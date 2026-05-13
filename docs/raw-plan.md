@@ -1,33 +1,3 @@
-# VPS Setup CLI Plan
-
-**Project name candidates (Japanese names only):**
-
-1. **Kōjō** — fortress / stronghold
-2. **Mamoru** — to protect
-3. **Tate** — shield
-4. **Kintsugi** — repair / resilience
-5. **Daiku** — carpenter / builder
-6. **Shokunin** — craftsman
-7. **Kiban** — foundation
-8. **Hajime** — beginning / start
-9. **Kairo** — route / circuit
-10. **Toride** — fortress
-11. **Kumitate** — assembly / setup
-12. **Kaizen** — continuous improvement
-13. **Anzen** — safety / security
-14. **Hayai** — fast
-15. **Kasoku** — acceleration
-
-Recommended short-list:
-
-* **Kiban** — best for a serious VPS foundation/setup tool
-* **Mamoru** — best for a security-first VPS hardening tool
-* **Kōjō** — best if the brand should feel strong and defensive
-* **Kumitate** — best if the app focuses on assembling a server from modules
-* **Hajime** — best if the app is a clean “start from zero” VPS bootstrapper
-
----
-
 # Product Goal
 
 Build a Rust + Ratatui terminal application that guides a user through VPS setup, security hardening, developer tooling installation, deployment stack installation, and quality-of-life configuration.
@@ -198,7 +168,8 @@ VPS Setup
 │  ├─ Docker user permissions
 │  ├─ Docker log rotation
 │  └─ Docker daemon config
-│
+│  └─ Docker daemon config
+
 ├─ Server Managers
 │  ├─ Dokploy
 │  ├─ Coolify
@@ -633,7 +604,7 @@ Plan:
 Default:
 
 ```bash
-kiban
+toride
 ```
 
 ## Non-interactive mode
@@ -641,25 +612,25 @@ kiban
 For automation and AI agents:
 
 ```bash
-kiban apply --profile basic --user deploy --ssh-key ~/.ssh/id_ed25519.pub
+toride apply --profile basic --user deploy --ssh-key ~/.ssh/id_ed25519.pub
 ```
 
 ## Dry-run mode
 
 ```bash
-kiban plan --profile basic
+toride plan --profile basic
 ```
 
 ## Export plan
 
 ```bash
-kiban plan --profile basic --export setup-plan.json
+toride plan --profile basic --export setup-plan.json
 ```
 
 ## Apply from config
 
 ```bash
-kiban apply --config kiban.toml
+toride apply --config toride.toml
 ```
 
 ---
@@ -831,15 +802,15 @@ Critical files to backup before edit:
 Log locations:
 
 ```text
-/var/log/kiban/setup.log
-/var/log/kiban/actions.jsonl
-/var/log/kiban/report.json
+/var/log/toride/setup.log
+/var/log/toride/actions.jsonl
+/var/log/toride/report.json
 ```
 
 For non-root local dry-runs:
 
 ```text
-~/.local/state/kiban/logs/
+~/.local/state/toride/logs/
 ```
 
 Logs should include:
@@ -929,26 +900,3 @@ Hard rules:
 * Signed recipes
 * Web dashboard optional
 * Server inventory mode
-
----
-
-# Suggested Final Direction
-
-Use **Kiban** as the working name.
-
-It is short, serious, easy to pronounce, and fits the purpose: building the foundation of a VPS.
-
-Positioning:
-
-> Kiban is a Rust-powered terminal setup assistant for turning a fresh VPS into a secure, production-ready deployment machine.
-
-Core focus:
-
-* Safe VPS hardening
-* Developer runtime setup
-* Docker/server manager setup
-* Reverse proxy choices
-* Firewall and CDN-aware origin protection
-* Repeatable profiles
-* Dry-run and logs
-* AI-agent friendly automation
