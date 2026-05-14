@@ -533,7 +533,11 @@ fn handle_screen_keys(model: &mut Model, key: KeyEvent, screen: Screen, effects:
 
     match key.code {
         KeyCode::Char('q') => {
-            model.should_quit = true;
+            if matches!(screen, Screen::Welcome | Screen::Summary) {
+                model.should_quit = true;
+            } else {
+                model.pop_screen();
+            }
         }
         KeyCode::Char('?') | KeyCode::F(1) => {
             model.push_screen(Screen::Help);
@@ -598,6 +602,17 @@ fn handle_screen_keys(model: &mut Model, key: KeyEvent, screen: Screen, effects:
 
 fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen, effects: &mut Vec<Effect>) {
     match screen {
+        Screen::Welcome => {
+            match key.code {
+                KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right | KeyCode::Down => {
+                    if matches!(model.screen_states.get(&Screen::Welcome), Some(ScreenState::Ready)) {
+                        model.push_screen(Screen::ProfileSelect);
+                        model.focus = FocusId::ProfileList;
+                    }
+                }
+                _ => {}
+            }
+        }
         Screen::ProfileSelect => {
             match key.code {
                 KeyCode::Enter | KeyCode::Char('l') | KeyCode::Right => {
@@ -805,8 +820,11 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
             }
         }
         Screen::Summary => {
-            if let KeyCode::Char('q') = key.code {
-                model.should_quit = true;
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Enter => {
+                    model.should_quit = true;
+                }
+                _ => {}
             }
         }
         _ => {}
