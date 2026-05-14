@@ -10,6 +10,14 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
             tokio::spawn(async move {
                 let info = detect_system_info().await;
                 let _ = tx.send(Action::OsDetected(info));
+                if let Some(os) = crate::system::os_detect::detect() {
+                    if !crate::system::os_detect::is_supported(&os) {
+                        let _ = tx.send(Action::Toast {
+                            message: format!("Unsupported OS: {}. Toride supports Debian and Ubuntu.", os.name),
+                            kind: crate::tui::model::ToastKind::Warning,
+                        });
+                    }
+                }
             });
         }
         Effect::GeneratePlan(module_ids) => {

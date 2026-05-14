@@ -302,6 +302,28 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
         }
 
         Action::SshPhaseDone(phase) => {
+            // Show contextual messages for interactive SSH phases
+            match phase {
+                SshVerifyPhase::AddKey => {
+                    let ip = model.system.public_ip.as_deref().unwrap_or("SERVER_IP");
+                    let user = if model.forms.get(FormField::Username).is_empty() {
+                        "deploy"
+                    } else {
+                        model.forms.get(FormField::Username)
+                    };
+                    model.add_toast(
+                        format!("Test reconnect in another terminal: ssh {}@{} true", user, ip),
+                        ToastKind::Info,
+                    );
+                }
+                SshVerifyPhase::HardenedConfig => {
+                    model.add_toast(
+                        "Rollback: sudo cp /var/backups/toride/sshd_config.d/00-toride.conf.bak /etc/ssh/sshd_config.d/00-toride.conf && sudo systemctl reload ssh".into(),
+                        ToastKind::Info,
+                    );
+                }
+                _ => {}
+            }
             let next = match phase {
                 SshVerifyPhase::CreateUser => Some(SshVerifyPhase::AddKey),
                 SshVerifyPhase::AddKey => Some(SshVerifyPhase::TestConnect),
