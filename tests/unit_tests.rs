@@ -335,3 +335,126 @@ fn preflight_warnings_cloudflare() {
     ]);
     assert!(warnings.iter().any(|w| w.message.contains("Cloudflare")));
 }
+
+#[test]
+fn preflight_warnings_ssh_harding() {
+    let warnings = toride::executor::plan::generate_preflight_warnings(&[
+        ModuleId::UserSsh,
+    ]);
+    assert!(warnings.iter().any(|w| w.message.contains("SSH hardening")));
+}
+
+#[test]
+fn preflight_warnings_docker_needs_update() {
+    let warnings = toride::executor::plan::generate_preflight_warnings(&[
+        ModuleId::Docker,
+    ]);
+    assert!(warnings.iter().any(|w| w.message.contains("System Update")));
+}
+
+#[test]
+fn preflight_warnings_tailscale_script() {
+    let warnings = toride::executor::plan::generate_preflight_warnings(&[
+        ModuleId::Tailscale,
+    ]);
+    assert!(warnings.iter().any(|w| w.message.contains("Tailscale")));
+}
+
+#[test]
+fn pending_confirm_action_variants() {
+    use toride::tui::model::PendingConfirmAction;
+    assert!(matches!(PendingConfirmAction::EnableUfw, PendingConfirmAction::EnableUfw));
+    assert!(matches!(PendingConfirmAction::DisableRootSsh, PendingConfirmAction::DisableRootSsh));
+    assert!(matches!(PendingConfirmAction::EnableCloudflareHttp, PendingConfirmAction::EnableCloudflareHttp));
+    assert!(matches!(PendingConfirmAction::ChangeSshPort, PendingConfirmAction::ChangeSshPort));
+}
+
+#[test]
+fn form_field_covers_all_variants() {
+    use toride::tui::model::FormField;
+    let fields = [
+        FormField::Username,
+        FormField::SshPublicKey,
+        FormField::SwapSize,
+        FormField::SshPort,
+        FormField::Hostname,
+        FormField::Timezone,
+    ];
+    assert_eq!(fields.len(), 6);
+}
+
+#[test]
+fn config_schema_roundtrip() {
+    let config = toride::config::schema::Config {
+        profile: "basic".into(),
+        user: toride::config::schema::UserConfig::default(),
+        security: toride::config::schema::SecurityConfig::default(),
+        runtimes: toride::config::schema::RuntimesConfig::default(),
+        containers: toride::config::schema::ContainersConfig::default(),
+        swap: toride::config::schema::SwapConfig::default(),
+        networking: toride::config::schema::NetworkingConfig::default(),
+        server_manager: toride::config::schema::ServerManagerConfig::default(),
+        reverse_proxy: toride::config::schema::ReverseProxyConfig::default(),
+        backup: toride::config::schema::BackupConfig::default(),
+        monitoring: toride::config::schema::MonitoringConfig::default(),
+    };
+    let toml_str = toml::to_string_pretty(&config).unwrap();
+    let parsed: toride::config::schema::Config = toml::from_str(&toml_str).unwrap();
+    assert_eq!(parsed.profile, config.profile);
+    assert_eq!(parsed.containers.docker, config.containers.docker);
+    assert_eq!(parsed.swap.size, config.swap.size);
+}
+
+#[test]
+fn config_schema_networking_defaults() {
+    let config = toride::config::schema::NetworkingConfig::default();
+    assert!(!config.tailscale);
+    assert!(!config.cloudflare_tunnel);
+    assert!(!config.wireguard);
+}
+
+#[test]
+fn config_schema_monitoring_defaults() {
+    let config = toride::config::schema::MonitoringConfig::default();
+    assert!(!config.node_exporter);
+    assert!(!config.prometheus);
+    assert!(!config.grafana);
+    assert!(!config.uptime_kuma);
+    assert!(!config.netdata);
+}
+
+#[test]
+fn plugin_recipe_parse_with_exec_and_write() {
+    let toml = r#"
+id = "complex"
+name = "Complex Recipe"
+version = "2.0"
+description = "A more complex recipe"
+
+[[steps]]
+type = "apt"
+packages = ["vim", "htop"]
+
+[[steps]]
+type = "exec"
+cmd = "systemctl"
+args = ["enable", "nginx"]
+
+[[steps]]
+type = "write"
+path = "/etc/nginx/conf.d/default.conf"
+content = "server { listen 80; }"
+mode = 420
+backup = true
+"#;
+    let recipe = toride::plugins::recipe::parse_recipe(toml).unwrap();
+    assert_eq!(recipe.steps.len(), 3);
+    assert_eq!(recipe.steps[0].step_type, "apt");
+    assert_eq!(recipe.steps[1].cmd.as_deref(), Some("systemctl"));
+    assert_eq!(recipe.steps[2].path.as_deref(), Some("/etc/nginx/conf.d/default.conf"));
+    assert_eq!(recipe.steps[2].mode, Some(420));
+    assert_eq!(recipe.steps[2].backup, Some(true));
+
+    let actions = recipe.to_install_actions();
+    assert_eq!(actions.len(), 3);
+}

@@ -1,6 +1,3 @@
-use std::collections::BTreeMap;
-use crate::modules::SetupModule;
-use crate::tui::model::ModuleId;
 use super::recipe;
 
 pub fn load_plugins_from_dirs(dirs: &[std::path::PathBuf]) -> Vec<recipe::Recipe> {

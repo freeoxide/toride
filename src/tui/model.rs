@@ -632,6 +632,11 @@ pub enum PendingConfirmAction {
     Quit,
     ApplyPlan,
     CancelInstall,
+    EnableUfw,
+    DisableRootSsh,
+    DisablePasswordSsh,
+    EnableCloudflareHttp,
+    ChangeSshPort,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

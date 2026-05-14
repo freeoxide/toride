@@ -152,5 +152,40 @@ pub fn generate_preflight_warnings(module_ids: &[ModuleId]) -> Vec<PreflightWarn
         });
     }
 
+    // nftables conflict warning before UFW enable
+    if selected.contains(&ModuleId::Ufw) {
+        if std::path::Path::new("/usr/sbin/nft").exists() {
+            let output = std::process::Command::new("nft")
+                .args(["list", "ruleset"])
+                .output()
+                .ok();
+            if let Some(out) = output {
+                let stdout = String::from_utf8_lossy(&out.stdout);
+                if !stdout.trim().is_empty() {
+                    warnings.push(PreflightWarning {
+                        message: "Pre-existing nftables rules detected. UFW uses the nftables backend and may not see provider-loaded rules. Verify with 'nft list ruleset' before enabling UFW.".into(),
+                        severity: WarningSeverity::Warning,
+                    });
+                }
+            }
+        }
+    }
+
+    // SSH port change warning
+    if selected.contains(&ModuleId::UserSsh) {
+        warnings.push(PreflightWarning {
+            message: "SSH hardening will change authentication settings. Keep an active session open during apply.".into(),
+            severity: WarningSeverity::Warning,
+        });
+    }
+
+    // Reboot check
+    if std::path::Path::new("/var/run/reboot-required").exists() {
+        warnings.push(PreflightWarning {
+            message: "A reboot is pending from a previous update. Consider rebooting before applying.".into(),
+            severity: WarningSeverity::Info,
+        });
+    }
+
     warnings
 }

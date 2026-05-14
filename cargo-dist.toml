@@ -1,0 +1,23 @@
+[dist]
+# Installers
+installers = ["shell"]
+# Target platforms — musl-static Linux builds
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+# Release repository
+repository = "hmziqrs/toride"
+# CI
+ci = ["github"]
+# Don't build on every push, only on release
+pr-run-mode = "plan"
+# Archive format
+install-path = "CARGO_HOME"
+# Merge multiple targets into a single release
+merge-tarballs = false
+
+[dist.dependencies.apt]
+build-essential = "*"
+libssl-dev = "*"
+pkg-config = "*"

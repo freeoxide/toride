@@ -401,6 +401,21 @@ fn handle_confirm_keys(model: &mut Model, key: KeyEvent) -> Vec<Effect> {
                         effects.push(Effect::CancelInstall);
                         model.run = RunState::Done(Outcome::Cancelled);
                     }
+                    Some(PendingConfirmAction::EnableUfw) => {
+                        model.add_toast("UFW will be enabled during apply. Ensure SSH port is allowed.".into(), ToastKind::Warning);
+                    }
+                    Some(PendingConfirmAction::DisableRootSsh) => {
+                        model.add_toast("Root SSH login will be disabled. Verify new user access first.".into(), ToastKind::Warning);
+                    }
+                    Some(PendingConfirmAction::DisablePasswordSsh) => {
+                        model.add_toast("Password SSH login will be disabled. Ensure SSH key is configured.".into(), ToastKind::Warning);
+                    }
+                    Some(PendingConfirmAction::EnableCloudflareHttp) => {
+                        model.add_toast("Cloudflare-only HTTP/S confirmed. Ensure DNS is proxied through Cloudflare.".into(), ToastKind::Warning);
+                    }
+                    Some(PendingConfirmAction::ChangeSshPort) => {
+                        model.add_toast("SSH port will be changed. Update your SSH config on the client side.".into(), ToastKind::Warning);
+                    }
                     None => model.should_quit = true,
                 }
             } else {
@@ -790,14 +805,47 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
         Screen::Preflight => {
             if key.code == KeyCode::Enter {
                 if model.plan.is_some() {
-                    let spec = ConfirmSpec {
-                        action_label: "Apply setup plan",
-                        description: "This will make changes to your system. Ensure you have reviewed the plan.",
-                        confirm_label: "Apply",
-                        cancel_label: "Cancel",
-                        is_destructive: true,
-                    };
-                    model.push_screen(Screen::Confirm(spec));
+                    // Show per-action confirmations for destructive modules
+                    let selected: std::collections::BTreeSet<ModuleId> =
+                        model.selection.selected_ids().into_iter().collect();
+
+                    if selected.contains(&ModuleId::Ufw) && !model.caps.no_color {
+                        // Already have a pending confirm for UFW — skip if already confirmed
+                    }
+
+                    // Check for destructive modules and show confirmations
+                    if selected.contains(&ModuleId::CloudflareHttp) {
+                        let spec = ConfirmSpec {
+                            action_label: "Enable Cloudflare-only HTTP/S",
+                            description: "This restricts ports 80/443 to Cloudflare IP ranges only. Your site will be unreachable unless DNS is proxied through Cloudflare.",
+                            confirm_label: "Enable",
+                            cancel_label: "Skip",
+                            is_destructive: true,
+                        };
+                        model.pending_confirm = Some(PendingConfirmAction::EnableCloudflareHttp);
+                        model.push_screen(Screen::Confirm(spec));
+                    } else if selected.contains(&ModuleId::Ufw) {
+                        let spec = ConfirmSpec {
+                            action_label: "Enable UFW Firewall",
+                            description: "UFW will be enabled with default deny. Only SSH (port 22) will be allowed initially. Ensure you have console access.",
+                            confirm_label: "Enable UFW",
+                            cancel_label: "Skip UFW",
+                            is_destructive: true,
+                        };
+                        model.pending_confirm = Some(PendingConfirmAction::EnableUfw);
+                        model.push_screen(Screen::Confirm(spec));
+                    } else {
+                        // Standard apply confirmation
+                        let spec = ConfirmSpec {
+                            action_label: "Apply setup plan",
+                            description: "This will make changes to your system. Ensure you have reviewed the plan.",
+                            confirm_label: "Apply",
+                            cancel_label: "Cancel",
+                            is_destructive: true,
+                        };
+                        model.pending_confirm = Some(PendingConfirmAction::ApplyPlan);
+                        model.push_screen(Screen::Confirm(spec));
+                    }
                 }
             }
         }
@@ -888,7 +936,22 @@ fn handle_palette_cmd(model: &mut Model, cmd: PaletteCmd, effects: &mut Vec<Effe
             model.needs_render = true;
         }
         PaletteCmd::Export => {
-            model.add_toast("Export not yet implemented".into(), ToastKind::Warning);
+            if let Some(ref plan) = model.plan {
+                let json = serde_json::to_string_pretty(&plan.actions.iter().map(|a| {
+                    serde_json::json!({
+                        "module": a.module_id.label(),
+                        "action": a.label,
+                        "status": format!("{:?}", a.status),
+                    })
+                }).collect::<Vec<_>>()).unwrap_or_default();
+                let path = std::path::PathBuf::from("toride-plan.json");
+                match std::fs::write(&path, json.as_bytes()) {
+                    Ok(_) => model.add_toast(format!("Plan exported to {}", path.display()), ToastKind::Success),
+                    Err(e) => model.add_toast(format!("Export failed: {}", e), ToastKind::Error),
+                }
+            } else {
+                model.add_toast("No plan to export. Generate a plan first with :plan".into(), ToastKind::Warning);
+            }
         }
         PaletteCmd::Quit => {
             model.should_quit = true;
@@ -927,17 +990,21 @@ fn next_form_field(current: FocusId) -> FocusId {
         FocusId::Form(FormField::Username) => FocusId::Form(FormField::SshPublicKey),
         FocusId::Form(FormField::SshPublicKey) => FocusId::Form(FormField::SwapSize),
         FocusId::Form(FormField::SwapSize) => FocusId::Form(FormField::SshPort),
-        FocusId::Form(FormField::SshPort) => FocusId::Form(FormField::Username),
+        FocusId::Form(FormField::SshPort) => FocusId::Form(FormField::Hostname),
+        FocusId::Form(FormField::Hostname) => FocusId::Form(FormField::Timezone),
+        FocusId::Form(FormField::Timezone) => FocusId::Form(FormField::Username),
         _ => FocusId::Form(FormField::Username),
     }
 }
 
 fn prev_form_field(current: FocusId) -> FocusId {
     match current {
-        FocusId::Form(FormField::Username) => FocusId::Form(FormField::SshPort),
+        FocusId::Form(FormField::Username) => FocusId::Form(FormField::Timezone),
         FocusId::Form(FormField::SshPublicKey) => FocusId::Form(FormField::Username),
         FocusId::Form(FormField::SwapSize) => FocusId::Form(FormField::SshPublicKey),
         FocusId::Form(FormField::SshPort) => FocusId::Form(FormField::SwapSize),
+        FocusId::Form(FormField::Hostname) => FocusId::Form(FormField::SshPort),
+        FocusId::Form(FormField::Timezone) => FocusId::Form(FormField::Hostname),
         _ => FocusId::Form(FormField::Username),
     }
 }
