@@ -47,19 +47,35 @@ pub fn spawn_effect(effect: Effect, tx: mpsc::UnboundedSender<Action>, cancel: C
             cancel.cancel();
         }
         Effect::WriteConfig(path) => {
+            let tx = tx.clone();
             tokio::spawn(async move {
-                let _ = tx.send(Action::Toast {
-                    message: format!("Config saved to {}", path.display()),
-                    kind: crate::tui::model::ToastKind::Success,
-                });
+                match tokio::fs::write(&path, b"").await {
+                    Ok(_) => {
+                        let _ = tx.send(Action::Toast {
+                            message: format!("Config saved to {}", path.display()),
+                            kind: crate::tui::model::ToastKind::Success,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Action::Error(format!("Failed to save config: {}", e)));
+                    }
+                }
             });
         }
         Effect::LoadConfig(path) => {
+            let tx = tx.clone();
             tokio::spawn(async move {
-                let _ = tx.send(Action::Toast {
-                    message: format!("Config loaded from {}", path.display()),
-                    kind: crate::tui::model::ToastKind::Info,
-                });
+                match tokio::fs::read_to_string(&path).await {
+                    Ok(_content) => {
+                        let _ = tx.send(Action::Toast {
+                            message: format!("Config loaded from {}", path.display()),
+                            kind: crate::tui::model::ToastKind::Info,
+                        });
+                    }
+                    Err(e) => {
+                        let _ = tx.send(Action::Error(format!("Failed to load config: {}", e)));
+                    }
+                }
             });
         }
         Effect::OpenUrl(_url) => {}

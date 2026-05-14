@@ -120,7 +120,7 @@ async fn run_plan(profile: Option<&str>, _config_path: Option<&str>, json: bool)
     Ok(())
 }
 
-async fn run_apply(profile: Option<&str>, _config_path: Option<&str>, _user: Option<&str>, _ssh_key: Option<&str>) -> color_eyre::Result<()> {
+async fn run_apply(profile: Option<&str>, config_path: Option<&str>, user: Option<&str>, ssh_key: Option<&str>) -> color_eyre::Result<()> {
     let profile = match profile {
         Some("basic") => tui::model::Profile::Basic,
         Some("custom") | None => tui::model::Profile::Custom,
