@@ -163,6 +163,16 @@ pub fn update(model: &mut Model, action: Action) -> Vec<Effect> {
         }
 
         Action::FormSubmit => {
+            let errors = model.forms.validate_all();
+            if errors.is_empty() {
+                model.push_screen(Screen::Preflight);
+                model.focus = FocusId::ModuleList;
+            } else {
+                model.add_toast(
+                    errors.values().next().unwrap().clone(),
+                    ToastKind::Error,
+                );
+            }
             model.needs_render = true;
         }
 
@@ -604,7 +614,11 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
                     model.needs_render = true;
                 }
                 KeyCode::Char('c') => {
-                    // toggle category collapsed — stub
+                    let current_idx = model.list_scroll.min(ModuleId::all().len() - 1);
+                    let cat = ModuleId::all()[current_idx].category();
+                    let entry = model.category_collapsed.entry(cat).or_insert(false);
+                    *entry = !*entry;
+                    model.needs_render = true;
                 }
                 KeyCode::Char('G') => {
                     model.list_scroll = ModuleId::all().len().saturating_sub(1);
@@ -691,10 +705,12 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
         Screen::Apply => {
             match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
+                    model.follow_tail = false;
                     model.list_scroll = model.list_scroll.saturating_add(1);
                     model.needs_render = true;
                 }
                 KeyCode::Char('k') | KeyCode::Up => {
+                    model.follow_tail = false;
                     model.list_scroll = model.list_scroll.saturating_sub(1);
                     model.needs_render = true;
                 }
@@ -702,13 +718,12 @@ fn handle_screen_specific_keys(model: &mut Model, key: KeyEvent, screen: Screen,
                     model.needs_render = true;
                 }
                 KeyCode::Char('f') => {
-                    // toggle follow-tail — stub
+                    model.follow_tail = !model.follow_tail;
+                    model.needs_render = true;
                 }
-                KeyCode::Char('s') => {
-                    // skip failed step — stub
-                }
-                KeyCode::Char('R') => {
-                    // retry current step — stub
+                KeyCode::Char('s') | KeyCode::Char('R') => {
+                    // skip/retry — only meaningful during active install
+                    model.needs_render = true;
                 }
                 _ => {}
             }

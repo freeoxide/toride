@@ -267,6 +267,19 @@ impl FormData {
             }
         }
     }
+
+    pub fn validate_all(&mut self) -> HashMap<FormField, String> {
+        let validators = crate::tui::forms::validators();
+        self.errors.clear();
+        for (field, validator) in &validators {
+            if let Some(value) = self.fields.get(field) {
+                if let Err(e) = validator(value) {
+                    self.errors.insert(*field, e);
+                }
+            }
+        }
+        self.errors.clone()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -497,6 +510,8 @@ pub struct Model {
     pub dry_run: bool,
     pub list_scroll: usize,
     pub log_panel_visible: bool,
+    pub follow_tail: bool,
+    pub category_collapsed: HashMap<Category, bool>,
     pub pending_confirm: Option<PendingConfirmAction>,
     pub reboot_required: bool,
     pub screen_states: HashMap<Screen, ScreenState>,
@@ -563,6 +578,8 @@ impl Model {
             dry_run: false,
             list_scroll: 0,
             log_panel_visible: false,
+            follow_tail: true,
+            category_collapsed: HashMap::new(),
             pending_confirm: None,
             reboot_required: false,
             screen_states: HashMap::new(),

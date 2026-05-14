@@ -33,6 +33,7 @@ impl SetupModule for Mise {
         for (tool, version) in [
             ("node", "lts"),
             ("bun", "latest"),
+            ("deno", "latest"),
             ("go", "latest"),
             ("rust", "stable"),
             ("python", "3.12"),

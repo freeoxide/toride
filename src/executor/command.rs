@@ -50,10 +50,9 @@ pub async fn execute_actions(
 pub async fn execute_single(action: &InstallAction) -> ModuleResult<String> {
     match action {
         InstallAction::AptInstall { packages } => {
-            let mut args = vec!["install".to_string(), "-y".to_string()];
-            args.extend(packages.iter().cloned());
-            let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-            run_cmd("apt-get", &arg_refs).await
+            let pkg_refs: Vec<&str> = packages.iter().map(|s| s.as_str()).collect();
+            let cmd = crate::system::package_manager::apt_install(&pkg_refs);
+            run_cmd_from(cmd).await
         }
 
         InstallAction::AptRepoAdd { name, key_url, sources_line, .. } => {
@@ -75,7 +74,8 @@ pub async fn execute_single(action: &InstallAction) -> ModuleResult<String> {
                 .map_err(|e| ModuleError::Exec(format!("Failed to write sources: {}", e)))?;
 
             // Update index
-            run_cmd("apt-get", &["update"]).await
+            let cmd = crate::system::package_manager::apt_update();
+            run_cmd_from(cmd).await
         }
 
         InstallAction::WriteFile { path, content, mode, backup } => {
@@ -275,14 +275,26 @@ pub async fn execute_single(action: &InstallAction) -> ModuleResult<String> {
 }
 
 async fn run_cmd(cmd: &str, args: &[&str]) -> ModuleResult<String> {
+    let mut command = tokio::process::Command::new(cmd);
+    command.args(args);
+    run_cmd_inner(command).await
+}
+
+async fn run_cmd_from(mut command: std::process::Command) -> ModuleResult<String> {
+    let tokio_cmd: tokio::process::Command = command.into();
+    run_cmd_inner(tokio_cmd).await
+}
+
+async fn run_cmd_inner(mut child: tokio::process::Command) -> ModuleResult<String> {
     use tokio::io::AsyncBufReadExt;
     use tokio_stream::wrappers::LinesStream;
     use tokio_stream::StreamExt;
 
-    let mut child = tokio::process::Command::new(cmd)
-        .args(args)
+    child
         .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+
+    let mut child = child
         .spawn()
         .map_err(|e| ModuleError::Exec(e.to_string()))?;
 
@@ -306,7 +318,7 @@ async fn run_cmd(cmd: &str, args: &[&str]) -> ModuleResult<String> {
     if status.success() {
         Ok(output)
     } else {
-        Err(ModuleError::Exec(format!("{} exited with {}", cmd, status)))
+        Err(ModuleError::Exec(format!("command exited with {}", status)))
     }
 }
 
