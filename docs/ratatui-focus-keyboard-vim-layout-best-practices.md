@@ -1,76 +1,202 @@
 # Ratatui Best Practices: Focus, Keyboard Shortcuts, Vim Actions, Layout, and Flex
 
-This document audits interaction and layout patterns using Ratatui official docs and examples.
+## Dependencies
 
-## 1) Focus Model in Ratatui (Important)
+```toml
+[dependencies]
+ratatui = "0.30"
+crossterm = "0.29"
+color-eyre = "0.6"
+```
 
-Ratatui does not provide a built-in focus-node system like many GUI frameworks.
-You should model focus explicitly in app state.
+## 1) Focus Model in Ratatui
 
-Recommended pattern:
-- Add `focused_pane`, `focused_widget`, and optional `mode` fields to `App`.
-- Route key events based on focus + mode.
-- Keep per-widget state (`ListState`, `TableState`) in `App` and only mutate active target.
+Ratatui has no built-in focus system. Model focus explicitly in app state.
+
+```rust
+enum Pane { Sidebar, Main, Footer }
+
+struct App {
+    focused_pane: Pane,
+    sidebar_state: ListState,
+    main_state: TableState,
+}
+```
+
+- Route key events based on `focused_pane` + `mode`.
+- Only mutate the active widget's state object on navigation keys.
+- Keep per-widget state (`ListState`, `TableState`) in `App`, not inside `draw()`.
 
 ## 2) Keyboard Shortcuts Architecture
 
-Best practices:
-- Use a typed command/action enum as semantic layer (`Action::Quit`, `Action::MoveUp`, etc.).
-- Parse raw keys once, then map to actions by current mode/context.
-- Centralize keymap tables to avoid duplicate logic.
-- Reserve global shortcuts (`q`, `Ctrl+C`) and keep others context-sensitive.
+Use a typed action enum as a semantic layer between raw keys and state mutations.
+
+```rust
+enum Action {
+    Quit,
+    MoveUp,
+    MoveDown,
+    FocusNext,
+    Select,
+}
+
+fn map_key_to_action(mode: &Mode, pane: &Pane, key: KeyCode) -> Option<Action> {
+    match (mode, key) {
+        (Mode::Normal, KeyCode::Char('q')) => Some(Action::Quit),
+        (Mode::Normal, KeyCode::Char('j') | KeyCode::Down) => Some(Action::MoveDown),
+        (Mode::Normal, KeyCode::Char('k') | KeyCode::Up) => Some(Action::MoveUp),
+        (Mode::Normal, KeyCode::Tab) => Some(Action::FocusNext),
+        (Mode::Normal, KeyCode::Enter) => Some(Action::Select),
+        _ => None,
+    }
+}
+```
 
 Recommended flow:
 1. `Event::Key(KeyEvent)`
-2. `map_key_to_action(app.mode, app.focus, key)`
-3. `update(app, action)`
-4. Optional rerender trigger
+2. `map_key_to_action(app.mode, app.focused_pane, key.code)`
+3. `app.update(action)`
+4. Rerender
 
 ## 3) Vim-Style Modal Input
 
-Ratatui is well-suited for Vim-like behavior when modeled explicitly.
+```rust
+#[derive(Default, PartialEq)]
+enum Mode { #[default] Normal, Insert, Visual, Command }
 
-Best practices:
-- Store mode enum: `Normal | Insert | Visual | Command`.
-- Apply mode-specific keymaps.
+impl App {
+    fn update(&mut self, action: Action) {
+        match (&self.mode, action) {
+            (Mode::Normal, Action::EnterInsert) => self.mode = Mode::Insert,
+            (Mode::Insert, Action::Escape) => self.mode = Mode::Normal,
+            (Mode::Normal, Action::MoveDown) => self.move_down(),
+            _ => {}
+        }
+    }
+}
+```
+
+- Store mode in `App`; apply mode-specific keymaps in `map_key_to_action`.
 - Display mode indicator in status bar.
-- Keep mode transitions atomic (mode + cursor/selection/focus updates together).
+- Keep mode transitions atomic — update mode, cursor, focus, and selection together.
 
-Anti-pattern:
-- Large nested `match` trees without a keymap abstraction.
+Anti-pattern: large nested `match` trees without a keymap abstraction.
 
 ## 4) Layout and Flex Patterns
 
-Ratatui layout is constraint-driven and supports modern `Flex` alignment.
+```rust
+use ratatui::layout::{Constraint, Flex, Layout};
 
-Best practices:
-- Use `Layout::{horizontal, vertical}` with clear constraints (`Length`, `Min`, `Fill`, `Percentage`, `Ratio`).
+fn draw(app: &App, frame: &mut Frame) {
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Fill(1),
+        Constraint::Length(1),
+    ]).areas(frame.area());
+
+    let [sidebar, main] = Layout::horizontal([
+        Constraint::Length(24),
+        Constraint::Fill(1),
+    ]).areas(body);
+
+    // Center a fixed-width element using Flex
+    let [_, content, _] = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(60),
+        Constraint::Fill(1),
+    ]).flex(Flex::Center).areas(body);
+}
+```
+
 - Use `Flex` (`Start`, `Center`, `End`, `SpaceBetween`, `SpaceAround`, `SpaceEvenly`) to control excess space behavior.
-- Build nested layout shells: header/body/footer, then split body into panes.
 - Keep constraints stable and data-driven for predictable resizing.
 
 ## 5) Stateful Widgets as Focus Targets
 
-Treat stateful widgets as the practical “focus particles” of a TUI:
-- `List + ListState`
-- `Table + TableState`
-- `Scrollbar + ScrollbarState`
+```rust
+// Persist state in App, not in draw()
+impl App {
+    fn move_down(&mut self) {
+        match self.focused_pane {
+            Pane::Sidebar => self.sidebar_state.select_next(),
+            Pane::Main => {
+                let next = self.main_state.selected().map(|i| i + 1).unwrap_or(0);
+                self.main_state.select(Some(next.min(self.items.len() - 1)));
+            }
+            _ => {}
+        }
+    }
+}
 
-Best practices:
-- Persist state objects across renders.
+// In draw(), pass state by mutable ref
+fn draw(app: &mut App, frame: &mut Frame) {
+    let list = List::new(app.sidebar_items.clone())
+        .highlight_style(Style::new().bold().cyan());
+    frame.render_stateful_widget(list, sidebar_area, &mut app.sidebar_state);
+}
+```
+
+- Use `.bold().cyan()` via the `Stylize` trait, not `Style::new().add_modifier(Modifier::BOLD)`.
 - Move selection/offset in update logic, not in rendering code.
-- Couple focused widget routing with its state object mutation.
 
-## 6) Cross-Match: “Focus Nodes/Actions/Flex” Expectations
+## 6) Styling with the Stylize Trait
 
-- Focus nodes: not built-in; implement in app state.
-- Keyboard action registry: not built-in framework-wide; implement action enums and mapping.
-- Vim actions: first-class feasible via modal state + keymap tables.
-- Flex/layout: first-class via Ratatui `Layout` + `Flex` and recipes/examples.
+```rust
+use ratatui::style::Stylize;
 
-## 7) Testing Targets
+// Preferred
+"NORMAL".bold().on_cyan()
+"item text".dim()
+"error".red().bold()
+"selected".cyan()
 
-Regression tests should cover:
+// Avoid
+Style::default().fg(Color::White)
+Style::new().add_modifier(Modifier::BOLD)
+```
+
+Color palette:
+- Primary: `.cyan()`, `.green()`
+- Error: `.red()`
+- Muted: `.dim()`, `.dark_gray()`
+- Accent: `.magenta()`
+
+## 7) Key Bindings Display
+
+```rust
+let help = Line::from(vec![
+    " q ".bold().cyan(),
+    "quit ".dim(),
+    " ↑↓ ".bold().cyan(),
+    "navigate ".dim(),
+    " Tab ".bold().cyan(),
+    "focus ".dim(),
+]);
+frame.render_widget(Paragraph::new(help), footer_area);
+```
+
+## 8) Centered Popup
+
+```rust
+fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
+    let [_, center, _] = Layout::vertical([
+        Constraint::Percentage((100 - percent_y) / 2),
+        Constraint::Percentage(percent_y),
+        Constraint::Percentage((100 - percent_y) / 2),
+    ]).areas(area);
+
+    let [_, center, _] = Layout::horizontal([
+        Constraint::Percentage((100 - percent_x) / 2),
+        Constraint::Percentage(percent_x),
+        Constraint::Percentage((100 - percent_x) / 2),
+    ]).areas(center);
+
+    center
+}
+```
+
+## 9) Testing Targets
+
 - Focus routing across panes/widgets.
 - Mode switching correctness (Normal/Insert/etc.).
 - Shortcut conflicts and precedence.
