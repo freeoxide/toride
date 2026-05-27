@@ -3,12 +3,22 @@
 ## Dependencies
 
 ```toml
+[package]
+name = "my-tui"
+version = "0.1.0"
+edition = "2024"
+
 [dependencies]
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 color-eyre = "0.6"
 tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt"] }
 futures = "0.3"
+textwrap = "0.16"
+
+# Optional: image support
+ratatui-image = { version = "5", features = ["chafa-static"] }
 ```
 
 ## 1) State Management Model (Core Pattern)
@@ -22,8 +32,9 @@ Ratatui is render-focused and intentionally does not provide a full app framewor
 ```rust
 struct App {
     items: Vec<String>,
-    list_state: ListState,   // widget state
+    list_state: ListState,
     should_quit: bool,
+    dirty: bool,
 }
 
 enum Action { Quit, MoveUp, MoveDown }
@@ -35,6 +46,7 @@ impl App {
             Action::MoveDown => self.list_state.select_next(),
             Action::MoveUp => self.list_state.select_previous(),
         }
+        self.dirty = true;
     }
 
     fn draw(&mut self, frame: &mut Frame) {
@@ -47,7 +59,7 @@ impl App {
 
 - Keep widget state (`ListState`, `TableState`, `ScrollbarState`) inside `App`, not inside `draw()`.
 - Keep domain state and widget state as separate fields.
-- Do not mutate state while building widget definitions.
+- Set `dirty = true` in `update()` so the event loop knows to redraw.
 
 ## 2) Lifecycle and Terminal Discipline
 
@@ -84,18 +96,22 @@ fn main() -> Result<()> {
 
 ## 3) Async Event Architecture
 
-Use `EventStream` from crossterm (requires `event-stream` feature) rather than raw `mpsc` channels.
+Use `EventStream` from crossterm (requires `event-stream` feature) with a background task channel.
 
 ```rust
-use crossterm::event::{Event, EventStream, KeyCode, KeyEvent};
+use crossterm::event::{Event, EventStream, KeyCode};
 use futures::StreamExt;
-use tokio::select;
+use tokio::{select, sync::mpsc};
 
 async fn run(mut app: App, mut terminal: Terminal<impl Backend>) -> Result<()> {
     let mut events = EventStream::new();
+    let (tx, mut rx) = mpsc::channel::<AppEvent>(32);
 
     loop {
-        terminal.draw(|f| app.draw(f))?;
+        if app.dirty {
+            terminal.draw(|f| app.draw(f))?;
+            app.dirty = false;
+        }
 
         select! {
             Some(Ok(event)) = events.next() => {
@@ -103,8 +119,8 @@ async fn run(mut app: App, mut terminal: Terminal<impl Backend>) -> Result<()> {
                     app.update(action);
                 }
             }
-            result = app.background_task() => {
-                app.handle_task_result(result);
+            Some(event) = rx.recv() => {
+                app.handle_event(event);
             }
         }
 
@@ -117,18 +133,16 @@ async fn run(mut app: App, mut terminal: Terminal<impl Backend>) -> Result<()> {
 Recommended architecture:
 1. `EventStream` yields crossterm `Event`s (keyboard, mouse, resize).
 2. Map `Event` → `Action` via `map_event_to_action`.
-3. `app.update(action)` mutates state.
-4. `terminal.draw(|f| app.draw(f))` renders.
-
-- Separate `Event` (external/input) from `Action` (domain intent).
-- For async jobs (network/fs), spawn tasks and feed results back via channels into `select!`.
-- Use cancellation tokens for long-running tasks.
+3. Background tasks send results back through an `mpsc::Receiver` in the same `select!`.
+4. `terminal.draw(|f| app.draw(f))` renders only when dirty.
 
 ## 4) Background Tasks
 
 ```rust
-use tokio::{sync::mpsc, task::JoinHandle};
+use tokio::{select, sync::mpsc};
 use tokio_util::sync::CancellationToken;
+
+enum AppEvent { FetchDone(Result<String, String>) }
 
 struct App {
     tx: mpsc::Sender<AppEvent>,
@@ -141,20 +155,65 @@ impl App {
         let cancel = self.cancel.clone();
         tokio::spawn(async move {
             select! {
-                result = fetch(url) => { let _ = tx.send(AppEvent::FetchDone(result)).await; }
+                result = reqwest::get(&url) => {
+                    let payload = result
+                        .map(|_| url)
+                        .map_err(|e| e.to_string());
+                    let _ = tx.send(AppEvent::FetchDone(payload)).await;
+                }
                 _ = cancel.cancelled() => {}
             }
         });
+    }
+
+    fn handle_event(&mut self, event: AppEvent) {
+        match event {
+            AppEvent::FetchDone(Ok(data)) => { /* update state */ }
+            AppEvent::FetchDone(Err(e)) => self.error = Some(e),
+        }
+        self.dirty = true;
     }
 }
 ```
 
 - Never block the event loop with long synchronous operations.
-- Keep mutation serialized in the main update loop.
+- Keep mutation serialized in the main update loop via channel messages.
+- Use `CancellationToken` (from `tokio-util`) so tasks shut down cleanly on quit.
 - Use message passing, not shared `Arc<Mutex<_>>`, between tasks.
-- Ensure spawned tasks can be shut down cleanly via cancellation tokens.
 
-## 5) Error Handling
+## 5) Image Integration
+
+```rust
+use ratatui_image::{picker::Picker, Resize, StatefulImage};
+use std::thread;
+
+// Query terminal protocol support once at startup — not per frame
+let mut picker = Picker::from_query_stdio()?;
+
+// Offload resize/encode to a background thread
+let (tx, rx) = std::sync::mpsc::channel();
+thread::spawn(move || {
+    let dyn_img = image::open("photo.png").unwrap();
+    let protocol = picker.new_protocol(dyn_img, area.into(), Resize::Fit(None));
+    tx.send(protocol).unwrap();
+});
+
+// In the event loop, receive when ready
+if let Ok(protocol) = rx.try_recv() {
+    app.image_state = Some(protocol);
+}
+
+// In draw(), use StatefulImage to avoid re-encoding on redraws
+if let Some(ref mut img) = app.image_state {
+    frame.render_stateful_widget(StatefulImage::default(), image_area, img);
+}
+```
+
+- Add `ratatui-image = { version = "5", features = ["chafa-static"] }` for portable binaries.
+- Query the terminal protocol once; reusing `Picker` across frames is safe.
+- Always offload image loading and encoding to a thread — never in `draw()`.
+
+## 6) Error Handling
 
 ```rust
 use color_eyre::{eyre::Result, eyre::WrapErr};
@@ -164,47 +223,37 @@ fn load_config(path: &Path) -> Result<Config> {
         .wrap_err_with(|| format!("Failed to read config at {}", path.display()))?;
     toml::from_str(&text).wrap_err("Failed to parse config")
 }
-
-// Convert task failures into app events so the UI stays alive
-enum AppEvent {
-    FetchDone(Result<Data>),
-}
-
-impl App {
-    fn handle_event(&mut self, event: AppEvent) {
-        match event {
-            AppEvent::FetchDone(Err(e)) => self.error = Some(e.to_string()),
-            AppEvent::FetchDone(Ok(data)) => self.data = data,
-        }
-    }
-}
 ```
 
 - Use `color-eyre` for rich error context; install it first in `main()`.
-- Convert task failures into `AppEvent::Error` and show recoverable UI state.
+- Convert task failures into app events (see Section 4) so the UI stays alive.
 - Never leave the terminal in raw/alternate mode after an error.
 
-## 6) Performance and Rendering
+## 7) Text Wrapping
 
 ```rust
-struct App {
-    dirty: bool,
-}
+use textwrap::wrap;
+use ratatui::text::Line;
 
-// Only redraw when state changed
-loop {
-    if app.dirty {
-        terminal.draw(|f| app.draw(f))?;
-        app.dirty = false;
-    }
-    // ... handle events
-}
+let wrapped: Vec<Line> = wrap(&long_text, area.width as usize)
+    .into_iter()
+    .map(|cow| Line::from(cow.into_owned()))
+    .collect();
+frame.render_widget(Paragraph::new(wrapped), area);
 ```
 
-- Keep `draw()` pure and fast; precompute expensive view-model data in `update()`, not in `draw()`.
-- Use stateful widgets correctly to preserve selection/offset across frames.
-- Cap render FPS and separate tick rate from render rate.
-- Set `app.dirty = true` in `update()` when state actually changes.
+Precompute wrapped lines in `update()` when the content changes, not inside `draw()`.
+
+## 8) Release Optimization
+
+```toml
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+opt-level = "z"  # optimize for binary size
+```
 
 ## Pre-Ship Checklist
 
@@ -213,7 +262,8 @@ loop {
 - [ ] No `unwrap()` outside tests
 - [ ] `color_eyre::install()` is first call in `main()`
 - [ ] Panic hook restores terminal
-- [ ] `cargo build --release` succeeds
+- [ ] All spawned tasks use `CancellationToken` and are joined on quit
+- [ ] `cargo build --release` with the release profile above succeeds
 - [ ] Test on target terminal(s)
 
 ## Primary Sources
@@ -225,5 +275,6 @@ loop {
 - Async Event Stream: <https://ratatui.rs/tutorials/counter-async-app/async-event-stream/>
 - Full Async Events: <https://ratatui.rs/tutorials/counter-async-app/full-async-events/>
 - Full Async Actions: <https://ratatui.rs/tutorials/counter-async-app/full-async-actions/>
+- ratatui-image crate: <https://docs.rs/ratatui-image/latest/ratatui_image/>
 - Ratatui crate docs: <https://docs.rs/ratatui/latest/ratatui/>
 - Widgets module (`Widget` / `StatefulWidget`): <https://docs.rs/ratatui/latest/ratatui/widgets/>

@@ -3,10 +3,16 @@
 ## Dependencies
 
 ```toml
+[package]
+name = "my-tui"
+version = "0.1.0"
+edition = "2024"
+
 [dependencies]
 ratatui = "0.30"
 crossterm = "0.29"
 color-eyre = "0.6"
+textwrap = "0.16"
 ```
 
 ## 1) Focus Model in Ratatui
@@ -14,6 +20,7 @@ color-eyre = "0.6"
 Ratatui has no built-in focus system. Model focus explicitly in app state.
 
 ```rust
+#[derive(Copy, Clone, PartialEq)]
 enum Pane { Sidebar, Main, Footer }
 
 struct App {
@@ -32,21 +39,29 @@ struct App {
 Use a typed action enum as a semantic layer between raw keys and state mutations.
 
 ```rust
+#[derive(Copy, Clone)]
 enum Action {
     Quit,
     MoveUp,
     MoveDown,
     FocusNext,
     Select,
+    EnterInsert,
+    Escape,
 }
 
-fn map_key_to_action(mode: &Mode, pane: &Pane, key: KeyCode) -> Option<Action> {
+#[derive(Copy, Clone, PartialEq)]
+enum Mode { Normal, Insert, Visual, Command }
+
+fn map_key_to_action(mode: Mode, pane: Pane, key: KeyCode) -> Option<Action> {
     match (mode, key) {
         (Mode::Normal, KeyCode::Char('q')) => Some(Action::Quit),
+        (Mode::Normal, KeyCode::Char('i')) => Some(Action::EnterInsert),
         (Mode::Normal, KeyCode::Char('j') | KeyCode::Down) => Some(Action::MoveDown),
         (Mode::Normal, KeyCode::Char('k') | KeyCode::Up) => Some(Action::MoveUp),
         (Mode::Normal, KeyCode::Tab) => Some(Action::FocusNext),
         (Mode::Normal, KeyCode::Enter) => Some(Action::Select),
+        (Mode::Insert, KeyCode::Esc) => Some(Action::Escape),
         _ => None,
     }
 }
@@ -61,15 +76,14 @@ Recommended flow:
 ## 3) Vim-Style Modal Input
 
 ```rust
-#[derive(Default, PartialEq)]
-enum Mode { #[default] Normal, Insert, Visual, Command }
-
 impl App {
     fn update(&mut self, action: Action) {
-        match (&self.mode, action) {
+        match (self.mode, action) {
             (Mode::Normal, Action::EnterInsert) => self.mode = Mode::Insert,
             (Mode::Insert, Action::Escape) => self.mode = Mode::Normal,
             (Mode::Normal, Action::MoveDown) => self.move_down(),
+            (Mode::Normal, Action::MoveUp) => self.move_up(),
+            (Mode::Normal, Action::Quit) => self.should_quit = true,
             _ => {}
         }
     }
@@ -77,7 +91,7 @@ impl App {
 ```
 
 - Store mode in `App`; apply mode-specific keymaps in `map_key_to_action`.
-- Display mode indicator in status bar.
+- Display mode indicator in status bar (see Section 7).
 - Keep mode transitions atomic — update mode, cursor, focus, and selection together.
 
 Anti-pattern: large nested `match` trees without a keymap abstraction.
@@ -87,7 +101,7 @@ Anti-pattern: large nested `match` trees without a keymap abstraction.
 ```rust
 use ratatui::layout::{Constraint, Flex, Layout};
 
-fn draw(app: &App, frame: &mut Frame) {
+fn draw(app: &mut App, frame: &mut Frame) {
     let [header, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Fill(1),
@@ -114,7 +128,6 @@ fn draw(app: &App, frame: &mut Frame) {
 ## 5) Stateful Widgets as Focus Targets
 
 ```rust
-// Persist state in App, not in draw()
 impl App {
     fn move_down(&mut self) {
         match self.focused_pane {
@@ -136,8 +149,8 @@ fn draw(app: &mut App, frame: &mut Frame) {
 }
 ```
 
-- Use `.bold().cyan()` via the `Stylize` trait, not `Style::new().add_modifier(Modifier::BOLD)`.
 - Move selection/offset in update logic, not in rendering code.
+- `frame.render_stateful_widget(widget, area, &mut state)` — always pass state as `&mut`.
 
 ## 6) Styling with the Stylize Trait
 
@@ -161,7 +174,24 @@ Color palette:
 - Muted: `.dim()`, `.dark_gray()`
 - Accent: `.magenta()`
 
-## 7) Key Bindings Display
+## 7) Status Bar
+
+```rust
+let mode_label = match app.mode {
+    Mode::Normal => " NORMAL ".bold().on_cyan(),
+    Mode::Insert => " INSERT ".bold().on_green(),
+    Mode::Visual => " VISUAL ".bold().on_magenta(),
+    Mode::Command => " COMMAND ".bold().on_yellow(),
+};
+
+let status = Line::from(vec![
+    mode_label.into(),
+    format!(" {} items ", app.items.len()).dim().into(),
+]);
+frame.render_widget(Paragraph::new(status), footer_area);
+```
+
+## 8) Key Bindings Display
 
 ```rust
 let help = Line::from(vec![
@@ -175,7 +205,20 @@ let help = Line::from(vec![
 frame.render_widget(Paragraph::new(help), footer_area);
 ```
 
-## 8) Centered Popup
+## 9) Text Wrapping
+
+```rust
+use textwrap::wrap;
+use ratatui::text::Line;
+
+let wrapped: Vec<Line> = wrap(&long_text, area.width as usize)
+    .into_iter()
+    .map(|cow| Line::from(cow.into_owned()))
+    .collect();
+frame.render_widget(Paragraph::new(wrapped), area);
+```
+
+## 10) Centered Popup
 
 ```rust
 fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
@@ -195,7 +238,22 @@ fn centered_rect(percent_x: u16, percent_y: u16, area: Rect) -> Rect {
 }
 ```
 
-## 9) Testing Targets
+## 11) Template Guidance
+
+For apps with focus, modes, and multiple panes, use the `component-app` template:
+
+```bash
+cp -r ~/.agents/skills/ratatui-tui-blacktop/assets/templates/component-app/* .
+```
+
+Structure:
+- `app.rs` — `App` state, `update()` logic
+- `action.rs` — `Action` enum (place `Action` and `Mode` here)
+- `event.rs` — event handling, `map_key_to_action`
+- `ui.rs` — all rendering
+- `tui.rs` — terminal setup/teardown
+
+## 12) Testing Targets
 
 - Focus routing across panes/widgets.
 - Mode switching correctness (Normal/Insert/etc.).
