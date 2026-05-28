@@ -95,7 +95,7 @@ impl WelcomeScreen {
         let main_color = Color::Magenta;
         let main_width = LOGO[0].len();
         let center_width = center.width as usize;
-        let h_pad = (center_width - main_width) / 2;
+        let h_pad = center_width.saturating_sub(main_width) / 2;
 
         let mut logo_lines: Vec<Line> = Vec::new();
         for line in LOGO {
