@@ -233,9 +233,25 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
         };
 
         if final_content != content {
-            std::fs::write(&config_path, final_content).map_err(|e| {
-                Error::ConfigWriteFailed(format!("failed to update config: {e}"))
+            // Atomic write: temp file + rename to prevent corruption on crash.
+            let parent = config_path.parent().unwrap_or(std::path::Path::new("."));
+            let tmp_path = parent.join(format!(
+                ".config.tmp.{}.{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ));
+            std::fs::write(&tmp_path, &final_content).map_err(|e| {
+                Error::ConfigWriteFailed(format!("failed to write temp config: {e}"))
             })?;
+            if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
+                let _ = std::fs::remove_file(&tmp_path);
+                return Err(Error::ConfigWriteFailed(format!(
+                    "failed to rename config: {e}"
+                )));
+            }
         }
 
         Ok(())

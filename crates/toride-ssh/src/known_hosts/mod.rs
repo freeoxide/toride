@@ -120,6 +120,21 @@ fn remove_host_sync(path: &Path, host: &str) -> Result<()> {
             .open(&tmp_path)?;
         std::io::Write::write_all(&mut tmp_file, kept.as_bytes())?;
     }
+    // Preserve the original file permissions.
+    if let Ok(original_meta) = std::fs::metadata(path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(
+                &tmp_path,
+                std::fs::Permissions::from_mode(original_meta.permissions().mode()),
+            );
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = std::fs::set_permissions(&tmp_path, original_meta.permissions());
+        }
+    }
     if let Err(e) = std::fs::rename(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
         return Err(e.into());
