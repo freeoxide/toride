@@ -68,25 +68,25 @@ pub async fn resolve(ssh_dir: &Path, host: &str) -> Result<ResolvedHost> {
                     );
                 }
             }
-            ConfigNode::MatchBlock { criteria, nodes, .. } => {
-                // TODO: full Match criteria parsing (host, user, exec, etc.)
-                // For now, we only support `host <pattern>` criteria.
-                if match_criteria_host(criteria, host) {
-                    resolve_block(
-                        nodes,
-                        host,
-                        ssh_dir,
-                        &mut resolved,
-                        &mut seen_keys,
-                    );
-                }
+            // TODO: full Match criteria parsing (host, user, exec, etc.)
+            // For now, we only support `host <pattern>` criteria.
+            ConfigNode::MatchBlock { criteria, nodes, .. }
+                if match_criteria_host(criteria, host) =>
+            {
+                resolve_block(
+                    nodes,
+                    host,
+                    ssh_dir,
+                    &mut resolved,
+                    &mut seen_keys,
+                );
             }
             _ => {}
         }
     }
 
     // Token expansion on all values.
-    expand_resolved(&mut resolved, host, ssh_dir)?;
+    expand_resolved(&mut resolved, host, ssh_dir);
 
     Ok(resolved)
 }
@@ -111,19 +111,20 @@ fn load_and_flatten<'a>(
             return Ok(ConfigAst { nodes: Vec::new() });
         };
 
-        let mut flat = ast::parse(&content)?;
+        let mut flat = ast::parse(&content);
 
         // Inline includes.
         let include_nodes: Vec<String> = flat
             .nodes
             .iter()
             .filter_map(|node| {
-                if let ConfigNode::Directive { keyword, value, .. } = node {
-                    if keyword.eq_ignore_ascii_case("include") {
-                        return Some(value.clone());
-                    }
+                if let ConfigNode::Directive { keyword, value, .. } = node
+                    && keyword.eq_ignore_ascii_case("include")
+                {
+                    Some(value.clone())
+                } else {
+                    None
                 }
-                None
             })
             .collect();
 
@@ -177,10 +178,10 @@ fn expand_tilde_and_env(path: &str, _base_dir: &Path) -> String {
     let mut result = path.to_owned();
 
     // Expand `~` or `~/`.
-    if result.starts_with("~/") || result == "~" {
-        if let Some(home) = dirs::home_dir() {
-            result = result.replacen('~', &home.display().to_string(), 1);
-        }
+    if (result.starts_with("~/") || result == "~")
+        && let Some(home) = dirs::home_dir()
+    {
+        result = result.replacen('~', &home.display().to_string(), 1);
     }
 
     // Expand `${ENV_VAR}` and `$ENV_VAR`.
@@ -216,7 +217,7 @@ fn glob_paths(pattern: &str) -> Vec<PathBuf> {
     if let Some(parent) = Path::new(pattern).parent() {
         let file_name = Path::new(pattern)
             .file_name()
-            .map(|f| f.to_string_lossy().to_owned())
+            .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
 
         if let Ok(entries) = std::fs::read_dir(parent) {
@@ -266,10 +267,10 @@ fn resolve_block(
 
             // Accumulative directives — always collect.
             if super::directives::is_accumulative(&key_lower) {
-                if key_lower == "identityfile" {
-                    if !resolved.identity_files.iter().any(|f| f == value) {
-                        resolved.identity_files.push(value.clone());
-                    }
+                if key_lower == "identityfile"
+                    && !resolved.identity_files.iter().any(|f| f == value)
+                {
+                    resolved.identity_files.push(value.clone());
                 }
                 resolved
                     .directives
@@ -301,7 +302,7 @@ fn resolve_block(
 }
 
 /// Expand tokens in resolved values.
-fn expand_resolved(resolved: &mut ResolvedHost, host: &str, ssh_dir: &Path) -> Result<()> {
+fn expand_resolved(resolved: &mut ResolvedHost, host: &str, ssh_dir: &Path) {
     let local_user = whoami();
     let local_hostname = hostname();
     let home_dir = dirs::home_dir()
@@ -332,7 +333,6 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, ssh_dir: &Path) -> R
         *pj = collapse_double_percent(pj);
     }
 
-    Ok(())
 }
 
 /// Expand SSH tokens (%d, %h, %l, %n, %p, %r, %u) in a value string.
@@ -364,17 +364,13 @@ fn expand_tokens(
                     chars.next();
                     result.push_str(home_dir);
                 }
-                Some('h') => {
+                Some('h' | 'n') => {
                     chars.next();
                     result.push_str(host);
                 }
                 Some('l') => {
                     chars.next();
                     result.push_str(local_hostname);
-                }
-                Some('n') => {
-                    chars.next();
-                    result.push_str(host);
                 }
                 Some('p') => {
                     chars.next();
@@ -436,32 +432,24 @@ fn host_matches(host: &str, patterns: &[String]) -> bool {
 /// Returns `false` if no `host` clause is present (Match block requires
 /// at least one condition we understand to match).
 fn match_criteria_host(criteria: &str, target_host: &str) -> bool {
-    let tokens: Vec<&str> = criteria.split_whitespace().collect();
-    let mut i = 0;
+    let mut tokens = criteria.split_whitespace();
     let mut host_matched = false;
     let mut has_host_clause = false;
 
-    while i < tokens.len() {
-        if tokens[i].eq_ignore_ascii_case("host") && i + 1 < tokens.len() {
+    while let Some(token) = tokens.next() {
+        if token.eq_ignore_ascii_case("host")
+            && let Some(patterns_str) = tokens.next()
+        {
             has_host_clause = true;
-            let patterns: Vec<String> = tokens[i + 1]
+            let patterns: Vec<String> = patterns_str
                 .split(',')
-                .map(|s| s.to_owned())
+                .map(str::to_owned)
                 .collect();
             if host_matches(target_host, &patterns) {
                 host_matched = true;
             }
-            i += 2;
-        } else {
-            // Skip unknown criteria tokens (user, exec, etc.).
-            i += 1;
         }
     }
 
-    // If no host clause was found, we don't know enough to match.
-    if !has_host_clause {
-        return false;
-    }
-
-    host_matched
+    has_host_clause && host_matched
 }

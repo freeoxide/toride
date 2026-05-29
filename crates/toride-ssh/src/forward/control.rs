@@ -175,12 +175,12 @@ pub(crate) fn parse_forward_line(line: &str, forward_type: ForwardType) -> Optio
     let fwd_rest = &rest[comma_idx + 1..];
     let fwd_label = "forwarding to ";
     let fwd_idx = fwd_rest.find(fwd_label)?;
-    let remote_part = &fwd_rest[fwd_idx + fwd_label.len()..];
+    let rhost_port = &fwd_rest[fwd_idx + fwd_label.len()..];
 
-    // remote_part: "10.0.0.1 port 80"
-    let rport_idx = remote_part.rfind(" port ")?;
-    let remote_addr = remote_part[..rport_idx].trim().to_owned();
-    let remote_port: u16 = remote_part[rport_idx + 6..].trim().parse().ok()?;
+    // rhost_port: "10.0.0.1 port 80"
+    let rport_idx = rhost_port.rfind(" port ")?;
+    let remote_addr = rhost_port[..rport_idx].trim().to_owned();
+    let remote_port: u16 = rhost_port[rport_idx + 6..].trim().parse().ok()?;
 
     Some(PortForward {
         local_addr,
@@ -368,7 +368,6 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         // 2. /tmp/ssh-*
         collect_matching(&tmp_dir, "ssh-*", &mut candidates);
 
-        // Deduplicate
         candidates.sort();
         candidates.dedup();
 
@@ -395,13 +394,11 @@ fn collect_matching(dir: &Path, pattern: &str, out: &mut Vec<PathBuf>) {
     if let Ok(entries) = std::fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if glob_matches(pattern, name) {
-                    // Only include socket files or files that could be sockets
-                    if is_socket_or_candidate(&path) {
-                        out.push(path);
-                    }
-                }
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if glob_matches(pattern, name) && is_socket_or_candidate(&path) {
+                out.push(path);
             }
         }
     }
@@ -466,7 +463,6 @@ fn build_session(control_path: &Path) -> ControlSession {
         established,
     }
 }
-
 
 /// Try to extract a hostname from common control socket naming patterns.
 ///

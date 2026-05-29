@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn parse_simple_entry() {
+fn parse_line_should_return_entry_for_simple_valid_input() {
     let line = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
     assert!(entry.markers.is_empty());
@@ -11,21 +11,21 @@ fn parse_simple_entry() {
 }
 
 #[test]
-fn parse_entry_with_comment() {
+fn parse_line_should_capture_trailing_comment() {
     let line = "example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio my comment here";
     let entry = parse_line(line, 2).unwrap();
     assert_eq!(entry.comment.as_deref(), Some("my comment here"));
 }
 
 #[test]
-fn parse_entry_with_marker() {
+fn parse_line_should_parse_revoked_marker() {
     let line = "@revoked example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio";
     let entry = parse_line(line, 3).unwrap();
     assert_eq!(entry.markers, vec!["@revoked"]);
 }
 
 #[test]
-fn parse_cert_authority_marker() {
+fn parse_line_should_parse_cert_authority_marker() {
     let line = "@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio";
     let entry = parse_line(line, 10).unwrap();
     assert_eq!(entry.markers, vec!["@cert-authority"]);
@@ -33,7 +33,7 @@ fn parse_cert_authority_marker() {
 }
 
 #[test]
-fn parse_hashed_host() {
+fn parse_line_should_preserve_hashed_hostname() {
     let line = "|1|JfKTdBh7rNbXkVAQCRp4OQoPfmI=|USECr3SWf1JUPsms5AqfD5QfxkM= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio";
     let entry = parse_line(line, 4).unwrap();
     assert_eq!(entry.hosts.len(), 1);
@@ -41,39 +41,39 @@ fn parse_hashed_host() {
 }
 
 #[test]
-fn parse_multiple_hosts() {
+fn parse_line_should_split_comma_separated_hosts() {
     let line = "host1,host2,!host3 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio";
     let entry = parse_line(line, 5).unwrap();
     assert_eq!(entry.hosts, vec!["host1", "host2", "!host3"]);
 }
 
 #[test]
-fn parse_bracketed_host_port() {
+fn parse_line_should_parse_bracketed_host_and_port() {
     let line = "[192.168.1.1]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio";
     let entry = parse_line(line, 6).unwrap();
     assert_eq!(entry.hosts, vec!["[192.168.1.1]:2222"]);
 }
 
 #[test]
-fn parse_ipv6_bracketed() {
+fn parse_line_should_parse_ipv6_bracketed_host() {
     let line = "[::1]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio";
     let entry = parse_line(line, 7).unwrap();
     assert_eq!(entry.hosts, vec!["[::1]:22"]);
 }
 
 #[test]
-fn reject_insufficient_fields() {
+fn parse_line_should_error_when_insufficient_fields() {
     assert!(parse_line("github.com", 1).is_err());
     assert!(parse_line("github.com ssh-ed25519", 2).is_err());
 }
 
 #[test]
-fn full_line_comment_is_skipped() {
+fn parse_line_should_error_for_full_line_comment() {
     assert!(parse_line("# this is a comment", 8).is_err());
 }
 
 #[test]
-fn parse_line_with_rsa_key() {
+fn parse_line_should_parse_rsa_key_type() {
     let line = "host ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7";
     let entry = parse_line(line, 9).unwrap();
     assert_eq!(entry.key_type, "ssh-rsa");
@@ -81,14 +81,14 @@ fn parse_line_with_rsa_key() {
 }
 
 #[test]
-fn parse_line_with_ecdsa_key() {
+fn parse_line_should_parse_ecdsa_key_type() {
     let line = "host ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY=";
     let entry = parse_line(line, 10).unwrap();
     assert_eq!(entry.key_type, "ecdsa-sha2-nistp256");
 }
 
 #[test]
-fn parse_line_with_sk_key() {
+fn parse_line_should_parse_security_key_type() {
     let line = "host sk-ssh-ed25519@openssh.com AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 11).unwrap();
     assert_eq!(entry.key_type, "sk-ssh-ed25519@openssh.com");

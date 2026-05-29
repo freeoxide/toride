@@ -12,7 +12,6 @@ Host other
     HostName other.com
 ",
     )
-    .unwrap()
 }
 
 #[test]

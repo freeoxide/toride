@@ -8,6 +8,7 @@ pub use session::ControlSession;
 use std::path::Path;
 
 use crate::paths::SshPaths;
+use crate::Error;
 use crate::Result;
 use crate::SshKey;
 
@@ -26,23 +27,18 @@ impl<'a> AgentService<'a> {
     /// Returns `true` when `SSH_AUTH_SOCK` points to an existing socket and
     /// we can successfully connect to the agent.
     pub async fn status(&self) -> Result<bool> {
-        // 1. Check SSH_AUTH_SOCK env var exists.
-        let socket_path = match std::env::var("SSH_AUTH_SOCK") {
-            Ok(v) => v,
-            Err(_) => return Ok(false),
+        let Ok(socket_path) = std::env::var("SSH_AUTH_SOCK") else {
+            return Ok(false);
         };
 
-        // 2. Check if the socket path exists.
         if !Path::new(&socket_path).exists() {
             return Ok(false);
         }
 
-        // 3. Try to connect and list identities (ping the agent).
         #[cfg(feature = "agent")]
         {
             match client::connect().await {
                 Ok(mut c) => {
-                    // A successful request_identities call confirms the agent is alive.
                     c.request_identities()
                         .await
                         .map_err(|e| Error::AgentOperationFailed(e.to_string()))?;
@@ -55,7 +51,6 @@ impl<'a> AgentService<'a> {
 
         #[cfg(not(feature = "agent"))]
         {
-            // Fall back to running ssh-add -l.
             match crate::runner::ssh_add_list().await {
                 Ok(_) => Ok(true),
                 Err(Error::CommandFailed(_)) => Ok(false),
@@ -87,5 +82,3 @@ impl<'a> AgentService<'a> {
         session::list_sessions(self.paths.ssh_dir()).await
     }
 }
-
-use crate::Error;

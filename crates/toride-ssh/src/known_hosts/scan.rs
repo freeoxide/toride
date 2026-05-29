@@ -29,7 +29,7 @@ pub struct ScannedHostKey {
 /// [`add_host_hashed`] or [`add_to_known_hosts`].
 pub async fn scan_host(host: &str) -> Result<Vec<ScannedHostKey>> {
     let raw = runner::ssh_keyscan_no_hash(host).await?;
-    parse_keyscan_output(host, &raw)
+    Ok(parse_keyscan_output(host, &raw))
 }
 
 /// Scan a host with `-H` (hashed hostname) and parse the output.
@@ -38,11 +38,11 @@ pub async fn scan_host(host: &str) -> Result<Vec<ScannedHostKey>> {
 /// hashed hostnames for privacy.
 async fn scan_host_hashed(host: &str) -> Result<Vec<ScannedHostKey>> {
     let raw = runner::ssh_keyscan(host).await?;
-    parse_keyscan_output(host, &raw)
+    Ok(parse_keyscan_output(host, &raw))
 }
 
 /// Parse raw `ssh-keyscan` output into a list of [`ScannedHostKey`] values.
-fn parse_keyscan_output(original_host: &str, raw: &str) -> Result<Vec<ScannedHostKey>> {
+fn parse_keyscan_output(original_host: &str, raw: &str) -> Vec<ScannedHostKey> {
     let mut keys = Vec::new();
     for line in raw.lines() {
         let line = line.trim();
@@ -58,7 +58,7 @@ fn parse_keyscan_output(original_host: &str, raw: &str) -> Result<Vec<ScannedHos
         }
     }
 
-    Ok(keys)
+    keys
 }
 
 /// Parse a single `ssh-keyscan` output line.
@@ -105,12 +105,13 @@ pub async fn add_to_known_hosts(
     let path: PathBuf = known_hosts_path.to_path_buf();
 
     tokio::task::spawn_blocking(move || {
+        use std::io::Write;
+
         // Ensure the parent directory exists.
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
 
-        use std::io::Write;
         let mut file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)

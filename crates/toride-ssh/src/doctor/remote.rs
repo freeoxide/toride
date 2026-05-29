@@ -39,7 +39,6 @@ impl HostReachable {
             }]);
         }
 
-        let host = self.host.clone();
         let output = tokio::process::Command::new("ssh")
             .args([
                 "-o",
@@ -48,7 +47,7 @@ impl HostReachable {
                 "ConnectTimeout=5",
                 "-o",
                 "StrictHostKeyChecking=accept-new",
-                &host,
+                self.host.as_str(),
                 "true",
             ])
             .output()
@@ -87,6 +86,7 @@ impl HostKeyKnown {
                 // Check if the host appears in a known_hosts line. This is a
                 // best-effort check: hashed known_hosts entries (HashKnownHosts yes)
                 // cannot be matched by name and will be reported as unknown.
+                let bracketed = format!("[{}]", self.host);
                 let known = content.lines().any(|line| {
                     if line.is_empty() || line.starts_with('#') || line.starts_with('@') {
                         return false;
@@ -102,7 +102,7 @@ impl HostKeyKnown {
                     }
                     host_field
                         .split(',')
-                        .any(|h| h == self.host || h == format!("[{}]", self.host))
+                        .any(|h| h == self.host || h == bracketed)
                 });
 
                 if known {
@@ -146,9 +146,7 @@ impl AgentForwarding {
         // purposes (a brief `ssh-add -l` invocation) but note that agent
         // forwarding should not be used on untrusted remote hosts in general
         // because a compromised remote could use the forwarded agent socket.
-        let host = self.host.clone();
 
-        // First check if SSH_AUTH_SOCK is set locally.
         if std::env::var("SSH_AUTH_SOCK").map_or(true, |v| v.is_empty()) {
             return Ok(vec![Diagnostic {
                 id: "agent_forwarding",
@@ -159,7 +157,6 @@ impl AgentForwarding {
             }]);
         }
 
-        // Try to forward the agent and list identities on the remote.
         let output = tokio::process::Command::new("ssh")
             .args([
                 "-o",
@@ -169,7 +166,7 @@ impl AgentForwarding {
                 "-o",
                 "StrictHostKeyChecking=accept-new",
                 "-A",
-                &host,
+                self.host.as_str(),
                 "ssh-add -l",
             ])
             .output()

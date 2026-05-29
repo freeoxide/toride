@@ -11,7 +11,7 @@ Host example
 Host *
     ServerAliveInterval 60
 ";
-    let ast = parse(input).unwrap();
+    let ast = parse(input);
     assert_eq!(ast.nodes.len(), 3);
 
     match &ast.nodes[0] {
@@ -34,7 +34,7 @@ Host example
 Host *
     ServerAliveInterval 60
 ";
-    let ast = parse(input).unwrap();
+    let ast = parse(input);
     let output = ast.to_string_lossless();
     assert_eq!(output, input);
 }
@@ -42,7 +42,7 @@ Host *
 #[test]
 fn parse_equals_separator() {
     let input = "Host=myserver\n    HostName=192.168.1.1\n";
-    let ast = parse(input).unwrap();
+    let ast = parse(input);
     match &ast.nodes[0] {
         ConfigNode::HostBlock { header, .. } => {
             assert_eq!(header, "Host=myserver");
@@ -85,7 +85,7 @@ fn parse_directive_equals_separator() {
 #[test]
 fn round_trip_preserves_tab_indentation() {
     let input = "Host example\n\tHostName example.com\n\tUser alice\n";
-    let ast = parse(input).unwrap();
+    let ast = parse(input);
     let output = ast.to_string_lossless();
     assert_eq!(output, input);
 }
@@ -93,7 +93,7 @@ fn round_trip_preserves_tab_indentation() {
 #[test]
 fn round_trip_with_comment_in_block() {
     let input = "Host example\n    # inline comment\n    HostName example.com\n";
-    let ast = parse(input).unwrap();
+    let ast = parse(input);
     let output = ast.to_string_lossless();
     assert_eq!(output, input);
 }

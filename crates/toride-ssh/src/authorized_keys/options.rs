@@ -1,7 +1,7 @@
 //! Parse and handle authorized_keys option fields.
 //!
 //! Supports all documented options from `man sshd` AUTHORIZED_KEYS FILE FORMAT:
-//! command, environment, from, permit-open, port-forwarding,-principals,
+//! command, environment, from, permit-open, port-forwarding, principals,
 //! no-pty, no-port-forwarding, no-X11-forwarding, no-agent-forwarding,
 //! no-user-rc, restrict, tunnel, cert-authority, expiry-time, perferrp.
 

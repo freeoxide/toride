@@ -239,20 +239,17 @@ impl Check for PrivateKeyPermissions {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let mut diagnostics = Vec::new();
-            let mut read_dir = match tokio::fs::read_dir(&ssh_dir).await {
-                Ok(rd) => rd,
-                Err(_) => {
-                    return Ok(vec![Diagnostic {
-                        id: "private_key_permissions",
-                        severity: Severity::Warning,
-                        message: format!(
-                            "Cannot scan {}: directory does not exist",
-                            ssh_dir.display()
-                        ),
-                        hint: None,
-                        module: "local",
-                    }]);
-                }
+            let Ok(mut read_dir) = tokio::fs::read_dir(&ssh_dir).await else {
+                return Ok(vec![Diagnostic {
+                    id: "private_key_permissions",
+                    severity: Severity::Warning,
+                    message: format!(
+                        "Cannot scan {}: directory does not exist",
+                        ssh_dir.display()
+                    ),
+                    hint: None,
+                    module: "local",
+                }]);
             };
 
             while let Some(entry) = read_dir.next_entry().await? {
@@ -272,9 +269,8 @@ impl Check for PrivateKeyPermissions {
                 }
 
                 let path = entry.path();
-                let meta = match tokio::fs::metadata(&path).await {
-                    Ok(m) => m,
-                    Err(_) => continue,
+                let Ok(meta) = tokio::fs::metadata(&path).await else {
+                    continue;
                 };
 
                 // Only check regular files.
@@ -286,14 +282,12 @@ impl Check for PrivateKeyPermissions {
                 // loading potentially large files into memory.
                 let header = {
                     use tokio::io::AsyncReadExt;
-                    let mut file = match tokio::fs::File::open(&path).await {
-                        Ok(f) => f,
-                        Err(_) => continue,
+                    let Ok(mut file) = tokio::fs::File::open(&path).await else {
+                        continue;
                     };
                     let mut buf = [0u8; 4096];
-                    let n = match file.read(&mut buf).await {
-                        Ok(n) => n,
-                        Err(_) => continue,
+                    let Ok(n) = file.read(&mut buf).await else {
+                        continue;
                     };
                     if n < 8 {
                         continue;
@@ -375,8 +369,7 @@ impl Check for AgentAvailable {
                             id: "agent_available",
                             severity: Severity::Warning,
                             message: format!(
-                                "$SSH_AUTH_SOCK is set to {} but the socket does not exist",
-                                sock
+                                "$SSH_AUTH_SOCK is set to {sock} but the socket does not exist",
                             ),
                             hint: Some(
                                 "Start the SSH agent: `eval $(ssh-agent -s)`".into(),

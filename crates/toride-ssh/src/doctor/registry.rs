@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use crate::doctor::check::Check;
 
 /// Registry of available diagnostic checks.
+#[derive(Default)]
 pub struct CheckRegistry {
     checks: HashMap<&'static str, Box<dyn Check>>,
 }
@@ -10,9 +11,7 @@ pub struct CheckRegistry {
 impl CheckRegistry {
     /// Create an empty registry.
     pub fn new() -> Self {
-        Self {
-            checks: HashMap::new(),
-        }
+        Self::default()
     }
 
     /// Register a check.

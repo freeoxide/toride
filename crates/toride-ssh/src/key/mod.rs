@@ -74,24 +74,15 @@ impl<'a> KeyService<'a> {
 
         let public_path = private_path.with_extension("pub");
 
-        let cert_path = {
-            let name = params.name.clone();
-            self.paths.ssh_dir().join(format!("{name}-cert.pub"))
-        };
+        let cert_path = self.paths.ssh_dir().join(format!("{}-cert.pub", params.name));
 
-        let paths = self.paths.clone();
         let params_clone = params.clone();
-        let private_path = private_path.clone();
-        let public_path = public_path.clone();
-        let cert_path = cert_path.clone();
 
         tokio::task::spawn_blocking(move || {
             // Backup if requested
             if params_clone.backup {
                 let backup_path = private_path.with_extension("bak");
-                std::fs::rename(&private_path, &backup_path).map_err(|e| {
-                    Error::Io(e)
-                })?;
+                std::fs::rename(&private_path, &backup_path)?;
 
                 if params_clone.remove_public && public_path.exists() {
                     let stem = public_path.file_stem().unwrap_or_default().to_string_lossy();
@@ -110,22 +101,16 @@ impl<'a> KeyService<'a> {
                 }
             } else {
                 // Remove the private key file
-                std::fs::remove_file(&private_path).map_err(|e| {
-                    Error::Io(e)
-                })?;
+                std::fs::remove_file(&private_path)?;
 
                 // Remove public key companion
                 if params_clone.remove_public && public_path.exists() {
-                    std::fs::remove_file(&public_path).map_err(|e| {
-                        Error::Io(e)
-                    })?;
+                    std::fs::remove_file(&public_path)?;
                 }
 
                 // Remove certificate companion
                 if params_clone.remove_certificate && cert_path.exists() {
-                    std::fs::remove_file(&cert_path).map_err(|e| {
-                        Error::Io(e)
-                    })?;
+                    std::fs::remove_file(&cert_path)?;
                 }
             }
 
@@ -141,7 +126,7 @@ impl<'a> KeyService<'a> {
 
         // Remove from config if requested
         if params.remove_from_config {
-            remove_from_config(&paths, &params.name).await?;
+            remove_from_config(self.paths, &params.name).await?;
         }
 
         Ok(())
@@ -158,12 +143,9 @@ impl<'a> KeyService<'a> {
 /// This is intentionally non-fatal: the key may not be loaded in the agent,
 /// which is a perfectly normal state. Errors are logged but not propagated.
 async fn remove_key_from_agent(private_path: &std::path::Path) {
-    let path_str = match private_path.to_str() {
-        Some(s) => s.to_string(),
-        None => {
-            tracing::warn!("invalid key path for ssh-add, skipping agent removal");
-            return;
-        }
+    let Some(path_str) = private_path.to_str().map(str::to_string) else {
+        tracing::warn!("invalid key path for ssh-add, skipping agent removal");
+        return;
     };
 
     let result = tokio::task::spawn_blocking(move || {
@@ -193,12 +175,11 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> crate::Result<(
         return Ok(());
     }
 
-    let config_path_clone = config_path.clone();
     let key_name_owned = key_name.to_string();
     let ssh_dir_str = paths.ssh_dir().to_string_lossy().into_owned();
 
     tokio::task::spawn_blocking(move || {
-        let content = match std::fs::read_to_string(&config_path_clone) {
+        let content = match std::fs::read_to_string(&config_path) {
             Ok(c) => c,
             Err(e) => {
                 tracing::warn!("cannot read config for cleanup: {e}");
@@ -237,11 +218,8 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> crate::Result<(
         };
 
         if final_content != content {
-            std::fs::write(&config_path_clone, final_content).map_err(|e| {
-                Error::ConfigWriteFailed(format!(
-                    "failed to update config: {}",
-                    e
-                ))
+            std::fs::write(&config_path, final_content).map_err(|e| {
+                Error::ConfigWriteFailed(format!("failed to update config: {e}"))
             })?;
         }
 

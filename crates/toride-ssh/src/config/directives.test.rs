@@ -2,7 +2,7 @@ use super::*;
 use crate::config::ast::{parse as parse_ast, ConfigAst};
 
 fn make_ast(input: &str) -> ConfigAst {
-    parse_ast(input).unwrap()
+    parse_ast(input)
 }
 
 #[test]
@@ -14,7 +14,7 @@ Host example
     User alice
 ",
     );
-    let val = get_directive(&ast, "example", "HostName").unwrap();
+    let val = get_directive(&ast, "example", "HostName");
     assert_eq!(val, Some("example.com".to_owned()));
 }
 
@@ -26,7 +26,7 @@ Host example
     hostname example.com
 ",
     );
-    let val = get_directive(&ast, "example", "HOSTNAME").unwrap();
+    let val = get_directive(&ast, "example", "HOSTNAME");
     assert_eq!(val, Some("example.com".to_owned()));
 }
 
@@ -38,7 +38,7 @@ Host *
     User default
 ",
     );
-    let val = get_directive(&ast, "anything", "User").unwrap();
+    let val = get_directive(&ast, "anything", "User");
     assert_eq!(val, Some("default".to_owned()));
 }
 
@@ -50,10 +50,10 @@ Host * !badhost
     User default
 ",
     );
-    let val = get_directive(&ast, "goodhost", "User").unwrap();
+    let val = get_directive(&ast, "goodhost", "User");
     assert_eq!(val, Some("default".to_owned()));
 
-    let val = get_directive(&ast, "badhost", "User").unwrap();
+    let val = get_directive(&ast, "badhost", "User");
     assert_eq!(val, None);
 }
 
@@ -89,7 +89,7 @@ Host *
     IdentityFile ~/.ssh/id_rsa
 ",
     );
-    let vals = get_accumulative_directive(&ast, "myhost", "IdentityFile").unwrap();
+    let vals = get_accumulative_directive(&ast, "myhost", "IdentityFile");
     assert_eq!(vals.len(), 2);
     assert_eq!(vals[0], "~/.ssh/id_ed25519");
     assert_eq!(vals[1], "~/.ssh/id_rsa");

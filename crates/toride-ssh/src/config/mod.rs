@@ -31,7 +31,7 @@ impl<'a> ConfigService<'a> {
             return Ok(ast::ConfigAst { nodes: Vec::new() });
         }
         let content = tokio::fs::read_to_string(&path).await?;
-        ast::parse(&content)
+        Ok(ast::parse(&content))
     }
 
     /// Save the AST back to the config file.
@@ -76,7 +76,7 @@ impl<'a> ConfigService<'a> {
         ast: &ast::ConfigAst,
         host: &str,
         key: &str,
-    ) -> Result<Option<String>> {
+    ) -> Option<String> {
         directives::get_directive(ast, host, key)
     }
 
@@ -84,7 +84,7 @@ impl<'a> ConfigService<'a> {
     pub fn get_all_host_directives(
         ast: &ast::ConfigAst,
         host: &str,
-    ) -> Result<Vec<(String, String)>> {
+    ) -> Vec<(String, String)> {
         directives::get_all_directives(ast, host)
     }
 
@@ -116,8 +116,8 @@ impl<'a> ConfigService<'a> {
         ast: &mut ast::ConfigAst,
         name: &str,
         directives: Vec<(String, String)>,
-    ) -> Result<()> {
-        managed::upsert_managed_block(ast, name, directives)
+    ) {
+        managed::upsert_managed_block(ast, name, directives);
     }
 
     /// Remove a managed block by name.

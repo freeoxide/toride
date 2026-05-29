@@ -5,8 +5,6 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::Result;
-
 /// Top-level SSH config AST.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfigAst {
@@ -25,7 +23,7 @@ pub enum Separator {
 
 impl Separator {
     /// Render the separator as a string.
-    pub fn as_str(&self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             Self::Space => " ",
             Self::Equals => "=",
@@ -136,21 +134,10 @@ impl ConfigNode {
                 out.push('\n');
             }
             Self::HostBlock {
-                header,
-                nodes,
-                ..
-            } => {
-                out.push_str(&computed_prefix);
-                out.push_str(header);
-                out.push('\n');
-                for child in nodes {
-                    child.render(out, indent_level + 1);
-                }
+                header, nodes, ..
             }
-            Self::MatchBlock {
-                header,
-                nodes,
-                ..
+            | Self::MatchBlock {
+                header, nodes, ..
             } => {
                 out.push_str(&computed_prefix);
                 out.push_str(header);
@@ -199,7 +186,7 @@ impl ConfigNode {
 ///
 /// Handles `Host` and `Match` blocks with proper nesting, preserves
 /// whitespace, comments, blank lines, and both `=` and space separators.
-pub fn parse(input: &str) -> Result<ConfigAst> {
+pub fn parse(input: &str) -> ConfigAst {
     let mut nodes = Vec::new();
     let mut lines = input.lines().peekable();
 
@@ -225,7 +212,7 @@ pub fn parse(input: &str) -> Result<ConfigAst> {
         // Parse keyword and value
         let (keyword, separator, rest) = parse_directive_parts(trimmed);
         if keyword.eq_ignore_ascii_case("host") {
-            let patterns = parse_patterns(&rest);
+            let patterns = parse_patterns(rest);
             let header = line.trim().to_owned();
             let inner = parse_block_body(&mut lines);
             nodes.push(ConfigNode::HostBlock {
@@ -244,7 +231,7 @@ pub fn parse(input: &str) -> Result<ConfigAst> {
             });
         } else {
             // Regular directive — check for trailing inline comment
-            let (value, comment) = split_trailing_comment(&rest);
+            let (value, comment) = split_trailing_comment(rest);
             nodes.push(ConfigNode::Directive {
                 keyword: keyword.to_owned(),
                 separator,
@@ -255,7 +242,7 @@ pub fn parse(input: &str) -> Result<ConfigAst> {
         }
     }
 
-    Ok(ConfigAst { nodes })
+    ConfigAst { nodes }
 }
 
 /// Extract the leading whitespace from a line.
@@ -277,7 +264,9 @@ where
             break;
         }
 
-        let line = lines.next().unwrap();
+        let Some(line) = lines.next() else {
+            break;
+        };
         let trimmed = line.trim();
         let indent = line_indent(line);
 
@@ -299,7 +288,7 @@ where
 
         // Nested Host/Match inside a block is not standard, but we handle it
         // gracefully by treating it as a directive.
-        let (value, comment) = split_trailing_comment(&rest);
+        let (value, comment) = split_trailing_comment(rest);
         body.push(ConfigNode::Directive {
             keyword: keyword.to_owned(),
             separator,
@@ -307,7 +296,6 @@ where
             comment,
             indent: indent.to_owned(),
         });
-        let _ = keyword; // could be used for nested blocks if needed
     }
 
     body
@@ -349,7 +337,7 @@ pub(crate) fn parse_directive_parts(line: &str) -> (&str, Separator, &str) {
 fn parse_patterns(value: &str) -> Vec<String> {
     value
         .split_whitespace()
-        .map(|s| s.to_owned())
+        .map(str::to_owned)
         .collect()
 }
 

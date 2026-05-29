@@ -1,10 +1,6 @@
 #![warn(missing_docs)]
 #![expect(dead_code, reason = "scaffolding for modules under active development")]
 #![expect(
-    clippy::unused_async,
-    reason = "async fns are scaffolding for future async operations"
-)]
-#![expect(
     clippy::must_use_candidate,
     reason = "service methods are call-and-forget; callers rarely use return"
 )]

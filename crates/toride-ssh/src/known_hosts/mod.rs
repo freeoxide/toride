@@ -127,29 +127,29 @@ fn host_pattern_matches(pattern: &str, target: &str) -> bool {
     if pattern == target {
         return true;
     }
-    // Handle bracketed form: [host]:port should also match host:port.
-    // Compare parts directly to avoid heap allocation from format!().
-    fn strip_brackets(s: &str) -> Option<(&str, &str)> {
-        let inner = s.strip_prefix('[')?;
-        let (host, rest) = inner.split_once("]:")?;
-        Some((host, rest))
-    }
 
-    if let Some((p_host, p_port)) = strip_brackets(pattern) {
-        if let Some((t_host, t_port)) = target.split_once(':') {
-            if p_host == t_host && p_port == t_port {
-                return true;
-            }
-        }
+    if let Some((p_host, p_port)) = strip_brackets(pattern)
+        && let Some((t_host, t_port)) = target.split_once(':')
+        && p_host == t_host && p_port == t_port
+    {
+        return true;
     }
-    if let Some((t_host, t_port)) = strip_brackets(target) {
-        if let Some((p_host, p_port)) = pattern.split_once(':') {
-            if p_host == t_host && p_port == t_port {
-                return true;
-            }
-        }
+    if let Some((t_host, t_port)) = strip_brackets(target)
+        && let Some((p_host, p_port)) = pattern.split_once(':')
+        && p_host == t_host && p_port == t_port
+    {
+        return true;
     }
     false
+}
+
+/// Extract host and port from a bracketed `[host]:port` string.
+///
+/// Returns `None` if the string is not in bracketed form.
+fn strip_brackets(s: &str) -> Option<(&str, &str)> {
+    let inner = s.strip_prefix('[')?;
+    let (host, rest) = inner.split_once("]:")?;
+    Some((host, rest))
 }
 
 /// Check whether a known_hosts line refers to the given host.
@@ -159,18 +159,17 @@ fn host_pattern_matches(pattern: &str, target: &str) -> bool {
 fn line_matches_host(line: &str, target: &str) -> bool {
     // Skip optional marker.
     let rest = if line.starts_with('@') {
-        match line.split_once(' ') {
-            Some((_, r)) => r,
-            None => return false,
-        }
+        let Some((_, r)) = line.split_once(' ') else {
+            return false;
+        };
+        r
     } else {
         line
     };
 
     // The host field is the first whitespace-delimited token.
-    let hosts_field = match rest.split_whitespace().next() {
-        Some(h) => h,
-        None => return false,
+    let Some(hosts_field) = rest.split_whitespace().next() else {
+        return false;
     };
 
     // Hashed entries — cannot match by name.

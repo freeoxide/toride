@@ -116,14 +116,13 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
         let alg_str = key_data.algorithm().to_string();
         let key_type = parse_key_type_from_algorithm(&alg_str);
 
-        // Encode the public key to bytes and compute SHA-256 fingerprint.
         let fingerprint = encode_key_data(key_data)
             .ok()
             .map(|bytes| compute_sha256_fingerprint(&bytes, key_type));
 
         keys.push(SshKey {
             path: std::path::PathBuf::from(if identity.comment.is_empty() {
-                format!("agent:{:?}", key_type)
+                format!("agent:{key_type:?}")
             } else {
                 format!("agent:{}", identity.comment)
             }),
@@ -171,7 +170,7 @@ fn compute_sha256_fingerprint(bytes: &[u8], key_type: KeyType) -> Fingerprint {
     }
 }
 
-/// Map an algorithm name string (e.g. "ssh-ed25519", "ssh-rsa") to [`KeyType`].
+/// Map an algorithm name string (e.g. `"ssh-ed25519"`, `"ssh-rsa"`) to [`KeyType`].
 pub(crate) fn parse_key_type_from_algorithm(alg: &str) -> KeyType {
     match alg {
         "ssh-ed25519" => KeyType::Ed25519,
@@ -196,15 +195,7 @@ pub(crate) fn parse_key_type_from_algorithm(alg: &str) -> KeyType {
 /// Parse `ssh-add -l` output into a list of [`SshKey`] values.
 async fn list_identities_via_cli() -> Result<Vec<SshKey>> {
     let output = runner::ssh_add_list().await?;
-    let mut keys = Vec::new();
-
-    for line in output.lines() {
-        if let Some(key) = parse_ssh_add_line(line) {
-            keys.push(key);
-        }
-    }
-
-    Ok(keys)
+    Ok(output.lines().filter_map(parse_ssh_add_line).collect())
 }
 
 /// Parse a single `ssh-add -l` output line.
@@ -220,48 +211,41 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
     let rest = rest.trim();
 
     // Extract parenthesised key type from the end.
-    let (rest, key_type_str) = if let Some(start) = rest.rfind('(') {
+    let (rest, key_type_opt) = if let Some(start) = rest.rfind('(') {
         if let Some(end) = rest[start..].find(')') {
             let kt = &rest[start + 1..start + end];
-            (rest[..start].trim_end(), kt.to_string())
+            (rest[..start].trim_end(), Some(kt))
         } else {
-            (rest, String::new())
+            (rest, None)
         }
     } else {
-        (rest, String::new())
+        (rest, None)
     };
 
-    let key_type = parse_key_type_from_display(&key_type_str)?;
+    let key_type = key_type_opt.and_then(parse_key_type_from_display)?;
 
-    // Split fingerprint from comment.
-    let (fingerprint_str, comment) = if let Some(space) = rest.find(' ') {
+    // Split fingerprint from comment, keeping both as borrowed slices.
+    let (fingerprint_part, comment_part) = if let Some(space) = rest.find(' ') {
         let (fp, c) = rest.split_at(space);
         let c = c.trim();
-        (
-            fp.to_string(),
-            if c.is_empty() {
-                None
-            } else {
-                Some(c.to_string())
-            },
-        )
+        (fp, if c.is_empty() { None } else { Some(c) })
     } else {
-        (rest.to_string(), None)
+        (rest, None)
     };
 
-    let hash = fingerprint_str
+    let hash = fingerprint_part
         .strip_prefix("SHA256:")
-        .unwrap_or(&fingerprint_str)
+        .unwrap_or(fingerprint_part)
         .to_string();
 
     Some(SshKey {
         path: std::path::PathBuf::from(format!(
             "agent:{}",
-            comment.as_deref().unwrap_or("unknown")
+            comment_part.unwrap_or("unknown")
         )),
         key_type,
         fingerprint: Some(Fingerprint { hash, key_type }),
-        comment,
+        comment: comment_part.map(str::to_owned),
         encrypted: false,
         source: KeySource::Agent,
         permissions: None,

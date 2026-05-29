@@ -26,7 +26,7 @@ pub struct ManagedBlock {
 /// Scans top-level nodes looking for `# >>> toride {name}` /
 /// `# <<< toride {name}` comment pairs at the *top level* of the config.
 /// Returns the directive nodes between the markers.
-pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Result<Option<ManagedBlock>> {
+pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Option<ManagedBlock> {
     let open = format!("{OPEN_PREFIX}{name}");
     let close = format!("{CLOSE_PREFIX}{name}");
 
@@ -37,13 +37,12 @@ pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Result<Option<Manag
         match node {
             ConfigNode::Comment { text, .. } if text.trim() == open => {
                 inside = true;
-                continue;
             }
             ConfigNode::Comment { text, .. } if text.trim() == close => {
-                return Ok(Some(ManagedBlock {
+                return Some(ManagedBlock {
                     name: name.to_owned(),
                     nodes,
-                }));
+                });
             }
             _ if inside => {
                 nodes.push(node.clone());
@@ -55,12 +54,12 @@ pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Result<Option<Manag
     // If we were inside but never hit the closing marker, that is a malformed
     // block — return what we have.
     if inside {
-        Ok(Some(ManagedBlock {
+        Some(ManagedBlock {
             name: name.to_owned(),
             nodes,
-        }))
+        })
     } else {
-        Ok(None)
+        None
     }
 }
 
@@ -88,7 +87,7 @@ pub fn upsert_managed_block(
     ast: &mut ConfigAst,
     name: &str,
     directives: Vec<(String, String)>,
-) -> Result<()> {
+) {
     // Try to find and replace existing block.
     let open = format!("{OPEN_PREFIX}{name}");
     let close = format!("{CLOSE_PREFIX}{name}");
@@ -123,7 +122,7 @@ pub fn upsert_managed_block(
             for (i, node) in new_nodes.into_iter().enumerate() {
                 ast.nodes.insert(start + 1 + i, node);
             }
-            return Ok(());
+            return;
         }
     }
 
@@ -149,8 +148,6 @@ pub fn upsert_managed_block(
         ast.nodes.push(node);
     }
     ast.nodes.push(close_comment);
-
-    Ok(())
 }
 
 /// Remove a managed block by name.

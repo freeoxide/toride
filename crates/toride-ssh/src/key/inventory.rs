@@ -46,7 +46,7 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     let permissions = get_permissions(&path);
 
     let private_key_data = std::fs::read_to_string(&path)
-        .map_err(|e| Error::KeyParseFailed(format!("failed to read {}: {}", filename, e)))?;
+        .map_err(|e| Error::KeyParseFailed(format!("failed to read {filename}: {e}")))?;
 
     // Check the file content for encryption markers which is more
     // reliable than parsing the error message string.
@@ -153,10 +153,7 @@ fn guess_key_type_from_name(name: &str) -> KeyType {
 /// Scan `~/.ssh/id_*` and the agent for available keys.
 pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
     let ssh_dir = paths.ssh_dir().to_path_buf();
-    let default_names = SshPaths::default_key_names()
-        .iter()
-        .map(|s| s.to_string())
-        .collect::<Vec<_>>();
+    let default_names = SshPaths::default_key_names();
 
     tokio::task::spawn_blocking(move || {
         let mut keys = Vec::new();
@@ -202,8 +199,8 @@ pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
         }
 
         // Ensure all default key names are checked even if not in directory listing
-        for default_name in &default_names {
-            if seen_names.insert(default_name.clone()) {
+        for &default_name in default_names {
+            if seen_names.insert(default_name.to_owned()) {
                 let default_path = ssh_dir.join(default_name);
                 if default_path.is_file() {
                     private_key_paths.push(default_path);

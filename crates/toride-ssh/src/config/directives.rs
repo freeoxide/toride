@@ -11,55 +11,52 @@ use crate::Result;
 ///
 /// The key comparison is case-insensitive (SSH config keywords are
 /// case-insensitive).
-pub fn get_directive(ast: &ConfigAst, host: &str, key: &str) -> Result<Option<String>> {
+pub fn get_directive(ast: &ConfigAst, host: &str, key: &str) -> Option<String> {
     let key_lower = key.to_lowercase();
 
     for node in &ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node {
-            if host_matches_patterns(host, patterns) {
-                if let Some(val) = find_directive_in_nodes(nodes, &key_lower) {
-                    return Ok(Some(val));
-                }
-            }
+        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
+            && host_matches_patterns(host, patterns)
+            && let Some(val) = find_directive_in_nodes(nodes, &key_lower)
+        {
+            return Some(val);
         }
     }
-    Ok(None)
+    None
 }
 
 /// Get all values for a directive that accumulates (e.g. `IdentityFile`).
 ///
 /// Unlike first-match-wins, accumulative directives collect values from all
 /// matching Host blocks.
-pub fn get_accumulative_directive(ast: &ConfigAst, host: &str, key: &str) -> Result<Vec<String>> {
+pub fn get_accumulative_directive(ast: &ConfigAst, host: &str, key: &str) -> Vec<String> {
     let key_lower = key.to_lowercase();
     let mut values = Vec::new();
 
     for node in &ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node {
-            if host_matches_patterns(host, patterns) {
-                collect_directives_in_nodes(nodes, &key_lower, &mut values);
-            }
+        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
+            && host_matches_patterns(host, patterns)
+        {
+            collect_directives_in_nodes(nodes, &key_lower, &mut values);
         }
     }
-    Ok(values)
+    values
 }
 
 /// Get a directive value from any Host block by exact host name (the first
 /// pattern in the block). This is a simpler lookup than pattern matching.
-pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Result<Option<String>> {
+pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Option<String> {
     let key_lower = key.to_lowercase();
 
     for node in &ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node {
-            // Check if the name appears in the patterns (exact or wildcard).
-            if patterns.iter().any(|p| p == name || p == "*") {
-                if let Some(val) = find_directive_in_nodes(nodes, &key_lower) {
-                    return Ok(Some(val));
-                }
-            }
+        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
+            && patterns.iter().any(|p| p == name || p == "*")
+            && let Some(val) = find_directive_in_nodes(nodes, &key_lower)
+        {
+            return Some(val);
         }
     }
-    Ok(None)
+    None
 }
 
 /// Get all directives for a host as key-value pairs.
@@ -68,18 +65,18 @@ pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Result<O
 /// values for multi-valued directives (`IdentityFile`, `CertificateFile`,
 /// `ProxyJump`, `ForwardAgent`, `SendEnv`, `SetEnv`, `DynamicForward`,
 /// `LocalForward`, `RemoteForward`).
-pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Result<Vec<(String, String)>> {
+pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Vec<(String, String)> {
     let mut result = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for node in &ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node {
-            if host_matches_patterns(host, patterns) {
-                collect_all_directives(nodes, &mut result, &mut seen);
-            }
+        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
+            && host_matches_patterns(host, patterns)
+        {
+            collect_all_directives(nodes, &mut result, &mut seen);
         }
     }
-    Ok(result)
+    result
 }
 
 /// Set (or update) a directive value inside the first matching Host block.
@@ -95,27 +92,27 @@ pub fn set_directive(
     let key_lower = key.to_lowercase();
 
     for node in &mut ast.nodes {
-        if let ConfigNode::HostBlock { patterns, nodes, .. } = node {
-            if host_matches_patterns(host, patterns) {
-                // Try to update existing directive.
-                for child in nodes.iter_mut() {
-                    if let ConfigNode::Directive { keyword, value: v, .. } = child {
-                        if keyword.eq_ignore_ascii_case(&key_lower) {
-                            *v = value.to_owned();
-                            return Ok(());
-                        }
-                    }
+        if let ConfigNode::HostBlock { patterns, nodes, .. } = node
+            && host_matches_patterns(host, patterns)
+        {
+            // Try to update existing directive.
+            for child in nodes.iter_mut() {
+                if let ConfigNode::Directive { keyword, value: v, .. } = child
+                    && keyword.eq_ignore_ascii_case(&key_lower)
+                {
+                    value.clone_into(v);
+                    return Ok(());
                 }
-                // Not found — append new directive.
-                nodes.push(ConfigNode::Directive {
-                    keyword: key.to_owned(),
-                    separator: super::ast::Separator::Space,
-                    value: value.to_owned(),
-                    comment: None,
-                    indent: String::new(),
-                });
-                return Ok(());
             }
+            // Not found — append new directive.
+            nodes.push(ConfigNode::Directive {
+                keyword: key.to_owned(),
+                separator: super::ast::Separator::Space,
+                value: value.to_owned(),
+                comment: None,
+                indent: String::new(),
+            });
+            return Ok(());
         }
     }
 
@@ -125,10 +122,10 @@ pub fn set_directive(
 /// Find the first directive matching `key_lower` in a list of nodes (recursive).
 fn find_directive_in_nodes(nodes: &[ConfigNode], key_lower: &str) -> Option<String> {
     for node in nodes {
-        if let ConfigNode::Directive { keyword, value, .. } = node {
-            if keyword.eq_ignore_ascii_case(&key_lower) {
-                return Some(value.clone());
-            }
+        if let ConfigNode::Directive { keyword, value, .. } = node
+            && keyword.eq_ignore_ascii_case(key_lower)
+        {
+            return Some(value.clone());
         }
     }
     None
@@ -137,10 +134,10 @@ fn find_directive_in_nodes(nodes: &[ConfigNode], key_lower: &str) -> Option<Stri
 /// Collect all values for a directive from a list of nodes.
 fn collect_directives_in_nodes(nodes: &[ConfigNode], key_lower: &str, out: &mut Vec<String>) {
     for node in nodes {
-        if let ConfigNode::Directive { keyword, value, .. } = node {
-            if keyword.eq_ignore_ascii_case(&key_lower) {
-                out.push(value.clone());
-            }
+        if let ConfigNode::Directive { keyword, value, .. } = node
+            && keyword.eq_ignore_ascii_case(key_lower)
+        {
+            out.push(value.clone());
         }
     }
 }
@@ -162,7 +159,7 @@ fn collect_all_directives(
                 // Always append accumulative directives.
                 out.push((keyword.clone(), value.clone()));
             } else if !seen.contains(&key_lower) {
-                seen.insert(key_lower.clone());
+                seen.insert(key_lower);
                 out.push((keyword.clone(), value.clone()));
             }
         }
@@ -201,9 +198,8 @@ pub(crate) fn host_matches_patterns(host: &str, patterns: &[String]) -> bool {
     for pattern in patterns {
         let pat_lower = pattern.to_lowercase();
 
-        if pat_lower.starts_with('!') {
+        if let Some(negated) = pat_lower.strip_prefix('!') {
             // Negated pattern — if it matches, the whole result is false.
-            let negated = &pat_lower[1..];
             if glob_matches(&host_lower, negated) {
                 return false;
             }
@@ -239,7 +235,7 @@ fn glob_match_recursive(text: &[u8], pattern: &[u8]) -> bool {
     let mut ti = 0;
     let mut pi = 0;
     let mut star_pi = None;
-    let mut star_ti = 0;
+    let mut star_text_idx = 0;
 
     while ti < text.len() {
         if pi < pattern.len() {
@@ -254,7 +250,7 @@ fn glob_match_recursive(text: &[u8], pattern: &[u8]) -> bool {
 
             if pc == b'*' {
                 star_pi = Some(pi + 1);
-                star_ti = ti;
+                star_text_idx = ti;
                 pi += 1;
                 continue;
             }
@@ -269,8 +265,8 @@ fn glob_match_recursive(text: &[u8], pattern: &[u8]) -> bool {
         // Mismatch — backtrack to last star.
         if let Some(spi) = star_pi {
             pi = spi;
-            star_ti += 1;
-            ti = star_ti;
+            star_text_idx += 1;
+            ti = star_text_idx;
             continue;
         }
 

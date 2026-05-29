@@ -16,13 +16,12 @@ Host other
     HostName other.com
 ",
     )
-    .unwrap()
 }
 
 #[test]
 fn extract_managed_block_works() {
     let ast = make_ast_with_managed();
-    let block = extract_managed_block(&ast, "test-block").unwrap();
+    let block = extract_managed_block(&ast, "test-block");
     assert!(block.is_some());
     let block = block.unwrap();
     assert_eq!(block.name, "test-block");
@@ -32,7 +31,7 @@ fn extract_managed_block_works() {
 #[test]
 fn extract_missing_returns_none() {
     let ast = make_ast_with_managed();
-    let block = extract_managed_block(&ast, "nonexistent").unwrap();
+    let block = extract_managed_block(&ast, "nonexistent");
     assert!(block.is_none());
 }
 
@@ -45,16 +44,15 @@ fn list_managed_blocks_works() {
 
 #[test]
 fn upsert_new_block_appends() {
-    let mut ast = parse_ast("Host foo\n    HostName foo.com\n").unwrap();
+    let mut ast = parse_ast("Host foo\n    HostName foo.com\n");
     upsert_managed_block(
         &mut ast,
         "myblock",
         vec![("HostName".to_owned(), "new.com".to_owned())],
-    )
-    .unwrap();
+    );
 
     assert!(has_managed_block(&ast, "myblock"));
-    let block = extract_managed_block(&ast, "myblock").unwrap().unwrap();
+    let block = extract_managed_block(&ast, "myblock").unwrap();
     assert_eq!(block.nodes.len(), 1);
 }
 
@@ -65,10 +63,9 @@ fn upsert_replaces_existing() {
         &mut ast,
         "test-block",
         vec![("HostName".to_owned(), "replaced.com".to_owned())],
-    )
-    .unwrap();
+    );
 
-    let block = extract_managed_block(&ast, "test-block").unwrap().unwrap();
+    let block = extract_managed_block(&ast, "test-block").unwrap();
     assert_eq!(block.nodes.len(), 1);
     assert_eq!(
         block.nodes[0].as_directive().unwrap().1,

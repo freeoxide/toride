@@ -79,7 +79,7 @@ impl<'a> AuthorizedKeysService<'a> {
         }
 
         // Check for duplicate before writing
-        if self.contains(public_key).await? {
+        if self.contains(&key_line).await? {
             return Err(Error::KeyExists(
                 "key already present in authorized_keys".to_string(),
             ));
@@ -99,7 +99,6 @@ impl<'a> AuthorizedKeysService<'a> {
 
         // Append the line atomically: write to temp file, then rename.
         let line_with_newline = format!("{line}\n");
-        let path_clone = path.clone();
         let data = line_with_newline.into_bytes();
 
         tokio::task::spawn_blocking(move || {
@@ -107,12 +106,12 @@ impl<'a> AuthorizedKeysService<'a> {
             use std::io::Write;
 
             // If the file exists, we append. If not, we create and set permissions.
-            let is_new = !path_clone.exists();
+            let is_new = !path.exists();
 
             let mut file = OpenOptions::new()
                 .create(true)
                 .append(true)
-                .open(&path_clone)
+                .open(&path)
                 .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
 
             file.write_all(&data)
@@ -123,7 +122,7 @@ impl<'a> AuthorizedKeysService<'a> {
 
             // Set restrictive permissions on new files
             if is_new {
-                set_permissions(&path_clone)?;
+                set_permissions(&path)?;
             }
 
             Ok(())
@@ -142,7 +141,6 @@ impl<'a> AuthorizedKeysService<'a> {
     /// Returns an error if the file cannot be read, parsed, or written.
     pub async fn remove(&self, fingerprint: &str) -> Result<usize> {
         let path = self.paths.authorized_keys_path();
-        let fingerprint = fingerprint.to_string();
 
         let entries = self.list().await?;
         let mut removed = 0;
@@ -169,20 +167,18 @@ impl<'a> AuthorizedKeysService<'a> {
         let raw_contents = tokio::fs::read_to_string(&path).await?;
 
         // Reconstruct the file without removed lines
-        let mut kept_lines = Vec::new();
-        for (i, line) in raw_contents.lines().enumerate() {
-            let line_num = i + 1;
-            if !lines_to_remove.contains(&line_num) {
-                kept_lines.push(line.to_string());
-            }
-        }
+        let kept_lines: Vec<&str> = raw_contents
+            .lines()
+            .enumerate()
+            .filter(|(i, _)| !lines_to_remove.contains(&(i + 1)))
+            .map(|(_, line)| line)
+            .collect();
 
         let new_contents = format!("{}\n", kept_lines.join("\n"));
 
         // Write atomically: write to temp file in same directory, then rename
-        let path_clone = path.clone();
         tokio::task::spawn_blocking(move || {
-            atomic_write(&path_clone, &new_contents)
+            atomic_write(&path, &new_contents)
         })
         .await
         .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))??;
@@ -200,10 +196,8 @@ impl<'a> AuthorizedKeysService<'a> {
     /// Returns an error if the file cannot be read or parsed, or if the
     /// provided key string is not valid.
     pub async fn contains(&self, public_key: &str) -> Result<bool> {
-        let target_key = public_key.trim().to_string();
-
         // Compute the fingerprint of the key we are looking for
-        let target_pk = ssh_key::PublicKey::from_openssh(&target_key).map_err(|e| {
+        let target_pk = ssh_key::PublicKey::from_openssh(public_key.trim()).map_err(|e| {
             Error::KeyParseFailed(format!("invalid public key: {e}"))
         })?;
         let target_fp = target_pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();

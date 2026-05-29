@@ -36,22 +36,11 @@ pub struct ControlSession {
 /// sockets.
 pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     let mut sessions = Vec::new();
-
-    // Gather candidate socket paths from common locations.
     let mut candidates = Vec::new();
 
-    // 1. Scan ~/.ssh/ for socket files (cm-*, ctrl-*, mux-*).
     if ssh_dir.exists() {
-        let dir_entries = tokio::fs::read_dir(ssh_dir)
-            .await
-            ?;
-
-        let mut entries = dir_entries;
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            ?
-        {
+        let mut entries = tokio::fs::read_dir(ssh_dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             if is_control_socket_candidate(&path).await {
                 candidates.push(path);
@@ -59,14 +48,8 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         }
     }
 
-    // 2. Scan /tmp for ssh control socket patterns.
-    if let Ok(tmp_entries) = tokio::fs::read_dir("/tmp").await {
-        let mut entries = tmp_entries;
-        while let Some(entry) = entries
-            .next_entry()
-            .await
-            ?
-        {
+    if let Ok(mut entries) = tokio::fs::read_dir("/tmp").await {
+        while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
             let name = path
                 .file_name()
@@ -78,22 +61,17 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         }
     }
 
-    // For each candidate, try to extract host info and verify with ssh -O check.
     for socket_path in candidates {
         let host = extract_host_from_socket_path(&socket_path);
 
-        // Verify the session is still alive.
         if verify_control_session(&socket_path).await {
             // The socket may have disappeared between the check above and now
             // (race with another process cleaning it up). Treat a missing file
             // as "session gone" rather than a fatal error.
-            let metadata = match tokio::fs::metadata(&socket_path).await {
-                Ok(m) => m,
-                Err(_) => continue,
+            let Ok(metadata) = tokio::fs::metadata(&socket_path).await else {
+                continue;
             };
-            let established = metadata
-                .modified()
-                .unwrap_or_else(|_| SystemTime::UNIX_EPOCH);
+            let established = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
             sessions.push(ControlSession {
                 control_path: socket_path,
@@ -106,8 +84,7 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         }
     }
 
-    // Sort by establishment time (most recent first).
-    sessions.sort_by(|a, b| b.established.cmp(&a.established));
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.established));
 
     Ok(sessions)
 }
@@ -123,25 +100,22 @@ async fn is_control_socket_candidate(path: &Path) -> bool {
         .and_then(|n| n.to_str())
         .unwrap_or("");
 
-    // Common prefixes for control socket files.
     let is_match = name.starts_with("cm-")
         || name.starts_with("ctrl-")
         || name.starts_with("mux-")
         || name.starts_with("ssh-")
-        || name.contains("@");
+        || name.contains('@');
 
     if !is_match {
         return false;
     }
 
-    // On Unix, verify it's a socket (or at least that it exists).
     #[cfg(unix)]
     {
-        let metadata = match tokio::fs::metadata(path).await {
-            Ok(m) => m,
-            Err(_) => return false,
-        };
         use std::os::unix::fs::FileTypeExt;
+        let Ok(metadata) = tokio::fs::metadata(path).await else {
+            return false;
+        };
         metadata.file_type().is_socket()
     }
 
@@ -163,7 +137,6 @@ pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
         .and_then(|n| n.to_str())
         .unwrap_or("unknown");
 
-    // Strip common prefixes.
     let stripped = name
         .strip_prefix("cm-")
         .or_else(|| name.strip_prefix("ctrl-"))
@@ -174,11 +147,9 @@ pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
     // Strip trailing port and random suffix, e.g. "root@host:22-abc" -> "root@host".
     if let Some(at_pos) = stripped.find('@') {
         let after_at = &stripped[at_pos..];
-        // Remove `:port` part.
         if let Some(colon) = after_at.find(':') {
             return stripped[..at_pos + colon].to_string();
         }
-        // Remove trailing `-random`.
         if let Some(dash) = after_at.find('-') {
             return stripped[..at_pos + dash].to_string();
         }
@@ -217,7 +188,6 @@ async fn verify_control_session(socket_path: &Path) -> bool {
 
     match result {
         Ok(Ok(output)) => {
-            // ssh -O check succeeded (exit 0) — session is alive.
             // Some versions print "Master running" to stdout, others are silent.
             output.contains("Master running") || output.is_empty()
         }

@@ -33,7 +33,7 @@ impl CertificateService {
     pub async fn is_valid(&self, path: &Path) -> Result<bool> {
         let info = self.inspect(path).await?;
         // Clamp to non-negative: timestamp() returns i64, valid_* fields are u64.
-        let now = chrono::Utc::now().timestamp().max(0) as u64;
+        let now = u64::try_from(chrono::Utc::now().timestamp().max(0)).unwrap_or(0);
         // OpenSSH validity check: valid_after <= now < valid_before
         Ok(info.valid_after <= now && now < info.valid_before)
     }
@@ -49,7 +49,7 @@ impl CertificateService {
         // If the KRL already exists, use -u to update it in-place rather than
         // overwriting. Without -u, ssh-keygen -k replaces the entire KRL.
         let update = krl_path.exists();
-        let mut args: Vec<&str> = Vec::new();
+        let mut args = Vec::with_capacity(5);
         args.push("-k");
         if update {
             args.push("-u");

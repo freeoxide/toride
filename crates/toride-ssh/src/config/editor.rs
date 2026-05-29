@@ -40,8 +40,7 @@ pub fn add_host(
         .nodes
         .iter()
         .rposition(|n| matches!(n, ConfigNode::HostBlock { .. } | ConfigNode::MatchBlock { .. }))
-        .map(|i| i + 1)
-        .unwrap_or(ast.nodes.len());
+        .map_or(ast.nodes.len(), |i| i + 1);
 
     // Insert a blank line separator before the new block if needed.
     if !ast.nodes.is_empty() && insert_pos > 0 {

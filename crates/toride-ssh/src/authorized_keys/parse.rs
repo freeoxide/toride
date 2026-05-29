@@ -110,33 +110,37 @@ fn parse_line(raw_line: &str, line_number: usize, original: &str) -> Result<Auth
 
     // Split the key+comment portion: key-type base64-key [comment]
     // The key data is base64 so it contains no spaces. We can safely split on spaces.
-    let key_parts: Vec<&str> = key_and_comment.splitn(3, ' ').collect();
+    let mut parts = key_and_comment.splitn(3, ' ');
 
-    if key_parts.len() < 2 {
-        return Err(Error::AuthorizedKeysParseFailed(format!(
-            "line {line_number}: missing key type or key data after options"
-        )));
-    }
+    let key_type = parts
+        .next()
+        .ok_or_else(|| {
+            Error::AuthorizedKeysParseFailed(format!(
+                "line {line_number}: missing key type or key data after options"
+            ))
+        })?
+        .to_string();
 
-    let key_type = key_parts[0].to_string();
-    let public_key = key_parts[1].to_string();
-    let comment = if key_parts.len() > 2 {
-        Some(key_parts[2].to_string())
-    } else {
-        None
-    };
+    let public_key = parts
+        .next()
+        .ok_or_else(|| {
+            Error::AuthorizedKeysParseFailed(format!(
+                "line {line_number}: missing key type or key data after options"
+            ))
+        })?
+        .to_string();
+
+    let comment = parts.next().map(ToString::to_string);
 
     // Validate by attempting to parse the key portion through ssh-key.
-    let key_line = key_and_comment;
-
-    if let Err(e) = ssh_key::PublicKey::from_openssh(key_line) {
+    if let Err(e) = ssh_key::PublicKey::from_openssh(key_and_comment) {
         return Err(Error::AuthorizedKeysParseFailed(format!(
             "line {line_number}: invalid key: {e}"
         )));
     }
 
     let options = options_str
-        .map(|s| super::options::parse_options(s))
+        .map(super::options::parse_options)
         .transpose()?;
 
     Ok(AuthorizedKeyEntry {
