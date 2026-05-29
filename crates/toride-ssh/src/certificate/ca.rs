@@ -289,3 +289,128 @@ fn datetime_str_to_unix(s: &str) -> Result<u64> {
             ))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_keygen_output_user_cert() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Public key: ED25519-CERT SHA256:xxxx
+        Signing CA: ED25519 SHA256:yyyy (using ssh-ed25519)
+        Key ID: "my-key-id"
+        Serial: 12345
+        Valid: from 2024-01-01T00:00:00 to 2025-01-01T00:00:00
+        Principals:
+                user1
+                user2
+        Critical Options: (none)
+        Extensions:
+                permit-X11-forwarding
+                permit-agent-forwarding
+                permit-port-forwarding
+                permit-pty
+                permit-user-rc
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
+        assert_eq!(info.key_type, "ssh-ed25519-cert-v01@openssh.com");
+        assert_eq!(info.key_id, "my-key-id");
+        assert_eq!(info.serial, 12345);
+        assert!(!info.is_host);
+        assert_eq!(info.valid_principals, vec!["user1", "user2"]);
+        assert_eq!(info.extensions.len(), 5);
+        assert!(info.ca_fingerprint.is_some());
+        assert!(info.ca_fingerprint.as_deref().unwrap().starts_with("SHA256:"));
+    }
+
+    #[test]
+    fn parse_keygen_output_host_cert() {
+        let output = r#"/path/to/host-cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com host certificate
+        Public key: ED25519-CERT SHA256:xxxx
+        Signing CA: ED25519 SHA256:yyyy
+        Key ID: "host-key"
+        Serial: 0
+        Valid: from 2024-01-01T00:00:00 to forever
+        Principals:
+                example.com
+                192.168.1.1
+        Critical Options:
+                force-command /usr/bin/limited
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
+        assert!(info.is_host);
+        assert_eq!(info.valid_before, u64::MAX);
+        assert_eq!(info.valid_principals, vec!["example.com", "192.168.1.1"]);
+        assert_eq!(info.critical_options.len(), 1);
+        assert_eq!(info.critical_options[0].0, "force-command");
+        assert!(info.extensions.is_empty());
+    }
+
+    #[test]
+    fn parse_keygen_output_no_type_fails() {
+        let output = "Some random output without type\n";
+        let result = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_keygen_output_empty() {
+        let result = parse_keygen_output("", std::path::Path::new("/path/to/cert.pub"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_keygen_output_no_principals() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "test"
+        Serial: 0
+        Valid: from 2024-01-01T00:00:00 to 2025-01-01T00:00:00
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
+        assert!(info.valid_principals.is_empty());
+    }
+
+    #[test]
+    fn datetime_str_to_unix_forever() {
+        assert_eq!(datetime_str_to_unix("forever").unwrap(), u64::MAX);
+        assert_eq!(datetime_str_to_unix("FOREVER").unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn datetime_str_to_unix_invalid() {
+        assert!(datetime_str_to_unix("not-a-date").is_err());
+        assert!(datetime_str_to_unix("").is_err());
+    }
+
+    #[test]
+    fn datetime_str_to_unix_valid() {
+        // Should parse a valid ISO timestamp
+        let result = datetime_str_to_unix("2024-01-01T00:00:00");
+        assert!(result.is_ok());
+        assert!(result.unwrap() > 0);
+    }
+
+    #[test]
+    fn keygen_parser_state_extensions_none() {
+        let mut state = KeygenParserState::new();
+        state.process_line("        Extensions: (none)").unwrap();
+        assert!(!state.in_extensions);
+        assert!(state.info.extensions.is_empty());
+    }
+
+    #[test]
+    fn keygen_parser_state_critical_none() {
+        let mut state = KeygenParserState::new();
+        state.process_line("        Critical Options: (none)").unwrap();
+        assert!(!state.in_critical);
+        assert!(state.info.critical_options.is_empty());
+    }
+}

@@ -465,3 +465,88 @@ fn cancel_spec_dynamic_forward() {
     };
     assert_eq!(spec, "[127.0.0.1]:1080");
 }
+
+// ---------------------------------------------------------------------------
+// glob_matches tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn glob_matches_prefix_wildcard() {
+    assert!(glob_matches("cm-*", "cm-user@host:22"));
+    assert!(glob_matches("ssh-*", "ssh-abc123"));
+}
+
+#[test]
+fn glob_matches_exact() {
+    assert!(glob_matches("cm-foo", "cm-foo"));
+    assert!(!glob_matches("cm-foo", "cm-bar"));
+}
+
+#[test]
+fn glob_matches_no_match() {
+    assert!(!glob_matches("cm-*", "ctrl-user@host"));
+    assert!(!glob_matches("mux-*", "cm-user@host"));
+}
+
+#[test]
+fn glob_matches_empty_pattern() {
+    assert!(!glob_matches("", "cm-user@host"));
+}
+
+#[test]
+fn glob_matches_empty_name() {
+    assert!(!glob_matches("cm-*", ""));
+}
+
+#[test]
+fn glob_matches_wildcard_only() {
+    assert!(glob_matches("*", "anything"));
+}
+
+// ---------------------------------------------------------------------------
+// extract_host_from_name edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn extract_host_from_name_ssh_hash_format() {
+    // ssh-<hash>-<pid> format falls back to stripped name
+    let host = extract_host_from_name("ssh-abc123def-12345");
+    assert_eq!(host, "abc123def-12345");
+}
+
+#[test]
+fn extract_host_from_name_ctrl_prefix() {
+    let host = extract_host_from_name("ctrl-user@server.com:22");
+    assert_eq!(host, "server.com");
+}
+
+#[test]
+fn extract_host_from_name_no_prefix() {
+    let host = extract_host_from_name("user@host:22");
+    assert_eq!(host, "host");
+}
+
+// ---------------------------------------------------------------------------
+// extract_pid_from_name edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn extract_pid_from_name_valid() {
+    assert_eq!(extract_pid_from_name("ssh-abc-12345"), Some(12345));
+}
+
+#[test]
+fn extract_pid_from_name_zero() {
+    // PID 0 is never valid
+    assert_eq!(extract_pid_from_name("ssh-abc-0"), None);
+}
+
+#[test]
+fn extract_pid_from_name_no_number() {
+    assert_eq!(extract_pid_from_name("cm-user@host"), None);
+}
+
+#[test]
+fn extract_pid_from_name_overflow() {
+    assert_eq!(extract_pid_from_name("ssh-abc-99999999999"), None);
+}

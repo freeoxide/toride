@@ -9,6 +9,103 @@ use crate::{Error, Result};
 pub use parse::KnownHostEntry;
 pub use scan::ScannedHostKey;
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strip_brackets_valid() {
+        assert_eq!(strip_brackets("[host]:22"), Some(("host", "22")));
+        assert_eq!(strip_brackets("[192.168.1.1]:2222"), Some(("192.168.1.1", "2222")));
+    }
+
+    #[test]
+    fn strip_brackets_invalid() {
+        assert_eq!(strip_brackets("host:22"), None);
+        assert_eq!(strip_brackets("host"), None);
+        assert_eq!(strip_brackets("[host]"), None);
+        assert_eq!(strip_brackets(""), None);
+    }
+
+    #[test]
+    fn host_pattern_matches_exact() {
+        assert!(host_pattern_matches("example.com", "example.com"));
+    }
+
+    #[test]
+    fn host_pattern_matches_no_match() {
+        assert!(!host_pattern_matches("example.com", "other.com"));
+    }
+
+    #[test]
+    fn host_pattern_matches_bracketed_pattern() {
+        assert!(host_pattern_matches("[example.com]:22", "example.com:22"));
+    }
+
+    #[test]
+    fn host_pattern_matches_bracketed_target() {
+        assert!(host_pattern_matches("example.com:22", "[example.com]:22"));
+    }
+
+    #[test]
+    fn host_pattern_matches_port_different() {
+        assert!(!host_pattern_matches("[example.com]:22", "example.com:2222"));
+    }
+
+    #[test]
+    fn line_matches_host_simple() {
+        assert!(line_matches_host("example.com ssh-ed25519 AAAA...", "example.com"));
+    }
+
+    #[test]
+    fn line_matches_host_comma_separated() {
+        assert!(line_matches_host("host1.com,host2.com ssh-ed25519 AAAA...", "host2.com"));
+    }
+
+    #[test]
+    fn line_matches_host_no_match() {
+        assert!(!line_matches_host("other.com ssh-ed25519 AAAA...", "example.com"));
+    }
+
+    #[test]
+    fn line_matches_host_skips_hashed() {
+        assert!(!line_matches_host("|1|salt|hash ssh-ed25519 AAAA...", "example.com"));
+    }
+
+    #[test]
+    fn line_matches_host_cert_authority_marker() {
+        assert!(line_matches_host("@cert-authority example.com ssh-ed25519 AAAA...", "example.com"));
+    }
+
+    #[test]
+    fn line_matches_host_revoked_marker() {
+        // @revoked with exact hostname matches
+        assert!(line_matches_host("@revoked example.com ssh-ed25519 AAAA...", "example.com"));
+    }
+
+    #[test]
+    fn line_matches_host_revoked_no_match() {
+        // @revoked with different host does not match
+        assert!(!line_matches_host("@revoked other.com ssh-ed25519 AAAA...", "example.com"));
+    }
+
+    #[test]
+    fn line_matches_host_marker_no_space() {
+        // Malformed marker line without space after marker
+        assert!(!line_matches_host("@cert-authority", "example.com"));
+    }
+
+    #[test]
+    fn line_matches_host_empty() {
+        assert!(!line_matches_host("", "example.com"));
+    }
+
+    #[test]
+    fn line_matches_host_bracketed_port() {
+        assert!(line_matches_host("[example.com]:2222 ssh-ed25519 AAAA...", "example.com:2222"));
+    }
+}
+
 /// `known_hosts` file management.
 pub struct KnownHostsService<'a> {
     paths: &'a SshPaths,

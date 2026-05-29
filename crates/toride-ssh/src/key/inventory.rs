@@ -157,6 +157,101 @@ fn guess_key_type_from_name(name: &str) -> KeyType {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn guess_key_type_from_name_ed25519() {
+        assert!(matches!(guess_key_type_from_name("id_ed25519"), KeyType::Ed25519));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_rsa() {
+        assert!(matches!(guess_key_type_from_name("id_rsa"), KeyType::Rsa { .. }));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_ecdsa() {
+        assert!(matches!(guess_key_type_from_name("id_ecdsa"), KeyType::EcdsaP256));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_dsa() {
+        assert!(matches!(guess_key_type_from_name("id_dsa"), KeyType::Dsa));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_sk_ed25519() {
+        // SK variants must be checked before base algo (ed25519_sk contains "ed25519")
+        assert!(matches!(guess_key_type_from_name("id_ed25519_sk"), KeyType::SkEd25519));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_sk_ecdsa() {
+        assert!(matches!(guess_key_type_from_name("id_ecdsa_sk"), KeyType::SkEcdsaP256));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_unknown_defaults_to_ed25519() {
+        assert!(matches!(guess_key_type_from_name("my_custom_key"), KeyType::Ed25519));
+    }
+
+    #[test]
+    fn guess_key_type_from_name_case_insensitive() {
+        assert!(matches!(guess_key_type_from_name("ID_ED25519"), KeyType::Ed25519));
+        assert!(matches!(guess_key_type_from_name("Id_RSA"), KeyType::Rsa { .. }));
+    }
+
+    #[test]
+    fn is_likely_encrypted_openssh_format() {
+        // OpenSSH encrypted keys have "ENCRYPTED" in the header comment area.
+        let data = "-----BEGIN OPENSSH PRIVATE KEY-----\nENCRYPTED\nb3BlbnNzaC1rZXktdjEAAAA...\n";
+        assert!(is_likely_encrypted(data));
+    }
+
+    #[test]
+    fn is_likely_encrypted_pem_format() {
+        let data = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,...\n";
+        assert!(is_likely_encrypted(data));
+    }
+
+    #[test]
+    fn is_likely_encrypted_unencrypted() {
+        let data = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAEbm9uZQAAAAEAAAAEAAA...\n";
+        assert!(!is_likely_encrypted(data));
+    }
+
+    #[test]
+    fn is_likely_encrypted_empty() {
+        assert!(!is_likely_encrypted(""));
+    }
+
+    #[test]
+    fn algorithm_to_key_type_all_known() {
+        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Ed25519).is_some());
+        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Rsa { hash: None }).is_some());
+        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP256 }).is_some());
+        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP384 }).is_some());
+        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP521 }).is_some());
+        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Dsa).is_some());
+        assert!(algorithm_to_key_type(&ssh_key::Algorithm::SkEd25519).is_some());
+        assert!(algorithm_to_key_type(&ssh_key::Algorithm::SkEcdsaSha2NistP256).is_some());
+    }
+
+    #[test]
+    fn algorithm_to_key_type_ecdsa_curves() {
+        let p256 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP256 }).unwrap();
+        assert!(matches!(p256, KeyType::EcdsaP256));
+
+        let p384 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP384 }).unwrap();
+        assert!(matches!(p384, KeyType::EcdsaP384));
+
+        let p521 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP521 }).unwrap();
+        assert!(matches!(p521, KeyType::EcdsaP521));
+    }
+}
+
 /// Scan `~/.ssh/id_*` and the agent for available keys.
 pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
     let ssh_dir = paths.ssh_dir().to_path_buf();

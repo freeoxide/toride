@@ -325,3 +325,55 @@ fn parse_ssh_add_line_unknown_type_in_parens() {
     // Unknown type should return None
     assert!(result.is_none());
 }
+
+// ---------------------------------------------------------------------------
+// parse_key_type_from_display tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_display_ed25519() {
+    assert_eq!(parse_key_type_from_display("ED25519"), Some(KeyType::Ed25519));
+}
+
+#[test]
+fn parse_display_ed25519_sk() {
+    assert_eq!(parse_key_type_from_display("ED25519-SK"), Some(KeyType::SkEd25519));
+}
+
+#[test]
+fn parse_display_rsa() {
+    assert_eq!(parse_key_type_from_display("RSA"), Some(KeyType::Rsa { bits: 0 }));
+}
+
+#[test]
+fn parse_display_ecdsa() {
+    assert_eq!(parse_key_type_from_display("ECDSA"), Some(KeyType::EcdsaP256));
+}
+
+#[test]
+fn parse_display_ecdsa_sk() {
+    assert_eq!(parse_key_type_from_display("ECDSA-SK"), Some(KeyType::SkEcdsaP256));
+}
+
+#[test]
+fn parse_display_dsa() {
+    assert_eq!(parse_key_type_from_display("DSA"), Some(KeyType::Dsa));
+}
+
+#[test]
+fn parse_display_case_insensitive() {
+    assert_eq!(parse_key_type_from_display("ed25519"), Some(KeyType::Ed25519));
+    assert_eq!(parse_key_type_from_display("rsa"), Some(KeyType::Rsa { bits: 0 }));
+    assert_eq!(parse_key_type_from_display("Ed25519-Sk"), Some(KeyType::SkEd25519));
+}
+
+#[test]
+fn parse_display_unknown() {
+    assert_eq!(parse_key_type_from_display("UNKNOWN"), None);
+    assert_eq!(parse_key_type_from_display(""), None);
+}
+
+#[test]
+fn parse_display_whitespace() {
+    assert_eq!(parse_key_type_from_display("  "), None);
+}

@@ -173,6 +173,144 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
     })
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn key_type_to_cli_arg_all_types() {
+        assert_eq!(key_type_to_cli_arg(KeyType::Ed25519), "ed25519");
+        assert_eq!(key_type_to_cli_arg(KeyType::Rsa { bits: 4096 }), "rsa");
+        assert_eq!(key_type_to_cli_arg(KeyType::EcdsaP256), "ecdsa");
+        assert_eq!(key_type_to_cli_arg(KeyType::EcdsaP384), "ecdsa");
+        assert_eq!(key_type_to_cli_arg(KeyType::EcdsaP521), "ecdsa");
+        assert_eq!(key_type_to_cli_arg(KeyType::Dsa), "dsa");
+        assert_eq!(key_type_to_cli_arg(KeyType::SkEd25519), "sk-ssh-ed25519@openssh.com");
+        assert_eq!(key_type_to_cli_arg(KeyType::SkEcdsaP256), "sk-ecdsa-sha2-nistp256@openssh.com");
+    }
+
+    #[test]
+    fn build_keygen_args_ed25519_basic() {
+        let params = KeyCreateParams {
+            name: "id_ed25519".to_owned(),
+            key_type: KeyType::Ed25519,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+        };
+        let args = build_keygen_args(&params, "/home/user/.ssh/id_ed25519");
+        assert_eq!(args[0..4], ["-t", "ed25519", "-f", "/home/user/.ssh/id_ed25519"]);
+        assert_eq!(args[4..6], ["-N", ""]);
+        assert!(!args.contains(&"-b".to_owned()));
+        assert!(!args.contains(&"-C".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_rsa_with_bits() {
+        let params = KeyCreateParams {
+            name: "id_rsa".to_owned(),
+            key_type: KeyType::Rsa { bits: 4096 },
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"-b".to_owned()));
+        assert!(args.contains(&"4096".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_with_comment() {
+        let params = KeyCreateParams {
+            name: "id_ed25519".to_owned(),
+            key_type: KeyType::Ed25519,
+            comment: Some("user@host".to_owned()),
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"-C".to_owned()));
+        assert!(args.contains(&"user@host".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_with_passphrase() {
+        let params = KeyCreateParams {
+            name: "id_ed25519".to_owned(),
+            key_type: KeyType::Ed25519,
+            comment: None,
+            passphrase: Some("secret".to_owned()),
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"-N".to_owned()));
+        assert!(args.contains(&"secret".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_with_kdf_rounds() {
+        let params = KeyCreateParams {
+            name: "id_ed25519".to_owned(),
+            key_type: KeyType::Ed25519,
+            comment: None,
+            passphrase: Some("pass".to_owned()),
+            kdf_rounds: Some(64),
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"-a".to_owned()));
+        assert!(args.contains(&"64".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_ecdsa_p384() {
+        let params = KeyCreateParams {
+            name: "id_ecdsa".to_owned(),
+            key_type: KeyType::EcdsaP384,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"-b".to_owned()));
+        assert!(args.contains(&"384".to_owned()));
+    }
+
+    #[test]
+    fn build_keygen_args_ecdsa_p521() {
+        let params = KeyCreateParams {
+            name: "id_ecdsa".to_owned(),
+            key_type: KeyType::EcdsaP521,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+        };
+        let args = build_keygen_args(&params, "/tmp/key");
+        assert!(args.contains(&"-b".to_owned()));
+        assert!(args.contains(&"521".to_owned()));
+    }
+}
+
 /// Add a key to the SSH agent.
 async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
     let path_str = private_path

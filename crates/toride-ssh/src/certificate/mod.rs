@@ -96,3 +96,50 @@ impl CertificateService {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_ssh_datetime_compact() {
+        // ssh-keygen KRL format: 20240101T000000
+        let ts = parse_ssh_datetime("20240101T000000").unwrap();
+        assert!(ts > 0);
+        // Should be 2024-01-01 00:00:00 UTC
+        assert_eq!(ts, 1704067200);
+    }
+
+    #[test]
+    fn parse_ssh_datetime_iso() {
+        let ts = parse_ssh_datetime("2024-01-01T00:00:00").unwrap();
+        assert_eq!(ts, 1704067200);
+    }
+
+    #[test]
+    fn parse_ssh_datetime_space_separated() {
+        let ts = parse_ssh_datetime("2024-01-01 00:00:00").unwrap();
+        assert_eq!(ts, 1704067200);
+    }
+
+    #[test]
+    fn parse_ssh_datetime_date_only() {
+        let ts = parse_ssh_datetime("2024-01-01").unwrap();
+        assert_eq!(ts, 1704067200);
+    }
+
+    #[test]
+    fn parse_ssh_datetime_invalid() {
+        assert!(parse_ssh_datetime("").is_none());
+        assert!(parse_ssh_datetime("not-a-date").is_none());
+        assert!(parse_ssh_datetime("2024-13-01").is_none());
+    }
+
+    #[test]
+    fn parse_ssh_datetime_different_dates() {
+        // Verify different dates produce different timestamps
+        let ts1 = parse_ssh_datetime("2024-01-01").unwrap();
+        let ts2 = parse_ssh_datetime("2024-06-15").unwrap();
+        assert!(ts2 > ts1);
+    }
+}
