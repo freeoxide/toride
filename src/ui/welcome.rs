@@ -95,18 +95,26 @@ impl WelcomeScreen {
         .areas(area);
 
         // Vertical layout
-        let [_top, logo_area, _g1, version_area, prompt_area, _g2, keys_area, _bottom] =
-            Layout::vertical([
-                Constraint::Fill(1),
-                Constraint::Length(6),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Fill(1),
-            ])
-            .areas(center);
+        let [
+            _top,
+            logo_area,
+            _g1,
+            version_area,
+            prompt_area,
+            _g2,
+            keys_area,
+            _bottom,
+        ] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(6),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(center);
 
         // ── Logo ──────────────────────────────────────────────────────────
         let logo_style = Style::new().fg(p.accent).bold();

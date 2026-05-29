@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::{
     Frame,
     layout::{Constraint, Rect},
@@ -5,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use super::theme::Palette;
 
@@ -19,16 +22,19 @@ const COMPACT_W: u16 = 50;
 const COMPACT_H: u16 = 16;
 
 /// Terminal size category for adaptive layouts.
+///
+/// Derives `PartialOrd` / `Ord` by declaration order — variants are ordered
+/// smallest-to-largest so that `vp >= Viewport::Compact` means "at least Compact".
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Viewport {
-    /// >= 72 x 24 — full chrome, generous spacing
-    Full,
-    /// >= 50 x 16 — reduced spacing, truncated content
-    Compact,
-    /// >= 30 x 10 — minimal: abbreviated text, no labels
-    Minimal,
     /// < 30 x 10 — too small to render anything useful
     TooSmall,
+    /// >= 30 x 10 — abbreviated text, no labels
+    Minimal,
+    /// >= 50 x 16 — reduced spacing, truncated content
+    Compact,
+    /// >= 72 x 24 — full chrome, generous spacing
+    Full,
 }
 
 impl Viewport {
@@ -76,69 +82,41 @@ pub fn render_too_small(frame: &mut Frame, p: Palette) -> bool {
 // ── Content truncation ───────────────────────────────────────────────────────
 
 /// Truncate a string to `max_width` Unicode-width columns, appending ".." if it
-/// doesn't fit. Handles multi-byte characters correctly.
+/// doesn't fit.
 pub fn truncate_str(s: &str, max_width: usize) -> String {
     if max_width < 2 {
         return String::new();
     }
 
+    if UnicodeWidthStr::width(s) <= max_width {
+        return s.to_owned();
+    }
+
     let mut width = 0usize;
     for (i, ch) in s.char_indices() {
-        let cw = unicode_width(ch);
+        let cw = ch.width().unwrap_or(1);
         if width + cw > max_width - 2 {
-            let end = i;
-            return format!("{}..", &s[..end]);
+            return format!("{}..", &s[..i]);
         }
         width += cw;
     }
-    // Fits as-is.
+
     s.to_owned()
 }
 
 /// Truncate each line of a logo (array of `&str`) to `max_width`, appending ".."
-/// when a row overflows. Returns owned `Line`s styled with the given style.
-pub fn truncate_logo<'a>(
-    rows: &[&'a str],
-    max_width: u16,
-    style: Style,
-) -> Vec<Line<'a>> {
+/// when a row overflows. Returns styled `Line`s — borrows the original slice when
+/// no truncation is needed, avoiding allocation.
+pub fn truncate_logo<'a>(rows: &[&'a str], max_width: u16, style: Style) -> Vec<Line<'a>> {
     let mw = max_width as usize;
     rows.iter()
         .map(|row| {
-            let truncated = truncate_str(row, mw);
-            // Re-borrow from the original if unchanged so we avoid allocating.
-            let text = if truncated.len() == row.len() && truncated == *row {
+            let text = if UnicodeWidthStr::width(*row) <= mw {
                 Cow::Borrowed(*row)
             } else {
-                Cow::Owned(truncated)
+                Cow::Owned(truncate_str(row, mw))
             };
             Line::from(Span::styled(text, style))
         })
         .collect()
 }
-
-// ── Internal ─────────────────────────────────────────────────────────────────
-
-fn unicode_width(ch: char) -> usize {
-    match ch {
-        '\0'..='\x7f' => 1,
-        // CJK / wide — most terminals render at double width
-        '\u{1100}'..='\u{115f}' => 2,
-        '\u{2329}'..='\u{232a}' => 2,
-        '\u{2e80}'..='\u{303e}' => 2,
-        '\u{3041}'..='\u{3247}' => 2,
-        '\u{3251}'..='\u{4dbf}' => 2,
-        '\u{4e00}'..='\u{a4c6}' => 2,
-        '\u{a960}'..='\u{a97c}' => 2,
-        '\u{ac00}'..='\u{d7a3}' => 2,
-        '\u{f900}'..='\u{faff}' => 2,
-        '\u{fe10}'..='\u{fe19}' => 2,
-        '\u{fe30}'..='\u{fe6b}' => 2,
-        '\u{ff01}'..='\u{ff60}' => 2,
-        '\u{ffe0}'..='\u{ffe6}' => 2,
-        '\u{1f000}'..='\u{1f9ff}' => 2,
-        _ => 1,
-    }
-}
-
-use std::borrow::Cow;
