@@ -58,7 +58,7 @@ impl<'a> KnownHostsService<'a> {
 
         tokio::task::spawn_blocking(move || remove_host_sync(&path, &host))
             .await
-            .map_err(|e| Error::KnownHostsParseFailed(e.to_string()))?
+            .map_err(|e| Error::TaskFailed(e.to_string()))?
     }
 
     /// Check whether a host appears in `~/.ssh/known_hosts`.

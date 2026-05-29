@@ -34,7 +34,7 @@ pub async fn parse_known_hosts(path: &Path) -> Result<Vec<KnownHostEntry>> {
     let path = path.to_path_buf();
     tokio::task::spawn_blocking(move || parse_known_hosts_sync(&path))
         .await
-        .map_err(|e| Error::KnownHostsParseFailed(e.to_string()))?
+        .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Synchronous implementation that does the actual parsing.

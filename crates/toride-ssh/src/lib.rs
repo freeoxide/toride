@@ -81,6 +81,9 @@ pub enum Error {
     /// Failed to parse `~/.ssh/config`.
     #[error("config parse failed: {0}")]
     ConfigParseFailed(String),
+    /// Managed block not found in config.
+    #[error("managed block not found: {0}")]
+    ManagedBlockNotFound(String),
     /// Failed to write `~/.ssh/config`.
     #[error("config write failed: {0}")]
     ConfigWriteFailed(String),
@@ -97,9 +100,9 @@ pub enum Error {
     #[error("token expansion failed for {token}: {reason}")]
     TokenExpansionFailed {
         /// The token that failed to expand.
-        token: String,
+        token: Box<str>,
         /// Why expansion failed.
-        reason: String,
+        reason: Box<str>,
     },
 
     // Known hosts
@@ -174,6 +177,10 @@ pub enum Error {
     /// Underlying I/O error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+
+    /// Background task panicked or was cancelled.
+    #[error("background task failed: {0}")]
+    TaskFailed(String),
 }
 
 /// Alias for results in this crate.

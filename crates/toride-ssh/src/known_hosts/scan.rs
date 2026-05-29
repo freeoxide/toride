@@ -116,7 +116,7 @@ pub async fn add_to_known_hosts(
         Ok(())
     })
     .await
-    .map_err(|e| Error::KnownHostsParseFailed(e.to_string()))?
+    .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Scan a host (with `-H` hashing) and append all discovered keys to

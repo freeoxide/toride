@@ -166,7 +166,7 @@ pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
     });
 
     let Some(start) = open_idx else {
-        return Err(crate::Error::HostNotFound(format!(
+        return Err(crate::Error::ManagedBlockNotFound(format!(
             "managed block {name} not found"
         )));
     };
@@ -179,7 +179,7 @@ pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
         .map(|i| start + 1 + i);
 
     let Some(end) = end else {
-        return Err(crate::Error::HostNotFound(format!(
+        return Err(crate::Error::ManagedBlockNotFound(format!(
             "managed block {name} closing marker not found"
         )));
     };

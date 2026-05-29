@@ -32,7 +32,7 @@ pub async fn repair_public_key(private_key_path: &Path) -> Result<()> {
         public_key
             .write_openssh_file(&public_path)
             .map_err(|e| {
-                Error::KeyParseFailed(format!(
+                Error::CommandFailed(format!(
                     "failed to write public key {}: {e}",
                     public_path.display()
                 ))
