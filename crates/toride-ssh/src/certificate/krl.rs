@@ -42,7 +42,7 @@ pub struct KrlInfo {
 /// The dummy file (`/dev/null`) is required because `-Q` needs at least one key
 /// to query, but we only care about the listing output produced by `-l`.
 pub async fn inspect_krl(path: &Path) -> Result<KrlInfo> {
-    let path_str = path.to_string_lossy().to_string();
+    let path_str = path.to_string_lossy().into_owned();
 
     // -Q queries a KRL, -l causes it to also print the KRL contents.
     // A dummy file argument is required; /dev/null works as a no-op input.
@@ -151,9 +151,7 @@ fn parse_krl_output(output: &str, path: &Path) -> Result<KrlInfo> {
 fn parse_serials(input: &str, out: &mut Vec<u64>) {
     if let Some((start, end)) = input.split_once('-') {
         if let (Ok(s), Ok(e)) = (start.trim().parse::<u64>(), end.trim().parse::<u64>()) {
-            for n in s..=e {
-                out.push(n);
-            }
+            out.extend(s..=e);
         }
     } else if let Ok(n) = input.parse::<u64>() {
         out.push(n);

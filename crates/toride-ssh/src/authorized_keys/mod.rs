@@ -166,7 +166,7 @@ impl<'a> AuthorizedKeysService<'a> {
         }
 
         // Read the raw file to preserve formatting of kept lines
-        let raw_contents = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+        let raw_contents = tokio::fs::read_to_string(&path).await?;
 
         // Reconstruct the file without removed lines
         let mut kept_lines = Vec::new();

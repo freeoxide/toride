@@ -23,8 +23,16 @@ impl<'a> ForwardService<'a> {
         let mut results = Vec::with_capacity(sessions.len());
 
         for session in sessions {
-            let forwards = control::list_forwards(&session.control_path).await.unwrap_or_default();
-            results.push((session, forwards));
+            match control::list_forwards(&session.control_path).await {
+                Ok(forwards) => results.push((session, forwards)),
+                Err(e) => {
+                    tracing::warn!(
+                        "failed to list forwards for {}: {e}",
+                        session.control_path.display()
+                    );
+                    results.push((session, Vec::new()));
+                }
+            }
         }
 
         Ok(results)

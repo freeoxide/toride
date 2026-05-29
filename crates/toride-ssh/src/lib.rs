@@ -1,11 +1,24 @@
 #![warn(missing_docs)]
-#![allow(dead_code)]
-#![allow(
+#![expect(dead_code, reason = "scaffolding for modules under active development")]
+#![expect(
     clippy::unused_async,
+    reason = "async fns are scaffolding for future async operations"
+)]
+#![expect(
     clippy::must_use_candidate,
+    reason = "service methods are call-and-forget; callers rarely use return"
+)]
+#![expect(
     clippy::missing_errors_doc,
+    reason = "error docs added incrementally; tracked for full coverage"
+)]
+#![expect(
     clippy::doc_markdown,
-    clippy::struct_excessive_bools
+    reason = "SSH-specific terms like ed25519 trigger false positives"
+)]
+#![expect(
+    clippy::struct_excessive_bools,
+    reason = "AuthorizedKeyOptions models an external SSH format with many boolean flags"
 )]
 
 //! `toride-ssh` — async SSH manager library wrapping `ssh-key`, `ssh2-config-rs`,

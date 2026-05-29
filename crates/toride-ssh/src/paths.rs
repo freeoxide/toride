@@ -1,9 +1,9 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::Error;
 
 /// Resolved paths for the `~/.ssh` directory.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SshPaths {
     ssh_dir: PathBuf,
 }
@@ -17,7 +17,7 @@ impl SshPaths {
     }
 
     /// Path to `~/.ssh`.
-    pub fn ssh_dir(&self) -> &PathBuf {
+    pub fn ssh_dir(&self) -> &Path {
         &self.ssh_dir
     }
 

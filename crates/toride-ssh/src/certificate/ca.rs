@@ -66,7 +66,7 @@ async fn inspect_native(path: &Path) -> Result<CertificateInfo> {
 
 /// Parse `ssh-keygen -L` output when the native parser is insufficient.
 async fn inspect_via_keygen(path: &Path) -> Result<CertificateInfo> {
-    let path_str = path.to_string_lossy().to_string();
+    let path_str = path.to_string_lossy().into_owned();
     let output = crate::runner::ssh_keygen(&["-L", "-f", &path_str]).await?;
 
     parse_keygen_output(&output, path)
@@ -200,11 +200,11 @@ fn parse_keygen_output(output: &str, path: &Path) -> Result<CertificateInfo> {
             let rest = rest.trim();
             if let Some(from_str) = rest.strip_prefix("from ") {
                 if let Some((after_str, before_str)) = from_str.split_once(" to ") {
-                    valid_after = datetime_str_to_unix(after_str.trim());
+                    valid_after = datetime_str_to_unix(after_str.trim())?;
                     valid_before = if before_str.trim().eq_ignore_ascii_case("forever") {
                         u64::MAX
                     } else {
-                        datetime_str_to_unix(before_str.trim())
+                        datetime_str_to_unix(before_str.trim())?
                     };
                 }
             }
@@ -249,10 +249,15 @@ fn parse_keygen_output(output: &str, path: &Path) -> Result<CertificateInfo> {
 }
 
 /// Convert a datetime string like "2024-01-01T00:00:00" to a Unix timestamp.
-/// Returns 0 if parsing fails. Handles the keyword "forever" by returning `u64::MAX`.
-fn datetime_str_to_unix(s: &str) -> u64 {
+/// Handles the keyword "forever" by returning `u64::MAX`.
+///
+/// # Errors
+///
+/// Returns [`crate::Error::CertificateParseFailed`] if the datetime string
+/// cannot be parsed with any known SSH date format.
+fn datetime_str_to_unix(s: &str) -> Result<u64> {
     if s.eq_ignore_ascii_case("forever") {
-        return u64::MAX;
+        return Ok(u64::MAX);
     }
 
     // ssh-keygen outputs dates in various formats:
@@ -270,9 +275,11 @@ fn datetime_str_to_unix(s: &str) -> u64 {
 
     for fmt in &formats {
         if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(s, fmt) {
-            return dt.and_utc().timestamp().max(0) as u64;
+            return Ok(dt.and_utc().timestamp().max(0) as u64);
         }
     }
 
-    0
+    Err(crate::Error::CertificateParseFailed(format!(
+        "unrecognized datetime format: {s}"
+    )))
 }

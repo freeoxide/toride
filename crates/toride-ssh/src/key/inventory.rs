@@ -35,16 +35,10 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
         .to_string_lossy()
         .to_string();
 
-    let pub_path = {
-        let mut p = path.clone();
-        p.set_extension("pub");
-        p
-    };
+    let pub_path = path.with_extension("pub");
     let cert_path = {
-        let mut p = path.clone();
-        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-        p.set_file_name(format!("{}-cert.pub", name));
-        p
+        let name = path.file_name().unwrap_or_default().to_string_lossy();
+        path.with_file_name(format!("{name}-cert.pub"))
     };
 
     let has_public_pair = pub_path.exists();
@@ -161,7 +155,7 @@ fn guess_key_type_from_name(name: &str) -> KeyType {
 
 /// Scan `~/.ssh/id_*` and the agent for available keys.
 pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
-    let ssh_dir = paths.ssh_dir().clone();
+    let ssh_dir = paths.ssh_dir().to_path_buf();
     let default_names = SshPaths::default_key_names()
         .iter()
         .map(|s| s.to_string())

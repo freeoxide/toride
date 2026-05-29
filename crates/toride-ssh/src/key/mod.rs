@@ -72,11 +72,7 @@ impl<'a> KeyService<'a> {
             return Err(Error::KeyNotFound(params.name.clone()));
         }
 
-        let public_path = {
-            let mut p = private_path.clone();
-            p.set_extension("pub");
-            p
-        };
+        let public_path = private_path.with_extension("pub");
 
         let cert_path = {
             let name = params.name.clone();
@@ -92,11 +88,7 @@ impl<'a> KeyService<'a> {
         tokio::task::spawn_blocking(move || {
             // Backup if requested
             if params_clone.backup {
-                let backup_path = {
-                    let mut p = private_path.clone();
-                    p.set_extension("bak");
-                    p
-                };
+                let backup_path = private_path.with_extension("bak");
                 std::fs::rename(&private_path, &backup_path).map_err(|e| {
                     Error::CommandFailed(format!(
                         "failed to backup {}: {e}",
@@ -105,22 +97,14 @@ impl<'a> KeyService<'a> {
                 })?;
 
                 if params_clone.remove_public && public_path.exists() {
-                    let pub_backup = {
-                        let mut p = public_path.clone();
-                        let stem = p.file_stem().unwrap_or_default().to_string_lossy().to_string();
-                        p.set_file_name(format!("{stem}.pub.bak"));
-                        p
-                    };
+                    let stem = public_path.file_stem().unwrap_or_default().to_string_lossy();
+                    let pub_backup = public_path.with_file_name(format!("{stem}.pub.bak"));
                     let _ = std::fs::rename(&public_path, &pub_backup);
                 }
 
                 if params_clone.remove_certificate && cert_path.exists() {
-                    let cert_backup = {
-                        let mut p = cert_path.clone();
-                        let name = p.file_name().unwrap_or_default().to_string_lossy().to_string();
-                        p.set_file_name(format!("{name}.bak"));
-                        p
-                    };
+                    let name = cert_path.file_name().unwrap_or_default().to_string_lossy();
+                    let cert_backup = cert_path.with_file_name(format!("{name}.bak"));
                     let _ = std::fs::rename(&cert_path, &cert_backup);
                 }
             } else {

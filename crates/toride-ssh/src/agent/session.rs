@@ -3,7 +3,7 @@
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-use crate::{Error, Result};
+use crate::Result;
 
 /// A single active SSH ControlMaster session.
 #[derive(Debug, Clone)]
@@ -44,13 +44,13 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     if ssh_dir.exists() {
         let dir_entries = tokio::fs::read_dir(ssh_dir)
             .await
-            .map_err(|e| Error::Io(e))?;
+            ?;
 
         let mut entries = dir_entries;
         while let Some(entry) = entries
             .next_entry()
             .await
-            .map_err(|e| Error::Io(e))?
+            ?
         {
             let path = entry.path();
             if is_control_socket_candidate(&path).await {
@@ -65,7 +65,7 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         while let Some(entry) = entries
             .next_entry()
             .await
-            .map_err(|e| Error::Io(e))?
+            ?
         {
             let path = entry.path();
             let name = path
@@ -216,17 +216,21 @@ async fn verify_control_session(socket_path: &Path) -> bool {
     .await;
 
     match result {
-        Ok(_) => true,
-        // ssh returns exit code 1 with a message like "Master running (pid=N)"
-        // on stderr when the session IS alive. A non-zero exit from `duct::cmd::read`
-        // means the command failed entirely. We treat any output as a sign the
-        // session might be alive -- a truly dead socket produces "No such file or
-        // directory" or similar errors.
-        Err(e) => {
+        Ok(Ok(output)) => {
+            // ssh -O check succeeded (exit 0) — session is alive.
+            // Some versions print "Master running" to stdout, others are silent.
+            output.contains("Master running") || output.is_empty()
+        }
+        Ok(Err(e)) => {
+            // ssh exited non-zero. With stderr_to_stdout, the error message
+            // may contain "Master running" (some OpenSSH versions report the
+            // alive status via a non-zero exit code).
             let msg = e.to_string();
-            // If the master is running, ssh still exits with non-zero but prints
-            // "Master running" to stderr. duct with stderr_to_stdout captures it.
-            msg.contains("Master running")
+            msg.contains("Master running") || msg.contains("Running")
+        }
+        Err(_) => {
+            // spawn_blocking task panicked — treat as dead session.
+            false
         }
     }
 }

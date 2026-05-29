@@ -111,7 +111,7 @@ pub struct Diagnostic {
 }
 
 /// Parameters for creating a new SSH key.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct KeyCreateParams {
     /// Algorithm to use.
     pub key_type: KeyType,
@@ -129,6 +129,21 @@ pub struct KeyCreateParams {
     pub add_to_config: bool,
     /// Host alias to use in config when `add_to_config` is true.
     pub config_host: Option<String>,
+}
+
+impl std::fmt::Debug for KeyCreateParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("KeyCreateParams")
+            .field("key_type", &self.key_type)
+            .field("name", &self.name)
+            .field("comment", &self.comment)
+            .field("passphrase", &self.passphrase.as_ref().map(|_| "[REDACTED]"))
+            .field("kdf_rounds", &self.kdf_rounds)
+            .field("add_to_agent", &self.add_to_agent)
+            .field("add_to_config", &self.add_to_config)
+            .field("config_host", &self.config_host)
+            .finish()
+    }
 }
 
 /// Parameters for deleting an SSH key.

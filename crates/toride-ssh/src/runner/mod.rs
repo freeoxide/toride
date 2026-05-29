@@ -64,15 +64,17 @@ pub async fn ssh_add_list() -> Result<String> {
 
 /// Run `ssh-copy-id -i <pubkey> <dest>`.
 pub async fn ssh_copy_id(pubkey: &Path, dest: &str) -> Result<String> {
-    let pubkey = pubkey.to_path_buf();
+    let pubkey_str = pubkey
+        .to_str()
+        .ok_or_else(|| {
+            Error::CommandFailed(format!("public key path is not valid UTF-8: {}", pubkey.display()))
+        })?
+        .to_owned();
     let dest = dest.to_owned();
     tokio::task::spawn_blocking(move || {
-        duct::cmd(
-            "ssh-copy-id",
-            ["-i", pubkey.to_str().unwrap_or(""), &dest],
-        )
-        .read()
-        .map_err(|e| Error::CommandFailed(e.to_string()))
+        duct::cmd("ssh-copy-id", ["-i", &pubkey_str, &dest])
+            .read()
+            .map_err(|e| Error::CommandFailed(e.to_string()))
     })
     .await
     .map_err(|e| Error::CommandFailed(e.to_string()))?

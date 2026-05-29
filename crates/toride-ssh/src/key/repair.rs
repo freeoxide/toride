@@ -25,8 +25,7 @@ pub async fn repair_public_key(private_key_path: &Path) -> Result<()> {
         })?;
 
         // Derive the public key path
-        let mut public_path = private_path.clone();
-        public_path.set_extension("pub");
+        let public_path = private_path.with_extension("pub");
 
         // Get the public key and write it
         let public_key = private_key.public_key();

@@ -65,7 +65,7 @@ impl Check for SshDirExists {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
     {
-        let ssh_dir = self.paths.ssh_dir().clone();
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let meta = tokio::fs::metadata(&ssh_dir).await;
             match meta {
@@ -107,7 +107,7 @@ impl Check for SshDirPermissions {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
     {
-        let ssh_dir = self.paths.ssh_dir().clone();
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let meta = tokio::fs::metadata(&ssh_dir).await;
             match meta {
@@ -236,7 +236,7 @@ impl Check for PrivateKeyPermissions {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
     {
-        let ssh_dir = self.paths.ssh_dir().clone();
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let mut diagnostics = Vec::new();
             let mut read_dir = match tokio::fs::read_dir(&ssh_dir).await {
@@ -284,16 +284,21 @@ impl Check for PrivateKeyPermissions {
 
                 // Read only the first 4 KB to detect private key markers without
                 // loading potentially large files into memory.
-                let header = match tokio::fs::read(&path).await {
-                    Ok(bytes) if bytes.len() >= 8 => {
-                        // Read at most 4096 bytes for the header check.
-                        let end = bytes.len().min(4096);
-                        String::from_utf8_lossy(&bytes[..end]).into_owned()
+                let header = {
+                    use tokio::io::AsyncReadExt;
+                    let mut file = match tokio::fs::File::open(&path).await {
+                        Ok(f) => f,
+                        Err(_) => continue,
+                    };
+                    let mut buf = [0u8; 4096];
+                    let n = match file.read(&mut buf).await {
+                        Ok(n) => n,
+                        Err(_) => continue,
+                    };
+                    if n < 8 {
+                        continue;
                     }
-                    Ok(bytes) => {
-                        String::from_utf8_lossy(&bytes).into_owned()
-                    }
-                    Err(_) => continue,
+                    String::from_utf8_lossy(&buf[..n]).into_owned()
                 };
 
                 if !header.contains("PRIVATE KEY") {
@@ -440,7 +445,7 @@ impl Check for DefaultKeyExists {
         &self,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + '_>>
     {
-        let ssh_dir = self.paths.ssh_dir().clone();
+        let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let mut found = Vec::new();
             for name in SshPaths::default_key_names() {

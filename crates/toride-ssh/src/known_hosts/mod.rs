@@ -1,7 +1,7 @@
 mod parse;
 mod scan;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use crate::paths::SshPaths;
 use crate::{Error, Result};
@@ -53,7 +53,7 @@ impl<'a> KnownHostsService<'a> {
     /// The removal is performed atomically (write to a temp file, then rename)
     /// so that a crash mid-write cannot corrupt the file.
     pub async fn remove(&self, host: &str) -> Result<()> {
-        let path: PathBuf = self.paths.known_hosts_path().clone();
+        let path = self.paths.known_hosts_path();
         let host = host.to_owned();
 
         tokio::task::spawn_blocking(move || remove_host_sync(&path, &host))
@@ -109,7 +109,10 @@ fn remove_host_sync(path: &Path, host: &str) -> Result<()> {
     })?;
     let tmp_path = parent.join(format!(".known_hosts.tmp.{}", std::process::id()));
     std::fs::write(&tmp_path, &kept)?;
-    std::fs::rename(&tmp_path, path)?;
+    if let Err(e) = std::fs::rename(&tmp_path, path) {
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(e.into());
+    }
     Ok(())
 }
 
@@ -125,25 +128,23 @@ fn host_pattern_matches(pattern: &str, target: &str) -> bool {
         return true;
     }
     // Handle bracketed form: [host]:port should also match host:port.
-    if pattern.starts_with('[') && pattern.contains("]:") {
-        let inner = &pattern[1..];
-        if let Some(bracket_end) = inner.find("]:") {
-            let host_part = &inner[..bracket_end];
-            let port_part = &inner[bracket_end + 1..]; // skip "]:"
-            let reconstructed = format!("{host_part}:{port_part}");
-            if reconstructed == target {
+    // Compare parts directly to avoid heap allocation from format!().
+    fn strip_brackets(s: &str) -> Option<(&str, &str)> {
+        let inner = s.strip_prefix('[')?;
+        let (host, rest) = inner.split_once("]:")?;
+        Some((host, rest))
+    }
+
+    if let Some((p_host, p_port)) = strip_brackets(pattern) {
+        if let Some((t_host, t_port)) = target.split_once(':') {
+            if p_host == t_host && p_port == t_port {
                 return true;
             }
         }
     }
-    // Handle target is bracketed but pattern is not.
-    if target.starts_with('[') && target.contains("]:") {
-        let inner = &target[1..];
-        if let Some(bracket_end) = inner.find("]:") {
-            let host_part = &inner[..bracket_end];
-            let port_part = &inner[bracket_end + 1..];
-            let reconstructed = format!("{host_part}:{port_part}");
-            if pattern == reconstructed {
+    if let Some((t_host, t_port)) = strip_brackets(target) {
+        if let Some((p_host, p_port)) = pattern.split_once(':') {
+            if p_host == t_host && p_port == t_port {
                 return true;
             }
         }
