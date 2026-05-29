@@ -1,0 +1,41 @@
+[package]
+name = "toride-ssh"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["ed25519", "rsa", "ecdsa", "agent", "doctor"]
+ed25519 = ["ssh-key/ed25519"]
+rsa = ["ssh-key/rsa"]
+ecdsa = ["ssh-key/p256"]
+ecdsa-full = ["ssh-key/p256", "ssh-key/p384", "ssh-key/p521"]
+dsa = ["ssh-key/dsa"]
+crypto = ["ssh-key/crypto"]
+fido = []
+native-client = ["dep:russh"]
+agent = ["dep:ssh-agent-lib"]
+doctor = []
+certificate = []
+macos-keychain = []
+
+[dependencies]
+ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
+ssh2-config-rs = "0.7"
+ssh-agent-lib = { version = "0.6", optional = true }
+russh = { version = "0.61", optional = true }
+tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+dirs = { workspace = true }
+which = { workspace = true }
+duct = "1"
+
+chrono = { version = "0.4", features = ["serde"], optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lints]
+workspace = true
