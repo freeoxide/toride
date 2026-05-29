@@ -1,5 +1,3 @@
-use std::cell::RefCell;
-
 use ratatui::{
     Frame,
     buffer::Buffer,
@@ -39,7 +37,7 @@ const STATUS_MESSAGES: &[(&str, &str)] = &[
 ];
 
 pub struct WelcomeScreen {
-    gradient_cache: RefCell<Option<(Rect, Buffer)>>,
+    gradient_cache: Option<(Rect, Buffer)>,
 }
 
 impl Default for WelcomeScreen {
@@ -51,7 +49,7 @@ impl Default for WelcomeScreen {
 impl WelcomeScreen {
     pub fn new() -> Self {
         Self {
-            gradient_cache: RefCell::new(None),
+            gradient_cache: None,
         }
     }
 
@@ -65,22 +63,21 @@ impl WelcomeScreen {
         }
     }
 
-    pub fn view(&self, frame: &mut Frame) {
+    pub fn view(&mut self, frame: &mut Frame) {
         self.view_with_palette(frame, theme::CHARM);
     }
 
-    fn view_with_palette(&self, frame: &mut Frame, p: Palette) {
+    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette) {
         let area = frame.area();
 
         let buf = frame.buffer_mut();
-        let mut cache = self.gradient_cache.borrow_mut();
-        let needs_regen = !cache.as_ref().is_some_and(|(cached_area, _)| *cached_area == area);
+        let needs_regen = !self.gradient_cache.as_ref().is_some_and(|(cached_area, _)| *cached_area == area);
         if needs_regen {
             let mut gradient = Buffer::empty(area);
             render_gradient_bg(&mut gradient, area, p);
             copy_bg(&gradient, buf, area);
-            *cache = Some((area, gradient));
-        } else if let Some((_, ref gradient)) = *cache {
+            self.gradient_cache = Some((area, gradient));
+        } else if let Some((_, ref gradient)) = self.gradient_cache {
             copy_bg(gradient, buf, area);
         }
 

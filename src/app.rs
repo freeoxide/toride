@@ -34,7 +34,7 @@ impl App {
         }
     }
 
-    fn view(&self, frame: &mut Frame) {
+    fn view(&mut self, frame: &mut Frame) {
         self.welcome.view(frame);
     }
 
