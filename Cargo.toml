@@ -45,6 +45,7 @@ ratatui-wgpu = "0.5.0"
 
 [dev-dependencies]
 insta = "1"
+tempfile = "3"
 testty = "0.9"
 
 [profile.release]
