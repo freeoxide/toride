@@ -35,6 +35,7 @@ hex = "0.4"
 which = "8"
 nix = { version = "0.31", features = ["user", "signal", "fs"] }
 dirs = "6"
+sysinfo = "0.35"
 async-trait = "0.1"
 ratatui-interact = "0.5.3"
 rattles = "0.3.1"
