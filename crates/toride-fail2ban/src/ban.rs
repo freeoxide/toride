@@ -40,6 +40,9 @@ impl CidrBlock {
     pub fn contains(&self, ip: IpAddr) -> bool {
         match (self.addr, ip) {
             (IpAddr::V4(net), IpAddr::V4(host)) => {
+                if self.prefix == 0 {
+                    return true;
+                }
                 let mask = !((1u32 << (32 - self.prefix)) - 1);
                 let net_bits = u32::from(net) & mask;
                 let host_bits = u32::from(host) & mask;
