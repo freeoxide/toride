@@ -150,9 +150,8 @@ Responsible for process execution.
 
 Use:
 
-* `duct` for command execution
+* `duct` v1.1+ for command execution (built-in timeout via `.timeout()`)
 * `which` to locate binaries
-* optional `process_control` or `wait-timeout` for timeouts
 * no raw `std::process::Command` scattered around the codebase
 
 Requirements:
@@ -496,16 +495,15 @@ For apps behind Traefik, NGINX, Cloudflare, or a VPS proxy:
 
 Use:
 
-* `duct`
+* `duct` v1.1+ (has built-in timeout via `.timeout()`)
 
 Optional:
 
-* `process_control`
-* `wait-timeout`
-* `which`
+* `which` to locate binaries
 
 Avoid:
 
+* `process_control` / `wait-timeout` — `duct` already handles timeouts
 * raw repeated `std::process::Command`
 * shell string concatenation
 * `sh -c` unless explicitly required and gated
@@ -516,10 +514,10 @@ Use:
 
 * `camino` for UTF-8 paths
 * `atomic-write-file` for atomic writes
-* `fs2` or newer equivalent for file locks
-* `tempfile` for temporary files
+* `fd-lock` for file locks (actively maintained; `fs2` is stale since 2018)
+* `tempfile` for temporary files and backup naming
 * `walkdir` for scanning managed files
-* `globset` or `glob` for logpath checks
+* `globset` for logpath checks (by BurntSushi, 176M+ downloads)
 
 ### Config rendering
 
@@ -537,11 +535,11 @@ Be careful with generic INI crates because Fail2Ban config has interpolation and
 
 Use:
 
-* `ipnet`
+* `ipnet` — sufficient for IP/CIDR parsing and overlap checks via `.contains()` and `.overlaps()`
 
 Optional:
 
-* `iprange` for ignore list overlap checks
+* `iprange` only if interval-tree performance needed for large ignore lists (last updated 2022)
 
 ### Durations
 
@@ -551,10 +549,9 @@ Use Fail2Ban itself for exact validation where possible:
 
 For internal Rust parsing/display:
 
-* `humantime`
-* `parse_duration`
+* `humantime` v2.3+ (363M+ downloads, actively maintained)
 
-But do not assume Rust duration parsing equals Fail2Ban duration parsing.
+Do not use `parse_duration` — avoids conflicting duration semantics. Fail2Ban duration strings differ from Rust conventions. Always validate through `--str2sec` before applying.
 
 ### Service control
 
@@ -571,7 +568,7 @@ Optional:
 
 Use:
 
-* `nftables` or `nftables-json` for nft JSON inspection
+* `nftables` v0.6+ for nft JSON inspection (supports `tokio` and `async-process` features)
 * `iptables` crate only for diagnostic support if needed
 
 Do not become a firewall abstraction crate in v1.
