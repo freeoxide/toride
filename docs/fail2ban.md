@@ -150,7 +150,7 @@ Responsible for process execution.
 
 Use:
 
-* `duct` v1.1+ for command execution (built-in timeout via `.timeout()`)
+* `duct` v1.1+ for command execution (use `.start()?.wait_timeout()` for timeouts)
 * `which` to locate binaries
 * no raw `std::process::Command` scattered around the codebase
 
@@ -236,6 +236,10 @@ Use backups before replacing files:
 ### `spec`
 
 Strongly typed Rust model.
+
+Use `typed-builder` for compile-time checked spec builders (required fields enforced at compile time).
+
+Use `nutype` for validated newtypes (`JailName`, `FilterName`, `ActionName`, `IpOrCidr`, etc.) to eliminate boilerplate for `FromStr`, `Display`, and validation.
 
 Types:
 
@@ -491,11 +495,27 @@ For apps behind Traefik, NGINX, Cloudflare, or a VPS proxy:
 
 ## Existing crate choices
 
+### Audit update (2026-05-30)
+
+Deep audit outcome for "use crates before home-cooked":
+
+* Keep `duct` as the mandatory process runner for all spawned tasks.
+* Keep command execution centralized behind one trait (`Runner`) with a single `duct` implementation in v1.
+* Keep `fail2ban-client`/`fail2ban-regex` as source of truth for Fail2Ban semantics instead of re-implementing parser/daemon behavior.
+* Keep generated-file rendering (typed model -> template output) instead of generic INI mutation.
+
+Fail2Ban-related crates checked:
+
+* `fail2ban-rs` is a full replacement daemon ("pure-Rust replacement for fail2ban"), so it does **not** match this crate's "manage existing Fail2Ban" scope.
+* `fail2ban-log-parser-core` is parser-focused and does not cover full config/control/doctor workflow.
+
+Conclusion: stay with the current architecture (wrapper around installed Fail2Ban) and avoid importing replacement-daemon crates into core design.
+
 ### Process execution
 
 Use:
 
-* `duct` v1.1+ (has built-in timeout via `.timeout()`)
+* `duct` v1.1+ (use `.start()?` and `handle.wait_timeout(...)` for timeouts)
 
 Optional:
 
@@ -512,10 +532,9 @@ Avoid:
 
 Use:
 
-* `camino` for UTF-8 paths
-* `atomic-write-file` for atomic writes
+* `fs-err` as a drop-in `std::fs` replacement with path-inclusive error messages (97M+ downloads)
+* `tempfile` for temporary files, backup naming, and atomic writes via `NamedTempFile::persist()` (594M+ downloads)
 * `fd-lock` for file locks (actively maintained; `fs2` is stale since 2018)
-* `tempfile` for temporary files and backup naming
 * `walkdir` for scanning managed files
 * `globset` for logpath checks (by BurntSushi, 176M+ downloads)
 
@@ -564,6 +583,12 @@ Optional:
 * `zbus_systemd`
 * `service-manager`
 
+Selection guidance:
+
+* prefer `systemctl` via `duct` in MVP
+* use `service-manager` only behind feature flags for non-systemd portability
+* keep `zbus_systemd` optional and off by default due to dependency weight
+
 ### Firewall diagnostics
 
 Use:
@@ -579,6 +604,7 @@ Use:
 
 * `thiserror`
 * `miette` optionally for rich human diagnostics
+* `fs-err` as drop-in `std::fs` replacement for path-inclusive filesystem errors
 * `serde` for JSON report output
 * `tracing` for internal logging
 
@@ -592,6 +618,28 @@ Use:
 * `proptest`
 * fake command runner
 * Docker-based integration tests for real Fail2Ban behavior
+
+Maintenance policy for dependencies:
+
+* before adding a crate, check latest release recency and open issue velocity
+* prefer crates with recent releases (roughly within the last 12-18 months) unless crate is demonstrably stable and low-risk
+* pin with caret ranges but review changelogs before minor upgrades for process, filesystem, and firewall crates
+
+Current maintenance snapshot (checked 2026-05-30):
+
+* `duct` latest release: 2025-11-09
+* `which` latest release: 2026-03-08
+* `fs-err` latest release: 2026-02-07
+* `fd-lock` latest release: 2025-03-10
+* `tempfile` latest release: 2026-03-11
+* `typed-builder` latest release: 2025-11-19
+* `nutype` latest release: 2026-04-25
+* `ipnet` latest release: 2026-03-03
+* `humantime` latest release: 2025-09-11
+* `service-manager` latest release: 2026-02-18
+* `nftables` latest release: 2025-08-15
+
+These are acceptable for current plan quality and maintenance goals.
 
 ## Feature flags
 
