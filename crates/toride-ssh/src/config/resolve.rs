@@ -119,7 +119,7 @@ fn load_and_flatten<'a>(
             .iter()
             .filter_map(|node| {
                 if let ConfigNode::Directive { keyword, value, .. } = node {
-                    if keyword.to_lowercase() == "include" {
+                    if keyword.eq_ignore_ascii_case("include") {
                         return Some(value.clone());
                     }
                 }
@@ -151,7 +151,7 @@ fn load_and_flatten<'a>(
 
     // Remove Include directives after processing.
     flat.nodes
-        .retain(|node| !matches!(node, ConfigNode::Directive { keyword, .. } if keyword.to_lowercase() == "include"));
+        .retain(|node| !matches!(node, ConfigNode::Directive { keyword, .. } if keyword.eq_ignore_ascii_case("include")));
 
     Ok(flat)
     })
@@ -161,7 +161,7 @@ fn load_and_flatten<'a>(
 fn insert_included_nodes(flat: &mut ConfigAst, included: &ConfigAst) {
     // Find the first Include directive and replace it with the included nodes.
     let include_idx = flat.nodes.iter().position(|node| {
-        matches!(node, ConfigNode::Directive { keyword, .. } if keyword.to_lowercase() == "include")
+        matches!(node, ConfigNode::Directive { keyword, .. } if keyword.eq_ignore_ascii_case("include"))
     });
 
     if let Some(idx) = include_idx {
@@ -442,8 +442,7 @@ fn match_criteria_host(criteria: &str, target_host: &str) -> bool {
     let mut has_host_clause = false;
 
     while i < tokens.len() {
-        let token_lower = tokens[i].to_lowercase();
-        if token_lower == "host" && i + 1 < tokens.len() {
+        if tokens[i].eq_ignore_ascii_case("host") && i + 1 < tokens.len() {
             has_host_clause = true;
             let patterns: Vec<String> = tokens[i + 1]
                 .split(',')

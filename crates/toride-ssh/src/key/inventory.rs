@@ -117,12 +117,9 @@ fn is_likely_encrypted(data: &str) -> bool {
     // OpenSSH format: "-----BEGIN OPENSSH PRIVATE KEY-----\n...encrypted..."
     // Check for "ENCRYPTED" keyword in the first few lines of the header.
     for line in data.lines().take(5) {
-        let line_upper = line.to_uppercase();
-        if line_upper.contains("ENCRYPTED") {
-            return true;
-        }
+        // OpenSSH encrypted keys contain "ENCRYPTED" in the header.
         // PEM format: "Proc-Type: 4,ENCRYPTED"
-        if line_upper.contains("PROC-TYPE:") && line_upper.contains("ENCRYPTED") {
+        if line.contains("ENCRYPTED") || line.contains("encrypted") {
             return true;
         }
     }
@@ -193,7 +190,7 @@ pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
             }
 
             // Only consider regular files
-            let file_type = entry.file_type().map_err(Error::Io)?;
+            let file_type = entry.file_type()?;
             if !file_type.is_file() {
                 continue;
             }
@@ -235,5 +232,5 @@ pub async fn scan_keys(paths: &SshPaths) -> Result<Vec<SshKey>> {
         Ok(keys)
     })
     .await
-    .map_err(|e| Error::CommandFailed(format!("scan_keys task failed: {e}")))?
+    .map_err(|e| Error::TaskFailed(format!("scan_keys task failed: {e}")))?
 }

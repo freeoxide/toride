@@ -224,9 +224,7 @@ pub fn parse(input: &str) -> Result<ConfigAst> {
 
         // Parse keyword and value
         let (keyword, separator, rest) = parse_directive_parts(trimmed);
-        let keyword_lower = keyword.to_lowercase();
-
-        if keyword_lower == "host" {
+        if keyword.eq_ignore_ascii_case("host") {
             let patterns = parse_patterns(&rest);
             let header = line.trim().to_owned();
             let inner = parse_block_body(&mut lines);
@@ -235,7 +233,7 @@ pub fn parse(input: &str) -> Result<ConfigAst> {
                 patterns,
                 nodes: inner,
             });
-        } else if keyword_lower == "match" {
+        } else if keyword.eq_ignore_ascii_case("match") {
             let header = line.trim().to_owned();
             let criteria = rest.to_owned();
             let inner = parse_block_body(&mut lines);

@@ -216,12 +216,8 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
         return None;
     }
 
-    let parts: Vec<&str> = line.splitn(2, ' ').collect();
-    if parts.len() < 2 {
-        return None;
-    }
-
-    let rest = parts[1].trim();
+    let (_bits, rest) = line.split_once(' ')?;
+    let rest = rest.trim();
 
     // Extract parenthesised key type from the end.
     let (rest, key_type_str) = if let Some(start) = rest.rfind('(') {
@@ -279,14 +275,20 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
 /// These strings come from `ssh-add -l` output, e.g. `(ED25519)`, `(RSA)`,
 /// `(ECDSA)`, `(ED25519-SK)`, `(ECDSA-SK)`.
 fn parse_key_type_from_display(s: &str) -> Option<KeyType> {
-    match s.to_uppercase().as_str() {
-        "ED25519" => Some(KeyType::Ed25519),
-        "ED25519-SK" => Some(KeyType::SkEd25519),
-        "RSA" => Some(KeyType::Rsa { bits: 0 }),
-        "ECDSA" => Some(KeyType::EcdsaP256),
-        "ECDSA-SK" => Some(KeyType::SkEcdsaP256),
-        "DSA" => Some(KeyType::Dsa),
-        _ => None,
+    if s.eq_ignore_ascii_case("ED25519") {
+        Some(KeyType::Ed25519)
+    } else if s.eq_ignore_ascii_case("ED25519-SK") {
+        Some(KeyType::SkEd25519)
+    } else if s.eq_ignore_ascii_case("RSA") {
+        Some(KeyType::Rsa { bits: 0 })
+    } else if s.eq_ignore_ascii_case("ECDSA") {
+        Some(KeyType::EcdsaP256)
+    } else if s.eq_ignore_ascii_case("ECDSA-SK") {
+        Some(KeyType::SkEcdsaP256)
+    } else if s.eq_ignore_ascii_case("DSA") {
+        Some(KeyType::Dsa)
+    } else {
+        None
     }
 }
 

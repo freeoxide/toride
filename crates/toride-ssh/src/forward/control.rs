@@ -430,12 +430,9 @@ fn is_socket_or_candidate(path: &Path) -> bool {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 // Only accept names with no extension that don't look like
                 // regular SSH files (known_hosts, config, *.pub, etc.)
-                return !name.contains('.')
-                    && !name.ends_with(".pub")
-                    && !name.ends_with("-cert.pub")
-                    && !name.ends_with(".pem")
-                    && !name.ends_with(".old")
-                    && !name.ends_with(".bak");
+                // Names without dots are unlikely to be regular SSH files
+                // (known_hosts, config, *.pub all have extensions).
+                return !name.contains('.');
             }
             false
         }
@@ -455,13 +452,12 @@ fn build_session(control_path: &Path) -> ControlSession {
 
     let host = extract_host_from_name(name);
 
-    let pid = extract_pid_from_name(name).or_else(|| pid_from_check(control_path));
+    let pid = extract_pid_from_name(name);
 
     let established = control_path
         .metadata()
         .ok()
-        .and_then(|m| m.modified().ok())
-        .map(std::time::SystemTime::from);
+        .and_then(|m| m.modified().ok());
 
     ControlSession {
         control_path: control_path.to_path_buf(),
@@ -471,19 +467,6 @@ fn build_session(control_path: &Path) -> ControlSession {
     }
 }
 
-/// Attempt to extract the PID from the control socket by statting it.
-/// This is a synchronous helper used inside `build_session` which runs on a
-/// blocking thread.  Returns `None` if the stat fails or the path is gone.
-fn pid_from_check(path: &Path) -> Option<u32> {
-    // On some platforms the inode or ctime can give a hint but the most
-    // reliable approach is to use `ssh -O check` which returns the PID in
-    // its output: "Master running (pid=12345)".  However, since
-    // `build_session` is called *after* `check_alive` already succeeded, we
-    // skip the extra command here.  The PID extracted from the filename is
-    // usually sufficient for display purposes.
-    let _ = path;
-    None
-}
 
 /// Try to extract a hostname from common control socket naming patterns.
 ///
@@ -522,15 +505,9 @@ pub(crate) fn extract_host_from_name(name: &str) -> String {
 /// Returns `None` for PID 0 since it is never a valid process ID.
 pub(crate) fn extract_pid_from_name(name: &str) -> Option<u32> {
     // Patterns like ssh-<hash>-<pid>
-    let parts: Vec<&str> = name.rsplitn(2, '-').collect();
-    if parts.len() == 2 {
-        if let Ok(pid) = parts[0].parse::<u32>() {
-            if pid > 0 {
-                return Some(pid);
-            }
-        }
-    }
-    None
+    let (_prefix, pid_str) = name.rsplit_once('-')?;
+    let pid: u32 = pid_str.parse().ok()?;
+    (pid > 0).then_some(pid)
 }
 
 #[cfg(test)]

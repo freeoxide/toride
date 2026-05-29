@@ -130,7 +130,7 @@ pub fn remove_directive_from_host(ast: &mut ConfigAst, name: &str, key: &str) ->
     if let Some(nodes) = ast.nodes[idx].as_host_block_mut() {
         nodes.retain(|node| {
             if let Some((k, _)) = node.as_directive() {
-                k.to_lowercase() != key_lower
+                !k.eq_ignore_ascii_case(&key_lower)
             } else {
                 true
             }

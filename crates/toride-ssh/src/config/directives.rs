@@ -100,7 +100,7 @@ pub fn set_directive(
                 // Try to update existing directive.
                 for child in nodes.iter_mut() {
                     if let ConfigNode::Directive { keyword, value: v, .. } = child {
-                        if keyword.to_lowercase() == key_lower {
+                        if keyword.eq_ignore_ascii_case(&key_lower) {
                             *v = value.to_owned();
                             return Ok(());
                         }
@@ -126,7 +126,7 @@ pub fn set_directive(
 fn find_directive_in_nodes(nodes: &[ConfigNode], key_lower: &str) -> Option<String> {
     for node in nodes {
         if let ConfigNode::Directive { keyword, value, .. } = node {
-            if keyword.to_lowercase() == key_lower {
+            if keyword.eq_ignore_ascii_case(&key_lower) {
                 return Some(value.clone());
             }
         }
@@ -138,7 +138,7 @@ fn find_directive_in_nodes(nodes: &[ConfigNode], key_lower: &str) -> Option<Stri
 fn collect_directives_in_nodes(nodes: &[ConfigNode], key_lower: &str, out: &mut Vec<String>) {
     for node in nodes {
         if let ConfigNode::Directive { keyword, value, .. } = node {
-            if keyword.to_lowercase() == key_lower {
+            if keyword.eq_ignore_ascii_case(&key_lower) {
                 out.push(value.clone());
             }
         }

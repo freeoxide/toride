@@ -43,7 +43,7 @@ impl CertificateService {
     /// Creates the KRL file if it does not exist, or updates it if it does.
     /// The `key` parameter should be the path to the public key file to revoke.
     pub async fn revoke_key(&self, krl_path: &Path, key: &str) -> Result<()> {
-        let krl_str = krl_path.to_string_lossy().to_string();
+        let krl_str = krl_path.to_string_lossy().into_owned();
         let key_owned = key.to_owned();
 
         // If the KRL already exists, use -u to update it in-place rather than

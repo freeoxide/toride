@@ -191,7 +191,9 @@ fn parse_keygen_output(output: &str, path: &Path) -> Result<CertificateInfo> {
                 key_type = rest.to_owned();
             }
         } else if let Some(rest) = trimmed.strip_prefix("Serial:") {
-            serial = rest.trim().parse().unwrap_or(0);
+            serial = rest.trim().parse().map_err(|_| {
+                crate::Error::CertificateParseFailed(format!("invalid serial: {}", rest.trim()))
+            })?;
         } else if let Some(rest) = trimmed.strip_prefix("Key ID:") {
             key_id = rest.trim().trim_matches('"').to_owned();
         } else if let Some(rest) = trimmed.strip_prefix("Valid:") {

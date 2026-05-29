@@ -90,49 +90,41 @@ impl<'a> KeyService<'a> {
             if params_clone.backup {
                 let backup_path = private_path.with_extension("bak");
                 std::fs::rename(&private_path, &backup_path).map_err(|e| {
-                    Error::CommandFailed(format!(
-                        "failed to backup {}: {e}",
-                        private_path.display()
-                    ))
+                    Error::Io(e)
                 })?;
 
                 if params_clone.remove_public && public_path.exists() {
                     let stem = public_path.file_stem().unwrap_or_default().to_string_lossy();
                     let pub_backup = public_path.with_file_name(format!("{stem}.pub.bak"));
-                    let _ = std::fs::rename(&public_path, &pub_backup);
+                    if let Err(e) = std::fs::rename(&public_path, &pub_backup) {
+                        tracing::warn!("failed to backup {}: {e}", public_path.display());
+                    }
                 }
 
                 if params_clone.remove_certificate && cert_path.exists() {
                     let name = cert_path.file_name().unwrap_or_default().to_string_lossy();
                     let cert_backup = cert_path.with_file_name(format!("{name}.bak"));
-                    let _ = std::fs::rename(&cert_path, &cert_backup);
+                    if let Err(e) = std::fs::rename(&cert_path, &cert_backup) {
+                        tracing::warn!("failed to backup {}: {e}", cert_path.display());
+                    }
                 }
             } else {
                 // Remove the private key file
                 std::fs::remove_file(&private_path).map_err(|e| {
-                    Error::CommandFailed(format!(
-                        "failed to remove {}: {e}",
-                        private_path.display()
-                    ))
+                    Error::Io(e)
                 })?;
 
                 // Remove public key companion
                 if params_clone.remove_public && public_path.exists() {
                     std::fs::remove_file(&public_path).map_err(|e| {
-                        Error::CommandFailed(format!(
-                            "failed to remove {}: {e}",
-                            public_path.display()
-                        ))
+                        Error::Io(e)
                     })?;
                 }
 
                 // Remove certificate companion
                 if params_clone.remove_certificate && cert_path.exists() {
                     std::fs::remove_file(&cert_path).map_err(|e| {
-                        Error::CommandFailed(format!(
-                            "failed to remove {}: {e}",
-                            cert_path.display()
-                        ))
+                        Error::Io(e)
                     })?;
                 }
             }
@@ -140,7 +132,7 @@ impl<'a> KeyService<'a> {
             Ok::<(), Error>(())
         })
         .await
-        .map_err(|e| Error::CommandFailed(format!("delete task failed: {e}")))??;
+        .map_err(|e| Error::TaskFailed(format!("delete task failed: {e}")))??;
 
         // Remove from agent if requested (non-fatal)
         if params.remove_from_agent {
@@ -203,7 +195,7 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> crate::Result<(
 
     let config_path_clone = config_path.clone();
     let key_name_owned = key_name.to_string();
-    let ssh_dir_str = paths.ssh_dir().to_string_lossy().to_string();
+    let ssh_dir_str = paths.ssh_dir().to_string_lossy().into_owned();
 
     tokio::task::spawn_blocking(move || {
         let content = match std::fs::read_to_string(&config_path_clone) {
@@ -256,5 +248,5 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> crate::Result<(
         Ok(())
     })
     .await
-    .map_err(|e| Error::CommandFailed(format!("config cleanup task failed: {e}")))?
+    .map_err(|e| Error::TaskFailed(format!("config cleanup task failed: {e}")))?
 }

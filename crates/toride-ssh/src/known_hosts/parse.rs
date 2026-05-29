@@ -110,7 +110,7 @@ pub(crate) fn parse_line(line: &str, line_number: usize) -> Result<KnownHostEntr
     }
 
     let hosts_str = fields[0];
-    let hosts: Vec<String> = hosts_str.split_terminator(',').map(String::from).collect();
+    let hosts: Vec<String> = hosts_str.split_terminator(',').map(str::to_owned).collect();
 
     let key_type = fields[1].to_owned();
     let public_key = fields[2].to_owned();

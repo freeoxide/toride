@@ -65,19 +65,22 @@ fn parse_keyscan_output(original_host: &str, raw: &str) -> Result<Vec<ScannedHos
 ///
 /// Format: `hostname key-type base64-key [comment...]`
 pub(crate) fn parse_keyscan_line(original_host: &str, line: &str) -> Result<ScannedHostKey> {
-    let parts: Vec<&str> = line.split_whitespace().collect();
-    if parts.len() < 3 {
-        return Err(Error::CommandParseFailed(format!(
-            "expected at least 3 fields in keyscan output, got {}: {line}",
-            parts.len()
-        )));
-    }
+    let mut parts = line.split_whitespace();
+    let raw_host = parts.next().ok_or_else(|| {
+        Error::CommandParseFailed(format!("expected at least 3 fields in keyscan output: {line}"))
+    })?;
+    let key_type = parts.next().ok_or_else(|| {
+        Error::CommandParseFailed(format!("expected at least 3 fields in keyscan output: {line}"))
+    })?;
+    let public_key = parts.next().ok_or_else(|| {
+        Error::CommandParseFailed(format!("expected at least 3 fields in keyscan output: {line}"))
+    })?;
 
     Ok(ScannedHostKey {
         host: original_host.to_owned(),
-        key_type: parts[1].to_owned(),
-        public_key: parts[2].to_owned(),
-        raw_host: parts[0].to_owned(),
+        key_type: key_type.to_owned(),
+        public_key: public_key.to_owned(),
+        raw_host: raw_host.to_owned(),
     })
 }
 

@@ -6,7 +6,7 @@ use std::os::unix::fs::PermissionsExt;
 use crate::doctor::check::Check;
 use crate::paths::SshPaths;
 use crate::types::{Diagnostic, Severity};
-use crate::{Error, Result};
+use crate::Result;
 
 // ---------------------------------------------------------------------------
 // Concrete check structs
@@ -255,7 +255,7 @@ impl Check for PrivateKeyPermissions {
                 }
             };
 
-            while let Some(entry) = read_dir.next_entry().await.map_err(Error::Io)? {
+            while let Some(entry) = read_dir.next_entry().await? {
                 let name = entry.file_name();
                 let name_lossy = name.to_string_lossy();
 

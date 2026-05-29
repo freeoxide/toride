@@ -22,11 +22,7 @@ fn key_type_to_cli_arg(kt: &KeyType) -> &'static str {
 /// Generate a new SSH key pair.
 pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<SshKey> {
     let private_path = paths.ssh_dir().join(&params.name);
-    let public_path = {
-        let mut p = private_path.clone();
-        p.set_extension("pub");
-        p
-    };
+    let public_path = private_path.with_extension("pub");
 
     // Check if key already exists
     if private_path.exists() {
@@ -104,18 +100,24 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(
+            if let Err(e) = std::fs::set_permissions(
                 &ssh_dir,
                 std::fs::Permissions::from_mode(0o700),
-            );
-            let _ = std::fs::set_permissions(
+            ) {
+                tracing::warn!("failed to set permissions on {}: {e}", ssh_dir.display());
+            }
+            if let Err(e) = std::fs::set_permissions(
                 &private_path_clone,
                 std::fs::Permissions::from_mode(0o600),
-            );
-            let _ = std::fs::set_permissions(
+            ) {
+                tracing::warn!("failed to set permissions on {}: {e}", private_path_clone.display());
+            }
+            if let Err(e) = std::fs::set_permissions(
                 &public_path_clone,
                 std::fs::Permissions::from_mode(0o644),
-            );
+            ) {
+                tracing::warn!("failed to set permissions on {}: {e}", public_path_clone.display());
+            }
         }
 
         let permissions = get_permissions(&private_path_clone);
@@ -129,7 +131,7 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
         Ok::<_, Error>((permissions, pk, public_path_clone.exists()))
     })
     .await
-    .map_err(|e| Error::CommandFailed(format!("post-generation task failed: {e}")))??;
+    .map_err(|e| Error::TaskFailed(format!("post-generation task failed: {e}")))??;
 
     let (permissions, pk, has_public_pair) = result;
 
@@ -169,7 +171,7 @@ pub async fn generate_key(paths: &SshPaths, params: KeyCreateParams) -> Result<S
 async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
     let path_str = private_path
         .to_str()
-        .ok_or_else(|| Error::CommandFailed("invalid key path for ssh-add".to_string()))?
+        .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_string()))?
         .to_string();
 
     tokio::task::spawn_blocking(move || {
@@ -179,5 +181,5 @@ async fn add_key_to_agent(private_path: &std::path::Path) -> Result<()> {
         Ok(())
     })
     .await
-    .map_err(|e| Error::CommandFailed(format!("ssh-add task failed: {e}")))?
+    .map_err(|e| Error::TaskFailed(format!("ssh-add task failed: {e}")))?
 }

@@ -54,5 +54,5 @@ pub async fn repair_public_key(private_key_path: &Path) -> Result<()> {
         Ok(())
     })
     .await
-    .map_err(|e| Error::CommandFailed(format!("repair_public_key task failed: {e}")))?
+    .map_err(|e| Error::TaskFailed(format!("repair_public_key task failed: {e}")))?
 }

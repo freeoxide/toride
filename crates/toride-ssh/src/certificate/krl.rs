@@ -92,7 +92,9 @@ fn parse_krl_output(output: &str, path: &Path) -> Result<KrlInfo> {
         }
 
         if let Some(rest) = trimmed.strip_prefix("# KRL version") {
-            version = rest.trim().parse().unwrap_or(0);
+            version = rest.trim().parse().map_err(|_| {
+                crate::Error::CertificateParseFailed(format!("invalid KRL version: {}", rest.trim()))
+            })?;
         } else if let Some(rest) = trimmed.strip_prefix("# Generated at") {
             let dt_str = rest.trim();
             generated_at = parse_datetime_to_unix(dt_str);

@@ -18,7 +18,7 @@ pub async fn ssh_keygen(args: &[&str]) -> Result<String> {
             .map_err(|e| Error::CommandFailed(e.to_string()))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?
+    .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Run `ssh-keyscan -H <host>` and return the host key lines.
@@ -32,7 +32,7 @@ pub async fn ssh_keyscan(host: &str) -> Result<String> {
             .map_err(|e| Error::CommandFailed(e.to_string()))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?
+    .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Run `ssh-keyscan <host>` (without `-H`) and return the host key lines.
@@ -48,7 +48,7 @@ pub async fn ssh_keyscan_no_hash(host: &str) -> Result<String> {
             .map_err(|e| Error::CommandFailed(e.to_string()))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?
+    .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Run `ssh-add -l` to list agent identities.
@@ -59,7 +59,7 @@ pub async fn ssh_add_list() -> Result<String> {
             .map_err(|e| Error::CommandFailed(e.to_string()))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?
+    .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Run `ssh-copy-id -i <pubkey> <dest>`.
@@ -77,7 +77,7 @@ pub async fn ssh_copy_id(pubkey: &Path, dest: &str) -> Result<String> {
             .map_err(|e| Error::CommandFailed(e.to_string()))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?
+    .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Check whether a tool exists in `PATH`.
