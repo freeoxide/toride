@@ -1,5 +1,6 @@
 //! Port forwarding control via ControlMaster sessions.
 
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
@@ -320,6 +321,7 @@ pub async fn exit_session(control_path: &Path) -> Result<()> {
 fn is_stale_socket(path: &Path) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) => {
+            #[cfg(unix)]
             if meta.file_type().is_socket() {
                 // Socket file exists but `ssh -O check` presumably failed.
                 // It is stale if `connect()` would fail, but we already know
@@ -407,6 +409,7 @@ fn is_socket_or_candidate(path: &Path) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) => {
             let ft = meta.file_type();
+            #[cfg(unix)]
             if ft.is_socket() {
                 return true;
             }

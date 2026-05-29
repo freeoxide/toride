@@ -37,19 +37,37 @@ impl<'a> ConfigService<'a> {
     /// Save the AST back to the config file.
     ///
     /// Writes the lossless string representation and ensures the file
-    /// has appropriate permissions (0o644).
+    /// has appropriate permissions (0o600 — owner read/write only).
+    /// OpenSSH requires user config not be writable by others; 0o600 is
+    /// the strictest correct permission.
     pub async fn save(&self, ast: &ast::ConfigAst) -> Result<()> {
         let path = self.paths.config_path();
         let content = ast.to_string_lossless();
-        tokio::fs::write(&path, &content).await?;
 
-        // Set permissions to 0o644 (owner read/write, group/other read).
+        // Atomic write: write to temp file, then rename.
+        let parent = path.parent().unwrap_or(std::path::Path::new("."));
+        let tmp_path = parent.join(format!(
+            ".config.tmp.{}.{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
+        ));
+        tokio::fs::write(&tmp_path, &content).await?;
+
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o644);
-            tokio::fs::set_permissions(path, perms).await?;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            tokio::fs::set_permissions(&tmp_path, perms).await?;
         }
+
+        tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
+            // Clean up temp file on rename failure.
+            let _ = std::fs::remove_file(&tmp_path);
+            crate::Error::ConfigWriteFailed(format!("failed to rename config: {e}"))
+        })?;
 
         Ok(())
     }
@@ -130,7 +148,7 @@ impl<'a> ConfigService<'a> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o644)).await?;
+                tokio::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).await?;
                 tokio::fs::set_permissions(
                     self.paths.ssh_dir(),
                     std::fs::Permissions::from_mode(0o700),

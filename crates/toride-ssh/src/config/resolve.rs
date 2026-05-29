@@ -194,9 +194,11 @@ fn expand_tilde_and_env(path: &str) -> String {
     result
 }
 
-/// Expand environment variables in `${VAR}` format.
+/// Expand environment variables in `${VAR}` and `$VAR` formats.
 ///
 /// Uses a single-pass builder to avoid repeated string reallocations.
+/// If a `${` is encountered without a matching `}`, the literal `${` is
+/// preserved in the output to avoid silently corrupting paths.
 fn expand_env_vars(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let mut chars = s.char_indices().peekable();
@@ -204,6 +206,7 @@ fn expand_env_vars(s: &str) -> String {
     while let Some((i, ch)) = chars.next() {
         if ch == '$' {
             if let Some((_, '{')) = chars.peek() {
+                // `${VAR}` form — look for closing `}`.
                 chars.next(); // consume '{'
                 let start = i + 2;
                 if let Some(end_offset) = s[start..].find('}') {
@@ -215,7 +218,26 @@ fn expand_env_vars(s: &str) -> String {
                     }
                     continue;
                 }
+                // No closing `}` — preserve the literal `${` to avoid corruption.
+                result.push(ch);
+                result.push('{');
+                continue;
             }
+            // `$VAR` form (without braces) — read until non-alphanumeric/underscore.
+            let rest = &s[i + 1..];
+            let end = rest
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(rest.len());
+            if end > 0 {
+                let var_name = &rest[..end];
+                result.push_str(&std::env::var(var_name).unwrap_or_default());
+                // Skip the variable name characters.
+                for _ in 0..end {
+                    chars.next();
+                }
+                continue;
+            }
+            // Bare `$` at end of string or before non-name char.
             result.push(ch);
         } else {
             result.push(ch);

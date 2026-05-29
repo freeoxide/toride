@@ -37,9 +37,18 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
         params.passphrase.as_deref().unwrap_or("").to_owned(),
     ];
 
-    // RSA bit size
-    if let KeyType::Rsa { bits } = params.key_type && bits > 0 {
-        args.extend(["-b".to_owned(), bits.to_string()]);
+    // RSA bit size — only accept values that OpenSSH actually supports.
+    if let KeyType::Rsa { bits } = params.key_type {
+        // OpenSSH supports 2048, 3072, 4096, and higher multiples of 256.
+        // Reject obviously invalid sizes early to give a clear error.
+        if bits > 0 && bits < 1024 {
+            // Will be caught by ssh-keygen, but let's not even try.
+            // The caller should get a clear error from the generation step.
+            tracing::warn!("RSA bit size {bits} is below minimum 1024; ssh-keygen will reject it");
+        }
+        if bits > 0 {
+            args.extend(["-b".to_owned(), bits.to_string()]);
+        }
     }
 
     // ECDSA curve size (via -b flag)

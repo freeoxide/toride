@@ -25,8 +25,8 @@ fn expand_env_vars_undefined_var() {
 
 #[test]
 fn expand_env_vars_unclosed_brace() {
-    // Unclosed ${ — the $ is consumed but the rest is preserved
-    assert_eq!(expand_env_vars("${UNCLOSED"), "$UNCLOSED");
+    // Unclosed ${ — the literal ${ is preserved to avoid path corruption.
+    assert_eq!(expand_env_vars("${UNCLOSED"), "${UNCLOSED");
 }
 
 #[test]
@@ -67,6 +67,42 @@ fn expand_env_vars_empty_string() {
 #[test]
 fn expand_env_vars_only_dollar() {
     assert_eq!(expand_env_vars("$"), "$");
+}
+
+#[test]
+fn expand_env_vars_no_braces() {
+    unsafe {
+        std::env::set_var("TORIDE_NO_BRACE", "nobrace");
+    }
+    assert_eq!(expand_env_vars("$TORIDE_NO_BRACE"), "nobrace");
+    unsafe {
+        std::env::remove_var("TORIDE_NO_BRACE");
+    }
+}
+
+#[test]
+fn expand_env_vars_no_braces_with_suffix() {
+    unsafe {
+        std::env::set_var("TORIDE_VAR_SUF", "value");
+    }
+    assert_eq!(expand_env_vars("${TORIDE_VAR_SUF}_extra"), "value_extra");
+    assert_eq!(expand_env_vars("$TORIDE_VAR_SUF.extra"), "value.extra");
+    unsafe {
+        std::env::remove_var("TORIDE_VAR_SUF");
+    }
+}
+
+#[test]
+fn expand_env_vars_no_braces_undefined() {
+    // Undefined $VAR should expand to empty string.
+    assert_eq!(expand_env_vars("$TORIDE_UNDEF_XYZ_123"), "");
+}
+
+#[test]
+fn expand_env_vars_bare_dollar_before_non_name() {
+    // `$ ` (dollar followed by space) should preserve the dollar.
+    assert_eq!(expand_env_vars("$ "), "$ ");
+    assert_eq!(expand_env_vars("$/path"), "$/path");
 }
 
 #[test]

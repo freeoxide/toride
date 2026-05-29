@@ -133,9 +133,13 @@ pub fn upsert_managed_block(
             );
             return;
         }
+
+        // Unclosed block: remove the orphaned opening marker and everything
+        // after it (the stale content), then fall through to append a fresh block.
+        ast.nodes.drain(start..);
     }
 
-    // No existing block — append a new one.
+    // No existing block (or unclosed block was cleaned up) — append a new one.
     let open_comment = ConfigNode::Comment { text: open, indent: String::new() };
     let close_comment = ConfigNode::Comment { text: close, indent: String::new() };
 
