@@ -77,7 +77,6 @@ impl ActionVars {
             log_path: log_path.to_string(),
         }
     }
-
 }
 
 impl ActionExec {

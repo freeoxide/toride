@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 /// Ban entry representing a banned IP address.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BanEntry {
     /// The banned IP address.
     pub ip: IpAddr,
@@ -29,7 +29,7 @@ pub struct BanEntry {
 }
 
 /// Platform command definition for different operating systems.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PlatformCommands {
     /// Commands used on Linux (iptables/nftables).
     pub linux: Vec<String>,
@@ -41,7 +41,8 @@ pub struct PlatformCommands {
 
 impl PlatformCommands {
     /// Create a new platform commands definition.
-    pub fn new(linux: Vec<String>, macos: Vec<String>, freebsd: Vec<String>) -> Self {
+    #[must_use]
+    pub const fn new(linux: Vec<String>, macos: Vec<String>, freebsd: Vec<String>) -> Self {
         Self {
             linux,
             macos,
@@ -130,7 +131,8 @@ pub enum ExecutionMode {
 
 impl ExecutionMode {
     /// Returns true if this is a dry run.
-    pub fn is_dry_run(self) -> bool {
+    #[must_use]
+    pub const fn is_dry_run(self) -> bool {
         matches!(self, Self::DryRun)
     }
 }

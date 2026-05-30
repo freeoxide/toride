@@ -86,7 +86,7 @@ fn new_fails_with_invalid_regex_pattern() {
     let config = crate::config::ResolvedJail {
         name: "bad".to_string(),
         enabled: true,
-        log_path: log_path.clone(),
+        log_path,
         pattern: "(((".to_string(), // invalid regex
         find_time: 600,
         ban_time: 3600,
@@ -131,7 +131,7 @@ fn name_returns_configured_name() {
     let config = crate::config::ResolvedJail {
         name: "my-custom-jail".to_string(),
         enabled: true,
-        log_path: log_path.clone(),
+        log_path,
         pattern: r"(?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
         find_time: 300,
         ban_time: 1800,
@@ -437,7 +437,7 @@ fn unban_ip_wrong_jail_returns_not_banned() {
     let config_b = crate::config::ResolvedJail {
         name: "jail-b".to_string(),
         enabled: true,
-        log_path: log_path.clone(),
+        log_path,
         pattern: r"(?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
         find_time: 600,
         ban_time: 3600,

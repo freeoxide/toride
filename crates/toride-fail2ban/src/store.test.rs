@@ -379,7 +379,7 @@ fn update_journal_insert() {
     let (_dir, store) = tmp_store();
     let entry = make_journal("sshd", "/var/log/auth.log", 0, 0);
 
-    store.update_journal(entry.clone()).unwrap();
+    store.update_journal(entry).unwrap();
 
     let loaded = store.get_journal("sshd", "/var/log/auth.log".as_ref()).unwrap();
     assert!(loaded.is_some());
@@ -406,12 +406,12 @@ fn update_journal_upsert_updates_existing() {
 
     // Should not have created a duplicate.
     let data = store.load().unwrap();
-    let matching: Vec<_> = data
+    let matching = data
         .journals
         .iter()
         .filter(|j| j.jail_name == "sshd" && j.log_path.to_str() == Some("/var/log/auth.log"))
-        .collect();
-    assert_eq!(matching.len(), 1);
+        .count();
+    assert_eq!(matching, 1);
 }
 
 #[test]

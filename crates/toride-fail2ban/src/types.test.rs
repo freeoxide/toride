@@ -423,6 +423,7 @@ fn scan_result_clone() {
         matches_found: 0,
         scan_duration: Duration::ZERO,
     };
+    #[expect(clippy::redundant_clone, reason = "testing Clone trait implementation")]
     let cloned = original.clone();
     assert_eq!(cloned.lines_scanned, 0);
     assert_eq!(cloned.matches_found, 0);

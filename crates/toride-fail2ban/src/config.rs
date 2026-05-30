@@ -57,13 +57,13 @@ impl Default for DefaultConfig {
     }
 }
 
-fn default_find_time() -> u64 {
+const fn default_find_time() -> u64 {
     600
 }
-fn default_ban_time() -> u64 {
+const fn default_ban_time() -> u64 {
     3600
 }
-fn default_max_retry() -> u32 {
+const fn default_max_retry() -> u32 {
     5
 }
 fn default_ban_action() -> String {
@@ -98,7 +98,7 @@ pub struct JailConfig {
     pub ignore_ips: Vec<String>,
 }
 
-fn default_true() -> bool {
+const fn default_true() -> bool {
     true
 }
 
@@ -139,13 +139,13 @@ impl Default for GlobalConfig {
     }
 }
 
-fn default_scan_interval() -> u64 {
+const fn default_scan_interval() -> u64 {
     10
 }
 fn default_log_level() -> String {
     "info".into()
 }
-fn default_max_history() -> usize {
+const fn default_max_history() -> usize {
     1000
 }
 
@@ -284,8 +284,8 @@ impl Fail2BanConfig {
             find_time: jail.find_time.unwrap_or(self.defaults.find_time),
             ban_time: jail.ban_time.unwrap_or(self.defaults.ban_time),
             max_retry: jail.max_retry.unwrap_or(self.defaults.max_retry),
-            ban_action: jail.ban_action.clone().unwrap_or_else(|| self.defaults.ban_action.clone()),
-            unban_action: jail.unban_action.clone().unwrap_or_else(|| self.defaults.unban_action.clone()),
+            ban_action: jail.ban_action.as_deref().unwrap_or(&self.defaults.ban_action).to_string(),
+            unban_action: jail.unban_action.as_deref().unwrap_or(&self.defaults.unban_action).to_string(),
             ignore_ips: jail.ignore_ips.clone(),
         })
     }

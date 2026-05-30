@@ -26,6 +26,10 @@ impl Fail2BanPaths {
     ///
     /// Defaults to `~/.config/toride/fail2ban/` for config
     /// and `~/.local/share/toride/fail2ban/` for data.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidConfig` if the system config or data directory cannot be determined.
     pub fn resolve() -> crate::Result<Self> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| crate::Error::InvalidConfig("Cannot determine config directory".into()))?

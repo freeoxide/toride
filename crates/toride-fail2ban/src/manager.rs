@@ -27,6 +27,11 @@ pub struct Fail2BanManager {
 
 impl Fail2BanManager {
     /// Create a new manager from configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Io` if directories cannot be created, or `InvalidRegex` if
+    /// any enabled jail has an invalid pattern.
     pub fn new(config: Fail2BanConfig, paths: Fail2BanPaths) -> crate::Result<Self> {
         paths.ensure_directories()?;
 
@@ -56,6 +61,11 @@ impl Fail2BanManager {
     }
 
     /// Add a new jail at runtime.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JailAlreadyExists` if a jail with the given name already exists,
+    /// or `InvalidRegex` if the jail pattern is invalid.
     pub fn add_jail(&mut self, name: &str, resolved: ResolvedJail) -> crate::Result<()> {
         if self.jails.contains_key(name) {
             return Err(crate::Error::JailAlreadyExists(name.to_string()));
@@ -66,6 +76,10 @@ impl Fail2BanManager {
     }
 
     /// Remove a jail.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JailNotFound` if the jail does not exist.
     pub fn remove_jail(&mut self, name: &str) -> crate::Result<()> {
         self.jails.remove(name).ok_or_else(|| {
             crate::Error::JailNotFound(name.to_string())
@@ -74,6 +88,11 @@ impl Fail2BanManager {
     }
 
     /// Scan all active jails.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LogFileError` if any log file cannot be read, or `CommandFailed`
+    /// if a ban action fails during scan.
     pub fn scan_all(&mut self, mode: ExecutionMode) -> crate::Result<BTreeMap<String, crate::types::ScanResult>> {
         let mut results = BTreeMap::new();
 
@@ -86,6 +105,11 @@ impl Fail2BanManager {
     }
 
     /// Scan a specific jail.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JailNotFound` if the jail does not exist, `LogFileError` if the
+    /// log file cannot be read, or `CommandFailed` if a ban action fails.
     pub fn scan_jail(&mut self, name: &str, mode: ExecutionMode) -> crate::Result<crate::types::ScanResult> {
         let jail = self.jails.get_mut(name).ok_or_else(|| {
             crate::Error::JailNotFound(name.to_string())
@@ -94,6 +118,12 @@ impl Fail2BanManager {
     }
 
     /// Ban an IP in a specific jail.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JailNotFound` if the jail does not exist, `AlreadyBanned` if the
+    /// IP is already banned, `InvalidConfig` if the IP is in the ignore list,
+    /// or `CommandFailed` if the firewall command fails.
     pub fn ban_ip(&mut self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
         let jail = self.jails.get_mut(jail_name).ok_or_else(|| {
             crate::Error::JailNotFound(jail_name.to_string())
@@ -103,6 +133,11 @@ impl Fail2BanManager {
     }
 
     /// Unban an IP from a specific jail.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JailNotFound` if the jail does not exist, `NotBanned` if the IP
+    /// is not currently banned, or `CommandFailed` if the firewall command fails.
     pub fn unban_ip(&mut self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
         let jail = self.jails.get_mut(jail_name).ok_or_else(|| {
             crate::Error::JailNotFound(jail_name.to_string())
@@ -112,6 +147,10 @@ impl Fail2BanManager {
     }
 
     /// Get status of all jails.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Io` if the ban store cannot be read.
     pub fn status(&self) -> crate::Result<Fail2BanStatus> {
         let jail_statuses = self.jail_statuses()?;
         Ok(Fail2BanStatus {
@@ -122,6 +161,11 @@ impl Fail2BanManager {
     }
 
     /// Get status of a specific jail.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JailNotFound` if the jail does not exist, or `Io` if the ban
+    /// store cannot be read.
     pub fn jail_status(&self, name: &str) -> crate::Result<JailStatus> {
         let jail = self.jails.get(name).ok_or_else(|| {
             crate::Error::JailNotFound(name.to_string())
@@ -157,6 +201,10 @@ impl Fail2BanManager {
     }
 
     /// Purge expired bans across all jails and trim history.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Io` if the ban store cannot be read or written.
     pub fn purge_expired(&self) -> crate::Result<Vec<crate::types::BanEntry>> {
         let purged = self.store.clear_expired()?;
         // Trim history to configured max.
@@ -165,21 +213,25 @@ impl Fail2BanManager {
     }
 
     /// Get the detected firewall type.
-    pub fn firewall(&self) -> Firewall {
+    #[must_use]
+    pub const fn firewall(&self) -> Firewall {
         self.firewall
     }
 
     /// Get the configuration.
-    pub fn config(&self) -> &Fail2BanConfig {
+    #[must_use]
+    pub const fn config(&self) -> &Fail2BanConfig {
         &self.config
     }
 
     /// Get the paths.
-    pub fn paths(&self) -> &Fail2BanPaths {
+    #[must_use]
+    pub const fn paths(&self) -> &Fail2BanPaths {
         &self.paths
     }
 
     /// Get the configured log level.
+    #[must_use]
     pub fn log_level(&self) -> &str {
         &self.config.global.log_level
     }

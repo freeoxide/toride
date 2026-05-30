@@ -34,7 +34,7 @@ pub struct LogDetector {
 }
 
 /// Details extracted from a single regex match.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MatchDetail {
     /// Matched IP address (from named capture group `ip` or `host`).
     pub ip: Option<IpAddr>,
@@ -68,7 +68,7 @@ impl LogDetector {
     }
 
     /// Set the starting offset and line number from a journal entry.
-    pub fn set_position(&mut self, offset: u64, line_number: u64) {
+    pub const fn set_position(&mut self, offset: u64, line_number: u64) {
         self.offset = offset;
         self.line_number = line_number;
     }
@@ -181,7 +181,7 @@ impl LogDetector {
     }
 }
 
-fn default_prefix(ip: IpAddr) -> u8 {
+const fn default_prefix(ip: IpAddr) -> u8 {
     match ip {
         IpAddr::V4(_) => 32,
         IpAddr::V6(_) => 128,

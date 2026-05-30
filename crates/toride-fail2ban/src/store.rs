@@ -41,7 +41,7 @@ pub struct StoreData {
 }
 
 /// Tracks the last-read position in a log file.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct JournalEntry {
     /// Jail name this journal belongs to.
     pub jail_name: String,
@@ -57,7 +57,8 @@ pub struct JournalEntry {
 
 impl Store {
     /// Open or create a store at the given path.
-    pub fn new(path: PathBuf) -> Self {
+    #[must_use]
+    pub const fn new(path: PathBuf) -> Self {
         Self { path }
     }
 
@@ -200,10 +201,15 @@ impl Store {
     }
 
     /// Count historical bans for a specific jail.
+    ///
+    /// Returns 0 if the store cannot be loaded (with a logged warning).
     pub fn history_count_for_jail(&self, jail_name: &str) -> u64 {
         match self.load() {
             Ok(data) => data.history.iter().filter(|b| b.jail_name == jail_name).count() as u64,
-            Err(_) => 0,
+            Err(e) => {
+                tracing::warn!(jail = %jail_name, error = %e, "failed to load history count, returning 0");
+                0
+            }
         }
     }
 }

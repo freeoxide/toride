@@ -37,10 +37,12 @@ impl CidrBlock {
     }
 
     /// Get the network address.
-    pub fn addr(&self) -> IpAddr { self.addr }
+    #[must_use]
+    pub const fn addr(&self) -> IpAddr { self.addr }
 
     /// Get the prefix length.
-    pub fn prefix(&self) -> u8 { self.prefix }
+    #[must_use]
+    pub const fn prefix(&self) -> u8 { self.prefix }
 
     /// Check if an IP address falls within this CIDR block.
     pub fn contains(&self, ip: IpAddr) -> bool {
@@ -95,9 +97,7 @@ impl CidrSet {
             IpAddr::V4(addr) => {
                 if block.prefix() == 32 {
                     let ip = u32::from(addr);
-                    if !self.singles_v4.contains(&ip) {
-                        self.singles_v4.insert(ip);
-                    }
+                    let _ = self.singles_v4.insert(ip);
                 } else if block.prefix() == 0 {
                     self.v4.push((0u32, 0u32));
                 } else {
@@ -191,12 +191,14 @@ pub struct BanManager {
 
 impl BanManager {
     /// Create a new ban manager.
-    pub fn new(store: Store) -> Self {
+    #[must_use]
+    pub const fn new(store: Store) -> Self {
         Self { store }
     }
 
     /// Get a reference to the underlying store.
-    pub fn store(&self) -> &Store {
+    #[must_use]
+    pub const fn store(&self) -> &Store {
         &self.store
     }
 

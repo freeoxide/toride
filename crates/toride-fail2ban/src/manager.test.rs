@@ -119,7 +119,7 @@ fn new_loads_only_enabled_jails() {
         "nginx".to_string(),
         JailConfig {
             enabled: false,
-            log_path: log_path.clone(),
+            log_path,
             pattern: r"error".to_string(),
             find_time: None,
             ban_time: None,
@@ -253,7 +253,7 @@ fn scan_all_returns_results_for_each_jail() {
         "nginx".to_string(),
         JailConfig {
             enabled: true,
-            log_path: log_path.clone(),
+            log_path,
             pattern: r"error from (?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
             find_time: None,
             ban_time: None,
@@ -514,7 +514,7 @@ fn purge_expired_removes_expired_bans() {
         "sshd".to_string(),
         JailConfig {
             enabled: true,
-            log_path: log_path.clone(),
+            log_path,
             pattern: r"Failed password for .* from (?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
             find_time: Some(600),
             ban_time: Some(1),
