@@ -116,13 +116,26 @@ pub fn read_framework_file(path: &Path) -> Result<String> {
 ///
 /// If `backup_dir` is provided and the file already exists, the current
 /// content is backed up before writing.
-pub fn write_framework_file(path: &Path, content: &str, backup_dir: Option<&Path>) -> Result<()> {
+///
+/// Returns the previous content if the file existed (for rollback purposes).
+pub fn write_framework_file(
+    path: &Path,
+    content: &str,
+    backup_dir: Option<&Path>,
+) -> Result<Option<String>> {
+    // Read existing content for rollback
+    let previous = if path.exists() {
+        Some(
+            std::fs::read_to_string(path)
+                .map_err(|e| Error::FrameworkBlockError(format!("read existing: {e}")))?,
+        )
+    } else {
+        None
+    };
+
     // Backup existing file if requested
     if let Some(dir) = backup_dir {
-        if path.exists() {
-            let existing = std::fs::read_to_string(path)
-                .map_err(|e| Error::BackupFailed(format!("read for backup: {e}")))?;
-
+        if let Some(existing) = &previous {
             std::fs::create_dir_all(dir)
                 .map_err(|e| Error::BackupFailed(format!("create backup dir: {e}")))?;
 
@@ -131,8 +144,8 @@ pub fn write_framework_file(path: &Path, content: &str, backup_dir: Option<&Path
                 .unwrap_or_default()
                 .to_string_lossy()
                 .into_owned();
-            std::fs::write(dir.join(&name), &existing)
-                .map_err(|e| Error::BackupFailed(format!("write backup {name}: {e}")))?;
+            std::fs::write(dir.join(name), existing)
+                .map_err(|e| Error::BackupFailed(format!("write backup: {e}")))?;
         }
     }
 
@@ -152,6 +165,28 @@ pub fn write_framework_file(path: &Path, content: &str, backup_dir: Option<&Path
     tmp.persist(path)
         .map_err(|e| Error::FrameworkBlockError(format!("persist: {e}")))?;
 
+    Ok(previous)
+}
+
+/// Rollback a framework file to its previous content.
+///
+/// If `previous` is `None`, the file is removed.
+/// If `previous` is `Some(content)`, the file is restored to that content.
+pub fn rollback_framework_file(path: &Path, previous: Option<&str>) -> Result<()> {
+    match previous {
+        Some(content) => {
+            std::fs::write(path, content).map_err(|e| {
+                Error::FrameworkBlockError(format!("rollback {}: {e}", path.display()))
+            })?;
+        }
+        None => {
+            if path.exists() {
+                std::fs::remove_file(path).map_err(|e| {
+                    Error::FrameworkBlockError(format!("rollback remove {}: {e}", path.display()))
+                })?;
+            }
+        }
+    }
     Ok(())
 }
 

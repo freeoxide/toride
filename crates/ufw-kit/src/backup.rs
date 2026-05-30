@@ -93,6 +93,48 @@ pub fn write_backup(bundle: &BackupBundle, dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Restore files from a backup bundle to their original locations.
+///
+/// This is used for rollback when a file-backed operation fails.
+/// Only restores files that have content in the bundle.
+pub fn restore_backup(bundle: &BackupBundle, paths: &UfwPaths) -> Result<()> {
+    if let Some(content) = &bundle.default_ufw {
+        std::fs::write(&paths.default_ufw, content)
+            .map_err(|e| Error::RestoreFailed(format!("restore default_ufw: {e}")))?;
+    }
+    if let Some(content) = &bundle.ufw_conf {
+        std::fs::write(&paths.ufw_conf, content)
+            .map_err(|e| Error::RestoreFailed(format!("restore ufw.conf: {e}")))?;
+    }
+    if let Some(content) = &bundle.sysctl_conf {
+        std::fs::write(&paths.sysctl_conf, content)
+            .map_err(|e| Error::RestoreFailed(format!("restore sysctl.conf: {e}")))?;
+    }
+
+    let app_dir = &paths.app_profiles_dir;
+    for (name, content) in &bundle.app_profiles {
+        std::fs::create_dir_all(app_dir)
+            .map_err(|e| Error::RestoreFailed(format!("create applications.d: {e}")))?;
+        std::fs::write(app_dir.join(name), content)
+            .map_err(|e| Error::RestoreFailed(format!("restore app profile {name}: {e}")))?;
+    }
+
+    let framework_files = [
+        ("before.rules", &paths.before_rules),
+        ("after.rules", &paths.after_rules),
+        ("before6.rules", &paths.before6_rules),
+        ("after6.rules", &paths.after6_rules),
+    ];
+    for (name, path) in &framework_files {
+        if let Some((_, content)) = bundle.framework_files.iter().find(|(n, _)| n == name) {
+            std::fs::write(path, content)
+                .map_err(|e| Error::RestoreFailed(format!("restore {name}: {e}")))?;
+        }
+    }
+
+    Ok(())
+}
+
 fn read_optional(path: &Path) -> Result<Option<String>> {
     if path.exists() {
         std::fs::read_to_string(path)

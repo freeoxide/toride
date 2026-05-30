@@ -155,3 +155,75 @@ fn list_blocks_should_handle_multiple_on_same_line() {
     let blocks = list_blocks(content);
     assert_eq!(blocks.len(), 2);
 }
+
+// ---------------------------------------------------------------------------
+// write_framework_file and rollback tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn write_framework_file_should_return_none_for_new_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("before.rules");
+
+    let previous = write_framework_file(&path, "*filter\nCOMMIT\n", None).unwrap();
+    assert!(previous.is_none());
+    assert!(path.exists());
+}
+
+#[test]
+fn write_framework_file_should_return_previous_content() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("before.rules");
+
+    std::fs::write(&path, "old content\n").unwrap();
+
+    let previous = write_framework_file(&path, "new content\n", None).unwrap();
+    assert_eq!(previous, Some("old content\n".to_string()));
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new content\n");
+}
+
+#[test]
+fn write_framework_file_should_backup_when_requested() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("before.rules");
+    let backup_dir = dir.path().join("backup");
+
+    std::fs::write(&path, "original\n").unwrap();
+
+    write_framework_file(&path, "updated\n", Some(&backup_dir)).unwrap();
+
+    // Verify backup was created
+    assert!(backup_dir.join("before.rules").exists());
+    assert_eq!(
+        std::fs::read_to_string(backup_dir.join("before.rules")).unwrap(),
+        "original\n"
+    );
+}
+
+#[test]
+fn rollback_framework_file_should_restore_previous() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.rules");
+
+    std::fs::write(&path, "original\n").unwrap();
+
+    // Simulate: write new, then rollback
+    let previous = write_framework_file(&path, "new\n", None).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "new\n");
+
+    rollback_framework_file(&path, previous.as_deref()).unwrap();
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "original\n");
+}
+
+#[test]
+fn rollback_framework_file_should_remove_new_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("test.rules");
+
+    // Simulate: write new file (no previous), then rollback
+    let previous = write_framework_file(&path, "new\n", None).unwrap();
+    assert!(path.exists());
+
+    rollback_framework_file(&path, previous.as_deref()).unwrap();
+    assert!(!path.exists());
+}
