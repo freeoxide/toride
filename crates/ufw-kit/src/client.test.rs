@@ -373,3 +373,92 @@ fn app_default_should_call_ufw() {
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.app_default(AppDefaultPolicy::Skip).is_ok());
 }
+
+// ---------------------------------------------------------------------------
+// Dry-run tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn dry_run_should_return_output() {
+    let runner = FakeRunner::new().respond_ok("ufw", &[], "Dry run output\n");
+    let ufw = Ufw::with_runner(runner);
+    let output = ufw.dry_run(&["allow", "443/tcp"]).unwrap();
+    assert!(output.contains("Dry run"));
+}
+
+#[test]
+fn dry_run_should_fail_on_error() {
+    let runner = FakeRunner::new().respond_err("ufw", &[], "ERROR: invalid rule", 1);
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.dry_run(&["invalid"]);
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// apply_rule tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn apply_rule_should_dry_run_then_execute() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &[], "Rules updated\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .to_port(443)
+        .proto(Protocol::Tcp)
+        .build()
+        .unwrap();
+    let report = ufw.apply_rule(&spec).unwrap();
+    assert!(report.success);
+    assert!(report.dry_run_output.is_some());
+}
+
+// ---------------------------------------------------------------------------
+// ensure_rule tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ensure_rule_should_add_when_no_existing() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status", "numbered"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n")
+        .respond_ok("ufw", &[], "Rule added\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .to_port(443)
+        .proto(Protocol::Tcp)
+        .comment("managed:https")
+        .build()
+        .unwrap();
+    let report = ufw.ensure_rule(&spec).unwrap();
+    assert!(report.success);
+    assert!(report.action.contains("add rule"));
+}
+
+#[test]
+fn ensure_rule_should_skip_when_comment_exists() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status", "numbered"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n[ 1] 443/tcp ALLOW IN Anywhere comment managed:https\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .to_port(443)
+        .proto(Protocol::Tcp)
+        .comment("managed:https")
+        .build()
+        .unwrap();
+    let report = ufw.ensure_rule(&spec).unwrap();
+    assert!(report.success);
+    assert!(report.action.contains("already exists"));
+}
+
+#[test]
+fn ensure_rule_should_add_when_no_comment() {
+    let runner = FakeRunner::new().respond_ok("ufw", &[], "Rule added\n");
+    let ufw = Ufw::with_runner(runner);
+    let spec = RuleSpec::builder(Action::Allow)
+        .to_port(443)
+        .proto(Protocol::Tcp)
+        .build()
+        .unwrap();
+    let report = ufw.ensure_rule(&spec).unwrap();
+    assert!(report.success);
+}
