@@ -436,7 +436,7 @@ mod tests {
     #[test]
     fn is_process_alive_returns_false_for_invalid_pid() {
         // PID 999999 is very unlikely to exist.
-        assert!(!is_process_alive(999999));
+        assert!(!is_process_alive(999_999));
     }
 
     #[test]
@@ -473,7 +473,7 @@ mod tests {
         let dir = setup_test_dir(None, Some("999999"));
         assert_eq!(
             read_restart_count(&dir.path().join("restart_count")),
-            999999
+            999_999
         );
     }
 
@@ -510,7 +510,7 @@ mod tests {
 
     #[test]
     fn parse_elapsed_time_days_hours_minutes_seconds() {
-        assert_eq!(parse_elapsed_time("2-03:04:05"), Some(183845));
+        assert_eq!(parse_elapsed_time("2-03:04:05"), Some(183_845));
     }
 
     #[test]
@@ -591,7 +591,7 @@ mod tests {
         let dir = setup_test_dir(Some("2147483647"), None);
         assert_eq!(
             read_pid_file(&dir.path().join("toride.pid")),
-            Some(2147483647)
+            Some(2_147_483_647)
         );
     }
 
@@ -645,9 +645,9 @@ mod tests {
 
         let dir = TempDir::new().unwrap();
         let sock_path = dir.path().join("real.sock");
-        let _listener = UnixListener::bind(&sock_path).unwrap();
+        let listener = UnixListener::bind(&sock_path).unwrap();
         // Drop the listener; the socket file persists but no one is listening.
-        drop(_listener);
+        drop(listener);
 
         // The socket file exists but no server is bound — should be stale.
         // Note: on some platforms the file may be removed on drop, in which

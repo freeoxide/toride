@@ -423,10 +423,10 @@ mod tests {
     #[test]
     fn validate_control_path_returns_false_for_wrong_permissions() {
         use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("socket");
         // Create a Unix socket with wrong permissions.
-        use std::os::unix::net::UnixListener;
         let _listener = UnixListener::bind(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(!validate_control_path(&path));
@@ -436,9 +436,9 @@ mod tests {
     #[test]
     fn does_not_panic_for_listener_socket() {
         use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
         let dir = TempDir::new().unwrap();
         let path = dir.path().join("socket");
-        use std::os::unix::net::UnixListener;
         let _listener = UnixListener::bind(&path).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
         // The socket is valid but may not be "connectable" in the traditional

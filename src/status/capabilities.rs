@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn display_contains_all_sections() {
         let caps = Capabilities::detect();
-        let output = format!("{}", caps);
+        let output = format!("{caps}");
         assert!(output.contains("Capabilities"));
         assert!(output.contains("System:"));
         assert!(output.contains("Daemon:"));
@@ -443,7 +443,7 @@ mod tests {
     #[test]
     fn display_shows_all_capabilities() {
         let caps = Capabilities::detect();
-        let output = format!("{}", caps);
+        let output = format!("{caps}");
         assert!(output.contains("CPU usage:"));
         assert!(output.contains("Per-core CPU:"));
         assert!(output.contains("Memory:"));
@@ -467,7 +467,7 @@ mod tests {
     #[test]
     fn display_values_are_yes_or_no() {
         let caps = Capabilities::detect();
-        let output = format!("{}", caps);
+        let output = format!("{caps}");
         for line in output.lines() {
             if line.contains(':') && !line.starts_with("===") && !line.ends_with(':') {
                 let trimmed = line.trim();

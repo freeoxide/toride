@@ -70,6 +70,100 @@ use crate::status::provider::{
     OsProvider, ProcessProvider, SensorProvider,
 };
 
+// ── Shared helpers ──────────────────────────────────────────────────────
+
+/// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::option_if_let_else
+)] // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
+fn parse_vram_to_bytes(v: &str) -> Option<u64> {
+    let v = v.trim();
+    if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
+        gb_str.trim().parse::<f64>().ok().map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64)
+    } else if let Some(mb_str) = v.strip_suffix("MB").or_else(|| v.strip_suffix(" MB")) {
+        mb_str.trim().parse::<f64>().ok().map(|mb| (mb * 1024.0 * 1024.0) as u64)
+    } else if let Some(tb_str) = v.strip_suffix("TB").or_else(|| v.strip_suffix(" TB")) {
+        tb_str.trim().parse::<f64>().ok().map(|tb| (tb * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
+    } else {
+        // Bare number, assume MB
+        v.replace(' ', "").parse::<u64>().ok().map(|mb| mb.saturating_mul(1024 * 1024))
+    }
+}
+
+/// Read battery status from the OS.
+#[cfg(target_os = "macos")]
+fn read_battery_os() -> Option<BatteryInfo> {
+    use std::process::Command;
+    let output = Command::new("pmset")
+        .arg("-g")
+        .arg("batt")
+        .output()
+        .ok()?;
+    let text = String::from_utf8_lossy(&output.stdout);
+    let percent_line = text.lines().find(|l| l.contains('%'))?;
+    let pct_str = percent_line
+        .split_whitespace()
+        .find(|w| w.ends_with('%'))?;
+    let pct: f32 = pct_str.trim_end_matches('%').parse().ok()?;
+    let state = if text.contains("discharging") {
+        "Discharging"
+    } else if text.contains("charging") || text.contains("AC attached") {
+        "Charging"
+    } else {
+        "Unknown"
+    };
+    Some(BatteryInfo {
+        charge_percent: pct,
+        state: state.to_string(),
+        time_to_empty_secs: None,
+        time_to_full_secs: None,
+    })
+}
+
+/// Read battery status from the OS.
+#[cfg(target_os = "linux")]
+fn read_battery_os() -> Option<BatteryInfo> {
+    use std::fs;
+    use std::path::Path;
+    let supply_dir = Path::new("/sys/class/power_supply");
+    let entries = fs::read_dir(supply_dir).ok()?;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if !name_str.starts_with("BAT") && name_str != "battery" {
+            continue;
+        }
+        if let Ok(type_content) = fs::read_to_string(path.join("type")) {
+            if type_content.trim() != "Battery" {
+                continue;
+            }
+        }
+        let capacity = fs::read_to_string(path.join("capacity")).ok()?;
+        let pct: f32 = capacity.trim().parse().ok()?;
+        let status = fs::read_to_string(path.join("status"))
+            .ok()
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|| "Unknown".to_string());
+        return Some(BatteryInfo {
+            charge_percent: pct,
+            state: status,
+            time_to_empty_secs: None,
+            time_to_full_secs: None,
+        });
+    }
+    None
+}
+
+/// Read battery status from the OS.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_battery_os() -> Option<BatteryInfo> {
+    None
+}
+
 /// OS-level system metrics snapshot.
 ///
 /// All fields are populated by [`collect`](Self::collect). Fields that cannot
@@ -392,7 +486,7 @@ impl SystemStatus {
         };
         let processes = Self::read_processes_from(&sys);
         let gpu = Self::read_gpus();
-        let battery = Self::read_battery();
+        let battery = read_battery_os();
 
         Self {
             cpu_usage,
@@ -611,27 +705,6 @@ impl SystemStatus {
         }
     }
 
-    /// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::option_if_let_else
-    )] // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
-    fn parse_vram_to_bytes(v: &str) -> Option<u64> {
-        let v = v.trim();
-        if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
-            gb_str.trim().parse::<f64>().ok().map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64)
-        } else if let Some(mb_str) = v.strip_suffix("MB").or_else(|| v.strip_suffix(" MB")) {
-            mb_str.trim().parse::<f64>().ok().map(|mb| (mb * 1024.0 * 1024.0) as u64)
-        } else if let Some(tb_str) = v.strip_suffix("TB").or_else(|| v.strip_suffix(" TB")) {
-            tb_str.trim().parse::<f64>().ok().map(|tb| (tb * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
-        } else {
-            // Bare number, assume MB
-            v.replace(' ', "").parse::<u64>().ok().map(|mb| mb.saturating_mul(1024 * 1024))
-        }
-    }
-
     fn read_gpus() -> Vec<GpuInfo> {
         let mut gpus = Vec::new();
         // Try system_profiler on macOS
@@ -657,7 +730,7 @@ impl SystemStatus {
                         .to_string();
                     let vram = display["sppci_vram"]
                         .as_str()
-                        .and_then(Self::parse_vram_to_bytes);
+                        .and_then(parse_vram_to_bytes);
                     gpus.push(GpuInfo {
                         name,
                         vendor,
@@ -695,77 +768,6 @@ impl SystemStatus {
             }
         }
         gpus
-    }
-
-    fn read_battery() -> Option<BatteryInfo> {
-        #[cfg(target_os = "macos")]
-        {
-            use std::process::Command;
-            let output = Command::new("pmset")
-                .arg("-g")
-                .arg("batt")
-                .output()
-                .ok()?;
-            let text = String::from_utf8_lossy(&output.stdout);
-            let percent_line = text.lines().find(|l| l.contains('%'))?;
-            let pct_str = percent_line
-                .split_whitespace()
-                .find(|w| w.ends_with('%'))?;
-            let pct: f32 = pct_str.trim_end_matches('%').parse().ok()?;
-            let state = if text.contains("discharging") {
-                "Discharging"
-            } else if text.contains("charging") || text.contains("AC attached") {
-                "Charging"
-            } else {
-                "Unknown"
-            };
-            Some(BatteryInfo {
-                charge_percent: pct,
-                state: state.to_string(),
-                time_to_empty_secs: None,
-                time_to_full_secs: None,
-            })
-        }
-        #[cfg(target_os = "linux")]
-        {
-            use std::fs;
-            use std::path::Path;
-            // Enumerate all battery entries (BAT0, BAT1, BATT, etc.)
-            let supply_dir = Path::new("/sys/class/power_supply");
-            let entries = fs::read_dir(supply_dir).ok()?;
-            for entry in entries.flatten() {
-                let path = entry.path();
-                let name = entry.file_name();
-                let name_str = name.to_string_lossy();
-                // Match BAT* or "battery" entries
-                if !name_str.starts_with("BAT") && name_str != "battery" {
-                    continue;
-                }
-                // Verify it's actually a battery (type == "Battery")
-                if let Ok(type_content) = fs::read_to_string(path.join("type")) {
-                    if type_content.trim() != "Battery" {
-                        continue;
-                    }
-                }
-                let capacity = fs::read_to_string(path.join("capacity")).ok()?;
-                let pct: f32 = capacity.trim().parse().ok()?;
-                let status = fs::read_to_string(path.join("status"))
-                    .ok()
-                    .map(|s| s.trim().to_string())
-                    .unwrap_or_else(|| "Unknown".to_string());
-                return Some(BatteryInfo {
-                    charge_percent: pct,
-                    state: status,
-                    time_to_empty_secs: None,
-                    time_to_full_secs: None,
-                });
-            }
-            None
-        }
-        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-        {
-            None
-        }
     }
 }
 
@@ -948,100 +950,6 @@ impl SysinfoProvider {
         Self { sys }
     }
 
-    /// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::option_if_let_else
-    )] // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
-    fn parse_vram_to_bytes(v: &str) -> Option<u64> {
-        let v = v.trim();
-        if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
-            gb_str.trim().parse::<f64>().ok().map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64)
-        } else if let Some(mb_str) = v.strip_suffix("MB").or_else(|| v.strip_suffix(" MB")) {
-            mb_str.trim().parse::<f64>().ok().map(|mb| (mb * 1024.0 * 1024.0) as u64)
-        } else if let Some(tb_str) = v.strip_suffix("TB").or_else(|| v.strip_suffix(" TB")) {
-            tb_str.trim().parse::<f64>().ok().map(|tb| (tb * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
-        } else {
-            // Bare number, assume MB
-            v.replace(' ', "").parse::<u64>().ok().map(|mb| mb.saturating_mul(1024 * 1024))
-        }
-    }
-
-    /// Read battery status from the OS.
-    #[cfg(target_os = "macos")]
-    fn read_battery() -> Option<BatteryInfo> {
-        use std::process::Command;
-        let output = Command::new("pmset")
-            .arg("-g")
-            .arg("batt")
-            .output()
-            .ok()?;
-        let text = String::from_utf8_lossy(&output.stdout);
-        let percent_line = text.lines().find(|l| l.contains('%'))?;
-        let pct_str = percent_line
-            .split_whitespace()
-            .find(|w| w.ends_with('%'))?;
-        let pct: f32 = pct_str.trim_end_matches('%').parse().ok()?;
-        let state = if text.contains("discharging") {
-            "Discharging"
-        } else if text.contains("charging") || text.contains("AC attached") {
-            "Charging"
-        } else {
-            "Unknown"
-        };
-        Some(BatteryInfo {
-            charge_percent: pct,
-            state: state.to_string(),
-            time_to_empty_secs: None,
-            time_to_full_secs: None,
-        })
-    }
-
-    /// Read battery status from the OS.
-    #[cfg(target_os = "linux")]
-    fn read_battery() -> Option<BatteryInfo> {
-        use std::fs;
-        use std::path::Path;
-        // Enumerate all battery entries (BAT0, BAT1, BATT, etc.)
-        let supply_dir = Path::new("/sys/class/power_supply");
-        let entries = fs::read_dir(supply_dir).ok()?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
-            // Match BAT* or "battery" entries
-            if !name_str.starts_with("BAT") && name_str != "battery" {
-                continue;
-            }
-            // Verify it's actually a battery (type == "Battery")
-            if let Ok(type_content) = fs::read_to_string(path.join("type")) {
-                if type_content.trim() != "Battery" {
-                    continue;
-                }
-            }
-            let capacity = fs::read_to_string(path.join("capacity")).ok()?;
-            let pct: f32 = capacity.trim().parse().ok()?;
-            let status = fs::read_to_string(path.join("status"))
-                .ok()
-                .map(|s| s.trim().to_string())
-                .unwrap_or_else(|| "Unknown".to_string());
-            return Some(BatteryInfo {
-                charge_percent: pct,
-                state: status,
-                time_to_empty_secs: None,
-                time_to_full_secs: None,
-            });
-        }
-        None
-    }
-
-    /// Read battery status from the OS.
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
-    fn read_battery() -> Option<BatteryInfo> {
-        None
-    }
 }
 
 impl Default for SysinfoProvider {
@@ -1288,7 +1196,7 @@ impl GpuProvider for SysinfoProvider {
                         .to_string();
                     let vram = display["sppci_vram"]
                         .as_str()
-                        .and_then(Self::parse_vram_to_bytes);
+                        .and_then(parse_vram_to_bytes);
                     gpus.push(GpuInfo {
                         name,
                         vendor,
@@ -1331,7 +1239,7 @@ impl GpuProvider for SysinfoProvider {
 
 impl BatteryProvider for SysinfoProvider {
     fn battery(&self) -> StatusResult<Option<BatteryInfo>> {
-        Ok(Self::read_battery())
+        Ok(read_battery_os())
     }
 }
 
@@ -1560,6 +1468,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss, reason = "test compares percentages with tolerance")]
     fn memory_percentage_is_consistent() {
         let status = SystemStatus::collect();
         let expected = if status.memory.total_bytes > 0 {
@@ -1587,6 +1496,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss, reason = "test compares percentages with tolerance")]
     fn disk_percentage_is_consistent() {
         let status = SystemStatus::collect();
         if status.disk.total_bytes > 0 {
@@ -1853,6 +1763,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::too_many_lines, reason = "snapshot test constructs a full SystemStatus with all fields populated")]
     fn snapshot_system_status_display() {
         let status = SystemStatus {
             cpu_usage: Some(42.5),
@@ -1930,8 +1841,8 @@ mod tests {
                     name: "en0".to_string(),
                     bytes_received: 60 * GB,
                     bytes_transmitted: 30 * GB,
-                    packets_received: 1000000,
-                    packets_transmitted: 500000,
+                    packets_received: 1_000_000,
+                    packets_transmitted: 500_000,
                     errors_received: 0,
                     errors_transmitted: 0,
                 },
@@ -1939,8 +1850,8 @@ mod tests {
                     name: "lo0".to_string(),
                     bytes_received: 40 * GB,
                     bytes_transmitted: 20 * GB,
-                    packets_received: 2000000,
-                    packets_transmitted: 2000000,
+                    packets_received: 2_000_000,
+                    packets_transmitted: 2_000_000,
                     errors_received: 0,
                     errors_transmitted: 0,
                 },
@@ -1955,7 +1866,7 @@ mod tests {
                     temperature: Some(48.0),
                 },
             ],
-            boot_time: Some(1700000000),
+            boot_time: Some(1_700_000_000),
             processes: ProcessSnapshot {
                 processes: vec![],
                 total_count: 0,
@@ -2073,43 +1984,48 @@ mod tests {
 
     #[test]
     fn parse_vram_to_bytes_gb() {
-        assert_eq!(SystemStatus::parse_vram_to_bytes("8 GB"), Some(8 * 1024 * 1024 * 1024));
-        assert_eq!(SystemStatus::parse_vram_to_bytes("8GB"), Some(8 * 1024 * 1024 * 1024));
+        assert_eq!(parse_vram_to_bytes("8 GB"), Some(8 * 1024 * 1024 * 1024));
+        assert_eq!(parse_vram_to_bytes("8GB"), Some(8 * 1024 * 1024 * 1024));
     }
 
     #[test]
     fn parse_vram_to_bytes_mb() {
-        assert_eq!(SystemStatus::parse_vram_to_bytes("8192 MB"), Some(8192 * 1024 * 1024));
-        assert_eq!(SystemStatus::parse_vram_to_bytes("8192MB"), Some(8192 * 1024 * 1024));
+        assert_eq!(parse_vram_to_bytes("8192 MB"), Some(8192 * 1024 * 1024));
+        assert_eq!(parse_vram_to_bytes("8192MB"), Some(8192 * 1024 * 1024));
     }
 
     #[test]
     fn parse_vram_to_bytes_bare_number() {
-        assert_eq!(SystemStatus::parse_vram_to_bytes("8192"), Some(8192 * 1024 * 1024));
+        assert_eq!(parse_vram_to_bytes("8192"), Some(8192 * 1024 * 1024));
     }
 
     #[test]
     fn parse_vram_tb_suffix() {
-        let result = SystemStatus::parse_vram_to_bytes("2TB");
+        let result = parse_vram_to_bytes("2TB");
         assert_eq!(result, Some(2 * 1024 * 1024 * 1024 * 1024));
     }
 
     #[test]
     fn parse_vram_tb_with_space() {
-        let result = SystemStatus::parse_vram_to_bytes("2 TB");
+        let result = parse_vram_to_bytes("2 TB");
         assert_eq!(result, Some(2 * 1024 * 1024 * 1024 * 1024));
     }
 
     #[test]
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test verifies exact conversion of known-good float to u64"
+    )]
     fn parse_vram_tb_fractional() {
-        let result = SystemStatus::parse_vram_to_bytes("1.5 TB");
+        let result = parse_vram_to_bytes("1.5 TB");
         assert_eq!(result, Some((1.5 * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64));
     }
 
     #[test]
     fn parse_vram_bare_number_saturates() {
         // u64::MAX cannot overflow with saturating_mul; it clamps to u64::MAX.
-        let result = SystemStatus::parse_vram_to_bytes(&u64::MAX.to_string());
+        let result = parse_vram_to_bytes(&u64::MAX.to_string());
         assert_eq!(result, Some(u64::MAX));
     }
 
@@ -2180,7 +2096,7 @@ mod tests {
 
     // ── Memory percentage edge cases ─────────────────────────────────────
 
-    /// Helper to construct a minimal SystemStatus for unit testing.
+    /// Helper to construct a minimal `SystemStatus` for unit testing.
     fn make_status(memory: MemoryStatus, disk: DiskStatus) -> SystemStatus {
         SystemStatus {
             cpu_usage: None,
@@ -2223,7 +2139,7 @@ mod tests {
             MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0 },
             empty_disk(),
         );
-        assert_eq!(status.memory.percentage, 0.0);
+        assert!((status.memory.percentage).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2257,7 +2173,7 @@ mod tests {
                 is_removable: false,
             },
         );
-        assert_eq!(status.disk.percentage, 0.0);
+        assert!((status.disk.percentage).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -2386,8 +2302,7 @@ mod tests {
         let top = snapshot.top_by_cpu(3);
         assert_eq!(top.len(), 3, "all processes should be returned even with NaN");
         // Verify the non-NaN process is included.
-        let pids: Vec<u32> = top.iter().map(|p| p.pid).collect();
-        assert!(pids.contains(&2), "non-NaN process should be present");
+        assert!(top.iter().any(|p| p.pid == 2), "non-NaN process should be present");
     }
 
     #[test]
@@ -2490,7 +2405,7 @@ mod tests {
             gpu: vec![GpuInfo {
                 name: "NVIDIA RTX 4090".to_string(),
                 vendor: "NVIDIA".to_string(),
-                vram_bytes: Some(24 * GB as u64),
+                vram_bytes: Some(24 * GB),
                 driver_version: Some("535.129.03".to_string()),
             }],
             battery: None,
@@ -2611,7 +2526,7 @@ mod tests {
             battery: None,
         };
         // Should not panic when displaying
-        let _ = format!("{}", status);
+        let _ = format!("{status}");
     }
 
     #[test]
@@ -2663,7 +2578,7 @@ mod tests {
                 time_to_full_secs: Some(3600),
             }),
         };
-        let output = format!("{}", status);
+        let output = format!("{status}");
         assert!(output.contains("GPU 0: Apple M1 (Apple)"));
         assert!(output.contains("Battery: 85% (Charging)"));
     }
@@ -2672,31 +2587,31 @@ mod tests {
 
     #[test]
     fn provider_impl_all_traits() {
-        fn _assert_cpu<T: CpuProvider>() {}
-        fn _assert_memory<T: MemoryProvider>() {}
-        fn _assert_disk<T: DiskProvider>() {}
-        fn _assert_network<T: NetworkProvider>() {}
-        fn _assert_os<T: OsProvider>() {}
-        fn _assert_process<T: ProcessProvider>() {}
-        fn _assert_gpu<T: GpuProvider>() {}
-        fn _assert_battery<T: BatteryProvider>() {}
-        fn _assert_sensor<T: SensorProvider>() {}
-        _assert_cpu::<SysinfoProvider>();
-        _assert_memory::<SysinfoProvider>();
-        _assert_disk::<SysinfoProvider>();
-        _assert_network::<SysinfoProvider>();
-        _assert_os::<SysinfoProvider>();
-        _assert_process::<SysinfoProvider>();
-        _assert_gpu::<SysinfoProvider>();
-        _assert_battery::<SysinfoProvider>();
-        _assert_sensor::<SysinfoProvider>();
+        fn assert_cpu<T: CpuProvider>() {}
+        fn assert_memory<T: MemoryProvider>() {}
+        fn assert_disk<T: DiskProvider>() {}
+        fn assert_network<T: NetworkProvider>() {}
+        fn assert_os<T: OsProvider>() {}
+        fn assert_process<T: ProcessProvider>() {}
+        fn assert_gpu<T: GpuProvider>() {}
+        fn assert_battery<T: BatteryProvider>() {}
+        fn assert_sensor<T: SensorProvider>() {}
+        assert_cpu::<SysinfoProvider>();
+        assert_memory::<SysinfoProvider>();
+        assert_disk::<SysinfoProvider>();
+        assert_network::<SysinfoProvider>();
+        assert_os::<SysinfoProvider>();
+        assert_process::<SysinfoProvider>();
+        assert_gpu::<SysinfoProvider>();
+        assert_battery::<SysinfoProvider>();
+        assert_sensor::<SysinfoProvider>();
     }
 
     #[test]
     fn provider_implements_status_provider() {
         use crate::status::provider::StatusProvider;
-        fn _assert<T: StatusProvider>() {}
-        _assert::<SysinfoProvider>();
+        fn assert_provider<T: StatusProvider>() {}
+        assert_provider::<SysinfoProvider>();
     }
 
     // ── collect_via_provider tests ──────────────────────────────────
@@ -2733,6 +2648,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss, reason = "test compares percentages with tolerance")]
     fn collect_via_provider_memory_percentage_is_consistent() {
         let status = SystemStatus::collect_via_provider();
         let expected = if status.memory.total_bytes > 0 {
@@ -2760,6 +2676,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::cast_precision_loss, reason = "test compares percentages with tolerance")]
     fn collect_via_provider_disk_percentage_is_consistent() {
         let status = SystemStatus::collect_via_provider();
         if status.disk.total_bytes > 0 {

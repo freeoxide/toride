@@ -329,8 +329,8 @@ mod tests {
                         name: "en0".to_string(),
                         bytes_received: 60 * 1024 * 1024 * 1024,
                         bytes_transmitted: 30 * 1024 * 1024 * 1024,
-                        packets_received: 1000000,
-                        packets_transmitted: 500000,
+                        packets_received: 1_000_000,
+                        packets_transmitted: 500_000,
                         errors_received: 0,
                         errors_transmitted: 0,
                     },
@@ -341,7 +341,7 @@ mod tests {
                         temperature: Some(55.5),
                     },
                 ],
-                boot_time: Some(1700000000),
+                boot_time: Some(1_700_000_000),
                 processes: crate::status::system::ProcessSnapshot {
                     processes: vec![],
                     total_count: 0,
@@ -615,7 +615,7 @@ mod tests {
             },
             StatusError::CommandTimeout("slow".into()),
             StatusError::ParseError("bad".into()),
-            StatusError::Io(std::io::Error::new(std::io::ErrorKind::Other, "io")),
+            StatusError::Io(std::io::Error::other("io")),
             StatusError::Unsupported("os".into()),
             StatusError::DataUnavailable("info".into()),
         ];
@@ -639,7 +639,7 @@ mod tests {
             StatusError::CommandFailed { command: "r".into(), code: 1, stderr: "e".into() },
             StatusError::CommandTimeout("t".into()),
             StatusError::ParseError("p".into()),
-            StatusError::Io(std::io::Error::new(std::io::ErrorKind::Other, "o")),
+            StatusError::Io(std::io::Error::other("o")),
             StatusError::Unsupported("u".into()),
             StatusError::DataUnavailable("d".into()),
         ];

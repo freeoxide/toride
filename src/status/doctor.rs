@@ -415,7 +415,7 @@ mod tests {
     #[test]
     fn display_contains_header() {
         let report = DoctorReport::check();
-        let output = format!("{}", report);
+        let output = format!("{report}");
         assert!(output.contains("Doctor Report"));
     }
 
@@ -836,7 +836,7 @@ mod tests {
             disks: vec![],
             network_interfaces: vec![],
             sensors: vec![],
-            boot_time: Some(1700000000),
+            boot_time: Some(1_700_000_000),
             processes: crate::status::system::ProcessSnapshot {
                 processes: vec![],
                 total_count: 0,

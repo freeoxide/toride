@@ -302,7 +302,7 @@ mod tests {
         DiskStatus, MemoryStatus, NetworkStatus, OsInfo, ProcessSnapshot, SystemStatus,
     };
 
-    /// Helper to construct a minimal SystemStatus with specific cpu_usage and network values.
+    /// Helper to construct a minimal `SystemStatus` with specific `cpu_usage` and network values.
     fn make_system_status(cpu_usage: Option<f64>, rx: u64, tx: u64) -> SystemStatus {
         SystemStatus {
             cpu_usage,
@@ -346,8 +346,8 @@ mod tests {
         assert_eq!(delta.bytes_received_delta, 1000);
         assert_eq!(delta.bytes_transmitted_delta, 1000);
         // Rates must be 0, not NaN or Inf from division by zero.
-        assert_eq!(delta.bytes_received_rate, 0.0);
-        assert_eq!(delta.bytes_transmitted_rate, 0.0);
+        assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
+        assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
         assert_eq!(delta.cpu_usage_delta, Some(10.0));
     }
 
@@ -361,8 +361,8 @@ mod tests {
         // saturating_sub prevents underflow; returns 0 when curr < prev.
         assert_eq!(delta.bytes_received_delta, 0);
         assert_eq!(delta.bytes_transmitted_delta, 0);
-        assert_eq!(delta.bytes_received_rate, 0.0);
-        assert_eq!(delta.bytes_transmitted_rate, 0.0);
+        assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
+        assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -435,7 +435,7 @@ mod tests {
         // We test compute_delta directly since we can't actually sleep 24 hours.
         let prev = make_system_status(Some(10.0), 1_000_000, 500_000);
         let curr = make_system_status(Some(50.0), 1_000_000 + 86_400 * 1000, 500_000 + 86_400 * 500);
-        let long_elapsed = Duration::from_secs(86_400); // 24 hours
+        let long_elapsed = Duration::from_hours(24);
         let delta = compute_delta(&prev, &curr, long_elapsed);
 
         assert_eq!(delta.elapsed, long_elapsed);
@@ -596,7 +596,7 @@ mod tests {
             bytes_received_rate: 1024.0,
             bytes_transmitted_rate: 512.0,
         };
-        let output = format!("{}", d);
+        let output = format!("{d}");
         assert!(output.contains("Delta"));
         assert!(output.contains("Network RX"));
     }
@@ -620,8 +620,8 @@ mod tests {
         let curr = prev.clone();
         // Zero elapsed with identical snapshots should not cause division by zero
         let delta = compute_delta(&prev, &curr, Duration::ZERO);
-        assert_eq!(delta.bytes_received_rate, 0.0);
-        assert_eq!(delta.bytes_transmitted_rate, 0.0);
+        assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
+        assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
         assert_eq!(delta.bytes_received_delta, 0);
         assert_eq!(delta.bytes_transmitted_delta, 0);
         assert_eq!(delta.cpu_usage_delta, Some(0.0));
@@ -637,7 +637,7 @@ mod tests {
         // saturating_sub yields 0 when curr < prev (counter wrap detected)
         assert_eq!(delta.bytes_received_delta, 0);
         assert_eq!(delta.bytes_transmitted_delta, 0);
-        assert_eq!(delta.bytes_received_rate, 0.0);
-        assert_eq!(delta.bytes_transmitted_rate, 0.0);
+        assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
+        assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
     }
 }
