@@ -31,7 +31,7 @@ fn sample_jail_config(log_path: std::path::PathBuf) -> JailConfig {
 fn sample_action_config() -> ActionConfig {
     ActionConfig {
         commands: sample_platform_commands(),
-        validate: vec!["which iptables".into()],
+        validation_commands: vec!["which iptables".into()],
     }
 }
 
@@ -168,7 +168,7 @@ fn action_config_serialization_roundtrip() {
     let json = serde_json::to_string(&ac).unwrap();
     let restored: ActionConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.commands, ac.commands);
-    assert_eq!(restored.validate, ac.validate);
+    assert_eq!(restored.validation_commands, ac.validation_commands);
 }
 
 #[test]
@@ -178,7 +178,7 @@ fn action_config_deserializes_with_empty_validate() {
         "validate": []
     }"#;
     let ac: ActionConfig = serde_json::from_str(json).unwrap();
-    assert!(ac.validate.is_empty());
+    assert!(ac.validation_commands.is_empty());
     assert!(ac.commands.linux.is_empty());
 }
 

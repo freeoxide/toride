@@ -34,7 +34,7 @@ pub struct LogDetector {
 }
 
 /// Details extracted from a single regex match.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MatchDetail {
     /// Matched IP address (from named capture group `ip` or `host`).
     pub ip: Option<IpAddr>,
@@ -74,6 +74,7 @@ impl LogDetector {
     }
 
     /// Get the current journal state.
+    #[must_use]
     pub fn journal(&self) -> JournalEntry {
         JournalEntry {
             jail_name: self.jail_name.clone(),

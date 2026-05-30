@@ -52,7 +52,7 @@ fn setup_test_jail() -> (Jail, NamedTempFile, tempfile::TempDir) {
     let log_file = NamedTempFile::new_in(tmpdir.path()).expect("failed to create temp log file");
     let store = make_store(tmpdir.path());
     let config = make_resolved_jail(log_file.path());
-    let jail = Jail::new(config, store).expect("failed to create jail");
+    let jail = Jail::new(config, store, None).expect("failed to create jail");
     (jail, log_file, tmpdir)
 }
 
@@ -62,7 +62,7 @@ fn setup_test_jail_dual() -> (Jail, NamedTempFile, tempfile::TempDir) {
     let log_file = NamedTempFile::new_in(tmpdir.path()).expect("failed to create temp log file");
     let store = make_store(tmpdir.path());
     let config = make_resolved_jail_dual(log_file.path());
-    let jail = Jail::new(config, store).expect("failed to create jail");
+    let jail = Jail::new(config, store, None).expect("failed to create jail");
     (jail, log_file, tmpdir)
 }
 
@@ -96,7 +96,7 @@ fn new_fails_with_invalid_regex_pattern() {
         ignore_ips: Vec::new(),
     };
     let store = make_store(dir.path());
-    match Jail::new(config, store) {
+    match Jail::new(config, store, None) {
         Err(crate::Error::InvalidRegex(_)) => {}
         Err(other) => panic!("expected InvalidRegex, got: {other:?}"),
         Ok(_) => panic!("expected error, got Ok"),
@@ -141,7 +141,7 @@ fn name_returns_configured_name() {
         ignore_ips: Vec::new(),
     };
     let store = make_store(dir.path());
-    let jail = Jail::new(config, store).unwrap();
+    let jail = Jail::new(config, store, None).unwrap();
 
     assert_eq!(jail.name(), "my-custom-jail");
 }
@@ -164,7 +164,7 @@ fn log_path_returns_configured_path() {
         ignore_ips: Vec::new(),
     };
     let store = make_store(dir.path());
-    let jail = Jail::new(config, store).unwrap();
+    let jail = Jail::new(config, store, None).unwrap();
 
     assert_eq!(jail.log_path(), log_path.as_path());
 }
@@ -266,7 +266,7 @@ fn scan_filters_out_ignored_ips() {
     let log_file = NamedTempFile::new_in(tmpdir.path()).unwrap();
     let store = make_store(tmpdir.path());
     let config = make_resolved_jail(log_file.path());
-    let mut jail = Jail::new(config, store)
+    let mut jail = Jail::new(config, store, None)
         .unwrap()
         .with_ignore_ips(vec!["10.0.0.5".to_string()]);
 
@@ -289,7 +289,7 @@ fn scan_filters_ips_in_ignored_cidr_range() {
     let log_file = NamedTempFile::new_in(tmpdir.path()).unwrap();
     let store = make_store(tmpdir.path());
     let config = make_resolved_jail(log_file.path());
-    let mut jail = Jail::new(config, store)
+    let mut jail = Jail::new(config, store, None)
         .unwrap()
         .with_ignore_ips(vec!["192.168.0.0/16".to_string()]);
 
@@ -428,7 +428,7 @@ fn unban_ip_wrong_jail_returns_not_banned() {
         unban_action: "unban".to_string(),
         ignore_ips: Vec::new(),
     };
-    let mut jail_a = Jail::new(config_a, store).unwrap();
+    let mut jail_a = Jail::new(config_a, store, None).unwrap();
     let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
     jail_a.ban_ip(ip, ExecutionMode::DryRun).unwrap();
 
@@ -446,7 +446,7 @@ fn unban_ip_wrong_jail_returns_not_banned() {
         unban_action: "unban".to_string(),
         ignore_ips: Vec::new(),
     };
-    let mut jail_b = Jail::new(config_b, store2).unwrap();
+    let mut jail_b = Jail::new(config_b, store2, None).unwrap();
 
     // Unban from jail-b should fail since the IP is banned under jail-a.
     let result = jail_b.unban_ip("10.0.0.1".parse().unwrap(), ExecutionMode::DryRun);
@@ -743,7 +743,7 @@ fn test_scan_find_time_window_prunes_old_failures() {
         unban_action: "unban".to_string(),
         ignore_ips: Vec::new(),
     };
-    let mut jail = Jail::new(config, store).unwrap();
+    let mut jail = Jail::new(config, store, None).unwrap();
 
     let mut f = log_file.reopen().unwrap();
 
@@ -787,7 +787,7 @@ fn test_scan_max_retry_boundary_triggers_ban() {
         unban_action: "unban".to_string(),
         ignore_ips: Vec::new(),
     };
-    let mut jail = Jail::new(config, store).unwrap();
+    let mut jail = Jail::new(config, store, None).unwrap();
 
     // Write 3 matching lines for the same IP in one go.
     let mut f = log_file.reopen().unwrap();
@@ -830,7 +830,7 @@ fn test_scan_max_retry_below_threshold_no_ban() {
         unban_action: "unban".to_string(),
         ignore_ips: Vec::new(),
     };
-    let mut jail = Jail::new(config, store).unwrap();
+    let mut jail = Jail::new(config, store, None).unwrap();
 
     // Write only 2 matching lines -- below the threshold of 3.
     let mut f = log_file.reopen().unwrap();
@@ -962,7 +962,7 @@ fn test_scan_with_pattern_matching_everything() {
         unban_action: "unban".to_string(),
         ignore_ips: Vec::new(),
     };
-    let mut jail = Jail::new(config, store).unwrap();
+    let mut jail = Jail::new(config, store, None).unwrap();
 
     let mut f = log_file.reopen().unwrap();
     writeln!(f, "some arbitrary text").unwrap();
@@ -1054,7 +1054,7 @@ fn test_ignore_ips_with_invalid_entry_skipped() {
     let log_file = NamedTempFile::new_in(dir.path()).unwrap();
     let store = make_store(dir.path());
     let config = make_resolved_jail(log_file.path());
-    let mut jail = Jail::new(config, store)
+    let mut jail = Jail::new(config, store, None)
         .unwrap()
         .with_ignore_ips(vec![
             "not-an-ip".to_string(), // invalid -- should be silently skipped

@@ -42,6 +42,7 @@ impl CidrBlock {
     pub const fn prefix(&self) -> u8 { self.prefix }
 
     /// Check if an IP address falls within this CIDR block.
+    #[must_use]
     pub fn contains(&self, ip: IpAddr) -> bool {
         match (self.addr, ip) {
             (IpAddr::V4(net), IpAddr::V4(host)) => {
@@ -70,6 +71,31 @@ impl CidrBlock {
 impl std::fmt::Display for CidrBlock {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}/{}", self.addr, self.prefix)
+    }
+}
+
+impl std::str::FromStr for CidrBlock {
+    type Err = crate::Error;
+
+    /// Parse a CIDR block from a string like `"192.168.1.0/24"` or `"::1/128"`.
+    /// A plain IP address (without `/prefix`) is treated as a host block
+    /// (`/32` for IPv4, `/128` for IPv6).
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((addr_str, prefix_str)) = s.split_once('/') {
+            let addr: IpAddr = addr_str.parse().map_err(|_| {
+                crate::Error::InvalidIp(format!("invalid IP address in CIDR: '{addr_str}'"))
+            })?;
+            let prefix: u8 = prefix_str.parse().map_err(|_| {
+                crate::Error::InvalidIp(format!("invalid prefix in CIDR: '{prefix_str}'"))
+            })?;
+            Self::new(addr, prefix)
+        } else {
+            let addr: IpAddr = s.parse().map_err(|_| {
+                crate::Error::InvalidIp(format!("invalid IP address: '{s}'"))
+            })?;
+            let prefix = crate::types::default_prefix(addr);
+            Self::new(addr, prefix)
+        }
     }
 }
 
@@ -120,6 +146,7 @@ impl CidrSet {
     }
 
     /// Check if an IP is contained in any block in this set.
+    #[must_use]
     pub fn contains(&self, ip: IpAddr) -> bool {
         match ip {
             IpAddr::V4(addr) => {
@@ -176,6 +203,7 @@ impl CidrSet {
     }
 
     /// Check if the set is empty.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.v4.is_empty() && self.v6.is_empty() && self.singles_v4.is_empty() && self.singles_v6.is_empty()
     }

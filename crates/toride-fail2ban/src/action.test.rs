@@ -85,7 +85,7 @@ fn action_exec_new_initializes_empty_validate_and_env() {
     let cmds = make_platform_commands(&["echo hi"], &[], &[]);
     let exec = make_exec("action", cmds);
 
-    assert!(exec.validate.is_empty());
+    assert!(exec.validation_commands.is_empty());
     assert!(exec.env.is_empty());
 }
 
@@ -422,7 +422,7 @@ fn exec_expands_variables_before_running() {
 fn validate_success_with_true_command() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("valid-action", cmds);
-    exec.validate.push("true".to_string());
+    exec.validation_commands.push("true".to_string());
 
     assert!(exec.validate().is_ok());
 }
@@ -431,8 +431,8 @@ fn validate_success_with_true_command() {
 fn validate_success_with_multiple_commands() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("multi-validate", cmds);
-    exec.validate.push("true".to_string());
-    exec.validate.push("true".to_string());
+    exec.validation_commands.push("true".to_string());
+    exec.validation_commands.push("true".to_string());
 
     assert!(exec.validate().is_ok());
 }
@@ -449,7 +449,7 @@ fn validate_success_with_empty_validate_list() {
 fn validate_failure_returns_command_failed() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("invalid-action", cmds);
-    exec.validate.push("false".to_string());
+    exec.validation_commands.push("false".to_string());
 
     let result = exec.validate();
     assert!(result.is_err());
@@ -469,9 +469,9 @@ fn validate_failure_returns_command_failed() {
 fn validate_stops_on_first_failure() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("validate-stop", cmds);
-    exec.validate.push("true".to_string());
-    exec.validate.push("false".to_string());
-    exec.validate.push("true".to_string());
+    exec.validation_commands.push("true".to_string());
+    exec.validation_commands.push("false".to_string());
+    exec.validation_commands.push("true".to_string());
 
     let result = exec.validate();
     assert!(result.is_err());
@@ -483,7 +483,7 @@ fn validate_expands_dummy_values_in_template() {
     // This command tests that <ip> becomes 127.0.0.1 and <jail> becomes test.
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("template-validate", cmds);
-    exec.validate
+    exec.validation_commands
         .push("test <ip> = 127.0.0.1 && test <jail> = test".to_string());
 
     assert!(exec.validate().is_ok());
@@ -493,7 +493,7 @@ fn validate_expands_dummy_values_in_template() {
 fn validate_expands_prefix_dummy_to_32() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("prefix-validate", cmds);
-    exec.validate
+    exec.validation_commands
         .push("test <prefix> = 32".to_string());
 
     assert!(exec.validate().is_ok());
@@ -503,7 +503,7 @@ fn validate_expands_prefix_dummy_to_32() {
 fn validate_expands_ban_time_dummy_to_1() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("bantime-validate", cmds);
-    exec.validate
+    exec.validation_commands
         .push("test <ban-time> = 1".to_string());
 
     assert!(exec.validate().is_ok());
@@ -513,7 +513,7 @@ fn validate_expands_ban_time_dummy_to_1() {
 fn validate_expands_fail_count_dummy_to_1() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("failcount-validate", cmds);
-    exec.validate
+    exec.validation_commands
         .push("test <fail-count> = 1".to_string());
 
     assert!(exec.validate().is_ok());
@@ -523,7 +523,7 @@ fn validate_expands_fail_count_dummy_to_1() {
 fn validate_expands_log_path_dummy_to_dev_null() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("logpath-validate", cmds);
-    exec.validate
+    exec.validation_commands
         .push("test <log-path> = /dev/null".to_string());
 
     assert!(exec.validate().is_ok());
@@ -587,11 +587,11 @@ fn action_exec_fields_are_accessible_and_mutable() {
     let mut exec = make_exec("mutable-test", cmds);
 
     // Modify fields after construction.
-    exec.validate.push("true".to_string());
+    exec.validation_commands.push("true".to_string());
     exec.env
         .insert("KEY".to_string(), "VALUE".to_string());
 
-    assert_eq!(exec.validate.len(), 1);
+    assert_eq!(exec.validation_commands.len(), 1);
     assert_eq!(exec.env.get("KEY").unwrap(), "VALUE");
 }
 
@@ -612,13 +612,13 @@ fn action_vars_clone() {
 fn action_exec_clone() {
     let cmds = make_platform_commands(&["cmd"], &[], &[]);
     let mut exec = make_exec("clone-test", cmds);
-    exec.validate.push("true".to_string());
+    exec.validation_commands.push("true".to_string());
     exec.env.insert("K".to_string(), "V".to_string());
 
     let cloned = exec.clone();
     assert_eq!(cloned.name, exec.name);
     assert_eq!(cloned.commands, exec.commands);
-    assert_eq!(cloned.validate, exec.validate);
+    assert_eq!(cloned.validation_commands, exec.validation_commands);
     assert_eq!(cloned.env, exec.env);
 }
 
@@ -677,7 +677,6 @@ fn shell_escape_with_single_quotes() {
 
 #[test]
 fn shell_escape_with_dollar_sign() {
-    let vars = default_vars();
     // $HOME in jail_name should be shell-escaped to prevent expansion.
     let vars = ActionVars::new("10.0.0.1", 32, "$HOME", 1, 1, "/dev/null");
     let result = ActionExec::expand_command("set <jail> banip <ip>", &vars);
@@ -715,7 +714,7 @@ fn exec_with_empty_env() {
 fn validate_with_all_dummy_values() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let mut exec = make_exec("all-dummies", cmds);
-    exec.validate.push(
+    exec.validation_commands.push(
         "test <ip> = 127.0.0.1 && test <prefix> = 32 && test <jail> = test && \
          test <ban-time> = 1 && test <fail-count> = 1 && test <log-path> = /dev/null"
             .to_string(),

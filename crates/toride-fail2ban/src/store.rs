@@ -30,7 +30,7 @@ pub struct Store {
 }
 
 /// The on-disk format for the ban store.
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct StoreData {
     /// Currently active bans.
     pub active_bans: Vec<BanEntry>,
@@ -196,6 +196,7 @@ impl Store {
     }
 
     /// Get the store path.
+    #[must_use]
     pub fn path(&self) -> &Path {
         &self.path
     }

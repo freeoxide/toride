@@ -7,7 +7,7 @@ use chrono::{DateTime, Duration, Utc};
 
 use crate::action::{ActionExec, ActionVars};
 use crate::ban::{BanManager, CidrBlock, CidrSet};
-use crate::config::ResolvedJail;
+use crate::config::{ActionConfig, ResolvedJail};
 use crate::detector::LogDetector;
 use crate::store::Store;
 use crate::support;
@@ -34,10 +34,18 @@ pub struct Jail {
 impl Jail {
     /// Create a new jail from resolved configuration.
     ///
+    /// If `actions` is provided, custom action templates from the config are
+    /// used instead of the default platform commands. Action names `"ban"` and
+    /// `"unban"` always resolve to the default platform commands.
+    ///
     /// # Errors
     ///
     /// Returns `InvalidRegex` if the config pattern is invalid.
-    pub fn new(config: ResolvedJail, store: Store) -> crate::Result<Self> {
+    pub fn new(
+        config: ResolvedJail,
+        store: Store,
+        actions: Option<&HashMap<String, ActionConfig>>,
+    ) -> crate::Result<Self> {
         let detector = LogDetector::new(
             &config.name,
             &config.log_path,
@@ -46,15 +54,19 @@ impl Jail {
 
         let ban_manager = BanManager::new(store);
 
-        // Create default platform actions.
         let firewall = support::detect_firewall();
-        let ban_action = ActionExec::new(
-            config.ban_action.clone(),
-            support::default_ban_commands(firewall),
+
+        // Resolve ban action: use custom action from config if available,
+        // otherwise fall back to default platform commands.
+        let ban_action = resolve_action(
+            &config.ban_action,
+            actions,
+            &support::default_ban_commands(firewall),
         );
-        let unban_action = ActionExec::new(
-            config.unban_action.clone(),
-            support::default_unban_commands(firewall),
+        let unban_action = resolve_action(
+            &config.unban_action,
+            actions,
+            &support::default_unban_commands(firewall),
         );
 
         let ignore_set = parse_ignore_list(&config.ignore_ips);
@@ -79,18 +91,41 @@ impl Jail {
     }
 
     /// Get the jail name.
+    #[must_use]
     pub fn name(&self) -> &str {
         &self.config.name
     }
 
     /// Get the log path.
+    #[must_use]
     pub fn log_path(&self) -> &std::path::Path {
         &self.config.log_path
     }
 
     /// Get the regex pattern.
+    #[must_use]
     pub fn pattern(&self) -> &str {
         &self.config.pattern
+    }
+
+    /// Restore the detector's scan position from the persisted journal.
+    ///
+    /// This should be called after constructing a jail to resume scanning
+    /// from where the last run left off, rather than re-scanning from the
+    /// beginning of the log file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Io` if the journal store cannot be read.
+    pub fn restore_journal(&mut self) -> crate::Result<()> {
+        let journal = self.ban_manager.store().get_journal(
+            &self.config.name,
+            &self.config.log_path,
+        )?;
+        if let Some(entry) = journal {
+            self.detector.set_position(entry.offset, entry.line_number);
+        }
+        Ok(())
     }
 
     /// Create action variables for the given IP.
@@ -115,8 +150,11 @@ impl Jail {
         let mut result = self.detector.scan()?;
 
         let now = Utc::now();
-        #[expect(clippy::cast_possible_wrap, reason = "find_time fits in i64")]
-        let find_time = Duration::seconds(self.config.find_time as i64);
+        let find_time_secs = i64::try_from(self.config.find_time)
+            .map_err(|_| crate::Error::InvalidConfig(
+                format!("find_time {} exceeds maximum", self.config.find_time)
+            ))?;
+        let find_time = Duration::seconds(find_time_secs);
 
         // Apply find_time/max_retry threshold logic.
         let mut to_ban = Vec::new();
@@ -251,6 +289,25 @@ impl Jail {
     fn is_ignored(&self, ip: IpAddr) -> bool {
         self.ignore_set.contains(ip)
     }
+}
+
+/// Resolve an action by name, looking it up in the actions map or falling
+/// back to default platform commands for built-in names `"ban"` / `"unban"`.
+fn resolve_action(
+    name: &str,
+    actions: Option<&HashMap<String, ActionConfig>>,
+    default_commands: &crate::types::PlatformCommands,
+) -> ActionExec {
+    // Built-in names always use default platform commands.
+    if name == "ban" || name == "unban" {
+        return ActionExec::new(name.to_string(), default_commands.clone());
+    }
+    // Look up custom action in the actions map.
+    if let Some(action_cfg) = actions.and_then(|map| map.get(name)) {
+        return ActionExec::new(name.to_string(), action_cfg.commands.clone());
+    }
+    // Fallback to default commands if action not found.
+    ActionExec::new(name.to_string(), default_commands.clone())
 }
 
 /// Parse a list of IP/CIDR strings into a `CidrSet`.

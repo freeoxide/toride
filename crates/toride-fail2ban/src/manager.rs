@@ -23,6 +23,8 @@ pub struct Fail2BanManager {
     jails: HashMap<String, Jail>,
     /// Detected firewall.
     firewall: Firewall,
+    /// Whether the manager is currently running (started).
+    running: bool,
 }
 
 impl Fail2BanManager {
@@ -44,6 +46,7 @@ impl Fail2BanManager {
             store,
             jails: HashMap::new(),
             firewall,
+            running: true,
         };
 
         manager.load_jails()?;
@@ -54,7 +57,14 @@ impl Fail2BanManager {
     fn load_jails(&mut self) -> crate::Result<()> {
         for name in self.config.enabled_jails() {
             let resolved = self.config.resolve_jail(name)?;
-            let jail = Jail::new(resolved, self.store.clone())?;
+            let actions = if self.config.actions.is_empty() {
+                None
+            } else {
+                Some(&self.config.actions)
+            };
+            let mut jail = Jail::new(resolved, self.store.clone(), actions)?;
+            // Resume scanning from the last persisted journal position.
+            jail.restore_journal()?;
             self.jails.insert(name.to_string(), jail);
         }
         Ok(())
@@ -70,7 +80,12 @@ impl Fail2BanManager {
         if self.jails.contains_key(name) {
             return Err(crate::Error::JailAlreadyExists(name.to_string()));
         }
-        let jail = Jail::new(resolved, self.store.clone())?;
+        let actions = if self.config.actions.is_empty() {
+            None
+        } else {
+            Some(&self.config.actions)
+        };
+        let jail = Jail::new(resolved, self.store.clone(), actions)?;
         self.jails.insert(name.to_string(), jail);
         Ok(())
     }
@@ -154,7 +169,7 @@ impl Fail2BanManager {
     pub fn status(&self) -> crate::Result<Fail2BanStatus> {
         let jail_statuses = self.jail_statuses()?;
         Ok(Fail2BanStatus {
-            running: true,
+            running: self.running,
             jails: jail_statuses,
             config_path: self.paths.config_file.clone(),
         })
@@ -236,6 +251,22 @@ impl Fail2BanManager {
     #[must_use]
     pub fn log_level(&self) -> &str {
         &self.config.global.log_level
+    }
+
+    /// Mark the manager as running.
+    pub const fn start(&mut self) {
+        self.running = true;
+    }
+
+    /// Mark the manager as stopped.
+    pub const fn stop(&mut self) {
+        self.running = false;
+    }
+
+    /// Check if the manager is currently running.
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
+        self.running
     }
 }
 

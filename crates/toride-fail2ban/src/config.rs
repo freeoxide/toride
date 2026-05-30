@@ -108,8 +108,8 @@ pub struct ActionConfig {
     /// Commands to execute when the action fires.
     pub commands: PlatformCommands,
     /// Optional validation commands.
-    #[serde(default)]
-    pub validate: Vec<String>,
+    #[serde(default, alias = "validate")]
+    pub validation_commands: Vec<String>,
 }
 
 /// Global daemon settings.
@@ -196,8 +196,25 @@ impl Fail2BanConfig {
     /// # Errors
     ///
     /// Returns `InvalidConfig` on zero `find_time`, zero `max_retry`, zero `ban_time`,
-    /// invalid regex pattern, missing log file, or invalid action references.
+    /// invalid regex pattern, missing log file, invalid action references,
+    /// invalid log level, zero scan interval, or values exceeding upper bounds.
+    #[allow(clippy::too_many_lines, reason = "validation covers many distinct checks")]
     pub fn validate(&self) -> crate::Result<()> {
+        // Validate global settings.
+        if self.global.scan_interval == 0 {
+            return Err(crate::Error::InvalidConfig(
+                "global: scan_interval must be greater than 0".to_string()
+            ));
+        }
+        let valid_levels = ["trace", "debug", "info", "warn", "error"];
+        if !valid_levels.contains(&self.global.log_level.as_str()) {
+            return Err(crate::Error::InvalidConfig(format!(
+                "global: log_level '{}' is not valid (expected one of: {})",
+                self.global.log_level,
+                valid_levels.join(", ")
+            )));
+        }
+
         // Validate global defaults.
         if self.defaults.find_time == 0 {
             return Err(crate::Error::InvalidConfig(
@@ -212,6 +229,22 @@ impl Fail2BanConfig {
         if self.defaults.ban_time == 0 {
             return Err(crate::Error::InvalidConfig(
                 "defaults: ban_time must be greater than 0".to_string()
+            ));
+        }
+        // Upper bounds: find_time <= 1 day, ban_time <= 1 year, max_retry <= 10000.
+        if self.defaults.find_time > 86_400 {
+            return Err(crate::Error::InvalidConfig(
+                "defaults: find_time must not exceed 86400 (1 day)".to_string()
+            ));
+        }
+        if self.defaults.ban_time > 31_536_000 {
+            return Err(crate::Error::InvalidConfig(
+                "defaults: ban_time must not exceed 31536000 (1 year)".to_string()
+            ));
+        }
+        if self.defaults.max_retry > 10_000 {
+            return Err(crate::Error::InvalidConfig(
+                "defaults: max_retry must not exceed 10000".to_string()
             ));
         }
 
@@ -231,6 +264,27 @@ impl Fail2BanConfig {
                     "Jail '{name}': ban_time must be > 0"
                 )));
             }
+            if let Some(ft) = jail.find_time
+                && ft > 86_400
+            {
+                return Err(crate::Error::InvalidConfig(format!(
+                    "Jail '{name}': find_time must not exceed 86400 (1 day)"
+                )));
+            }
+            if let Some(bt) = jail.ban_time
+                && bt > 31_536_000
+            {
+                return Err(crate::Error::InvalidConfig(format!(
+                    "Jail '{name}': ban_time must not exceed 31536000 (1 year)"
+                )));
+            }
+            if let Some(mr) = jail.max_retry
+                && mr > 10_000
+            {
+                return Err(crate::Error::InvalidConfig(format!(
+                    "Jail '{name}': max_retry must not exceed 10000"
+                )));
+            }
             if !jail.log_path.exists() {
                 return Err(crate::Error::InvalidConfig(format!(
                     "Jail '{name}': log file does not exist: {}",
@@ -244,23 +298,21 @@ impl Fail2BanConfig {
                 )));
             }
             // Validate action references.
-            if !self.actions.is_empty() {
-                if let Some(ref action_name) = jail.ban_action
-                    && action_name != "ban"
-                    && !self.actions.contains_key(action_name)
-                {
-                    return Err(crate::Error::InvalidConfig(format!(
-                        "Jail '{name}': ban_action '{action_name}' not found in actions"
-                    )));
-                }
-                if let Some(ref action_name) = jail.unban_action
-                    && action_name != "unban"
-                    && !self.actions.contains_key(action_name)
-                {
-                    return Err(crate::Error::InvalidConfig(format!(
-                        "Jail '{name}': unban_action '{action_name}' not found in actions"
-                    )));
-                }
+            if let Some(ref action_name) = jail.ban_action
+                && action_name != "ban"
+                && !self.actions.contains_key(action_name)
+            {
+                return Err(crate::Error::InvalidConfig(format!(
+                    "Jail '{name}': ban_action '{action_name}' not found in actions"
+                )));
+            }
+            if let Some(ref action_name) = jail.unban_action
+                && action_name != "unban"
+                && !self.actions.contains_key(action_name)
+            {
+                return Err(crate::Error::InvalidConfig(format!(
+                    "Jail '{name}': unban_action '{action_name}' not found in actions"
+                )));
             }
         }
         Ok(())
@@ -291,6 +343,7 @@ impl Fail2BanConfig {
     }
 
     /// Get all enabled jail names.
+    #[must_use]
     pub fn enabled_jails(&self) -> Vec<&str> {
         self.jails
             .iter()

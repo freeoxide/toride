@@ -34,8 +34,8 @@ pub struct ActionExec {
     /// Platform-specific command templates.
     pub commands: PlatformCommands,
     /// Optional validation commands.
-    #[serde(default)]
-    pub validate: Vec<String>,
+    #[serde(default, alias = "validate")]
+    pub validation_commands: Vec<String>,
     /// Environment variables for command execution.
     #[serde(default)]
     pub env: HashMap<String, String>,
@@ -60,6 +60,7 @@ pub struct ActionVars {
 
 impl ActionVars {
     /// Create new action variables.
+    #[must_use]
     pub fn new(
         ip: &str,
         prefix: u8,
@@ -85,7 +86,7 @@ impl ActionExec {
         Self {
             name,
             commands,
-            validate: Vec::new(),
+            validation_commands: Vec::new(),
             env: HashMap::new(),
         }
     }
@@ -131,7 +132,7 @@ impl ActionExec {
 
     /// Validate that the action can be executed.
     pub fn validate(&self) -> crate::Result<()> {
-        for template in &self.validate {
+        for template in &self.validation_commands {
             let cmd_str = template
                 .replace("<ip>", "127.0.0.1")
                 .replace("<prefix>", "32")
@@ -164,6 +165,7 @@ impl ActionExec {
     }
 
     /// Get commands for the current platform.
+    #[must_use]
     pub fn platform_commands(&self) -> &[String] {
         self.commands.for_current_platform()
     }

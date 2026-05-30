@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::PlatformCommands;
 
 /// Detected firewall type.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Firewall {
     /// Linux iptables.
     Iptables,
@@ -22,7 +22,7 @@ pub enum Firewall {
 }
 
 /// Detected init system.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InitSystem {
     /// systemd.
     Systemd,
@@ -36,8 +36,33 @@ pub enum InitSystem {
     Unknown,
 }
 
+impl std::fmt::Display for Firewall {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Iptables => write!(f, "iptables"),
+            Self::Nftables => write!(f, "nftables"),
+            Self::Pf => write!(f, "pf"),
+            Self::Firewalld => write!(f, "firewalld"),
+            Self::WindowsFirewall => write!(f, "windows-firewall"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
+impl std::fmt::Display for InitSystem {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Systemd => write!(f, "systemd"),
+            Self::OpenRC => write!(f, "openrc"),
+            Self::Launchd => write!(f, "launchd"),
+            Self::Rc => write!(f, "rc"),
+            Self::Unknown => write!(f, "unknown"),
+        }
+    }
+}
+
 /// Full platform detection result.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PlatformInfo {
     /// Detected operating system.
     pub os: String,
@@ -111,7 +136,9 @@ pub fn default_ban_commands(firewall: Firewall) -> PlatformCommands {
             vec![],
         ),
         Firewall::Nftables => PlatformCommands::new(
-            vec!["nft add rule ip filter INPUT ip saddr <ip> drop".to_string()],
+            vec![
+                "nft add set ip filter toride_banned \\{ type ipv4_addr \\; \\} 2>/dev/null; nft add element ip filter toride_banned \\{ <ip> \\}".to_string(),
+            ],
             vec![],
             vec![],
         ),
@@ -143,7 +170,7 @@ pub fn default_unban_commands(firewall: Firewall) -> PlatformCommands {
             vec![],
         ),
         Firewall::Nftables => PlatformCommands::new(
-            vec!["nft delete rule ip filter INPUT handle <ip>".to_string()],
+            vec!["nft delete element ip filter toride_banned \\{ <ip> \\}".to_string()],
             vec![],
             vec![],
         ),

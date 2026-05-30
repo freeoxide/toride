@@ -54,6 +54,7 @@ impl PlatformCommands {
     ///
     /// Returns an empty slice for unsupported platforms instead of falling back
     /// to the Linux commands.
+    #[must_use]
     pub fn for_current_platform(&self) -> &[String] {
         if cfg!(target_os = "linux") {
             &self.linux
@@ -68,7 +69,7 @@ impl PlatformCommands {
 }
 
 /// Result of scanning a log file.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScanResult {
     /// New ban entries generated from this scan.
     pub new_bans: Vec<BanEntry>,
@@ -81,7 +82,7 @@ pub struct ScanResult {
 }
 
 /// Status information for a single jail.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct JailStatus {
     /// Name of the jail.
     pub name: String,
@@ -98,7 +99,7 @@ pub struct JailStatus {
 }
 
 /// Overall fail2ban status.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Fail2BanStatus {
     /// Whether the fail2ban daemon is running.
     pub running: bool,
