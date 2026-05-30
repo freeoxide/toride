@@ -1,0 +1,44 @@
+# Toride Lima sandbox — Ubuntu 24.04 LTS
+# See docs/lima-sandbox.md for full contract.
+#
+# Usage:
+#   limactl create --tty=false --name=toride-u2404 --mount-none dev/sandbox/lima/templates/ubuntu-24.04.yaml
+#   limactl start toride-u2404
+
+minimumLimaVersion: "2.0.0"
+vmType: vz
+arch: default
+cpus: 2
+memory: 4GiB
+disk: 24GiB
+
+images:
+  # Prefer local images when present. Lima falls back to downloading from
+  # the location URL if the file is missing, so we list both paths.
+  - location: "~/os/toride/dev/sandbox/lima/images/ubuntu-24.04/image-aarch64.qcow2"
+    arch: "aarch64"
+  - location: "~/os/toride/dev/sandbox/lima/images/ubuntu-24.04/image-x86_64.qcow2"
+    arch: "x86_64"
+
+mounts: []
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      if command -v cloud-init >/dev/null 2>&1; then
+        cloud-init status --wait || true
+      fi
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update
+      apt-get install -y ca-certificates curl sudo openssh-server systemd systemd-sysv iproute2
+      systemctl enable ssh || true
+      systemctl start ssh || true
+
+# Lima's default user is fine. We do not add extra users or keys.
+# The destructive test (Toride apply) is responsible for user setup.
