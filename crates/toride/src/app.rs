@@ -32,6 +32,7 @@ impl Default for App {
 }
 
 impl App {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             screen: Screen::Welcome,
@@ -93,6 +94,11 @@ impl App {
         }
     }
 
+    /// Run the main event loop.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the terminal draw fails or the event stream encounters an error.
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         let mut events = EventStream::new();
         let mut status_rx: Option<oneshot::Receiver<TorideStatus>> = None;

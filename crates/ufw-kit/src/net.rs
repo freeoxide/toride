@@ -22,13 +22,13 @@ pub fn is_link_local_v4(ip: Ipv4Addr) -> bool {
     ip.octets()[0] == 169 && ip.octets()[1] == 254
 }
 
-/// Check if an IPv6 address is link-local (fe80::/10).
+/// Check if an IPv6 address is link-local (`fe80::/10`).
 #[must_use]
 pub fn is_link_local_v6(ip: Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xffc0) == 0xfe80
 }
 
-/// Check if an IPv6 address is unique local (fc00::/7).
+/// Check if an IPv6 address is unique local (`fc00::/7`).
 #[must_use]
 pub fn is_unique_local_v6(ip: Ipv6Addr) -> bool {
     (ip.segments()[0] & 0xfe00) == 0xfc00
@@ -62,10 +62,9 @@ pub fn is_public_ip(ip: IpAddr) -> bool {
 #[must_use]
 pub fn is_ipv6(addr: &Address) -> bool {
     match addr {
-        Address::Any => false,
         Address::Ip(IpAddr::V6(_)) => true,
         Address::Net(net) => matches!(net, ipnet::IpNet::V6(_)),
-        _ => false,
+        Address::Ip(_) | Address::Any => false,
     }
 }
 
@@ -73,10 +72,9 @@ pub fn is_ipv6(addr: &Address) -> bool {
 #[must_use]
 pub fn is_ipv4(addr: &Address) -> bool {
     match addr {
-        Address::Any => false,
         Address::Ip(IpAddr::V4(_)) => true,
         Address::Net(net) => matches!(net, ipnet::IpNet::V4(_)),
-        _ => false,
+        Address::Ip(_) | Address::Any => false,
     }
 }
 

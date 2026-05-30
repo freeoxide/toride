@@ -37,6 +37,7 @@ impl Default for WelcomeScreen {
 }
 
 impl WelcomeScreen {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             gradient_cache: None,
@@ -47,6 +48,7 @@ impl WelcomeScreen {
         self.gradient_cache = None;
     }
 
+    #[must_use]
     pub fn handle_key(&self, code: ratatui::crossterm::event::KeyCode) -> Option<Action> {
         use ratatui::crossterm::event::KeyCode;
         match code {

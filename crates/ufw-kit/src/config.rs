@@ -2,6 +2,8 @@
 //!
 //! Provides safe key-value editing with comment preservation.
 
+use std::fmt::Write;
+
 use crate::spec::UfwConfig;
 
 /// Parse `/etc/default/ufw` content.
@@ -45,7 +47,7 @@ pub fn update_config_key(content: &str, key: &str, value: &str) -> String {
 
         if let Some((k, _)) = parse_kv(trimmed) {
             if k == key {
-                result.push_str(&format!("{key}={value}\n"));
+                let _ = writeln!(result, "{key}={value}");
                 found = true;
                 continue;
             }
@@ -56,7 +58,7 @@ pub fn update_config_key(content: &str, key: &str, value: &str) -> String {
     }
 
     if !found {
-        result.push_str(&format!("{key}={value}\n"));
+        let _ = writeln!(result, "{key}={value}");
     }
 
     result

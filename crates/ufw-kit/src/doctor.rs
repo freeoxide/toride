@@ -13,53 +13,53 @@ pub fn doctor(ufw: &Ufw, scope: DoctorScope) -> Result<Vec<Finding>> {
 
     match scope {
         DoctorScope::All => {
-            findings.extend(check_binaries(ufw)?);
-            findings.extend(check_service(ufw)?);
-            findings.extend(check_config(ufw)?);
-            findings.extend(check_policy(ufw)?);
-            findings.extend(check_rules(ufw)?);
-            findings.extend(check_ssh(ufw)?);
-            findings.extend(check_ipv6(ufw)?);
-            findings.extend(check_logging(ufw)?);
-            findings.extend(check_permissions(ufw)?);
+            findings.extend(check_binaries(ufw));
+            findings.extend(check_service(ufw));
+            findings.extend(check_config(ufw));
+            findings.extend(check_policy(ufw));
+            findings.extend(check_rules(ufw));
+            findings.extend(check_ssh(ufw));
+            findings.extend(check_ipv6(ufw));
+            findings.extend(check_logging(ufw));
+            findings.extend(check_app_profiles(ufw));
+            findings.extend(check_permissions(ufw));
         }
-        DoctorScope::Binaries => findings.extend(check_binaries(ufw)?),
-        DoctorScope::Service => findings.extend(check_service(ufw)?),
-        DoctorScope::Policy => findings.extend(check_policy(ufw)?),
-        DoctorScope::Rules => findings.extend(check_rules(ufw)?),
-        DoctorScope::Ssh => findings.extend(check_ssh(ufw)?),
-        DoctorScope::Ipv6 => findings.extend(check_ipv6(ufw)?),
-        DoctorScope::Logging => findings.extend(check_logging(ufw)?),
-        DoctorScope::AppProfiles => findings.extend(check_app_profiles(ufw)?),
-        DoctorScope::Permissions => findings.extend(check_permissions(ufw)?),
+        DoctorScope::Binaries => findings.extend(check_binaries(ufw)),
+        DoctorScope::Service => findings.extend(check_service(ufw)),
+        DoctorScope::Policy => findings.extend(check_policy(ufw)),
+        DoctorScope::Rules => findings.extend(check_rules(ufw)),
+        DoctorScope::Ssh => findings.extend(check_ssh(ufw)),
+        DoctorScope::Ipv6 => findings.extend(check_ipv6(ufw)),
+        DoctorScope::Logging => findings.extend(check_logging(ufw)),
+        DoctorScope::AppProfiles => findings.extend(check_app_profiles(ufw)),
+        DoctorScope::Permissions => findings.extend(check_permissions(ufw)),
     }
 
     Ok(findings)
 }
 
 /// Check that required binaries exist.
-fn check_binaries(ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_binaries(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     // Check ufw binary
-    match ufw.find_ufw() {
-        Ok(_) => findings.push(Finding {
+    if ufw.find_ufw().is_ok() {
+        findings.push(Finding {
             id: "bin:ufw:exists",
             severity: Severity::Ok,
             title: "UFW binary found".into(),
             detail: "The ufw binary is available on this system.".into(),
             fix: None,
-        }),
-        Err(_) => {
-            findings.push(Finding {
-                id: "bin:ufw:missing",
-                severity: Severity::Critical,
-                title: "UFW binary not found".into(),
-                detail: "The ufw binary is not installed or not in PATH.".into(),
-                fix: Some("Install ufw: sudo apt install ufw (Debian/Ubuntu) or sudo pacman -S ufw (Arch)".into()),
-            });
-            return Ok(findings); // No point checking further
-        }
+        });
+    } else {
+        findings.push(Finding {
+            id: "bin:ufw:missing",
+            severity: Severity::Critical,
+            title: "UFW binary not found".into(),
+            detail: "The ufw binary is not installed or not in PATH.".into(),
+            fix: Some("Install ufw: sudo apt install ufw (Debian/Ubuntu) or sudo pacman -S ufw (Arch)".into()),
+        });
+        return findings; // No point checking further
     }
 
     // Check ufw version
@@ -80,11 +80,11 @@ fn check_binaries(ufw: &Ufw) -> Result<Vec<Finding>> {
         }),
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check UFW service status.
-fn check_service(ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_service(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     match ufw.status() {
@@ -116,11 +116,11 @@ fn check_service(ufw: &Ufw) -> Result<Vec<Finding>> {
         }),
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check UFW configuration files.
-fn check_config(_ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_config(_ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     let config_files = [
@@ -151,11 +151,11 @@ fn check_config(_ufw: &Ufw) -> Result<Vec<Finding>> {
         }
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check default policies.
-fn check_policy(ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_policy(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     match ufw.status_verbose() {
@@ -217,11 +217,11 @@ fn check_policy(ufw: &Ufw) -> Result<Vec<Finding>> {
         }),
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check rules for safety issues.
-fn check_rules(ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_rules(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     match ufw.status() {
@@ -273,48 +273,45 @@ fn check_rules(ufw: &Ufw) -> Result<Vec<Finding>> {
         }),
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check SSH access safety.
-fn check_ssh(ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    match ufw.status() {
-        Ok(status) => {
-            let has_ssh_rule = status.rules.iter().any(|rule| {
-                let raw = rule.raw.to_lowercase();
-                raw.contains("22") || raw.contains("ssh")
-            });
+    if let Ok(status) = ufw.status() {
+        let has_ssh_rule = status.rules.iter().any(|rule| {
+            let raw = rule.raw.to_lowercase();
+            raw.contains("22") || raw.contains("ssh")
+        });
 
-            if status.active {
-                if has_ssh_rule {
-                    findings.push(Finding {
-                        id: "ssh:allowed",
-                        severity: Severity::Ok,
-                        title: "SSH access is allowed".into(),
-                        detail: "An SSH allow rule exists in the firewall.".into(),
-                        fix: None,
-                    });
-                } else {
-                    findings.push(Finding {
-                        id: "ssh:no-rule",
-                        severity: Severity::Critical,
-                        title: "No SSH allow rule found".into(),
-                        detail: "UFW is active but no SSH allow rule exists. This may lock you out.".into(),
-                        fix: Some("Add SSH allow rule: ufw allow 22/tcp".into()),
-                    });
-                }
+        if status.active {
+            if has_ssh_rule {
+                findings.push(Finding {
+                    id: "ssh:allowed",
+                    severity: Severity::Ok,
+                    title: "SSH access is allowed".into(),
+                    detail: "An SSH allow rule exists in the firewall.".into(),
+                    fix: None,
+                });
+            } else {
+                findings.push(Finding {
+                    id: "ssh:no-rule",
+                    severity: Severity::Critical,
+                    title: "No SSH allow rule found".into(),
+                    detail: "UFW is active but no SSH allow rule exists. This may lock you out.".into(),
+                    fix: Some("Add SSH allow rule: ufw allow 22/tcp".into()),
+                });
             }
         }
-        Err(_) => {}
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check IPv6 configuration.
-fn check_ipv6(ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     // Check if IPv6 is enabled in UFW config
@@ -333,20 +330,17 @@ fn check_ipv6(ufw: &Ufw) -> Result<Vec<Finding>> {
         });
 
         // Check for IPv6 rules
-        match ufw.status() {
-            Ok(status) => {
-                let ipv6_rules: Vec<_> = status.rules.iter().filter(|r| r.ipv6).collect();
-                if ipv6_rules.is_empty() {
-                    findings.push(Finding {
-                        id: "ipv6:no-rules",
-                        severity: Severity::Info,
-                        title: "No IPv6-specific rules".into(),
-                        detail: "IPv6 is enabled but no IPv6-specific rules were found.".into(),
-                        fix: Some("Consider adding IPv6 rules for dual-stack coverage.".into()),
-                    });
-                }
+        if let Ok(status) = ufw.status() {
+            let ipv6_rules: Vec<_> = status.rules.iter().filter(|r| r.ipv6).collect();
+            if ipv6_rules.is_empty() {
+                findings.push(Finding {
+                    id: "ipv6:no-rules",
+                    severity: Severity::Info,
+                    title: "No IPv6-specific rules".into(),
+                    detail: "IPv6 is enabled but no IPv6-specific rules were found.".into(),
+                    fix: Some("Consider adding IPv6 rules for dual-stack coverage.".into()),
+                });
             }
-            Err(_) => {}
         }
     } else {
         findings.push(Finding {
@@ -358,55 +352,52 @@ fn check_ipv6(ufw: &Ufw) -> Result<Vec<Finding>> {
         });
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check logging configuration.
-fn check_logging(ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_logging(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
-    match ufw.status_verbose() {
-        Ok(status) => {
-            if let Some(level) = &status.logging_level {
-                match level {
-                    crate::spec::LoggingLevel::Off => {
-                        findings.push(Finding {
-                            id: "log:off",
-                            severity: Severity::Info,
-                            title: "Logging is disabled".into(),
-                            detail: "UFW logging is currently off.".into(),
-                            fix: Some("Enable logging: ufw logging on".into()),
-                        });
-                    }
-                    crate::spec::LoggingLevel::High | crate::spec::LoggingLevel::Full => {
-                        findings.push(Finding {
-                            id: "log:high",
-                            severity: Severity::Warning,
-                            title: "Logging level is high/full".into(),
-                            detail: format!("Logging level: {level}. This can generate significant disk I/O."),
-                            fix: Some("Consider using 'low' or 'medium' logging, or per-rule logging instead.".into()),
-                        });
-                    }
-                    _ => {
-                        findings.push(Finding {
-                            id: "log:ok",
-                            severity: Severity::Ok,
-                            title: "Logging level is reasonable".into(),
-                            detail: format!("Logging level: {level}"),
-                            fix: None,
-                        });
-                    }
+    if let Ok(status) = ufw.status_verbose() {
+        if let Some(level) = &status.logging_level {
+            match level {
+                crate::spec::LoggingLevel::Off => {
+                    findings.push(Finding {
+                        id: "log:off",
+                        severity: Severity::Info,
+                        title: "Logging is disabled".into(),
+                        detail: "UFW logging is currently off.".into(),
+                        fix: Some("Enable logging: ufw logging on".into()),
+                    });
+                }
+                crate::spec::LoggingLevel::High | crate::spec::LoggingLevel::Full => {
+                    findings.push(Finding {
+                        id: "log:high",
+                        severity: Severity::Warning,
+                        title: "Logging level is high/full".into(),
+                        detail: format!("Logging level: {level}. This can generate significant disk I/O."),
+                        fix: Some("Consider using 'low' or 'medium' logging, or per-rule logging instead.".into()),
+                    });
+                }
+                _ => {
+                    findings.push(Finding {
+                        id: "log:ok",
+                        severity: Severity::Ok,
+                        title: "Logging level is reasonable".into(),
+                        detail: format!("Logging level: {level}"),
+                        fix: None,
+                    });
                 }
             }
         }
-        Err(_) => {}
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check application profiles.
-fn check_app_profiles(ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     match ufw.app_list() {
@@ -438,11 +429,11 @@ fn check_app_profiles(ufw: &Ufw) -> Result<Vec<Finding>> {
         }),
     }
 
-    Ok(findings)
+    findings
 }
 
 /// Check file permissions.
-fn check_permissions(_ufw: &Ufw) -> Result<Vec<Finding>> {
+fn check_permissions(_ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     let paths_to_check = [
@@ -519,7 +510,7 @@ fn check_permissions(_ufw: &Ufw) -> Result<Vec<Finding>> {
         }
     }
 
-    Ok(findings)
+    findings
 }
 
 #[cfg(test)]

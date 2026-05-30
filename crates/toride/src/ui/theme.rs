@@ -175,6 +175,7 @@ pub enum Theme {
 }
 
 impl Theme {
+    #[must_use]
     pub fn palette(self) -> &'static Palette {
         match self {
             Theme::Catppuccin => &CATPPUCCIN,
@@ -186,6 +187,7 @@ impl Theme {
         }
     }
 
+    #[must_use]
     pub fn label(self) -> &'static str {
         match self {
             Theme::Catppuccin => "Catppuccin Mocha",
@@ -197,6 +199,7 @@ impl Theme {
         }
     }
 
+    #[must_use]
     pub fn all() -> &'static [Theme] {
         &[
             Theme::Catppuccin,

@@ -38,6 +38,7 @@ pub enum Viewport {
 }
 
 impl Viewport {
+    #[must_use]
     pub fn from_area(area: Rect) -> Self {
         let (w, h) = (area.width, area.height);
         if w < MIN_WIDTH || h < MIN_HEIGHT {
@@ -55,6 +56,7 @@ impl Viewport {
 // ── Layout helpers ───────────────────────────────────────────────────────────
 
 /// Center column constraint — caps at 72 columns but shrinks on narrow terminals.
+#[must_use]
 pub fn center_column() -> Constraint {
     Constraint::Max(FULL_W)
 }
@@ -82,6 +84,7 @@ pub fn render_too_small(frame: &mut Frame, p: Palette) -> bool {
 
 /// Truncate a string to `max_width` Unicode-width columns, appending ".." if it
 /// doesn't fit.
+#[must_use]
 pub fn truncate_str(s: &str, max_width: usize) -> String {
     if max_width < 2 {
         return String::new();
@@ -106,6 +109,7 @@ pub fn truncate_str(s: &str, max_width: usize) -> String {
 /// Truncate each line of a logo (array of `&str`) to `max_width`, appending ".."
 /// when a row overflows. Returns styled `Line`s — borrows the original slice when
 /// no truncation is needed, avoiding allocation.
+#[must_use]
 pub fn truncate_logo<'a>(rows: &[&'a str], max_width: u16, style: Style) -> Vec<Line<'a>> {
     let mw = max_width as usize;
     rows.iter()

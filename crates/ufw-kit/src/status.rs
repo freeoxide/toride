@@ -48,7 +48,7 @@ pub fn parse_status_verbose(output: &str) -> Result<UfwStatus> {
         // Check logging level
         if trimmed.starts_with("Logging:") {
             let rest = trimmed.strip_prefix("Logging:").unwrap().trim();
-            status.logging_level = parse_logging_level(rest);
+            status.logging_level = Some(parse_logging_level(rest));
             continue;
         }
 
@@ -261,7 +261,6 @@ fn parse_policy(s: &str) -> Option<Policy> {
         "allow" | "accept" => Some(Policy::Allow),
         "deny" | "drop" => Some(Policy::Deny),
         "reject" => Some(Policy::Reject),
-        "disabled" => None,
         _ => None,
     }
 }
@@ -269,7 +268,7 @@ fn parse_policy(s: &str) -> Option<Policy> {
 /// Parse a logging level string.
 ///
 /// Handles formats like "on (low)", "on", "off", "low", "medium", "high", "full".
-fn parse_logging_level(s: &str) -> Option<LoggingLevel> {
+fn parse_logging_level(s: &str) -> LoggingLevel {
     let lower = s.trim().to_lowercase();
 
     // Handle "on (level)" format first — extract the parenthesized level
@@ -277,19 +276,18 @@ fn parse_logging_level(s: &str) -> Option<LoggingLevel> {
         if let Some(end) = lower.find(')') {
             let level_str = lower[start + 1..end].trim();
             return match level_str {
-                "full" => Some(LoggingLevel::Full),
-                "high" => Some(LoggingLevel::High),
-                "medium" => Some(LoggingLevel::Medium),
-                "low" => Some(LoggingLevel::Low),
-                "on" => Some(LoggingLevel::On),
-                "off" => Some(LoggingLevel::Off),
-                _ => Some(LoggingLevel::On),
+                "full" => LoggingLevel::Full,
+                "high" => LoggingLevel::High,
+                "medium" => LoggingLevel::Medium,
+                "low" => LoggingLevel::Low,
+                "off" => LoggingLevel::Off,
+                _ => LoggingLevel::On,
             };
         }
     }
 
     // Plain values
-    let level = if lower.contains("full") {
+    if lower.contains("full") {
         LoggingLevel::Full
     } else if lower.contains("high") {
         LoggingLevel::High
@@ -301,8 +299,7 @@ fn parse_logging_level(s: &str) -> Option<LoggingLevel> {
         LoggingLevel::On
     } else {
         LoggingLevel::Off
-    };
-    Some(level)
+    }
 }
 
 /// Parse app default policy string.

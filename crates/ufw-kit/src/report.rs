@@ -1,5 +1,7 @@
 //! Report rendering — converts doctor findings into human-readable output.
 
+use std::fmt::Write;
+
 use crate::spec::{Finding, Severity};
 
 /// Render a list of findings as a human-readable text report.
@@ -15,35 +17,36 @@ pub fn render_findings(findings: &[Finding]) -> String {
     let ok = findings.iter().filter(|f| f.severity == Severity::Ok).count();
     let info = findings.iter().filter(|f| f.severity == Severity::Info).count();
 
-    out.push_str(&format!(
+    let _ = write!(
+        out,
         "Summary: {ok} OK, {info} info, {warnings} warnings, {errors} errors, {critical} critical\n\n"
-    ));
+    );
 
     // Show critical and errors first
     for finding in findings.iter().filter(|f| f.severity >= Severity::Error) {
-        out.push_str(&format!("[{}] {}\n", finding.severity, finding.title));
-        out.push_str(&format!("  {}\n", finding.detail));
+        let _ = writeln!(out, "[{}] {}", finding.severity, finding.title);
+        let _ = writeln!(out, "  {}", finding.detail);
         if let Some(fix) = &finding.fix {
-            out.push_str(&format!("  Fix: {fix}\n"));
+            let _ = writeln!(out, "  Fix: {fix}");
         }
         out.push('\n');
     }
 
     // Then warnings
     for finding in findings.iter().filter(|f| f.severity == Severity::Warning) {
-        out.push_str(&format!("[{}] {}\n", finding.severity, finding.title));
-        out.push_str(&format!("  {}\n", finding.detail));
+        let _ = writeln!(out, "[{}] {}", finding.severity, finding.title);
+        let _ = writeln!(out, "  {}", finding.detail);
         if let Some(fix) = &finding.fix {
-            out.push_str(&format!("  Fix: {fix}\n"));
+            let _ = writeln!(out, "  Fix: {fix}");
         }
         out.push('\n');
     }
 
     // Then info and OK
     for finding in findings.iter().filter(|f| f.severity <= Severity::Info) {
-        out.push_str(&format!("[{}] {}\n", finding.severity, finding.title));
+        let _ = writeln!(out, "[{}] {}", finding.severity, finding.title);
         if !finding.detail.is_empty() {
-            out.push_str(&format!("  {}\n", finding.detail));
+            let _ = writeln!(out, "  {}", finding.detail);
         }
     }
 

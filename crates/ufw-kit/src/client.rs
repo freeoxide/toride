@@ -39,8 +39,7 @@ impl Ufw {
     pub fn find_ufw(&self) -> Result<String> {
         if self.runner.binary_exists("ufw") {
             Ok(which::which("ufw")
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|_| "ufw".into()))
+                .map_or_else(|_| "ufw".into(), |p| p.to_string_lossy().into_owned()))
         } else {
             Err(Error::UfwNotFound(
                 "ufw binary not found on system".into(),
@@ -150,8 +149,7 @@ impl Ufw {
                 "ufw-kit-backup-{}",
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_secs())
-                    .unwrap_or(0)
+                    .map_or(0, |d| d.as_secs())
             ));
             let bundle = crate::backup::create_backup(&paths)
                 .map_err(|e| Error::BackupFailed(format!("pre-reset backup: {e}")))?;

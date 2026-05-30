@@ -1091,18 +1091,10 @@ impl Default for ResetOptions {
 }
 
 /// Options for deleting rules.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct DeleteOptions {
     /// Allow deletion by rule number (dangerous — numbers shift).
     pub allow_numbered_delete: bool,
-}
-
-impl Default for DeleteOptions {
-    fn default() -> Self {
-        Self {
-            allow_numbered_delete: false,
-        }
-    }
 }
 
 // ============================================================================
