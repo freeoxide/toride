@@ -28,21 +28,6 @@ pub struct BanEntry {
     pub reason: Option<String>,
 }
 
-/// Log entry representing a parsed log line.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct LogEntry {
-    /// Timestamp of the log entry.
-    pub timestamp: DateTime<Utc>,
-    /// Matched IP address, if any.
-    pub ip: Option<IpAddr>,
-    /// Matched line number in the log file.
-    pub line_number: u64,
-    /// The raw log line.
-    pub raw_line: String,
-    /// Name of the jail that matched.
-    pub jail_name: String,
-}
-
 /// Platform command definition for different operating systems.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct PlatformCommands {
@@ -128,6 +113,22 @@ impl fmt::Display for Fail2BanStatus {
             writeln!(f, "  - {}: {} banned IPs", jail.name, jail.banned_ips.len())?;
         }
         Ok(())
+    }
+}
+
+/// Execution mode for ban/unban operations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionMode {
+    /// Execute the action (actually run commands).
+    Execute,
+    /// Dry run - log what would happen without executing.
+    DryRun,
+}
+
+impl ExecutionMode {
+    /// Returns true if this is a dry run.
+    pub fn is_dry_run(self) -> bool {
+        matches!(self, Self::DryRun)
     }
 }
 

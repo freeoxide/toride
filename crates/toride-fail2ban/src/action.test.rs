@@ -68,58 +68,6 @@ fn action_vars_new_with_max_values() {
 }
 
 // ---------------------------------------------------------------------------
-// ActionVars::to_map
-// ---------------------------------------------------------------------------
-
-#[test]
-fn to_map_returns_all_six_keys() {
-    let vars = default_vars();
-    let map = vars.to_map();
-
-    assert_eq!(map.len(), 6);
-    assert!(map.contains_key("<ip>"));
-    assert!(map.contains_key("<prefix>"));
-    assert!(map.contains_key("<jail>"));
-    assert!(map.contains_key("<ban-time>"));
-    assert!(map.contains_key("<fail-count>"));
-    assert!(map.contains_key("<log-path>"));
-}
-
-#[test]
-fn to_map_values_match_fields() {
-    let vars = ActionVars::new("10.0.0.5", 24, "nginx", 1800, 3, "/var/log/nginx/access.log");
-    let map = vars.to_map();
-
-    assert_eq!(map["<ip>"], "10.0.0.5");
-    assert_eq!(map["<prefix>"], "24");
-    assert_eq!(map["<jail>"], "nginx");
-    assert_eq!(map["<ban-time>"], "1800");
-    assert_eq!(map["<fail-count>"], "3");
-    assert_eq!(map["<log-path>"], "/var/log/nginx/access.log");
-}
-
-#[test]
-fn to_map_numeric_fields_are_stringified() {
-    let vars = ActionVars::new("1.2.3.4", 16, "test", 99999, 42, "/dev/null");
-    let map = vars.to_map();
-
-    // Numeric values must appear as decimal strings.
-    assert_eq!(map["<prefix>"], "16");
-    assert_eq!(map["<ban-time>"], "99999");
-    assert_eq!(map["<fail-count>"], "42");
-}
-
-#[test]
-fn to_map_zero_prefix_and_times() {
-    let vars = ActionVars::new("0.0.0.0", 0, "j", 0, 0, "/x");
-    let map = vars.to_map();
-
-    assert_eq!(map["<prefix>"], "0");
-    assert_eq!(map["<ban-time>"], "0");
-    assert_eq!(map["<fail-count>"], "0");
-}
-
-// ---------------------------------------------------------------------------
 // ActionExec::new
 // ---------------------------------------------------------------------------
 

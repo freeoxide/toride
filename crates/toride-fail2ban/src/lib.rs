@@ -29,7 +29,7 @@
 
 pub mod action;
 pub mod ban;
-pub mod cli;
+pub(crate) mod cli;
 pub mod config;
 pub mod detector;
 pub mod jail;

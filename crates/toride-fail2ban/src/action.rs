@@ -61,17 +61,6 @@ impl ActionVars {
         }
     }
 
-    /// Build a variable map for template expansion.
-    pub fn to_map(&self) -> HashMap<String, String> {
-        let mut map = HashMap::new();
-        map.insert("<ip>".to_string(), self.ip.clone());
-        map.insert("<prefix>".to_string(), self.prefix.to_string());
-        map.insert("<jail>".to_string(), self.jail_name.clone());
-        map.insert("<ban-time>".to_string(), self.ban_time.to_string());
-        map.insert("<fail-count>".to_string(), self.fail_count.to_string());
-        map.insert("<log-path>".to_string(), self.log_path.clone());
-        map
-    }
 }
 
 impl ActionExec {
@@ -87,12 +76,13 @@ impl ActionExec {
 
     /// Expand command templates with the given variables.
     pub fn expand_command(template: &str, vars: &ActionVars) -> String {
-        let var_map = vars.to_map();
-        let mut result = template.to_string();
-        for (key, value) in &var_map {
-            result = result.replace(key, value);
-        }
-        result
+        template
+            .replace("<ip>", &vars.ip)
+            .replace("<prefix>", &vars.prefix.to_string())
+            .replace("<jail>", &vars.jail_name)
+            .replace("<ban-time>", &vars.ban_time.to_string())
+            .replace("<fail-count>", &vars.fail_count.to_string())
+            .replace("<log-path>", &vars.log_path)
     }
 
     /// Execute the action for the current platform.

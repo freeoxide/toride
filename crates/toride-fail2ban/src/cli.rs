@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::types::ExecutionMode;
+
 /// Fail2Ban CLI for toride.
 #[derive(Parser, Debug)]
 #[command(name = "toride-fail2ban", about = "Fail2Ban-style intrusion prevention")]
@@ -23,6 +25,17 @@ pub struct Cli {
 
     #[command(subcommand)]
     pub command: Commands,
+}
+
+impl Cli {
+    /// Convert the `--dry-run` flag into an [`ExecutionMode`].
+    pub fn execution_mode(&self) -> ExecutionMode {
+        if self.dry_run {
+            ExecutionMode::DryRun
+        } else {
+            ExecutionMode::Execute
+        }
+    }
 }
 
 /// Available CLI subcommands.

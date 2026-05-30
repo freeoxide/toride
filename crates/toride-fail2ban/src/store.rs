@@ -1,6 +1,17 @@
 //! JSON-based persistent storage for ban entries and log journals.
 //!
 //! Uses atomic write (temp file + rename) to prevent corruption.
+//!
+//! Design note: `Store` is intentionally stateless -- every public method reads
+//! the JSON file from disk and writes it back after mutation. This keeps the
+//! implementation simple and correct for a single-process tool: there is no
+//! in-memory cache that can drift out of sync with the on-disk state, and
+//! concurrent writers (if any) always see the latest snapshot. The trade-off is
+//! that each operation pays the cost of a full deserialize/serialize round-trip,
+//! which is acceptable at the expected data volumes (hundreds of bans). If
+//! profiling reveals this becomes a bottleneck, interior mutability via
+//! `RefCell<Option<StoreData>>` can be added behind the existing `&self` API
+//! without changing callers.
 
 use std::fs;
 use std::net::IpAddr;
@@ -82,11 +93,13 @@ impl Store {
     pub fn add_ban(&self, entry: BanEntry) -> crate::Result<()> {
         let mut data = self.load()?;
 
-        let already_banned = data.active_bans.iter().any(|b| {
-            b.ip == entry.ip && b.jail_name == entry.jail_name
-        });
-        if already_banned {
-            return Err(crate::Error::AlreadyBanned(entry.ip.to_string()));
+        // Extract the fields used for the duplicate check so the lookup borrows
+        // only what it needs, leaving `entry` free to be moved into the Vec on
+        // the happy path without any implicit re-borrow.
+        let ip = entry.ip;
+        let jail_name = &entry.jail_name;
+        if data.active_bans.iter().any(|b| b.ip == ip && b.jail_name == *jail_name) {
+            return Err(crate::Error::AlreadyBanned(ip.to_string()));
         }
 
         data.active_bans.push(entry);
@@ -120,12 +133,17 @@ impl Store {
         let mut data = self.load()?;
         let now = Utc::now();
 
-        let (expired, active): (Vec<_>, Vec<_>) = data.active_bans.into_iter().partition(|b| {
+        // Partition active bans into expired and still-active, consuming the
+        // original Vec via into_iter to avoid cloning BanEntry values.
+        let active_bans = std::mem::take(&mut data.active_bans);
+        let (expired, active): (Vec<_>, Vec<_>) = active_bans.into_iter().partition(|b| {
             b.expires_at.is_some_and(|exp| exp <= now)
         });
 
         data.active_bans = active;
-        data.history.extend(expired.clone());
+        // Clone each entry into history in one allocation pass, avoiding the
+        // temporary Vec that `extend(expired.clone())` would create.
+        data.history.extend_from_slice(&expired);
         self.save(&data)?;
 
         Ok(expired)

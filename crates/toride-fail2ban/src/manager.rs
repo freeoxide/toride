@@ -8,7 +8,7 @@ use crate::jail::Jail;
 use crate::paths::Fail2BanPaths;
 use crate::store::Store;
 use crate::support::{self, Firewall};
-use crate::types::{Fail2BanStatus, JailStatus};
+use crate::types::{ExecutionMode, Fail2BanStatus, JailStatus};
 
 /// Top-level manager for all fail2ban operations.
 pub struct Fail2BanManager {
@@ -73,11 +73,11 @@ impl Fail2BanManager {
     }
 
     /// Scan all active jails.
-    pub fn scan_all(&mut self, dry_run: bool) -> crate::Result<HashMap<String, crate::types::ScanResult>> {
+    pub fn scan_all(&mut self, mode: ExecutionMode) -> crate::Result<HashMap<String, crate::types::ScanResult>> {
         let mut results = HashMap::new();
 
         for (name, jail) in &mut self.jails {
-            let result = jail.scan(dry_run)?;
+            let result = jail.scan(mode)?;
             results.insert(name.clone(), result);
         }
 
@@ -85,28 +85,28 @@ impl Fail2BanManager {
     }
 
     /// Scan a specific jail.
-    pub fn scan_jail(&mut self, name: &str, dry_run: bool) -> crate::Result<crate::types::ScanResult> {
+    pub fn scan_jail(&mut self, name: &str, mode: ExecutionMode) -> crate::Result<crate::types::ScanResult> {
         let jail = self.jails.get_mut(name).ok_or_else(|| {
             crate::Error::JailNotFound(name.to_string())
         })?;
-        jail.scan(dry_run)
+        jail.scan(mode)
     }
 
     /// Ban an IP in a specific jail.
-    pub fn ban_ip(&self, jail_name: &str, ip: IpAddr, dry_run: bool) -> crate::Result<()> {
+    pub fn ban_ip(&self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
         let jail = self.jails.get(jail_name).ok_or_else(|| {
             crate::Error::JailNotFound(jail_name.to_string())
         })?;
-        jail.ban_ip(ip, dry_run)?;
+        jail.ban_ip(ip, mode)?;
         Ok(())
     }
 
     /// Unban an IP from a specific jail.
-    pub fn unban_ip(&self, jail_name: &str, ip: IpAddr, dry_run: bool) -> crate::Result<()> {
+    pub fn unban_ip(&self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
         let jail = self.jails.get(jail_name).ok_or_else(|| {
             crate::Error::JailNotFound(jail_name.to_string())
         })?;
-        jail.unban_ip(ip, dry_run)?;
+        jail.unban_ip(ip, mode)?;
         Ok(())
     }
 

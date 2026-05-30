@@ -1,5 +1,5 @@
 use super::*;
-use std::net::IpAddr;
+use std::net::{IpAddr, Ipv6Addr};
 use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
@@ -578,4 +578,137 @@ fn ban_manager_unban_wrong_jail_returns_not_banned() {
         crate::Error::NotBanned(_) => {}
         other => panic!("expected NotBanned, got: {other:?}"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: ban duration boundaries
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ban_duration_zero_creates_instantly_expired_ban() {
+    let (manager, _dir) = setup_manager();
+    let ip: IpAddr = "10.0.0.1".parse().unwrap();
+
+    let entry = manager.ban(ip, 32, "sshd", 1, 0, Some("zero duration".to_string()));
+    assert!(entry.is_ok());
+    let entry = entry.unwrap();
+    let expires = entry.expires_at.expect("expires_at must be set");
+    // A duration-0 ban should already be expired (expires_at <= now).
+    assert!(
+        expires <= Utc::now(),
+        "expected expires_at ({expires}) to be <= now ({})",
+        Utc::now()
+    );
+}
+
+#[test]
+fn ban_duration_max_value() {
+    let (manager, _dir) = setup_manager();
+    let ip: IpAddr = "10.0.0.1".parse().unwrap();
+
+    // u64::MAX seconds is far beyond any reasonable timestamp. The i64 cast
+    // inside the ban logic must not panic; it should either succeed or return
+    // a domain error.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        manager.ban(ip, 32, "sshd", 1, u64::MAX, None)
+    }));
+    assert!(
+        result.is_ok(),
+        "ban with u64::MAX duration must not panic"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: IPv4-mapped IPv6 and CidrSet
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cidr_set_contains_ipv4_mapped_ipv6() {
+    let mut set = CidrSet::new();
+    let block = CidrBlock::new("10.0.0.0".parse().unwrap(), 8).unwrap();
+    set.insert(block);
+
+    // The IPv4-mapped IPv6 representation of 10.0.0.1 must NOT match an
+    // IPv4 CIDR block -- they are different address families.
+    let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
+    assert!(
+        !set.contains(mapped),
+        "IPv4 CIDR block must not match IPv4-mapped IPv6 address"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: overlapping CIDR blocks
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cidr_set_overlapping_blocks() {
+    let mut set = CidrSet::new();
+    let broad = CidrBlock::new("10.0.0.0".parse().unwrap(), 8).unwrap();
+    let narrow = CidrBlock::new("10.0.1.0".parse().unwrap(), 24).unwrap();
+    set.insert(broad);
+    set.insert(narrow);
+
+    // 10.0.1.1 falls inside both 10.0.0.0/8 and 10.0.1.0/24.
+    assert!(
+        set.contains("10.0.1.1".parse().unwrap()),
+        "overlapping blocks should both match"
+    );
+    // Also verify the broader block still works for addresses outside /24.
+    assert!(
+        set.contains("10.99.99.99".parse().unwrap()),
+        "broader /8 block should still match"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: IPv6 link-local in CidrBlock
+// ---------------------------------------------------------------------------
+
+#[test]
+fn cidr_block_contains_ipv6_link_local() {
+    let block = CidrBlock::new(
+        IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)),
+        10,
+    )
+    .unwrap();
+
+    // fe80::1 is within fe80::/10
+    assert!(
+        block.contains(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 1))),
+        "fe80::1 must be inside fe80::/10"
+    );
+    // febf:: should also be in fe80::/10 (the /10 covers fe80..febf)
+    assert!(
+        block.contains(IpAddr::V6(Ipv6Addr::new(0xfebf, 0, 0, 0, 0, 0, 0, 0))),
+        "febf:: must be inside fe80::/10"
+    );
+    // fec0:: is outside fe80::/10
+    assert!(
+        !block.contains(IpAddr::V6(Ipv6Addr::new(0xfec0, 0, 0, 0, 0, 0, 0, 0))),
+        "fec0:: must NOT be inside fe80::/10"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: ban an IPv6 address via BanManager
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ban_manager_ban_ipv6() {
+    let (manager, _dir) = setup_manager();
+    let ip: IpAddr = "2001:db8::abcd".parse().unwrap();
+
+    let entry = manager.ban(ip, 128, "sshd", 7, 3600, Some("ipv6 brute".to_string()));
+    assert!(entry.is_ok());
+    let entry = entry.unwrap();
+    assert_eq!(entry.ip, ip);
+    assert_eq!(entry.prefix, 128);
+    assert_eq!(entry.jail_name, "sshd");
+    assert_eq!(entry.fail_count, 7);
+    assert_eq!(entry.reason, Some("ipv6 brute".to_string()));
+    assert!(entry.expires_at.is_some());
+
+    // Verify the ban is visible through is_banned.
+    assert!(manager.is_banned(ip).unwrap());
 }

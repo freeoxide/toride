@@ -568,3 +568,72 @@ fn scan_result_types_are_correct() {
     let _found: u32 = result.matches_found;
     let _dur: std::time::Duration = result.scan_duration;
 }
+
+// ===========================================================================
+// Additional edge-case tests
+// ===========================================================================
+
+#[test]
+fn scan_regex_matching_empty_string() {
+    // Pattern ".*" matches every line (including empty ones) but must not
+    // cause an infinite loop inside the scanner.
+    let content = "line one\n\nline three\n";
+    let (mut detector, _tmp) = detector_with_content(content, ".*");
+    let result = detector.scan().expect("scan should not hang or fail");
+    assert_eq!(result.lines_scanned, 3);
+    // ".*" matches empty strings, so all lines (including the blank one)
+    // should count as matches.
+    assert_eq!(result.matches_found, 3);
+    assert!(result.new_bans.is_empty(), "no capture group means no bans");
+}
+
+#[test]
+fn scan_non_utf8_content() {
+    // Write raw binary bytes that are not valid UTF-8. The scanner should
+    // skip or handle the corrupt line gracefully without panicking.
+    let tmp = NamedTempFile::new().expect("failed to create temp file");
+    let mut file = tmp.reopen().expect("failed to reopen temp file");
+    // Valid line, then a line with invalid UTF-8 bytes, then another valid line.
+    file.write_all(b"good line\n").unwrap();
+    file.write_all(&[0xFF, 0xFE, 0x80, 0x81, b'\n']).unwrap();
+    file.write_all(b"another good line\n").unwrap();
+    file.flush().unwrap();
+
+    let mut detector =
+        LogDetector::new("test-jail", tmp.path(), r"good line").expect("LogDetector::new");
+    let result = detector.scan();
+    // The scanner must not return an error for non-UTF-8 content.
+    assert!(result.is_ok(), "scan should handle non-UTF-8 gracefully");
+    let result = result.unwrap();
+    // At minimum, the two valid lines should be scanned.
+    assert!(result.lines_scanned >= 2, "should scan at least the two valid lines");
+    assert_eq!(result.matches_found, 2);
+}
+
+#[test]
+fn set_position_beyond_eof() {
+    // Setting the read offset past the end of the file should cause the
+    // scanner to read zero lines without error.
+    let content = "short\n";
+    let (mut detector, _tmp) = detector_with_content(content, r"\w+");
+    detector.set_position(999_999, 100);
+    let result = detector.scan().expect("scan should succeed");
+    assert_eq!(result.lines_scanned, 0);
+    assert_eq!(result.matches_found, 0);
+    assert!(result.new_bans.is_empty());
+}
+
+#[test]
+fn match_line_with_host_group_containing_hostname() {
+    // When the only named group is `host` and it captures a hostname
+    // (not an IP address), extract_ip should return None.
+    let (detector, _tmp) = detector_with_content(
+        "anything\n",
+        r"(?P<host>\S+) auth failure",
+    );
+    let detail = detector
+        .match_line("example.com auth failure", 1)
+        .expect("should match");
+    assert!(detail.ip.is_none(), "hostname is not an IP address");
+    assert_eq!(detail.line, "example.com auth failure");
+}

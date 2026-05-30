@@ -2,13 +2,22 @@
 
 use std::net::IpAddr;
 
+use ipnet::IpNet;
+
 use crate::action::{ActionExec, ActionVars};
 use crate::ban::BanManager;
 use crate::config::ResolvedJail;
 use crate::detector::LogDetector;
 use crate::store::Store;
 use crate::support;
-use crate::types::{BanEntry, ScanResult};
+use crate::types::{BanEntry, ExecutionMode, ScanResult};
+
+/// Pre-parsed ignore entry to avoid re-parsing on every check.
+#[derive(Debug, Clone)]
+enum IgnoreEntry {
+    Single(IpAddr),
+    Cidr(IpNet),
+}
 
 /// A jail monitors a log file and bans IPs that match its pattern.
 pub struct Jail {
@@ -23,7 +32,7 @@ pub struct Jail {
     /// Action to execute on unban.
     unban_action: ActionExec,
     /// IPs that should never be banned.
-    ignore_ips: Vec<String>,
+    ignore_ips: Vec<IgnoreEntry>,
 }
 
 impl Jail {
@@ -48,7 +57,16 @@ impl Jail {
             support::default_unban_commands(firewall),
         );
 
-        let ignore_ips = config.ignore_ips.clone();
+        let ignore_ips = config.ignore_ips.iter().filter_map(|s| {
+            if let Ok(cidr) = s.parse::<IpNet>() {
+                Some(IgnoreEntry::Cidr(cidr))
+            } else if let Ok(ip) = s.parse::<IpAddr>() {
+                Some(IgnoreEntry::Single(ip))
+            } else {
+                tracing::warn!(entry = %s, "invalid ignore_ips entry, skipping");
+                None
+            }
+        }).collect();
 
         Ok(Self {
             config,
@@ -63,7 +81,15 @@ impl Jail {
     /// Set ignore IPs for this jail.
     #[must_use]
     pub fn with_ignore_ips(mut self, ips: Vec<String>) -> Self {
-        self.ignore_ips = ips;
+        self.ignore_ips = ips.iter().filter_map(|s| {
+            if let Ok(cidr) = s.parse::<IpNet>() {
+                Some(IgnoreEntry::Cidr(cidr))
+            } else if let Ok(ip) = s.parse::<IpAddr>() {
+                Some(IgnoreEntry::Single(ip))
+            } else {
+                None
+            }
+        }).collect();
         self
     }
 
@@ -78,13 +104,13 @@ impl Jail {
     }
 
     /// Scan the log file and process any new matches.
-    pub fn scan(&mut self, dry_run: bool) -> crate::Result<ScanResult> {
+    pub fn scan(&mut self, mode: ExecutionMode) -> crate::Result<ScanResult> {
         let mut result = self.detector.scan()?;
 
         // Filter out ignored IPs.
         result.new_bans.retain(|ban| !self.is_ignored(ban.ip));
 
-        if !dry_run {
+        if !mode.is_dry_run() {
             for ban in &result.new_bans {
                 let vars = ActionVars::new(
                     &ban.ip.to_string(),
@@ -106,7 +132,7 @@ impl Jail {
     }
 
     /// Ban a specific IP address.
-    pub fn ban_ip(&self, ip: IpAddr, dry_run: bool) -> crate::Result<BanEntry> {
+    pub fn ban_ip(&self, ip: IpAddr, mode: ExecutionMode) -> crate::Result<BanEntry> {
         if self.is_ignored(ip) {
             return Err(crate::Error::InvalidConfig(format!(
                 "IP {ip} is in the ignore list"
@@ -125,7 +151,7 @@ impl Jail {
             None,
         )?;
 
-        if !dry_run {
+        if !mode.is_dry_run() {
             let vars = ActionVars::new(
                 &ip.to_string(),
                 entry.prefix,
@@ -143,10 +169,10 @@ impl Jail {
     }
 
     /// Unban a specific IP address.
-    pub fn unban_ip(&self, ip: IpAddr, dry_run: bool) -> crate::Result<BanEntry> {
+    pub fn unban_ip(&self, ip: IpAddr, mode: ExecutionMode) -> crate::Result<BanEntry> {
         let entry = self.ban_manager.unban(ip, &self.config.name)?;
 
-        if !dry_run {
+        if !mode.is_dry_run() {
             let vars = ActionVars::new(
                 &ip.to_string(),
                 entry.prefix,
@@ -170,13 +196,9 @@ impl Jail {
 
     /// Check if an IP is ignored.
     fn is_ignored(&self, ip: IpAddr) -> bool {
-        self.ignore_ips.iter().any(|ignored| {
-            // Simple IP match or CIDR match.
-            if let Ok(cidr) = ignored.parse::<ipnet::IpNet>() {
-                cidr.contains(&ip)
-            } else {
-                ignored == &ip.to_string()
-            }
+        self.ignore_ips.iter().any(|entry| match entry {
+            IgnoreEntry::Single(ignored) => *ignored == ip,
+            IgnoreEntry::Cidr(cidr) => cidr.contains(&ip),
         })
     }
 }
