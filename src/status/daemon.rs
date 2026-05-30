@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 /// Daemon liveness and health snapshot.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct DaemonStatus {
     /// Whether the daemon process is alive.
     pub alive: bool,
@@ -99,7 +99,8 @@ fn default_restart_count_path() -> PathBuf {
 }
 
 /// Read a PID from a file. Returns `None` if the file doesn't exist or
-/// contains invalid content.
+/// contains invalid content. PID 0 is rejected because `kill(0, 0)` signals
+/// the entire process group, which would cause false-positive liveness checks.
 fn read_pid_file(path: &Path) -> Option<u32> {
     let content = fs::read_to_string(path).ok()?;
     let trimmed = content.trim();
@@ -107,7 +108,12 @@ fn read_pid_file(path: &Path) -> Option<u32> {
     if trimmed.is_empty() || trimmed.contains(|c: char| !c.is_ascii_digit()) {
         return None;
     }
-    trimmed.parse::<u32>().ok()
+    let pid = trimmed.parse::<u32>().ok()?;
+    // PID 0 targets the process group via kill(0, 0), not a specific process.
+    if pid == 0 {
+        return None;
+    }
+    Some(pid)
 }
 
 /// Check if a process with the given PID is alive.
@@ -149,10 +155,10 @@ fn uptime_for_pid(pid: u32) -> Option<u64> {
 fn uptime_for_pid(pid: u32) -> Option<u64> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     // Field 22 (0-indexed: 21) is starttime in clock ticks since boot.
-    // The comm field (field 2) can contain spaces and is wrapped in parens,
-    // so we skip past the closing ')' before splitting.
-    let after_comm = stat.find(')')?;
-    let rest = &stat[after_comm + 2..];
+    // The comm field (field 2) can contain spaces, parens, and special chars,
+    // so we use rfind to locate the closing ')' reliably.
+    let after_comm = stat.rfind(')')?;
+    let rest = stat.get(after_comm + 2..)?;
     let start_ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
     let ticks_per_sec = sysconf::sysconf(sysconf::SysconfVariable::ClkTck).unwrap_or(100) as u64;
     let boot_time = read_boot_time()?;
@@ -202,10 +208,16 @@ fn parse_elapsed_time(s: &str) -> Option<u64> {
 }
 
 /// Read the restart count from an append-only file.
+/// Parses as u64 first, then clamps to u32::MAX to avoid silent zero on overflow.
 fn read_restart_count(path: &Path) -> u32 {
     fs::read_to_string(path)
         .ok()
-        .and_then(|c| c.trim().parse::<u32>().ok())
+        .and_then(|c| {
+            c.trim()
+                .parse::<u64>()
+                .ok()
+                .map(|v| v.min(u64::from(u32::MAX)) as u32)
+        })
         .unwrap_or(0)
 }
 
@@ -340,10 +352,10 @@ mod tests {
     }
 
     #[test]
-    fn read_pid_file_accepts_pid_zero() {
-        // PID 0 is valid on some systems but unusual; we accept it.
+    fn read_pid_file_rejects_pid_zero() {
+        // PID 0 targets the process group via kill(0, 0), not a specific process.
         let dir = setup_test_dir(Some("0"), None);
-        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), Some(0));
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), None);
     }
 
     #[test]
@@ -511,16 +523,19 @@ mod tests {
     }
 
     #[test]
-    fn read_pid_file_parses_pid_zero_with_newline() {
+    fn read_pid_file_rejects_pid_zero_with_newline() {
         let dir = setup_test_dir(Some("0\n"), None);
-        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), Some(0));
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), None);
     }
 
     #[test]
-    fn read_restart_count_returns_zero_for_overflow_value() {
-        // u32::MAX + 1 overflows parse::<u32>() -> returns 0
+    fn read_restart_count_clamps_overflow_value_to_u32_max() {
+        // u32::MAX + 1 clamps to u32::MAX instead of silently returning 0.
         let dir = setup_test_dir(None, Some("4294967296"));
-        assert_eq!(read_restart_count(&dir.path().join("restart_count")), 0);
+        assert_eq!(
+            read_restart_count(&dir.path().join("restart_count")),
+            u32::MAX
+        );
     }
 
     #[test]

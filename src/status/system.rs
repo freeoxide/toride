@@ -44,7 +44,7 @@ pub struct SystemStatus {
 }
 
 /// Memory usage snapshot.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct MemoryStatus {
     /// Used memory in bytes.
     pub used_bytes: u64,
@@ -55,7 +55,7 @@ pub struct MemoryStatus {
 }
 
 /// Disk usage snapshot (root filesystem).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct DiskStatus {
     /// Used disk space in bytes.
     pub used_bytes: u64,
@@ -66,7 +66,7 @@ pub struct DiskStatus {
 }
 
 /// Network I/O counters.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct NetworkStatus {
     /// Total bytes received.
     pub bytes_received: u64,
@@ -75,7 +75,7 @@ pub struct NetworkStatus {
 }
 
 /// System load average (1, 5, 15 minute windows).
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct LoadAverage {
     /// 1-minute load average.
     pub one: f64,
@@ -187,8 +187,8 @@ impl SystemStatus {
         let networks = Networks::new_with_refreshed_list();
         let (mut received, mut transmitted) = (0u64, 0u64);
         for (_name, data) in networks.iter() {
-            received += data.total_received();
-            transmitted += data.total_transmitted();
+            received = received.saturating_add(data.total_received());
+            transmitted = transmitted.saturating_add(data.total_transmitted());
         }
         NetworkStatus {
             bytes_received: received,

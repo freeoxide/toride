@@ -21,7 +21,7 @@ use std::process::Command;
 use serde::Serialize;
 
 /// SSH subsystem status snapshot.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize)]
 pub struct SshStatus {
     /// Whether the SSH mux master is alive.
     pub mux_master_alive: bool,
@@ -144,15 +144,12 @@ fn check_socket_connectable(path: &Path) -> bool {
 ///
 /// Returns `true` if the command exits with status 0.
 fn check_mux_master(control_path: &Path) -> bool {
-    let control_str = control_path.to_string_lossy();
     Command::new("ssh")
-        .args([
-            "-O",
-            "check",
-            "-S",
-            &control_str,
-            "dummy",
-        ])
+        .arg("-O")
+        .arg("check")
+        .arg("-S")
+        .arg(control_path)
+        .arg("dummy")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -162,11 +159,14 @@ fn check_mux_master(control_path: &Path) -> bool {
 
 /// Check if the SSH config parses without errors.
 ///
-/// Runs `ssh -G -F <config>` and checks the exit status.
+/// Runs `ssh -G -F <config> localhost` and checks the exit status.
+/// A hostname argument is required by `ssh -G`; without it, ssh exits 255.
 fn check_config(config_path: &Path) -> bool {
-    let config_str = config_path.to_string_lossy();
     Command::new("ssh")
-        .args(["-G", "-F", &config_str])
+        .arg("-G")
+        .arg("-F")
+        .arg(config_path)
+        .arg("localhost")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
