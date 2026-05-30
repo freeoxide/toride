@@ -19,7 +19,10 @@
 use std::fmt;
 
 use serde::Serialize;
-use sysinfo::{Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, RefreshKind, System};
+use sysinfo::{
+    Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
+    ProcessesToUpdate, RefreshKind, System,
+};
 
 /// OS-level system metrics snapshot.
 ///
@@ -57,6 +60,12 @@ pub struct SystemStatus {
     pub sensors: Vec<SensorStatus>,
     /// System boot time (seconds since Unix epoch).
     pub boot_time: Option<u64>,
+    /// Process list snapshot.
+    pub processes: ProcessSnapshot,
+    /// GPU information, if available.
+    pub gpu: Vec<GpuInfo>,
+    /// Battery status, if available.
+    pub battery: Option<BatteryInfo>,
 }
 
 /// Memory usage snapshot.
@@ -172,6 +181,80 @@ pub struct SensorStatus {
     pub temperature: Option<f32>,
 }
 
+/// GPU identity information.
+#[derive(Debug, Clone, Serialize)]
+pub struct GpuInfo {
+    /// GPU name/model.
+    pub name: String,
+    /// GPU vendor.
+    pub vendor: String,
+    /// Total VRAM in bytes, if available.
+    pub vram_bytes: Option<u64>,
+    /// Driver version, if available.
+    pub driver_version: Option<String>,
+}
+
+/// Battery status snapshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatteryInfo {
+    /// Battery charge percentage (0.0–100.0).
+    pub charge_percent: f32,
+    /// Battery state (Charging, Discharging, Full, Unknown).
+    pub state: String,
+    /// Time to empty (seconds), if discharging.
+    pub time_to_empty_secs: Option<u64>,
+    /// Time to full (seconds), if charging.
+    pub time_to_full_secs: Option<u64>,
+}
+
+/// Process information snapshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessStatus {
+    /// Process ID.
+    pub pid: u32,
+    /// Parent process ID.
+    pub parent_pid: Option<u32>,
+    /// Process name.
+    pub name: String,
+    /// CPU usage percentage.
+    pub cpu_usage: f32,
+    /// Memory usage in bytes (RSS).
+    pub memory_bytes: u64,
+    /// Process status (Running, Sleeping, etc.).
+    pub status: String,
+    /// Process start time (seconds since epoch).
+    pub start_time: Option<u64>,
+}
+
+/// Process list snapshot.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessSnapshot {
+    /// All running processes.
+    pub processes: Vec<ProcessStatus>,
+    /// Total number of processes.
+    pub total_count: usize,
+}
+
+impl ProcessSnapshot {
+    /// Get top N processes by CPU usage.
+    pub fn top_by_cpu(&self, n: usize) -> Vec<&ProcessStatus> {
+        let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
+        sorted.sort_by(|a, b| {
+            b.cpu_usage
+                .partial_cmp(&a.cpu_usage)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        sorted.into_iter().take(n).collect()
+    }
+
+    /// Get top N processes by memory usage.
+    pub fn top_by_memory(&self, n: usize) -> Vec<&ProcessStatus> {
+        let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
+        sorted.sort_by_key(|b| std::cmp::Reverse(b.memory_bytes));
+        sorted.into_iter().take(n).collect()
+    }
+}
+
 impl SystemStatus {
     /// Collect a point-in-time snapshot of OS metrics.
     ///
@@ -216,6 +299,9 @@ impl SystemStatus {
             let bt = System::boot_time();
             if bt > 0 { Some(bt) } else { None }
         };
+        let processes = Self::read_processes();
+        let gpu = Self::read_gpus();
+        let battery = Self::read_battery();
 
         Self {
             cpu_usage,
@@ -233,6 +319,9 @@ impl SystemStatus {
             network_interfaces,
             sensors,
             boot_time,
+            processes,
+            gpu,
+            battery,
         }
     }
 
@@ -407,6 +496,150 @@ impl SystemStatus {
             })
             .collect()
     }
+
+    fn read_processes() -> ProcessSnapshot {
+        let mut sys = System::new_with_specifics(
+            RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
+        );
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        let processes: Vec<ProcessStatus> = sys
+            .processes()
+            .iter()
+            .map(|(pid, p)| ProcessStatus {
+                pid: pid.as_u32(),
+                parent_pid: p.parent().map(|pp| pp.as_u32()),
+                name: p.name().to_string_lossy().to_string(),
+                cpu_usage: p.cpu_usage(),
+                memory_bytes: p.memory(),
+                status: format!("{:?}", p.status()),
+                start_time: Some(p.start_time()),
+            })
+            .collect();
+        let total_count = processes.len();
+        ProcessSnapshot {
+            processes,
+            total_count,
+        }
+    }
+
+    fn read_gpus() -> Vec<GpuInfo> {
+        let mut gpus = Vec::new();
+        // Try system_profiler on macOS
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            if let Ok(output) = Command::new("system_profiler")
+                .args(["SPDisplaysDataType", "-json"])
+                .output()
+                && let Ok(text) = String::from_utf8(output.stdout)
+                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(displays) = json["SPDisplaysDataType"].as_array()
+            {
+                for display in displays {
+                    let name = display["sppci_model"]
+                        .as_str()
+                        .or_else(|| display["_name"].as_str())
+                        .unwrap_or("Unknown GPU")
+                        .to_string();
+                    let vendor = display["sppci_vendor"]
+                        .as_str()
+                        .unwrap_or("Unknown")
+                        .to_string();
+                    let vram = display["sppci_vram"]
+                        .as_str()
+                        .and_then(|v| {
+                            let v = v.replace("MB", "").replace(" ", "");
+                            v.parse::<u64>().ok().map(|mb| mb * 1024 * 1024)
+                        });
+                    gpus.push(GpuInfo {
+                        name,
+                        vendor,
+                        vram_bytes: vram,
+                        driver_version: None,
+                    });
+                }
+            }
+        }
+        // Try nvidia-smi on Linux
+        #[cfg(target_os = "linux")]
+        {
+            use std::process::Command;
+            if let Ok(output) = Command::new("nvidia-smi")
+                .args(["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"])
+                .output()
+            {
+                if output.status.success() {
+                    let text = String::from_utf8_lossy(&output.stdout);
+                    for line in text.lines() {
+                        let parts: Vec<&str> = line.split(", ").collect();
+                        if parts.len() >= 3 {
+                            let name = parts[0].trim().to_string();
+                            let vram_mb: Option<u64> = parts[1].trim().parse().ok();
+                            let driver = parts[2].trim().to_string();
+                            gpus.push(GpuInfo {
+                                name,
+                                vendor: "NVIDIA".to_string(),
+                                vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
+                                driver_version: Some(driver),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        gpus
+    }
+
+    fn read_battery() -> Option<BatteryInfo> {
+        #[cfg(target_os = "macos")]
+        {
+            use std::process::Command;
+            let output = Command::new("pmset")
+                .arg("-g")
+                .arg("batt")
+                .output()
+                .ok()?;
+            let text = String::from_utf8_lossy(&output.stdout);
+            let percent_line = text.lines().find(|l| l.contains("%"))?;
+            let pct_str = percent_line
+                .split_whitespace()
+                .find(|w| w.ends_with("%"))?;
+            let pct: f32 = pct_str.trim_end_matches('%').parse().ok()?;
+            let state = if text.contains("charging") || text.contains("AC attached") {
+                "Charging"
+            } else if text.contains("discharging") {
+                "Discharging"
+            } else {
+                "Unknown"
+            };
+            Some(BatteryInfo {
+                charge_percent: pct,
+                state: state.to_string(),
+                time_to_empty_secs: None,
+                time_to_full_secs: None,
+            })
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use std::fs;
+            let capacity = fs::read_to_string("/sys/class/power_supply/BAT0/capacity").ok()?;
+            let pct: f32 = capacity.trim().parse().ok()?;
+            let status = fs::read_to_string("/sys/class/power_supply/BAT0/status")
+                .ok()
+                .map(|s| s.trim().to_string())
+                .unwrap_or_else(|| "Unknown".to_string());
+            Some(BatteryInfo {
+                charge_percent: pct,
+                state: status,
+                time_to_empty_secs: None,
+                time_to_full_secs: None,
+            })
+        }
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        {
+            None
+        }
+    }
 }
 
 impl fmt::Display for SystemStatus {
@@ -495,6 +728,10 @@ impl fmt::Display for SystemStatus {
             }
         }
 
+        if self.processes.total_count > 0 {
+            writeln!(f, "  Processes: {}", self.processes.total_count)?;
+        }
+
         if let Some(load) = &self.load_average {
             writeln!(
                 f,
@@ -513,6 +750,18 @@ impl fmt::Display for SystemStatus {
                     writeln!(f, "    {}: N/A", sensor.label)?;
                 }
             }
+        }
+
+        for (i, gpu) in self.gpu.iter().enumerate() {
+            writeln!(f, "  GPU {}: {} ({})", i, gpu.name, gpu.vendor)?;
+            if let Some(vram) = gpu.vram_bytes {
+                write!(f, "    VRAM: ")?;
+                write_bytes(f, vram)?;
+                writeln!(f)?;
+            }
+        }
+        if let Some(battery) = &self.battery {
+            writeln!(f, "  Battery: {:.0}% ({})", battery.charge_percent, battery.state)?;
         }
 
         if let Some(secs) = self.uptime_secs {
@@ -883,6 +1132,12 @@ mod tests {
             network_interfaces: Vec::new(),
             sensors: Vec::new(),
             boot_time: None,
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
+            gpu: vec![],
+            battery: None,
         };
         let output = format!("{status}");
         assert!(output.contains("CPU: N/A"), "expected 'CPU: N/A' in output:\n{output}");
@@ -1042,7 +1297,116 @@ mod tests {
                 },
             ],
             boot_time: Some(1700000000),
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
+            gpu: vec![],
+            battery: None,
         };
         insta::assert_snapshot!("system_status_display", format!("{}", status));
+    }
+
+    #[test]
+    fn processes_is_non_empty() {
+        let status = SystemStatus::collect();
+        assert!(
+            status.processes.total_count > 0,
+            "processes.total_count should be > 0"
+        );
+    }
+
+    #[test]
+    fn top_by_cpu_returns_sorted() {
+        let snapshot = ProcessSnapshot {
+            processes: vec![
+                ProcessStatus {
+                    pid: 1,
+                    parent_pid: None,
+                    name: "low".to_string(),
+                    cpu_usage: 1.0,
+                    memory_bytes: 100,
+                    status: "Running".to_string(),
+                    start_time: Some(1000),
+                },
+                ProcessStatus {
+                    pid: 2,
+                    parent_pid: None,
+                    name: "high".to_string(),
+                    cpu_usage: 50.0,
+                    memory_bytes: 100,
+                    status: "Running".to_string(),
+                    start_time: Some(1000),
+                },
+                ProcessStatus {
+                    pid: 3,
+                    parent_pid: None,
+                    name: "mid".to_string(),
+                    cpu_usage: 25.0,
+                    memory_bytes: 100,
+                    status: "Running".to_string(),
+                    start_time: Some(1000),
+                },
+            ],
+            total_count: 3,
+        };
+        let top = snapshot.top_by_cpu(2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].pid, 2);
+        assert_eq!(top[1].pid, 3);
+    }
+
+    #[test]
+    fn top_by_memory_returns_sorted() {
+        let snapshot = ProcessSnapshot {
+            processes: vec![
+                ProcessStatus {
+                    pid: 1,
+                    parent_pid: None,
+                    name: "small".to_string(),
+                    cpu_usage: 1.0,
+                    memory_bytes: 1024,
+                    status: "Running".to_string(),
+                    start_time: Some(1000),
+                },
+                ProcessStatus {
+                    pid: 2,
+                    parent_pid: None,
+                    name: "large".to_string(),
+                    cpu_usage: 1.0,
+                    memory_bytes: 1024 * 1024 * 100,
+                    status: "Running".to_string(),
+                    start_time: Some(1000),
+                },
+                ProcessStatus {
+                    pid: 3,
+                    parent_pid: None,
+                    name: "medium".to_string(),
+                    cpu_usage: 1.0,
+                    memory_bytes: 1024 * 1024,
+                    status: "Running".to_string(),
+                    start_time: Some(1000),
+                },
+            ],
+            total_count: 3,
+        };
+        let top = snapshot.top_by_memory(2);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].pid, 2);
+        assert_eq!(top[1].pid, 3);
+    }
+
+    #[test]
+    fn gpu_vec_is_accessible() {
+        let status = SystemStatus::collect();
+        // GPU detection may or may not find devices; verify the field is accessible.
+        let _ = &status.gpu;
+    }
+
+    #[test]
+    fn battery_is_accessible() {
+        let status = SystemStatus::collect();
+        // Battery may or may not be present on this machine; verify the field is accessible.
+        let _ = &status.battery;
     }
 }

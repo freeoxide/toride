@@ -10,9 +10,14 @@
 //! println!("{status}");
 //! ```
 
+pub mod capabilities;
+pub mod collector;
 pub mod daemon;
 pub mod doctor;
 pub mod error;
+pub mod presets;
+pub mod privacy;
+pub mod provider;
 pub mod ssh;
 pub mod system;
 
@@ -20,9 +25,13 @@ use std::fmt;
 
 use serde::Serialize;
 
+pub use capabilities::Capabilities;
+pub use collector::{Collector, SystemDelta};
 pub use daemon::DaemonStatus;
 pub use doctor::{CheckStatus, DoctorCheck, DoctorReport};
 pub use error::{StatusError, StatusResult};
+pub use presets::Preset;
+pub use privacy::{PrivacyMode, Redactor};
 pub use ssh::SshStatus;
 pub use system::SystemStatus;
 
@@ -48,6 +57,8 @@ pub struct TorideStatus {
     pub daemon: DaemonStatus,
     /// SSH subsystem health (mux master, control path, agent, keys).
     pub ssh: SshStatus,
+    /// Platform capabilities.
+    pub capabilities: Capabilities,
     /// Non-fatal warnings collected during status gathering.
     #[serde(skip)]
     pub warnings: Vec<StatusError>,
@@ -71,6 +82,7 @@ impl TorideStatus {
         let system = SystemStatus::collect();
         let daemon = DaemonStatus::collect();
         let ssh = SshStatus::collect();
+        let capabilities = Capabilities::detect();
         let mut warnings = Vec::new();
         if system.hostname.is_empty() {
             warnings.push(StatusError::Unsupported("hostname unavailable".to_string()));
@@ -78,7 +90,7 @@ impl TorideStatus {
         if system.memory.total_bytes == 0 {
             warnings.push(StatusError::Unsupported("memory info unavailable".to_string()));
         }
-        Self { system, daemon, ssh, warnings }
+        Self { system, daemon, ssh, capabilities, warnings }
     }
 }
 
@@ -89,6 +101,7 @@ impl fmt::Display for TorideStatus {
         write!(f, "{}", self.daemon)?;
         write!(f, "{}", self.ssh)?;
         if !self.warnings.is_empty() {
+            write!(f, "{}", self.capabilities)?;
             writeln!(f, "Warnings:")?;
             for w in &self.warnings {
                 writeln!(f, "  \u{26a0} {}", w)?;
@@ -209,6 +222,12 @@ mod tests {
                     },
                 ],
                 boot_time: Some(1700000000),
+                processes: crate::status::system::ProcessSnapshot {
+                    processes: vec![],
+                    total_count: 0,
+                },
+                gpu: vec![],
+                battery: None,
             },
             daemon: DaemonStatus {
                 alive: true,
@@ -224,8 +243,45 @@ mod tests {
                 agent_running: true,
                 key_count: 3,
             },
+            capabilities: Capabilities::detect(),
             warnings: vec![],
         };
         insta::assert_snapshot!("toride_status_display", format!("{}", status));
+    }
+
+    #[test]
+    fn collect_includes_capabilities() {
+        let status = TorideStatus::collect();
+        assert!(status.capabilities.system.cpu_usage);
+    }
+
+    #[test]
+    fn collect_includes_processes() {
+        let status = TorideStatus::collect();
+        assert!(status.system.processes.total_count > 0);
+    }
+
+    #[test]
+    fn collector_produces_status_and_delta() {
+        let mut collector = Collector::default_collector();
+        let (status, delta) = collector.collect();
+        assert!(!status.system.hostname.is_empty());
+        assert!(delta.is_none()); // first collect
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        let (_, delta2) = collector.collect();
+        assert!(delta2.is_some());
+    }
+
+    #[test]
+    fn redactor_safe_mode() {
+        let r = Redactor::new(PrivacyMode::Safe);
+        assert_eq!(r.redact_hostname("myhost"), "[redacted]");
+    }
+
+    #[test]
+    fn preset_diagnostics_includes_all() {
+        let p = Preset::Diagnostics;
+        assert!(p.includes_per_core_cpu());
+        assert!(p.includes_processes());
     }
 }

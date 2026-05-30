@@ -342,6 +342,12 @@ mod tests {
             network_interfaces: vec![],
             sensors: vec![],
             boot_time: None,
+            processes: crate::status::system::ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
+            gpu: vec![],
+            battery: None,
         };
         let daemon = DaemonStatus {
             alive: true,
@@ -415,6 +421,12 @@ mod tests {
             network_interfaces: vec![],
             sensors: vec![],
             boot_time: Some(1700000000),
+            processes: crate::status::system::ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
+            gpu: vec![],
+            battery: None,
         };
         let daemon = DaemonStatus {
             alive: true,
