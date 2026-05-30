@@ -166,22 +166,6 @@ pub fn default_unban_commands(firewall: Firewall) -> PlatformCommands {
     }
 }
 
-/// Get iptables commands for banning/unbanning.
-pub fn iptables_commands(action: &str, ip: &str) -> Vec<String> {
-    match action {
-        "ban" => vec![format!("iptables -I INPUT -s {ip} -j DROP")],
-        "unban" => vec![format!("iptables -D INPUT -s {ip} -j DROP")],
-        _ => vec![],
-    }
-}
-
-/// Get pf commands for banning/unbanning.
-pub fn pf_commands(action: &str, ip: &str) -> Vec<String> {
-    match action {
-        "ban" | "unban" => vec![format!("echo 'block in from {ip}' | pfctl -f -")],
-        _ => vec![],
-    }
-}
 
 fn which_exists(name: &str) -> bool {
     which::which(name).is_ok()

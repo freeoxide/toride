@@ -29,6 +29,7 @@ pub struct Cli {
 
 impl Cli {
     /// Convert the `--dry-run` flag into an [`ExecutionMode`].
+    #[expect(dead_code, reason = "used by CLI binary, not library tests")]
     pub fn execution_mode(&self) -> ExecutionMode {
         if self.dry_run {
             ExecutionMode::DryRun

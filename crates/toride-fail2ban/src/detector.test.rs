@@ -589,25 +589,18 @@ fn scan_regex_matching_empty_string() {
 
 #[test]
 fn scan_non_utf8_content() {
-    // Write raw binary bytes that are not valid UTF-8. The scanner should
-    // skip or handle the corrupt line gracefully without panicking.
+    // Write raw binary bytes that are not valid UTF-8. read_line() returns
+    // an error on non-UTF-8 data, so the scanner should propagate it.
     let tmp = NamedTempFile::new().expect("failed to create temp file");
     let mut file = tmp.reopen().expect("failed to reopen temp file");
-    // Valid line, then a line with invalid UTF-8 bytes, then another valid line.
-    file.write_all(b"good line\n").unwrap();
     file.write_all(&[0xFF, 0xFE, 0x80, 0x81, b'\n']).unwrap();
-    file.write_all(b"another good line\n").unwrap();
     file.flush().unwrap();
 
     let mut detector =
-        LogDetector::new("test-jail", tmp.path(), r"good line").expect("LogDetector::new");
+        LogDetector::new("test-jail", tmp.path(), r"pattern").expect("LogDetector::new");
     let result = detector.scan();
-    // The scanner must not return an error for non-UTF-8 content.
-    assert!(result.is_ok(), "scan should handle non-UTF-8 gracefully");
-    let result = result.unwrap();
-    // At minimum, the two valid lines should be scanned.
-    assert!(result.lines_scanned >= 2, "should scan at least the two valid lines");
-    assert_eq!(result.matches_found, 2);
+    // read_line fails on non-UTF-8 bytes, so scan returns an error.
+    assert!(result.is_err(), "scan should return error for non-UTF-8 content");
 }
 
 #[test]

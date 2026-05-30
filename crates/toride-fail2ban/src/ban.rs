@@ -187,6 +187,10 @@ impl BanManager {
     }
 
     /// Ban an IP address.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AlreadyBanned` if the IP is already banned.
     pub fn ban(
         &self,
         ip: IpAddr,
@@ -213,6 +217,10 @@ impl BanManager {
     }
 
     /// Unban an IP address.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotBanned` if the IP is not currently banned.
     pub fn unban(&self, ip: IpAddr, jail_name: &str) -> crate::Result<BanEntry> {
         self.store.remove_ban(ip, jail_name)
     }

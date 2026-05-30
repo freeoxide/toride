@@ -46,6 +46,10 @@ pub struct MatchDetail {
 
 impl LogDetector {
     /// Create a new log detector.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidRegex` if the pattern is not valid regex.
     pub fn new(
         jail_name: &str,
         log_path: &Path,
@@ -81,6 +85,10 @@ impl LogDetector {
     }
 
     /// Scan the log file from the last known position.
+    ///
+    /// # Errors
+    ///
+    /// Returns `LogFileError` if the file cannot be opened, or `Io` on read/seek failure.
     pub fn scan(&mut self) -> crate::Result<ScanResult> {
         let start = std::time::Instant::now();
         let mut new_bans = Vec::new();

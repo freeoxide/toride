@@ -130,9 +130,9 @@ impl Fail2BanManager {
             name: name.to_string(),
             active: true,
             banned_ips: bans,
-            total_bans: 0,
+            total_bans: 0, // TODO: track total bans across history
             log_path: jail.log_path().to_path_buf(),
-            pattern: String::new(),
+            pattern: self.config.resolve_jail(name).map(|j| j.pattern).unwrap_or_default(),
         })
     }
 
@@ -145,9 +145,9 @@ impl Fail2BanManager {
                 name: name.clone(),
                 active: true,
                 banned_ips: bans,
-                total_bans: 0,
+                total_bans: 0, // TODO: track total bans across history
                 log_path: jail.log_path().to_path_buf(),
-                pattern: String::new(),
+                pattern: self.config.resolve_jail(name).map(|j| j.pattern).unwrap_or_default(),
             });
         }
         Ok(statuses)

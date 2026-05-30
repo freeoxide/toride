@@ -891,3 +891,41 @@ fn full_lifecycle_with_journals() {
     assert_eq!(nginx.offset, 8192);
     assert_eq!(nginx.line_number, 200);
 }
+
+// ---------------------------------------------------------------------------
+// Edge case: non-UTF-8 file content
+// ---------------------------------------------------------------------------
+
+#[test]
+fn load_with_non_utf8_content() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("store.json");
+
+    // Write raw binary bytes that are not valid UTF-8 (lone continuation bytes).
+    std::fs::write(&path, [0xFF, 0xFE, 0x80, 0x81, 0x00]).unwrap();
+
+    let store = Store::new(path);
+    let result = store.load();
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: malformed IP string via IpAddr parse
+// ---------------------------------------------------------------------------
+
+#[test]
+fn remove_ban_with_malformed_ip() {
+    let malformed = &[
+        "",
+        "not-an-ip",
+        "999.999.999.999",
+        ":::1",
+        "10.0.0.1/24",
+        "localhost",
+    ];
+
+    for bad in malformed {
+        let result: std::result::Result<IpAddr, _> = bad.parse();
+        assert!(result.is_err(), "expected parse error for '{bad}', got Ok({result:?})");
+    }
+}

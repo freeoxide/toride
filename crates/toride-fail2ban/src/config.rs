@@ -151,6 +151,11 @@ fn default_max_history() -> usize {
 
 impl Fail2BanConfig {
     /// Load configuration from a JSON file.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ConfigNotFound` if the file does not exist, `Io` on read failure,
+    /// or `InvalidConfig` on parse/validation failure.
     pub fn load(path: &Path) -> crate::Result<Self> {
         let content = fs::read_to_string(path).map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -159,14 +164,18 @@ impl Fail2BanConfig {
                 crate::Error::Io(e)
             }
         })?;
-        let config: Self = serde_json::from_str(&content)?;
+        let config: Self = serde_json::from_str(&content).map_err(|e| {
+            crate::Error::InvalidConfig(format!("Failed to parse '{}': {e}", path.display()))
+        })?;
         config.validate()?;
         Ok(config)
     }
 
     /// Save configuration to a JSON file.
     pub fn save(&self, path: &Path) -> crate::Result<()> {
-        let content = serde_json::to_string_pretty(self)?;
+        let content = serde_json::to_string_pretty(self).map_err(|e| {
+            crate::Error::InvalidConfig(format!("Failed to serialize config: {e}"))
+        })?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -175,6 +184,10 @@ impl Fail2BanConfig {
     }
 
     /// Validate configuration values.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidConfig` on zero `find_time`, zero `max_retry`, or missing log file.
     pub fn validate(&self) -> crate::Result<()> {
         for (name, jail) in &self.jails {
             if jail.find_time == Some(0) {
@@ -198,6 +211,10 @@ impl Fail2BanConfig {
     }
 
     /// Get resolved jail config with defaults applied.
+    ///
+    /// # Errors
+    ///
+    /// Returns `JailNotFound` if the jail name is not in the configuration.
     pub fn resolve_jail(&self, name: &str) -> crate::Result<ResolvedJail> {
         let jail = self.jails.get(name).ok_or_else(|| {
             crate::Error::JailNotFound(name.to_string())

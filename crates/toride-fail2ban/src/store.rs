@@ -89,7 +89,11 @@ impl Store {
         Ok(())
     }
 
-    /// Add a ban entry. Returns error if IP is already banned in this jail.
+    /// Add a ban entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `AlreadyBanned` if the IP is already banned in this jail.
     pub fn add_ban(&self, entry: BanEntry) -> crate::Result<()> {
         let mut data = self.load()?;
 
@@ -107,6 +111,10 @@ impl Store {
     }
 
     /// Remove a ban entry. Returns the removed entry.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotBanned` if the IP is not found in this jail.
     pub fn remove_ban(&self, ip: IpAddr, jail_name: &str) -> crate::Result<BanEntry> {
         let mut data = self.load()?;
 

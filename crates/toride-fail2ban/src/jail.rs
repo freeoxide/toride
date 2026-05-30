@@ -37,6 +37,10 @@ pub struct Jail {
 
 impl Jail {
     /// Create a new jail from resolved configuration.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidRegex` if the config pattern is invalid.
     pub fn new(config: ResolvedJail, store: Store) -> crate::Result<Self> {
         let detector = LogDetector::new(
             &config.name,
@@ -80,6 +84,7 @@ impl Jail {
 
     /// Set ignore IPs for this jail.
     #[must_use]
+    #[expect(clippy::needless_pass_by_value, reason = "builder pattern takes ownership")]
     pub fn with_ignore_ips(mut self, ips: Vec<String>) -> Self {
         self.ignore_ips = ips.iter().filter_map(|s| {
             if let Ok(cidr) = s.parse::<IpNet>() {
@@ -132,6 +137,10 @@ impl Jail {
     }
 
     /// Ban a specific IP address.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidConfig` if the IP is in the ignore list, or `AlreadyBanned` if already banned.
     pub fn ban_ip(&self, ip: IpAddr, mode: ExecutionMode) -> crate::Result<BanEntry> {
         if self.is_ignored(ip) {
             return Err(crate::Error::InvalidConfig(format!(
@@ -169,6 +178,10 @@ impl Jail {
     }
 
     /// Unban a specific IP address.
+    ///
+    /// # Errors
+    ///
+    /// Returns `NotBanned` if the IP is not currently banned.
     pub fn unban_ip(&self, ip: IpAddr, mode: ExecutionMode) -> crate::Result<BanEntry> {
         let entry = self.ban_manager.unban(ip, &self.config.name)?;
 

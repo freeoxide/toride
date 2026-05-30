@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::ExecutionMode;
 use crate::config::{Fail2BanConfig, JailConfig, DefaultConfig};
 use crate::paths::Fail2BanPaths;
 use std::collections::HashMap;
@@ -272,7 +273,7 @@ fn scan_all_returns_results_for_each_jail() {
     let paths = make_paths(&dir);
     let mut manager = Fail2BanManager::new(config, paths).unwrap();
 
-    let results = manager.scan_all(true).unwrap();
+    let results = manager.scan_all(ExecutionMode::DryRun).unwrap();
     assert_eq!(results.len(), 2);
     assert!(results.contains_key("sshd"));
     assert!(results.contains_key("nginx"));
@@ -289,7 +290,7 @@ fn scan_all_empty_jails_returns_empty_map() {
 
     manager.remove_jail("sshd").unwrap();
 
-    let results = manager.scan_all(true).unwrap();
+    let results = manager.scan_all(ExecutionMode::DryRun).unwrap();
     assert!(results.is_empty());
 }
 
@@ -304,7 +305,7 @@ fn scan_jail_returns_result_for_existing_jail() {
     let paths = make_paths(&dir);
     let mut manager = Fail2BanManager::new(config, paths).unwrap();
 
-    let result = manager.scan_jail("sshd", true).unwrap();
+    let result = manager.scan_jail("sshd", ExecutionMode::DryRun).unwrap();
     // The sample log has "Failed password" lines with IPs, so there should be matches.
     assert!(result.lines_scanned > 0);
 }
@@ -313,7 +314,7 @@ fn scan_jail_returns_result_for_existing_jail() {
 fn scan_jail_nonexistent_returns_not_found() {
     let (_dir, mut manager) = setup();
 
-    let result = manager.scan_jail("nonexistent", true);
+    let result = manager.scan_jail("nonexistent", ExecutionMode::DryRun);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::JailNotFound(name) => assert_eq!(name, "nonexistent"),
@@ -328,8 +329,8 @@ fn ban_ip_succeeds_for_existing_jail() {
     let (_dir, manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
-    // ban_ip with dry_run=true should succeed without running any commands.
-    manager.ban_ip("sshd", ip, true).unwrap();
+    // ban_ip with dry_run should succeed without running any commands.
+    manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
 }
 
 #[test]
@@ -337,7 +338,7 @@ fn ban_ip_nonexistent_jail_returns_not_found() {
     let (_dir, manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
-    let result = manager.ban_ip("nonexistent", ip, true);
+    let result = manager.ban_ip("nonexistent", ip, ExecutionMode::DryRun);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::JailNotFound(name) => assert_eq!(name, "nonexistent"),
@@ -350,8 +351,8 @@ fn ban_ip_duplicate_returns_already_banned() {
     let (_dir, manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
-    manager.ban_ip("sshd", ip, true).unwrap();
-    let result = manager.ban_ip("sshd", ip, true);
+    manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
+    let result = manager.ban_ip("sshd", ip, ExecutionMode::DryRun);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::AlreadyBanned(_) => {}
@@ -366,15 +367,15 @@ fn unban_ip_succeeds_for_banned_ip() {
     let (_dir, manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
-    manager.ban_ip("sshd", ip, true).unwrap();
-    manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), true).unwrap();
+    manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
+    manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun).unwrap();
 }
 
 #[test]
 fn unban_ip_nonexistent_jail_returns_not_found() {
     let (_dir, manager) = setup();
 
-    let result = manager.unban_ip("nonexistent", "192.168.1.100".parse().unwrap(), true);
+    let result = manager.unban_ip("nonexistent", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::JailNotFound(name) => assert_eq!(name, "nonexistent"),
@@ -386,7 +387,7 @@ fn unban_ip_nonexistent_jail_returns_not_found() {
 fn unban_ip_not_banned_returns_not_banned() {
     let (_dir, manager) = setup();
 
-    let result = manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), true);
+    let result = manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(_) => {}
@@ -472,7 +473,7 @@ fn jail_status_shows_banned_ips() {
     let (_dir, manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
-    manager.ban_ip("sshd", ip, true).unwrap();
+    manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
 
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.banned_ips.len(), 1);
@@ -609,12 +610,12 @@ fn ban_then_unban_reflects_in_status() {
     let (_dir, manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
-    manager.ban_ip("sshd", ip, true).unwrap();
+    manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.banned_ips.len(), 1);
     assert_eq!(js.banned_ips[0].ip, ip);
 
-    manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), true).unwrap();
+    manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun).unwrap();
     let js = manager.jail_status("sshd").unwrap();
     assert!(js.banned_ips.is_empty());
 }
@@ -627,9 +628,9 @@ fn multiple_bans_in_same_jail() {
     let ip2: std::net::IpAddr = "192.168.1.2".parse().unwrap();
     let ip3: std::net::IpAddr = "192.168.1.3".parse().unwrap();
 
-    manager.ban_ip("sshd", ip1, true).unwrap();
-    manager.ban_ip("sshd", ip2, true).unwrap();
-    manager.ban_ip("sshd", ip3, true).unwrap();
+    manager.ban_ip("sshd", ip1, ExecutionMode::DryRun).unwrap();
+    manager.ban_ip("sshd", ip2, ExecutionMode::DryRun).unwrap();
+    manager.ban_ip("sshd", ip3, ExecutionMode::DryRun).unwrap();
 
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.banned_ips.len(), 3);

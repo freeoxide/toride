@@ -1,4 +1,5 @@
 use super::*;
+use crate::types::ExecutionMode;
 use tempfile::{tempdir, NamedTempFile};
 use std::io::Write;
 
@@ -113,7 +114,7 @@ fn with_ignore_ips_sets_ignore_list() {
 
     // ban_ip on an ignored IP should fail.
     let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
-    let result = jail.ban_ip(ip, true);
+    let result = jail.ban_ip(ip, ExecutionMode::DryRun);
     assert!(result.is_err());
 }
 
@@ -178,7 +179,7 @@ fn scan_empty_log_returns_zero_counts() {
     // Write nothing -- file is empty.
     log_file.flush().unwrap();
 
-    let result = jail.scan(false).unwrap();
+    let result = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(result.lines_scanned, 0);
     assert_eq!(result.matches_found, 0);
     assert!(result.new_bans.is_empty());
@@ -196,7 +197,7 @@ fn scan_with_matching_lines_returns_ban_entries() {
     writeln!(log_file, "Failed login from 10.0.0.5").unwrap();
     log_file.flush().unwrap();
 
-    let result = jail.scan(false).unwrap();
+    let result = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(result.lines_scanned, 3);
     assert_eq!(result.matches_found, 2);
     assert_eq!(result.new_bans.len(), 2);
@@ -219,7 +220,7 @@ fn scan_no_matches_when_lines_do_not_match_pattern() {
     writeln!(log_file, "Connection closed by 10.0.0.1").unwrap();
     log_file.flush().unwrap();
 
-    let result = jail.scan(false).unwrap();
+    let result = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 0);
     assert!(result.new_bans.is_empty());
@@ -237,7 +238,7 @@ fn scan_dry_run_returns_results() {
 
     // Dry-run should return results (actions are no-ops since firewall commands
     // will fail silently or be empty).
-    let result = jail.scan(true).unwrap();
+    let result = jail.scan(ExecutionMode::DryRun).unwrap();
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
     assert_eq!(result.new_bans.len(), 1);
@@ -251,7 +252,7 @@ fn scan_dry_run_false_also_returns_results() {
     log_file.flush().unwrap();
 
     // Non-dry-run also returns results (actions may fail but scan succeeds).
-    let result = jail.scan(false).unwrap();
+    let result = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(result.new_bans.len(), 1);
 }
 
@@ -275,7 +276,7 @@ fn scan_filters_out_ignored_ips() {
     writeln!(f, "Failed login from 192.168.1.100").unwrap();
     f.flush().unwrap();
 
-    let result = jail.scan(false).unwrap();
+    let result = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(result.matches_found, 2);
     // Only the non-ignored IP should appear in new_bans.
     assert_eq!(result.new_bans.len(), 1);
@@ -297,7 +298,7 @@ fn scan_filters_ips_in_ignored_cidr_range() {
     writeln!(f, "Failed login from 10.0.0.1").unwrap();
     f.flush().unwrap();
 
-    let result = jail.scan(false).unwrap();
+    let result = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(result.new_bans.len(), 1);
     assert_eq!(result.new_bans[0].ip, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
 }
@@ -311,7 +312,7 @@ fn ban_ip_adds_ban_entry() {
     let (jail, _log, _dir) = setup_test_jail();
     let ip: std::net::IpAddr = "203.0.113.50".parse().unwrap();
 
-    let entry = jail.ban_ip(ip, false).unwrap();
+    let entry = jail.ban_ip(ip, ExecutionMode::Execute).unwrap();
     assert_eq!(entry.ip, ip);
     assert_eq!(entry.prefix, 32);
     assert_eq!(entry.jail_name, "test-jail");
@@ -323,7 +324,7 @@ fn ban_ip_dry_run_returns_entry_without_executing() {
     let (jail, _log, _dir) = setup_test_jail();
     let ip: std::net::IpAddr = "203.0.113.50".parse().unwrap();
 
-    let entry = jail.ban_ip(ip, true).unwrap();
+    let entry = jail.ban_ip(ip, ExecutionMode::DryRun).unwrap();
     assert_eq!(entry.ip, ip);
     assert_eq!(entry.prefix, 32);
 }
@@ -334,7 +335,7 @@ fn ban_ip_ignored_exact_returns_invalid_config() {
     let jail = jail.with_ignore_ips(vec!["10.0.0.1".to_string()]);
     let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
 
-    let result = jail.ban_ip(ip, false);
+    let result = jail.ban_ip(ip, ExecutionMode::Execute);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::InvalidConfig(msg) => {
@@ -351,7 +352,7 @@ fn ban_ip_ignored_cidr_returns_invalid_config() {
     let jail = jail.with_ignore_ips(vec!["192.168.0.0/16".to_string()]);
     let ip: std::net::IpAddr = "192.168.5.10".parse().unwrap();
 
-    let result = jail.ban_ip(ip, false);
+    let result = jail.ban_ip(ip, ExecutionMode::Execute);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::InvalidConfig(msg) => {
@@ -366,8 +367,8 @@ fn ban_ip_already_banned_returns_already_banned() {
     let (jail, _log, _dir) = setup_test_jail();
     let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
 
-    jail.ban_ip(ip, false).unwrap();
-    let result = jail.ban_ip(ip, false);
+    jail.ban_ip(ip, ExecutionMode::Execute).unwrap();
+    let result = jail.ban_ip(ip, ExecutionMode::Execute);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::AlreadyBanned(_) => {}
@@ -384,8 +385,8 @@ fn unban_ip_removes_ban_entry() {
     let (jail, _log, _dir) = setup_test_jail();
     let ip: std::net::IpAddr = "203.0.113.50".parse().unwrap();
 
-    jail.ban_ip(ip, false).unwrap();
-    let entry = jail.unban_ip("203.0.113.50".parse().unwrap(), false).unwrap();
+    jail.ban_ip(ip, ExecutionMode::Execute).unwrap();
+    let entry = jail.unban_ip("203.0.113.50".parse().unwrap(), ExecutionMode::Execute).unwrap();
     assert_eq!(entry.ip, ip);
     assert_eq!(entry.jail_name, "test-jail");
 
@@ -398,7 +399,7 @@ fn unban_ip_removes_ban_entry() {
 fn unban_ip_not_banned_returns_not_banned() {
     let (jail, _log, _dir) = setup_test_jail();
 
-    let result = jail.unban_ip("10.0.0.99".parse().unwrap(), false);
+    let result = jail.unban_ip("10.0.0.99".parse().unwrap(), ExecutionMode::Execute);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(msg) => assert!(msg.contains("10.0.0.99")),
@@ -429,7 +430,7 @@ fn unban_ip_wrong_jail_returns_not_banned() {
     };
     let jail_a = Jail::new(config_a, store).unwrap();
     let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
-    jail_a.ban_ip(ip, false).unwrap();
+    jail_a.ban_ip(ip, ExecutionMode::Execute).unwrap();
 
     // Create "jail-b" sharing the same store.
     let store2 = make_store(dir.path());
@@ -448,7 +449,7 @@ fn unban_ip_wrong_jail_returns_not_banned() {
     let jail_b = Jail::new(config_b, store2).unwrap();
 
     // Unban from jail-b should fail since the IP is banned under jail-a.
-    let result = jail_b.unban_ip("10.0.0.1".parse().unwrap(), false);
+    let result = jail_b.unban_ip("10.0.0.1".parse().unwrap(), ExecutionMode::Execute);
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(_) => {}
@@ -474,8 +475,8 @@ fn list_bans_returns_active_bans() {
     let ip1: std::net::IpAddr = "10.0.0.1".parse().unwrap();
     let ip2: std::net::IpAddr = "10.0.0.2".parse().unwrap();
 
-    jail.ban_ip(ip1, false).unwrap();
-    jail.ban_ip(ip2, false).unwrap();
+    jail.ban_ip(ip1, ExecutionMode::Execute).unwrap();
+    jail.ban_ip(ip2, ExecutionMode::Execute).unwrap();
 
     let bans = jail.list_bans().unwrap();
     assert_eq!(bans.len(), 2);
@@ -491,10 +492,10 @@ fn list_bans_after_unban_reflects_removal() {
     let ip1: std::net::IpAddr = "10.0.0.1".parse().unwrap();
     let ip2: std::net::IpAddr = "10.0.0.2".parse().unwrap();
 
-    jail.ban_ip(ip1, false).unwrap();
-    jail.ban_ip(ip2, false).unwrap();
+    jail.ban_ip(ip1, ExecutionMode::Execute).unwrap();
+    jail.ban_ip(ip2, ExecutionMode::Execute).unwrap();
 
-    jail.unban_ip("10.0.0.1".parse().unwrap(), false).unwrap();
+    jail.unban_ip("10.0.0.1".parse().unwrap(), ExecutionMode::Execute).unwrap();
 
     let bans = jail.list_bans().unwrap();
     assert_eq!(bans.len(), 1);
@@ -510,11 +511,11 @@ fn is_ignored_exact_ip_match() {
     let (jail, _log, _dir) = setup_test_jail();
     let jail = jail.with_ignore_ips(vec!["192.0.2.1".to_string()]);
 
-    let result = jail.ban_ip("192.0.2.1".parse().unwrap(), true);
+    let result = jail.ban_ip("192.0.2.1".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_err());
 
     // A different IP should not be ignored.
-    let result = jail.ban_ip("192.0.2.2".parse().unwrap(), true);
+    let result = jail.ban_ip("192.0.2.2".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_ok());
 }
 
@@ -524,11 +525,11 @@ fn is_ignored_cidr_match() {
     let jail = jail.with_ignore_ips(vec!["10.0.0.0/8".to_string()]);
 
     // Any IP in 10.0.0.0/8 should be ignored.
-    let result = jail.ban_ip("10.255.255.255".parse().unwrap(), true);
+    let result = jail.ban_ip("10.255.255.255".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_err());
 
     // Outside the range should be fine.
-    let result = jail.ban_ip("11.0.0.1".parse().unwrap(), true);
+    let result = jail.ban_ip("11.0.0.1".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_ok());
 }
 
@@ -536,7 +537,7 @@ fn is_ignored_cidr_match() {
 fn is_ignored_not_ignored() {
     let (jail, _log, _dir) = setup_test_jail();
     // Empty ignore list -- nothing should be ignored.
-    let result = jail.ban_ip("8.8.8.8".parse().unwrap(), true);
+    let result = jail.ban_ip("8.8.8.8".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_ok());
 }
 
@@ -548,9 +549,9 @@ fn is_ignored_multiple_rules_first_match_wins() {
         "10.0.0.0/8".to_string(),
     ]);
 
-    assert!(jail.ban_ip("192.168.1.1".parse().unwrap(), true).is_err());
-    assert!(jail.ban_ip("10.99.99.99".parse().unwrap(), true).is_err());
-    assert!(jail.ban_ip("172.16.0.1".parse().unwrap(), true).is_ok());
+    assert!(jail.ban_ip("192.168.1.1".parse().unwrap(), ExecutionMode::DryRun).is_err());
+    assert!(jail.ban_ip("10.99.99.99".parse().unwrap(), ExecutionMode::DryRun).is_err());
+    assert!(jail.ban_ip("172.16.0.1".parse().unwrap(), ExecutionMode::DryRun).is_ok());
 }
 
 #[test]
@@ -558,10 +559,10 @@ fn is_ignored_ipv6_cidr_match() {
     let (jail, _log, _dir) = setup_test_jail();
     let jail = jail.with_ignore_ips(vec!["2001:db8::/32".to_string()]);
 
-    let result = jail.ban_ip("2001:db8::1".parse().unwrap(), true);
+    let result = jail.ban_ip("2001:db8::1".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_err());
 
-    let result = jail.ban_ip("2001:db9::1".parse().unwrap(), true);
+    let result = jail.ban_ip("2001:db9::1".parse().unwrap(), ExecutionMode::DryRun);
     assert!(result.is_ok());
 }
 
@@ -575,7 +576,7 @@ fn scan_after_ban_ip_does_not_duplicate_ban() {
     let ip: std::net::IpAddr = "192.168.1.10".parse().unwrap();
 
     // Manually ban the IP first.
-    jail.ban_ip(ip, false).unwrap();
+    jail.ban_ip(ip, ExecutionMode::Execute).unwrap();
     assert_eq!(jail.list_bans().unwrap().len(), 1);
 
     // Now scan a log that contains the same IP. The scan itself returns
@@ -583,7 +584,7 @@ fn scan_after_ban_ip_does_not_duplicate_ban() {
     writeln!(log_file, "Failed login from 192.168.1.10").unwrap();
     log_file.flush().unwrap();
 
-    let result = jail.scan(false).unwrap();
+    let result = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(result.new_bans.len(), 1);
 
     // The manual ban should still be the only one in the store.
@@ -602,7 +603,7 @@ fn multiple_scans_incremental_reads() {
     let (mut jail, mut log_file, _dir) = setup_test_jail();
 
     // First scan: empty file.
-    let r1 = jail.scan(false).unwrap();
+    let r1 = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(r1.lines_scanned, 0);
 
     // Append a matching line.
@@ -610,7 +611,7 @@ fn multiple_scans_incremental_reads() {
     log_file.flush().unwrap();
 
     // Second scan: should read only the new line.
-    let r2 = jail.scan(false).unwrap();
+    let r2 = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(r2.lines_scanned, 1);
     assert_eq!(r2.new_bans.len(), 1);
 
@@ -619,7 +620,7 @@ fn multiple_scans_incremental_reads() {
     log_file.flush().unwrap();
 
     // Third scan: should only read the newly appended line.
-    let r3 = jail.scan(false).unwrap();
+    let r3 = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(r3.lines_scanned, 1);
     assert_eq!(r3.new_bans.len(), 1);
     assert_eq!(r3.new_bans[0].ip, "10.0.0.2".parse::<std::net::IpAddr>().unwrap());
@@ -634,7 +635,7 @@ fn ban_ip_ipv6_sets_prefix_128() {
     let (jail, _log, _dir) = setup_test_jail();
     let ip: std::net::IpAddr = "::1".parse().unwrap();
 
-    let entry = jail.ban_ip(ip, false).unwrap();
+    let entry = jail.ban_ip(ip, ExecutionMode::Execute).unwrap();
     assert_eq!(entry.ip, ip);
     assert_eq!(entry.prefix, 128);
 }
@@ -648,7 +649,7 @@ fn scan_with_ipv6_in_log() {
     writeln!(f, "Failed login from 192.168.1.1").unwrap();
     f.flush().unwrap();
 
-    let result = jail.scan(false).unwrap();
+    let result = jail.scan(ExecutionMode::Execute).unwrap();
     assert_eq!(result.matches_found, 2);
     assert_eq!(result.new_bans.len(), 2);
 
@@ -667,11 +668,11 @@ fn ban_ip_ipv6_ignored_by_cidr() {
     let jail = jail.with_ignore_ips(vec!["fe80::/10".to_string()]);
 
     let link_local: std::net::IpAddr = "fe80::1".parse().unwrap();
-    let result = jail.ban_ip(link_local, true);
+    let result = jail.ban_ip(link_local, ExecutionMode::DryRun);
     assert!(result.is_err());
 
     let global: std::net::IpAddr = "2001:db8::1".parse().unwrap();
-    let result = jail.ban_ip(global, true);
+    let result = jail.ban_ip(global, ExecutionMode::DryRun);
     assert!(result.is_ok());
 }
 
@@ -684,11 +685,11 @@ fn unban_then_reban_succeeds() {
     let (jail, _log, _dir) = setup_test_jail();
     let ip: std::net::IpAddr = "10.0.0.1".parse().unwrap();
 
-    jail.ban_ip(ip, false).unwrap();
-    jail.unban_ip("10.0.0.1".parse().unwrap(), false).unwrap();
+    jail.ban_ip(ip, ExecutionMode::Execute).unwrap();
+    jail.unban_ip("10.0.0.1".parse().unwrap(), ExecutionMode::Execute).unwrap();
 
     // Re-banning should succeed.
-    let entry = jail.ban_ip(ip, false).unwrap();
+    let entry = jail.ban_ip(ip, ExecutionMode::Execute).unwrap();
     assert_eq!(entry.ip, ip);
 
     let bans = jail.list_bans().unwrap();
@@ -709,11 +710,11 @@ fn mixed_ignore_list_only_affects_matching_family() {
     ]);
 
     // IPv4 in ignored range.
-    assert!(jail.ban_ip("10.0.0.1".parse().unwrap(), true).is_err());
+    assert!(jail.ban_ip("10.0.0.1".parse().unwrap(), ExecutionMode::DryRun).is_err());
     // IPv6 exact match.
-    assert!(jail.ban_ip("::1".parse().unwrap(), true).is_err());
+    assert!(jail.ban_ip("::1".parse().unwrap(), ExecutionMode::DryRun).is_err());
     // IPv4 outside ignored range.
-    assert!(jail.ban_ip("192.168.1.1".parse().unwrap(), true).is_ok());
+    assert!(jail.ban_ip("192.168.1.1".parse().unwrap(), ExecutionMode::DryRun).is_ok());
     // IPv6 outside ignored range.
-    assert!(jail.ban_ip("2001:db8::1".parse().unwrap(), true).is_ok());
+    assert!(jail.ban_ip("2001:db8::1".parse().unwrap(), ExecutionMode::DryRun).is_ok());
 }

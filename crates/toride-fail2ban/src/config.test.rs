@@ -682,3 +682,58 @@ fn multiple_jails_resolve_independently() {
     assert_eq!(nginx.max_retry, 10);
     assert_eq!(nginx.ban_action, "nginx_block"); // override
 }
+
+// ---------------------------------------------------------------------------
+// Edge case: ban_time of 0 is allowed (permanent ban)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_does_not_reject_zero_ban_time() {
+    let dir = tempdir().unwrap();
+    let log_path = dir.path().join("auth.log");
+    fs::write(&log_path, "some log content").unwrap();
+
+    let jail = JailConfig {
+        ban_time: Some(0),
+        ..sample_jail_config(log_path)
+    };
+    let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
+    // ban_time == 0 means permanent ban and should NOT be rejected.
+    assert!(config.validate().is_ok());
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: create_default on an existing file with corrupt JSON
+// ---------------------------------------------------------------------------
+
+#[test]
+fn create_default_with_corrupt_existing_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    fs::write(&path, "{{{{this is not valid json").unwrap();
+
+    let result = Fail2BanConfig::create_default(&path);
+    assert!(result.is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: load with wrong field types in JSON
+// ---------------------------------------------------------------------------
+
+#[test]
+fn load_with_malformed_field_types() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("config.json");
+    // find_time is a string instead of a number.
+    let json = r#"{
+        "defaults": {
+            "find_time": "not_a_number",
+            "ban_time": 3600,
+            "max_retry": 5
+        }
+    }"#;
+    fs::write(&path, json).unwrap();
+
+    let result = Fail2BanConfig::load(&path);
+    assert!(result.is_err());
+}
