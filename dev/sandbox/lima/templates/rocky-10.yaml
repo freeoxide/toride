@@ -1,0 +1,40 @@
+# Toride Lima sandbox — Rocky Linux 10
+# See docs/lima-sandbox.md for full contract.
+#
+# Usage:
+#   limactl create --tty=false --name=toride-r10 --mount-none dev/sandbox/lima/templates/rocky-10.yaml
+#   limactl start toride-r10
+#
+# Note: Verify the image supports the host CPU architecture.
+# Rocky 10 changed some architecture baselines on x86.
+
+minimumLimaVersion: "2.0.0"
+vmType: vz
+arch: default
+cpus: 2
+memory: 4GiB
+disk: 24GiB
+
+images:
+  - location: "~/os/toride/dev/sandbox/lima/images/rocky-10/image-aarch64.qcow2"
+    arch: "aarch64"
+  - location: "~/os/toride/dev/sandbox/lima/images/rocky-10/image-x86_64.qcow2"
+    arch: "x86_64"
+
+mounts: []
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      if command -v cloud-init >/dev/null 2>&1; then
+        cloud-init status --wait || true
+      fi
+      dnf install -y ca-certificates curl sudo openssh-server systemd iproute
+      systemctl enable sshd || true
+      systemctl start sshd || true

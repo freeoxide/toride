@@ -29,3 +29,12 @@ local.properties
 
 #playwright
 .playwright-mcp
+
+# Lima sandbox VM images (disks are disposable; source images are not committed)
+dev/sandbox/lima/images/**/*.qcow2
+dev/sandbox/lima/images/**/*.img
+dev/sandbox/lima/images/**/*.raw
+dev/sandbox/lima/images/**/*.iso
+
+# Lima sandbox artifacts (collected test output)
+.sandbox-artifacts/

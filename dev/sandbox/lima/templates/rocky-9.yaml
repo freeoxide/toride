@@ -1,0 +1,37 @@
+# Toride Lima sandbox — Rocky Linux 9
+# See docs/lima-sandbox.md for full contract.
+#
+# Usage:
+#   limactl create --tty=false --name=toride-r9 --mount-none dev/sandbox/lima/templates/rocky-9.yaml
+#   limactl start toride-r9
+
+minimumLimaVersion: "2.0.0"
+vmType: vz
+arch: default
+cpus: 2
+memory: 4GiB
+disk: 24GiB
+
+images:
+  - location: "~/os/toride/dev/sandbox/lima/images/rocky-9/image-aarch64.qcow2"
+    arch: "aarch64"
+  - location: "~/os/toride/dev/sandbox/lima/images/rocky-9/image-x86_64.qcow2"
+    arch: "x86_64"
+
+mounts: []
+
+containerd:
+  system: false
+  user: false
+
+provision:
+  - mode: system
+    script: |
+      #!/bin/bash
+      set -eux
+      if command -v cloud-init >/dev/null 2>&1; then
+        cloud-init status --wait || true
+      fi
+      dnf install -y ca-certificates curl sudo openssh-server systemd iproute
+      systemctl enable sshd || true
+      systemctl start sshd || true
