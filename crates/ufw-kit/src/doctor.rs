@@ -226,6 +226,9 @@ fn check_service(ufw: &Ufw) -> Vec<Finding> {
                         });
                     }
                 }
+
+                // Check if boot integration is set up (ufw.service or ufw-enabled.service symlink)
+                check_boot_integration(&mut findings);
             }
 
             // Check default incoming policy and warn if allow
@@ -398,10 +401,12 @@ fn check_policy(ufw: &Ufw) -> Vec<Finding> {
                     crate::spec::Policy::Allow => {
                         findings.push(Finding {
                             id: "pol:incoming:allow",
-                            severity: Severity::Warning,
-                            title: "Default incoming policy is ALLOW".into(),
-                            detail: "Servers should typically have incoming DENY or REJECT as default.".into(),
-                            fix: Some("Set default incoming to deny: ufw default deny incoming".into()),
+                            severity: Severity::Critical,
+                            title: "Incoming allow is dangerously permissive".into(),
+                            detail: "The default incoming policy is ALLOW, which means all inbound traffic \
+                                     is permitted by default. This effectively disables the firewall for \
+                                     incoming connections.".into(),
+                            fix: Some("Set default incoming to deny: sudo ufw default deny incoming".into()),
                         });
                     }
                     crate::spec::Policy::Deny | crate::spec::Policy::Reject => {
@@ -450,9 +455,10 @@ fn check_policy(ufw: &Ufw) -> Vec<Finding> {
                         findings.push(Finding {
                             id: "pol:routed:allow",
                             severity: Severity::Warning,
-                            title: "Default routed policy is ALLOW".into(),
-                            detail: "The default routed/forwarded policy is allow. This can expose internal networks if forwarding is enabled.".into(),
-                            fix: Some("Set default routed to deny: ufw default deny routed".into()),
+                            title: "Default routed policy is ALLOW (accept)".into(),
+                            detail: "The default routed/forwarded policy is accept. This can expose \
+                                     internal networks if forwarding is enabled.".into(),
+                            fix: Some("Set default routed to deny: sudo ufw default deny routed".into()),
                         });
                     }
                     crate::spec::Policy::Deny | crate::spec::Policy::Reject => {
@@ -626,6 +632,13 @@ fn check_rules(ufw: &Ufw) -> Vec<Finding> {
                     }
                 }
             }
+
+            // Check for shadowed rules: if an earlier allow and a later deny target
+            // the same port/direction, the deny is shadowed and never fires.
+            check_shadowed_rules(&status.rules, &mut findings);
+
+            // Check for IPv4/IPv6 dual-stack coverage
+            check_dual_stack_coverage(&status.rules, &mut findings);
         }
         Err(e) => findings.push(Finding {
             id: "rule:status-fail",
@@ -670,7 +683,7 @@ fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
                     findings.push(Finding {
                         id: "ssh:limit",
                         severity: Severity::Ok,
-                        title: "SSH rule uses rate limiting".into(),
+                        title: "SSH uses rate limiting".into(),
                         detail: "The SSH rule uses the 'limit' action, which provides brute-force protection.".into(),
                         fix: None,
                     });
@@ -701,9 +714,27 @@ fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
                     findings.push(Finding {
                         id: "ssh:allow-anywhere",
                         severity: Severity::Warning,
-                        title: "SSH allows connections from anywhere".into(),
-                        detail: "An SSH rule allows connections from any source address. This exposes SSH to brute-force attacks.".into(),
-                        fix: Some("Restrict SSH to trusted IPs: ufw allow from <trusted-ip> to any port 22 proto tcp".into()),
+                        title: "SSH allows from any source".into(),
+                        detail: "An SSH rule allows connections from any source address. \
+                                 This exposes SSH to brute-force attacks from the entire internet.".into(),
+                        fix: Some("Restrict SSH to trusted IPs: sudo ufw allow from <trusted-ip> to any port 22 proto tcp".into()),
+                    });
+                }
+
+                // Check if Tailscale or WireGuard interface is present in SSH rules
+                let vpn_interfaces = ["tailscale", "wg", "wg0", "wg1", "tailscale0"];
+                let has_vpn = ssh_rules.iter().any(|rule| {
+                    let raw = rule.raw.to_lowercase();
+                    vpn_interfaces.iter().any(|iface| raw.contains(iface))
+                });
+                if has_vpn {
+                    findings.push(Finding {
+                        id: "ssh:vpn-interface",
+                        severity: Severity::Info,
+                        title: "SSH rule references VPN interface".into(),
+                        detail: "At least one SSH rule is scoped to a Tailscale or WireGuard interface, \
+                                 which restricts SSH access to VPN peers.".into(),
+                        fix: None,
                     });
                 }
             } else {
@@ -722,6 +753,7 @@ fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
 }
 
 /// Check IPv6 configuration.
+#[allow(clippy::too_many_lines)]
 fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -776,6 +808,63 @@ fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
                         fix: Some("Align IPv6 policy with IPv4 in /etc/default/ufw.".into()),
                     });
                 }
+            }
+
+            // Check IPv6 routed/forward policy matches IPv4
+            let v4_routed = status.default_routed;
+            if let (Some(v4_pol), Some(ipv6_fwd_str)) = (&v4_routed, &config.default_forward_policy) {
+                let v4_str = v4_pol.to_string().to_lowercase();
+                if v4_str != ipv6_fwd_str.to_lowercase() {
+                    findings.push(Finding {
+                        id: "ipv6:forward-policy-mismatch",
+                        severity: Severity::Warning,
+                        title: "IPv6 forward policy differs from IPv4 routed".into(),
+                        detail: format!("IPv4 routed policy is {v4_str} but IPv6 DEFAULT_FORWARD_POLICY is set to {ipv6_fwd_str}."),
+                        fix: Some("Align IPv6 forward policy with IPv4 routed in /etc/default/ufw.".into()),
+                    });
+                }
+            }
+        }
+
+        // Check for IPv6 route rules
+        if let Ok(status) = ufw.status() {
+            let ipv6_route_rules: Vec<_> = status
+                .rules
+                .iter()
+                .filter(|r| r.ipv6 && r.is_route)
+                .collect();
+            if !ipv6_route_rules.is_empty() {
+                findings.push(Finding {
+                    id: "ipv6:route-rules",
+                    severity: Severity::Info,
+                    title: "IPv6 route rules present".into(),
+                    detail: format!(
+                        "Found {} IPv6 route/forward rule(s). Ensure they match your network topology.",
+                        ipv6_route_rules.len()
+                    ),
+                    fix: None,
+                });
+            }
+        }
+
+        // Check for IPv6 listening ports exposure via firewall show listening
+        if let Ok(listening_output) = ufw.show(crate::spec::UfwReport::Listening) {
+            let ipv6_listening: Vec<_> = listening_output
+                .lines()
+                .filter(|l| l.contains("[::]") || l.contains(":::"))
+                .collect();
+            if !ipv6_listening.is_empty() {
+                findings.push(Finding {
+                    id: "ipv6:listening-exposed",
+                    severity: Severity::Info,
+                    title: "Services listening on IPv6".into(),
+                    detail: format!(
+                        "Found {} service(s) listening on IPv6 wildcard addresses ([::] or :::port). \
+                         Ensure IPv6 firewall rules restrict access as needed.",
+                        ipv6_listening.len()
+                    ),
+                    fix: None,
+                });
             }
         }
     } else {
@@ -837,6 +926,17 @@ fn check_logging(ufw: &Ufw) -> Vec<Finding> {
                 detail: "Could not determine the UFW logging level.".into(),
                 fix: None,
             });
+        }
+    }
+
+    // Check if UFW log file exists and its size
+    let log_paths = ["/var/log/ufw.log", "/var/log/syslog", "/var/log/kern.log"];
+    for log_path in &log_paths {
+        if let Ok(meta) = std::fs::metadata(log_path) {
+            let nbytes = meta.len();
+            check_log_file_size(log_path, nbytes, &mut findings);
+            // Only report on the first log file found
+            break;
         }
     }
 
@@ -931,11 +1031,17 @@ fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
         }),
     }
 
+    // Cross-reference: check if any rules reference app profiles that do not exist
+    check_app_profile_references(ufw, &mut findings);
+
+    // Check if any app profiles have ports that conflict with each other
+    check_app_profile_port_conflicts(ufw, &mut findings);
+
     findings
 }
 
 /// Check file permissions.
-fn check_permissions(_ufw: &Ufw) -> Vec<Finding> {
+fn check_permissions(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
     let paths_to_check = [
@@ -956,6 +1062,12 @@ fn check_permissions(_ufw: &Ufw) -> Vec<Finding> {
 
     // Check app profile directory separately for non-world-readable
     check_path_permissions("/etc/ufw/applications.d", &mut findings);
+
+    // Check file ownership: /etc/ufw and its contents should be owned by root
+    check_file_ownership(&mut findings);
+
+    // Check for secrets in rule comments (cross-reference with spec validation)
+    check_secrets_in_comments(ufw, &mut findings);
 
     findings
 }
@@ -1030,6 +1142,44 @@ fn check_path_permissions(path: &str, findings: &mut Vec<Finding>) {
 }
 
 // ── Helper functions ──────────────────────────────────────────────
+
+/// Check log file size and add findings if too large.
+fn check_log_file_size(log_path: &str, nbytes: u64, findings: &mut Vec<Finding>) {
+    const HUNDRED_MB: u64 = 100 * 1024 * 1024;
+    // Precision loss from u64->f64 is acceptable for display purposes;
+    // file sizes beyond 2^53 bytes (8 PB) will not be encountered.
+    #[allow(clippy::cast_precision_loss)]
+    let megabytes = nbytes as f64 / (1024.0 * 1024.0);
+    #[allow(clippy::cast_precision_loss)]
+    let kilobytes = nbytes as f64 / 1024.0;
+
+    if nbytes > HUNDRED_MB {
+        findings.push(Finding {
+            id: Box::leak(
+                format!("log:{}:large", log_path.replace('/', ":"))
+                    .into_boxed_str(),
+            ),
+            severity: Severity::Warning,
+            title: format!("{log_path} is very large ({megabytes:.1} MB)"),
+            detail: format!(
+                "{log_path} is {megabytes:.1} MB, which could fill disk space. Consider rotating logs."
+            ),
+            fix: Some("Set up log rotation or reduce logging level. \
+                      You can also truncate: sudo truncate -s 0 {log_path}".into()),
+        });
+    } else {
+        findings.push(Finding {
+            id: Box::leak(
+                format!("log:{}:ok", log_path.replace('/', ":"))
+                    .into_boxed_str(),
+            ),
+            severity: Severity::Ok,
+            title: format!("{log_path} exists ({kilobytes:.1} KB)"),
+            detail: format!("Log file {log_path} is {kilobytes:.1} KB."),
+            fix: None,
+        });
+    }
+}
 
 /// Read whether IPv6 is enabled from /etc/default/ufw using the config module.
 fn read_ipv6_enabled_from_config() -> bool {
@@ -1109,6 +1259,345 @@ fn is_valid_port_spec(spec: &str) -> bool {
     }
 
     true // Allow named ports and other formats we can't easily validate
+}
+
+/// Check if boot integration is set up (ufw.service or ufw-enabled.service).
+fn check_boot_integration(findings: &mut Vec<Finding>) {
+    let systemd_paths = [
+        "/etc/systemd/system/ufw.service",
+        "/lib/systemd/system/ufw.service",
+        "/etc/systemd/system/multi-user.target.wants/ufw.service",
+    ];
+
+    let found = systemd_paths
+        .iter()
+        .any(|p| std::path::Path::new(p).exists());
+
+    if found {
+        findings.push(Finding {
+            id: "svc:boot:integrated",
+            severity: Severity::Ok,
+            title: "UFW boot integration is set up".into(),
+            detail: "A systemd unit file for UFW was found. UFW will start at boot.".into(),
+            fix: None,
+        });
+    } else {
+        findings.push(Finding {
+            id: "svc:boot:no-unit",
+            severity: Severity::Info,
+            title: "No UFW systemd unit file found".into(),
+            detail: "No ufw.service unit file was found in standard systemd paths. \
+                     UFW may rely on its own init script instead of systemd.".into(),
+            fix: None,
+        });
+    }
+}
+
+/// Detect shadowed rules: if an earlier allow and a later deny target the same
+/// port and direction, the deny is shadowed and will never fire.
+fn check_shadowed_rules(rules: &[crate::spec::ParsedRule], findings: &mut Vec<Finding>) {
+    // Build a list of (index, direction, port_str, is_allow) from raw text.
+    let mut parsed: Vec<(usize, Option<crate::spec::Direction>, String, bool)> = Vec::new();
+
+    for (i, rule) in rules.iter().enumerate() {
+        let raw_lower = rule.raw.to_lowercase();
+        let is_allow = raw_lower.contains("allow") || raw_lower.contains("limit");
+        let is_deny = raw_lower.contains("deny") || raw_lower.contains("reject");
+
+        if !is_allow && !is_deny {
+            continue;
+        }
+
+        // Extract a port identifier from the raw text.
+        // Look for patterns like "22/tcp", "443", "8080/tcp", etc.
+        let port_str = extract_port_from_raw(&raw_lower);
+        if port_str.is_empty() {
+            continue;
+        }
+
+        parsed.push((i, rule.direction, port_str, is_allow));
+    }
+
+    // For each deny rule, check if there's an earlier allow with the same port and direction.
+    for (idx, dir, port, is_allow) in &parsed {
+        if *is_allow {
+            continue;
+        }
+
+        let is_shadowed = parsed.iter().any(|(earlier_idx, earlier_dir, earlier_port, earlier_is_allow)| {
+            *earlier_idx < *idx
+                && *earlier_is_allow
+                && earlier_port == port
+                && (earlier_dir == dir || earlier_dir.is_none() || dir.is_none())
+        });
+
+        if is_shadowed {
+            let rule_text = &rules[*idx].raw;
+            findings.push(Finding {
+                id: "rule:shadowed",
+                severity: Severity::Warning,
+                title: "Shadowed deny/reject rule detected".into(),
+                detail: format!(
+                    "Rule at position {} ('{}') is shadowed by an earlier allow rule \
+                     on the same port. The deny/reject will never match.",
+                    idx + 1,
+                    rule_text
+                ),
+                fix: Some(
+                    "Reorder rules so the deny/reject comes before the allow, \
+                     or remove the shadowed rule.".into(),
+                ),
+            });
+        }
+    }
+}
+
+/// Extract a port identifier from raw rule text (lowercase).
+fn extract_port_from_raw(raw_lower: &str) -> String {
+    // Look for patterns: "NNNN/tcp", "NNNN/udp", or a standalone number
+    // in the first few whitespace-separated tokens (the "To" column).
+    for token in raw_lower.split_whitespace().take(3) {
+        // "22/tcp", "443/tcp", etc.
+        if let Some(slash_pos) = token.find('/') {
+            let port_part = &token[..slash_pos];
+            if port_part.parse::<u16>().is_ok() {
+                return token.to_string();
+            }
+        }
+        // Standalone number (e.g., "22" in "22 ALLOW IN")
+        if token.parse::<u16>().is_ok() {
+            return token.to_string();
+        }
+    }
+    String::new()
+}
+
+/// Check for IPv4/IPv6 dual-stack coverage: if there are IPv4 rules but no
+/// corresponding IPv6 rules (or vice versa), suggest dual-stack coverage.
+fn check_dual_stack_coverage(rules: &[crate::spec::ParsedRule], findings: &mut Vec<Finding>) {
+    let ipv4_rules: Vec<_> = rules.iter().filter(|r| !r.ipv6).collect();
+    let ipv6_rules: Vec<_> = rules.iter().filter(|r| r.ipv6).collect();
+
+    if ipv4_rules.is_empty() && ipv6_rules.is_empty() {
+        return;
+    }
+
+    // If there are IPv4 rules but no IPv6 rules (or vice versa), note it.
+    if !ipv4_rules.is_empty() && ipv6_rules.is_empty() {
+        findings.push(Finding {
+            id: "rule:ipv4-only",
+            severity: Severity::Info,
+            title: "Rules exist only for IPv4".into(),
+            detail: format!(
+                "Found {} IPv4 rule(s) but no IPv6 rules. If IPv6 is enabled, \
+                 consider adding equivalent IPv6 rules for dual-stack coverage.",
+                ipv4_rules.len()
+            ),
+            fix: Some("Add IPv6 equivalents of your IPv4 rules, or use UFW's dual-stack support.".into()),
+        });
+    } else if ipv4_rules.is_empty() && !ipv6_rules.is_empty() {
+        findings.push(Finding {
+            id: "rule:ipv6-only",
+            severity: Severity::Info,
+            title: "Rules exist only for IPv6".into(),
+            detail: format!(
+                "Found {} IPv6 rule(s) but no IPv4 rules. Most services also need IPv4 rules.",
+                ipv6_rules.len()
+            ),
+            fix: Some("Add IPv4 equivalents of your IPv6 rules.".into()),
+        });
+    }
+}
+
+/// Check file ownership: /etc/ufw and key config files should be owned by root.
+fn check_file_ownership(findings: &mut Vec<Finding>) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let paths = ["/etc/ufw", "/etc/default/ufw", "/etc/ufw/ufw.conf"];
+        for path in &paths {
+            if let Ok(meta) = std::fs::metadata(path) {
+                let uid = meta.uid();
+                if uid != 0 {
+                    findings.push(Finding {
+                        id: Box::leak(
+                            format!("perm:{}:not-root-owned", path.replace('/', ":"))
+                                .into_boxed_str(),
+                        ),
+                        severity: Severity::Warning,
+                        title: format!("{path} is not owned by root"),
+                        detail: format!(
+                            "{path} is owned by UID {uid} instead of root (UID 0). \
+                             UFW config files should be owned by root to prevent tampering.",
+                        ),
+                        fix: Some(format!("Fix ownership: sudo chown root:root {path}")),
+                    });
+                }
+            }
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = findings;
+    }
+}
+
+/// Check for secrets in rule comments (cross-reference with spec validation).
+fn check_secrets_in_comments(ufw: &Ufw, findings: &mut Vec<Finding>) {
+    if let Ok(status) = ufw.status() {
+        for rule in &status.rules {
+            if let Some(comment) = &rule.comment {
+                // Reuse the spec validation logic for secret detection
+                if crate::spec::validate_comment_for_secrets_doctor(comment) {
+                    findings.push(Finding {
+                        id: "perm:rule:secret-in-comment",
+                        severity: Severity::Warning,
+                        title: "Rule comment may contain a secret".into(),
+                        detail: format!(
+                            "Rule '{}' has a comment that appears to contain a secret: '{}'. \
+                             Secrets should not be stored in firewall rule comments.",
+                            rule.raw,
+                            comment
+                        ),
+                        fix: Some(
+                            "Remove the secret from the rule comment and store it in a \
+                             proper secrets manager. Then recreate the rule without the secret.".into(),
+                        ),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Cross-reference: check if any rules reference app profiles that do not exist.
+fn check_app_profile_references(ufw: &Ufw, findings: &mut Vec<Finding>) {
+    // Get the list of known profiles
+    let known_profiles: Vec<String> = match ufw.app_list() {
+        Ok(list) => list
+            .lines()
+            .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
+            .map(|l| l.trim().trim_start_matches(|c: char| c.is_whitespace() || c == '*').to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
+        Err(_) => return,
+    };
+
+    // Check rules for app profile references (rules that don't match port patterns
+    // but reference a profile name).
+    if let Ok(status) = ufw.status() {
+        for rule in &status.rules {
+            let raw_lower = rule.raw.to_lowercase();
+
+            // Skip rules that clearly have port numbers
+            if raw_lower.split_whitespace().take(2).any(|t| t.parse::<u16>().is_ok()) {
+                continue;
+            }
+
+            // Check if the first token looks like a profile name that's not in the list
+            let first_token = raw_lower.split_whitespace().next().unwrap_or("");
+            if first_token.is_empty() {
+                continue;
+            }
+
+            // If it's not a well-known keyword and not in the profiles list, flag it
+            let is_keyword = matches!(
+                first_token,
+                "allow" | "deny" | "reject" | "limit" | "anywhere"
+            );
+            if !is_keyword
+                && first_token.parse::<u16>().is_err()
+                && !known_profiles.iter().any(|p| p.to_lowercase() == first_token)
+            {
+                // Check if the raw text contains a known profile name elsewhere
+                let found_in_raw = known_profiles
+                    .iter()
+                    .any(|p| raw_lower.contains(&p.to_lowercase()));
+                if !found_in_raw && raw_lower.contains("allow") {
+                    // Possible dangling app profile reference
+                    findings.push(Finding {
+                        id: "app:rule:unknown-profile-ref",
+                        severity: Severity::Info,
+                        title: "Rule may reference unknown app profile".into(),
+                        detail: format!(
+                            "Rule '{}' references '{}' which is not a known app profile.",
+                            rule.raw, first_token
+                        ),
+                        fix: Some("Check the rule and profile name. Install the missing profile or fix the rule.".into()),
+                    });
+                }
+            }
+        }
+    }
+}
+
+/// Check if any app profiles have ports that conflict with each other.
+fn check_app_profile_port_conflicts(ufw: &Ufw, findings: &mut Vec<Finding>) {
+    // Collect (profile_name, ports_string) from app info
+    let profiles = match ufw.app_list() {
+        Ok(list) => list
+            .lines()
+            .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
+            .map(|l| l.trim().trim_start_matches(|c: char| c.is_whitespace() || c == '*').to_string())
+            .filter(|l| !l.is_empty())
+            .collect::<Vec<_>>(),
+        Err(_) => return,
+    };
+
+    let mut profile_ports: Vec<(String, Vec<String>)> = Vec::new();
+
+    for name in &profiles {
+        if let Ok(info) = ufw.app_info(name) {
+            if let Some(ports_line) = info.lines().find(|l| l.contains("Port")) {
+                if let Some(ports_str) = ports_line.split(':').nth(1) {
+                    let ports: Vec<String> = ports_str
+                        .split(',')
+                        .map(|s| s.trim().to_string())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    profile_ports.push((name.clone(), ports));
+                }
+            }
+        }
+    }
+
+    // Check for overlapping ports between profiles
+    for i in 0..profile_ports.len() {
+        for j in (i + 1)..profile_ports.len() {
+            let (ref name_a, ref ports_a) = profile_ports[i];
+            let (ref name_b, ref ports_b) = profile_ports[j];
+
+            let conflicts: Vec<_> = ports_a
+                .iter()
+                .filter(|p| ports_b.contains(p))
+                .collect();
+
+            if !conflicts.is_empty() {
+                let conflict_list: String = conflicts
+                    .iter()
+                    .map(|s| s.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                findings.push(Finding {
+                    id: Box::leak(
+                        format!("app:conflict:{name_a}:{name_b}")
+                            .into_boxed_str(),
+                    ),
+                    severity: Severity::Info,
+                    title: format!("App profiles {name_a} and {name_b} share ports"),
+                    detail: format!(
+                        "Profiles '{name_a}' and '{name_b}' both define port(s): {conflict_list}. \
+                         This can cause conflicts when both are used in rules."
+                    ),
+                    fix: Some(
+                        "Review the profile definitions and remove duplicate port declarations, \
+                         or avoid using both profiles simultaneously.".into(),
+                    ),
+                });
+            }
+        }
+    }
 }
 
 #[cfg(test)]

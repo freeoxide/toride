@@ -3,10 +3,29 @@
 //! Manages controlled blocks within UFW framework files
 //! (`before.rules`, `after.rules`, etc.) using marker comments.
 
+use std::fs::File;
 use std::path::Path;
+
+use fs2::FileExt;
 
 use crate::error::{Error, Result};
 use crate::spec::FrameworkRuleBlock;
+
+/// Acquire an exclusive lock on a lock file derived from `path`.
+///
+/// The lock file uses a `.lock` extension alongside the target file so the
+/// actual framework file is never corrupted by lock metadata.
+/// Returns the locked file handle — the lock is held until it is dropped.
+fn acquire_lock(path: &Path) -> Result<File> {
+    let lock_path = path.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(&lock_path)?;
+    file.lock_exclusive()
+        .map_err(|e| Error::Io(format!("failed to acquire lock on {}: {e}", lock_path.display())))?;
+    Ok(file)
+}
 
 /// Start marker for a managed block.
 fn start_marker(id: &str) -> String {
@@ -123,6 +142,8 @@ pub fn write_framework_file(
     content: &str,
     backup_dir: Option<&Path>,
 ) -> Result<Option<String>> {
+    let _lock = acquire_lock(path)?;
+
     // Read existing content for rollback
     let previous = if path.exists() {
         Some(

@@ -35,6 +35,8 @@ pub mod diff;
 pub mod backup;
 pub mod report;
 pub mod config;
+pub mod firewall;
+pub mod presets;
 
 #[cfg(feature = "client")]
 pub mod client;

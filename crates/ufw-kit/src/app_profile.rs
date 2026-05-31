@@ -3,12 +3,31 @@
 //! Handles writing, updating, and removing UFW application profiles
 //! in `/etc/ufw/applications.d/`.
 
+use std::fs::File;
 use std::path::Path;
+
+use fs2::FileExt;
 
 use crate::backup;
 use crate::error::{Error, Result};
 use crate::paths::UfwPaths;
 use crate::spec::AppProfileSpec;
+
+/// Acquire an exclusive lock on a lock file derived from `path`.
+///
+/// The lock file uses a `.lock` extension alongside the target file so the
+/// actual app profile file is never corrupted by lock metadata.
+/// Returns the locked file handle — the lock is held until it is dropped.
+fn acquire_lock(path: &Path) -> Result<File> {
+    let lock_path = path.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(&lock_path)?;
+    file.lock_exclusive()
+        .map_err(|e| Error::Io(format!("failed to acquire lock on {}: {e}", lock_path.display())))?;
+    Ok(file)
+}
 
 /// Ensure an application profile exists and is up to date.
 ///
@@ -24,6 +43,8 @@ pub fn ensure_app_profile(
 
     let path = paths.app_profile_path(namespace, &spec.name);
     let new_content = spec.render();
+
+    let _lock = acquire_lock(&path)?;
 
     // Check if already exists with same content
     if path.exists() {

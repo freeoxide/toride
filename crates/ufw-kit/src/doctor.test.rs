@@ -469,3 +469,117 @@ fn check_config_should_parse_loglevel_validity() {
     assert_eq!(conf.loglevel.as_deref(), Some("invalid_level"));
     // Doctor would emit cfg:loglevel:invalid for this
 }
+
+// ---------------------------------------------------------------------------
+// Edge-case: shadowed rules
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_rules_should_detect_shadowed_deny() {
+    // allow 22, then deny 22 — the deny is shadowed
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n22/tcp                     DENY        Anywhere\n",
+    );
+    let findings = check_rules(&ufw);
+    assert!(findings.iter().any(|f| f.id == "rule:shadowed"));
+}
+
+#[test]
+fn check_rules_should_not_flag_non_shadowed() {
+    // deny 22, then allow 22 — not shadowed (deny first, allow after — normal)
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     DENY        Anywhere\n22/tcp                     ALLOW       Anywhere\n",
+    );
+    let findings = check_rules(&ufw);
+    assert!(!findings.iter().any(|f| f.id == "rule:shadowed"));
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: dual-stack coverage
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_rules_should_flag_ipv4_only() {
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n443/tcp                    ALLOW       Anywhere\n80/tcp                     ALLOW       Anywhere\n",
+    );
+    let findings = check_rules(&ufw);
+    assert!(findings.iter().any(|f| f.id == "rule:ipv4-only"));
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: policy severity for incoming allow
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_policy_should_use_critical_for_incoming_allow() {
+    let output = "Status: active\nDefault: allow (incoming), allow (outgoing)\nLogging: on\n";
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+        .respond_ok("ufw", &["status"], "Status: active\n")
+        .respond_ok("ufw", &["status", "verbose"], output)
+        .respond_ok("ufw", &["app", "list"], "");
+    let ufw = Ufw::with_runner(runner);
+    let findings = check_policy(&ufw);
+    let incoming = findings.iter().find(|f| f.id == "pol:incoming:allow").unwrap();
+    assert_eq!(incoming.severity, Severity::Critical);
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: SSH VPN interface detection
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_ssh_should_detect_vpn_interface() {
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere on tailscale0\n",
+    );
+    let findings = check_ssh(&ufw);
+    assert!(findings.iter().any(|f| f.id == "ssh:vpn-interface"));
+}
+
+#[test]
+fn check_ssh_should_detect_wireguard_interface() {
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere on wg0\n",
+    );
+    let findings = check_ssh(&ufw);
+    assert!(findings.iter().any(|f| f.id == "ssh:vpn-interface"));
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: secrets in comments
+// ---------------------------------------------------------------------------
+
+#[test]
+fn check_permissions_should_detect_secret_in_comment() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["--version"], "ufw 0.36.1")
+        .respond_ok(
+            "ufw",
+            &["status"],
+            "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere comment 'password=secret123'\n",
+        )
+        .respond_ok(
+            "ufw",
+            &["status", "verbose"],
+            "Status: active\nDefault: deny (incoming), allow (outgoing)\nLogging: on (low)\n",
+        )
+        .respond_ok("ufw", &["app", "list"], "")
+        .respond_ok("ufw", &["app", "info", "OpenSSH"], "Profile: OpenSSH\nTitle: OpenSSH\nDescription: OpenSSH\nPort: 22/tcp\n");
+    let ufw = Ufw::with_runner(runner);
+    let findings = check_permissions(&ufw);
+    assert!(findings.iter().any(|f| f.id == "perm:rule:secret-in-comment"));
+}
+
+// ---------------------------------------------------------------------------
+// Edge-case: comment secret detection helper
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_comment_for_secrets_doctor_should_detect_key_value() {
+    assert!(crate::spec::validate_comment_for_secrets_doctor("password=secret123"));
+    assert!(crate::spec::validate_comment_for_secrets_doctor("api_key=abc123"));
+    assert!(!crate::spec::validate_comment_for_secrets_doctor("managed:https"));
+    assert!(!crate::spec::validate_comment_for_secrets_doctor("allow ssh from office"));
+}

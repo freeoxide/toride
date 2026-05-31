@@ -3,13 +3,31 @@
 //! Provides safe key-value editing with comment preservation and atomic writes.
 
 use std::fmt::Write;
+use std::fs::File;
 use std::io::Write as IoWrite;
 use std::path::Path;
 
+use fs2::FileExt;
 use tempfile::NamedTempFile;
 
 use crate::error::{Error, Result};
 use crate::spec::{UfwConf, UfwConfig};
+
+/// Acquire an exclusive lock on a lock file derived from `path`.
+///
+/// The lock file uses a `.lock` extension alongside the target file so the
+/// actual config file is never corrupted by lock metadata.
+/// Returns the locked file handle — the lock is held until it is dropped.
+fn acquire_lock(path: &Path) -> Result<File> {
+    let lock_path = path.with_extension("lock");
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let file = File::create(&lock_path)?;
+    file.lock_exclusive()
+        .map_err(|e| Error::Io(format!("failed to acquire lock on {}: {e}", lock_path.display())))?;
+    Ok(file)
+}
 
 /// Parse `/etc/default/ufw` content.
 pub fn parse_default_ufw(content: &str) -> UfwConfig {
@@ -114,6 +132,8 @@ pub fn update_ufw_conf_key(content: &str, key: &str, value: &str) -> String {
 ///
 /// The backup is named after the target file's stem with a `.bak` suffix.
 pub fn write_config_file(path: &Path, content: &str, backup_dir: Option<&Path>) -> Result<()> {
+    let _lock = acquire_lock(path)?;
+
     // Step 1: Create backup if requested and original file exists
     if let Some(backup_dir) = backup_dir {
         if path.exists() {

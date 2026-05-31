@@ -1367,6 +1367,14 @@ fn validate_app_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Public wrapper for secret detection in comments, used by the doctor module.
+///
+/// Returns `true` if the comment appears to contain a secret pattern.
+#[must_use]
+pub fn validate_comment_for_secrets_doctor(comment: &str) -> bool {
+    check_comment_for_secrets(comment).is_err()
+}
+
 // ============================================================================
 // Structs — Show Reports
 // ============================================================================
@@ -1420,3 +1428,7 @@ impl From<&str> for PortSpec {
 #[cfg(test)]
 #[path = "spec.test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "proptest.test.rs"]
+mod proptest_tests;
