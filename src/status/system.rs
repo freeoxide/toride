@@ -57,6 +57,7 @@
 //! ```
 
 use std::fmt;
+use std::path::Path;
 
 use serde::Serialize;
 use sysinfo::{
@@ -66,9 +67,71 @@ use sysinfo::{
 
 use crate::status::error::StatusResult;
 use crate::status::provider::{
-    BatteryProvider, CpuProvider, DiskProvider, GpuProvider, MemoryProvider, NetworkProvider,
-    OsProvider, ProcessProvider, SensorProvider,
+    BatteryProvider, CpuProvider, DiskIoProvider, DiskProvider, GpuProvider, MemoryProvider,
+    NetworkProvider, OsProvider, ProcessProvider, SensorProvider, StaticInfoProvider,
+    VirtualizationProvider,
 };
+
+// ── Feature-gated optional crate imports ──────────────────────────────
+// These ensure optional deps compile-check when their feature is enabled.
+// Each crate is imported as `_` to suppress unused warnings while still
+// verifying the dependency resolves and compiles.
+
+#[cfg(feature = "os-info")]
+#[allow(unused_imports)]
+use os_info as _os_info;
+
+#[cfg(feature = "cpu-cpuid")]
+#[allow(unused_imports)]
+use raw_cpuid as _raw_cpuid;
+
+#[cfg(feature = "gpu-nvidia")]
+#[allow(unused_imports)]
+use nvml_wrapper as _nvml;
+
+#[cfg(feature = "battery")]
+#[allow(unused_imports)]
+use starship_battery as _battery;
+
+#[cfg(feature = "hardware-dmi")]
+#[allow(unused_imports)]
+use dmidecode as _dmidecode;
+
+#[cfg(feature = "linux-procfs")]
+#[allow(unused_imports)]
+use procfs as _procfs;
+
+#[cfg(feature = "linux-sensors")]
+#[allow(unused_imports)]
+use lm_sensors as _lm_sensors;
+
+#[cfg(feature = "commands")]
+#[allow(unused_imports)]
+use duct as _duct;
+
+#[cfg(feature = "linux-udev")]
+#[allow(unused_imports)]
+use udev as _udev;
+
+#[cfg(feature = "linux-rtnetlink")]
+#[allow(unused_imports)]
+use rtnetlink as _rtnetlink;
+
+#[cfg(feature = "hardware-pci")]
+#[allow(unused_imports)]
+use pci_info as _pci_info;
+
+#[cfg(feature = "hardware-pci")]
+#[allow(unused_imports)]
+use pci_ids as _pci_ids;
+
+#[cfg(feature = "hardware-topology")]
+#[allow(unused_imports)]
+use hwlocality as _hwlocality;
+
+#[cfg(feature = "linux-cgroups")]
+#[allow(unused_imports)]
+use cgroups_rs as _cgroups_rs;
 
 // ── Shared helpers ──────────────────────────────────────────────────────
 
@@ -93,10 +156,941 @@ fn parse_vram_to_bytes(v: &str) -> Option<u64> {
     }
 }
 
+/// Parse a "hh:mm" or "hh:mm:ss" time string into total seconds.
+fn parse_hhmm_to_secs(s: &str) -> Option<u64> {
+    let parts: Vec<&str> = s.split(':').collect();
+    match parts.len() {
+        3 => {
+            let h: u64 = parts[0].parse().ok()?;
+            let m: u64 = parts[1].parse().ok()?;
+            let s: u64 = parts[2].parse().ok()?;
+            Some(h * 3600 + m * 60 + s)
+        }
+        2 => {
+            let h: u64 = parts[0].parse().ok()?;
+            let m: u64 = parts[1].parse().ok()?;
+            Some(h * 3600 + m * 60)
+        }
+        _ => None,
+    }
+}
+
+// ── OS info helpers ──────────────────────────────────────────────────────
+
+/// Parse /etc/os-release into a HashMap of key=value pairs.
+#[cfg(target_os = "linux")]
+fn parse_os_release() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    if let Ok(content) = std::fs::read_to_string("/etc/os-release") {
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((key, value)) = line.split_once('=') {
+                // Strip surrounding quotes from value
+                let value = value.trim_matches('"');
+                map.insert(key.trim().to_string(), value.to_string());
+            }
+        }
+    }
+    map
+}
+
+/// Resolve macOS version to codename.
+#[cfg(target_os = "macos")]
+fn macos_codename(version: &str) -> Option<String> {
+    let major_minor = version.split('.').take(2).collect::<Vec<_>>().join(".");
+    match major_minor.as_str() {
+        "15" | "15.0" => Some("Sequoia".to_string()),
+        "14" | "14.0" => Some("Sonoma".to_string()),
+        "13" | "13.0" => Some("Ventura".to_string()),
+        "12" | "12.0" => Some("Monterey".to_string()),
+        "11" | "11.0" => Some("Big Sur".to_string()),
+        "10.15" => Some("Catalina".to_string()),
+        "10.14" => Some("Mojave".to_string()),
+        "10.13" => Some("High Sierra".to_string()),
+        "10.12" => Some("Sierra".to_string()),
+        "10.11" => Some("El Capitan".to_string()),
+        "10.10" => Some("Yosemite".to_string()),
+        _ => None,
+    }
+}
+
+/// Detect system timezone by reading /etc/localtime symlink target.
+#[cfg(unix)]
+fn detect_timezone() -> Option<String> {
+    std::fs::read_link("/etc/localtime")
+        .ok()
+        .and_then(|path| {
+            let s = path.to_string_lossy();
+            // Typical path: /var/db/timezone/zoneinfo/America/New_York or
+            // /usr/share/zoneinfo/America/New_York
+            // Extract everything after "zoneinfo/"
+            s.rsplit_once("zoneinfo/")
+                .map(|(_, tz)| tz.to_string())
+        })
+}
+
+#[cfg(not(unix))]
+fn detect_timezone() -> Option<String> {
+    None
+}
+
+/// Detect whether the effective user is root.
+#[cfg(unix)]
+fn detect_is_root() -> bool {
+    nix::unistd::Uid::effective().is_root()
+}
+
+#[cfg(not(unix))]
+fn detect_is_root() -> bool {
+    false
+}
+
+/// Detect WSL environment.
+fn detect_wsl() -> bool {
+    std::env::var("WSL_DISTRO_NAME").is_ok()
+        || Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
+}
+
+/// Detect systemd presence.
+fn detect_systemd() -> bool {
+    Path::new("/run/systemd/system").exists()
+}
+
+/// Build the Rust target triple string.
+fn detect_target_triple() -> String {
+    let env = if cfg!(target_env = "gnu") {
+        "gnu"
+    } else if cfg!(target_env = "musl") {
+        "musl"
+    } else if cfg!(target_env = "msvc") {
+        "msvc"
+    } else {
+        "unknown"
+    };
+    format!("{}-{}-{}", std::env::consts::ARCH, std::env::consts::OS, env)
+}
+
+/// Detect system locale from environment variables.
+fn detect_locale() -> Option<String> {
+    std::env::var("LANG")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("LC_ALL").ok().filter(|v| !v.is_empty()))
+}
+
+/// Detect current user name from environment.
+fn detect_current_user() -> Option<String> {
+    std::env::var("USER")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .or_else(|| std::env::var("USERNAME").ok().filter(|v| !v.is_empty()))
+}
+
+// ── Memory helpers ──────────────────────────────────────────────────────
+
+/// Parse a field from /proc/meminfo, returning its value in bytes.
+/// The file lists values in kB; this function converts to bytes.
+#[cfg(target_os = "linux")]
+fn parse_meminfo_field(field_name: &str) -> Option<u64> {
+    let content = std::fs::read_to_string("/proc/meminfo").ok()?;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix(field_name) {
+            let rest = rest.trim_start_matches(':').trim();
+            let kb: u64 = rest.split_whitespace().next()?.parse().ok()?;
+            return Some(kb.saturating_mul(1024));
+        }
+    }
+    None
+}
+
+/// Read cached memory in bytes (cross-platform).
+fn read_cached_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        return parse_meminfo_field("Cached:").unwrap_or(0);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        if let Ok(output) = Command::new("vm_stat").output()
+            && let Ok(text) = String::from_utf8(output.stdout)
+        {
+            let mut page_size: u64 = 16384;
+            let mut purgeable_pages: u64 = 0;
+            for line in text.lines() {
+                if let Some(pos) = line.find("page size of") {
+                    let rest = &line[pos + "page size of".len()..];
+                    for word in rest.split_whitespace() {
+                        if let Ok(sz) = word.parse::<u64>() {
+                            page_size = sz;
+                            break;
+                        }
+                    }
+                }
+                if line.starts_with("Pages purgeable:")
+                    && let Some(val) = line.split_whitespace().nth(2)
+                {
+                    purgeable_pages = val.trim_end_matches('.').parse().unwrap_or(0);
+                }
+            }
+            return purgeable_pages.saturating_mul(page_size);
+        }
+        0
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        0
+    }
+}
+
+/// Read buffer memory in bytes (Linux only, 0 elsewhere).
+fn read_buffers_bytes() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        parse_meminfo_field("Buffers:").unwrap_or(0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        0
+    }
+}
+
+// ── Network helpers ──────────────────────────────────────────────────────
+
+/// Extra per-interface metrics from platform-specific sources.
+struct InterfaceExtras {
+    link_status: Option<String>,
+    speed_bps: Option<u64>,
+    duplex: Option<String>,
+    drops_received: u64,
+    drops_transmitted: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn read_interface_extras(name: &str) -> InterfaceExtras {
+    InterfaceExtras {
+        link_status: std::fs::read_to_string(format!("/sys/class/net/{name}/operstate"))
+            .ok()
+            .map(|s| s.trim().to_string()),
+        speed_bps: std::fs::read_to_string(format!("/sys/class/net/{name}/speed"))
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(|mbps| mbps.saturating_mul(1_000_000)),
+        duplex: std::fs::read_to_string(format!("/sys/class/net/{name}/duplex"))
+            .ok()
+            .map(|s| s.trim().to_string()),
+        drops_received: std::fs::read_to_string(format!(
+            "/sys/class/net/{name}/statistics/rx_dropped"
+        ))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0),
+        drops_transmitted: std::fs::read_to_string(format!(
+            "/sys/class/net/{name}/statistics/tx_dropped"
+        ))
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn read_interface_extras(name: &str) -> InterfaceExtras {
+    use std::process::Command;
+    let mut extras = InterfaceExtras {
+        link_status: None,
+        speed_bps: None,
+        duplex: None,
+        drops_received: 0,
+        drops_transmitted: 0,
+    };
+    if let Ok(output) = Command::new("ifconfig").arg(name).output()
+        && let Ok(text) = String::from_utf8(output.stdout)
+    {
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if let Some(rest) = trimmed.strip_prefix("status:") {
+                let status = rest.trim().to_string();
+                if !status.is_empty() {
+                    extras.link_status = Some(status);
+                }
+            }
+            if let Some(rest) = trimmed.strip_prefix("media:")
+                && let Some(pstart) = rest.find('(')
+            {
+                let inside = &rest[pstart + 1..];
+                if let Some(pend) = inside.find(')') {
+                    let media = &inside[..pend];
+                    for word in media.split_whitespace() {
+                        if let Some(speed_str) = word
+                            .strip_suffix("baseT")
+                            .or_else(|| word.strip_suffix("baseTX"))
+                            .or_else(|| word.strip_suffix("baseT4"))
+                            && let Ok(mbps) = speed_str.parse::<u64>()
+                        {
+                            extras.speed_bps = Some(mbps.saturating_mul(1_000_000));
+                        }
+                    }
+                    if media.contains("full-duplex") {
+                        extras.duplex = Some("full".to_string());
+                    } else if media.contains("half-duplex") {
+                        extras.duplex = Some("half".to_string());
+                    }
+                }
+            }
+        }
+    }
+    extras
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn read_interface_extras(_name: &str) -> InterfaceExtras {
+    InterfaceExtras {
+        link_status: None,
+        speed_bps: None,
+        duplex: None,
+        drops_received: 0,
+        drops_transmitted: 0,
+    }
+}
+
+/// Detect the default gateway (cross-platform).
+fn detect_gateway() -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let content = std::fs::read_to_string("/proc/net/route").ok()?;
+        for line in content.lines().skip(1) {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            if fields.len() >= 3 && fields[1] == "00000000" {
+                let val = u32::from_str_radix(fields[2], 16).ok()?;
+                let bytes = val.to_ne_bytes();
+                return Some(format!(
+                    "{}.{}.{}.{}",
+                    bytes[0], bytes[1], bytes[2], bytes[3]
+                ));
+            }
+        }
+        None
+    }
+    #[cfg(target_os = "macos")]
+    {
+        use std::process::Command;
+        let output = Command::new("netstat").args(["-rn"]).output().ok()?;
+        let text = String::from_utf8_lossy(&output.stdout);
+        for line in text.lines() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("default") {
+                let parts: Vec<&str> = trimmed.split_whitespace().collect();
+                if parts.len() >= 2 {
+                    let gw = parts[1];
+                    if gw.contains('.') || gw.contains(':') {
+                        return Some(gw.to_string());
+                    }
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    {
+        None
+    }
+}
+
+/// Detect DNS servers (Unix: /etc/resolv.conf; macOS also tries scutil).
+fn detect_dns_servers() -> Vec<String> {
+    let mut servers = Vec::new();
+
+    #[cfg(unix)]
+    {
+        if let Ok(content) = std::fs::read_to_string("/etc/resolv.conf") {
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if let Some(rest) = trimmed.strip_prefix("nameserver") {
+                    let server = rest.trim();
+                    if !server.is_empty() {
+                        servers.push(server.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if servers.is_empty() {
+            use std::process::Command;
+            if let Ok(output) = Command::new("scutil").args(["--dns"]).output()
+                && let Ok(text) = String::from_utf8(output.stdout)
+            {
+                for line in text.lines() {
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("nameserver[")
+                        && let Some(val) = trimmed.split(':').nth(1)
+                    {
+                        let server = val.trim();
+                        if !server.is_empty() {
+                            servers.push(server.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    servers
+}
+
+/// Detect the first DNS server (for per-interface field).
+fn detect_first_dns() -> Option<String> {
+    detect_dns_servers().into_iter().next()
+}
+
+// ── Process helpers (Linux) ──────────────────────────────────────────────
+
+/// Read thread count from /proc/<pid>/status.
+#[cfg(target_os = "linux")]
+fn read_proc_thread_count(pid: u32) -> Option<u32> {
+    let content = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("Threads:") {
+            return rest.trim().parse().ok();
+        }
+    }
+    None
+}
+
+/// Read working directory from /proc/<pid>/cwd symlink.
+#[cfg(target_os = "linux")]
+fn read_proc_working_dir(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+}
+
+/// Read disk I/O bytes from /proc/<pid>/io.
+#[cfg(target_os = "linux")]
+fn read_proc_io(pid: u32) -> (Option<u64>, Option<u64>) {
+    let content = match std::fs::read_to_string(format!("/proc/{pid}/io")) {
+        Ok(c) => c,
+        Err(_) => return (None, None),
+    };
+    let mut read_bytes = None;
+    let mut write_bytes = None;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("read_bytes:") {
+            read_bytes = rest.trim().parse().ok();
+        } else if let Some(rest) = line.strip_prefix("write_bytes:") {
+            write_bytes = rest.trim().parse().ok();
+        }
+    }
+    (read_bytes, write_bytes)
+}
+
+/// Count open file descriptors from /proc/<pid>/fd.
+#[cfg(target_os = "linux")]
+#[allow(clippy::cast_possible_truncation)] // fd count fits in u32 for any real process
+fn read_proc_fd_count(pid: u32) -> Option<u32> {
+    std::fs::read_dir(format!("/proc/{pid}/fd"))
+        .ok()
+        .map(|entries| entries.filter_map(Result::ok).count() as u32)
+}
+
+// ── Sensor helpers (Linux) ──────────────────────────────────────────────
+
+/// Read fan RPM readings from /sys/class/hwmon/.
+#[cfg(target_os = "linux")]
+fn read_hwmon_fans() -> Vec<SensorStatus> {
+    let mut sensors = Vec::new();
+    let hwmon_dir = match std::fs::read_dir("/sys/class/hwmon") {
+        Ok(d) => d,
+        Err(_) => return sensors,
+    };
+    for entry in hwmon_dir.flatten() {
+        let path = entry.path();
+        let name = std::fs::read_to_string(path.join("name"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
+        for i in 1..=16u32 {
+            let fan_path = path.join(format!("fan{i}_input"));
+            if let Ok(rpm_str) = std::fs::read_to_string(fan_path)
+                && let Ok(rpm) = rpm_str.trim().parse::<u32>()
+            {
+                sensors.push(SensorStatus {
+                    label: format!("{name} Fan {i}"),
+                    temperature: None,
+                    fan_rpm: Some(rpm),
+                    voltage: None,
+                    thermal_throttling: None,
+                });
+            }
+        }
+    }
+    sensors
+}
+
+/// Read voltage readings from /sys/class/hwmon/.
+#[cfg(target_os = "linux")]
+#[allow(clippy::cast_precision_loss)] // millivolt to volt conversion; bounded sensor values
+fn read_hwmon_voltages() -> Vec<SensorStatus> {
+    let mut sensors = Vec::new();
+    let hwmon_dir = match std::fs::read_dir("/sys/class/hwmon") {
+        Ok(d) => d,
+        Err(_) => return sensors,
+    };
+    for entry in hwmon_dir.flatten() {
+        let path = entry.path();
+        let name = std::fs::read_to_string(path.join("name"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
+        for i in 0..=16u32 {
+            let in_path = path.join(format!("in{i}_input"));
+            if let Ok(mv_str) = std::fs::read_to_string(in_path)
+                && let Ok(mv) = mv_str.trim().parse::<f32>()
+            {
+                sensors.push(SensorStatus {
+                    label: format!("{name} Voltage {i}"),
+                    temperature: None,
+                    fan_rpm: None,
+                    voltage: Some(mv / 1000.0),
+                    thermal_throttling: None,
+                });
+            }
+        }
+    }
+    sensors
+}
+
+// ── Disk helpers ──────────────────────────────────────────────────────
+
+/// Determine the base block device name from a partition name.
+/// E.g., "sda1" -> "sda", "nvme0n1p1" -> "nvme0n1".
+#[cfg(target_os = "linux")]
+fn disk_base_device(name: &str) -> &str {
+    if name.contains("nvme") {
+        if let Some(idx) = name.rfind('p') {
+            let suffix = &name[idx + 1..];
+            if !suffix.is_empty() && suffix.chars().all(|c| c.is_ascii_digit()) {
+                return &name[..idx];
+            }
+        }
+        return name;
+    }
+    name.trim_end_matches(|c: char| c.is_ascii_digit())
+}
+
+/// Read disk type from sysfs rotational flag.
+#[cfg(target_os = "linux")]
+fn read_disk_type_linux(dev_name: &str) -> String {
+    let base = disk_base_device(dev_name);
+    if base.is_empty() {
+        return "Unknown".to_string();
+    }
+    match std::fs::read_to_string(format!("/sys/block/{base}/queue/rotational")) {
+        Ok(content) => {
+            if content.trim() == "0" {
+                "SSD".to_string()
+            } else {
+                "HDD".to_string()
+            }
+        }
+        Err(_) => "Unknown".to_string(),
+    }
+}
+
+/// Determine disk type on macOS (APFS defaults to SSD).
+#[cfg(target_os = "macos")]
+fn read_disk_type_macos(filesystem: &str) -> String {
+    if filesystem.to_lowercase() == "apfs" {
+        "SSD".to_string()
+    } else {
+        "Unknown".to_string()
+    }
+}
+
+/// CPU topology information (internal helper for `StaticInfo` / `CpuStatic`).
+struct CpuTopology {
+    sockets: Option<u32>,
+    cores_per_socket: Option<u32>,
+    threads_per_core: Option<u32>,
+    base_frequency: Option<u64>,
+    max_frequency: Option<u64>,
+    cache_l1d: Option<u32>,
+    cache_l1i: Option<u32>,
+    cache_l2: Option<u32>,
+    cache_l3: Option<u64>,
+}
+
+/// Read CPU topology from macOS sysctl values.
+#[cfg(target_os = "macos")]
+#[allow(clippy::cast_possible_truncation)] // core/thread/socket counts fit in u32
+fn read_cpu_topology() -> CpuTopology {
+    use std::process::Command;
+
+    fn sysctl_u64(name: &str) -> Option<u64> {
+        Command::new("sysctl")
+            .args(["-n", name])
+            .output()
+            .ok()
+            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+    }
+
+    let sockets = sysctl_u64("hw.packages")
+        .or_else(|| sysctl_u64("hw.npackages"))
+        .map(|v| v as u32);
+    let physical = sysctl_u64("hw.physicalcpu");
+    let logical = sysctl_u64("hw.logicalcpu");
+
+    let cores_per_socket = match (physical, sockets) {
+        (Some(p), Some(s)) if s > 0 => Some((p / u64::from(s)) as u32),
+        (Some(p), None) => Some(p as u32),
+        _ => None,
+    };
+
+    let threads_per_core = match (logical, physical) {
+        (Some(l), Some(p)) if p > 0 => Some((l / p) as u32),
+        _ => None,
+    };
+
+    // Frequencies in Hz, convert to MHz. Apple Silicon may not report these.
+    let max_frequency = sysctl_u64("hw.cpufrequency_max")
+        .or_else(|| sysctl_u64("hw.cpufrequency"))
+        .filter(|&v| v > 0)
+        .map(|hz| hz / 1_000_000);
+    let base_frequency = sysctl_u64("hw.cpufrequency")
+        .filter(|&v| v > 0)
+        .map(|hz| hz / 1_000_000);
+
+    // Cache sizes in bytes.
+    let cache_l1d = sysctl_u64("hw.l1dcachesize").filter(|&v| v > 0).map(|v| v as u32);
+    let cache_l1i = sysctl_u64("hw.l1icachesize").filter(|&v| v > 0).map(|v| v as u32);
+    let cache_l2 = sysctl_u64("hw.l2cachesize").filter(|&v| v > 0).map(|v| v as u32);
+    let cache_l3 = sysctl_u64("hw.l3cachesize").filter(|&v| v > 0);
+
+    CpuTopology {
+        sockets,
+        cores_per_socket,
+        threads_per_core,
+        base_frequency,
+        max_frequency,
+        cache_l1d,
+        cache_l1i,
+        cache_l2,
+        cache_l3,
+    }
+}
+
+/// Read CPU topology from /proc/cpuinfo and sysfs on Linux.
+#[cfg(target_os = "linux")]
+#[allow(clippy::cast_possible_truncation)] // core/thread/socket counts fit in u32
+fn read_cpu_topology() -> CpuTopology {
+    use std::collections::HashSet;
+    use std::fs;
+
+    /// Parse a sysfs cache size string like "32K" or "12288K" or "32M" into bytes.
+    fn parse_cache_size(path: &str) -> Option<u64> {
+        let s = fs::read_to_string(path).ok()?;
+        let s = s.trim();
+        if let Some(kb) = s.strip_suffix('K').or_else(|| s.strip_suffix("kB")) {
+            kb.trim().parse::<u64>().ok().map(|v| v * 1024)
+        } else if let Some(mb) = s.strip_suffix('M').or_else(|| s.strip_suffix("MB")) {
+            mb.trim().parse::<u64>().ok().map(|v| v * 1024 * 1024)
+        } else {
+            s.parse::<u64>().ok()
+        }
+    }
+
+    // ── Parse /proc/cpuinfo ──
+    let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+
+    let mut physical_ids = HashSet::new();
+    let mut cpu_cores: Option<u32> = None;
+    let mut siblings: Option<u32> = None;
+
+    for line in cpuinfo.lines() {
+        if let Some((key, val)) = line.split_once(':') {
+            let key = key.trim();
+            let val = val.trim();
+            match key {
+                "physical id" => {
+                    if let Ok(id) = val.parse::<u32>() {
+                        physical_ids.insert(id);
+                    }
+                }
+                "cpu cores" if cpu_cores.is_none() => {
+                    cpu_cores = val.parse().ok();
+                }
+                "siblings" if siblings.is_none() => {
+                    siblings = val.parse().ok();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // Sockets: count unique physical ids; fallback to NUMA node count.
+    let sockets = if physical_ids.is_empty() {
+        fs::read_dir("/sys/devices/system/node/")
+            .ok()
+            .map(|entries| {
+                entries
+                    .filter_map(Result::ok)
+                    .filter(|e| e.file_name().to_string_lossy().starts_with("node"))
+                    .count()
+            })
+            .filter(|&c| c > 0)
+            .map(|c| c as u32)
+    } else {
+        Some(physical_ids.len() as u32)
+    };
+
+    let cores_per_socket = cpu_cores;
+    let threads_per_core = match (siblings, cpu_cores) {
+        (Some(s), Some(c)) if c > 0 => Some(s / c),
+        _ => None,
+    };
+
+    // ── Frequencies from sysfs (kHz -> MHz) ──
+    fn read_freq_khz(path: &str) -> Option<u64> {
+        fs::read_to_string(path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u64>().ok())
+            .map(|khz| khz / 1000)
+    }
+
+    let max_frequency = read_freq_khz("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
+    let base_frequency = read_freq_khz("/sys/devices/system/cpu/cpu0/cpufreq/base_frequency");
+
+    // ── Cache sizes from sysfs ──
+    let mut cache_l1d = None;
+    let mut cache_l1i = None;
+    let mut cache_l2 = None;
+    let mut cache_l3 = None;
+
+    for i in 0..8 {
+        let type_path = format!("/sys/devices/system/cpu/cpu0/cache/index{i}/type");
+        let size_path = format!("/sys/devices/system/cpu/cpu0/cache/index{i}/size");
+        let level_path = format!("/sys/devices/system/cpu/cpu0/cache/index{i}/level");
+
+        let cache_type = fs::read_to_string(&type_path).ok().map(|s| s.trim().to_lowercase());
+        let level = fs::read_to_string(&level_path)
+            .ok()
+            .and_then(|s| s.trim().parse::<u32>().ok());
+        let size = parse_cache_size(&size_path);
+
+        if let (Some(ref ctype), Some(lvl), Some(sz)) = (cache_type, level, size) {
+            match (lvl, ctype.as_str()) {
+                (1, "data") if cache_l1d.is_none() => cache_l1d = Some(sz as u32),
+                (1, "instruction") if cache_l1i.is_none() => cache_l1i = Some(sz as u32),
+                (2, _) if cache_l2.is_none() => cache_l2 = Some(sz as u32),
+                (3, _) if cache_l3.is_none() => cache_l3 = Some(sz),
+                _ => {}
+            }
+        }
+    }
+
+    CpuTopology {
+        sockets,
+        cores_per_socket,
+        threads_per_core,
+        base_frequency,
+        max_frequency,
+        cache_l1d,
+        cache_l1i,
+        cache_l2,
+        cache_l3,
+    }
+}
+
+/// Fallback for unsupported platforms.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_cpu_topology() -> CpuTopology {
+    CpuTopology {
+        sockets: None,
+        cores_per_socket: None,
+        threads_per_core: None,
+        base_frequency: None,
+        max_frequency: None,
+        cache_l1d: None,
+        cache_l1i: None,
+        cache_l2: None,
+        cache_l3: None,
+    }
+}
+
+/// Read hardware inventory from macOS `system_profiler`.
+#[cfg(target_os = "macos")]
+fn read_hardware_inventory() -> HardwareInventory {
+    use std::process::Command;
+
+    let mut inv = HardwareInventory {
+        manufacturer: Some("Apple".to_string()),
+        bios_vendor: Some("Apple".to_string()),
+        ..HardwareInventory::default()
+    };
+
+    if let Ok(output) = Command::new("system_profiler")
+        .args(["SPHardwareDataType", "-json"])
+        .output()
+        && let Ok(text) = String::from_utf8(output.stdout)
+        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+        && let Some(hw) = json["SPHardwareDataType"]
+            .as_array()
+            .and_then(|a| a.first())
+    {
+        inv.product_name = hw["machine_model"].as_str().map(String::from);
+        inv.bios_version = hw["boot_rom_version"].as_str().map(String::from);
+        inv.system_serial = hw["serial_number"].as_str().map(String::from);
+        inv.system_uuid = hw["platform_UUID"].as_str().map(String::from);
+        inv.board_name = hw["motherboard_serial"]
+            .as_str()
+            .map(String::from)
+            .or_else(|| Some("Apple Silicon".to_string()));
+    }
+
+    inv
+}
+
+/// Read hardware inventory from Linux DMI/SMBIOS sysfs.
+#[cfg(target_os = "linux")]
+fn read_hardware_inventory() -> HardwareInventory {
+    use std::fs;
+
+    fn read_dmi_string(path: &str) -> Option<String> {
+        fs::read_to_string(path)
+            .ok()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty() && s != "To Be Filled By O.E.M." && s != "Default string")
+    }
+
+    fn chassis_type_string(raw: &str) -> Option<String> {
+        let num: u32 = raw.trim().parse().ok()?;
+        Some(
+            match num {
+                1 => "Other",
+                2 => "Unknown",
+                3 => "Desktop",
+                4 => "Low Profile Desktop",
+                5 => "Pizza Box",
+                6 => "Mini Tower",
+                7 => "Tower",
+                8 => "Portable",
+                9 => "Laptop",
+                10 => "Notebook",
+                11 => "Hand Held",
+                12 => "Docking Station",
+                13 => "All in One",
+                14 => "Sub Notebook",
+                15 => "Space-saving",
+                16 => "Lunch Box",
+                17 => "Main Server Chassis",
+                18 => "Expansion Chassis",
+                19 => "Sub Chassis",
+                20 => "Bus Expansion Chassis",
+                21 => "Peripheral Chassis",
+                22 => "RAID Chassis",
+                23 => "Rack Mount Chassis",
+                24 => "Sealed-case PC",
+                30 => "Tablet",
+                31 => "Convertible",
+                32 => "Detachable",
+                _ => return None,
+            }
+            .to_string(),
+        )
+    }
+
+    let chassis_type = fs::read_to_string("/sys/class/dmi/id/chassis_type")
+        .ok()
+        .and_then(|s| chassis_type_string(&s));
+
+    HardwareInventory {
+        manufacturer: read_dmi_string("/sys/class/dmi/id/sys_vendor"),
+        product_name: read_dmi_string("/sys/class/dmi/id/product_name"),
+        board_name: read_dmi_string("/sys/class/dmi/id/board_name"),
+        bios_vendor: read_dmi_string("/sys/class/dmi/id/bios_vendor"),
+        bios_version: read_dmi_string("/sys/class/dmi/id/bios_version"),
+        chassis_type,
+        system_serial: read_dmi_string("/sys/class/dmi/id/product_serial"),
+        system_uuid: read_dmi_string("/sys/class/dmi/id/product_uuid"),
+        asset_tag: read_dmi_string("/sys/class/dmi/id/board_asset_tag"),
+    }
+}
+
+/// Fallback for unsupported platforms.
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn read_hardware_inventory() -> HardwareInventory {
+    HardwareInventory::default()
+}
+
+/// Build a fully populated OsInfo.
+fn build_os_info() -> OsInfo {
+    let os_type = Some(std::env::consts::OS.to_string());
+    let bitness = Some((std::mem::size_of::<usize>() * 8) as u32);
+    let current_user = detect_current_user();
+    let is_root = detect_is_root();
+    let target_triple = Some(detect_target_triple());
+    let locale = detect_locale();
+    let timezone = detect_timezone();
+    let systemd_detected = detect_systemd();
+    let wsl_detected = detect_wsl();
+
+    // Platform-specific: edition and codename
+    #[cfg(target_os = "linux")]
+    let (edition, codename) = {
+        let release = parse_os_release();
+        let edition = release
+            .get("VERSION_ID")
+            .or_else(|| release.get("VARIANT_ID"))
+            .cloned();
+        let codename = release.get("VERSION_CODENAME").cloned();
+        (edition, codename)
+    };
+
+    #[cfg(target_os = "macos")]
+    let (edition, codename) = {
+        let codename = System::os_version().and_then(|v| macos_codename(&v));
+        (None, codename)
+    };
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    let (edition, codename): (Option<String>, Option<String>) = (None, None);
+
+    OsInfo {
+        name: System::name(),
+        version: System::os_version(),
+        kernel_version: System::kernel_version(),
+        arch: std::env::consts::ARCH.to_string(),
+        os_type,
+        edition,
+        codename,
+        bitness,
+        timezone,
+        locale,
+        current_user,
+        is_root,
+        container_detected: false,
+        vm_detected: false,
+        wsl_detected,
+        systemd_detected,
+        target_triple,
+    }
+}
+
 /// Read battery status from the OS.
 #[cfg(target_os = "macos")]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)] // mV->V and mAh->Wh conversions; values are bounded battery readings
 fn read_battery_os() -> Option<BatteryInfo> {
     use std::process::Command;
+
+    // ── pmset: charge percent, state, and time estimates ──
     let output = Command::new("pmset")
         .arg("-g")
         .arg("batt")
@@ -115,22 +1109,148 @@ fn read_battery_os() -> Option<BatteryInfo> {
     } else {
         "Unknown"
     };
+
+    // Parse pmset -g batt for time remaining (e.g. " - 2:35 remaining")
+    let mut time_to_empty_secs: Option<u64> = None;
+    let mut time_to_full_secs: Option<u64> = None;
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix('-').or_else(|| line.strip_prefix(" -")) {
+            let rest = rest.trim();
+            if let Some(time_part) = rest.split("remaining").next() {
+                let time_str = time_part.trim();
+                if let Some(secs) = parse_hhmm_to_secs(time_str) {
+                    if secs > 0 {
+                        time_to_empty_secs = Some(secs);
+                    }
+                }
+            } else if let Some(time_part) = rest.split("until charged").next() {
+                let time_str = time_part.trim();
+                if let Some(secs) = parse_hhmm_to_secs(time_str) {
+                    if secs > 0 {
+                        time_to_full_secs = Some(secs);
+                    }
+                }
+            }
+        }
+    }
+
+    // ── system_profiler SPPowerDataType: detailed battery info ──
+    let mut voltage: Option<f32> = None;
+    let mut cycle_count: Option<u32> = None;
+    let mut manufacturer: Option<String> = None;
+    let mut model: Option<String> = None;
+    let mut health_percent: Option<f32> = None;
+    let mut energy_wh: Option<f32> = None;
+    let mut energy_full_wh: Option<f32> = None;
+    let mut energy_full_design_wh: Option<f32> = None;
+
+    if let Ok(sp_output) = Command::new("system_profiler")
+        .args(["SPPowerDataType", "-json"])
+        .output()
+    {
+        if let Ok(sp_text) = String::from_utf8(sp_output.stdout) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&sp_text) {
+                if let Some(powers) = json["SPPowerDataType"].as_array() {
+                    for power_section in powers {
+                        if let Some(batteries) = power_section["sppower_battery_health_info"].as_array() {
+                            for bat_info in batteries {
+                                // cycle_count
+                                if cycle_count.is_none() {
+                                    cycle_count = bat_info["cycle_count"].as_u64().map(|cc| cc as u32);
+                                }
+                                // manufacturer
+                                if manufacturer.is_none() {
+                                    manufacturer = bat_info["manufacturer"].as_str().map(std::string::ToString::to_string);
+                                }
+                                // model / device_name
+                                if model.is_none() {
+                                    model = bat_info["device_name"].as_str().map(std::string::ToString::to_string);
+                                }
+                                // voltage: sppower_voltage is in mV
+                                if voltage.is_none() {
+                                    if let Some(mv) = bat_info["sppower_voltage"].as_f64() {
+                                        voltage = Some((mv / 1000.0) as f32);
+                                    }
+                                }
+                                // health: max_capacity / design_capacity * 100
+                                let max_cap = bat_info["max_capacity"].as_f64();
+                                let design_cap = bat_info["design_capacity"].as_f64();
+                                if health_percent.is_none() {
+                                    if let (Some(max), Some(design)) = (max_cap, design_cap) {
+                                        if design > 0.0 {
+                                            health_percent = Some((max / design * 100.0) as f32);
+                                        }
+                                    }
+                                }
+                                // energy_wh: current_capacity (mAh) * voltage (V) / 1000 -> Wh
+                                if energy_wh.is_none() {
+                                    if let (Some(cur_cap), Some(v)) = (bat_info["current_capacity"].as_f64(), voltage) {
+                                        energy_wh = Some((cur_cap * f64::from(v) / 1000.0) as f32);
+                                    }
+                                }
+                                // energy_full_wh: max_capacity (mAh) * voltage (V) / 1000 -> Wh
+                                if energy_full_wh.is_none() {
+                                    if let (Some(max_val), Some(v)) = (max_cap, voltage) {
+                                        energy_full_wh = Some((max_val * f64::from(v) / 1000.0) as f32);
+                                    }
+                                }
+                                // energy_full_design_wh: design_capacity (mAh) * voltage (V) / 1000 -> Wh
+                                if energy_full_design_wh.is_none() {
+                                    if let (Some(des_val), Some(v)) = (design_cap, voltage) {
+                                        energy_full_design_wh = Some((des_val * f64::from(v) / 1000.0) as f32);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     Some(BatteryInfo {
         charge_percent: pct,
         state: state.to_string(),
-        time_to_empty_secs: None,
-        time_to_full_secs: None,
-        voltage: None,
-        cycle_count: None,
-        health_percent: None,
+        time_to_empty_secs,
+        time_to_full_secs,
+        voltage,
+        cycle_count,
+        health_percent,
+        energy_wh,
+        energy_full_wh,
+        energy_full_design_wh,
+        manufacturer,
+        model,
     })
 }
 
 /// Read battery status from the OS.
 #[cfg(target_os = "linux")]
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)] // micro-unit->unit conversions; values are bounded battery readings
 fn read_battery_os() -> Option<BatteryInfo> {
     use std::fs;
     use std::path::Path;
+
+    /// Helper: read a sysfs file, trim, parse as T. Returns None on any error.
+    fn read_sysfs_parse<T: std::str::FromStr>(dir: &Path, name: &str) -> Option<T> {
+        fs::read_to_string(dir.join(name))
+            .ok()?
+            .trim()
+            .parse::<T>()
+            .ok()
+    }
+
+    /// Helper: read a sysfs file as a trimmed string. Returns None on any error.
+    fn read_sysfs_string(dir: &Path, name: &str) -> Option<String> {
+        fs::read_to_string(dir.join(name))
+            .ok()
+            .map(|s| s.trim().to_string())
+    }
+
     let supply_dir = Path::new("/sys/class/power_supply");
     let entries = fs::read_dir(supply_dir).ok()?;
     for entry in entries.flatten() {
@@ -145,20 +1265,65 @@ fn read_battery_os() -> Option<BatteryInfo> {
                 continue;
             }
         }
-        let capacity = fs::read_to_string(path.join("capacity")).ok()?;
-        let pct: f32 = capacity.trim().parse().ok()?;
-        let status = fs::read_to_string(path.join("status"))
-            .ok()
-            .map(|s| s.trim().to_string())
+
+        let pct: f32 = read_sysfs_parse(&path, "capacity")?;
+        let status = read_sysfs_string(&path, "status")
             .unwrap_or_else(|| "Unknown".to_string());
+
+        // time_to_empty_secs: file value is in seconds
+        let time_to_empty_secs: Option<u64> = read_sysfs_parse(&path, "time_to_empty");
+        // time_to_full_secs: file value is in seconds
+        let time_to_full_secs: Option<u64> = read_sysfs_parse(&path, "time_to_full");
+        // voltage: file value in microvolts, convert to volts
+        let voltage: Option<f32> = read_sysfs_parse::<f64>(&path, "voltage_now")
+            .map(|v| (v / 1_000_000.0) as f32);
+        // cycle_count
+        let cycle_count: Option<u32> = read_sysfs_parse(&path, "cycle_count");
+        // manufacturer
+        let manufacturer: Option<String> = read_sysfs_string(&path, "manufacturer");
+        // model
+        let model: Option<String> = read_sysfs_string(&path, "model_name");
+
+        // energy values: files in microjoules, convert to watt-hours
+        // energy_wh = energy_now (microjoules) / 1_000_000.0 (joules) / 3600.0 (hours)
+        //   but on Linux sysfs, energy_now and energy_full are in microwatt-hours (uWh)
+        //   when the unit file says "uWh", or microamp-hours (uAh) combined with voltage.
+        // The standard is microwatt-hours for energy_* files, so divide by 1_000_000 for Wh.
+        let energy_wh: Option<f32> = read_sysfs_parse::<f64>(&path, "energy_now")
+            .map(|e| (e / 1_000_000.0) as f32);
+        let energy_full_wh: Option<f32> = read_sysfs_parse::<f64>(&path, "energy_full")
+            .map(|e| (e / 1_000_000.0) as f32);
+        let energy_full_design_wh: Option<f32> = read_sysfs_parse::<f64>(&path, "energy_full_design")
+            .map(|e| (e / 1_000_000.0) as f32);
+
+        // health_percent = energy_full / energy_full_design * 100
+        let health_percent: Option<f32> = {
+            let full: Option<f64> = read_sysfs_parse(&path, "energy_full");
+            let design: Option<f64> = read_sysfs_parse(&path, "energy_full_design");
+            if let (Some(f), Some(d)) = (full, design) {
+                if d > 0.0 {
+                    Some((f / d * 100.0) as f32)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        };
+
         return Some(BatteryInfo {
             charge_percent: pct,
             state: status,
-            time_to_empty_secs: None,
-            time_to_full_secs: None,
-            voltage: None,
-            cycle_count: None,
-            health_percent: None,
+            time_to_empty_secs,
+            time_to_full_secs,
+            voltage,
+            cycle_count,
+            health_percent,
+            energy_wh,
+            energy_full_wh,
+            energy_full_design_wh,
+            manufacturer,
+            model,
         });
     }
     None
@@ -168,6 +1333,20 @@ fn read_battery_os() -> Option<BatteryInfo> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn read_battery_os() -> Option<BatteryInfo> {
     None
+}
+
+/// Hardware inventory information from SMBIOS/DMI.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct HardwareInventory {
+    pub manufacturer: Option<String>,
+    pub product_name: Option<String>,
+    pub board_name: Option<String>,
+    pub bios_vendor: Option<String>,
+    pub bios_version: Option<String>,
+    pub chassis_type: Option<String>,
+    pub system_serial: Option<String>,
+    pub system_uuid: Option<String>,
+    pub asset_tag: Option<String>,
 }
 
 /// Static hardware information that does not change between snapshots.
@@ -182,6 +1361,16 @@ pub struct StaticInfo {
     pub physical_cores: Option<usize>,
     pub logical_cores: usize,
     pub memory_total_bytes: u64,
+    pub hardware: HardwareInventory,
+    pub sockets: Option<u32>,
+    pub cores_per_socket: Option<u32>,
+    pub threads_per_core: Option<u32>,
+    pub base_frequency: Option<u64>,
+    pub max_frequency: Option<u64>,
+    pub cache_l1d: Option<u32>,
+    pub cache_l1i: Option<u32>,
+    pub cache_l2: Option<u32>,
+    pub cache_l3: Option<u64>,
 }
 
 /// Aggregated sensor snapshot with CPU/GPU temperature highlights.
@@ -205,6 +1394,10 @@ pub struct VirtualizationSnapshot {
     pub cgroup_version: Option<String>,
     pub cpu_quota: Option<f64>,
     pub memory_limit_bytes: Option<u64>,
+    pub swap_limit: Option<u64>,
+    pub blkio_limit: Option<u64>,
+    pub cpuset_cpus: Option<String>,
+    pub in_podman: bool,
 }
 
 /// Disk I/O counters snapshot.
@@ -284,6 +1477,8 @@ pub struct MemoryStatus {
     pub available_bytes: u64,
     /// Cached memory in bytes.
     pub cached_bytes: u64,
+    /// Buffer memory in bytes.
+    pub buffers_bytes: u64,
 }
 
 /// Disk usage snapshot.
@@ -309,6 +1504,16 @@ pub struct DiskStatus {
     pub available_bytes: u64,
     /// Disk type: "SSD", "HDD", or "Unknown".
     pub disk_type: String,
+    /// Physical device path (e.g., "/dev/disk0", "/dev/sda").
+    pub physical_device_path: Option<String>,
+    /// Device model name.
+    pub model: Option<String>,
+    /// Device serial number.
+    pub serial: Option<String>,
+    /// Device temperature in Celsius, if available.
+    pub temperature: Option<f32>,
+    /// Wear percentage (0.0–100.0) for SSDs, if available.
+    pub wear_percent: Option<f32>,
 }
 
 /// Network I/O counters.
@@ -342,6 +1547,32 @@ pub struct OsInfo {
     pub kernel_version: Option<String>,
     /// CPU architecture (e.g., `x86_64`, `aarch64`).
     pub arch: String,
+    /// OS type (e.g., "linux", "macos", "windows").
+    pub os_type: Option<String>,
+    /// OS edition (e.g., "Pro", "Home", "Server").
+    pub edition: Option<String>,
+    /// OS codename (e.g., "Sequoia", "Noble Numbat").
+    pub codename: Option<String>,
+    /// OS bitness (32 or 64).
+    pub bitness: Option<u32>,
+    /// System timezone.
+    pub timezone: Option<String>,
+    /// System locale.
+    pub locale: Option<String>,
+    /// Current user name.
+    pub current_user: Option<String>,
+    /// Whether the current user is root.
+    pub is_root: bool,
+    /// Whether running inside a container.
+    pub container_detected: bool,
+    /// Whether running inside a virtual machine.
+    pub vm_detected: bool,
+    /// Whether running inside WSL.
+    pub wsl_detected: bool,
+    /// Whether systemd is detected.
+    pub systemd_detected: bool,
+    /// Rust target triple (e.g., "x86_64-unknown-linux-gnu").
+    pub target_triple: Option<String>,
 }
 
 /// Per-core CPU information.
@@ -355,6 +1586,44 @@ pub struct CpuCore {
     pub frequency: u64,
 }
 
+/// Static CPU information that does not change between snapshots.
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuStatic {
+    /// CPU vendor (e.g., "GenuineIntel", "Apple").
+    pub vendor: String,
+    /// CPU brand string (e.g., "Apple M2 Pro").
+    pub brand: String,
+    /// CPU architecture (e.g., "x86_64", "aarch64").
+    pub arch: String,
+    /// Number of CPU sockets.
+    pub sockets: Option<u32>,
+    /// Physical cores per socket.
+    pub cores_per_socket: Option<u32>,
+    /// Hardware threads per core.
+    pub threads_per_core: Option<u32>,
+    /// Base frequency in MHz.
+    pub base_freq: Option<u64>,
+    /// Maximum frequency in MHz.
+    pub max_freq: Option<u64>,
+    /// L1 data cache size in bytes.
+    pub cache_l1d: Option<u32>,
+    /// L1 instruction cache size in bytes.
+    pub cache_l1i: Option<u32>,
+    /// L2 cache size in bytes.
+    pub cache_l2: Option<u32>,
+    /// L3 cache size in bytes.
+    pub cache_l3: Option<u64>,
+}
+
+/// Point-in-time CPU usage sample.
+#[derive(Debug, Clone, Serialize)]
+pub struct CpuSample {
+    /// Aggregate CPU usage percentage (0.0–100.0).
+    pub total_usage: Option<f64>,
+    /// Per-core usage percentages.
+    pub per_core: Vec<f64>,
+}
+
 /// Swap usage snapshot.
 #[derive(Debug, Clone, Copy, Serialize)]
 pub struct SwapStatus {
@@ -364,6 +1633,8 @@ pub struct SwapStatus {
     pub total_bytes: u64,
     /// Usage percentage (0.0–100.0).
     pub percentage: f64,
+    /// Free swap in bytes.
+    pub free_bytes: u64,
 }
 
 /// Per-interface network counters.
@@ -391,6 +1662,24 @@ pub struct NetworkInterface {
     pub drops_received: u64,
     /// Transmit drops.
     pub drops_transmitted: u64,
+    /// Human-readable display name.
+    pub display_name: Option<String>,
+    /// Interface description.
+    pub description: Option<String>,
+    /// IPv4 addresses.
+    pub ipv4_addresses: Vec<String>,
+    /// IPv6 addresses.
+    pub ipv6_addresses: Vec<String>,
+    /// Default gateway address.
+    pub gateway: Option<String>,
+    /// DNS server address.
+    pub dns: Option<String>,
+    /// Link status (e.g., "up", "down").
+    pub link_status: Option<String>,
+    /// Link speed in bits per second.
+    pub speed_bps: Option<u64>,
+    /// Duplex mode (e.g., "full", "half").
+    pub duplex: Option<String>,
 }
 
 /// Temperature sensor reading.
@@ -400,6 +1689,12 @@ pub struct SensorStatus {
     pub label: String,
     /// Temperature in Celsius, if available.
     pub temperature: Option<f32>,
+    /// Fan RPM, if available.
+    pub fan_rpm: Option<u32>,
+    /// Voltage in volts, if available.
+    pub voltage: Option<f32>,
+    /// Whether thermal throttling is active, if detectable.
+    pub thermal_throttling: Option<bool>,
 }
 
 /// GPU identity information.
@@ -419,6 +1714,28 @@ pub struct GpuInfo {
     pub temperature: Option<f32>,
     /// GPU utilization percentage (0.0-100.0), if available.
     pub utilization: Option<f32>,
+    /// PCI device ID.
+    pub device_id: Option<String>,
+    /// PCI bus ID.
+    pub pci_bus_id: Option<String>,
+    /// Used VRAM in bytes, if available.
+    pub used_vram_bytes: Option<u64>,
+    /// Free VRAM in bytes, if available.
+    pub free_vram_bytes: Option<u64>,
+    /// Memory utilization percentage (0.0-100.0), if available.
+    pub memory_utilization: Option<f32>,
+    /// Encoder utilization percentage (0.0-100.0), if available.
+    pub encoder_utilization: Option<f32>,
+    /// Decoder utilization percentage (0.0-100.0), if available.
+    pub decoder_utilization: Option<f32>,
+    /// Fan speed in RPM, if available.
+    pub fan_speed_rpm: Option<u32>,
+    /// Power draw in watts, if available.
+    pub power_draw_watts: Option<f32>,
+    /// Power limit in watts, if available.
+    pub power_limit_watts: Option<f32>,
+    /// Clock speed in MHz, if available.
+    pub clock_speed_mhz: Option<u32>,
 }
 
 /// Battery status snapshot.
@@ -438,6 +1755,16 @@ pub struct BatteryInfo {
     pub cycle_count: Option<u32>,
     /// Battery health as a percentage (0.0-100.0), if available.
     pub health_percent: Option<f32>,
+    /// Current energy in watt-hours, if available.
+    pub energy_wh: Option<f32>,
+    /// Full charge energy in watt-hours, if available.
+    pub energy_full_wh: Option<f32>,
+    /// Design energy capacity in watt-hours, if available.
+    pub energy_full_design_wh: Option<f32>,
+    /// Battery manufacturer, if available.
+    pub manufacturer: Option<String>,
+    /// Battery model, if available.
+    pub model: Option<String>,
 }
 
 /// Process information snapshot.
@@ -465,6 +1792,18 @@ pub struct ProcessStatus {
     pub virtual_memory: u64,
     /// Number of threads.
     pub thread_count: Option<u32>,
+    /// Full command line (argv joined with spaces).
+    pub command_line: Option<String>,
+    /// Current working directory.
+    pub working_dir: Option<String>,
+    /// Disk bytes read, if available.
+    pub disk_read_bytes: Option<u64>,
+    /// Disk bytes written, if available.
+    pub disk_write_bytes: Option<u64>,
+    /// Number of open files, if available.
+    pub open_files: Option<u32>,
+    /// Number of file descriptors, if available.
+    pub fd_count: Option<u32>,
 }
 
 /// Process list snapshot.
@@ -490,8 +1829,8 @@ impl ProcessSnapshot {
     ///
     /// let snapshot = ProcessSnapshot {
     ///     processes: vec![
-    ///         ProcessStatus { pid: 1, parent_pid: None, name: "idle".into(), cpu_usage: 0.1, memory_bytes: 100, status: "Sleeping".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None },
-    ///         ProcessStatus { pid: 2, parent_pid: None, name: "busy".into(), cpu_usage: 95.0, memory_bytes: 200, status: "Running".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None },
+    ///         ProcessStatus { pid: 1, parent_pid: None, name: "idle".into(), cpu_usage: 0.1, memory_bytes: 100, status: "Sleeping".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None, command_line: None, working_dir: None, disk_read_bytes: None, disk_write_bytes: None, open_files: None, fd_count: None },
+    ///         ProcessStatus { pid: 2, parent_pid: None, name: "busy".into(), cpu_usage: 95.0, memory_bytes: 200, status: "Running".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None, command_line: None, working_dir: None, disk_read_bytes: None, disk_write_bytes: None, open_files: None, fd_count: None },
     ///     ],
     ///     total_count: 2,
     /// };
@@ -521,8 +1860,8 @@ impl ProcessSnapshot {
     ///
     /// let snapshot = ProcessSnapshot {
     ///     processes: vec![
-    ///         ProcessStatus { pid: 1, parent_pid: None, name: "small".into(), cpu_usage: 1.0, memory_bytes: 1024, status: "Sleeping".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None },
-    ///         ProcessStatus { pid: 2, parent_pid: None, name: "large".into(), cpu_usage: 1.0, memory_bytes: 1024 * 1024 * 100, status: "Running".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None },
+    ///         ProcessStatus { pid: 1, parent_pid: None, name: "small".into(), cpu_usage: 1.0, memory_bytes: 1024, status: "Sleeping".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None, command_line: None, working_dir: None, disk_read_bytes: None, disk_write_bytes: None, open_files: None, fd_count: None },
+    ///         ProcessStatus { pid: 2, parent_pid: None, name: "large".into(), cpu_usage: 1.0, memory_bytes: 1024 * 1024 * 100, status: "Running".into(), start_time: None, executable_path: None, user: None, virtual_memory: 0, thread_count: None, command_line: None, working_dir: None, disk_read_bytes: None, disk_write_bytes: None, open_files: None, fd_count: None },
     ///     ],
     ///     total_count: 2,
     /// };
@@ -534,6 +1873,28 @@ impl ProcessSnapshot {
         let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
         sorted.sort_by_key(|b| std::cmp::Reverse(b.memory_bytes));
         sorted.into_iter().take(n).collect()
+    }
+
+    /// Get top N processes by disk I/O (total read+write bytes).
+    pub fn top_by_disk_io(&self, n: usize) -> Vec<&ProcessStatus> {
+        let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
+        sorted.sort_by(|a, b| {
+            let a_io = a.disk_read_bytes.unwrap_or(0) + a.disk_write_bytes.unwrap_or(0);
+            let b_io = b.disk_read_bytes.unwrap_or(0) + b.disk_write_bytes.unwrap_or(0);
+            b_io.cmp(&a_io)
+        });
+        sorted.into_iter().take(n).collect()
+    }
+
+    /// Build a parent-to-children mapping for process tree traversal.
+    pub fn process_tree(&self) -> std::collections::HashMap<u32, Vec<u32>> {
+        let mut tree: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+        for proc in &self.processes {
+            if let Some(ppid) = proc.parent_pid {
+                tree.entry(ppid).or_default().push(proc.pid);
+            }
+        }
+        tree
     }
 }
 
@@ -646,7 +2007,8 @@ impl SystemStatus {
             percentage,
             free_bytes: free,
             available_bytes: available,
-            cached_bytes: 0,
+            cached_bytes: read_cached_bytes(),
+            buffers_bytes: read_buffers_bytes(),
         }
     }
 
@@ -667,6 +2029,11 @@ impl SystemStatus {
                 free_bytes: 0,
                 available_bytes: 0,
                 disk_type: "Unknown".to_string(),
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             })
     }
 
@@ -712,12 +2079,7 @@ impl SystemStatus {
     }
 
     fn read_os_info() -> OsInfo {
-        OsInfo {
-            name: System::name(),
-            version: System::os_version(),
-            kernel_version: System::kernel_version(),
-            arch: std::env::consts::ARCH.to_string(),
-        }
+        build_os_info()
     }
 
     fn read_cpu_cores(sys: &System) -> Vec<CpuCore> {
@@ -743,6 +2105,7 @@ impl SystemStatus {
             used_bytes: used,
             total_bytes: total,
             percentage,
+            free_bytes: total.saturating_sub(used),
         })
     }
 
@@ -760,70 +2123,153 @@ impl SystemStatus {
                 } else {
                     0.0
                 };
+                let name_str = d.name().to_string_lossy().to_string();
+                let fs_str = d.file_system().to_string_lossy().to_string();
+                #[cfg(target_os = "linux")]
+                let disk_type = read_disk_type_linux(&name_str);
+                #[cfg(target_os = "macos")]
+                let disk_type = read_disk_type_macos(&fs_str);
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                let disk_type = "Unknown".to_string();
+                #[cfg(target_os = "linux")]
+                let physical_device_path = if name_str.is_empty() {
+                    None
+                } else {
+                    Some(format!("/dev/{name_str}"))
+                };
+                #[cfg(not(target_os = "linux"))]
+                let physical_device_path: Option<String> = None;
                 DiskStatus {
-                    name: d.name().to_string_lossy().to_string(),
+                    name: name_str,
                     mount_point: d.mount_point().to_string_lossy().to_string(),
-                    filesystem: d.file_system().to_string_lossy().to_string(),
+                    filesystem: fs_str,
                     used_bytes: used,
                     total_bytes: total,
                     percentage,
                     is_removable: d.is_removable(),
                     free_bytes: available,
                     available_bytes: available,
-                    disk_type: "Unknown".to_string(),
+                    disk_type,
+                    physical_device_path,
+                    model: None,
+                    serial: None,
+                    temperature: None,
+                    wear_percent: None,
                 }
             })
             .collect()
     }
 
     fn read_network_interfaces(networks: &Networks) -> Vec<NetworkInterface> {
+        let gw = detect_gateway();
+        let dns = detect_first_dns();
         networks
             .iter()
-            .map(|(name, data)| NetworkInterface {
-                name: name.clone(),
-                bytes_received: data.total_received(),
-                bytes_transmitted: data.total_transmitted(),
-                packets_received: data.total_packets_received(),
-                packets_transmitted: data.total_packets_transmitted(),
-                errors_received: data.errors_on_received(),
-                errors_transmitted: data.errors_on_transmitted(),
-                mac_address: None,
-                mtu: None,
-                drops_received: 0,
-                drops_transmitted: 0,
+            .map(|(name, data)| {
+                let mac = data.mac_address();
+                let mac_str = if mac.is_unspecified() {
+                    None
+                } else {
+                    let b = mac.0;
+                    Some(format!(
+                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        b[0], b[1], b[2], b[3], b[4], b[5]
+                    ))
+                };
+                let mtu_val = data.mtu();
+                let extras = read_interface_extras(name);
+                NetworkInterface {
+                    name: name.clone(),
+                    bytes_received: data.total_received(),
+                    bytes_transmitted: data.total_transmitted(),
+                    packets_received: data.total_packets_received(),
+                    packets_transmitted: data.total_packets_transmitted(),
+                    errors_received: data.errors_on_received(),
+                    errors_transmitted: data.errors_on_transmitted(),
+                    mac_address: mac_str,
+                    mtu: if mtu_val > 0 { Some(mtu_val as u32) } else { None },
+                    drops_received: extras.drops_received,
+                    drops_transmitted: extras.drops_transmitted,
+                    display_name: None,
+                    description: None,
+                    ipv4_addresses: Vec::new(),
+                    ipv6_addresses: Vec::new(),
+                    gateway: gw.clone(),
+                    dns: dns.clone(),
+                    link_status: extras.link_status,
+                    speed_bps: extras.speed_bps,
+                    duplex: extras.duplex,
+                }
             })
             .collect()
     }
 
     fn read_sensors() -> Vec<SensorStatus> {
         let components = Components::new_with_refreshed_list();
-        components
+        #[allow(unused_mut)] // mut needed on Linux for hwmon extension
+        let mut sensors: Vec<SensorStatus> = components
             .iter()
             .map(|c| SensorStatus {
                 label: c.label().to_string(),
                 temperature: {
                     c.temperature().filter(|t| !t.is_nan())
                 },
+                fan_rpm: None,
+                voltage: None,
+                thermal_throttling: None,
             })
-            .collect()
+            .collect();
+        #[cfg(target_os = "linux")]
+        {
+            sensors.extend(read_hwmon_fans());
+            sensors.extend(read_hwmon_voltages());
+        }
+        sensors
     }
 
     fn read_processes_from(sys: &System) -> ProcessSnapshot {
         let processes: Vec<ProcessStatus> = sys
             .processes()
             .iter()
-            .map(|(pid, p)| ProcessStatus {
-                pid: pid.as_u32(),
-                parent_pid: p.parent().map(sysinfo::Pid::as_u32),
-                name: p.name().to_string_lossy().to_string(),
-                cpu_usage: p.cpu_usage(),
-                memory_bytes: p.memory(),
-                status: format!("{}", p.status()),
-                start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
-                executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
-                user: None,
-                virtual_memory: p.virtual_memory(),
-                thread_count: None,
+            .map(|(pid, p)| {
+                let pid_u32 = pid.as_u32();
+                let cmd_line = p.cmd().iter()
+                    .map(|c| c.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                #[cfg(target_os = "linux")]
+                let (disk_read_bytes, disk_write_bytes) = read_proc_io(pid_u32);
+                #[cfg(not(target_os = "linux"))]
+                let (disk_read_bytes, disk_write_bytes): (Option<u64>, Option<u64>) = (None, None);
+                #[cfg(target_os = "linux")]
+                let fd_count = read_proc_fd_count(pid_u32);
+                #[cfg(not(target_os = "linux"))]
+                let fd_count: Option<u32> = None;
+                ProcessStatus {
+                    pid: pid_u32,
+                    parent_pid: p.parent().map(sysinfo::Pid::as_u32),
+                    name: p.name().to_string_lossy().to_string(),
+                    cpu_usage: p.cpu_usage(),
+                    memory_bytes: p.memory(),
+                    status: format!("{}", p.status()),
+                    start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
+                    executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
+                    user: p.user_id().map(|uid| uid.to_string()),
+                    virtual_memory: p.virtual_memory(),
+                    #[cfg(target_os = "linux")]
+                    thread_count: read_proc_thread_count(pid_u32),
+                    #[cfg(not(target_os = "linux"))]
+                    thread_count: None,
+                    command_line: if cmd_line.is_empty() { None } else { Some(cmd_line) },
+                    #[cfg(target_os = "linux")]
+                    working_dir: read_proc_working_dir(pid_u32),
+                    #[cfg(not(target_os = "linux"))]
+                    working_dir: None,
+                    disk_read_bytes,
+                    disk_write_bytes,
+                    open_files: fd_count,
+                    fd_count,
+                }
             })
             .collect();
         let total_count = processes.len();
@@ -859,14 +2305,33 @@ impl SystemStatus {
                     let vram = display["sppci_vram"]
                         .as_str()
                         .and_then(parse_vram_to_bytes);
+                    let device_id = display["sppci_device_id"]
+                        .as_str()
+                        .map(std::string::ToString::to_string);
+                    let gpu_type = if name.contains("Apple M") {
+                        Some("Integrated".to_string())
+                    } else {
+                        Some("Discrete".to_string())
+                    };
                     gpus.push(GpuInfo {
                         name,
                         vendor,
                         vram_bytes: vram,
                         driver_version: None,
-                        gpu_type: None,
+                        gpu_type,
                         temperature: None,
                         utilization: None,
+                        device_id,
+                        pci_bus_id: None,
+                        used_vram_bytes: None,
+                        free_vram_bytes: None,
+                        memory_utilization: None,
+                        encoder_utilization: None,
+                        decoder_utilization: None,
+                        fan_speed_rpm: None,
+                        power_draw_watts: None,
+                        power_limit_watts: None,
+                        clock_speed_mhz: None,
                     });
                 }
             }
@@ -876,25 +2341,49 @@ impl SystemStatus {
         {
             use std::process::Command;
             if let Ok(output) = Command::new("nvidia-smi")
-                .args(["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"])
+                .args(["--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics", "--format=csv,noheader,nounits"])
                 .output()
             {
                 if output.status.success() {
                     let text = String::from_utf8_lossy(&output.stdout);
                     for line in text.lines() {
                         let parts: Vec<&str> = line.split(", ").collect();
-                        if parts.len() >= 3 {
+                        if parts.len() >= 16 {
                             let name = parts[0].trim().to_string();
                             let vram_mb: Option<u64> = parts[1].trim().parse().ok();
                             let driver = parts[2].trim().to_string();
+                            let temperature: Option<f32> = parts[3].trim().parse().ok();
+                            let utilization: Option<f32> = parts[4].trim().parse().ok();
+                            let pci_bus_id = Some(parts[5].trim().to_string());
+                            let device_id = Some(parts[6].trim().to_string());
+                            let used_vram_mb: Option<u64> = parts[7].trim().parse().ok();
+                            let free_vram_mb: Option<u64> = parts[8].trim().parse().ok();
+                            let memory_utilization: Option<f32> = parts[9].trim().parse().ok();
+                            let encoder_utilization: Option<f32> = parts[10].trim().parse().ok();
+                            let decoder_utilization: Option<f32> = parts[11].trim().parse().ok();
+                            let fan_speed_rpm: Option<u32> = parts[12].trim().parse().ok();
+                            let power_draw_watts: Option<f32> = parts[13].trim().parse().ok();
+                            let power_limit_watts: Option<f32> = parts[14].trim().parse().ok();
+                            let clock_speed_mhz: Option<u32> = parts[15].trim().parse().ok();
                             gpus.push(GpuInfo {
                                 name,
                                 vendor: "NVIDIA".to_string(),
                                 vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
                                 driver_version: Some(driver),
                                 gpu_type: Some("Discrete".to_string()),
-                                temperature: None,
-                                utilization: None,
+                                temperature,
+                                utilization,
+                                device_id,
+                                pci_bus_id,
+                                used_vram_bytes: used_vram_mb.map(|mb| mb * 1024 * 1024),
+                                free_vram_bytes: free_vram_mb.map(|mb| mb * 1024 * 1024),
+                                memory_utilization,
+                                encoder_utilization,
+                                decoder_utilization,
+                                fan_speed_rpm,
+                                power_draw_watts,
+                                power_limit_watts,
+                                clock_speed_mhz,
                             });
                         }
                     }
@@ -909,6 +2398,8 @@ impl SystemStatus {
         let brand = cpus.first().map_or_else(String::new, |c| c.brand().to_string());
         let vendor = cpus.first().map_or_else(String::new, |c| c.vendor_id().to_string());
         let freq = cpus.first().map_or(0, |c| c.frequency());
+        let topology = read_cpu_topology();
+        let hardware = read_hardware_inventory();
         StaticInfo {
             os: Self::read_os_info(),
             kernel_version: sysinfo::System::kernel_version(),
@@ -919,6 +2410,16 @@ impl SystemStatus {
             physical_cores: sysinfo::System::physical_core_count(),
             logical_cores: cpus.len(),
             memory_total_bytes: sys.total_memory(),
+            hardware,
+            sockets: topology.sockets,
+            cores_per_socket: topology.cores_per_socket,
+            threads_per_core: topology.threads_per_core,
+            base_frequency: topology.base_frequency,
+            max_frequency: topology.max_frequency,
+            cache_l1d: topology.cache_l1d,
+            cache_l1i: topology.cache_l1i,
+            cache_l2: topology.cache_l2,
+            cache_l3: topology.cache_l3,
         }
     }
 
@@ -929,6 +2430,9 @@ impl SystemStatus {
             .map(|c| SensorStatus {
                 label: c.label().to_string(),
                 temperature: c.temperature().filter(|t| !t.is_nan()),
+                fan_rpm: None,
+                voltage: None,
+                thermal_throttling: None,
             })
             .collect();
         let cpu_temperature = readings.iter().find_map(|s| {
@@ -1221,6 +2725,40 @@ impl CpuProvider for SysinfoProvider {
     fn physical_cores(&self) -> StatusResult<Option<usize>> {
         Ok(System::physical_core_count())
     }
+
+    fn cpu_static(&self) -> StatusResult<CpuStatic> {
+        let cpus = self.sys.cpus();
+        let brand = cpus.first().map_or_else(String::new, |c| c.brand().to_string());
+        let vendor = cpus.first().map_or_else(String::new, |c| c.vendor_id().to_string());
+        let topology = read_cpu_topology();
+        Ok(CpuStatic {
+            vendor,
+            brand,
+            arch: std::env::consts::ARCH.to_string(),
+            sockets: topology.sockets,
+            cores_per_socket: topology.cores_per_socket,
+            threads_per_core: topology.threads_per_core,
+            base_freq: topology.base_frequency,
+            max_freq: topology.max_frequency,
+            cache_l1d: topology.cache_l1d,
+            cache_l1i: topology.cache_l1i,
+            cache_l2: topology.cache_l2,
+            cache_l3: topology.cache_l3,
+        })
+    }
+
+    #[allow(clippy::cast_precision_loss)] // usize->f64 for average; negligible precision loss for core counts
+    fn cpu_sample(&mut self) -> StatusResult<CpuSample> {
+        let cpus = self.sys.cpus();
+        let total_usage = if cpus.is_empty() {
+            None
+        } else {
+            let total: f64 = cpus.iter().map(|c| f64::from(c.cpu_usage())).sum();
+            Some(total / cpus.len() as f64)
+        };
+        let per_core: Vec<f64> = cpus.iter().map(|c| f64::from(c.cpu_usage())).collect();
+        Ok(CpuSample { total_usage, per_core })
+    }
 }
 
 impl MemoryProvider for SysinfoProvider {
@@ -1241,7 +2779,8 @@ impl MemoryProvider for SysinfoProvider {
             percentage,
             free_bytes: free,
             available_bytes: available,
-            cached_bytes: 0,
+            cached_bytes: read_cached_bytes(),
+            buffers_bytes: read_buffers_bytes(),
         })
     }
 
@@ -1257,7 +2796,19 @@ impl MemoryProvider for SysinfoProvider {
             used_bytes: used,
             total_bytes: total,
             percentage,
+            free_bytes: total.saturating_sub(used),
         }))
+    }
+
+    fn memory_pressure(&self) -> StatusResult<Option<f32>> {
+        // sysinfo does not directly expose memory pressure.
+        // Derive a rough approximation from used/total ratio.
+        let total = self.sys.total_memory();
+        if total == 0 {
+            return Ok(None);
+        }
+        let used = self.sys.used_memory();
+        Ok(Some((used as f32 / total as f32).clamp(0.0, 1.0)))
     }
 }
 
@@ -1279,6 +2830,11 @@ impl DiskProvider for SysinfoProvider {
                 free_bytes: 0,
                 available_bytes: 0,
                 disk_type: "Unknown".to_string(),
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             }))
     }
 
@@ -1296,17 +2852,38 @@ impl DiskProvider for SysinfoProvider {
                 } else {
                     0.0
                 };
+                let name_str = d.name().to_string_lossy().to_string();
+                let fs_str = d.file_system().to_string_lossy().to_string();
+                #[cfg(target_os = "linux")]
+                let disk_type = read_disk_type_linux(&name_str);
+                #[cfg(target_os = "macos")]
+                let disk_type = read_disk_type_macos(&fs_str);
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                let disk_type = "Unknown".to_string();
+                #[cfg(target_os = "linux")]
+                let physical_device_path = if name_str.is_empty() {
+                    None
+                } else {
+                    Some(format!("/dev/{name_str}"))
+                };
+                #[cfg(not(target_os = "linux"))]
+                let physical_device_path: Option<String> = None;
                 DiskStatus {
-                    name: d.name().to_string_lossy().to_string(),
+                    name: name_str,
                     mount_point: d.mount_point().to_string_lossy().to_string(),
-                    filesystem: d.file_system().to_string_lossy().to_string(),
+                    filesystem: fs_str,
                     used_bytes: used,
                     total_bytes: total,
                     percentage,
                     is_removable: d.is_removable(),
                     free_bytes: available,
                     available_bytes: available,
-                    disk_type: "Unknown".to_string(),
+                    disk_type,
+                    physical_device_path,
+                    model: None,
+                    serial: None,
+                    temperature: None,
+                    wear_percent: None,
                 }
             })
             .collect())
@@ -1329,33 +2906,61 @@ impl NetworkProvider for SysinfoProvider {
 
     fn interfaces(&mut self) -> StatusResult<Vec<NetworkInterface>> {
         let networks = Networks::new_with_refreshed_list();
+        let gw = detect_gateway();
+        let dns = detect_first_dns();
         Ok(networks
             .iter()
-            .map(|(name, data)| NetworkInterface {
-                name: name.clone(),
-                bytes_received: data.total_received(),
-                bytes_transmitted: data.total_transmitted(),
-                packets_received: data.total_packets_received(),
-                packets_transmitted: data.total_packets_transmitted(),
-                errors_received: data.errors_on_received(),
-                errors_transmitted: data.errors_on_transmitted(),
-                mac_address: None,
-                mtu: None,
-                drops_received: 0,
-                drops_transmitted: 0,
+            .map(|(name, data)| {
+                let mac = data.mac_address();
+                let mac_str = if mac.is_unspecified() {
+                    None
+                } else {
+                    let b = mac.0;
+                    Some(format!(
+                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+                        b[0], b[1], b[2], b[3], b[4], b[5]
+                    ))
+                };
+                let mtu_val = data.mtu();
+                let extras = read_interface_extras(name);
+                NetworkInterface {
+                    name: name.clone(),
+                    bytes_received: data.total_received(),
+                    bytes_transmitted: data.total_transmitted(),
+                    packets_received: data.total_packets_received(),
+                    packets_transmitted: data.total_packets_transmitted(),
+                    errors_received: data.errors_on_received(),
+                    errors_transmitted: data.errors_on_transmitted(),
+                    mac_address: mac_str,
+                    mtu: if mtu_val > 0 { Some(mtu_val as u32) } else { None },
+                    drops_received: extras.drops_received,
+                    drops_transmitted: extras.drops_transmitted,
+                    display_name: None,
+                    description: None,
+                    ipv4_addresses: Vec::new(),
+                    ipv6_addresses: Vec::new(),
+                    gateway: gw.clone(),
+                    dns: dns.clone(),
+                    link_status: extras.link_status,
+                    speed_bps: extras.speed_bps,
+                    duplex: extras.duplex,
+                }
             })
             .collect())
+    }
+
+    fn gateway(&self) -> StatusResult<Option<String>> {
+        Ok(detect_gateway())
+    }
+
+    fn dns_servers(&self) -> StatusResult<Vec<String>> {
+        Ok(detect_dns_servers())
     }
 }
 
 impl OsProvider for SysinfoProvider {
     fn os_info(&self) -> StatusResult<OsInfo> {
-        Ok(OsInfo {
-            name: System::name(),
-            version: System::os_version(),
-            kernel_version: System::kernel_version(),
-            arch: std::env::consts::ARCH.to_string(),
-        })
+        Ok(build_os_info())
     }
 
     fn hostname(&self) -> StatusResult<String> {
@@ -1387,6 +2992,11 @@ impl OsProvider for SysinfoProvider {
     fn load_average(&self) -> StatusResult<Option<LoadAverage>> {
         Ok(None)
     }
+
+    fn os_detailed(&self) -> StatusResult<OsInfo> {
+        // os_info() already populates all fields via build_os_info().
+        self.os_info()
+    }
 }
 
 impl ProcessProvider for SysinfoProvider {
@@ -1395,18 +3005,45 @@ impl ProcessProvider for SysinfoProvider {
             .sys
             .processes()
             .iter()
-            .map(|(pid, p)| ProcessStatus {
-                pid: pid.as_u32(),
-                parent_pid: p.parent().map(sysinfo::Pid::as_u32),
-                name: p.name().to_string_lossy().to_string(),
-                cpu_usage: p.cpu_usage(),
-                memory_bytes: p.memory(),
-                status: format!("{}", p.status()),
-                start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
-                executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
-                user: None,
-                virtual_memory: p.virtual_memory(),
-                thread_count: None,
+            .map(|(pid, p)| {
+                let pid_u32 = pid.as_u32();
+                let cmd_line = p.cmd().iter()
+                    .map(|c| c.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                #[cfg(target_os = "linux")]
+                let (disk_read_bytes, disk_write_bytes) = read_proc_io(pid_u32);
+                #[cfg(not(target_os = "linux"))]
+                let (disk_read_bytes, disk_write_bytes): (Option<u64>, Option<u64>) = (None, None);
+                #[cfg(target_os = "linux")]
+                let fd_count = read_proc_fd_count(pid_u32);
+                #[cfg(not(target_os = "linux"))]
+                let fd_count: Option<u32> = None;
+                ProcessStatus {
+                    pid: pid_u32,
+                    parent_pid: p.parent().map(sysinfo::Pid::as_u32),
+                    name: p.name().to_string_lossy().to_string(),
+                    cpu_usage: p.cpu_usage(),
+                    memory_bytes: p.memory(),
+                    status: format!("{}", p.status()),
+                    start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
+                    executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
+                    user: p.user_id().map(|uid| uid.to_string()),
+                    virtual_memory: p.virtual_memory(),
+                    #[cfg(target_os = "linux")]
+                    thread_count: read_proc_thread_count(pid_u32),
+                    #[cfg(not(target_os = "linux"))]
+                    thread_count: None,
+                    command_line: if cmd_line.is_empty() { None } else { Some(cmd_line) },
+                    #[cfg(target_os = "linux")]
+                    working_dir: read_proc_working_dir(pid_u32),
+                    #[cfg(not(target_os = "linux"))]
+                    working_dir: None,
+                    disk_read_bytes,
+                    disk_write_bytes,
+                    open_files: fd_count,
+                    fd_count,
+                }
             })
             .collect();
         let total_count = processes.len();
@@ -1414,6 +3051,16 @@ impl ProcessProvider for SysinfoProvider {
             processes,
             total_count,
         })
+    }
+
+    fn process_tree(&mut self) -> StatusResult<std::collections::HashMap<u32, Vec<u32>>> {
+        let mut tree: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
+        for (pid, p) in self.sys.processes() {
+            if let Some(ppid) = p.parent() {
+                tree.entry(ppid.as_u32()).or_default().push(pid.as_u32());
+            }
+        }
+        Ok(tree)
     }
 }
 
@@ -1450,14 +3097,33 @@ impl GpuProvider for SysinfoProvider {
                     let vram = display["sppci_vram"]
                         .as_str()
                         .and_then(parse_vram_to_bytes);
+                    let device_id = display["sppci_device_id"]
+                        .as_str()
+                        .map(std::string::ToString::to_string);
+                    let gpu_type = if name.contains("Apple M") {
+                        Some("Integrated".to_string())
+                    } else {
+                        Some("Discrete".to_string())
+                    };
                     gpus.push(GpuInfo {
                         name,
                         vendor,
                         vram_bytes: vram,
                         driver_version: None,
-                        gpu_type: None,
+                        gpu_type,
                         temperature: None,
                         utilization: None,
+                        device_id,
+                        pci_bus_id: None,
+                        used_vram_bytes: None,
+                        free_vram_bytes: None,
+                        memory_utilization: None,
+                        encoder_utilization: None,
+                        decoder_utilization: None,
+                        fan_speed_rpm: None,
+                        power_draw_watts: None,
+                        power_limit_watts: None,
+                        clock_speed_mhz: None,
                     });
                 }
             }
@@ -1467,25 +3133,49 @@ impl GpuProvider for SysinfoProvider {
         {
             use std::process::Command;
             if let Ok(output) = Command::new("nvidia-smi")
-                .args(["--query-gpu=name,memory.total,driver_version", "--format=csv,noheader,nounits"])
+                .args(["--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics", "--format=csv,noheader,nounits"])
                 .output()
             {
                 if output.status.success() {
                     let text = String::from_utf8_lossy(&output.stdout);
                     for line in text.lines() {
                         let parts: Vec<&str> = line.split(", ").collect();
-                        if parts.len() >= 3 {
+                        if parts.len() >= 16 {
                             let name = parts[0].trim().to_string();
                             let vram_mb: Option<u64> = parts[1].trim().parse().ok();
                             let driver = parts[2].trim().to_string();
+                            let temperature: Option<f32> = parts[3].trim().parse().ok();
+                            let utilization: Option<f32> = parts[4].trim().parse().ok();
+                            let pci_bus_id = Some(parts[5].trim().to_string());
+                            let device_id = Some(parts[6].trim().to_string());
+                            let used_vram_mb: Option<u64> = parts[7].trim().parse().ok();
+                            let free_vram_mb: Option<u64> = parts[8].trim().parse().ok();
+                            let memory_utilization: Option<f32> = parts[9].trim().parse().ok();
+                            let encoder_utilization: Option<f32> = parts[10].trim().parse().ok();
+                            let decoder_utilization: Option<f32> = parts[11].trim().parse().ok();
+                            let fan_speed_rpm: Option<u32> = parts[12].trim().parse().ok();
+                            let power_draw_watts: Option<f32> = parts[13].trim().parse().ok();
+                            let power_limit_watts: Option<f32> = parts[14].trim().parse().ok();
+                            let clock_speed_mhz: Option<u32> = parts[15].trim().parse().ok();
                             gpus.push(GpuInfo {
                                 name,
                                 vendor: "NVIDIA".to_string(),
                                 vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
                                 driver_version: Some(driver),
                                 gpu_type: Some("Discrete".to_string()),
-                                temperature: None,
-                                utilization: None,
+                                temperature,
+                                utilization,
+                                device_id,
+                                pci_bus_id,
+                                used_vram_bytes: used_vram_mb.map(|mb| mb * 1024 * 1024),
+                                free_vram_bytes: free_vram_mb.map(|mb| mb * 1024 * 1024),
+                                memory_utilization,
+                                encoder_utilization,
+                                decoder_utilization,
+                                fan_speed_rpm,
+                                power_draw_watts,
+                                power_limit_watts,
+                                clock_speed_mhz,
                             });
                         }
                     }
@@ -1505,13 +3195,41 @@ impl BatteryProvider for SysinfoProvider {
 impl SensorProvider for SysinfoProvider {
     fn sensors(&self) -> StatusResult<Vec<SensorStatus>> {
         let components = Components::new_with_refreshed_list();
-        Ok(components
+        #[allow(unused_mut)] // mut needed on Linux for hwmon extension
+        let mut sensors: Vec<SensorStatus> = components
             .iter()
             .map(|c| SensorStatus {
                 label: c.label().to_string(),
                 temperature: c.temperature().filter(|t| !t.is_nan()),
+                fan_rpm: None,
+                voltage: None,
+                thermal_throttling: None,
             })
-            .collect())
+            .collect();
+        #[cfg(target_os = "linux")]
+        {
+            sensors.extend(read_hwmon_fans());
+            sensors.extend(read_hwmon_voltages());
+        }
+        Ok(sensors)
+    }
+}
+
+impl VirtualizationProvider for SysinfoProvider {
+    fn virtualization(&self) -> StatusResult<VirtualizationSnapshot> {
+        Ok(SystemStatus::read_virtualization())
+    }
+}
+
+impl DiskIoProvider for SysinfoProvider {
+    fn disk_io(&self) -> StatusResult<DiskIoSnapshot> {
+        Ok(SystemStatus::read_disk_io())
+    }
+}
+
+impl StaticInfoProvider for SysinfoProvider {
+    fn static_info(&self) -> StatusResult<StaticInfo> {
+        Ok(SystemStatus::read_static_info(&self.sys))
     }
 }
 
@@ -1546,6 +3264,7 @@ impl SystemStatus {
             free_bytes: 0,
             available_bytes: 0,
             cached_bytes: 0,
+            buffers_bytes: 0,
         });
         let disk = provider.root_disk().unwrap_or_else(|_| DiskStatus {
             name: String::new(),
@@ -1558,6 +3277,11 @@ impl SystemStatus {
             free_bytes: 0,
             available_bytes: 0,
             disk_type: "Unknown".to_string(),
+            physical_device_path: None,
+            model: None,
+            serial: None,
+            temperature: None,
+            wear_percent: None,
         });
         let disks = provider.all_disks().unwrap_or_default();
         let network = provider.aggregate().unwrap_or(NetworkStatus {
@@ -1573,6 +3297,19 @@ impl SystemStatus {
             version: None,
             kernel_version: None,
             arch: String::new(),
+            os_type: None,
+            edition: None,
+            codename: None,
+            bitness: None,
+            timezone: None,
+            locale: None,
+            current_user: None,
+            is_root: false,
+            container_detected: false,
+            vm_detected: false,
+            wsl_detected: false,
+            systemd_detected: false,
+            target_triple: None,
         });
         let cpu_cores = provider.cpu_cores().unwrap_or_default();
         let physical_cores = provider.physical_cores().ok().flatten();
@@ -1586,13 +3323,13 @@ impl SystemStatus {
         let gpu = provider.gpus().unwrap_or_default();
         let battery = provider.battery().ok().flatten();
 
-        let static_info = Self::read_static_info(&System::new_with_specifics(
-            RefreshKind::nothing().with_cpu(CpuRefreshKind::nothing().with_cpu_usage())
-                .with_memory(MemoryRefreshKind::nothing().with_ram()),
-        ));
+        let static_info = provider.static_info().unwrap_or_else(|_| StaticInfo {
+            os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+            kernel_version: None, hostname: String::new(), cpu_brand: String::new(), cpu_vendor: String::new(), cpu_frequency: 0, physical_cores: None, logical_cores: 0, memory_total_bytes: 0, hardware: HardwareInventory::default(), sockets: None, cores_per_socket: None, threads_per_core: None, base_frequency: None, max_frequency: None, cache_l1d: None, cache_l1i: None, cache_l2: None, cache_l3: None,
+        });
         let sensor_snapshot = Self::read_sensor_snapshot();
-        let virtualization = Self::read_virtualization();
-        let disk_io = Self::read_disk_io();
+        let virtualization = provider.virtualization().unwrap_or_default();
+        let disk_io = provider.disk_io().unwrap_or_default();
 
         Self {
             cpu_usage,
@@ -1951,6 +3688,7 @@ mod tests {
                 cached_bytes: 0,
                 available_bytes: 0,
                 free_bytes: 0,
+                buffers_bytes: 0,
             },
             disk: DiskStatus {
                 name: String::new(),
@@ -1963,6 +3701,11 @@ mod tests {
                 disk_type: "Unknown".to_string(),
                 available_bytes: 0,
                 free_bytes: 0,
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             },
             network: NetworkStatus {
                 bytes_received: 0,
@@ -1976,6 +3719,19 @@ mod tests {
                 version: None,
                 kernel_version: None,
                 arch: "x86_64".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
             },
             cpu_cores: Vec::new(),
             physical_cores: None,
@@ -1994,7 +3750,7 @@ mod tests {
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -2003,6 +3759,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         };
         let output = format!("{status}");
@@ -2071,6 +3837,7 @@ mod tests {
                 cached_bytes: 0,
                 available_bytes: 0,
                 free_bytes: 0,
+                buffers_bytes: 0,
             },
             disk: DiskStatus {
                 name: "Macintosh HD".to_string(),
@@ -2083,6 +3850,11 @@ mod tests {
                 disk_type: "Unknown".to_string(),
                 available_bytes: 0,
                 free_bytes: 0,
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             },
             network: NetworkStatus {
                 bytes_received: 100 * GB,
@@ -2100,6 +3872,19 @@ mod tests {
                 version: Some("15.0".to_string()),
                 kernel_version: Some("24.0.0".to_string()),
                 arch: "aarch64".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
             },
             cpu_cores: vec![
                 CpuCore {
@@ -2118,6 +3903,7 @@ mod tests {
                 used_bytes: 512 * MB,
                 total_bytes: 2 * GB,
                 percentage: 25.0,
+                free_bytes: 2 * GB - 512 * MB,
             }),
             disks: vec![
                 DiskStatus {
@@ -2131,6 +3917,11 @@ mod tests {
                     disk_type: "Unknown".to_string(),
                     available_bytes: 0,
                     free_bytes: 0,
+                    physical_device_path: None,
+                    model: None,
+                    serial: None,
+                    temperature: None,
+                    wear_percent: None,
                 },
                 DiskStatus {
                     name: "External".to_string(),
@@ -2143,6 +3934,11 @@ mod tests {
                     disk_type: "Unknown".to_string(),
                     available_bytes: 0,
                     free_bytes: 0,
+                    physical_device_path: None,
+                    model: None,
+                    serial: None,
+                    temperature: None,
+                    wear_percent: None,
                 },
             ],
             network_interfaces: vec![
@@ -2158,6 +3954,15 @@ mod tests {
                     drops_received: 0,
                     mtu: None,
                     mac_address: None,
+                    display_name: None,
+                    description: None,
+                    ipv4_addresses: Vec::new(),
+                    ipv6_addresses: Vec::new(),
+                    gateway: None,
+                    dns: None,
+                    link_status: None,
+                    speed_bps: None,
+                    duplex: None,
                 },
                 NetworkInterface {
                     name: "lo0".to_string(),
@@ -2171,16 +3976,31 @@ mod tests {
                     drops_received: 0,
                     mtu: None,
                     mac_address: None,
+                    display_name: None,
+                    description: None,
+                    ipv4_addresses: Vec::new(),
+                    ipv6_addresses: Vec::new(),
+                    gateway: None,
+                    dns: None,
+                    link_status: None,
+                    speed_bps: None,
+                    duplex: None,
                 },
             ],
             sensors: vec![
                 SensorStatus {
                     label: "CPU".to_string(),
                     temperature: Some(55.5),
+                    fan_rpm: None,
+                    voltage: None,
+                    thermal_throttling: None,
                 },
                 SensorStatus {
                     label: "GPU".to_string(),
                     temperature: Some(48.0),
+                    fan_rpm: None,
+                    voltage: None,
+                    thermal_throttling: None,
                 },
             ],
             boot_time: Some(1_700_000_000),
@@ -2194,7 +4014,7 @@ mod tests {
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -2203,6 +4023,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         };
         insta::assert_snapshot!("system_status_display", format!("{}", status));
@@ -2233,6 +4063,12 @@ mod tests {
                     virtual_memory: 0,
                     user: None,
                     executable_path: None,
+                    command_line: None,
+                    working_dir: None,
+                    disk_read_bytes: None,
+                    disk_write_bytes: None,
+                    open_files: None,
+                    fd_count: None,
                 },
                 ProcessStatus {
                     pid: 2,
@@ -2246,6 +4082,12 @@ mod tests {
                     virtual_memory: 0,
                     user: None,
                     executable_path: None,
+                    command_line: None,
+                    working_dir: None,
+                    disk_read_bytes: None,
+                    disk_write_bytes: None,
+                    open_files: None,
+                    fd_count: None,
                 },
                 ProcessStatus {
                     pid: 3,
@@ -2259,6 +4101,12 @@ mod tests {
                     virtual_memory: 0,
                     user: None,
                     executable_path: None,
+                    command_line: None,
+                    working_dir: None,
+                    disk_read_bytes: None,
+                    disk_write_bytes: None,
+                    open_files: None,
+                    fd_count: None,
                 },
             ],
             total_count: 3,
@@ -2285,6 +4133,12 @@ mod tests {
                     virtual_memory: 0,
                     user: None,
                     executable_path: None,
+                    command_line: None,
+                    working_dir: None,
+                    disk_read_bytes: None,
+                    disk_write_bytes: None,
+                    open_files: None,
+                    fd_count: None,
                 },
                 ProcessStatus {
                     pid: 2,
@@ -2298,6 +4152,12 @@ mod tests {
                     virtual_memory: 0,
                     user: None,
                     executable_path: None,
+                    command_line: None,
+                    working_dir: None,
+                    disk_read_bytes: None,
+                    disk_write_bytes: None,
+                    open_files: None,
+                    fd_count: None,
                 },
                 ProcessStatus {
                     pid: 3,
@@ -2311,6 +4171,12 @@ mod tests {
                     virtual_memory: 0,
                     user: None,
                     executable_path: None,
+                    command_line: None,
+                    working_dir: None,
+                    disk_read_bytes: None,
+                    disk_write_bytes: None,
+                    open_files: None,
+                    fd_count: None,
                 },
             ],
             total_count: 3,
@@ -2461,7 +4327,7 @@ mod tests {
             load_average: None,
             uptime_secs: None,
             hostname: String::new(),
-            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -2473,7 +4339,7 @@ mod tests {
             gpu: vec![],
             battery: None,
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -2482,6 +4348,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             virtualization: VirtualizationSnapshot::default(),
@@ -2501,6 +4377,11 @@ mod tests {
             free_bytes: 0,
             available_bytes: 0,
             disk_type: "Unknown".to_string(),
+            physical_device_path: None,
+            model: None,
+            serial: None,
+            temperature: None,
+            wear_percent: None,
         }
     }
 
@@ -2508,7 +4389,7 @@ mod tests {
     fn memory_percentage_zero_total() {
         // Division by zero protection: total_bytes = 0 should yield 0%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             empty_disk(),
         );
         assert!((status.memory.percentage).abs() < f64::EPSILON);
@@ -2518,7 +4399,7 @@ mod tests {
     fn memory_percentage_capped_at_100() {
         // When used > total (e.g. reclaimed/buffer memory), percentage should be capped at 100%.
         let status = make_status(
-            MemoryStatus { used_bytes: 20 * GB, total_bytes: 16 * GB, percentage: 100.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            MemoryStatus { used_bytes: 20 * GB, total_bytes: 16 * GB, percentage: 100.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             empty_disk(),
         );
         assert!(
@@ -2534,7 +4415,7 @@ mod tests {
     fn disk_percentage_zero_total() {
         // Division by zero protection: total_bytes = 0 should yield 0%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -2546,6 +4427,11 @@ mod tests {
                 disk_type: "Unknown".to_string(),
                 available_bytes: 0,
                 free_bytes: 0,
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             },
         );
         assert!((status.disk.percentage).abs() < f64::EPSILON);
@@ -2555,7 +4441,7 @@ mod tests {
     fn disk_percentage_capped_at_100() {
         // When used > total (e.g. filesystem overhead), percentage should be capped at 100%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -2567,6 +4453,11 @@ mod tests {
                 disk_type: "Unknown".to_string(),
                 available_bytes: 0,
                 free_bytes: 0,
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             },
         );
         assert!(
@@ -2591,6 +4482,12 @@ mod tests {
             user: None,
             virtual_memory: 0,
             thread_count: None,
+            command_line: None,
+            working_dir: None,
+            disk_read_bytes: None,
+            disk_write_bytes: None,
+            open_files: None,
+            fd_count: None,
         }
     }
 
@@ -2719,6 +4616,7 @@ mod tests {
                 cached_bytes: 0,
                 available_bytes: 0,
                 free_bytes: 0,
+                buffers_bytes: 0,
             },
             disk: DiskStatus {
                 name: String::new(),
@@ -2731,6 +4629,11 @@ mod tests {
                 disk_type: "Unknown".to_string(),
                 available_bytes: 0,
                 free_bytes: 0,
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             },
             network: NetworkStatus {
                 bytes_received: 0,
@@ -2744,6 +4647,19 @@ mod tests {
                 version: None,
                 kernel_version: None,
                 arch: "unknown".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
             },
             cpu_cores: Vec::new(),
             physical_cores: None,
@@ -2762,7 +4678,7 @@ mod tests {
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -2771,6 +4687,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         };
         let output = format!("{status}");
@@ -2789,13 +4715,13 @@ mod tests {
     fn display_with_gpu_data() {
         let status = SystemStatus {
             cpu_usage: Some(50.0),
-            memory: MemoryStatus { used_bytes: 8 * GB, total_bytes: 16 * GB, percentage: 50.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            memory: MemoryStatus { used_bytes: 8 * GB, total_bytes: 16 * GB, percentage: 50.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             disk: empty_disk(),
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None,
             uptime_secs: None,
             hostname: "gpu-host".to_string(),
-            os_info: OsInfo { name: Some("Linux".to_string()), version: None, kernel_version: None, arch: "x86_64".to_string() },
+            os_info: OsInfo { name: Some("Linux".to_string()), version: None, kernel_version: None, arch: "x86_64".to_string(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -2812,13 +4738,24 @@ mod tests {
                 utilization: None,
                 temperature: None,
                 gpu_type: None,
+                device_id: None,
+                pci_bus_id: None,
+                used_vram_bytes: None,
+                free_vram_bytes: None,
+                memory_utilization: None,
+                encoder_utilization: None,
+                decoder_utilization: None,
+                fan_speed_rpm: None,
+                power_draw_watts: None,
+                power_limit_watts: None,
+                clock_speed_mhz: None,
             }],
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -2827,6 +4764,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         };
         let output = format!("{status}");
@@ -2840,13 +4787,13 @@ mod tests {
     fn display_with_battery_data() {
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             disk: empty_disk(),
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None,
             uptime_secs: None,
             hostname: "laptop".to_string(),
-            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: "aarch64".to_string() },
+            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: "aarch64".to_string(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -2864,12 +4811,17 @@ mod tests {
                 health_percent: None,
                 cycle_count: None,
                 voltage: None,
+                energy_wh: None,
+                energy_full_wh: None,
+                energy_full_design_wh: None,
+                manufacturer: None,
+                model: None,
             }),
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -2878,6 +4830,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         };
         let output = format!("{status}");
@@ -2890,13 +4852,13 @@ mod tests {
     fn display_sensors_none_temperature() {
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             disk: empty_disk(),
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None,
             uptime_secs: None,
             hostname: "sensor-host".to_string(),
-            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: "x86_64".to_string() },
+            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: "x86_64".to_string(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -2906,10 +4868,16 @@ mod tests {
                 SensorStatus {
                     label: "CPU".to_string(),
                     temperature: Some(65.0),
+                    fan_rpm: None,
+                    voltage: None,
+                    thermal_throttling: None,
                 },
                 SensorStatus {
                     label: "Unknown".to_string(),
                     temperature: None,
+                    fan_rpm: None,
+                    voltage: None,
+                    thermal_throttling: None,
                 },
             ],
             boot_time: None,
@@ -2920,7 +4888,7 @@ mod tests {
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -2929,6 +4897,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         };
         let output = format!("{status}");
@@ -2944,7 +4922,7 @@ mod tests {
         // Display should not panic when all memory/disk values are zero.
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             disk: DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -2956,6 +4934,11 @@ mod tests {
                 disk_type: "Unknown".to_string(),
                 available_bytes: 0,
                 free_bytes: 0,
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             },
             network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
             load_average: None,
@@ -2966,6 +4949,19 @@ mod tests {
                 version: None,
                 kernel_version: None,
                 arch: "x86_64".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
             },
             cpu_cores: vec![],
             physical_cores: None,
@@ -2981,7 +4977,7 @@ mod tests {
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -2990,6 +4986,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         };
         // Should not panic when displaying
@@ -3007,6 +5013,7 @@ mod tests {
                 cached_bytes: 0,
                 available_bytes: 0,
                 free_bytes: 0,
+                buffers_bytes: 0,
             },
             disk: DiskStatus {
                 name: "disk".to_string(),
@@ -3019,6 +5026,11 @@ mod tests {
                 disk_type: "Unknown".to_string(),
                 available_bytes: 0,
                 free_bytes: 0,
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             },
             network: NetworkStatus { bytes_received: 100, bytes_transmitted: 50 },
             load_average: None,
@@ -3029,6 +5041,19 @@ mod tests {
                 version: Some("14.0".to_string()),
                 kernel_version: Some("23.0".to_string()),
                 arch: "aarch64".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
             },
             cpu_cores: vec![],
             physical_cores: Some(8),
@@ -3046,6 +5071,17 @@ mod tests {
                 utilization: None,
                 temperature: None,
                 gpu_type: None,
+                device_id: None,
+                pci_bus_id: None,
+                used_vram_bytes: None,
+                free_vram_bytes: None,
+                memory_utilization: None,
+                encoder_utilization: None,
+                decoder_utilization: None,
+                fan_speed_rpm: None,
+                power_draw_watts: None,
+                power_limit_watts: None,
+                clock_speed_mhz: None,
             }],
             battery: Some(BatteryInfo {
                 charge_percent: 85.0,
@@ -3055,12 +5091,17 @@ mod tests {
                 health_percent: None,
                 cycle_count: None,
                 voltage: None,
+                energy_wh: None,
+                energy_full_wh: None,
+                energy_full_design_wh: None,
+                manufacturer: None,
+                model: None,
             }),
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -3069,6 +5110,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         };
         let output = format!("{status}");
@@ -3520,13 +5571,13 @@ mod tests {
             Self {
                 cpu_usage_val: Some(42.0),
                 cpu_cores_val: vec![CpuCore { name: "cpu0".into(), usage: 45.0, frequency: 3200 }],
-                memory_val: MemoryStatus { used_bytes: 8_000_000_000, total_bytes: 16_000_000_000, percentage: 50.0, free_bytes: 8_000_000_000, available_bytes: 12_000_000_000, cached_bytes: 2_000_000_000 },
-                swap_val: Some(SwapStatus { used_bytes: 500_000_000, total_bytes: 2_000_000_000, percentage: 25.0 }),
-                disk_val: DiskStatus { name: "test".into(), mount_point: "/".into(), filesystem: "ext4".into(), used_bytes: 100, total_bytes: 200, percentage: 50.0, is_removable: false, free_bytes: 100, available_bytes: 100, disk_type: "SSD".into() },
+                memory_val: MemoryStatus { used_bytes: 8_000_000_000, total_bytes: 16_000_000_000, percentage: 50.0, free_bytes: 8_000_000_000, available_bytes: 12_000_000_000, cached_bytes: 2_000_000_000, buffers_bytes: 0 },
+                swap_val: Some(SwapStatus { used_bytes: 500_000_000, total_bytes: 2_000_000_000, percentage: 25.0, free_bytes: 1_500_000_000 }),
+                disk_val: DiskStatus { name: "test".into(), mount_point: "/".into(), filesystem: "ext4".into(), used_bytes: 100, total_bytes: 200, percentage: 50.0, is_removable: false, free_bytes: 100, available_bytes: 100, disk_type: "SSD".into(), physical_device_path: None, model: None, serial: None, temperature: None, wear_percent: None },
                 disks_val: vec![],
                 network_val: NetworkStatus { bytes_received: 1000, bytes_transmitted: 500 },
                 interfaces_val: vec![],
-                os_info_val: OsInfo { name: Some("TestOS".into()), version: Some("1.0".into()), kernel_version: Some("5.0".into()), arch: "x86_64".into() },
+                os_info_val: OsInfo { name: Some("TestOS".into()), version: Some("1.0".into()), kernel_version: Some("5.0".into()), arch: "x86_64".into(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 hostname_val: "test-host".into(),
                 uptime_val: Some(3600),
                 boot_time_val: Some(1700000000),
@@ -3542,13 +5593,13 @@ mod tests {
             Self {
                 cpu_usage_val: None,
                 cpu_cores_val: vec![],
-                memory_val: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+                memory_val: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
                 swap_val: None,
-                disk_val: DiskStatus { name: String::new(), mount_point: "/".into(), filesystem: String::new(), used_bytes: 0, total_bytes: 0, percentage: 0.0, is_removable: false, free_bytes: 0, available_bytes: 0, disk_type: "Unknown".into() },
+                disk_val: DiskStatus { name: String::new(), mount_point: "/".into(), filesystem: String::new(), used_bytes: 0, total_bytes: 0, percentage: 0.0, is_removable: false, free_bytes: 0, available_bytes: 0, disk_type: "Unknown".into(), physical_device_path: None, model: None, serial: None, temperature: None, wear_percent: None },
                 disks_val: vec![],
                 network_val: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
                 interfaces_val: vec![],
-                os_info_val: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os_info_val: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 hostname_val: String::new(),
                 uptime_val: None,
                 boot_time_val: None,
@@ -3571,6 +5622,16 @@ mod tests {
         fn physical_cores(&self) -> crate::status::error::StatusResult<Option<usize>> {
             Ok(Some(self.cpu_cores_val.len()))
         }
+        fn cpu_static(&self) -> crate::status::error::StatusResult<CpuStatic> {
+            Ok(CpuStatic {
+                vendor: String::new(), brand: String::new(), arch: String::new(),
+                sockets: None, cores_per_socket: None, threads_per_core: None,
+                base_freq: None, max_freq: None, cache_l1d: None, cache_l1i: None, cache_l2: None, cache_l3: None,
+            })
+        }
+        fn cpu_sample(&mut self) -> crate::status::error::StatusResult<CpuSample> {
+            Ok(CpuSample { total_usage: self.cpu_usage_val, per_core: vec![] })
+        }
     }
 
     impl MemoryProvider for FakeProvider {
@@ -3579,6 +5640,9 @@ mod tests {
         }
         fn swap(&mut self) -> crate::status::error::StatusResult<Option<SwapStatus>> {
             Ok(self.swap_val)
+        }
+        fn memory_pressure(&self) -> crate::status::error::StatusResult<Option<f32>> {
+            Ok(None)
         }
     }
 
@@ -3598,6 +5662,12 @@ mod tests {
         fn interfaces(&mut self) -> crate::status::error::StatusResult<Vec<NetworkInterface>> {
             Ok(self.interfaces_val.clone())
         }
+        fn gateway(&self) -> crate::status::error::StatusResult<Option<String>> {
+            Ok(None)
+        }
+        fn dns_servers(&self) -> crate::status::error::StatusResult<Vec<String>> {
+            Ok(vec![])
+        }
     }
 
     impl OsProvider for FakeProvider {
@@ -3616,11 +5686,17 @@ mod tests {
         fn load_average(&self) -> crate::status::error::StatusResult<Option<LoadAverage>> {
             Ok(self.load_avg_val)
         }
+        fn os_detailed(&self) -> crate::status::error::StatusResult<OsInfo> {
+            Ok(self.os_info_val.clone())
+        }
     }
 
     impl ProcessProvider for FakeProvider {
         fn processes(&mut self) -> crate::status::error::StatusResult<ProcessSnapshot> {
             Ok(self.processes_val.clone())
+        }
+        fn process_tree(&mut self) -> crate::status::error::StatusResult<std::collections::HashMap<u32, Vec<u32>>> {
+            Ok(std::collections::HashMap::new())
         }
     }
 
@@ -3639,6 +5715,31 @@ mod tests {
     impl SensorProvider for FakeProvider {
         fn sensors(&self) -> crate::status::error::StatusResult<Vec<SensorStatus>> {
             Ok(self.sensors_val.clone())
+        }
+    }
+
+    impl VirtualizationProvider for FakeProvider {
+        fn virtualization(&self) -> crate::status::error::StatusResult<VirtualizationSnapshot> {
+            Ok(VirtualizationSnapshot::default())
+        }
+    }
+
+    impl DiskIoProvider for FakeProvider {
+        fn disk_io(&self) -> crate::status::error::StatusResult<DiskIoSnapshot> {
+            Ok(DiskIoSnapshot::default())
+        }
+    }
+
+    impl StaticInfoProvider for FakeProvider {
+        fn static_info(&self) -> crate::status::error::StatusResult<StaticInfo> {
+            Ok(StaticInfo {
+                os: self.os_info_val.clone(), kernel_version: None, hostname: String::new(),
+                cpu_brand: String::new(), cpu_vendor: String::new(), cpu_frequency: 0,
+                physical_cores: None, logical_cores: 0, memory_total_bytes: 0,
+                hardware: HardwareInventory::default(), sockets: None, cores_per_socket: None,
+                threads_per_core: None, base_frequency: None, max_frequency: None,
+                cache_l1d: None, cache_l1i: None, cache_l2: None, cache_l3: None,
+            })
         }
     }
 

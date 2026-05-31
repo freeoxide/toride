@@ -34,7 +34,7 @@
 //! std::thread::sleep(Duration::from_secs(1));
 //! let (status, delta) = collector.collect();
 //! if let Some(d) = delta {
-//!     println!("Network RX rate: {:.1} B/s", d.bytes_received_rate);
+//!     println!("Network RX rate: {:.1} B/s", d.network.bytes_received_rate);
 //! }
 //! ```
 //!
@@ -86,8 +86,8 @@ pub struct Collector {
 ///
 /// if let Some(d) = delta {
 ///     println!("Elapsed: {:.2?}", d.elapsed);
-///     println!("RX rate: {:.1} B/s", d.bytes_received_rate);
-///     println!("TX rate: {:.1} B/s", d.bytes_transmitted_rate);
+///     println!("RX rate: {:.1} B/s", d.network.bytes_received_rate);
+///     println!("TX rate: {:.1} B/s", d.network.bytes_transmitted_rate);
 ///     if let Some(cpu_delta) = d.cpu_usage_delta {
 ///         println!("CPU delta: {cpu_delta:+.1}%");
 ///     }
@@ -103,14 +103,10 @@ pub struct SystemDelta {
     pub to: std::time::SystemTime,
     /// CPU usage change.
     pub cpu_usage_delta: Option<f64>,
-    /// Network bytes received since last snapshot.
-    pub bytes_received_delta: u64,
-    /// Network bytes transmitted since last snapshot.
-    pub bytes_transmitted_delta: u64,
-    /// Network bytes received per second.
-    pub bytes_received_rate: f64,
-    /// Network bytes transmitted per second.
-    pub bytes_transmitted_rate: f64,
+    /// Per-core CPU usage deltas (percentage points).
+    pub per_core_cpu_delta: Vec<f64>,
+    /// Network delta.
+    pub network: NetworkDelta,
     /// Disk I/O delta, if available.
     pub disk_io: Option<DiskIoDelta>,
     /// Process count delta, if available.
@@ -156,6 +152,26 @@ pub struct GpuDelta {
     pub utilization_delta: Option<f32>,
     /// Change in GPU temperature in Celsius.
     pub temperature_delta: Option<f32>,
+}
+
+/// Network delta between two snapshots.
+///
+/// Contains both absolute deltas (bytes, packets) and per-second rates
+/// for aggregate network I/O.
+#[derive(Debug, Clone, Copy, Serialize, Default)]
+pub struct NetworkDelta {
+    /// Bytes received since last snapshot.
+    pub bytes_received_delta: u64,
+    /// Bytes transmitted since last snapshot.
+    pub bytes_transmitted_delta: u64,
+    /// Bytes received per second.
+    pub bytes_received_rate: f64,
+    /// Bytes transmitted per second.
+    pub bytes_transmitted_rate: f64,
+    /// Packets received since last snapshot.
+    pub packets_received_delta: u64,
+    /// Packets transmitted since last snapshot.
+    pub packets_transmitted_delta: u64,
 }
 
 impl Collector {
@@ -296,9 +312,36 @@ impl Collector {
 }
 
 /// Builder for configuring a [`Collector`].
+///
+/// Supports per-metric toggles and a preset. When a metric toggle is set
+/// to `false`, that metric is skipped during collection regardless of the
+/// preset.
+///
+/// # Examples
+///
+/// ```
+/// use std::time::Duration;
+/// use toride::status::collector::Collector;
+///
+/// let collector = Collector::builder()
+///     .interval(Duration::from_secs(2))
+///     .cpu(true)
+///     .memory(true)
+///     .disks(false)
+///     .network(true)
+///     .processes(false)
+///     .gpu(false)
+///     .build();
+/// ```
 pub struct CollectorBuilder {
     interval: Duration,
     preset: Preset,
+    collect_cpu: bool,
+    collect_memory: bool,
+    collect_disks: bool,
+    collect_network: bool,
+    collect_processes: bool,
+    collect_gpu: bool,
 }
 
 impl CollectorBuilder {
@@ -312,6 +355,78 @@ impl CollectorBuilder {
     pub fn preset(mut self, preset: Preset) -> Self {
         self.preset = preset;
         self
+    }
+
+    /// Enable or disable CPU metric collection.
+    pub fn cpu(mut self, enabled: bool) -> Self {
+        self.collect_cpu = enabled;
+        self
+    }
+
+    /// Enable or disable memory metric collection.
+    pub fn memory(mut self, enabled: bool) -> Self {
+        self.collect_memory = enabled;
+        self
+    }
+
+    /// Enable or disable disk metric collection.
+    pub fn disks(mut self, enabled: bool) -> Self {
+        self.collect_disks = enabled;
+        self
+    }
+
+    /// Enable or disable network metric collection.
+    pub fn network(mut self, enabled: bool) -> Self {
+        self.collect_network = enabled;
+        self
+    }
+
+    /// Enable or disable process metric collection.
+    pub fn processes(mut self, enabled: bool) -> Self {
+        self.collect_processes = enabled;
+        self
+    }
+
+    /// Enable or disable GPU metric collection.
+    pub fn gpu(mut self, enabled: bool) -> Self {
+        self.collect_gpu = enabled;
+        self
+    }
+
+    /// Get whether CPU collection is enabled.
+    #[must_use]
+    pub const fn is_cpu_enabled(&self) -> bool {
+        self.collect_cpu
+    }
+
+    /// Get whether memory collection is enabled.
+    #[must_use]
+    pub const fn is_memory_enabled(&self) -> bool {
+        self.collect_memory
+    }
+
+    /// Get whether disk collection is enabled.
+    #[must_use]
+    pub const fn is_disks_enabled(&self) -> bool {
+        self.collect_disks
+    }
+
+    /// Get whether network collection is enabled.
+    #[must_use]
+    pub const fn is_network_enabled(&self) -> bool {
+        self.collect_network
+    }
+
+    /// Get whether process collection is enabled.
+    #[must_use]
+    pub const fn is_processes_enabled(&self) -> bool {
+        self.collect_processes
+    }
+
+    /// Get whether GPU collection is enabled.
+    #[must_use]
+    pub const fn is_gpu_enabled(&self) -> bool {
+        self.collect_gpu
     }
 
     /// Build the [`Collector`].
@@ -328,6 +443,12 @@ impl Collector {
         CollectorBuilder {
             interval: Duration::from_secs(1),
             preset: Preset::default(),
+            collect_cpu: true,
+            collect_memory: true,
+            collect_disks: true,
+            collect_network: true,
+            collect_processes: true,
+            collect_gpu: true,
         }
     }
 }
@@ -335,6 +456,8 @@ impl Collector {
 #[allow(clippy::cast_precision_loss)] // u64->f64 for rate calculation display; negligible precision loss
 fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration, to: std::time::SystemTime) -> SystemDelta {
     let elapsed_secs = elapsed.as_secs_f64();
+
+    // Network delta
     let bytes_received_delta = curr
         .network
         .bytes_received
@@ -343,6 +466,40 @@ fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration, to
         .network
         .bytes_transmitted
         .saturating_sub(prev.network.bytes_transmitted);
+
+    // Packet deltas: sum across all interfaces
+    let prev_rx_packets: u64 = prev.network_interfaces.iter().map(|i| i.packets_received).sum();
+    let curr_rx_packets: u64 = curr.network_interfaces.iter().map(|i| i.packets_received).sum();
+    let prev_tx_packets: u64 = prev.network_interfaces.iter().map(|i| i.packets_transmitted).sum();
+    let curr_tx_packets: u64 = curr.network_interfaces.iter().map(|i| i.packets_transmitted).sum();
+
+    let network = NetworkDelta {
+        bytes_received_delta,
+        bytes_transmitted_delta,
+        bytes_received_rate: if elapsed_secs > 0.0 {
+            bytes_received_delta as f64 / elapsed_secs
+        } else {
+            0.0
+        },
+        bytes_transmitted_rate: if elapsed_secs > 0.0 {
+            bytes_transmitted_delta as f64 / elapsed_secs
+        } else {
+            0.0
+        },
+        packets_received_delta: curr_rx_packets.saturating_sub(prev_rx_packets),
+        packets_transmitted_delta: curr_tx_packets.saturating_sub(prev_tx_packets),
+    };
+
+    // Per-core CPU delta
+    let per_core_cpu_delta = if prev.cpu_cores.len() == curr.cpu_cores.len() && !prev.cpu_cores.is_empty() {
+        prev.cpu_cores
+            .iter()
+            .zip(curr.cpu_cores.iter())
+            .map(|(p, c)| c.usage - p.usage)
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     // Disk I/O delta
     let has_prev_io = prev.disk_io.read_bytes > 0 || prev.disk_io.written_bytes > 0;
@@ -411,21 +568,37 @@ fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration, to
             (Some(p), Some(c)) => Some(c - p),
             _ => None,
         },
-        bytes_received_delta,
-        bytes_transmitted_delta,
-        bytes_received_rate: if elapsed_secs > 0.0 {
-            bytes_received_delta as f64 / elapsed_secs
-        } else {
-            0.0
-        },
-        bytes_transmitted_rate: if elapsed_secs > 0.0 {
-            bytes_transmitted_delta as f64 / elapsed_secs
-        } else {
-            0.0
-        },
+        per_core_cpu_delta,
+        network,
         disk_io,
         process,
         gpu,
+    }
+}
+
+impl SystemStatus {
+    /// Compute delta between this snapshot and a previous one.
+    ///
+    /// Delegates to the internal `compute_delta` logic. The caller must
+    /// provide the elapsed duration and the wall-clock timestamp of the
+    /// current snapshot.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use std::time::Duration;
+    /// use toride::status::system::SystemStatus;
+    ///
+    /// let prev = SystemStatus::collect();
+    /// std::thread::sleep(Duration::from_secs(1));
+    /// let curr = SystemStatus::collect();
+    /// let delta = curr.diff(&prev, Duration::from_secs(1));
+    /// println!("RX rate: {:.1} B/s", delta.network.bytes_received_rate);
+    /// ```
+    #[must_use]
+    pub fn diff(&self, previous: &SystemStatus, elapsed: Duration) -> SystemDelta {
+        let to = std::time::SystemTime::now();
+        compute_delta(previous, self, elapsed, to)
     }
 }
 
@@ -436,11 +609,11 @@ impl std::fmt::Display for SystemDelta {
         if let Some(cpu) = self.cpu_usage_delta {
             writeln!(f, "  CPU delta: {cpu:+.1}%")?;
         }
-        writeln!(f, "  Network RX: {} bytes ({:.1} B/s)", self.bytes_received_delta, self.bytes_received_rate)?;
+        writeln!(f, "  Network RX: {} bytes ({:.1} B/s)", self.network.bytes_received_delta, self.network.bytes_received_rate)?;
         writeln!(
             f,
             "  Network TX: {} bytes ({:.1} B/s)",
-            self.bytes_transmitted_delta, self.bytes_transmitted_rate
+            self.network.bytes_transmitted_delta, self.network.bytes_transmitted_rate
         )?;
         if let Some(ref dio) = self.disk_io {
             writeln!(
@@ -475,15 +648,15 @@ impl std::fmt::Display for SystemDelta {
 mod tests {
     use super::*;
     use crate::status::system::{
-        DiskIoSnapshot, DiskStatus, MemoryStatus, NetworkStatus, OsInfo, ProcessSnapshot,
-        SensorSnapshot, StaticInfo, SystemStatus, VirtualizationSnapshot,
+        DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo,
+        ProcessSnapshot, SensorSnapshot, StaticInfo, SystemStatus, VirtualizationSnapshot,
     };
 
     /// Helper to construct a minimal `SystemStatus` with specific `cpu_usage` and network values.
     fn make_system_status(cpu_usage: Option<f64>, rx: u64, tx: u64) -> SystemStatus {
         SystemStatus {
             cpu_usage,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0 },
+            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
             disk: DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -495,12 +668,17 @@ mod tests {
                 disk_type: "Unknown".to_string(),
                 available_bytes: 0,
                 free_bytes: 0,
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
             },
             network: NetworkStatus { bytes_received: rx, bytes_transmitted: tx },
             load_average: None,
             uptime_secs: None,
             hostname: String::new(),
-            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -515,7 +693,7 @@ mod tests {
             virtualization: VirtualizationSnapshot::default(),
             sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -524,6 +702,16 @@ mod tests {
                 physical_cores: None,
                 logical_cores: 0,
                 memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             },
         }
     }
@@ -537,11 +725,11 @@ mod tests {
         let delta = compute_delta(&prev, &curr, Duration::ZERO, std::time::SystemTime::now());
 
         assert_eq!(delta.elapsed, Duration::ZERO);
-        assert_eq!(delta.bytes_received_delta, 1000);
-        assert_eq!(delta.bytes_transmitted_delta, 1000);
+        assert_eq!(delta.network.bytes_received_delta, 1000);
+        assert_eq!(delta.network.bytes_transmitted_delta, 1000);
         // Rates must be 0, not NaN or Inf from division by zero.
-        assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
-        assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
+        assert!((delta.network.bytes_received_rate).abs() < f64::EPSILON);
+        assert!((delta.network.bytes_transmitted_rate).abs() < f64::EPSILON);
         assert_eq!(delta.cpu_usage_delta, Some(10.0));
     }
 
@@ -553,10 +741,10 @@ mod tests {
         let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
 
         // saturating_sub prevents underflow; returns 0 when curr < prev.
-        assert_eq!(delta.bytes_received_delta, 0);
-        assert_eq!(delta.bytes_transmitted_delta, 0);
-        assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
-        assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
+        assert_eq!(delta.network.bytes_received_delta, 0);
+        assert_eq!(delta.network.bytes_transmitted_delta, 0);
+        assert!((delta.network.bytes_received_rate).abs() < f64::EPSILON);
+        assert!((delta.network.bytes_transmitted_rate).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -566,10 +754,10 @@ mod tests {
         let delta = compute_delta(&prev, &curr, Duration::from_secs(2), std::time::SystemTime::now());
 
         assert!(delta.cpu_usage_delta.is_none());
-        assert_eq!(delta.bytes_received_delta, 200);
-        assert_eq!(delta.bytes_transmitted_delta, 400);
-        assert!((delta.bytes_received_rate - 100.0).abs() < f64::EPSILON);
-        assert!((delta.bytes_transmitted_rate - 200.0).abs() < f64::EPSILON);
+        assert_eq!(delta.network.bytes_received_delta, 200);
+        assert_eq!(delta.network.bytes_transmitted_delta, 400);
+        assert!((delta.network.bytes_received_rate - 100.0).abs() < f64::EPSILON);
+        assert!((delta.network.bytes_transmitted_rate - 200.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -593,12 +781,12 @@ mod tests {
         let curr = make_system_status(Some(100.0), u64::MAX, u64::MAX);
         let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
 
-        assert_eq!(delta.bytes_received_delta, u64::MAX);
-        assert_eq!(delta.bytes_transmitted_delta, u64::MAX);
+        assert_eq!(delta.network.bytes_received_delta, u64::MAX);
+        assert_eq!(delta.network.bytes_transmitted_delta, u64::MAX);
         // Rate = u64::MAX as f64 / 1.0 -- large but finite.
-        assert!(delta.bytes_received_rate.is_finite());
-        assert!(delta.bytes_transmitted_rate.is_finite());
-        assert!(delta.bytes_received_rate > 1.0e18);
+        assert!(delta.network.bytes_received_rate.is_finite());
+        assert!(delta.network.bytes_transmitted_rate.is_finite());
+        assert!(delta.network.bytes_received_rate > 1.0e18);
     }
 
     // ── Collector edge cases ──────────────────────────────────────────
@@ -615,8 +803,8 @@ mod tests {
             let (_, delta) = c.collect();
             let d = delta.expect("subsequent collect should produce delta");
             // Elapsed may be very small but rates should be finite.
-            assert!(d.bytes_received_rate.is_finite());
-            assert!(d.bytes_transmitted_rate.is_finite());
+            assert!(d.network.bytes_received_rate.is_finite());
+            assert!(d.network.bytes_transmitted_rate.is_finite());
         }
     }
 
@@ -634,11 +822,11 @@ mod tests {
 
         assert_eq!(delta.elapsed, long_elapsed);
         assert_eq!(delta.cpu_usage_delta, Some(40.0));
-        assert_eq!(delta.bytes_received_delta, 86_400_000);
-        assert_eq!(delta.bytes_transmitted_delta, 43_200_000);
+        assert_eq!(delta.network.bytes_received_delta, 86_400_000);
+        assert_eq!(delta.network.bytes_transmitted_delta, 43_200_000);
         // Rates: 86_400_000 / 86_400 = 1000.0 B/s
-        assert!((delta.bytes_received_rate - 1000.0).abs() < 0.01);
-        assert!((delta.bytes_transmitted_rate - 500.0).abs() < 0.01);
+        assert!((delta.network.bytes_received_rate - 1000.0).abs() < 0.01);
+        assert!((delta.network.bytes_transmitted_rate - 500.0).abs() < 0.01);
     }
 
     #[test]
@@ -663,10 +851,8 @@ mod tests {
             from: std::time::SystemTime::now(),
             to: std::time::SystemTime::now(),
             cpu_usage_delta: Some(-15.3),
-            bytes_received_delta: 0,
-            bytes_transmitted_delta: 0,
-            bytes_received_rate: 0.0,
-            bytes_transmitted_rate: 0.0,
+            per_core_cpu_delta: Vec::new(),
+            network: NetworkDelta::default(),
             disk_io: None,
             process: None,
             gpu: None,
@@ -685,10 +871,8 @@ mod tests {
             from: std::time::SystemTime::now(),
             to: std::time::SystemTime::now(),
             cpu_usage_delta: Some(0.0),
-            bytes_received_delta: 0,
-            bytes_transmitted_delta: 0,
-            bytes_received_rate: 0.0,
-            bytes_transmitted_rate: 0.0,
+            per_core_cpu_delta: Vec::new(),
+            network: NetworkDelta::default(),
             disk_io: None,
             process: None,
             gpu: None,
@@ -706,10 +890,15 @@ mod tests {
             from: std::time::SystemTime::now(),
             to: std::time::SystemTime::now(),
             cpu_usage_delta: Some(100.0),
-            bytes_received_delta: u64::MAX,
-            bytes_transmitted_delta: u64::MAX,
-            bytes_received_rate: 1_000_000_000.0,
-            bytes_transmitted_rate: 1_000_000_000.0,
+            per_core_cpu_delta: Vec::new(),
+            network: NetworkDelta {
+                bytes_received_delta: u64::MAX,
+                bytes_transmitted_delta: u64::MAX,
+                bytes_received_rate: 1_000_000_000.0,
+                bytes_transmitted_rate: 1_000_000_000.0,
+                packets_received_delta: 0,
+                packets_transmitted_delta: 0,
+            },
             disk_io: None,
             process: None,
             gpu: None,
@@ -728,10 +917,15 @@ mod tests {
             from: std::time::SystemTime::now(),
             to: std::time::SystemTime::now(),
             cpu_usage_delta: None,
-            bytes_received_delta: 500,
-            bytes_transmitted_delta: 300,
-            bytes_received_rate: 500.0,
-            bytes_transmitted_rate: 300.0,
+            per_core_cpu_delta: Vec::new(),
+            network: NetworkDelta {
+                bytes_received_delta: 500,
+                bytes_transmitted_delta: 300,
+                bytes_received_rate: 500.0,
+                bytes_transmitted_rate: 300.0,
+                packets_received_delta: 0,
+                packets_transmitted_delta: 0,
+            },
             disk_io: None,
             process: None,
             gpu: None,
@@ -807,10 +1001,15 @@ mod tests {
             from: std::time::SystemTime::now(),
             to: std::time::SystemTime::now(),
             cpu_usage_delta: Some(5.0),
-            bytes_received_delta: 1024,
-            bytes_transmitted_delta: 512,
-            bytes_received_rate: 1024.0,
-            bytes_transmitted_rate: 512.0,
+            per_core_cpu_delta: Vec::new(),
+            network: NetworkDelta {
+                bytes_received_delta: 1024,
+                bytes_transmitted_delta: 512,
+                bytes_received_rate: 1024.0,
+                bytes_transmitted_rate: 512.0,
+                packets_received_delta: 0,
+                packets_transmitted_delta: 0,
+            },
             disk_io: None,
             process: None,
             gpu: None,
@@ -827,10 +1026,8 @@ mod tests {
             from: std::time::SystemTime::now(),
             to: std::time::SystemTime::now(),
             cpu_usage_delta: None,
-            bytes_received_delta: 0,
-            bytes_transmitted_delta: 0,
-            bytes_received_rate: 0.0,
-            bytes_transmitted_rate: 0.0,
+            per_core_cpu_delta: Vec::new(),
+            network: NetworkDelta::default(),
             disk_io: None,
             process: None,
             gpu: None,
@@ -844,10 +1041,10 @@ mod tests {
         let curr = prev.clone();
         // Zero elapsed with identical snapshots should not cause division by zero
         let delta = compute_delta(&prev, &curr, Duration::ZERO, std::time::SystemTime::now());
-        assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
-        assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
-        assert_eq!(delta.bytes_received_delta, 0);
-        assert_eq!(delta.bytes_transmitted_delta, 0);
+        assert!((delta.network.bytes_received_rate).abs() < f64::EPSILON);
+        assert!((delta.network.bytes_transmitted_rate).abs() < f64::EPSILON);
+        assert_eq!(delta.network.bytes_received_delta, 0);
+        assert_eq!(delta.network.bytes_transmitted_delta, 0);
         assert_eq!(delta.cpu_usage_delta, Some(0.0));
     }
 
@@ -859,10 +1056,10 @@ mod tests {
         curr.network.bytes_transmitted = 25;
         let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
         // saturating_sub yields 0 when curr < prev (counter wrap detected)
-        assert_eq!(delta.bytes_received_delta, 0);
-        assert_eq!(delta.bytes_transmitted_delta, 0);
-        assert!((delta.bytes_received_rate).abs() < f64::EPSILON);
-        assert!((delta.bytes_transmitted_rate).abs() < f64::EPSILON);
+        assert_eq!(delta.network.bytes_received_delta, 0);
+        assert_eq!(delta.network.bytes_transmitted_delta, 0);
+        assert!((delta.network.bytes_received_rate).abs() < f64::EPSILON);
+        assert!((delta.network.bytes_transmitted_rate).abs() < f64::EPSILON);
     }
 
     // ── CollectorBuilder tests ────────────────────────────────────────

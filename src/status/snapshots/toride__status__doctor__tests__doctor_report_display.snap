@@ -16,6 +16,10 @@ expression: "format!(\"{}\", report)"
   ✓ system.disk_duplicates: 0 disk(s), no duplicates
   ✓ system.virtualization: bare metal or unknown
   ⚠ system.disk_io: read: 0 bytes, written: 0 bytes
+  ✓ quality.cpu_interval: CPU usage: 42.5%
+  ✓ quality.monotonic_counters: rx: 100000000000 bytes, tx: 50000000000 bytes
+  ✓ quality.clock_sanity: boot time 1700000000 is reasonable
+  ✓ quality.virtual_fs_filtered: no virtual filesystems in disk list
   ✓ daemon.alive: daemon alive (PID 54321)
   ✓ daemon.socket: socket ok
   ✓ ssh.binary: ssh found
@@ -24,4 +28,13 @@ expression: "format!(\"{}\", report)"
   ✓ ssh.agent: agent running (3 key(s))
   ✓ privacy.hostname: hostname present
   ⚠ privacy.process_details: no process details available
---- 15 passed, 6 warnings, 0 failures
+  ⚠ permissions.process_executable: cannot read /proc/self/exe (permission denied or unsupported)
+  ⚠ permissions.process_cmdline: cannot read /proc/self/cmdline (permission denied or unsupported)
+  ✓ permissions.network_stats: network counters are readable
+  ✓ permissions.is_admin: not running as root
+  ⚠ network.provider: no network interfaces detected
+  ✓ network.counters_monotonic: no interfaces to check
+  ✓ privacy.serial_redacted: no serial numbers in collected data
+  ✓ privacy.mac_redacted: no MAC addresses in collected data
+  ✓ privacy.command_args: no command line arguments in collected data
+--- 25 passed, 9 warnings, 0 failures

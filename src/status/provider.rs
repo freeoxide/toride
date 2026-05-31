@@ -23,7 +23,10 @@
 //!   ├── ProcessProvider
 //!   ├── GpuProvider
 //!   ├── BatteryProvider
-//!   └── SensorProvider
+//!   ├── SensorProvider
+//!   ├── VirtualizationProvider
+//!   ├── DiskIoProvider
+//!   └── StaticInfoProvider
 //! ```
 //!
 //! ## Implementing a custom provider
@@ -69,10 +72,13 @@
 
 #![allow(clippy::missing_errors_doc)] // Internal trait methods; errors are documented via StatusResult
 
+use std::collections::HashMap;
+
 use crate::status::error::StatusResult;
 use crate::status::system::{
-    BatteryInfo, CpuCore, DiskStatus, GpuInfo, LoadAverage, MemoryStatus,
-    NetworkInterface, NetworkStatus, OsInfo, ProcessSnapshot, SensorStatus, SwapStatus,
+    BatteryInfo, CpuCore, CpuSample, CpuStatic, DiskIoSnapshot, DiskStatus, GpuInfo, LoadAverage,
+    MemoryStatus, NetworkInterface, NetworkStatus, OsInfo, ProcessSnapshot, SensorStatus,
+    StaticInfo, SwapStatus, VirtualizationSnapshot,
 };
 
 /// Provider for CPU metrics.
@@ -91,6 +97,10 @@ pub trait CpuProvider {
     ///
     /// Returns `None` if the core count cannot be determined.
     fn physical_cores(&self) -> StatusResult<Option<usize>>;
+    /// Get static CPU information (vendor, brand, architecture, topology, frequencies, cache).
+    fn cpu_static(&self) -> StatusResult<CpuStatic>;
+    /// Get a point-in-time CPU sample with total usage and per-core data.
+    fn cpu_sample(&mut self) -> StatusResult<CpuSample>;
 }
 
 /// Provider for memory metrics.
@@ -103,6 +113,10 @@ pub trait MemoryProvider {
     ///
     /// Returns `None` if swap is not configured or unavailable.
     fn swap(&mut self) -> StatusResult<Option<SwapStatus>>;
+    /// Get memory pressure as a value between 0.0 and 1.0.
+    ///
+    /// Returns `None` if memory pressure is not available on this platform.
+    fn memory_pressure(&self) -> StatusResult<Option<f32>>;
 }
 
 /// Provider for disk metrics.
@@ -131,6 +145,14 @@ pub trait NetworkProvider {
     ///
     /// Returns an empty vector if no interface data is available.
     fn interfaces(&mut self) -> StatusResult<Vec<NetworkInterface>>;
+    /// Get the default gateway address.
+    ///
+    /// Returns `None` if no default gateway can be determined.
+    fn gateway(&self) -> StatusResult<Option<String>>;
+    /// Get the DNS server addresses.
+    ///
+    /// Returns an empty vector if no DNS servers can be determined.
+    fn dns_servers(&self) -> StatusResult<Vec<String>>;
 }
 
 /// Provider for OS information.
@@ -153,6 +175,11 @@ pub trait OsProvider {
     ///
     /// Returns `None` on platforms that do not support load average (e.g., Windows).
     fn load_average(&self) -> StatusResult<Option<LoadAverage>>;
+    /// Get detailed OS information including extended fields.
+    ///
+    /// This is an expanded version of [`os_info`](Self::os_info) that may include
+    /// additional platform-specific details.
+    fn os_detailed(&self) -> StatusResult<OsInfo>;
 }
 
 /// Provider for process information.
@@ -163,6 +190,10 @@ pub trait ProcessProvider {
     ///
     /// Returns a snapshot of all running processes with CPU and memory usage.
     fn processes(&mut self) -> StatusResult<ProcessSnapshot>;
+    /// Get a process tree mapping parent PIDs to their children.
+    ///
+    /// Returns a map from parent PID to a vector of child PIDs.
+    fn process_tree(&mut self) -> StatusResult<HashMap<u32, Vec<u32>>>;
 }
 
 /// Provider for GPU information.
@@ -195,12 +226,38 @@ pub trait SensorProvider {
     fn sensors(&self) -> StatusResult<Vec<SensorStatus>>;
 }
 
+/// Provider for virtualization environment detection.
+///
+/// Implement this trait to detect container and VM environments.
+pub trait VirtualizationProvider {
+    /// Get virtualization environment snapshot.
+    fn virtualization(&self) -> StatusResult<VirtualizationSnapshot>;
+}
+
+/// Provider for disk I/O counters.
+///
+/// Implement this trait to provide disk I/O throughput data.
+pub trait DiskIoProvider {
+    /// Get disk I/O counters snapshot.
+    fn disk_io(&self) -> StatusResult<DiskIoSnapshot>;
+}
+
+/// Provider for static system information.
+///
+/// Implement this trait to provide hardware and OS information that
+/// does not change between snapshots.
+pub trait StaticInfoProvider {
+    /// Get static system information.
+    fn static_info(&self) -> StatusResult<StaticInfo>;
+}
+
 /// Composite provider that combines all individual providers.
 ///
 /// This trait is automatically implemented for any type that implements
 /// all sub-providers ([`CpuProvider`], [`MemoryProvider`], [`DiskProvider`],
 /// [`NetworkProvider`], [`OsProvider`], [`ProcessProvider`], [`GpuProvider`],
-/// [`BatteryProvider`], and [`SensorProvider`]).
+/// [`BatteryProvider`], [`SensorProvider`], [`VirtualizationProvider`],
+/// [`DiskIoProvider`], and [`StaticInfoProvider`]).
 ///
 /// Use this trait as a bound when you need access to all metrics:
 ///
@@ -221,6 +278,9 @@ pub trait StatusProvider:
     + GpuProvider
     + BatteryProvider
     + SensorProvider
+    + VirtualizationProvider
+    + DiskIoProvider
+    + StaticInfoProvider
 {}
 
 // Blanket impl for any type that implements all sub-providers.
@@ -234,6 +294,9 @@ impl<T> StatusProvider for T where
     + GpuProvider
     + BatteryProvider
     + SensorProvider
+    + VirtualizationProvider
+    + DiskIoProvider
+    + StaticInfoProvider
 {}
 
 #[cfg(test)]
@@ -256,6 +319,9 @@ mod tests {
         fn _assert_gpu<T: GpuProvider>() {}
         fn _assert_battery<T: BatteryProvider>() {}
         fn _assert_sensor<T: SensorProvider>() {}
+        fn _assert_virtualization<T: VirtualizationProvider>() {}
+        fn _assert_disk_io<T: DiskIoProvider>() {}
+        fn _assert_static_info<T: StaticInfoProvider>() {}
         fn _assert_status<T: StatusProvider>() {}
     }
 }

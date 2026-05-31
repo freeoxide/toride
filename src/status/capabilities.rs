@@ -78,7 +78,7 @@ use serde::Serialize;
 /// let caps = Capabilities::detect();
 /// println!("{}", caps);
 /// ```
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct Capabilities {
     /// System metric capabilities (CPU, memory, disk, etc.).
     pub system: SystemCapabilities,
@@ -91,7 +91,7 @@ pub struct Capabilities {
 /// System metric capabilities.
 ///
 /// Indicates which system metrics are available on the current platform.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[allow(clippy::struct_excessive_bools)] // Capabilities are inherently boolean flags
 pub struct SystemCapabilities {
     /// Aggregate CPU usage is available.
@@ -116,6 +116,22 @@ pub struct SystemCapabilities {
     pub os_info: bool,
     /// Temperature sensor data is available.
     pub sensors: bool,
+
+    // --- Per-domain capability structs ---
+    /// OS-level capabilities.
+    pub os: OsCapabilities,
+    /// GPU capabilities.
+    pub gpu: GpuCapabilities,
+    /// Battery capabilities.
+    pub battery: BatteryCapabilities,
+    /// Process capabilities.
+    pub process: ProcessCapabilities,
+    /// Storage capabilities.
+    pub storage: StorageCapabilities,
+    /// Network capabilities.
+    pub network_caps: NetworkCapabilities,
+    /// Sensor capabilities.
+    pub sensor: SensorCapabilities,
 }
 
 /// Daemon check capabilities.
@@ -148,6 +164,137 @@ pub struct SshCapabilities {
     pub key_counting: bool,
 }
 
+/// GPU capabilities.
+///
+/// Indicates which GPU metrics are available on the current platform.
+#[derive(Debug, Clone, Serialize)]
+pub struct GpuCapabilities {
+    /// GPU identity information is available.
+    pub identity: bool,
+    /// NVIDIA NVML is available.
+    pub nvidia_nvml: bool,
+    /// GPU utilization data is available.
+    pub utilization: bool,
+    /// GPU temperature data is available.
+    pub temperature: bool,
+    /// GPU memory data is available.
+    pub memory: bool,
+    /// Per-process GPU data is available.
+    pub per_process: bool,
+}
+
+/// Battery capabilities.
+///
+/// Indicates which battery metrics are available on the current platform.
+#[derive(Debug, Clone, Serialize)]
+pub struct BatteryCapabilities {
+    /// Battery is present and queryable.
+    pub available: bool,
+    /// Battery charge percentage is available.
+    pub charge_percent: bool,
+    /// Battery time remaining estimate is available.
+    pub time_remaining: bool,
+    /// Battery cycle count is available.
+    pub cycle_count: bool,
+    /// Battery health information is available.
+    pub health: bool,
+}
+
+/// Process capabilities.
+///
+/// Indicates which process metrics are available on the current platform.
+#[derive(Debug, Clone, Serialize)]
+pub struct ProcessCapabilities {
+    /// Process listing is available.
+    pub list: bool,
+    /// Per-process CPU usage is available.
+    pub cpu_usage: bool,
+    /// Per-process memory usage is available.
+    pub memory_usage: bool,
+    /// Process command line is available.
+    pub command_line: bool,
+    /// Thread count is available.
+    pub thread_count: bool,
+    /// Process user is available.
+    pub user: bool,
+    /// Per-process disk I/O is available.
+    pub disk_io: bool,
+    /// Process tree is available.
+    pub tree: bool,
+}
+
+/// Storage capabilities.
+///
+/// Indicates which storage metrics are available on the current platform.
+#[derive(Debug, Clone, Serialize)]
+pub struct StorageCapabilities {
+    /// Disk usage statistics are available.
+    pub disk_usage: bool,
+    /// Disk I/O counters are available.
+    pub disk_io: bool,
+    /// Disk type detection is available.
+    pub disk_type: bool,
+    /// Disk model information is available.
+    pub model: bool,
+    /// S.M.A.R.T. data is available.
+    pub smart: bool,
+    /// Disk temperature is available.
+    pub temperature: bool,
+}
+
+/// Network capabilities.
+///
+/// Indicates which network metrics are available on the current platform.
+#[derive(Debug, Clone, Serialize)]
+pub struct NetworkCapabilities {
+    /// Network interface listing is available.
+    pub interfaces: bool,
+    /// Network I/O counters are available.
+    pub counters: bool,
+    /// Network addresses are available.
+    pub addresses: bool,
+    /// Default gateway detection is available.
+    pub gateway: bool,
+    /// DNS configuration is available.
+    pub dns: bool,
+    /// Link status detection is available.
+    pub link_status: bool,
+}
+
+/// Sensor capabilities.
+///
+/// Indicates which sensor metrics are available on the current platform.
+#[derive(Debug, Clone, Serialize)]
+pub struct SensorCapabilities {
+    /// CPU temperature sensor is available.
+    pub cpu_temperature: bool,
+    /// GPU temperature sensor is available.
+    pub gpu_temperature: bool,
+    /// Fan speed sensor is available.
+    pub fan_speed: bool,
+    /// Voltage sensor is available.
+    pub voltage: bool,
+}
+
+/// OS capabilities.
+///
+/// Indicates which OS-level metrics are available on the current platform.
+#[derive(Debug, Clone, Serialize)]
+pub struct OsCapabilities {
+    /// OS information (name, version) is available.
+    pub os_info: bool,
+    /// Hostname is available.
+    pub hostname: bool,
+    /// System uptime is available.
+    pub uptime: bool,
+    /// Boot time is available.
+    pub boot_time: bool,
+    /// Load average is available (Unix only).
+    pub load_average: bool,
+    /// Virtualization detection is available.
+    pub virtualization: bool,
+}
+
 impl Capabilities {
     /// Detect capabilities of the current platform.
     ///
@@ -173,7 +320,9 @@ impl Capabilities {
 }
 
 impl SystemCapabilities {
-    const fn detect() -> Self {
+    fn detect() -> Self {
+        let os_caps = OsCapabilities::detect();
+        let sensor_caps = SensorCapabilities::detect();
         Self {
             cpu_usage: true,
             per_core_cpu: true,
@@ -186,6 +335,13 @@ impl SystemCapabilities {
             hostname: true,
             os_info: true,
             sensors: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            os: os_caps,
+            gpu: GpuCapabilities::detect(),
+            battery: BatteryCapabilities::detect(),
+            process: ProcessCapabilities::detect(),
+            storage: StorageCapabilities::detect(),
+            network_caps: NetworkCapabilities::detect(),
+            sensor: sensor_caps,
         }
     }
 }
@@ -214,6 +370,179 @@ impl SshCapabilities {
     }
 }
 
+impl GpuCapabilities {
+    fn detect() -> Self {
+        Self {
+            identity: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            nvidia_nvml: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
+            utilization: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
+            temperature: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
+            memory: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
+            per_process: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
+        }
+    }
+}
+
+impl BatteryCapabilities {
+    fn detect() -> Self {
+        Self {
+            available: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            charge_percent: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            time_remaining: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            cycle_count: cfg!(target_os = "macos"),
+            health: cfg!(target_os = "macos"),
+        }
+    }
+}
+
+impl ProcessCapabilities {
+    fn detect() -> Self {
+        Self {
+            list: true,
+            cpu_usage: true,
+            memory_usage: true,
+            command_line: cfg!(unix) || cfg!(target_os = "windows"),
+            thread_count: cfg!(unix) || cfg!(target_os = "windows"),
+            user: cfg!(unix) || cfg!(target_os = "windows"),
+            disk_io: cfg!(target_os = "linux"),
+            tree: cfg!(unix) || cfg!(target_os = "windows"),
+        }
+    }
+}
+
+impl StorageCapabilities {
+    fn detect() -> Self {
+        Self {
+            disk_usage: true,
+            disk_io: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            disk_type: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            model: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            smart: cfg!(target_os = "linux"),
+            temperature: cfg!(target_os = "linux"),
+        }
+    }
+}
+
+impl NetworkCapabilities {
+    fn detect() -> Self {
+        Self {
+            interfaces: true,
+            counters: true,
+            addresses: true,
+            gateway: cfg!(unix) || cfg!(target_os = "windows"),
+            dns: cfg!(unix) || cfg!(target_os = "windows"),
+            link_status: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+        }
+    }
+}
+
+impl SensorCapabilities {
+    fn detect() -> Self {
+        Self {
+            cpu_temperature: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            gpu_temperature: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
+            fan_speed: cfg!(target_os = "linux") || cfg!(target_os = "macos"),
+            voltage: cfg!(target_os = "linux"),
+        }
+    }
+}
+
+impl OsCapabilities {
+    const fn detect() -> Self {
+        Self {
+            os_info: true,
+            hostname: true,
+            uptime: true,
+            boot_time: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            load_average: cfg!(unix),
+            virtualization: cfg!(target_os = "linux"),
+        }
+    }
+}
+
+impl fmt::Display for GpuCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "GPU:")?;
+        writeln!(f, "  Identity: {}", yn(self.identity))?;
+        writeln!(f, "  NVIDIA NVML: {}", yn(self.nvidia_nvml))?;
+        writeln!(f, "  Utilization: {}", yn(self.utilization))?;
+        writeln!(f, "  Temperature: {}", yn(self.temperature))?;
+        writeln!(f, "  Memory: {}", yn(self.memory))?;
+        write!(f, "  Per-process: {}", yn(self.per_process))
+    }
+}
+
+impl fmt::Display for BatteryCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Battery:")?;
+        writeln!(f, "  Available: {}", yn(self.available))?;
+        writeln!(f, "  Charge percent: {}", yn(self.charge_percent))?;
+        writeln!(f, "  Time remaining: {}", yn(self.time_remaining))?;
+        writeln!(f, "  Cycle count: {}", yn(self.cycle_count))?;
+        write!(f, "  Health: {}", yn(self.health))
+    }
+}
+
+impl fmt::Display for ProcessCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Process:")?;
+        writeln!(f, "  List: {}", yn(self.list))?;
+        writeln!(f, "  CPU usage: {}", yn(self.cpu_usage))?;
+        writeln!(f, "  Memory usage: {}", yn(self.memory_usage))?;
+        writeln!(f, "  Command line: {}", yn(self.command_line))?;
+        writeln!(f, "  Thread count: {}", yn(self.thread_count))?;
+        writeln!(f, "  User: {}", yn(self.user))?;
+        writeln!(f, "  Disk I/O: {}", yn(self.disk_io))?;
+        write!(f, "  Tree: {}", yn(self.tree))
+    }
+}
+
+impl fmt::Display for StorageCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Storage:")?;
+        writeln!(f, "  Disk usage: {}", yn(self.disk_usage))?;
+        writeln!(f, "  Disk I/O: {}", yn(self.disk_io))?;
+        writeln!(f, "  Disk type: {}", yn(self.disk_type))?;
+        writeln!(f, "  Model: {}", yn(self.model))?;
+        writeln!(f, "  SMART: {}", yn(self.smart))?;
+        write!(f, "  Temperature: {}", yn(self.temperature))
+    }
+}
+
+impl fmt::Display for NetworkCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Network:")?;
+        writeln!(f, "  Interfaces: {}", yn(self.interfaces))?;
+        writeln!(f, "  Counters: {}", yn(self.counters))?;
+        writeln!(f, "  Addresses: {}", yn(self.addresses))?;
+        writeln!(f, "  Gateway: {}", yn(self.gateway))?;
+        writeln!(f, "  DNS: {}", yn(self.dns))?;
+        write!(f, "  Link status: {}", yn(self.link_status))
+    }
+}
+
+impl fmt::Display for SensorCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "Sensors:")?;
+        writeln!(f, "  CPU temperature: {}", yn(self.cpu_temperature))?;
+        writeln!(f, "  GPU temperature: {}", yn(self.gpu_temperature))?;
+        writeln!(f, "  Fan speed: {}", yn(self.fan_speed))?;
+        write!(f, "  Voltage: {}", yn(self.voltage))
+    }
+}
+
+impl fmt::Display for OsCapabilities {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "OS:")?;
+        writeln!(f, "  OS info: {}", yn(self.os_info))?;
+        writeln!(f, "  Hostname: {}", yn(self.hostname))?;
+        writeln!(f, "  Uptime: {}", yn(self.uptime))?;
+        writeln!(f, "  Boot time: {}", yn(self.boot_time))?;
+        writeln!(f, "  Load average: {}", yn(self.load_average))?;
+        write!(f, "  Virtualization: {}", yn(self.virtualization))
+    }
+}
+
 impl fmt::Display for Capabilities {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "=== Capabilities ===")?;
@@ -229,15 +558,31 @@ impl fmt::Display for Capabilities {
         writeln!(f, "  Hostname: {}", yn(self.system.hostname))?;
         writeln!(f, "  OS info: {}", yn(self.system.os_info))?;
         writeln!(f, "  Sensors: {}", yn(self.system.sensors))?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.system.os)?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.system.gpu)?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.system.battery)?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.system.process)?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.system.storage)?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.system.network_caps)?;
+        writeln!(f)?;
+        writeln!(f, "{}", self.system.sensor)?;
+        writeln!(f)?;
         writeln!(f, "Daemon:")?;
         writeln!(f, "  PID check: {}", yn(self.daemon.pid_check))?;
         writeln!(f, "  Uptime for PID: {}", yn(self.daemon.uptime_for_pid))?;
         writeln!(f, "  Stale socket: {}", yn(self.daemon.stale_socket_detection))?;
+        writeln!(f)?;
         writeln!(f, "SSH:")?;
         writeln!(f, "  Mux check: {}", yn(self.ssh.mux_check))?;
         writeln!(f, "  Config validation: {}", yn(self.ssh.config_validation))?;
         writeln!(f, "  Agent check: {}", yn(self.ssh.agent_check))?;
-        writeln!(f, "  Key counting: {}", yn(self.ssh.key_counting))
+        write!(f, "  Key counting: {}", yn(self.ssh.key_counting))
     }
 }
 
@@ -477,5 +822,263 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- GpuCapabilities ---
+
+    #[test]
+    fn gpu_detect_returns_struct() {
+        let caps = GpuCapabilities::detect();
+        // identity is true on linux/macos/windows (which this test machine is)
+        assert!(caps.identity);
+    }
+
+    #[test]
+    fn gpu_serialize_to_json() {
+        let caps = GpuCapabilities::detect();
+        assert!(serde_json::to_string(&caps).is_ok());
+    }
+
+    #[test]
+    fn gpu_display_contains_gpu() {
+        let caps = GpuCapabilities::detect();
+        let output = format!("{caps}");
+        assert!(output.contains("GPU:"));
+        assert!(output.contains("Identity:"));
+        assert!(output.contains("NVIDIA NVML:"));
+    }
+
+    // --- BatteryCapabilities ---
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn battery_available_on_supported_platforms() {
+        let caps = BatteryCapabilities::detect();
+        assert!(caps.available);
+        assert!(caps.charge_percent);
+        assert!(caps.time_remaining);
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn battery_cycle_count_and_health_on_macos() {
+        let caps = BatteryCapabilities::detect();
+        assert!(caps.cycle_count);
+        assert!(caps.health);
+    }
+
+    #[test]
+    fn battery_serialize_to_json() {
+        let caps = BatteryCapabilities::detect();
+        assert!(serde_json::to_string(&caps).is_ok());
+    }
+
+    #[test]
+    fn battery_display_contains_battery() {
+        let caps = BatteryCapabilities::detect();
+        let output = format!("{caps}");
+        assert!(output.contains("Battery:"));
+        assert!(output.contains("Charge percent:"));
+    }
+
+    // --- ProcessCapabilities ---
+
+    #[test]
+    fn process_list_always_true() {
+        let caps = ProcessCapabilities::detect();
+        assert!(caps.list);
+        assert!(caps.cpu_usage);
+        assert!(caps.memory_usage);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_command_line_true_on_unix() {
+        let caps = ProcessCapabilities::detect();
+        assert!(caps.command_line);
+        assert!(caps.thread_count);
+        assert!(caps.user);
+        assert!(caps.tree);
+    }
+
+    #[test]
+    fn process_serialize_to_json() {
+        let caps = ProcessCapabilities::detect();
+        assert!(serde_json::to_string(&caps).is_ok());
+    }
+
+    #[test]
+    fn process_display_contains_process() {
+        let caps = ProcessCapabilities::detect();
+        let output = format!("{caps}");
+        assert!(output.contains("Process:"));
+        assert!(output.contains("CPU usage:"));
+        assert!(output.contains("Memory usage:"));
+    }
+
+    // --- StorageCapabilities ---
+
+    #[test]
+    fn storage_disk_usage_always_true() {
+        let caps = StorageCapabilities::detect();
+        assert!(caps.disk_usage);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn storage_smart_and_temp_on_linux() {
+        let caps = StorageCapabilities::detect();
+        assert!(caps.smart);
+        assert!(caps.temperature);
+    }
+
+    #[test]
+    fn storage_serialize_to_json() {
+        let caps = StorageCapabilities::detect();
+        assert!(serde_json::to_string(&caps).is_ok());
+    }
+
+    #[test]
+    fn storage_display_contains_storage() {
+        let caps = StorageCapabilities::detect();
+        let output = format!("{caps}");
+        assert!(output.contains("Storage:"));
+        assert!(output.contains("Disk usage:"));
+    }
+
+    // --- NetworkCapabilities ---
+
+    #[test]
+    fn network_interfaces_always_true() {
+        let caps = NetworkCapabilities::detect();
+        assert!(caps.interfaces);
+        assert!(caps.counters);
+        assert!(caps.addresses);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn network_gateway_true_on_unix() {
+        let caps = NetworkCapabilities::detect();
+        assert!(caps.gateway);
+        assert!(caps.dns);
+    }
+
+    #[test]
+    fn network_serialize_to_json() {
+        let caps = NetworkCapabilities::detect();
+        assert!(serde_json::to_string(&caps).is_ok());
+    }
+
+    #[test]
+    fn network_display_contains_network() {
+        let caps = NetworkCapabilities::detect();
+        let output = format!("{caps}");
+        assert!(output.contains("Network:"));
+        assert!(output.contains("Interfaces:"));
+    }
+
+    // --- SensorCapabilities ---
+
+    #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
+    #[test]
+    fn sensor_cpu_temperature_on_supported_platforms() {
+        let caps = SensorCapabilities::detect();
+        assert!(caps.cpu_temperature);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn sensor_voltage_on_linux() {
+        let caps = SensorCapabilities::detect();
+        assert!(caps.voltage);
+    }
+
+    #[test]
+    fn sensor_serialize_to_json() {
+        let caps = SensorCapabilities::detect();
+        assert!(serde_json::to_string(&caps).is_ok());
+    }
+
+    #[test]
+    fn sensor_display_contains_sensors() {
+        let caps = SensorCapabilities::detect();
+        let output = format!("{caps}");
+        assert!(output.contains("Sensors:"));
+        assert!(output.contains("CPU temperature:"));
+    }
+
+    // --- OsCapabilities ---
+
+    #[test]
+    fn os_detect_returns_struct() {
+        let caps = OsCapabilities::detect();
+        assert!(caps.os_info);
+        assert!(caps.hostname);
+        assert!(caps.uptime);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn os_load_average_true_on_unix() {
+        let caps = OsCapabilities::detect();
+        assert!(caps.load_average);
+    }
+
+    #[test]
+    fn os_serialize_to_json() {
+        let caps = OsCapabilities::detect();
+        assert!(serde_json::to_string(&caps).is_ok());
+    }
+
+    #[test]
+    fn os_display_contains_os() {
+        let caps = OsCapabilities::detect();
+        let output = format!("{caps}");
+        assert!(output.contains("OS:"));
+        assert!(output.contains("OS info:"));
+        assert!(output.contains("Hostname:"));
+    }
+
+    // --- Integration: SystemCapabilities includes sub-structs ---
+
+    #[test]
+    fn system_capabilities_has_all_sub_structs() {
+        let caps = SystemCapabilities::detect();
+        // Verify sub-structs are populated (not default/zeroed)
+        assert!(caps.os.os_info);
+        assert!(caps.process.list);
+        assert!(caps.storage.disk_usage);
+        assert!(caps.network_caps.interfaces);
+        assert!(caps.sensor.cpu_temperature || !caps.sensor.cpu_temperature); // always valid
+        assert!(caps.gpu.identity || !caps.gpu.identity); // always valid
+        assert!(caps.battery.available || !caps.battery.available); // always valid
+    }
+
+    #[test]
+    fn system_capabilities_serialize_includes_sub_structs() {
+        let caps = SystemCapabilities::detect();
+        let json = serde_json::to_string(&caps).unwrap();
+        assert!(json.contains("\"os\""));
+        assert!(json.contains("\"gpu\""));
+        assert!(json.contains("\"battery\""));
+        assert!(json.contains("\"process\""));
+        assert!(json.contains("\"storage\""));
+        assert!(json.contains("\"network_caps\""));
+        assert!(json.contains("\"sensor\""));
+    }
+
+    #[test]
+    fn capabilities_display_includes_all_domain_sections() {
+        let caps = Capabilities::detect();
+        let output = format!("{caps}");
+        assert!(output.contains("GPU:"));
+        assert!(output.contains("Battery:"));
+        assert!(output.contains("Process:"));
+        assert!(output.contains("Storage:"));
+        // The Network sub-struct display also contains "Network:"
+        assert!(output.contains("Interfaces:"));
+        assert!(output.contains("Sensors:"));
+        assert!(output.contains("OS:"));
     }
 }

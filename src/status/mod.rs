@@ -20,6 +20,7 @@ pub mod privacy;
 pub mod provider;
 pub mod ssh;
 pub mod system;
+pub mod units;
 
 use std::fmt;
 
@@ -34,10 +35,12 @@ pub use presets::Preset;
 pub use privacy::{PrivacyMode, Redactor};
 pub use ssh::SshStatus;
 pub use system::{
-    BatteryInfo, CpuCore, DiskIoSnapshot, DiskStatus, GpuInfo, LoadAverage, MemoryStatus,
-    NetworkInterface, NetworkStatus, OsInfo, ProcessSnapshot, ProcessStatus, SensorSnapshot,
-    SensorStatus, StaticInfo, SwapStatus, SystemStatus, VirtualizationSnapshot,
+    BatteryInfo, CpuCore, CpuSample, CpuStatic, DiskIoSnapshot, DiskStatus, GpuInfo,
+    HardwareInventory, LoadAverage, MemoryStatus, NetworkInterface, NetworkStatus, OsInfo,
+    ProcessSnapshot, ProcessStatus, SensorSnapshot, SensorStatus, StaticInfo, SwapStatus,
+    SystemStatus, VirtualizationSnapshot,
 };
+pub use units::{Bytes, Celsius, Hertz, Rpm, Volts, Watts};
 
 /// Top-level aggregated status snapshot.
 ///
@@ -213,11 +216,58 @@ impl TorideStatus {
 
     /// Apply privacy redaction to sensitive fields.
     ///
-    /// Uses the [`Redactor`] from the privacy module to redact hostnames
-    /// and other identifying information according to the given mode.
+    /// Uses the [`Redactor`] from the privacy module to redact hostnames,
+    /// MAC addresses, serial numbers, command lines, and other identifying
+    /// information according to the given mode.
     fn apply_privacy(&mut self, mode: PrivacyMode) {
         let redactor = Redactor::new(mode);
+
+        // Hostname
         self.system.hostname = redactor.redact_hostname(&self.system.hostname);
+
+        // Static info hostname
+        self.system.static_info.hostname =
+            redactor.redact_hostname(&self.system.static_info.hostname);
+
+        // Network interface MAC addresses
+        for iface in &mut self.system.network_interfaces {
+            if let Some(ref mac) = iface.mac_address {
+                iface.mac_address = Some(redactor.redact_mac(mac));
+            }
+        }
+
+        // Process command lines
+        for proc in &mut self.system.processes.processes {
+            if let Some(ref cmd) = proc.command_line {
+                proc.command_line = Some(redactor.redact_command_line(cmd));
+            }
+        }
+
+        // Process usernames (hide unless Full mode)
+        if !redactor.should_show_username() {
+            for proc in &mut self.system.processes.processes {
+                proc.user = None;
+            }
+        }
+
+        // Hardware serial numbers, UUIDs, asset tags
+        if let Some(ref serial) = self.system.static_info.hardware.system_serial {
+            self.system.static_info.hardware.system_serial =
+                Some(redactor.redact_serial(serial));
+        }
+        if let Some(ref uuid) = self.system.static_info.hardware.system_uuid {
+            self.system.static_info.hardware.system_uuid = Some(redactor.redact_uuid(uuid));
+        }
+        if let Some(ref tag) = self.system.static_info.hardware.asset_tag {
+            self.system.static_info.hardware.asset_tag = Some(redactor.redact_asset_tag(tag));
+        }
+
+        // Disk serial numbers
+        for disk in &mut self.system.disks {
+            if let Some(ref serial) = disk.serial {
+                disk.serial = Some(redactor.redact_serial(serial));
+            }
+        }
     }
 }
 
@@ -235,6 +285,99 @@ impl fmt::Display for TorideStatus {
             }
         }
         Ok(())
+    }
+}
+
+/// Simple API entry point for collecting system status.
+///
+/// `SysProbe` provides the primary user-facing API as specified in the
+/// system-status spec. For advanced use cases (streaming, delta tracking),
+/// use [`Collector`] instead.
+///
+/// # Examples
+///
+/// ```no_run
+/// use toride::status::SysProbe;
+///
+/// let probe = SysProbe::new();
+/// let snapshot = probe.snapshot();
+/// println!("{}", snapshot.system.cpu_usage.unwrap_or(0.0));
+/// ```
+pub struct SysProbe {
+    preset: Preset,
+    privacy: PrivacyMode,
+}
+
+impl SysProbe {
+    /// Create a new `SysProbe` with default settings (Diagnostics preset, no privacy).
+    #[must_use]
+    pub fn new() -> Self {
+        Self {
+            preset: Preset::Diagnostics,
+            privacy: PrivacyMode::Diagnostics,
+        }
+    }
+
+    /// Create a builder for customizing the probe.
+    pub fn builder() -> SysProbeBuilder {
+        SysProbeBuilder::default()
+    }
+
+    /// Collect a system status snapshot.
+    #[must_use]
+    pub fn snapshot(&self) -> TorideStatus {
+        TorideStatus::collect_with_options(self.preset, self.privacy)
+    }
+
+    /// Detect platform capabilities.
+    #[must_use]
+    pub fn capabilities(&self) -> Capabilities {
+        Capabilities::detect()
+    }
+}
+
+impl Default for SysProbe {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Builder for [`SysProbe`].
+#[derive(Debug, Clone)]
+pub struct SysProbeBuilder {
+    preset: Preset,
+    privacy: PrivacyMode,
+}
+
+impl SysProbeBuilder {
+    pub fn new() -> Self {
+        Self {
+            preset: Preset::Diagnostics,
+            privacy: PrivacyMode::Diagnostics,
+        }
+    }
+
+    pub fn preset(mut self, preset: Preset) -> Self {
+        self.preset = preset;
+        self
+    }
+
+    pub fn privacy(mut self, mode: PrivacyMode) -> Self {
+        self.privacy = mode;
+        self
+    }
+
+    pub fn build(self) -> SysProbe {
+        SysProbe {
+            preset: self.preset,
+            privacy: self.privacy,
+        }
+    }
+}
+
+impl Default for SysProbeBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -288,6 +431,7 @@ mod tests {
                     cached_bytes: 0,
                     available_bytes: 0,
                     free_bytes: 0,
+                    buffers_bytes: 0,
                 },
                 disk: DiskStatus {
                     name: "Macintosh HD".to_string(),
@@ -300,6 +444,11 @@ mod tests {
                     disk_type: "Unknown".to_string(),
                     available_bytes: 0,
                     free_bytes: 0,
+                    physical_device_path: None,
+                    model: None,
+                    serial: None,
+                    temperature: None,
+                    wear_percent: None,
                 },
                 network: NetworkStatus {
                     bytes_received: 100 * 1024 * 1024 * 1024,
@@ -317,6 +466,19 @@ mod tests {
                     version: Some("15.0".to_string()),
                     kernel_version: Some("24.0.0".to_string()),
                     arch: "aarch64".to_string(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
                 },
                 cpu_cores: vec![
                     CpuCore {
@@ -335,6 +497,7 @@ mod tests {
                     used_bytes: 512 * 1024 * 1024,
                     total_bytes: 2 * 1024 * 1024 * 1024,
                     percentage: 25.0,
+                    free_bytes: 2 * 1024 * 1024 * 1024 - 512 * 1024 * 1024,
                 }),
                 disks: vec![],
                 network_interfaces: vec![
@@ -350,12 +513,24 @@ mod tests {
                         drops_received: 0,
                         mtu: None,
                         mac_address: None,
+                        display_name: None,
+                        description: None,
+                        ipv4_addresses: Vec::new(),
+                        ipv6_addresses: Vec::new(),
+                        gateway: None,
+                        dns: None,
+                        link_status: None,
+                        speed_bps: None,
+                        duplex: None,
                     },
                 ],
                 sensors: vec![
                     SensorStatus {
                         label: "CPU".to_string(),
                         temperature: Some(55.5),
+                        fan_rpm: None,
+                        voltage: None,
+                        thermal_throttling: None,
                     },
                 ],
                 boot_time: Some(1_700_000_000),
@@ -369,7 +544,7 @@ mod tests {
                 virtualization: VirtualizationSnapshot::default(),
                 sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
                 static_info: StaticInfo {
-                    os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new() },
+                    os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
                     kernel_version: None,
                     hostname: String::new(),
                     cpu_brand: String::new(),
@@ -378,6 +553,16 @@ mod tests {
                     physical_cores: None,
                     logical_cores: 0,
                     memory_total_bytes: 0,
+                    hardware: HardwareInventory::default(),
+                    sockets: None,
+                    cores_per_socket: None,
+                    threads_per_core: None,
+                    base_frequency: None,
+                    max_frequency: None,
+                    cache_l1d: None,
+                    cache_l1i: None,
+                    cache_l2: None,
+                    cache_l3: None,
                 },
             },
             daemon: DaemonStatus {
@@ -498,10 +683,10 @@ mod tests {
             "delta elapsed ({:?}) must be >= 80ms", d.elapsed);
 
         // Rates must be non-negative and finite.
-        assert!(d.bytes_received_rate.is_finite(), "RX rate must be finite");
-        assert!(d.bytes_received_rate >= 0.0, "RX rate must be non-negative");
-        assert!(d.bytes_transmitted_rate.is_finite(), "TX rate must be finite");
-        assert!(d.bytes_transmitted_rate >= 0.0, "TX rate must be non-negative");
+        assert!(d.network.bytes_received_rate.is_finite(), "RX rate must be finite");
+        assert!(d.network.bytes_received_rate >= 0.0, "RX rate must be non-negative");
+        assert!(d.network.bytes_transmitted_rate.is_finite(), "TX rate must be finite");
+        assert!(d.network.bytes_transmitted_rate >= 0.0, "TX rate must be non-negative");
 
         // Deltas must be non-negative (saturating_sub).
         // (They could be 0 if the system had no traffic, which is fine.)

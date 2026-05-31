@@ -47,10 +47,67 @@ System:
   Hostname: yes
   OS info: yes
   Sensors: yes
+
+OS:
+  OS info: yes
+  Hostname: yes
+  Uptime: yes
+  Boot time: yes
+  Load average: yes
+  Virtualization: no
+
+GPU:
+  Identity: yes
+  NVIDIA NVML: no
+  Utilization: no
+  Temperature: no
+  Memory: no
+  Per-process: no
+
+Battery:
+  Available: yes
+  Charge percent: yes
+  Time remaining: yes
+  Cycle count: yes
+  Health: yes
+
+Process:
+  List: yes
+  CPU usage: yes
+  Memory usage: yes
+  Command line: yes
+  Thread count: yes
+  User: yes
+  Disk I/O: no
+  Tree: yes
+
+Storage:
+  Disk usage: yes
+  Disk I/O: yes
+  Disk type: yes
+  Model: yes
+  SMART: no
+  Temperature: no
+
+Network:
+  Interfaces: yes
+  Counters: yes
+  Addresses: yes
+  Gateway: yes
+  DNS: yes
+  Link status: yes
+
+Sensors:
+  CPU temperature: yes
+  GPU temperature: no
+  Fan speed: yes
+  Voltage: no
+
 Daemon:
   PID check: yes
   Uptime for PID: yes
   Stale socket: yes
+
 SSH:
   Mux check: yes
   Config validation: yes

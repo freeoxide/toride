@@ -227,6 +227,114 @@ impl Preset {
         true // always useful
     }
 
+    /// Whether this preset includes hardware inventory info.
+    ///
+    /// Returns `true` for `Diagnostics` and `HardwareInventory` presets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::presets::Preset;
+    ///
+    /// assert!(Preset::Diagnostics.includes_hardware_inventory());
+    /// assert!(!Preset::Minimal.includes_hardware_inventory());
+    /// ```
+    #[must_use]
+    pub const fn includes_hardware_inventory(self) -> bool {
+        matches!(self, Self::Diagnostics | Self::HardwareInventory)
+    }
+
+    /// Whether this preset includes virtualization info.
+    ///
+    /// Returns `true` for `Diagnostics` and `ServerMonitoring` presets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::presets::Preset;
+    ///
+    /// assert!(Preset::Diagnostics.includes_virtualization());
+    /// assert!(!Preset::Minimal.includes_virtualization());
+    /// ```
+    #[must_use]
+    pub const fn includes_virtualization(self) -> bool {
+        matches!(self, Self::Diagnostics | Self::ServerMonitoring)
+    }
+
+    /// Whether this preset includes disk I/O info.
+    ///
+    /// Returns `true` for `Diagnostics`, `ServerMonitoring`, and `TaskManager` presets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::presets::Preset;
+    ///
+    /// assert!(Preset::Diagnostics.includes_disk_io());
+    /// assert!(!Preset::Minimal.includes_disk_io());
+    /// ```
+    #[must_use]
+    pub const fn includes_disk_io(self) -> bool {
+        matches!(
+            self,
+            Self::Diagnostics | Self::ServerMonitoring | Self::TaskManager
+        )
+    }
+
+    /// Whether this preset includes static info.
+    ///
+    /// Returns `true` for `Diagnostics`, `HardwareInventory`, and `PrivacySafeBugReport` presets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::presets::Preset;
+    ///
+    /// assert!(Preset::Diagnostics.includes_static_info());
+    /// assert!(!Preset::Minimal.includes_static_info());
+    /// ```
+    #[must_use]
+    pub const fn includes_static_info(self) -> bool {
+        matches!(
+            self,
+            Self::Diagnostics | Self::HardwareInventory | Self::PrivacySafeBugReport
+        )
+    }
+
+    /// Whether this preset includes network addresses.
+    ///
+    /// Returns `true` for `Diagnostics` only.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::presets::Preset;
+    ///
+    /// assert!(Preset::Diagnostics.includes_network_addresses());
+    /// assert!(!Preset::Minimal.includes_network_addresses());
+    /// ```
+    #[must_use]
+    pub const fn includes_network_addresses(self) -> bool {
+        matches!(self, Self::Diagnostics)
+    }
+
+    /// Whether this preset includes per-process disk I/O.
+    ///
+    /// Returns `true` for `Diagnostics` and `TaskManager` presets.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use toride::status::presets::Preset;
+    ///
+    /// assert!(Preset::Diagnostics.includes_process_disk_io());
+    /// assert!(!Preset::Minimal.includes_process_disk_io());
+    /// ```
+    #[must_use]
+    pub const fn includes_process_disk_io(self) -> bool {
+        matches!(self, Self::Diagnostics | Self::TaskManager)
+    }
+
     /// The human-readable name of this preset.
     ///
     /// # Examples
@@ -286,6 +394,12 @@ mod tests {
         assert!(p.includes_network_interfaces());
         assert!(p.includes_all_disks());
         assert!(p.includes_os_info());
+        assert!(p.includes_hardware_inventory());
+        assert!(p.includes_virtualization());
+        assert!(p.includes_disk_io());
+        assert!(p.includes_static_info());
+        assert!(p.includes_network_addresses());
+        assert!(p.includes_process_disk_io());
     }
 
     #[test]
@@ -471,6 +585,43 @@ mod tests {
         assert!(Preset::PrivacySafeBugReport.includes_os_info());
     }
 
+    // --- HardwareInventory (existing methods) ---
+
+    #[test]
+    fn hardware_inventory_includes_per_core_cpu() {
+        assert!(Preset::HardwareInventory.includes_per_core_cpu());
+    }
+
+    #[test]
+    fn hardware_inventory_excludes_swap() {
+        assert!(!Preset::HardwareInventory.includes_swap());
+    }
+
+    #[test]
+    fn hardware_inventory_includes_sensors() {
+        assert!(Preset::HardwareInventory.includes_sensors());
+    }
+
+    #[test]
+    fn hardware_inventory_excludes_processes() {
+        assert!(!Preset::HardwareInventory.includes_processes());
+    }
+
+    #[test]
+    fn hardware_inventory_excludes_network_interfaces() {
+        assert!(!Preset::HardwareInventory.includes_network_interfaces());
+    }
+
+    #[test]
+    fn hardware_inventory_includes_all_disks() {
+        assert!(Preset::HardwareInventory.includes_all_disks());
+    }
+
+    #[test]
+    fn hardware_inventory_includes_os_info() {
+        assert!(Preset::HardwareInventory.includes_os_info());
+    }
+
     // --- GPU ---
 
     #[test]
@@ -496,6 +647,11 @@ mod tests {
     #[test]
     fn privacy_safe_includes_gpu() {
         assert!(Preset::PrivacySafeBugReport.includes_gpu());
+    }
+
+    #[test]
+    fn hardware_inventory_includes_gpu() {
+        assert!(Preset::HardwareInventory.includes_gpu());
     }
 
     // --- Battery ---
@@ -525,6 +681,11 @@ mod tests {
         assert!(!Preset::PrivacySafeBugReport.includes_battery());
     }
 
+    #[test]
+    fn hardware_inventory_includes_battery() {
+        assert!(Preset::HardwareInventory.includes_battery());
+    }
+
     // --- Preset name edge cases ---
 
     #[test]
@@ -535,6 +696,7 @@ mod tests {
             Preset::Diagnostics,
             Preset::ServerMonitoring,
             Preset::PrivacySafeBugReport,
+            Preset::HardwareInventory,
         ];
         let names: Vec<&str> = presets.iter().map(|p| p.name()).collect();
         let unique: std::collections::HashSet<&str> = names.iter().copied().collect();
@@ -549,6 +711,7 @@ mod tests {
             Preset::Diagnostics,
             Preset::ServerMonitoring,
             Preset::PrivacySafeBugReport,
+            Preset::HardwareInventory,
         ];
         for preset in presets {
             assert!(
@@ -568,9 +731,202 @@ mod tests {
             (Preset::Diagnostics, "Diagnostics"),
             (Preset::ServerMonitoring, "Server Monitoring"),
             (Preset::PrivacySafeBugReport, "Privacy-Safe Bug Report"),
+            (Preset::HardwareInventory, "Hardware Inventory"),
         ];
         for (preset, expected) in cases {
             assert_eq!(format!("{preset}"), expected);
         }
+    }
+
+    // --- Hardware Inventory ---
+
+    #[test]
+    fn minimal_excludes_hardware_inventory() {
+        assert!(!Preset::Minimal.includes_hardware_inventory());
+    }
+
+    #[test]
+    fn task_manager_excludes_hardware_inventory() {
+        assert!(!Preset::TaskManager.includes_hardware_inventory());
+    }
+
+    #[test]
+    fn diagnostics_includes_hardware_inventory() {
+        assert!(Preset::Diagnostics.includes_hardware_inventory());
+    }
+
+    #[test]
+    fn server_monitoring_excludes_hardware_inventory() {
+        assert!(!Preset::ServerMonitoring.includes_hardware_inventory());
+    }
+
+    #[test]
+    fn privacy_safe_excludes_hardware_inventory() {
+        assert!(!Preset::PrivacySafeBugReport.includes_hardware_inventory());
+    }
+
+    #[test]
+    fn hardware_inventory_includes_hardware_inventory() {
+        assert!(Preset::HardwareInventory.includes_hardware_inventory());
+    }
+
+    // --- Virtualization ---
+
+    #[test]
+    fn minimal_excludes_virtualization() {
+        assert!(!Preset::Minimal.includes_virtualization());
+    }
+
+    #[test]
+    fn task_manager_excludes_virtualization() {
+        assert!(!Preset::TaskManager.includes_virtualization());
+    }
+
+    #[test]
+    fn diagnostics_includes_virtualization() {
+        assert!(Preset::Diagnostics.includes_virtualization());
+    }
+
+    #[test]
+    fn server_monitoring_includes_virtualization() {
+        assert!(Preset::ServerMonitoring.includes_virtualization());
+    }
+
+    #[test]
+    fn privacy_safe_excludes_virtualization() {
+        assert!(!Preset::PrivacySafeBugReport.includes_virtualization());
+    }
+
+    #[test]
+    fn hardware_inventory_excludes_virtualization() {
+        assert!(!Preset::HardwareInventory.includes_virtualization());
+    }
+
+    // --- Disk I/O ---
+
+    #[test]
+    fn minimal_excludes_disk_io() {
+        assert!(!Preset::Minimal.includes_disk_io());
+    }
+
+    #[test]
+    fn task_manager_includes_disk_io() {
+        assert!(Preset::TaskManager.includes_disk_io());
+    }
+
+    #[test]
+    fn diagnostics_includes_disk_io() {
+        assert!(Preset::Diagnostics.includes_disk_io());
+    }
+
+    #[test]
+    fn server_monitoring_includes_disk_io() {
+        assert!(Preset::ServerMonitoring.includes_disk_io());
+    }
+
+    #[test]
+    fn privacy_safe_excludes_disk_io() {
+        assert!(!Preset::PrivacySafeBugReport.includes_disk_io());
+    }
+
+    #[test]
+    fn hardware_inventory_excludes_disk_io() {
+        assert!(!Preset::HardwareInventory.includes_disk_io());
+    }
+
+    // --- Static Info ---
+
+    #[test]
+    fn minimal_excludes_static_info() {
+        assert!(!Preset::Minimal.includes_static_info());
+    }
+
+    #[test]
+    fn task_manager_excludes_static_info() {
+        assert!(!Preset::TaskManager.includes_static_info());
+    }
+
+    #[test]
+    fn diagnostics_includes_static_info() {
+        assert!(Preset::Diagnostics.includes_static_info());
+    }
+
+    #[test]
+    fn server_monitoring_excludes_static_info() {
+        assert!(!Preset::ServerMonitoring.includes_static_info());
+    }
+
+    #[test]
+    fn privacy_safe_includes_static_info() {
+        assert!(Preset::PrivacySafeBugReport.includes_static_info());
+    }
+
+    #[test]
+    fn hardware_inventory_includes_static_info() {
+        assert!(Preset::HardwareInventory.includes_static_info());
+    }
+
+    // --- Network Addresses ---
+
+    #[test]
+    fn minimal_excludes_network_addresses() {
+        assert!(!Preset::Minimal.includes_network_addresses());
+    }
+
+    #[test]
+    fn task_manager_excludes_network_addresses() {
+        assert!(!Preset::TaskManager.includes_network_addresses());
+    }
+
+    #[test]
+    fn diagnostics_includes_network_addresses() {
+        assert!(Preset::Diagnostics.includes_network_addresses());
+    }
+
+    #[test]
+    fn server_monitoring_excludes_network_addresses() {
+        assert!(!Preset::ServerMonitoring.includes_network_addresses());
+    }
+
+    #[test]
+    fn privacy_safe_excludes_network_addresses() {
+        assert!(!Preset::PrivacySafeBugReport.includes_network_addresses());
+    }
+
+    #[test]
+    fn hardware_inventory_excludes_network_addresses() {
+        assert!(!Preset::HardwareInventory.includes_network_addresses());
+    }
+
+    // --- Per-process Disk I/O ---
+
+    #[test]
+    fn minimal_excludes_process_disk_io() {
+        assert!(!Preset::Minimal.includes_process_disk_io());
+    }
+
+    #[test]
+    fn task_manager_includes_process_disk_io() {
+        assert!(Preset::TaskManager.includes_process_disk_io());
+    }
+
+    #[test]
+    fn diagnostics_includes_process_disk_io() {
+        assert!(Preset::Diagnostics.includes_process_disk_io());
+    }
+
+    #[test]
+    fn server_monitoring_excludes_process_disk_io() {
+        assert!(!Preset::ServerMonitoring.includes_process_disk_io());
+    }
+
+    #[test]
+    fn privacy_safe_excludes_process_disk_io() {
+        assert!(!Preset::PrivacySafeBugReport.includes_process_disk_io());
+    }
+
+    #[test]
+    fn hardware_inventory_excludes_process_disk_io() {
+        assert!(!Preset::HardwareInventory.includes_process_disk_io());
     }
 }
