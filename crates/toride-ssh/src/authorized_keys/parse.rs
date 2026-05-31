@@ -60,14 +60,22 @@ impl AuthorizedKeyEntry {
 /// - [`Error::AuthorizedKeysParseFailed`] if a key line fails to parse.
 pub async fn parse_authorized_keys(path: &Path) -> Result<Vec<AuthorizedKeyEntry>> {
     let path = path.to_owned();
-    tokio::task::spawn_blocking(move || parse_authorized_keys_sync(&path))
+
+    // Read the file asynchronously first, then hand off only the CPU-bound
+    // parsing to spawn_blocking.
+    let contents = match tokio::fs::read_to_string(&path).await {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+
+    tokio::task::spawn_blocking(move || parse_authorized_keys_sync(&contents))
         .await
         .map_err(|e| Error::AuthorizedKeysParseFailed(e.to_string()))?
 }
 
-/// Synchronous implementation that reads and parses the file.
-fn parse_authorized_keys_sync(path: &Path) -> Result<Vec<AuthorizedKeyEntry>> {
-    let contents = std::fs::read_to_string(path)?;
+/// Synchronous implementation that parses already-read file contents.
+fn parse_authorized_keys_sync(contents: &str) -> Result<Vec<AuthorizedKeyEntry>> {
 
     let mut entries = Vec::new();
 

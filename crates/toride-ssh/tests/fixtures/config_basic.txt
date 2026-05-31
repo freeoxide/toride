@@ -1,0 +1,24 @@
+# Basic SSH config for integration testing
+
+Host web
+    HostName web.example.com
+    User deploy
+    Port 22
+    IdentityFile ~/.ssh/id_ed25519
+
+Host db
+    HostName db.internal.example.com
+    User admin
+    IdentityFile ~/.ssh/id_rsa
+
+Host bastion
+    HostName bastion.example.com
+    User jump
+    IdentityFile ~/.ssh/id_ed25519
+    IdentityFile ~/.ssh/id_rsa
+    ProxyCommand none
+
+Host *
+    ServerAliveInterval 60
+    ServerAliveCountMax 3
+    AddKeysToAgent yes

@@ -65,24 +65,32 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     for socket_path in candidates {
         let host = extract_host_from_socket_path(&socket_path);
 
-        if verify_control_session(&socket_path).await {
-            // The socket may have disappeared between the check above and now
-            // (race with another process cleaning it up). Treat a missing file
-            // as "session gone" rather than a fatal error.
-            let Ok(metadata) = tokio::fs::metadata(&socket_path).await else {
-                continue;
-            };
-            let established = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+        match verify_control_session(&socket_path).await {
+            Some(true) => {
+                // The socket may have disappeared between the check above and now
+                // (race with another process cleaning it up). Treat a missing file
+                // as "session gone" rather than a fatal error.
+                let Ok(metadata) = tokio::fs::metadata(&socket_path).await else {
+                    continue;
+                };
+                let established = metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH);
 
-            sessions.push(ControlSession {
-                control_path: socket_path,
-                host,
-                established,
-            });
-        } else {
-            // Dead socket — clean it up.
-            if let Err(e) = tokio::fs::remove_file(&socket_path).await {
-                tracing::debug!("failed to remove dead socket {}: {e}", socket_path.display());
+                sessions.push(ControlSession {
+                    control_path: socket_path,
+                    host,
+                    established,
+                });
+            }
+            Some(false) => {
+                // Dead socket — clean it up.
+                if let Err(e) = tokio::fs::remove_file(&socket_path).await {
+                    tracing::debug!("failed to remove dead socket {}: {e}", socket_path.display());
+                }
+            }
+            None => {
+                // ssh binary not found — cannot determine status, skip cleanup
+                // to avoid destroying active sessions.
+                tracing::debug!("skipping socket {}: ssh binary not available", socket_path.display());
             }
         }
     }
@@ -142,6 +150,7 @@ pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
 
     let stripped = name
         .strip_prefix("cm-")
+        .or_else(|| name.strip_prefix("control-"))
         .or_else(|| name.strip_prefix("ctrl-"))
         .or_else(|| name.strip_prefix("mux-"))
         .or_else(|| name.strip_prefix("ssh-"))
@@ -170,10 +179,12 @@ pub(crate) fn extract_host_from_socket_path(path: &Path) -> String {
 /// Verify a control socket is still active using `ssh -O check`.
 ///
 /// Returns `true` if `ssh -O check` exits with code 0 (master running).
-async fn verify_control_session(socket_path: &Path) -> bool {
+/// Returns `None` if the `ssh` binary itself cannot be executed (not in PATH),
+/// which is different from "master not running".
+async fn verify_control_session(socket_path: &Path) -> Option<bool> {
     let path_str = match socket_path.to_str() {
         Some(s) => s.to_owned(),
-        None => return false,
+        None => return Some(false),
     };
 
     // We need a dummy host argument for ssh -O check.  The host can be
@@ -191,9 +202,18 @@ async fn verify_control_session(socket_path: &Path) -> bool {
     .await;
 
     match result {
-        Ok(Ok(_)) => true,         // exit code 0 = master running
-        Ok(Err(_)) => false,       // non-zero exit = not running
-        Err(_) => false,           // task panic = treat as dead
+        Ok(Ok(_)) => Some(true),           // exit code 0 = master running
+        Ok(Err(e)) => {
+            // Distinguish between "ssh not found" and "master not running".
+            // duct returns io::Error; when the binary is not found, kind is NotFound.
+            if e.kind() == std::io::ErrorKind::NotFound {
+                // ssh binary not in PATH — cannot determine status
+                tracing::warn!("ssh binary not found, cannot check control socket");
+                return None;
+            }
+            Some(false)  // non-zero exit = master not running
+        }
+        Err(_) => Some(false),             // task panic = treat as dead
     }
 }
 

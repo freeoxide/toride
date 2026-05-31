@@ -289,3 +289,262 @@ fn datetime_str_to_unix(s: &str) -> Result<u64> {
             ))
         })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_keygen_output_user_cert() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Public key: ED25519-CERT SHA256:xxxx
+        Signing CA: ED25519 SHA256:yyyy (using ssh-ed25519)
+        Key ID: "my-key-id"
+        Serial: 12345
+        Valid: from 2024-01-01T00:00:00 to 2025-01-01T00:00:00
+        Principals:
+                user1
+                user2
+        Critical Options: (none)
+        Extensions:
+                permit-X11-forwarding
+                permit-agent-forwarding
+                permit-port-forwarding
+                permit-pty
+                permit-user-rc
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
+        assert_eq!(info.key_type, "ssh-ed25519-cert-v01@openssh.com");
+        assert_eq!(info.key_id, "my-key-id");
+        assert_eq!(info.serial, 12345);
+        assert!(!info.is_host);
+        assert_eq!(info.valid_principals, vec!["user1", "user2"]);
+        assert_eq!(info.extensions.len(), 5);
+        assert!(info.ca_fingerprint.is_some());
+        assert!(info.ca_fingerprint.as_deref().unwrap().starts_with("SHA256:"));
+    }
+
+    #[test]
+    fn parse_keygen_output_host_cert() {
+        let output = r#"/path/to/host-cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com host certificate
+        Public key: ED25519-CERT SHA256:xxxx
+        Signing CA: ED25519 SHA256:yyyy
+        Key ID: "host-key"
+        Serial: 0
+        Valid: from 2024-01-01T00:00:00 to forever
+        Principals:
+                example.com
+                192.168.1.1
+        Critical Options:
+                force-command /usr/bin/limited
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
+        assert!(info.is_host);
+        assert_eq!(info.valid_before, u64::MAX);
+        assert_eq!(info.valid_principals, vec!["example.com", "192.168.1.1"]);
+        assert_eq!(info.critical_options.len(), 1);
+        assert_eq!(info.critical_options[0].0, "force-command");
+        assert!(info.extensions.is_empty());
+    }
+
+    #[test]
+    fn parse_keygen_output_no_type_fails() {
+        let output = "Some random output without type\n";
+        let result = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_keygen_output_empty() {
+        let result = parse_keygen_output("", std::path::Path::new("/path/to/cert.pub"));
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_keygen_output_no_principals() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "test"
+        Serial: 0
+        Valid: from 2024-01-01T00:00:00 to 2025-01-01T00:00:00
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
+        assert!(info.valid_principals.is_empty());
+    }
+
+    #[test]
+    fn datetime_str_to_unix_forever() {
+        assert_eq!(datetime_str_to_unix("forever").unwrap(), u64::MAX);
+        assert_eq!(datetime_str_to_unix("FOREVER").unwrap(), u64::MAX);
+    }
+
+    #[test]
+    fn datetime_str_to_unix_invalid() {
+        assert!(datetime_str_to_unix("not-a-date").is_err());
+        assert!(datetime_str_to_unix("").is_err());
+    }
+
+    #[test]
+    fn datetime_str_to_unix_valid() {
+        // Should parse a valid ISO timestamp
+        let result = datetime_str_to_unix("2024-01-01T00:00:00");
+        assert!(result.is_ok());
+        assert!(result.unwrap() > 0);
+    }
+
+    #[test]
+    fn keygen_parser_state_extensions_none() {
+        let mut state = KeygenParserState::new();
+        state.process_line("        Extensions: (none)").unwrap();
+        assert!(!state.in_extensions);
+        assert!(state.info.extensions.is_empty());
+    }
+
+    #[test]
+    fn keygen_parser_state_critical_none() {
+        let mut state = KeygenParserState::new();
+        state.process_line("        Critical Options: (none)").unwrap();
+        assert!(!state.in_critical);
+        assert!(state.info.critical_options.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // Certificate TrustedUserCAKeys — reading and validation
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn parse_keygen_output_with_ca_fingerprint() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Public key: ED25519-CERT SHA256:xxxx
+        Signing CA: ED25519 SHA256:caFingerPrintBase64Here (using ssh-ed25519)
+        Key ID: "ca-signed-key"
+        Serial: 99
+        Valid: from 2024-01-01T00:00:00 to 2025-12-31T23:59:59
+        Principals:
+                admin
+        Critical Options: (none)
+        Extensions:
+                permit-pty
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
+        assert!(info.ca_fingerprint.is_some());
+        let ca_fp = info.ca_fingerprint.as_ref().unwrap();
+        assert!(ca_fp.starts_with("SHA256:"), "CA fingerprint should start with SHA256: prefix");
+        assert!(ca_fp.contains("caFingerPrintBase64Here"));
+    }
+
+    #[test]
+    fn parse_keygen_output_host_cert_with_ca() {
+        // TrustedUserCAKeys is used to validate host certificates.
+        // A host cert signed by the CA should be parseable.
+        let output = r#"/etc/ssh/ssh_host_ed25519_key-cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com host certificate
+        Public key: ED25519-CERT SHA256:hostKeyHash
+        Signing CA: ED25519 SHA256:trustedCAHash (using ssh-ed25519)
+        Key ID: "host-key-signed-by-ca"
+        Serial: 0
+        Valid: from 2024-01-01T00:00:00 to forever
+        Principals:
+                server.example.com
+                10.0.0.1
+        Critical Options:
+                force-command /usr/sbin/sshd
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/etc/ssh/ssh_host_ed25519_key-cert.pub")).unwrap();
+        assert!(info.is_host, "should be detected as a host certificate");
+        assert_eq!(info.valid_before, u64::MAX, "forever should be u64::MAX");
+        assert_eq!(info.valid_principals, vec!["server.example.com", "10.0.0.1"]);
+        assert_eq!(info.critical_options.len(), 1);
+        assert_eq!(info.critical_options[0].0, "force-command");
+        assert!(info.ca_fingerprint.is_some());
+    }
+
+    #[test]
+    fn parse_keygen_output_cert_without_signing_ca() {
+        // Certificate without Signing CA line.
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Public key: ED25519-CERT SHA256:xxxx
+        Key ID: "no-ca"
+        Serial: 0
+        Valid: from 2024-01-01T00:00:00 to 2025-01-01T00:00:00
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
+        assert!(info.ca_fingerprint.is_none(), "no Signing CA line means no CA fingerprint");
+    }
+
+    #[test]
+    fn certificate_info_host_vs_user_type() {
+        // Verify host vs user certificate detection.
+        let user_output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "user-key"
+        Serial: 1
+        Valid: from 2024-01-01T00:00:00 to 2025-01-01T00:00:00
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let user_info = parse_keygen_output(user_output, std::path::Path::new("/p")).unwrap();
+        assert!(!user_info.is_host);
+
+        let host_output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com host certificate
+        Key ID: "host-key"
+        Serial: 1
+        Valid: from 2024-01-01T00:00:00 to 2025-01-01T00:00:00
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let host_info = parse_keygen_output(host_output, std::path::Path::new("/p")).unwrap();
+        assert!(host_info.is_host);
+    }
+
+    #[test]
+    fn certificate_validity_forever_both_ends() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "forever"
+        Serial: 0
+        Valid: from forever to forever
+        Principals: (none)
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/p")).unwrap();
+        assert_eq!(info.valid_after, u64::MAX);
+        assert_eq!(info.valid_before, u64::MAX);
+    }
+
+    #[test]
+    fn certificate_with_multiple_principals() {
+        let output = r#"/path/to/cert.pub:
+        Type: ssh-ed25519-cert-v01@openssh.com user certificate
+        Key ID: "multi-principal"
+        Serial: 0
+        Valid: from 2024-01-01T00:00:00 to 2025-01-01T00:00:00
+        Principals:
+                alice
+                bob
+                charlie
+                deploy
+        Critical Options: (none)
+        Extensions: (none)
+"#;
+        let info = parse_keygen_output(output, std::path::Path::new("/p")).unwrap();
+        assert_eq!(info.valid_principals.len(), 4);
+        assert_eq!(info.valid_principals, vec!["alice", "bob", "charlie", "deploy"]);
+    }
+}

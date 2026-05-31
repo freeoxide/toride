@@ -154,11 +154,30 @@ fn parse_krl_output(output: &str, path: &Path) -> Result<KrlInfo> {
     })
 }
 
+/// Maximum number of serials to expand from a range before storing as-is.
+///
+/// Expanding a range like `0-u64::MAX` would allocate 144 exabytes.
+/// We cap expansion at a reasonable limit and log a warning for larger ranges.
+const MAX_SERIAL_RANGE_EXPANSION: u64 = 10_000;
+
 /// Parse serial entries, which may be single numbers or ranges like "1-5".
-fn parse_serials(input: &str, out: &mut Vec<u64>) {
+pub(crate) fn parse_serials(input: &str, out: &mut Vec<u64>) {
     if let Some((start, end)) = input.split_once('-') {
         if let (Ok(s), Ok(e)) = (start.trim().parse::<u64>(), end.trim().parse::<u64>()) {
-            out.extend(s..=e);
+            if s > e {
+                tracing::warn!("invalid serial range: {s}-{e} (start > end)");
+                return;
+            }
+            let count = e - s + 1;
+            if count > MAX_SERIAL_RANGE_EXPANSION {
+                tracing::warn!(
+                    "serial range {s}-{e} is very large ({count} entries), \
+                     capping expansion at {MAX_SERIAL_RANGE_EXPANSION}"
+                );
+                out.extend(s..s + MAX_SERIAL_RANGE_EXPANSION);
+            } else {
+                out.extend(s..=e);
+            }
         }
     } else if let Ok(n) = input.parse::<u64>() {
         out.push(n);
@@ -172,3 +191,7 @@ fn parse_serials(input: &str, out: &mut Vec<u64>) {
 fn parse_datetime_to_unix(s: &str) -> Option<i64> {
     super::parse_ssh_datetime(s)
 }
+
+#[cfg(test)]
+#[path = "krl.test.rs"]
+mod tests;

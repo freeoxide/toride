@@ -30,7 +30,9 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 dirs = { workspace = true }
 which = { workspace = true }
+async-trait = { workspace = true }
 duct = "1"
+libc = "0.2"
 base64 = "0.22"
 gethostname = "0.5"
 chrono = { version = "0.4", features = ["serde"], optional = true }

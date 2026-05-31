@@ -35,6 +35,43 @@ impl Separator {
 /// (4 spaces, matching the OpenSSH convention).
 const DEFAULT_INDENT: &str = "    ";
 
+/// Data carried by a [`ConfigNode::Directive`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirectiveData {
+    /// The directive keyword (e.g. `HostName`, `User`, `Include`).
+    pub keyword: String,
+    /// Separator between keyword and value.
+    pub separator: Separator,
+    /// The raw value string.
+    pub value: String,
+    /// Optional trailing inline comment (without the `#`).
+    pub comment: Option<String>,
+    /// The leading whitespace/indentation before this directive.
+    pub indent: String,
+}
+
+/// Data carried by a [`ConfigNode::HostBlock`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HostBlockData {
+    /// The full raw `Host` header line (e.g. `"Host example.com *.example.com"`).
+    pub header: String,
+    /// Parsed host patterns (e.g. `["example.com", "*.example.com"]`).
+    pub patterns: Vec<String>,
+    /// Nodes inside this Host block.
+    pub nodes: Vec<ConfigNode>,
+}
+
+/// Data carried by a [`ConfigNode::MatchBlock`].
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MatchBlockData {
+    /// The full raw `Match` header line.
+    pub header: String,
+    /// The raw criteria string (e.g. `"host *.example.com user alice"`).
+    pub criteria: String,
+    /// Nodes inside this Match block.
+    pub nodes: Vec<ConfigNode>,
+}
+
 /// A single node in the SSH config AST.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ConfigNode {
@@ -48,36 +85,11 @@ pub enum ConfigNode {
         indent: String,
     },
     /// A standalone directive (not inside a Host/Match block).
-    Directive {
-        /// The directive keyword (e.g. `HostName`, `User`, `Include`).
-        keyword: String,
-        /// Separator between keyword and value.
-        separator: Separator,
-        /// The raw value string.
-        value: String,
-        /// Optional trailing inline comment (without the `#`).
-        comment: Option<String>,
-        /// The leading whitespace/indentation before this directive.
-        indent: String,
-    },
+    Directive(Box<DirectiveData>),
     /// A `Host` block containing nested directives.
-    HostBlock {
-        /// The full raw `Host` header line (e.g. `"Host example.com *.example.com"`).
-        header: String,
-        /// Parsed host patterns (e.g. `["example.com", "*.example.com"]`).
-        patterns: Vec<String>,
-        /// Nodes inside this Host block.
-        nodes: Vec<ConfigNode>,
-    },
+    HostBlock(Box<HostBlockData>),
     /// A `Match` block containing nested directives.
-    MatchBlock {
-        /// The full raw `Match` header line.
-        header: String,
-        /// The raw criteria string (e.g. `"host *.example.com user alice"`).
-        criteria: String,
-        /// Nodes inside this Match block.
-        nodes: Vec<ConfigNode>,
-    },
+    MatchBlock(Box<MatchBlockData>),
 }
 
 impl ConfigAst {
@@ -112,37 +124,34 @@ impl ConfigNode {
                 out.push_str(text);
                 out.push('\n');
             }
-            Self::Directive {
-                keyword,
-                separator,
-                value,
-                comment,
-                indent,
-            } => {
-                if indent.is_empty() && indent_level > 0 {
+            Self::Directive(d) => {
+                if d.indent.is_empty() && indent_level > 0 {
                     out.push_str(&computed_prefix);
                 } else {
-                    out.push_str(indent);
+                    out.push_str(&d.indent);
                 }
-                out.push_str(keyword);
-                out.push_str(separator.as_str());
-                out.push_str(value);
-                if let Some(c) = comment {
+                out.push_str(&d.keyword);
+                out.push_str(d.separator.as_str());
+                out.push_str(&d.value);
+                if let Some(ref c) = d.comment {
                     out.push_str(" #");
                     out.push_str(c);
                 }
                 out.push('\n');
             }
-            Self::HostBlock {
-                header, nodes, ..
-            }
-            | Self::MatchBlock {
-                header, nodes, ..
-            } => {
+            Self::HostBlock(b) => {
                 out.push_str(&computed_prefix);
-                out.push_str(header);
+                out.push_str(&b.header);
                 out.push('\n');
-                for child in nodes {
+                for child in &b.nodes {
+                    child.render(out, indent_level + 1);
+                }
+            }
+            Self::MatchBlock(b) => {
+                out.push_str(&computed_prefix);
+                out.push_str(&b.header);
+                out.push('\n');
+                for child in &b.nodes {
                     child.render(out, indent_level + 1);
                 }
             }
@@ -150,17 +159,17 @@ impl ConfigNode {
     }
 
     /// If this is a `HostBlock`, return its patterns and inner nodes.
-    pub fn as_host_block(&self) -> Option<(&[String], &[ConfigNode])> {
+    pub fn as_host_block(&self) -> Option<(&[String], &[Self])> {
         match self {
-            Self::HostBlock { patterns, nodes, .. } => Some((patterns, nodes)),
+            Self::HostBlock(b) => Some((&b.patterns, &b.nodes)),
             _ => None,
         }
     }
 
     /// If this is a `HostBlock`, return mutable access to its nodes.
-    pub fn as_host_block_mut(&mut self) -> Option<&mut Vec<ConfigNode>> {
+    pub fn as_host_block_mut(&mut self) -> Option<&mut Vec<Self>> {
         match self {
-            Self::HostBlock { nodes, .. } => Some(nodes),
+            Self::HostBlock(b) => Some(&mut b.nodes),
             _ => None,
         }
     }
@@ -168,7 +177,7 @@ impl ConfigNode {
     /// If this is a `Directive`, return its keyword and value.
     pub fn as_directive(&self) -> Option<(&str, &str)> {
         match self {
-            Self::Directive { keyword, value, .. } => Some((keyword, value)),
+            Self::Directive(d) => Some((&d.keyword, &d.value)),
             _ => None,
         }
     }
@@ -176,7 +185,7 @@ impl ConfigNode {
     /// If this is a `Directive`, return mutable access to its fields.
     pub fn as_directive_mut(&mut self) -> Option<(&mut String, &mut String)> {
         match self {
-            Self::Directive { keyword, value, .. } => Some((keyword, value)),
+            Self::Directive(d) => Some((&mut d.keyword, &mut d.value)),
             _ => None,
         }
     }
@@ -215,30 +224,30 @@ pub fn parse(input: &str) -> ConfigAst {
             let patterns = parse_patterns(rest);
             let header = line.trim().to_owned();
             let inner = parse_block_body(&mut lines);
-            nodes.push(ConfigNode::HostBlock {
+            nodes.push(ConfigNode::HostBlock(Box::new(HostBlockData {
                 header,
                 patterns,
                 nodes: inner,
-            });
+            })));
         } else if keyword.eq_ignore_ascii_case("match") {
             let header = line.trim().to_owned();
             let criteria = rest.to_owned();
             let inner = parse_block_body(&mut lines);
-            nodes.push(ConfigNode::MatchBlock {
+            nodes.push(ConfigNode::MatchBlock(Box::new(MatchBlockData {
                 header,
                 criteria,
                 nodes: inner,
-            });
+            })));
         } else {
             // Regular directive — check for trailing inline comment
             let (value, comment) = split_trailing_comment(rest);
-            nodes.push(ConfigNode::Directive {
+            nodes.push(ConfigNode::Directive(Box::new(DirectiveData {
                 keyword: keyword.to_owned(),
                 separator,
                 value,
                 comment,
                 indent: indent.to_owned(),
-            });
+            })));
         }
     }
 
@@ -289,13 +298,13 @@ where
         // Nested Host/Match inside a block is not standard, but we handle it
         // gracefully by treating it as a directive.
         let (value, comment) = split_trailing_comment(rest);
-        body.push(ConfigNode::Directive {
+        body.push(ConfigNode::Directive(Box::new(DirectiveData {
             keyword: keyword.to_owned(),
             separator,
             value,
             comment,
             indent: indent.to_owned(),
-        });
+        })));
     }
 
     body

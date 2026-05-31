@@ -18,6 +18,8 @@ pub use parse::AuthorizedKeyEntry as Entry;
 pub use options::AuthorizedKeyOptions as Options;
 
 /// `authorized_keys` file management.
+///
+/// Obtained from [`SshManager::authorized_keys()`](crate::SshManager::authorized_keys).
 pub struct AuthorizedKeysService<'a> {
     paths: &'a SshPaths,
 }
@@ -56,6 +58,15 @@ impl<'a> AuthorizedKeysService<'a> {
         comment: Option<&str>,
         options: Option<&str>,
     ) -> Result<()> {
+        // Reject options containing newlines to prevent injection attacks.
+        if let Some(opts) = options
+            && (opts.contains('\n') || opts.contains('\r'))
+        {
+            return Err(Error::AuthorizedKeysWriteFailed(
+                "options must not contain newlines".to_owned(),
+            ));
+        }
+
         // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
         let path = self.paths.authorized_keys_path().to_path_buf();
 
@@ -214,25 +225,38 @@ impl<'a> AuthorizedKeysService<'a> {
 /// Write `contents` to `path` atomically using a temp file + rename.
 ///
 /// The temp file is created in the same directory as `path` to guarantee
-/// the rename is on the same filesystem. Permissions are set to 0o600.
+/// the rename is on the same filesystem. Uses `create_new` to prevent
+/// symlink attacks on multi-user systems. Permissions are set to 0o600.
 fn atomic_write(path: &std::path::Path, contents: &str) -> Result<()> {
-    let parent = path.parent().unwrap_or(std::path::Path::new("."));
-    let temp_name = format!(
-        ".authorized_keys.tmp.{}",
-        std::process::id()
-    );
-    let temp_path = parent.join(temp_name);
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let temp_path = parent.join(format!(
+        ".authorized_keys.tmp.{}.{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
 
-    // Write to temp file
-    std::fs::write(&temp_path, contents)
-        .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
+    // Write to temp file using create_new to prevent symlink attacks.
+    {
+        let mut tmp_file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+            .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
+        std::io::Write::write_all(&mut tmp_file, contents.as_bytes())
+            .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
+    }
 
     // Set permissions before rename
     set_permissions(&temp_path)?;
 
     // Atomic rename
-    std::fs::rename(&temp_path, path)
-        .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
+    if let Err(e) = std::fs::rename(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(Error::AuthorizedKeysWriteFailed(e.to_string()));
+    }
 
     Ok(())
 }

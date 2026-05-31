@@ -1,0 +1,16 @@
+# Config with SSH token expansion patterns
+
+Host staging
+    HostName staging.example.com
+    User deploy
+    IdentityFile ~/.ssh/id_%h
+    ControlPath /tmp/ssh-%h-%p-%r
+
+Host production
+    HostName prod.example.com
+    User ops
+    ProxyCommand ssh -W %h:%p gateway
+    UserKnownHostsFile %d/.ssh/known_hosts_%h
+
+Host *
+    User default_user

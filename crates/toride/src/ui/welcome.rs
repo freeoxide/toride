@@ -181,26 +181,32 @@ impl WelcomeScreen {
 
 // ── Gradient background ──────────────────────────────────────────────────────
 
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    reason = "color math: f64->u8 truncation is intentional for RGB blending"
+)]
 fn render_gradient_bg(buf: &mut Buffer, area: Rect, p: Palette) {
     let (cr, cg, cb) = rgb_components(p.bg);
-    let er = (cr as f64 * 0.6) as u8;
-    let eg = (cg as f64 * 0.6) as u8;
-    let eb = (cb as f64 * 0.6) as u8;
+    let er = (f64::from(cr) * 0.6) as u8;
+    let eg = (f64::from(cg) * 0.6) as u8;
+    let eb = (f64::from(cb) * 0.6) as u8;
 
-    let cx = (area.left() + area.right()) / 2;
-    let cy = (area.top() + area.bottom()) / 2;
-    let max_dist = ((cx.saturating_sub(area.left()) as f64)
-        .hypot(cy.saturating_sub(area.top()) as f64))
+    let cx = u16::midpoint(area.left(), area.right());
+    let cy = u16::midpoint(area.top(), area.bottom());
+    let max_dist = ((f64::from(cx.saturating_sub(area.left())))
+        .hypot(f64::from(cy.saturating_sub(area.top()))))
     .max(1.0);
 
     for y in area.top()..area.bottom() {
         for x in area.left()..area.right() {
-            let dx = (x as i32 - cx as i32).abs() as f64;
-            let dy = (y as i32 - cy as i32).abs() as f64;
+            let dx = f64::from(i32::from(x).abs_diff(i32::from(cx)));
+            let dy = f64::from(i32::from(y).abs_diff(i32::from(cy)));
             let t = (dx.hypot(dy) / max_dist).min(1.0).powi(3);
-            let r = lerp(cr as f64, er as f64, t) as u8;
-            let g = lerp(cg as f64, eg as f64, t) as u8;
-            let b = lerp(cb as f64, eb as f64, t) as u8;
+            let r = lerp(f64::from(cr), f64::from(er), t) as u8;
+            let g = lerp(f64::from(cg), f64::from(eg), t) as u8;
+            let b = lerp(f64::from(cb), f64::from(eb), t) as u8;
             if let Some(cell) = buf.cell_mut(Position::new(x, y)) {
                 cell.set_bg(Color::Rgb(r, g, b));
             }

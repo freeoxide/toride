@@ -1,0 +1,28 @@
+# known_hosts file with marker entries for integration testing
+
+# Standard entry
+github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+# Entry with trailing comment
+gitlab.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl user@host
+
+# @cert-authority with wildcard host
+@cert-authority *.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+# @cert-authority with specific host
+@cert-authority ca.example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7tmI1mN5GYc5Jg+aQkPU+Xp479x/uUJlEgFWIlDJiHMKrGqFjW7G
+
+# @revoked entry
+@revoked revoked.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+# Hashed host entry
+|1|JfKTdBh7rNbXkVAQCRp4OQoPfmI=|USECr3SWf1JUPsms5AqfD5QfxkM= ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+# Bracketed host with port
+[custom.example.com]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+# Multiple comma-separated hosts
+host1.example.com,host2.example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7tmI1mN5GYc5Jg+aQkPU+Xp479x/uUJlEgFWIlDJiHMKrGqFjW7G
+
+# ECDSA key type
+ecdsa-host.example.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBK+O4KZGRKFPNTVKHkb1LQ4NiEGMH8gy0SdJMVPEZFL/A7EwFAk9VhiCZKHQkN8R7KdnVqJb3TDP37pBojDAGaE=

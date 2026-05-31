@@ -71,8 +71,7 @@ pub fn render_too_small(frame: &mut Frame, p: Palette) -> bool {
 
     let area = frame.area();
     let msg = format!(
-        "Terminal too small — need at least {}x{}",
-        MIN_WIDTH, MIN_HEIGHT
+        "Terminal too small — need at least {MIN_WIDTH}x{MIN_HEIGHT}"
     );
     let line = Line::from(Span::styled(msg, Style::new().fg(p.text_dim)));
     frame.render_widget(Paragraph::new(line).centered(), area);

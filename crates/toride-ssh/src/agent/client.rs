@@ -7,8 +7,7 @@
 
 use std::path::Path;
 
-use crate::{Error, Fingerprint, KeySource, KeyType, Result, SshKey};
-use crate::runner;
+use crate::{CliRunner, Error, Fingerprint, KeySource, KeyType, Result, SshKey};
 
 /// Connect to the SSH agent via `SSH_AUTH_SOCK`.
 ///
@@ -24,6 +23,19 @@ pub async fn connect() -> Result<Box<dyn ssh_agent_lib::agent::Session>> {
     let path = std::path::PathBuf::from(&socket_path);
     if !path.exists() {
         return Err(Error::AgentNotAvailable);
+    }
+
+    // Verify SSH_AUTH_SOCK points to an actual socket, not a regular file or FIFO.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::FileTypeExt;
+        if let Ok(meta) = std::fs::metadata(&path)
+            && !meta.file_type().is_socket()
+        {
+            return Err(Error::AgentOperationFailed(format!(
+                "SSH_AUTH_SOCK ({socket_path}) is not a Unix socket"
+            )));
+        }
     }
 
     // Connect directly via UnixStream to avoid pulling in service_binding.
@@ -46,7 +58,12 @@ pub async fn connect() -> Result<Box<dyn ssh_agent_lib::agent::Session>> {
 ///
 /// Uses the native agent protocol when the `agent` feature is enabled,
 /// falling back to parsing `ssh-add -l` output otherwise.
-pub async fn list_identities() -> Result<Vec<SshKey>> {
+///
+/// # Errors
+///
+/// Returns [`Error::AgentNotAvailable`] if the agent is not running, or
+/// [`Error::AgentOperationFailed`] if the agent protocol or CLI command fails.
+pub async fn list_identities(runner: &dyn CliRunner) -> Result<Vec<SshKey>> {
     #[cfg(feature = "agent")]
     {
         match list_identities_native().await {
@@ -58,27 +75,83 @@ pub async fn list_identities() -> Result<Vec<SshKey>> {
         }
     }
 
-    list_identities_via_cli().await
+    list_identities_via_cli(runner).await
 }
 
 /// Add a private key to the SSH agent via `ssh-add`.
-pub async fn add_key(key_path: &Path) -> Result<()> {
-    let path = key_path.to_path_buf();
-    tokio::task::spawn_blocking(move || {
-        let path_str = path.to_str().ok_or_else(|| {
-            Error::AgentOperationFailed("key path is not valid UTF-8".into())
-        })?;
-        duct::cmd("ssh-add", [path_str])
-            .read()
-            .map_err(|e| Error::AgentOperationFailed(e.to_string()))
-    })
-    .await
-    .map_err(|e| Error::AgentOperationFailed(e.to_string()))??;
+pub async fn add_key(key_path: &Path, runner: &dyn CliRunner) -> Result<()> {
+    let path_str = key_path
+        .to_str()
+        .ok_or_else(|| Error::AgentOperationFailed("key path is not valid UTF-8".into()))?
+        .to_owned();
+
+    runner
+        .run("ssh-add", vec![path_str])
+        .await
+        .map_err(|e| Error::AgentOperationFailed(e.to_string()))?;
+    Ok(())
+}
+
+/// Test whether a key is usable by the SSH agent (`ssh-add -T`).
+///
+/// Returns `Ok(true)` if the key is usable (exit code 0), `Ok(false)` if not
+/// (non-zero exit code), and `Err` if the command itself could not be run.
+///
+/// This is useful for checking whether a key that requires a passphrase has
+/// already been decrypted and loaded, or whether a hardware token key is
+/// accessible.
+pub async fn test_key_usability(key_path: &Path, runner: &dyn CliRunner) -> Result<bool> {
+    let path_str = key_path
+        .to_str()
+        .ok_or_else(|| Error::AgentOperationFailed("key path is not valid UTF-8".into()))?
+        .to_owned();
+
+    match runner.run("ssh-add", vec!["-T".to_owned(), path_str]).await {
+        Ok(_) => Ok(true),
+        Err(Error::CommandFailed(_)) => Ok(false),
+        Err(e) => Err(Error::AgentOperationFailed(e.to_string())),
+    }
+}
+
+/// Add a key to the SSH agent restricted to specific destinations (`ssh-add -h`).
+///
+/// The `hosts` slice specifies the allowed destinations. Only connections to
+/// these hosts will be authorized to use the key. The hosts are joined with
+/// `>` to form the `ssh-add -h` argument.
+///
+/// # Errors
+///
+/// Returns an error if `hosts` is empty, if the key cannot be added, or if
+/// the command fails.
+pub async fn destination_constrained_add(
+    key_path: &Path,
+    hosts: &[&str],
+    runner: &dyn CliRunner,
+) -> Result<()> {
+    if hosts.is_empty() {
+        return Err(Error::AgentOperationFailed(
+            "destination-constrained add requires at least one host".into(),
+        ));
+    }
+
+    let path_str = key_path
+        .to_str()
+        .ok_or_else(|| Error::AgentOperationFailed("key path is not valid UTF-8".into()))?
+        .to_owned();
+
+    let constraint = hosts.join(">");
+    runner
+        .run(
+            "ssh-add",
+            vec!["-h".to_owned(), constraint, path_str],
+        )
+        .await
+        .map_err(|e| Error::AgentOperationFailed(e.to_string()))?;
     Ok(())
 }
 
 /// Remove a key from the SSH agent via `ssh-add -d`.
-pub async fn remove_key(key_path: &Path) -> Result<()> {
+pub async fn remove_key(key_path: &Path, runner: &dyn CliRunner) -> Result<()> {
     let pub_path = key_path.with_extension("pub");
     let path = if pub_path.exists() {
         pub_path
@@ -86,16 +159,15 @@ pub async fn remove_key(key_path: &Path) -> Result<()> {
         key_path.to_path_buf()
     };
 
-    tokio::task::spawn_blocking(move || {
-        let path_str = path.to_str().ok_or_else(|| {
-            Error::AgentOperationFailed("key path is not valid UTF-8".into())
-        })?;
-        duct::cmd("ssh-add", ["-d", path_str])
-            .read()
-            .map_err(|e| Error::AgentOperationFailed(e.to_string()))
-    })
-    .await
-    .map_err(|e| Error::AgentOperationFailed(e.to_string()))??;
+    let path_str = path
+        .to_str()
+        .ok_or_else(|| Error::AgentOperationFailed("key path is not valid UTF-8".into()))?
+        .to_owned();
+
+    runner
+        .run("ssh-add", vec!["-d".to_owned(), path_str])
+        .await
+        .map_err(|e| Error::AgentOperationFailed(e.to_string()))?;
     Ok(())
 }
 
@@ -146,6 +218,9 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
             permissions: None,
             has_public_pair: false,
             has_certificate: false,
+            last_modified: None,
+            used_by_hosts: Vec::new(),
+            key_format: None,
         });
     }
 
@@ -208,8 +283,8 @@ pub(crate) fn parse_key_type_from_algorithm(alg: &str) -> Option<KeyType> {
 // ---------------------------------------------------------------------------
 
 /// Parse `ssh-add -l` output into a list of [`SshKey`] values.
-async fn list_identities_via_cli() -> Result<Vec<SshKey>> {
-    let output = runner::ssh_add_list().await?;
+async fn list_identities_via_cli(runner: &dyn CliRunner) -> Result<Vec<SshKey>> {
+    let output = runner.run("ssh-add", vec!["-l".to_owned()]).await?;
     Ok(output.lines().filter_map(parse_ssh_add_line).collect())
 }
 
@@ -266,6 +341,9 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
         permissions: None,
         has_public_pair: false,
         has_certificate: false,
+        last_modified: None,
+        used_by_hosts: Vec::new(),
+        key_format: None,
     })
 }
 

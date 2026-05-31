@@ -5,10 +5,6 @@
     reason = "service methods are call-and-forget; callers rarely use return"
 )]
 #![expect(
-    clippy::missing_errors_doc,
-    reason = "error docs added incrementally; tracked for full coverage"
-)]
-#![expect(
     clippy::doc_markdown,
     reason = "SSH-specific terms like ed25519 trigger false positives"
 )]
@@ -19,6 +15,24 @@
 
 //! `toride-ssh` — async SSH manager library wrapping `ssh-key`, `ssh2-config-rs`,
 //! `ssh-agent-lib`, and OpenSSH CLI tools behind a unified API.
+//!
+//! # Architecture
+//!
+//! The entry point is [`SshManager`], which resolves `~/.ssh` paths and
+//! provides accessor methods for each subsystem:
+//!
+//! - [`SshManager::keys`] -- key generation, inventory, repair
+//! - [`SshManager::config`] -- config parsing, editing, resolution
+//! - [`SshManager::agent`] -- SSH agent interaction
+//! - [`SshManager::authorized_keys`] -- authorized_keys management
+//! - [`SshManager::doctor`] -- diagnostic checks
+//! - [`SshManager::known_hosts`] -- known_hosts management
+//! - [`SshManager::forward`] -- port forwarding via ControlMaster
+//!
+//! # Testing with a custom CLI runner
+//!
+//! Use [`SshManager::with_cli_runner`] to inject a [`MockCliRunner`] so that
+//! no real SSH processes are spawned during tests.
 
 mod paths;
 mod types;
@@ -42,9 +56,14 @@ pub mod key;
 pub mod known_hosts;
 /// Helpers for running external SSH tools (`ssh-keygen`, `ssh-keyscan`, etc.).
 pub mod runner;
+/// Undo/restore mechanism for file mutations.
+pub mod undo;
+pub use runner::cli_runner::{CliRunner, DefaultCliRunner, MockCliRunner};
 
 pub use paths::SshPaths;
 pub use types::*;
+
+use std::sync::Arc;
 
 /// Errors returned by `toride-ssh` operations.
 #[derive(Debug, thiserror::Error)]
@@ -66,6 +85,9 @@ pub enum Error {
     /// Key generation failed.
     #[error("key generation failed: {0}")]
     KeyGenerationFailed(String),
+    /// Key name validation failed (empty, path traversal, etc.).
+    #[error("invalid key name: {0}")]
+    InvalidKeyName(String),
     /// The key requires a passphrase but none was provided.
     #[error("passphrase required")]
     PassphraseRequired,
@@ -189,28 +211,89 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Entry point for all SSH management operations.
 ///
 /// `SshManager` is cheaply [`Clone`](Clone)-able and safe to share
-/// across async tasks.
+/// across async tasks. Each subsystem is accessed via a dedicated
+/// accessor method (e.g. [`keys()`](Self::keys), [`config()`](Self::config)).
+///
+/// # Examples
+///
+/// ```rust,no_run
+/// use toride_ssh::SshManager;
+///
+/// # async fn example() -> toride_ssh::Result<()> {
+/// let mgr = SshManager::new()?;
+/// let keys = mgr.keys().list().await?;
+/// println!("Found {} keys", keys.len());
+/// # Ok(())
+/// # }
+/// ```
 #[derive(Clone)]
 pub struct SshManager {
     paths: SshPaths,
+    runner: Arc<dyn CliRunner>,
 }
 
 impl Default for SshManager {
+    /// Return a best-effort manager using [`DefaultCliRunner`].
+    ///
+    /// Falls back to `~/.ssh` if the home directory is unavailable.
     fn default() -> Self {
-        Self::new().expect("failed to resolve SSH paths")
+        Self {
+            paths: SshPaths::default(),
+            runner: Arc::new(DefaultCliRunner),
+        }
     }
 }
 
 impl SshManager {
     /// Create a new manager resolving `~/.ssh` from the user's home directory.
+    ///
+    /// Uses [`DefaultCliRunner`] for all CLI operations. For tests, prefer
+    /// [`with_cli_runner`](Self::with_cli_runner) with a [`MockCliRunner`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HomeNotFound`] if the user's home directory cannot
+    /// be resolved.
     pub fn new() -> Result<Self> {
         let paths = SshPaths::new()?;
-        Ok(Self { paths })
+        Ok(Self {
+            paths,
+            runner: Arc::new(DefaultCliRunner),
+        })
+    }
+
+    /// Create a manager with a custom [`CliRunner`].
+    ///
+    /// This is the primary injection point for tests: pass a
+    /// [`MockCliRunner`] to control command execution without spawning
+    /// real SSH processes.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::HomeNotFound`] if the user's home directory cannot
+    /// be resolved.
+    ///
+    /// # Examples
+    ///
+    /// ```rust
+    /// use std::sync::Arc;
+    /// use toride_ssh::{SshManager, MockCliRunner};
+    ///
+    /// # fn example() -> toride_ssh::Result<()> {
+    /// let mock = Arc::new(MockCliRunner::new());
+    /// mock.set_tool_exists("ssh-keygen", true);
+    /// let mgr = SshManager::with_cli_runner(mock)?;
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn with_cli_runner(runner: Arc<dyn CliRunner>) -> Result<Self> {
+        let paths = SshPaths::new()?;
+        Ok(Self { paths, runner })
     }
 
     /// Key management operations.
     pub fn keys(&self) -> key::KeyService<'_> {
-        key::KeyService::new(&self.paths)
+        key::KeyService::new(&self.paths, &*self.runner)
     }
 
     /// SSH config operations.
@@ -220,17 +303,22 @@ impl SshManager {
 
     /// SSH agent operations.
     pub fn agent(&self) -> agent::AgentService<'_> {
-        agent::AgentService::new(&self.paths)
+        agent::AgentService::new(&self.paths, &*self.runner)
+    }
+
+    /// `authorized_keys` management (listing, adding, removing keys).
+    pub fn authorized_keys(&self) -> authorized_keys::AuthorizedKeysService<'_> {
+        authorized_keys::AuthorizedKeysService::new(&self.paths)
     }
 
     /// Diagnostic checks.
     pub fn doctor(&self) -> doctor::DoctorService<'_> {
-        doctor::DoctorService::new(&self.paths)
+        doctor::DoctorService::new(&self.paths, &*self.runner)
     }
 
     /// Known hosts management (listing, scanning, adding, removing).
     pub fn known_hosts(&self) -> known_hosts::KnownHostsService<'_> {
-        known_hosts::KnownHostsService::new(&self.paths)
+        known_hosts::KnownHostsService::new(&self.paths, &*self.runner)
     }
 
     /// SSH certificate and CA operations (inspection, validity, KRL).

@@ -1,0 +1,17 @@
+# Config with ProxyCommand / ProxyJump conflict
+
+Host bastion
+    ProxyCommand ssh -W %h:%p gateway
+    ProxyJump jump.example.com
+    HostName bastion.example.com
+    User admin
+
+Host clean
+    HostName clean.example.com
+    User deploy
+
+Host dup
+    HostName dup1.example.com
+
+Host dup
+    HostName dup2.example.com

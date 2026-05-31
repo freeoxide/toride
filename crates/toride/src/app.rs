@@ -2,7 +2,6 @@ use color_eyre::eyre::Result;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use ratatui::{DefaultTerminal, Frame};
-use tokio::select;
 
 use crate::action::Action;
 use crate::ui::welcome::WelcomeScreen;
@@ -29,8 +28,8 @@ impl App {
     fn update(&mut self, action: Action) {
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Help => {} // TODO: help screen
-            Action::Continue => {}
+            // TODO: help screen
+            Action::Help | Action::Continue => {}
         }
     }
 
@@ -44,8 +43,9 @@ impl App {
         loop {
             terminal.draw(|f| self.view(f))?;
 
-            select! {
-                Some(Ok(event)) = events.next() => match event {
+            let event = events.next().await;
+            match event {
+                Some(Ok(event)) => match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
                         if let Some(action) = self.welcome.handle_key(key.code) {
                             self.update(action);
@@ -56,6 +56,13 @@ impl App {
                     }
                     _ => {}
                 },
+                Some(Err(e)) => {
+                    return Err(e.into());
+                }
+                None => {
+                    // Event stream ended (terminal disconnected)
+                    break;
+                }
             }
 
             if self.should_quit {

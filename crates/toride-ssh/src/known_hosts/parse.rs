@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD_NO_PAD as BASE64;
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
@@ -25,6 +27,70 @@ pub struct KnownHostEntry {
     pub line_number: usize,
 }
 
+impl KnownHostEntry {
+    /// Compute the SHA-256 fingerprint of this entry's public key.
+    ///
+    /// The fingerprint is computed by decoding the base64 public key blob,
+    /// parsing it as an SSH public key, and hashing the encoded key data
+    /// with SHA-256.  This matches the output of `ssh-keygen -lf`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::KnownHostsParseFailed`] if the base64 key cannot be
+    /// decoded or parsed as a valid SSH public key.
+    pub fn fingerprint(&self) -> Result<crate::Fingerprint> {
+        compute_key_fingerprint(&self.public_key, &self.key_type)
+    }
+}
+
+/// Compute a SHA-256 fingerprint from a base64-encoded SSH public key blob.
+///
+/// The key blob is the base64-encoded SSH wire format as stored in
+/// `known_hosts` files.  The fingerprint is computed using the same
+/// algorithm as `ssh-keygen -lf`.
+pub(crate) fn compute_key_fingerprint(
+    public_key_b64: &str,
+    key_type_str: &str,
+) -> Result<crate::Fingerprint> {
+    // SSH keys in known_hosts may or may not have padding.  Strip any
+    // trailing '=' characters so `STANDARD_NO_PAD` can decode them.
+    let trimmed = public_key_b64.trim_end_matches('=');
+    let decoded = BASE64
+        .decode(trimmed)
+        .map_err(|e| Error::KnownHostsParseFailed(format!("invalid base64 key: {e}")))?;
+
+    let pk = ssh_key::PublicKey::from_bytes(&decoded)
+        .map_err(|e| Error::KnownHostsParseFailed(format!("invalid SSH key blob: {e}")))?;
+
+    let ssh_fp = pk.fingerprint(ssh_key::HashAlg::Sha256);
+    let fp_str = ssh_fp.to_string();
+    let hash = fp_str
+        .strip_prefix("SHA256:")
+        .unwrap_or(&fp_str)
+        .to_owned();
+
+    let key_type = parse_key_type_string(key_type_str);
+
+    Ok(crate::Fingerprint { hash, key_type })
+}
+
+/// Convert a raw key type string (e.g. `"ssh-ed25519"`) to the [`KeyType`]
+/// enum.  Unknown types fall back to `Rsa { bits: 0 }`.
+fn parse_key_type_string(s: &str) -> crate::types::KeyType {
+    use crate::types::KeyType;
+    match s {
+        "ssh-ed25519" => KeyType::Ed25519,
+        "ecdsa-sha2-nistp256" => KeyType::EcdsaP256,
+        "ecdsa-sha2-nistp384" => KeyType::EcdsaP384,
+        "ecdsa-sha2-nistp521" => KeyType::EcdsaP521,
+        "ssh-dss" => KeyType::Dsa,
+        "sk-ssh-ed25519@openssh.com" => KeyType::SkEd25519,
+        "sk-ecdsa-sha2-nistp256@openssh.com" => KeyType::SkEcdsaP256,
+        // ssh-rsa and unknown types default to RSA with unknown bit size.
+        _ => KeyType::Rsa { bits: 0 },
+    }
+}
+
 /// Parse a known_hosts file at the given path.
 ///
 /// This reads the file asynchronously and parses each non-empty, non-comment
@@ -39,7 +105,11 @@ pub async fn parse_known_hosts(path: &Path) -> Result<Vec<KnownHostEntry>> {
 
 /// Synchronous implementation that does the actual parsing.
 fn parse_known_hosts_sync(path: &Path) -> Result<Vec<KnownHostEntry>> {
-    let contents = std::fs::read_to_string(path)?;
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
 
     // We hand-parse here so we can capture the comment field and preserve
     // the raw host-pattern strings (the ssh-key crate decodes hashed

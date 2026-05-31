@@ -207,3 +207,146 @@ fn find_key_type_offset_with_escaped_quote_at_boundary() {
     let offset = find_key_type_offset(line).unwrap();
     assert!(&line[offset..].starts_with("ssh-ed25519"));
 }
+
+// ---------------------------------------------------------------------------
+// Edge-case tests: keys with complex options (full parse_line)
+// ---------------------------------------------------------------------------
+// These tests use a valid ed25519 public key so ssh_key validation passes.
+
+const VALID_ED25519: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+
+#[test]
+fn parse_line_restrict_with_permit_open_and_no_pty() {
+    let line = format!("restrict,permit-open=\"host1:22,host2:80\",no-pty {VALID_ED25519} deploy@server");
+    let entry = parse_line(&line, 1, &line).unwrap();
+
+    assert!(entry.options.is_some());
+    let opts = entry.options.as_ref().unwrap();
+    assert!(opts.restrict, "restrict should be true");
+    assert!(opts.no_pty, "no-pty should be true");
+    assert_eq!(opts.permit_open, vec!["host1:22", "host2:80"]);
+    assert_eq!(entry.comment.as_deref(), Some("deploy@server"));
+}
+
+#[test]
+fn parse_line_command_with_from_and_environment() {
+    let line = format!(
+        "from=\"10.0.0.*,192.168.1.0/24\",command=\"/usr/bin/backup.sh\",environment=\"BACKUP_DIR=/data\" {VALID_ED25519} backup@cron"
+    );
+    let entry = parse_line(&line, 1, &line).unwrap();
+
+    let opts = entry.options.as_ref().unwrap();
+    assert_eq!(opts.from, vec!["10.0.0.*", "192.168.1.0/24"]);
+    assert_eq!(opts.command.as_deref(), Some("/usr/bin/backup.sh"));
+    assert_eq!(opts.environment, vec![("BACKUP_DIR".to_string(), "/data".to_string())]);
+    assert_eq!(entry.comment.as_deref(), Some("backup@cron"));
+}
+
+#[test]
+fn parse_line_cert_authority_with_principals() {
+    let line = format!("cert-authority,principals=\"admin,deploy,ops\" {VALID_ED25519}");
+    let entry = parse_line(&line, 1, &line).unwrap();
+
+    let opts = entry.options.as_ref().unwrap();
+    assert!(opts.cert_authority);
+    // principals stores the raw value as a single entry (not comma-split).
+    assert_eq!(opts.principals, vec!["admin,deploy,ops"]);
+    assert!(entry.comment.is_none());
+}
+
+#[test]
+fn parse_line_all_forwarding_restrictions() {
+    let line = format!(
+        "no-pty,no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-user-rc {VALID_ED25519}"
+    );
+    let entry = parse_line(&line, 1, &line).unwrap();
+
+    let opts = entry.options.as_ref().unwrap();
+    assert!(opts.no_pty);
+    assert!(opts.no_port_forwarding);
+    assert!(opts.no_x11_forwarding);
+    assert!(opts.no_agent_forwarding);
+    assert!(opts.no_user_rc);
+}
+
+#[test]
+fn parse_line_tunnel_with_expiry() {
+    let line = format!("tunnel=\"eth0\",expiry-time=\"20261231T235959\" {VALID_ED25519} infra@net");
+    let entry = parse_line(&line, 1, &line).unwrap();
+
+    let opts = entry.options.as_ref().unwrap();
+    assert_eq!(opts.tunnel.as_deref(), Some("eth0"));
+    assert_eq!(opts.expiry_time.as_deref(), Some("20261231T235959"));
+    assert_eq!(entry.comment.as_deref(), Some("infra@net"));
+}
+
+#[test]
+fn parse_line_command_with_escaped_quotes_and_commas() {
+    let line = format!(
+        "command=\"echo \\\"hello, world\\\"\" {VALID_ED25519} user@host"
+    );
+    let entry = parse_line(&line, 1, &line).unwrap();
+
+    let opts = entry.options.as_ref().unwrap();
+    assert_eq!(opts.command.as_deref(), Some("echo \"hello, world\""));
+}
+
+#[test]
+fn parse_line_no_options() {
+    let line = format!("{VALID_ED25519} simple@host");
+    let entry = parse_line(&line, 1, &line).unwrap();
+
+    assert!(entry.options.is_none());
+    assert_eq!(entry.key_type, "ssh-ed25519");
+    assert_eq!(entry.comment.as_deref(), Some("simple@host"));
+}
+
+// ---------------------------------------------------------------------------
+// Integration: parse_authorized_keys with complex entries
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn parse_authorized_keys_with_complex_options() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("authorized_keys");
+
+    let content = format!(
+        "# Deployment key with restrictions\n\
+         restrict,permit-open=\"db:5432,cache:6379\",from=\"10.0.0.*\" {VALID_ED25519} deploy@ci\n\
+         \n\
+         # Backup key\n\
+         command=\"/usr/local/bin/backup.sh\",no-pty,no-port-forwarding {VALID_ED25519} backup@cron\n\
+         \n\
+         # CA key\n\
+         cert-authority,principals=\"admin,ops\" {VALID_ED25519}\n"
+    );
+    std::fs::write(&path, content).unwrap();
+
+    let entries = parse_authorized_keys(&path).await.unwrap();
+    assert_eq!(entries.len(), 3, "should parse 3 key entries");
+
+    // First entry: restrict + permit-open + from
+    let deploy = &entries[0];
+    let opts = deploy.options.as_ref().unwrap();
+    assert!(opts.restrict);
+    assert_eq!(opts.permit_open, vec!["db:5432", "cache:6379"]);
+    assert_eq!(opts.from, vec!["10.0.0.*"]);
+    assert_eq!(deploy.comment.as_deref(), Some("deploy@ci"));
+    assert_eq!(deploy.line_number, 2);
+
+    // Second entry: command + no-pty + no-port-forwarding
+    let backup = &entries[1];
+    let opts = backup.options.as_ref().unwrap();
+    assert_eq!(opts.command.as_deref(), Some("/usr/local/bin/backup.sh"));
+    assert!(opts.no_pty);
+    assert!(opts.no_port_forwarding);
+    assert_eq!(backup.line_number, 5);
+
+    // Third entry: cert-authority + principals
+    let ca = &entries[2];
+    let opts = ca.options.as_ref().unwrap();
+    assert!(opts.cert_authority);
+    // principals stores the raw value as a single entry (not comma-split).
+    assert_eq!(opts.principals, vec!["admin,ops"]);
+    assert_eq!(ca.line_number, 8);
+}

@@ -1,6 +1,6 @@
 //! Mutation operations on the SSH config AST.
 
-use super::ast::{ConfigAst, ConfigNode, Separator};
+use super::ast::{ConfigAst, ConfigNode, DirectiveData, HostBlockData, Separator};
 use crate::Result;
 
 /// Add a new Host block to the config AST.
@@ -8,6 +8,11 @@ use crate::Result;
 /// The block is appended after the last existing Host block (or at the end
 /// if there are no Host blocks). A blank line separator is inserted before
 /// the new block if needed.
+///
+/// # Errors
+///
+/// Returns [`Error::DuplicateHost`] if a Host block with the same name
+/// already exists.
 pub fn add_host(
     ast: &mut ConfigAst,
     name: &str,
@@ -20,26 +25,26 @@ pub fn add_host(
 
     let nodes: Vec<ConfigNode> = directives
         .into_iter()
-        .map(|(key, value)| ConfigNode::Directive {
+        .map(|(key, value)| ConfigNode::Directive(Box::new(DirectiveData {
             keyword: key,
             separator: Separator::Space,
             value,
             comment: None,
             indent: String::new(),
-        })
+        })))
         .collect();
 
-    let block = ConfigNode::HostBlock {
+    let block = ConfigNode::HostBlock(Box::new(HostBlockData {
         header: format!("Host {name}"),
         patterns: vec![name.to_owned()],
         nodes,
-    };
+    }));
 
     // Find the position after the last Host/Match block.
     let insert_pos = ast
         .nodes
         .iter()
-        .rposition(|n| matches!(n, ConfigNode::HostBlock { .. } | ConfigNode::MatchBlock { .. }))
+        .rposition(|n| matches!(n, ConfigNode::HostBlock(_) | ConfigNode::MatchBlock(_)))
         .map_or(ast.nodes.len(), |i| i + 1);
 
     // Insert a blank line separator before the new block if needed.
@@ -61,6 +66,10 @@ pub fn add_host(
 ///
 /// Matches against the first pattern in the block. If a blank line precedes
 /// the block, it is also removed to avoid double-blank lines.
+///
+/// # Errors
+///
+/// Returns [`Error::HostNotFound`] if no Host block matches the given name.
 pub fn remove_host(ast: &mut ConfigAst, name: &str) -> Result<()> {
     let idx = find_host_index(ast, name)
         .ok_or_else(|| crate::Error::HostNotFound(name.to_owned()))?;
@@ -76,6 +85,11 @@ pub fn remove_host(ast: &mut ConfigAst, name: &str) -> Result<()> {
 }
 
 /// Rename a Host block by updating its header and patterns.
+///
+/// # Errors
+///
+/// Returns [`Error::HostNotFound`] if `old_name` does not match any block,
+/// or [`Error::DuplicateHost`] if `new_name` already exists.
 pub fn rename_host(ast: &mut ConfigAst, old_name: &str, new_name: &str) -> Result<()> {
     let idx = find_host_index(ast, old_name)
         .ok_or_else(|| crate::Error::HostNotFound(old_name.to_owned()))?;
@@ -84,20 +98,20 @@ pub fn rename_host(ast: &mut ConfigAst, old_name: &str, new_name: &str) -> Resul
         return Err(crate::Error::DuplicateHost(new_name.to_owned()));
     }
 
-    if let ConfigNode::HostBlock {
-        header,
-        patterns,
-        ..
-    } = &mut ast.nodes[idx]
+    if let ConfigNode::HostBlock(b) = &mut ast.nodes[idx]
     {
-        *header = format!("Host {new_name}");
-        *patterns = vec![new_name.to_owned()];
+        b.header = format!("Host {new_name}");
+        b.patterns = vec![new_name.to_owned()];
     }
 
     Ok(())
 }
 
 /// Add a directive to an existing Host block.
+///
+/// # Errors
+///
+/// Returns [`Error::HostNotFound`] if no Host block matches the given name.
 pub fn add_directive_to_host(
     ast: &mut ConfigAst,
     name: &str,
@@ -108,19 +122,23 @@ pub fn add_directive_to_host(
         .ok_or_else(|| crate::Error::HostNotFound(name.to_owned()))?;
 
     if let Some(nodes) = ast.nodes[idx].as_host_block_mut() {
-        nodes.push(ConfigNode::Directive {
+        nodes.push(ConfigNode::Directive(Box::new(DirectiveData {
             keyword: key.to_owned(),
             separator: Separator::Space,
             value: value.to_owned(),
             comment: None,
             indent: String::new(),
-        });
+        })));
     }
 
     Ok(())
 }
 
 /// Remove a directive from an existing Host block by key.
+///
+/// # Errors
+///
+/// Returns [`Error::HostNotFound`] if no Host block matches the given name.
 pub fn remove_directive_from_host(ast: &mut ConfigAst, name: &str, key: &str) -> Result<()> {
     let idx = find_host_index(ast, name)
         .ok_or_else(|| crate::Error::HostNotFound(name.to_owned()))?;
@@ -142,8 +160,8 @@ pub fn remove_directive_from_host(ast: &mut ConfigAst, name: &str, key: &str) ->
 /// Find the index of a Host block by its first pattern (exact match).
 pub(crate) fn find_host_index(ast: &ConfigAst, name: &str) -> Option<usize> {
     ast.nodes.iter().position(|node| {
-        if let ConfigNode::HostBlock { patterns, .. } = node {
-            patterns.iter().any(|p| p == name)
+        if let ConfigNode::HostBlock(b) = node {
+            b.patterns.iter().any(|p| p == name)
         } else {
             false
         }

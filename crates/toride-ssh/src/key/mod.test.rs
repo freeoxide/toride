@@ -66,8 +66,8 @@ fn validate_key_name_with_tabs() {
 
 #[test]
 fn validate_key_name_with_null_byte() {
-    // Null bytes should not be allowed (path traversal risk)
-    assert!(validate_key_name("my\0key").is_ok()); // Not explicitly blocked
+    // Null bytes are now rejected to prevent path truncation attacks
+    assert!(validate_key_name("my\0key").is_err());
 }
 
 #[test]
@@ -77,8 +77,36 @@ fn validate_key_name_with_control_chars() {
 
 #[test]
 fn validate_key_name_very_long() {
-    let long_name = "a".repeat(10000);
-    assert!(validate_key_name(&long_name).is_ok());
+    // Names up to 255 bytes are OK (filesystem limit).
+    let name_255 = "a".repeat(255);
+    assert!(validate_key_name(&name_255).is_ok());
+
+    // Names over 255 bytes are rejected.
+    let name_256 = "a".repeat(256);
+    assert!(validate_key_name(&name_256).is_err());
+}
+
+#[test]
+fn validate_key_name_exactly_255_bytes_accepted() {
+    // The maximum valid key name length: exactly 255 bytes.
+    let name = "k".repeat(255);
+    assert_eq!(name.len(), 255);
+    let result = validate_key_name(&name);
+    assert!(result.is_ok(), "255-byte name should be accepted: {result:?}");
+}
+
+#[test]
+fn validate_key_name_exactly_256_bytes_rejected() {
+    // One byte over the limit: must be rejected.
+    let name = "k".repeat(256);
+    assert_eq!(name.len(), 256);
+    let result = validate_key_name(&name);
+    assert!(result.is_err(), "256-byte name should be rejected");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("255"),
+        "error should mention the 255-byte limit: {err_msg}",
+    );
 }
 
 #[test]
@@ -186,4 +214,29 @@ fn validate_key_name_with_path_traversal_variants() {
 fn validate_key_name_with_backslash_traversal() {
     assert!(validate_key_name("..\\key").is_err());
     assert!(validate_key_name("key\\..").is_err());
+}
+
+// ---------------------------------------------------------------------------
+// Workflow-discovered edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn validate_key_name_null_byte_rejected() {
+    // Null bytes can cause path truncation via C-level APIs
+    assert!(validate_key_name("evil\0safe").is_err());
+}
+
+#[test]
+fn validate_key_name_null_byte_at_start() {
+    assert!(validate_key_name("\0key").is_err());
+}
+
+#[test]
+fn validate_key_name_null_byte_at_end() {
+    assert!(validate_key_name("key\0").is_err());
+}
+
+#[test]
+fn validate_key_name_multiple_null_bytes() {
+    assert!(validate_key_name("key\0\0\0").is_err());
 }

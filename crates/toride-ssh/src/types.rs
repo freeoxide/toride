@@ -1,3 +1,10 @@
+//! Core SSH types shared across all service modules.
+//!
+//! Defines enums and structs for key algorithms ([`KeyType`]), key formats,
+//! diagnostic severities, file permissions, and parameter types for key
+//! creation/deletion. These types form the vocabulary used by every other
+//! module in this crate.
+
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
@@ -24,6 +31,15 @@ pub enum KeyType {
     SkEd25519,
     /// FIDO2 security key ECDSA P-256.
     SkEcdsaP256,
+}
+
+/// Target format for key conversion.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum KeyFormat {
+    /// PEM (RFC 7468 / legacy OpenSSL PEM).
+    Pem,
+    /// OpenSSH format (the default since OpenSSH 6.5).
+    OpenSSH,
 }
 
 /// SHA-256 fingerprint of an SSH key.
@@ -80,6 +96,12 @@ pub struct SshKey {
     pub has_public_pair: bool,
     /// Whether a matching `-cert.pub` file exists.
     pub has_certificate: bool,
+    /// File modification time (seconds since Unix epoch), if available.
+    pub last_modified: Option<u64>,
+    /// Host aliases in `~/.ssh/config` that reference this key via `IdentityFile`.
+    pub used_by_hosts: Vec<String>,
+    /// Detected key format (PEM vs OpenSSH), if known.
+    pub key_format: Option<KeyFormat>,
 }
 
 /// Diagnostic severity level.
@@ -129,6 +151,76 @@ pub struct KeyCreateParams {
     pub add_to_config: bool,
     /// Host alias to use in config when `add_to_config` is true.
     pub config_host: Option<String>,
+    /// Require physical touch on FIDO/security key before signing.
+    pub touch_required: bool,
+    /// Require user verification (biometric/PIN) on FIDO/security key.
+    pub verify_required: bool,
+}
+
+impl KeyCreateParams {
+    /// Create parameters for an Ed25519 key with sensible defaults.
+    pub fn ed25519(name: String) -> Self {
+        Self {
+            key_type: KeyType::Ed25519,
+            name,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: false,
+            verify_required: false,
+        }
+    }
+
+    /// Create parameters for an RSA 4096-bit key with sensible defaults.
+    pub fn rsa_4096(name: String) -> Self {
+        Self {
+            key_type: KeyType::Rsa { bits: 4096 },
+            name,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: false,
+            verify_required: false,
+        }
+    }
+
+    /// Create parameters for a FIDO2 Ed25519 security key with sensible defaults.
+    pub fn ed25519_sk(name: String) -> Self {
+        Self {
+            key_type: KeyType::SkEd25519,
+            name,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: true,
+            verify_required: false,
+        }
+    }
+
+    /// Create parameters for a FIDO2 ECDSA P-256 security key with sensible defaults.
+    pub fn ecdsa_sk(name: String) -> Self {
+        Self {
+            key_type: KeyType::SkEcdsaP256,
+            name,
+            comment: None,
+            passphrase: None,
+            kdf_rounds: None,
+            add_to_agent: false,
+            add_to_config: false,
+            config_host: None,
+            touch_required: true,
+            verify_required: false,
+        }
+    }
 }
 
 impl std::fmt::Debug for KeyCreateParams {
@@ -142,6 +234,8 @@ impl std::fmt::Debug for KeyCreateParams {
             .field("add_to_agent", &self.add_to_agent)
             .field("add_to_config", &self.add_to_config)
             .field("config_host", &self.config_host)
+            .field("touch_required", &self.touch_required)
+            .field("verify_required", &self.verify_required)
             .finish()
     }
 }

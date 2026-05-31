@@ -190,8 +190,9 @@ fn parse_line_with_comment_containing_spaces() {
 #[test]
 fn parse_line_rsa_4096_key() {
     // RSA 4096-bit keys have very long base64
-    let long_key = format!("ssh-rsa {}", "A".repeat(1000));
-    let line = format!("host {}", long_key);
+    let key_data = "A".repeat(1000);
+    let long_key = format!("ssh-rsa {key_data}");
+    let line = format!("host {long_key}");
     let entry = parse_line(&line, 1).unwrap();
     assert_eq!(entry.key_type, "ssh-rsa");
 }
@@ -212,8 +213,9 @@ fn parse_line_with_multiple_markers() {
 
 #[test]
 fn parse_line_with_very_long_base64() {
-    let long_key = format!("ssh-ed25519 {}", "A".repeat(10000));
-    let line = format!("host {}", long_key);
+    let key_data = "A".repeat(10000);
+    let long_key = format!("ssh-ed25519 {key_data}");
+    let line = format!("host {long_key}");
     let entry = parse_line(&line, 1).unwrap();
     assert_eq!(entry.key_type, "ssh-ed25519");
     assert_eq!(entry.public_key.len(), 10000);
@@ -273,7 +275,7 @@ fn parse_line_preserves_key_type_string() {
 #[test]
 fn parse_line_preserves_public_key_string() {
     let key_data = "AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
-    let line = format!("host ssh-ed25519 {}", key_data);
+    let line = format!("host ssh-ed25519 {key_data}");
     let entry = parse_line(&line, 1).unwrap();
     assert_eq!(entry.public_key, key_data);
 }
@@ -297,4 +299,89 @@ fn parse_line_line_number_preserved() {
     let line = "host ssh-ed25519 AAAAC3...";
     let entry = parse_line(line, 999).unwrap();
     assert_eq!(entry.line_number, 999);
+}
+
+// ---------------------------------------------------------------------------
+// Workflow-discovered edge cases
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_line_with_revoked_key_id() {
+    // A key ID that happens to be "REVOKED" should not be skipped
+    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let entry = parse_line(line, 1).unwrap();
+    assert_eq!(entry.key_type, "ssh-ed25519");
+}
+
+#[test]
+fn parse_line_with_host_matching_another_entry() {
+    // Two entries for the same host should both parse correctly
+    let line1 = "host ssh-ed25519 AAAAC3...";
+    let line2 = "host ssh-rsa AAAAB3...";
+    let entry1 = parse_line(line1, 1).unwrap();
+    let entry2 = parse_line(line2, 2).unwrap();
+    assert_eq!(entry1.hosts, entry2.hosts);
+    assert_ne!(entry1.key_type, entry2.key_type);
+}
+
+// ---------------------------------------------------------------------------
+// Very long base64 keys
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_line_rsa_8192_key() {
+    // RSA 8192-bit keys produce very long base64 blobs (~1200+ chars).
+    // Use a realistic-looking base64 pattern.
+    let key_data = format!("AAAAB3NzaC1yc2EAAAADAQABAAACAQ{}", "B".repeat(5000));
+    let line = format!("host ssh-rsa {key_data}");
+    let entry = parse_line(&line, 1).unwrap();
+    assert_eq!(entry.key_type, "ssh-rsa");
+    assert_eq!(entry.public_key.len(), key_data.len());
+    // The key should be preserved verbatim.
+    assert_eq!(entry.public_key, key_data);
+}
+
+#[test]
+fn parse_line_very_long_base64_preserves_all_chars() {
+    // Ensure no characters are dropped or corrupted in a very long key.
+    let key_data = format!("AAAAC3NzaC1lZDI1NTE5AAAA{}", "AaBbCcDdEeFf0123456789".repeat(500));
+    let line = format!("host ssh-ed25519 {key_data}");
+    let entry = parse_line(&line, 1).unwrap();
+    assert_eq!(entry.public_key, key_data);
+    assert_eq!(entry.public_key.len(), key_data.len());
+}
+
+#[test]
+fn parse_line_long_key_with_comment() {
+    // Very long key followed by a comment.
+    let key_data = format!("AAAAC3NzaC1lZDI1NTE5AAAA{}", "X".repeat(8000));
+    let line = format!("server ssh-ed25519 {key_data} admin@server.example.com");
+    let entry = parse_line(&line, 42).unwrap();
+    assert_eq!(entry.key_type, "ssh-ed25519");
+    assert_eq!(entry.public_key, key_data);
+    assert_eq!(entry.comment.as_deref(), Some("admin@server.example.com"));
+    assert_eq!(entry.line_number, 42);
+}
+
+#[test]
+fn parse_line_long_key_with_cert_authority_marker() {
+    // @cert-authority with a very long key.
+    let key_data = format!("AAAA{}", "Y".repeat(6000));
+    let line = format!("@cert-authority *.example.com ssh-rsa {key_data}");
+    let entry = parse_line(&line, 1).unwrap();
+    assert_eq!(entry.markers, vec!["@cert-authority"]);
+    assert_eq!(entry.hosts, vec!["*.example.com"]);
+    assert_eq!(entry.key_type, "ssh-rsa");
+    assert_eq!(entry.public_key, key_data);
+}
+
+#[test]
+fn parse_line_long_key_with_revoked_marker() {
+    // @revoked with a very long ecdsa key.
+    let key_data = format!("AAAAE2VjZHNhLXNoYTItbmlzdHAyNTY{}", "Z".repeat(4000));
+    let line = format!("@revoked compromised.example.com ecdsa-sha2-nistp256 {key_data}");
+    let entry = parse_line(&line, 1).unwrap();
+    assert_eq!(entry.markers, vec!["@revoked"]);
+    assert_eq!(entry.key_type, "ecdsa-sha2-nistp256");
+    assert_eq!(entry.public_key, key_data);
 }

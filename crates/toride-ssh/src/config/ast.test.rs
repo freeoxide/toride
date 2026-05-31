@@ -1,3 +1,5 @@
+#![allow(clippy::unreadable_literal)]
+
 use super::*;
 
 #[test]
@@ -15,9 +17,9 @@ Host *
     assert_eq!(ast.nodes.len(), 3);
 
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, nodes, .. } => {
-            assert_eq!(patterns, &["example"]);
-            assert_eq!(nodes.len(), 3);
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns, &["example"]);
+            assert_eq!(b.nodes.len(), 3);
         }
         _ => panic!("expected HostBlock"),
     }
@@ -44,8 +46,8 @@ fn parse_equals_separator() {
     let input = "Host=myserver\n    HostName=192.168.1.1\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { header, .. } => {
-            assert_eq!(header, "Host=myserver");
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.header, "Host=myserver");
         }
         _ => panic!("expected HostBlock"),
     }
@@ -129,9 +131,9 @@ fn parse_host_with_no_directives() {
     let ast = parse(input);
     assert_eq!(ast.nodes.len(), 1);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, nodes, .. } => {
-            assert_eq!(patterns, &["empty"]);
-            assert!(nodes.is_empty());
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns, &["empty"]);
+            assert!(b.nodes.is_empty());
         }
         _ => panic!("expected HostBlock"),
     }
@@ -142,8 +144,8 @@ fn parse_host_with_multiple_patterns() {
     let input = "Host web1 web2 *.example.com\n    User admin\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => {
-            assert_eq!(patterns, &["web1", "web2", "*.example.com"]);
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns, &["web1", "web2", "*.example.com"]);
         }
         _ => panic!("expected HostBlock"),
     }
@@ -162,11 +164,11 @@ fn parse_directive_with_tab_separator() {
     let input = "Host example\n\tHostName example.com\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { nodes, .. } => {
-            match &nodes[0] {
-                ConfigNode::Directive { keyword, indent, .. } => {
-                    assert_eq!(keyword, "HostName");
-                    assert_eq!(indent, "\t");
+        ConfigNode::HostBlock(b) => {
+            match &b.nodes[0] {
+                ConfigNode::Directive(d) => {
+                    assert_eq!(d.keyword, "HostName");
+                    assert_eq!(d.indent, "\t");
                 }
                 _ => panic!("expected Directive"),
             }
@@ -187,11 +189,11 @@ Host db
     let ast = parse(input);
     assert_eq!(ast.nodes.len(), 3); // web, blank, db
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => assert_eq!(patterns, &["web"]),
+        ConfigNode::HostBlock(b) => assert_eq!(b.patterns, &["web"]),
         _ => panic!("expected HostBlock"),
     }
     match &ast.nodes[2] {
-        ConfigNode::HostBlock { patterns, .. } => assert_eq!(patterns, &["db"]),
+        ConfigNode::HostBlock(b) => assert_eq!(b.patterns, &["db"]),
         _ => panic!("expected HostBlock"),
     }
 }
@@ -202,9 +204,9 @@ fn parse_match_block() {
     let ast = parse(input);
     assert_eq!(ast.nodes.len(), 1);
     match &ast.nodes[0] {
-        ConfigNode::MatchBlock { criteria, nodes, .. } => {
-            assert_eq!(criteria, "host web*");
-            assert_eq!(nodes.len(), 1);
+        ConfigNode::MatchBlock(b) => {
+            assert_eq!(b.criteria, "host web*");
+            assert_eq!(b.nodes.len(), 1);
         }
         _ => panic!("expected MatchBlock"),
     }
@@ -252,11 +254,11 @@ fn parse_config_with_crlf_line_endings() {
     let ast = parse(input);
     // CRLF means \r is part of the trimmed content
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, nodes, .. } => {
+        ConfigNode::HostBlock(b) => {
             // The \r may be preserved in the header
-            assert!(patterns[0].contains("example") || header_contains_r(&ast.nodes[0]));
+            assert!(b.patterns[0].contains("example") || header_contains_r(&ast.nodes[0]));
             // At minimum, we should get a HostBlock back
-            assert!(!nodes.is_empty());
+            assert!(!b.nodes.is_empty());
         }
         _ => panic!("expected HostBlock"),
     }
@@ -264,7 +266,7 @@ fn parse_config_with_crlf_line_endings() {
 
 fn header_contains_r(node: &ConfigNode) -> bool {
     match node {
-        ConfigNode::HostBlock { header, .. } => header.contains('\r'),
+        ConfigNode::HostBlock(b) => b.header.contains('\r'),
         _ => false,
     }
 }
@@ -275,8 +277,8 @@ fn parse_config_with_trailing_whitespace() {
     let ast = parse(input);
     // Trailing whitespace should be trimmed
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => {
-            assert_eq!(patterns[0], "example");
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns[0], "example");
         }
         _ => panic!("expected HostBlock"),
     }
@@ -307,8 +309,8 @@ fn parse_host_with_very_long_name() {
     let input = format!("Host {long_name}\n    User alice\n");
     let ast = parse(&input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => {
-            assert_eq!(patterns[0], long_name);
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns[0], long_name);
         }
         _ => panic!("expected HostBlock"),
     }
@@ -319,8 +321,8 @@ fn parse_host_with_special_characters() {
     let input = "Host my-host.example.com\n    User alice\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => {
-            assert_eq!(patterns[0], "my-host.example.com");
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns[0], "my-host.example.com");
         }
         _ => panic!("expected HostBlock"),
     }
@@ -331,8 +333,8 @@ fn parse_directive_with_equals_no_spaces() {
     let input = "Host=example\nHostName=example.com\nUser=alice\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { header, .. } => {
-            assert_eq!(header, "Host=example");
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.header, "Host=example");
         }
         _ => panic!("expected HostBlock"),
     }
@@ -382,11 +384,11 @@ fn parse_host_block_followed_immediately_by_another() {
     let ast = parse(input);
     assert_eq!(ast.nodes.len(), 2); // no blank line between
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => assert_eq!(patterns[0], "a"),
+        ConfigNode::HostBlock(b) => assert_eq!(b.patterns[0], "a"),
         _ => panic!("expected HostBlock"),
     }
     match &ast.nodes[1] {
-        ConfigNode::HostBlock { patterns, .. } => assert_eq!(patterns[0], "b"),
+        ConfigNode::HostBlock(b) => assert_eq!(b.patterns[0], "b"),
         _ => panic!("expected HostBlock"),
     }
 }
@@ -400,8 +402,8 @@ fn parse_config_with_no_trailing_newline() {
     let input = "Host example\n    User alice";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { nodes, .. } => {
-            assert_eq!(nodes.len(), 1);
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.nodes.len(), 1);
         }
         _ => panic!("expected HostBlock"),
     }
@@ -428,8 +430,8 @@ fn parse_config_with_tabs_and_spaces_mixed() {
     let input = "Host example\n\t  User alice\n  \tPort 22\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { nodes, .. } => {
-            assert_eq!(nodes.len(), 2);
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.nodes.len(), 2);
         }
         _ => panic!("expected HostBlock"),
     }
@@ -452,8 +454,8 @@ fn parse_host_with_empty_pattern() {
     let ast = parse(input);
     // Should parse as a Host block with empty pattern
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => {
-            assert!(patterns.is_empty() || patterns.contains(&String::new()));
+        ConfigNode::HostBlock(b) => {
+            assert!(b.patterns.is_empty() || b.patterns.contains(&String::new()));
         }
         _ => panic!("expected HostBlock"),
     }
@@ -464,8 +466,8 @@ fn parse_host_with_only_negation_pattern() {
     let input = "Host !badhost\n    User alice\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => {
-            assert_eq!(patterns[0], "!badhost");
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns[0], "!badhost");
         }
         _ => panic!("expected HostBlock"),
     }
@@ -477,8 +479,8 @@ fn parse_match_with_exec_criteria() {
     let input = "Match exec \"/bin/true\"\n    User alice\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::MatchBlock { criteria, .. } => {
-            assert!(criteria.contains("exec"));
+        ConfigNode::MatchBlock(b) => {
+            assert!(b.criteria.contains("exec"));
         }
         _ => panic!("expected MatchBlock"),
     }
@@ -490,10 +492,10 @@ fn parse_directive_with_very_long_value() {
     let input = format!("Host example\n    HostName {long_value}\n");
     let ast = parse(&input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { nodes, .. } => {
-            match &nodes[0] {
-                ConfigNode::Directive { value, .. } => {
-                    assert_eq!(value.len(), 100000);
+        ConfigNode::HostBlock(b) => {
+            match &b.nodes[0] {
+                ConfigNode::Directive(d) => {
+                    assert_eq!(d.value.len(), 100000);
                 }
                 _ => panic!("expected Directive"),
             }
@@ -508,8 +510,8 @@ fn parse_config_with_control_characters() {
     let input = "Host example\n\tUser alice\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { nodes, .. } => {
-            assert_eq!(nodes.len(), 1);
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.nodes.len(), 1);
         }
         _ => panic!("expected HostBlock"),
     }
@@ -530,8 +532,8 @@ fn parse_host_with_multiple_negation_patterns() {
     let input = "Host * !bad1 !bad2\n    User alice\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { patterns, .. } => {
-            assert_eq!(patterns, &["*", "!bad1", "!bad2"]);
+        ConfigNode::HostBlock(b) => {
+            assert_eq!(b.patterns, &["*", "!bad1", "!bad2"]);
         }
         _ => panic!("expected HostBlock"),
     }
@@ -542,8 +544,8 @@ fn parse_comment_with_hash_in_value() {
     let input = "Host example\n    # This is a comment with # inside\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { nodes, .. } => {
-            match &nodes[0] {
+        ConfigNode::HostBlock(b) => {
+            match &b.nodes[0] {
                 ConfigNode::Comment { text, .. } => {
                     assert!(text.contains('#'));
                 }
@@ -559,15 +561,96 @@ fn parse_directive_with_hash_in_quoted_value() {
     let input = "Host example\n    IdentityFile \"path#with#hash\"\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock { nodes, .. } => {
-            match &nodes[0] {
-                ConfigNode::Directive { value, comment, .. } => {
+        ConfigNode::HostBlock(b) => {
+            match &b.nodes[0] {
+                ConfigNode::Directive(d) => {
                     // The # inside quotes should not be treated as a comment
-                    assert!(value.contains('#') || comment.is_some());
+                    assert!(d.value.contains('#') || d.comment.is_some());
                 }
                 _ => panic!("expected Directive"),
             }
         }
         _ => panic!("expected HostBlock"),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Edge case: = separator roundtrip preservation
+// ---------------------------------------------------------------------------
+
+#[test]
+fn round_trip_preserves_equals_separator() {
+    let input = "Host=myserver\n    HostName=example.com\n    User=alice\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn round_trip_preserves_mixed_separators() {
+    // Mix of = and space separators in the same block
+    let input = "Host example\n    HostName=example.com\n    User alice\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn round_trip_preserves_multiple_blank_lines() {
+    let input = "Host example\n    HostName example.com\n\n\n\nHost other\n    HostName other.com\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn round_trip_preserves_trailing_newline() {
+    let input = "Host example\n    HostName example.com\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+    assert!(output.ends_with('\n'));
+}
+
+#[test]
+fn round_trip_preserves_inline_comment_with_equals() {
+    // The AST parser strips the space after # in inline comments.
+    let input = "Host example\n    HostName=example.com #my server\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
+}
+
+#[test]
+fn parse_empty_config() {
+    let ast = parse("");
+    assert!(ast.nodes.is_empty());
+    assert_eq!(ast.to_string_lossless(), "");
+}
+
+#[test]
+fn parse_only_comments_roundtrip() {
+    let input = "# comment 1\n# comment 2\n";
+    let ast = parse(input);
+    assert_eq!(ast.nodes.len(), 2);
+    assert!(ast.nodes.iter().all(|n| matches!(n, ConfigNode::Comment { .. })));
+    assert_eq!(ast.to_string_lossless(), input);
+}
+
+#[test]
+fn parse_only_blank_lines() {
+    let input = "\n\n\n";
+    let ast = parse(input);
+    assert_eq!(ast.nodes.len(), 3);
+    assert!(ast.nodes.iter().all(|n| matches!(n, ConfigNode::BlankLine)));
+    assert_eq!(ast.to_string_lossless(), input);
+}
+
+#[test]
+fn round_trip_preserves_deeply_nested_indent() {
+    // Some users use unusual indentation
+    let input = "Host example\n            HostName example.com\n";
+    let ast = parse(input);
+    let output = ast.to_string_lossless();
+    assert_eq!(output, input);
 }

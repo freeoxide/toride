@@ -1,11 +1,16 @@
 //! Port forwarding control via ControlMaster sessions.
 
+#[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
+
+/// Maximum file size (bytes) for a candidate control socket on non-socket
+/// filesystems (e.g. NFS). Files larger than this are not considered sockets.
+const MAX_CONTROL_SOCKET_CANDIDATE_SIZE: u64 = 1024;
 
 /// Whether a forward is local (-L), remote (-R), or dynamic/SOCKS (-D).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -72,7 +77,7 @@ async fn ssh_control_cmd(control_path: &Path, action: &str) -> Result<String> {
             .map_err(|e| Error::CommandFailed(format!("ssh -O {action}: {e}")))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?
+    .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
 /// Check whether a control socket is still alive.
@@ -86,6 +91,11 @@ async fn check_alive(control_path: &Path) -> bool {
 ///
 /// Sends `ssh -O list -S <control_path>` and parses the output to extract
 /// individual forward entries.
+///
+/// # Errors
+///
+/// Returns [`Error::ForwardFailed`] if the control path is not valid UTF-8,
+/// or [`Error::CommandFailed`] if the `ssh -O list` command fails.
 pub async fn list_forwards(control_path: &Path) -> Result<Vec<PortForward>> {
     let output = ssh_control_cmd(control_path, "list").await?;
     Ok(parse_forward_output(&output))
@@ -207,6 +217,11 @@ pub(crate) fn parse_forward_line(line: &str, forward_type: ForwardType) -> Optio
 /// cancel command: the forward may vanish between the two calls.  The caller
 /// should be prepared to handle [`Error::ForwardNotFound`] or a cancel
 /// command that fails due to a stale forward.
+///
+/// # Errors
+///
+/// Returns [`Error::ForwardNotFound`] if no forward exists on the given
+/// local port, or [`Error::CommandFailed`] if the cancel command fails.
 pub async fn cancel_forward(control_path: &Path, local_port: u16) -> Result<()> {
     let forwards = list_forwards(control_path).await?;
 
@@ -232,6 +247,11 @@ pub async fn cancel_forward(control_path: &Path, local_port: u16) -> Result<()> 
 /// - **Dynamic**: `[bind_addr]:lport`
 ///
 /// When `GatewayPorts` is enabled the bind address may be `*` or `0.0.0.0`.
+///
+/// # Errors
+///
+/// Returns [`Error::ForwardFailed`] if the control path is not valid UTF-8,
+/// or [`Error::CommandFailed`] if the cancel command fails.
 pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) -> Result<()> {
     let path_str = control_path
         .to_str()
@@ -279,7 +299,7 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
         .map_err(|e| Error::CommandFailed(format!("ssh -O cancel: {e}")))
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))??;
+    .map_err(|e| Error::TaskFailed(e.to_string()))??;
 
     Ok(())
 }
@@ -289,6 +309,12 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
 /// After this call the control socket file may still exist on disk (it is
 /// cleaned up asynchronously by the master process).  Callers that need to
 /// verify cleanup should check for socket file removal separately.
+///
+/// # Errors
+///
+/// Returns [`Error::ForwardFailed`] if the control path is not valid UTF-8,
+/// or [`Error::CommandFailed`] if the `ssh -O exit` command fails for a
+/// reason other than a stale socket.
 pub async fn exit_session(control_path: &Path) -> Result<()> {
     let path = control_path.to_path_buf();
 
@@ -311,7 +337,7 @@ pub async fn exit_session(control_path: &Path) -> Result<()> {
         result
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))??;
+    .map_err(|e| Error::TaskFailed(e.to_string()))??;
 
     Ok(())
 }
@@ -320,6 +346,7 @@ pub async fn exit_session(control_path: &Path) -> Result<()> {
 fn is_stale_socket(path: &Path) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) => {
+            #[cfg(unix)]
             if meta.file_type().is_socket() {
                 // Socket file exists but `ssh -O check` presumably failed.
                 // It is stale if `connect()` would fail, but we already know
@@ -341,6 +368,11 @@ fn is_stale_socket(path: &Path) -> bool {
 /// 3. Any socket file in `~/.ssh/` that looks like a control socket
 ///
 /// Each candidate is verified with `ssh -O check` to confirm it is alive.
+///
+/// # Errors
+///
+/// Returns [`Error::TaskFailed`] if the background scan task panics or is
+/// cancelled.
 pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     let ssh_dir = ssh_dir.to_path_buf();
     let tmp_dir = std::path::PathBuf::from("/tmp");
@@ -363,7 +395,7 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
         candidates
     })
     .await
-    .map_err(|e| Error::CommandFailed(e.to_string()))?;
+    .map_err(|e| Error::TaskFailed(e.to_string()))?;
 
     // Verify candidates sequentially to avoid overwhelming the system
     // with concurrent ssh processes when many stale sockets are present.
@@ -407,12 +439,13 @@ fn is_socket_or_candidate(path: &Path) -> bool {
     match std::fs::metadata(path) {
         Ok(meta) => {
             let ft = meta.file_type();
+            #[cfg(unix)]
             if ft.is_socket() {
                 return true;
             }
             // On some filesystems (e.g. NFS) sockets may appear as regular files.
             // Accept small files with no extension as candidates.
-            if ft.is_file() && meta.len() < 1024 {
+            if ft.is_file() && meta.len() < MAX_CONTROL_SOCKET_CANDIDATE_SIZE {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 // Only accept names with no extension that don't look like
                 // regular SSH files (known_hosts, config, *.pub, etc.)
@@ -473,7 +506,24 @@ pub(crate) fn extract_host_from_name(name: &str) -> String {
     // Try user@host:port pattern
     if let Some(at_idx) = rest.find('@') {
         let after_at = &rest[at_idx + 1..];
-        // Take up to the colon (port separator)
+        // Check for bracket notation: [host]:port (used for IPv6)
+        if after_at.starts_with('[')
+            && let Some(bracket_end) = after_at.find(']')
+        {
+            return after_at[1..bracket_end].to_owned();
+        }
+        // If the address contains multiple colons it is likely a bare IPv6
+        // address (e.g. "::1:22" or "fe80::1:22").  The helper tries to
+        // split host from port; if it fails we treat the whole string as a
+        // bare IPv6 address without a port.
+        if after_at.matches(':').count() >= 2 {
+            if let Some(host) = split_bare_ipv6_host_port(after_at) {
+                return host.to_owned();
+            }
+            // Bare IPv6 without port (e.g. "::1", "fe80::1")
+            return after_at.to_owned();
+        }
+        // Take up to the first colon (port separator) — IPv4 / hostname
         if let Some(colon_idx) = after_at.find(':') {
             return after_at[..colon_idx].to_owned();
         }
@@ -483,6 +533,32 @@ pub(crate) fn extract_host_from_name(name: &str) -> String {
 
     // Fallback: use the stripped name
     rest.to_owned()
+}
+
+/// Split a bare IPv6 `host:port` string at the last colon that precedes a
+/// numeric-only port suffix.
+///
+/// Returns `Some(host)` when a valid split is found, `None` otherwise.
+///
+/// Heuristic: we only split when the candidate host portion contains `::`
+/// (the IPv6 compression marker) and the input has at least 3 colons, so
+/// that a bare IPv6 address like `::1` (2 colons, no port) is not
+/// mis-split into `::` + port `1`.
+fn split_bare_ipv6_host_port(s: &str) -> Option<&str> {
+    let colon_count = s.matches(':').count();
+    if colon_count < 3 || !s.contains("::") {
+        return None;
+    }
+    let last_colon = s.rfind(':')?;
+    let port_part = &s[last_colon + 1..];
+    if port_part.is_empty() || !port_part.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let host_part = &s[..last_colon];
+    if host_part.is_empty() {
+        return None;
+    }
+    Some(host_part)
 }
 
 /// Try to extract a PID from the control socket filename.

@@ -3,7 +3,7 @@
 //! Toride-managed blocks are delimited by special comment markers so the tool
 //! can add, replace, and remove them without touching user-edited content.
 
-use super::ast::{ConfigAst, ConfigNode, Separator};
+use super::ast::{ConfigAst, ConfigNode, DirectiveData, Separator};
 use crate::Result;
 
 /// The prefix for a managed block opening marker.
@@ -123,19 +123,23 @@ pub fn upsert_managed_block(
                 insert_at..insert_at,
                 directives
                     .into_iter()
-                    .map(|(key, value)| ConfigNode::Directive {
+                    .map(|(key, value)| ConfigNode::Directive(Box::new(DirectiveData {
                         keyword: key,
                         separator: Separator::Space,
                         value,
                         comment: None,
                         indent: String::new(),
-                    }),
+                    }))),
             );
             return;
         }
+
+        // Unclosed block: remove the orphaned opening marker and everything
+        // after it (the stale content), then fall through to append a fresh block.
+        ast.nodes.drain(start..);
     }
 
-    // No existing block — append a new one.
+    // No existing block (or unclosed block was cleaned up) — append a new one.
     let open_comment = ConfigNode::Comment { text: open, indent: String::new() };
     let close_comment = ConfigNode::Comment { text: close, indent: String::new() };
 
@@ -143,13 +147,13 @@ pub fn upsert_managed_block(
         ast.nodes.push(ConfigNode::BlankLine);
     }
     ast.nodes.push(open_comment);
-    ast.nodes.extend(directives.into_iter().map(|(key, value)| ConfigNode::Directive {
+    ast.nodes.extend(directives.into_iter().map(|(key, value)| ConfigNode::Directive(Box::new(DirectiveData {
         keyword: key,
         separator: Separator::Space,
         value,
         comment: None,
         indent: String::new(),
-    }));
+    }))));
     ast.nodes.push(close_comment);
 }
 
