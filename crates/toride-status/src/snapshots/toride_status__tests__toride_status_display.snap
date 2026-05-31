@@ -1,0 +1,115 @@
+---
+source: crates/toride-status/src/lib.rs
+expression: "format!(\"{}\", status)"
+---
+=== Toride Status ===
+System:
+  Hostname: test-host
+  OS: macOS 15.0 (kernel 24.0.0) aarch64
+  CPU: 42.5%
+  Physical cores: 8
+  CPU cores:
+    cpu0: 45.0% (3200 MHz)
+    cpu1: 40.0% (3200 MHz)
+  Memory: 8.0 GiB / 16.0 GiB (50.0%)
+  Swap: 512.0 MiB / 2.0 GiB (25.0%)
+  Disk: 500.0 GiB / 1.0 TiB (50.0%)
+  Network: 50.0 GiB sent, 100.0 GiB received
+  Network interfaces:
+    en0: 30.0 GiB sent, 60.0 GiB received
+  Load: 2.50 / 3.00 / 3.50
+  Sensors:
+    CPU: 55.5°C
+  Uptime: 1d 1h 1m 1s
+  Boot time: 1700000000
+Daemon:
+  Alive: yes
+  PID: 54321
+  Uptime: 86400s
+  Restarts: 2
+  Socket: ok
+SSH:
+  Mux master: alive
+  Control path: valid
+  Config: ok
+  Agent: running
+  Keys: 3
+=== Capabilities ===
+System:
+  CPU usage: yes
+  Per-core CPU: yes
+  Memory: yes
+  Swap: yes
+  Disk: yes
+  Network: yes
+  Load average: yes
+  Uptime: yes
+  Hostname: yes
+  OS info: yes
+  Sensors: yes
+
+OS:
+  OS info: yes
+  Hostname: yes
+  Uptime: yes
+  Boot time: yes
+  Load average: yes
+  Virtualization: no
+
+GPU:
+  Identity: yes
+  NVIDIA NVML: no
+  Utilization: no
+  Temperature: no
+  Memory: no
+  Per-process: no
+
+Battery:
+  Available: yes
+  Charge percent: yes
+  Time remaining: yes
+  Cycle count: yes
+  Health: yes
+
+Process:
+  List: yes
+  CPU usage: yes
+  Memory usage: yes
+  Command line: yes
+  Thread count: yes
+  User: yes
+  Disk I/O: no
+  Tree: yes
+
+Storage:
+  Disk usage: yes
+  Disk I/O: yes
+  Disk type: yes
+  Model: yes
+  SMART: no
+  Temperature: no
+
+Network:
+  Interfaces: yes
+  Counters: yes
+  Addresses: yes
+  Gateway: yes
+  DNS: yes
+  Link status: yes
+
+Sensors:
+  CPU temperature: yes
+  GPU temperature: no
+  Fan speed: yes
+  Voltage: no
+
+Daemon:
+  PID check: yes
+  Uptime for PID: yes
+  Stale socket: yes
+
+SSH:
+  Mux check: yes
+  Config validation: yes
+  Agent check: yes
+  Key counting: yes

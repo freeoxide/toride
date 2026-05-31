@@ -32,7 +32,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use toride::status::capabilities::Capabilities;
+//! use toride_status::capabilities::Capabilities;
 //!
 //! let caps = Capabilities::detect();
 //! if caps.system.load_average {
@@ -49,8 +49,8 @@
 //! Check capabilities before collecting:
 //!
 //! ```no_run
-//! use toride::status::capabilities::Capabilities;
-//! use toride::status::system::SystemStatus;
+//! use toride_status::capabilities::Capabilities;
+//! use toride_status::system::SystemStatus;
 //!
 //! let caps = Capabilities::detect();
 //! let status = SystemStatus::collect();
@@ -73,7 +73,7 @@ use serde::Serialize;
 /// # Examples
 ///
 /// ```no_run
-/// use toride::status::capabilities::Capabilities;
+/// use toride_status::capabilities::Capabilities;
 ///
 /// let caps = Capabilities::detect();
 /// println!("{}", caps);
@@ -304,7 +304,7 @@ impl Capabilities {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::capabilities::Capabilities;
+    /// use toride_status::capabilities::Capabilities;
     ///
     /// let caps = Capabilities::detect();
     /// assert!(caps.system.cpu_usage); // Always available.

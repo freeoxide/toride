@@ -64,7 +64,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use toride::status::ssh::SshStatus;
+//! use toride_status::ssh::SshStatus;
 //!
 //! let status = SshStatus::collect();
 //! println!("Mux master: {}", if status.mux_master_alive { "alive" } else { "dead" });
@@ -131,7 +131,7 @@ impl SshStatus {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::ssh::SshStatus;
+    /// use toride_status::ssh::SshStatus;
     ///
     /// let status = SshStatus::collect();
     /// println!("Mux alive: {}", status.mux_master_alive);
@@ -162,7 +162,7 @@ impl SshStatus {
     ///
     /// ```no_run
     /// use std::path::Path;
-    /// use toride::status::ssh::SshStatus;
+    /// use toride_status::ssh::SshStatus;
     ///
     /// let status = SshStatus::collect_with_paths(
     ///     Path::new("~/.ssh/controlmasters/%r@%h-%p"),

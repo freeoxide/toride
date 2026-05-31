@@ -4,5 +4,5 @@
 
 pub mod action;
 pub mod app;
-pub mod status;
+pub use toride_status as status;
 pub mod ui;

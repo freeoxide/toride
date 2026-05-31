@@ -5,8 +5,8 @@
 //!
 //! Run with: `cargo run --example gpu_status`
 
-use toride::status::units::{Bytes, Celsius};
-use toride::status::TorideStatus;
+use toride_status::units::{Bytes, Celsius};
+use toride_status::TorideStatus;
 
 fn main() {
     let status = TorideStatus::collect();

@@ -12,7 +12,7 @@
 //! Using the `?` operator with I/O errors:
 //!
 //! ```
-//! use toride::status::error::{StatusError, StatusResult};
+//! use toride_status::error::{StatusError, StatusResult};
 //!
 //! fn read_pid_file(path: &str) -> StatusResult<u32> {
 //!     let content = std::fs::read_to_string(path)?;
@@ -25,7 +25,7 @@
 //! Matching on specific error variants:
 //!
 //! ```
-//! use toride::status::error::StatusError;
+//! use toride_status::error::StatusError;
 //!
 //! fn handle_error(err: StatusError) {
 //!     match err {
@@ -72,7 +72,7 @@
 //! Collecting results into a vector:
 //!
 //! ```
-//! use toride::status::error::{StatusError, StatusResult};
+//! use toride_status::error::{StatusError, StatusResult};
 //!
 //! fn collect_metrics() -> Vec<StatusResult<String>> {
 //!     vec![

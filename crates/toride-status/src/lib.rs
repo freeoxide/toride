@@ -4,7 +4,7 @@
 //! subsystem (OS metrics, daemon liveness, SSH health).
 //!
 //! ```no_run
-//! use toride::status::TorideStatus;
+//! use toride_status::TorideStatus;
 //!
 //! let status = TorideStatus::collect();
 //! println!("{status}");
@@ -51,7 +51,7 @@ pub use units::{Bytes, Celsius, Hertz, Rpm, Volts, Watts};
 /// # Examples
 ///
 /// ```no_run
-/// use toride::status::TorideStatus;
+/// use toride_status::TorideStatus;
 ///
 /// let status = TorideStatus::collect();
 /// assert!(!status.system.hostname.is_empty());
@@ -87,7 +87,7 @@ impl TorideStatus {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::TorideStatus;
+    /// use toride_status::TorideStatus;
     ///
     /// let status = TorideStatus::collect();
     /// println!("{}", status.system.hostname);
@@ -106,7 +106,7 @@ impl TorideStatus {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::{TorideStatus, Preset};
+    /// use toride_status::{TorideStatus, Preset};
     ///
     /// let status = TorideStatus::collect_with_preset(Preset::Minimal);
     /// assert!(status.system.cpu_cores.is_empty());
@@ -126,7 +126,7 @@ impl TorideStatus {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::{TorideStatus, PrivacyMode};
+    /// use toride_status::{TorideStatus, PrivacyMode};
     ///
     /// let status = TorideStatus::collect_with_privacy(PrivacyMode::Safe);
     /// assert_eq!(status.system.hostname, "[redacted]");
@@ -145,7 +145,7 @@ impl TorideStatus {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::{TorideStatus, Preset, PrivacyMode};
+    /// use toride_status::{TorideStatus, Preset, PrivacyMode};
     ///
     /// let status = TorideStatus::collect_with_options(
     ///     Preset::Minimal,
@@ -297,7 +297,7 @@ impl fmt::Display for TorideStatus {
 /// # Examples
 ///
 /// ```no_run
-/// use toride::status::SysProbe;
+/// use toride_status::SysProbe;
 ///
 /// let probe = SysProbe::new();
 /// let snapshot = probe.snapshot();
@@ -417,7 +417,7 @@ mod tests {
 
     #[test]
     fn snapshot_toride_status_display() {
-        use crate::status::system::{
+        use crate::system::{
             CpuCore, DiskStatus, LoadAverage, MemoryStatus, NetworkInterface, NetworkStatus,
             OsInfo, SensorStatus, SwapStatus,
         };
@@ -534,7 +534,7 @@ mod tests {
                     },
                 ],
                 boot_time: Some(1_700_000_000),
-                processes: crate::status::system::ProcessSnapshot {
+                processes: crate::system::ProcessSnapshot {
                     processes: vec![],
                     total_count: 0,
                 },

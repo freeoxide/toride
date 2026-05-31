@@ -33,7 +33,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use toride::status::daemon::DaemonStatus;
+//! use toride_status::daemon::DaemonStatus;
 //!
 //! let status = DaemonStatus::collect();
 //! if status.alive {
@@ -78,7 +78,7 @@ impl DaemonStatus {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::daemon::DaemonStatus;
+    /// use toride_status::daemon::DaemonStatus;
     ///
     /// let status = DaemonStatus::collect();
     /// if status.alive {
@@ -111,7 +111,7 @@ impl DaemonStatus {
     ///
     /// ```
     /// use std::path::Path;
-    /// use toride::status::daemon::DaemonStatus;
+    /// use toride_status::daemon::DaemonStatus;
     ///
     /// let status = DaemonStatus::collect_with_paths(
     ///     Path::new("/var/run/myapp.pid"),

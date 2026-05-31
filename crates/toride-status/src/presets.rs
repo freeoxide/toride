@@ -40,7 +40,7 @@
 //! # Examples
 //!
 //! ```no_run
-//! use toride::status::presets::Preset;
+//! use toride_status::presets::Preset;
 //!
 //! let preset = Preset::TaskManager;
 //! println!("Preset: {preset}");
@@ -80,7 +80,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::TaskManager.includes_per_core_cpu());
     /// assert!(!Preset::Minimal.includes_per_core_cpu());
@@ -97,7 +97,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_swap());
     /// assert!(!Preset::Minimal.includes_swap());
@@ -114,7 +114,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_sensors());
     /// assert!(!Preset::ServerMonitoring.includes_sensors());
@@ -131,7 +131,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::TaskManager.includes_processes());
     /// assert!(!Preset::Minimal.includes_processes());
@@ -148,7 +148,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::ServerMonitoring.includes_network_interfaces());
     /// assert!(!Preset::Minimal.includes_network_interfaces());
@@ -166,7 +166,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_all_disks());
     /// assert!(!Preset::ServerMonitoring.includes_all_disks());
@@ -183,7 +183,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_gpu());
     /// assert!(!Preset::Minimal.includes_gpu());
@@ -200,7 +200,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_battery());
     /// assert!(!Preset::Minimal.includes_battery());
@@ -217,7 +217,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Minimal.includes_os_info());
     /// assert!(Preset::Diagnostics.includes_os_info());
@@ -234,7 +234,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_hardware_inventory());
     /// assert!(!Preset::Minimal.includes_hardware_inventory());
@@ -251,7 +251,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_virtualization());
     /// assert!(!Preset::Minimal.includes_virtualization());
@@ -268,7 +268,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_disk_io());
     /// assert!(!Preset::Minimal.includes_disk_io());
@@ -288,7 +288,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_static_info());
     /// assert!(!Preset::Minimal.includes_static_info());
@@ -308,7 +308,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_network_addresses());
     /// assert!(!Preset::Minimal.includes_network_addresses());
@@ -325,7 +325,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert!(Preset::Diagnostics.includes_process_disk_io());
     /// assert!(!Preset::Minimal.includes_process_disk_io());
@@ -340,7 +340,7 @@ impl Preset {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::presets::Preset;
+    /// use toride_status::presets::Preset;
     ///
     /// assert_eq!(Preset::Minimal.name(), "Minimal");
     /// assert_eq!(Preset::Diagnostics.name(), "Diagnostics");

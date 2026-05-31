@@ -5,7 +5,7 @@
 //!
 //! Run with: `cargo run --example doctor`
 
-use toride::status::{CheckStatus, DoctorReport};
+use toride_status::{CheckStatus, DoctorReport};
 
 fn main() {
     println!("Running health checks...");

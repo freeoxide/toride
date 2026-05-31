@@ -7,8 +7,8 @@
 
 use std::time::Duration;
 
-use toride::status::units::format_bytes;
-use toride::status::{Collector, Preset};
+use toride_status::units::format_bytes;
+use toride_status::{Collector, Preset};
 
 fn main() {
     let mut collector = Collector::new(Duration::from_secs(1), Preset::TaskManager);

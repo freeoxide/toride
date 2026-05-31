@@ -28,7 +28,7 @@
 //! Collect a full system snapshot:
 //!
 //! ```no_run
-//! use toride::status::system::SystemStatus;
+//! use toride_status::system::SystemStatus;
 //!
 //! let status = SystemStatus::collect();
 //! println!("CPU: {:.1}%", status.cpu_usage.unwrap_or(0.0));
@@ -39,7 +39,7 @@
 //! Get top CPU-consuming processes:
 //!
 //! ```no_run
-//! use toride::status::system::SystemStatus;
+//! use toride_status::system::SystemStatus;
 //!
 //! let status = SystemStatus::collect();
 //! for proc in status.processes.top_by_cpu(5) {
@@ -50,7 +50,7 @@
 //! Display formatted output:
 //!
 //! ```no_run
-//! use toride::status::system::SystemStatus;
+//! use toride_status::system::SystemStatus;
 //!
 //! let status = SystemStatus::collect();
 //! println!("{status}");
@@ -65,8 +65,8 @@ use sysinfo::{
     ProcessesToUpdate, RefreshKind, System,
 };
 
-use crate::status::error::StatusResult;
-use crate::status::provider::{
+use crate::error::StatusResult;
+use crate::provider::{
     BatteryProvider, CpuProvider, DiskIoProvider, DiskProvider, GpuProvider, MemoryProvider,
     NetworkProvider, OsProvider, ProcessProvider, SensorProvider, StaticInfoProvider,
     VirtualizationProvider,
@@ -1825,7 +1825,7 @@ impl ProcessSnapshot {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::system::{ProcessSnapshot, ProcessStatus};
+    /// use toride_status::system::{ProcessSnapshot, ProcessStatus};
     ///
     /// let snapshot = ProcessSnapshot {
     ///     processes: vec![
@@ -1856,7 +1856,7 @@ impl ProcessSnapshot {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::system::{ProcessSnapshot, ProcessStatus};
+    /// use toride_status::system::{ProcessSnapshot, ProcessStatus};
     ///
     /// let snapshot = ProcessSnapshot {
     ///     processes: vec![
@@ -1908,7 +1908,7 @@ impl SystemStatus {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::system::SystemStatus;
+    /// use toride_status::system::SystemStatus;
     ///
     /// let status = SystemStatus::collect();
     /// println!("CPU: {:?}", status.cpu_usage);
@@ -2657,8 +2657,8 @@ impl fmt::Display for SystemStatus {
 /// # Examples
 ///
 /// ```no_run
-/// use toride::status::system::SysinfoProvider;
-/// use toride::status::provider::*;
+/// use toride_status::system::SysinfoProvider;
+/// use toride_status::provider::*;
 ///
 /// let mut provider = SysinfoProvider::new();
 /// let cpu = provider.cpu_usage().unwrap();
@@ -3246,7 +3246,7 @@ impl SystemStatus {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::system::SystemStatus;
+    /// use toride_status::system::SystemStatus;
     ///
     /// let status = SystemStatus::collect_via_provider();
     /// assert!(!status.hostname.is_empty());
@@ -5153,7 +5153,7 @@ mod tests {
 
     #[test]
     fn provider_implements_status_provider() {
-        use crate::status::provider::StatusProvider;
+        use crate::provider::StatusProvider;
         fn assert_provider<T: StatusProvider>() {}
         assert_provider::<SysinfoProvider>();
     }
@@ -5613,125 +5613,125 @@ mod tests {
     }
 
     impl CpuProvider for FakeProvider {
-        fn cpu_usage(&mut self) -> crate::status::error::StatusResult<Option<f64>> {
+        fn cpu_usage(&mut self) -> crate::error::StatusResult<Option<f64>> {
             Ok(self.cpu_usage_val)
         }
-        fn cpu_cores(&mut self) -> crate::status::error::StatusResult<Vec<CpuCore>> {
+        fn cpu_cores(&mut self) -> crate::error::StatusResult<Vec<CpuCore>> {
             Ok(self.cpu_cores_val.clone())
         }
-        fn physical_cores(&self) -> crate::status::error::StatusResult<Option<usize>> {
+        fn physical_cores(&self) -> crate::error::StatusResult<Option<usize>> {
             Ok(Some(self.cpu_cores_val.len()))
         }
-        fn cpu_static(&self) -> crate::status::error::StatusResult<CpuStatic> {
+        fn cpu_static(&self) -> crate::error::StatusResult<CpuStatic> {
             Ok(CpuStatic {
                 vendor: String::new(), brand: String::new(), arch: String::new(),
                 sockets: None, cores_per_socket: None, threads_per_core: None,
                 base_freq: None, max_freq: None, cache_l1d: None, cache_l1i: None, cache_l2: None, cache_l3: None,
             })
         }
-        fn cpu_sample(&mut self) -> crate::status::error::StatusResult<CpuSample> {
+        fn cpu_sample(&mut self) -> crate::error::StatusResult<CpuSample> {
             Ok(CpuSample { total_usage: self.cpu_usage_val, per_core: vec![] })
         }
     }
 
     impl MemoryProvider for FakeProvider {
-        fn memory(&mut self) -> crate::status::error::StatusResult<MemoryStatus> {
+        fn memory(&mut self) -> crate::error::StatusResult<MemoryStatus> {
             Ok(self.memory_val)
         }
-        fn swap(&mut self) -> crate::status::error::StatusResult<Option<SwapStatus>> {
+        fn swap(&mut self) -> crate::error::StatusResult<Option<SwapStatus>> {
             Ok(self.swap_val)
         }
-        fn memory_pressure(&self) -> crate::status::error::StatusResult<Option<f32>> {
+        fn memory_pressure(&self) -> crate::error::StatusResult<Option<f32>> {
             Ok(None)
         }
     }
 
     impl DiskProvider for FakeProvider {
-        fn root_disk(&mut self) -> crate::status::error::StatusResult<DiskStatus> {
+        fn root_disk(&mut self) -> crate::error::StatusResult<DiskStatus> {
             Ok(self.disk_val.clone())
         }
-        fn all_disks(&mut self) -> crate::status::error::StatusResult<Vec<DiskStatus>> {
+        fn all_disks(&mut self) -> crate::error::StatusResult<Vec<DiskStatus>> {
             Ok(self.disks_val.clone())
         }
     }
 
     impl NetworkProvider for FakeProvider {
-        fn aggregate(&mut self) -> crate::status::error::StatusResult<NetworkStatus> {
+        fn aggregate(&mut self) -> crate::error::StatusResult<NetworkStatus> {
             Ok(self.network_val)
         }
-        fn interfaces(&mut self) -> crate::status::error::StatusResult<Vec<NetworkInterface>> {
+        fn interfaces(&mut self) -> crate::error::StatusResult<Vec<NetworkInterface>> {
             Ok(self.interfaces_val.clone())
         }
-        fn gateway(&self) -> crate::status::error::StatusResult<Option<String>> {
+        fn gateway(&self) -> crate::error::StatusResult<Option<String>> {
             Ok(None)
         }
-        fn dns_servers(&self) -> crate::status::error::StatusResult<Vec<String>> {
+        fn dns_servers(&self) -> crate::error::StatusResult<Vec<String>> {
             Ok(vec![])
         }
     }
 
     impl OsProvider for FakeProvider {
-        fn os_info(&self) -> crate::status::error::StatusResult<OsInfo> {
+        fn os_info(&self) -> crate::error::StatusResult<OsInfo> {
             Ok(self.os_info_val.clone())
         }
-        fn hostname(&self) -> crate::status::error::StatusResult<String> {
+        fn hostname(&self) -> crate::error::StatusResult<String> {
             Ok(self.hostname_val.clone())
         }
-        fn uptime(&self) -> crate::status::error::StatusResult<Option<u64>> {
+        fn uptime(&self) -> crate::error::StatusResult<Option<u64>> {
             Ok(self.uptime_val)
         }
-        fn boot_time(&self) -> crate::status::error::StatusResult<Option<u64>> {
+        fn boot_time(&self) -> crate::error::StatusResult<Option<u64>> {
             Ok(self.boot_time_val)
         }
-        fn load_average(&self) -> crate::status::error::StatusResult<Option<LoadAverage>> {
+        fn load_average(&self) -> crate::error::StatusResult<Option<LoadAverage>> {
             Ok(self.load_avg_val)
         }
-        fn os_detailed(&self) -> crate::status::error::StatusResult<OsInfo> {
+        fn os_detailed(&self) -> crate::error::StatusResult<OsInfo> {
             Ok(self.os_info_val.clone())
         }
     }
 
     impl ProcessProvider for FakeProvider {
-        fn processes(&mut self) -> crate::status::error::StatusResult<ProcessSnapshot> {
+        fn processes(&mut self) -> crate::error::StatusResult<ProcessSnapshot> {
             Ok(self.processes_val.clone())
         }
-        fn process_tree(&mut self) -> crate::status::error::StatusResult<std::collections::HashMap<u32, Vec<u32>>> {
+        fn process_tree(&mut self) -> crate::error::StatusResult<std::collections::HashMap<u32, Vec<u32>>> {
             Ok(std::collections::HashMap::new())
         }
     }
 
     impl GpuProvider for FakeProvider {
-        fn gpus(&self) -> crate::status::error::StatusResult<Vec<GpuInfo>> {
+        fn gpus(&self) -> crate::error::StatusResult<Vec<GpuInfo>> {
             Ok(self.gpus_val.clone())
         }
     }
 
     impl BatteryProvider for FakeProvider {
-        fn battery(&self) -> crate::status::error::StatusResult<Option<BatteryInfo>> {
+        fn battery(&self) -> crate::error::StatusResult<Option<BatteryInfo>> {
             Ok(self.battery_val.clone())
         }
     }
 
     impl SensorProvider for FakeProvider {
-        fn sensors(&self) -> crate::status::error::StatusResult<Vec<SensorStatus>> {
+        fn sensors(&self) -> crate::error::StatusResult<Vec<SensorStatus>> {
             Ok(self.sensors_val.clone())
         }
     }
 
     impl VirtualizationProvider for FakeProvider {
-        fn virtualization(&self) -> crate::status::error::StatusResult<VirtualizationSnapshot> {
+        fn virtualization(&self) -> crate::error::StatusResult<VirtualizationSnapshot> {
             Ok(VirtualizationSnapshot::default())
         }
     }
 
     impl DiskIoProvider for FakeProvider {
-        fn disk_io(&self) -> crate::status::error::StatusResult<DiskIoSnapshot> {
+        fn disk_io(&self) -> crate::error::StatusResult<DiskIoSnapshot> {
             Ok(DiskIoSnapshot::default())
         }
     }
 
     impl StaticInfoProvider for FakeProvider {
-        fn static_info(&self) -> crate::status::error::StatusResult<StaticInfo> {
+        fn static_info(&self) -> crate::error::StatusResult<StaticInfo> {
             Ok(StaticInfo {
                 os: self.os_info_val.clone(), kernel_version: None, hostname: String::new(),
                 cpu_brand: String::new(), cpu_vendor: String::new(), cpu_frequency: 0,

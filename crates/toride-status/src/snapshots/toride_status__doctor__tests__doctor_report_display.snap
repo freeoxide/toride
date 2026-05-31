@@ -1,0 +1,40 @@
+---
+source: crates/toride-status/src/doctor.rs
+expression: "format!(\"{}\", report)"
+---
+=== Doctor Report ===
+  ✓ system.hostname: hostname: test-host
+  ✓ system.cpu: CPU usage: 42.5%
+  ✓ system.memory: memory: 8000000000 used / 16000000000 total
+  ⚠ system.disks: 0 disk(s) found
+  ✓ system.os_info: OS: macOS 15.0
+  ⚠ system.gpu_provider: 0 GPU(s) detected
+  ⚠ system.battery_provider: no battery detected
+  ⚠ system.sensor_provider: 0 sensor(s) found
+  ✓ system.cpu_sample_quality: CPU usage: 42.5%
+  ✓ system.memory_sanity: memory: 8000000000 / 16000000000 (used <= total: true)
+  ✓ system.disk_duplicates: 0 disk(s), no duplicates
+  ✓ system.virtualization: bare metal or unknown
+  ⚠ system.disk_io: read: 0 bytes, written: 0 bytes
+  ✓ quality.cpu_interval: CPU usage: 42.5%
+  ✓ quality.monotonic_counters: rx: 100000000000 bytes, tx: 50000000000 bytes
+  ✓ quality.clock_sanity: boot time 1700000000 is reasonable
+  ✓ quality.virtual_fs_filtered: no virtual filesystems in disk list
+  ✓ daemon.alive: daemon alive (PID 54321)
+  ✓ daemon.socket: socket ok
+  ✓ ssh.binary: ssh found
+  ✓ ssh.agent_binary: ssh-add found
+  ✓ ssh.config: config valid
+  ✓ ssh.agent: agent running (3 key(s))
+  ✓ privacy.hostname: hostname present
+  ⚠ privacy.process_details: no process details available
+  ⚠ permissions.process_executable: cannot read /proc/self/exe (permission denied or unsupported)
+  ⚠ permissions.process_cmdline: cannot read /proc/self/cmdline (permission denied or unsupported)
+  ✓ permissions.network_stats: network counters are readable
+  ✓ permissions.is_admin: not running as root
+  ⚠ network.provider: no network interfaces detected
+  ✓ network.counters_monotonic: no interfaces to check
+  ✓ privacy.serial_redacted: no serial numbers in collected data
+  ✓ privacy.mac_redacted: no MAC addresses in collected data
+  ✓ privacy.command_args: no command line arguments in collected data
+--- 25 passed, 9 warnings, 0 failures

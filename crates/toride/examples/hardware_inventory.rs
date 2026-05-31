@@ -5,8 +5,8 @@
 //!
 //! Run with: `cargo run --example hardware_inventory`
 
-use toride::status::units::{format_bytes, Bytes, Celsius, Hertz};
-use toride::status::{Preset, TorideStatus};
+use toride_status::units::{format_bytes, Bytes, Celsius, Hertz};
+use toride_status::{Preset, TorideStatus};
 
 fn main() {
     let status = TorideStatus::collect_with_preset(Preset::HardwareInventory);

@@ -21,8 +21,8 @@
 //!
 //! ```no_run
 //! use std::time::Duration;
-//! use toride::status::collector::Collector;
-//! use toride::status::presets::Preset;
+//! use toride_status::collector::Collector;
+//! use toride_status::presets::Preset;
 //!
 //! let mut collector = Collector::new(Duration::from_secs(1), Preset::Diagnostics);
 //!
@@ -42,7 +42,7 @@
 //!
 //! ```no_run
 //! use std::time::Duration;
-//! use toride::status::collector::Collector;
+//! use toride_status::collector::Collector;
 //!
 //! let mut collector = Collector::default_collector();
 //! loop {
@@ -56,9 +56,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
-use crate::status::presets::Preset;
-use crate::status::system::SystemStatus;
-use crate::status::TorideStatus;
+use crate::presets::Preset;
+use crate::system::SystemStatus;
+use crate::TorideStatus;
 
 /// Collector for periodic status snapshots.
 pub struct Collector {
@@ -77,7 +77,7 @@ pub struct Collector {
 ///
 /// ```no_run
 /// use std::time::Duration;
-/// use toride::status::collector::Collector;
+/// use toride_status::collector::Collector;
 ///
 /// let mut collector = Collector::default_collector();
 /// collector.collect(); // First call, no delta.
@@ -185,8 +185,8 @@ impl Collector {
     ///
     /// ```
     /// use std::time::Duration;
-    /// use toride::status::collector::Collector;
-    /// use toride::status::presets::Preset;
+    /// use toride_status::collector::Collector;
+    /// use toride_status::presets::Preset;
     ///
     /// let collector = Collector::new(Duration::from_secs(5), Preset::Minimal);
     /// assert_eq!(collector.interval(), Duration::from_secs(5));
@@ -211,7 +211,7 @@ impl Collector {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::collector::Collector;
+    /// use toride_status::collector::Collector;
     ///
     /// let collector = Collector::default_collector();
     /// ```
@@ -245,7 +245,7 @@ impl Collector {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::collector::Collector;
+    /// use toride_status::collector::Collector;
     ///
     /// let mut collector = Collector::default_collector();
     /// let (status, delta) = collector.collect();
@@ -274,7 +274,7 @@ impl Collector {
     ///
     /// ```no_run
     /// use std::time::Duration;
-    /// use toride::status::collector::Collector;
+    /// use toride_status::collector::Collector;
     ///
     /// let mut collector = Collector::new(Duration::from_millis(100), Default::default());
     /// let (status, delta) = collector.collect_after_interval();
@@ -298,7 +298,7 @@ impl Collector {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::collector::Collector;
+    /// use toride_status::collector::Collector;
     ///
     /// let mut collector = Collector::default_collector();
     /// collector.collect();
@@ -321,7 +321,7 @@ impl Collector {
 ///
 /// ```
 /// use std::time::Duration;
-/// use toride::status::collector::Collector;
+/// use toride_status::collector::Collector;
 ///
 /// let collector = Collector::builder()
 ///     .interval(Duration::from_secs(2))
@@ -587,7 +587,7 @@ impl SystemStatus {
     ///
     /// ```no_run
     /// use std::time::Duration;
-    /// use toride::status::system::SystemStatus;
+    /// use toride_status::system::SystemStatus;
     ///
     /// let prev = SystemStatus::collect();
     /// std::thread::sleep(Duration::from_secs(1));
@@ -647,7 +647,7 @@ impl std::fmt::Display for SystemDelta {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::status::system::{
+    use crate::system::{
         DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo,
         ProcessSnapshot, SensorSnapshot, StaticInfo, SystemStatus, VirtualizationSnapshot,
     };

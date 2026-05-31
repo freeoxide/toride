@@ -1,0 +1,10 @@
+---
+source: crates/toride-status/src/ssh.rs
+expression: "format!(\"{}\", status)"
+---
+SSH:
+  Mux master: alive
+  Control path: valid
+  Config: ok
+  Agent: running
+  Keys: 3

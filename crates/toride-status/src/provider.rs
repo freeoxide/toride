@@ -32,9 +32,9 @@
 //! ## Implementing a custom provider
 //!
 //! ```ignore
-//! use toride::status::provider::*;
-//! use toride::status::system::*;
-//! use toride::status::error::StatusResult;
+//! use toride_status::provider::*;
+//! use toride_status::system::*;
+//! use toride_status::error::StatusResult;
 //!
 //! struct MyProvider;
 //!
@@ -60,22 +60,22 @@
 //!
 //! ## Error handling
 //!
-//! All provider methods return [`StatusResult<T>`](crate::status::error::StatusResult).
-//! Implementations should return appropriate [`StatusError`](crate::status::error::StatusError)
+//! All provider methods return [`StatusResult<T>`](crate::error::StatusResult).
+//! Implementations should return appropriate [`StatusError`](crate::error::StatusError)
 //! variants when data cannot be read:
 //!
-//! - [`StatusError::PermissionDenied`](crate::status::error::StatusError::PermissionDenied)
+//! - [`StatusError::PermissionDenied`](crate::error::StatusError::PermissionDenied)
 //!   when access is denied
-//! - [`StatusError::DataUnavailable`](crate::status::error::StatusError::DataUnavailable)
+//! - [`StatusError::DataUnavailable`](crate::error::StatusError::DataUnavailable)
 //!   when the metric is not available on this platform
-//! - [`StatusError::Io`](crate::status::error::StatusError::Io) for filesystem errors
+//! - [`StatusError::Io`](crate::error::StatusError::Io) for filesystem errors
 
 #![allow(clippy::missing_errors_doc)] // Internal trait methods; errors are documented via StatusResult
 
 use std::collections::HashMap;
 
-use crate::status::error::StatusResult;
-use crate::status::system::{
+use crate::error::StatusResult;
+use crate::system::{
     BatteryInfo, CpuCore, CpuSample, CpuStatic, DiskIoSnapshot, DiskStatus, GpuInfo, LoadAverage,
     MemoryStatus, NetworkInterface, NetworkStatus, OsInfo, ProcessSnapshot, SensorStatus,
     StaticInfo, SwapStatus, VirtualizationSnapshot,

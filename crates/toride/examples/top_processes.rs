@@ -2,8 +2,8 @@
 //!
 //! Run with: `cargo run --example top_processes`
 
-use toride::status::units::format_bytes;
-use toride::status::TorideStatus;
+use toride_status::units::format_bytes;
+use toride_status::TorideStatus;
 
 fn main() {
     let status = TorideStatus::collect();

@@ -1,0 +1,28 @@
+---
+source: crates/toride-status/src/system.rs
+expression: "format!(\"{}\", status)"
+---
+System:
+  Hostname: test-host
+  OS: macOS 15.0 (kernel 24.0.0) aarch64
+  CPU: 42.5%
+  Physical cores: 8
+  CPU cores:
+    cpu0: 45.0% (3200 MHz)
+    cpu1: 40.0% (3200 MHz)
+  Memory: 8.0 GiB / 16.0 GiB (50.0%)
+  Swap: 512.0 MiB / 2.0 GiB (25.0%)
+  Disk: 500.0 GiB / 1.0 TiB (50.0%)
+  Disks:
+    / (Macintosh HD) [apfs]: 500.0 GiB / 1.0 TiB (50.0%)
+    /Volumes/External (External) [exfat]: 100.0 GiB / 500.0 GiB (20.0%)
+  Network: 50.0 GiB sent, 100.0 GiB received
+  Network interfaces:
+    en0: 30.0 GiB sent, 60.0 GiB received
+    lo0: 20.0 GiB sent, 40.0 GiB received
+  Load: 2.50 / 3.00 / 3.50
+  Sensors:
+    CPU: 55.5°C
+    GPU: 48.0°C
+  Uptime: 1d 1h 1m 1s
+  Boot time: 1700000000

@@ -22,7 +22,7 @@
 //! Redacting sensitive data for logging:
 //!
 //! ```
-//! use toride::status::privacy::{PrivacyMode, Redactor};
+//! use toride_status::privacy::{PrivacyMode, Redactor};
 //!
 //! let redactor = Redactor::new(PrivacyMode::Safe);
 //! assert_eq!(redactor.redact_hostname("my-host.local"), "[redacted]");
@@ -32,7 +32,7 @@
 //! Using diagnostics mode for troubleshooting:
 //!
 //! ```
-//! use toride::status::privacy::{PrivacyMode, Redactor};
+//! use toride_status::privacy::{PrivacyMode, Redactor};
 //!
 //! let redactor = Redactor::new(PrivacyMode::Diagnostics);
 //! assert_eq!(redactor.redact_hostname("my-host.local"), "my-host.local");
@@ -42,7 +42,7 @@
 //! Full mode for local debugging:
 //!
 //! ```
-//! use toride::status::privacy::{PrivacyMode, Redactor};
+//! use toride_status::privacy::{PrivacyMode, Redactor};
 //!
 //! let redactor = Redactor::new(PrivacyMode::Full);
 //! assert_eq!(redactor.redact_serial("C02X12345678"), "C02X12345678");
@@ -81,7 +81,7 @@ impl Redactor {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    /// use toride_status::privacy::{PrivacyMode, Redactor};
     ///
     /// let redactor = Redactor::new(PrivacyMode::Safe);
     /// ```
@@ -98,7 +98,7 @@ impl Redactor {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    /// use toride_status::privacy::{PrivacyMode, Redactor};
     ///
     /// let safe = Redactor::new(PrivacyMode::Safe);
     /// assert_eq!(safe.redact_hostname("my-host.local"), "[redacted]");
@@ -122,7 +122,7 @@ impl Redactor {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    /// use toride_status::privacy::{PrivacyMode, Redactor};
     ///
     /// let redactor = Redactor::new(PrivacyMode::Diagnostics);
     /// assert_eq!(redactor.redact_mac("AA:BB:CC:DD:EE:FF"), "[redacted]");
@@ -146,7 +146,7 @@ impl Redactor {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    /// use toride_status::privacy::{PrivacyMode, Redactor};
     ///
     /// let redactor = Redactor::new(PrivacyMode::Safe);
     /// assert_eq!(redactor.redact_serial("C02X12345678"), "[redacted]");
@@ -168,7 +168,7 @@ impl Redactor {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    /// use toride_status::privacy::{PrivacyMode, Redactor};
     ///
     /// let safe = Redactor::new(PrivacyMode::Safe);
     /// assert_eq!(safe.redact_command_line("/usr/bin/sshd -D -R -p 22"), "[redacted]");
@@ -198,7 +198,7 @@ impl Redactor {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    /// use toride_status::privacy::{PrivacyMode, Redactor};
     ///
     /// let safe = Redactor::new(PrivacyMode::Safe);
     /// assert!(!safe.should_show_username());
@@ -219,7 +219,7 @@ impl Redactor {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    /// use toride_status::privacy::{PrivacyMode, Redactor};
     ///
     /// let safe = Redactor::new(PrivacyMode::Safe);
     /// assert_eq!(safe.redact_uuid("550e8400-e29b-41d4-a716-446655440000"), "[redacted]");
@@ -243,7 +243,7 @@ impl Redactor {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::privacy::{PrivacyMode, Redactor};
+    /// use toride_status::privacy::{PrivacyMode, Redactor};
     ///
     /// let safe = Redactor::new(PrivacyMode::Safe);
     /// assert_eq!(safe.redact_asset_tag("ASSET-001234"), "[redacted]");

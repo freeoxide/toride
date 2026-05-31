@@ -38,7 +38,7 @@
 //! Run all checks and print the report:
 //!
 //! ```no_run
-//! use toride::status::doctor::DoctorReport;
+//! use toride_status::doctor::DoctorReport;
 //!
 //! let report = DoctorReport::check();
 //! println!("{report}");
@@ -52,10 +52,10 @@
 //! Run checks against pre-collected snapshots:
 //!
 //! ```no_run
-//! use toride::status::daemon::DaemonStatus;
-//! use toride::status::doctor::DoctorReport;
-//! use toride::status::ssh::SshStatus;
-//! use toride::status::system::SystemStatus;
+//! use toride_status::daemon::DaemonStatus;
+//! use toride_status::doctor::DoctorReport;
+//! use toride_status::ssh::SshStatus;
+//! use toride_status::system::SystemStatus;
 //!
 //! let system = SystemStatus::collect();
 //! let daemon = DaemonStatus::collect();
@@ -68,10 +68,10 @@ use std::fmt;
 use serde::Serialize;
 use which::which;
 
-use crate::status::daemon::DaemonStatus;
-use crate::status::privacy::PrivacyMode;
-use crate::status::ssh::SshStatus;
-use crate::status::system::SystemStatus;
+use crate::daemon::DaemonStatus;
+use crate::privacy::PrivacyMode;
+use crate::ssh::SshStatus;
+use crate::system::SystemStatus;
 
 /// A collection of health checks.
 #[derive(Debug, Clone, Serialize)]
@@ -112,7 +112,7 @@ impl DoctorReport {
     /// # Examples
     ///
     /// ```no_run
-    /// use toride::status::doctor::DoctorReport;
+    /// use toride_status::doctor::DoctorReport;
     ///
     /// let report = DoctorReport::check();
     /// for check in &report.checks {
@@ -136,10 +136,10 @@ impl DoctorReport {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::daemon::DaemonStatus;
-    /// use toride::status::doctor::DoctorReport;
-    /// use toride::status::ssh::SshStatus;
-    /// use toride::status::system::SystemStatus;
+    /// use toride_status::daemon::DaemonStatus;
+    /// use toride_status::doctor::DoctorReport;
+    /// use toride_status::ssh::SshStatus;
+    /// use toride_status::system::SystemStatus;
     ///
     /// let system = SystemStatus::collect();
     /// let daemon = DaemonStatus::collect();
@@ -184,7 +184,7 @@ impl DoctorReport {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::doctor::DoctorReport;
+    /// use toride_status::doctor::DoctorReport;
     ///
     /// let report = DoctorReport::check();
     /// if report.all_passed() {
@@ -204,7 +204,7 @@ impl DoctorReport {
     /// # Examples
     ///
     /// ```
-    /// use toride::status::doctor::DoctorReport;
+    /// use toride_status::doctor::DoctorReport;
     ///
     /// let report = DoctorReport::check();
     /// let (pass, warn, fail) = report.summary();
@@ -787,7 +787,7 @@ mod tests {
 
     #[test]
     fn check_with_custom_statuses() {
-        use crate::status::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
+        use crate::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
         let system = SystemStatus {
             cpu_usage: Some(50.0),
             memory: MemoryStatus {
@@ -849,7 +849,7 @@ mod tests {
             network_interfaces: vec![],
             sensors: vec![],
             boot_time: None,
-            processes: crate::status::system::ProcessSnapshot {
+            processes: crate::system::ProcessSnapshot {
                 processes: vec![],
                 total_count: 0,
             },
@@ -900,7 +900,7 @@ mod tests {
 
     #[test]
     fn check_system_hostname_empty_fails() {
-        use crate::status::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
+        use crate::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
         let system = SystemStatus {
             cpu_usage: Some(50.0),
             memory: MemoryStatus { used_bytes: 100, total_bytes: 200, percentage: 50.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
@@ -910,7 +910,7 @@ mod tests {
             os_info: OsInfo { name: Some("TestOS".to_string()), version: Some("1.0".to_string()), kernel_version: None, arch: "x86_64".to_string(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
             cpu_cores: vec![], physical_cores: Some(4), swap: None, disks: vec![],
             network_interfaces: vec![], sensors: vec![], boot_time: None,
-            processes: crate::status::system::ProcessSnapshot { processes: vec![], total_count: 0 },
+            processes: crate::system::ProcessSnapshot { processes: vec![], total_count: 0 },
             gpu: vec![], battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
@@ -941,13 +941,13 @@ mod tests {
         let ssh = SshStatus { mux_master_alive: false, control_path_valid: false, config_valid: false, agent_running: false, key_count: 0 };
         let report = DoctorReport::check_with(&system, &daemon, &ssh);
         let hostname_check = report.checks.iter().find(|c| c.name == "system.hostname").unwrap();
-        assert_eq!(hostname_check.status, crate::status::doctor::CheckStatus::Fail);
+        assert_eq!(hostname_check.status, crate::doctor::CheckStatus::Fail);
     }
 
     // --- Helpers ---
 
     fn happy_system() -> SystemStatus {
-        use crate::status::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
+        use crate::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
         SystemStatus {
             cpu_usage: Some(50.0),
             memory: MemoryStatus {
@@ -1025,7 +1025,7 @@ mod tests {
             network_interfaces: vec![],
             sensors: vec![],
             boot_time: None,
-            processes: crate::status::system::ProcessSnapshot {
+            processes: crate::system::ProcessSnapshot {
                 processes: vec![],
                 total_count: 0,
             },
@@ -1099,7 +1099,7 @@ mod tests {
     #[test]
     fn check_with_zero_memory_produces_fail() {
         let mut system = happy_system();
-        system.memory = crate::status::system::MemoryStatus {
+        system.memory = crate::system::MemoryStatus {
             used_bytes: 0,
             total_bytes: 0,
             percentage: 0.0,
@@ -1296,7 +1296,7 @@ mod tests {
 
     #[test]
     fn snapshot_doctor_report_display() {
-        use crate::status::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
+        use crate::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
         let system = SystemStatus {
             cpu_usage: Some(42.5),
             memory: MemoryStatus {
@@ -1329,7 +1329,7 @@ mod tests {
                 bytes_received: 100_000_000_000,
                 bytes_transmitted: 50_000_000_000,
             },
-            load_average: Some(crate::status::system::LoadAverage {
+            load_average: Some(crate::system::LoadAverage {
                 one: 2.50,
                 five: 3.00,
                 fifteen: 3.50,
@@ -1362,7 +1362,7 @@ mod tests {
             network_interfaces: vec![],
             sensors: vec![],
             boot_time: Some(1_700_000_000),
-            processes: crate::status::system::ProcessSnapshot {
+            processes: crate::system::ProcessSnapshot {
                 processes: vec![],
                 total_count: 0,
             },
@@ -1474,7 +1474,7 @@ mod tests {
 
     #[test]
     fn network_provider_passes_with_interfaces() {
-        use crate::status::system::NetworkInterface;
+        use crate::system::NetworkInterface;
         let mut system = happy_system();
         system.network_interfaces = vec![NetworkInterface {
             name: "en0".to_string(),
@@ -1505,7 +1505,7 @@ mod tests {
 
     #[test]
     fn network_counters_monotonic_warns_on_zero_interface() {
-        use crate::status::system::NetworkInterface;
+        use crate::system::NetworkInterface;
         let mut system = happy_system();
         system.network_interfaces = vec![NetworkInterface {
             name: "lo".to_string(),
@@ -1536,7 +1536,7 @@ mod tests {
 
     #[test]
     fn network_counters_monotonic_passes_with_nonzero_interface() {
-        use crate::status::system::NetworkInterface;
+        use crate::system::NetworkInterface;
         let mut system = happy_system();
         system.network_interfaces = vec![NetworkInterface {
             name: "eth0".to_string(),
@@ -1582,7 +1582,7 @@ mod tests {
 
     #[test]
     fn privacy_serial_redacted_warns_when_serial_present() {
-        use crate::status::system::HardwareInventory;
+        use crate::system::HardwareInventory;
         let mut system = happy_system();
         system.static_info.hardware = HardwareInventory {
             system_serial: Some("SN-123456".to_string()),
@@ -1625,7 +1625,7 @@ mod tests {
 
     #[test]
     fn privacy_mac_redacted_warns_when_mac_present() {
-        use crate::status::system::NetworkInterface;
+        use crate::system::NetworkInterface;
         let mut system = happy_system();
         system.network_interfaces = vec![NetworkInterface {
             name: "en0".to_string(),
@@ -1687,8 +1687,8 @@ mod tests {
     #[test]
     fn privacy_command_args_warns_when_cmdline_present() {
         let mut system = happy_system();
-        system.processes = crate::status::system::ProcessSnapshot {
-            processes: vec![crate::status::system::ProcessStatus {
+        system.processes = crate::system::ProcessSnapshot {
+            processes: vec![crate::system::ProcessStatus {
                 pid: 1,
                 parent_pid: None,
                 name: "test".to_string(),
@@ -1763,7 +1763,7 @@ mod tests {
     #[test]
     fn quality_monotonic_counters_passes_with_nonzero() {
         let mut system = happy_system();
-        system.network = crate::status::system::NetworkStatus {
+        system.network = crate::system::NetworkStatus {
             bytes_received: 1000,
             bytes_transmitted: 500,
         };
@@ -1775,7 +1775,7 @@ mod tests {
     #[test]
     fn quality_monotonic_counters_warns_for_zero() {
         let mut system = happy_system();
-        system.network = crate::status::system::NetworkStatus {
+        system.network = crate::system::NetworkStatus {
             bytes_received: 0,
             bytes_transmitted: 0,
         };
@@ -1830,7 +1830,7 @@ mod tests {
     #[test]
     fn quality_virtual_fs_filtered_warns_for_tmpfs() {
         let mut system = happy_system();
-        system.disks.push(crate::status::system::DiskStatus {
+        system.disks.push(crate::system::DiskStatus {
             name: "tmpfs".to_string(),
             mount_point: "/tmp".to_string(),
             filesystem: "tmpfs".to_string(),
@@ -1854,7 +1854,7 @@ mod tests {
 
     #[test]
     fn quality_gpu_identity_no_metrics_warns() {
-        use crate::status::system::GpuInfo;
+        use crate::system::GpuInfo;
         let mut system = happy_system();
         system.gpu = vec![GpuInfo {
             name: "Test GPU".to_string(),
@@ -1884,7 +1884,7 @@ mod tests {
 
     #[test]
     fn quality_gpu_identity_no_metrics_passes_with_utilization() {
-        use crate::status::system::GpuInfo;
+        use crate::system::GpuInfo;
         let mut system = happy_system();
         system.gpu = vec![GpuInfo {
             name: "Test GPU".to_string(),

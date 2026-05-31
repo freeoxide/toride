@@ -5,7 +5,7 @@
 //!
 //! Run with: `cargo run --example privacy_safe_report`
 
-use toride::status::{Preset, PrivacyMode, TorideStatus};
+use toride_status::{Preset, PrivacyMode, TorideStatus};
 
 fn main() {
     println!("=== Privacy Mode Comparison ===");

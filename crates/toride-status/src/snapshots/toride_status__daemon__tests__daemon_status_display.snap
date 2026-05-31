@@ -1,0 +1,11 @@
+---
+source: crates/toride-status/src/daemon.rs
+assertion_line: 638
+expression: "format!(\"{}\", status)"
+---
+Daemon:
+  Alive: yes
+  PID: 54321
+  Uptime: 86400s
+  Restarts: 2
+  Socket: ok

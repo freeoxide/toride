@@ -2,8 +2,8 @@
 //!
 //! Run with: `cargo run --example simple_snapshot`
 
-use toride::status::units::{format_bytes, format_duration};
-use toride::status::SysProbe;
+use toride_status::units::{format_bytes, format_duration};
+use toride_status::SysProbe;
 
 fn main() {
     let probe = SysProbe::new();
