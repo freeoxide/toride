@@ -325,8 +325,8 @@ toride/
 │   │   └── src/{lib,runner,spec,output,fake,redact,discovery}.rs
 │   ├── toride-fs/                          # atomic_write, file locking, path expansion, permissions
 │   │   └── src/{lib,atomic,lock,permissions,expand,read}.rs
-│   ├── toride-diagnostic-types/            # Severity, Finding, check helpers
-│   │   └── src/{lib,severity,finding,helpers}.rs
+│   ├── toride-diagnostic-types/            # Severity, Finding, DoctorReport, render helpers
+│   │   └── src/{lib,severity,finding,report,render,helpers}.rs
 │   ├── toride-service/                     # systemd service management
 │   │   └── src/{lib,manager,free_functions,error}.rs
 │   │
@@ -341,38 +341,38 @@ toride/
 │   │
 │   │  ──── NEW VPS SECURITY CRATES ────────────────────────────────
 │   ├── toride-updates/                     # P0: Auto security updates
-│   │   └── src/{lib,error,paths,spec,report,client,service,doctor,config,
-│   │            backup,detect,apt,dnf,schedule,cli}.rs
+│   │   └── src/{lib,error,paths,spec,report,parse,render,validate,client,
+│   │            service,doctor,config,backup,detect,apt,dnf,schedule,cli}.rs
 │   ├── toride-harden/                      # P0: Kernel hardening (sysctl)
-│   │   └── src/{lib,error,paths,spec,report,client,doctor,config,
-│   │            backup,profile,sysctl,shm,cli}.rs
+│   │   └── src/{lib,error,paths,spec,report,parse,render,validate,diff,client,
+│   │            doctor,config,backup,profile,sysctl,shm,kernel,cli}.rs
 │   ├── toride-users/                       # P1: User/sudo/PAM/2FA
-│   │   └── src/{lib,error,paths,spec,report,client,doctor,config,
-│   │            backup,user,sudo,pam,totp,password,cli}.rs
+│   │   └── src/{lib,error,paths,spec,report,parse,render,validate,client,
+│   │            doctor,config,backup,user,group,sudo,pam,totp,password,cli}.rs
 │   ├── toride-wireguard/                   # P1: WireGuard VPN
-│   │   └── src/{lib,error,paths,spec,report,client,service,doctor,config,
-│   │            backup,net,peer,cli}.rs
+│   │   └── src/{lib,error,paths,spec,report,parse,render,validate,diff,client,
+│   │            service,doctor,config,backup,net,peer,key,cli}.rs
 │   ├── toride-audit/                       # P1: auditd + AIDE + logs (features: auditd, integrity, logs, ids)
-│   │   └── src/{lib,error,paths,spec,report,client,doctor,backup,
-│   │            auditd,auditd_config,auditd_rules,auditd_parse,auditd_presets,
+│   │   └── src/{lib,error,paths,spec,report,parse,render,validate,diff,client,
+│   │            doctor,backup,auditd,auditd_config,auditd_rules,auditd_presets,
 │   │            integrity,integrity_config,integrity_parse,
-│   │            logs,logs_rsyslog,logs_journald,logs_rotation,
-│   │            ids}.rs
+│   │            logs,logs_rsyslog,logs_journald,logs_rotation,ids}.rs
 │   ├── toride-proxy/                       # P1: Reverse proxy + TLS (features: nginx, caddy, certs, waf)
-│   │   └── src/{lib,error,paths,spec,report,client,service,doctor,backup,
-│   │            nginx,nginx_config,nginx_headers,caddy,
+│   │   └── src/{lib,error,paths,spec,report,parse,render,validate,diff,client,
+│   │            service,doctor,backup,nginx,nginx_config,nginx_headers,caddy,
 │   │            certs,certs_parse,certs_renewal,waf,cli}.rs
 │   ├── toride-backup/                      # P2: Backup scheduling
-│   │   └── src/{lib,error,paths,spec,report,client,service,doctor,config,
-│   │            backup,restic,borg,schedule,restore,cli}.rs
+│   │   └── src/{lib,error,paths,spec,report,parse,render,client,service,
+│   │            doctor,config,backup,restic,borg,schedule,restore,cli}.rs
 │   ├── toride-cloud/                       # P2: Cloud provider security
-│   │   └── src/{lib,error,paths,spec,report,client,doctor,detect,
-│   │            aws,gcp,digitalocean,hetzner,cli}.rs
+│   │   └── src/{lib,error,paths,spec,report,parse,render,validate,client,
+│   │            doctor,detect,aws,gcp,digitalocean,hetzner,cli}.rs
 │   ├── toride-monitor/                     # P2: Outbound monitoring
-│   │   └── src/{lib,error,paths,spec,report,client,doctor,config,
-│   │            output,conntrack,anomaly,alert,cli}.rs
+│   │   └── src/{lib,error,paths,spec,report,parse,validate,client,doctor,
+│   │            config,output,conntrack,anomaly,alert,cli}.rs
 │   └── toride-tailscale/                   # P2: Tailscale mesh VPN
-│       └── src/{lib,error,paths,spec,report,client,doctor,api,acl,tailnet,dns,cli}.rs
+│       └── src/{lib,error,paths,spec,report,parse,client,doctor,api,acl,
+│               tailnet,status,netcheck,dns,cli}.rs
 │
 ├── docs/
 │   └── vps-security-crate-split.md         # This document
@@ -447,10 +447,14 @@ toride-xxx/
     ├── paths.rs         # XxxPaths struct (domain-specific paths, uses toride-fs for expansion)
     ├── spec.rs          # Domain types, builders (XxxSpec)
     ├── report.rs        # Status reports, apply reports (uses toride-diagnostic-types::Finding)
+    ├── parse.rs         # Parse CLI tool output into typed Rust structs
+    ├── render.rs        # Generate config file content from typed structs
+    ├── validate.rs      # Validate inputs before writing (prevent typos, bad ranges)
+    ├── diff.rs          # Show pending changes before applying (uses `similar` crate)
     ├── client.rs        # #[cfg(feature = "client")] Main entry struct (uses toride-runner::Runner)
     ├── service.rs       # #[cfg(feature = "service")] (uses toride-service::ServiceManager)
     ├── doctor.rs        # #[cfg(feature = "doctor")] (uses toride-diagnostic-types helpers)
-    ├── config.rs        # #[cfg(feature = "config")] Config file parsing (uses toride-fs::atomic_write)
+    ├── config.rs        # #[cfg(feature = "config")] Config file read/write (uses toride-fs::atomic_write)
     ├── backup.rs        # Pre-mutation backup (uses toride-fs)
     ├── domain.rs        # Domain-specific modules (apt.rs, sysctl.rs, etc.)
     ├── cli.rs           # #[cfg(feature = "cli")] clap args
@@ -838,12 +842,12 @@ Tailscale managed mesh VPN integration via its HTTP API. Requires async runtime 
 
 | Phase | Crates | Modules |
 |-------|--------|---------|
-| Phase 0 (Shared) | `toride-runner`, `toride-fs`, `toride-diagnostic-types`, `toride-service` | ~20 |
-| Phase 1 (P0) | `toride-updates`, `toride-harden` | ~30 |
-| Phase 2 (P1) | `toride-users`, `toride-wireguard`, `toride-audit` | ~48 |
-| Phase 3 (P1) | `toride-proxy` | ~18 |
-| Phase 4 (P2) | `toride-backup`, `toride-cloud`, `toride-monitor`, `toride-tailscale` | ~53 |
-| **Total** | **14 new crates** | **~169 modules** |
+| Phase 0 (Shared) | `toride-runner`, `toride-fs`, `toride-diagnostic-types`, `toride-service` | ~22 |
+| Phase 1 (P0) | `toride-updates`, `toride-harden` | ~36 |
+| Phase 2 (P1) | `toride-users`, `toride-wireguard`, `toride-audit` | ~59 |
+| Phase 3 (P1) | `toride-proxy` | ~22 |
+| Phase 4 (P2) | `toride-backup`, `toride-cloud`, `toride-monitor`, `toride-tailscale` | ~66 |
+| **Total** | **14 new crates** | **~205 modules** |
 
 The workspace grows from 16 to 30 crates. Phase 0 extracts ~950 lines of duplicated code from existing crates into 4 shared libraries, eliminating 3 Runner traits, 9 atomic_write implementations, and scattered Severity/Finding definitions. Every subsequent crate is built on this proven shared foundation.
 
