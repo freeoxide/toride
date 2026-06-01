@@ -682,14 +682,14 @@ Tailscale managed mesh VPN integration via its HTTP API. Requires async runtime 
 
 ## Summary
 
-| Phase | Crates | Modules | Effort |
-|-------|--------|---------|--------|
-| Phase 0 (Shared) | `toride-runner`, `toride-fs`, `toride-diagnostic-types`, `toride-service` | ~20 | Extraction + migration |
-| Phase 1 (P0) | `toride-updates`, `toride-harden` | ~30 | Foundation |
-| Phase 2 (P1) | `toride-users`, `toride-wireguard`, `toride-audit` | ~48 | Core security |
-| Phase 3 (P1) | `toride-proxy` | ~18 | Application layer |
-| Phase 4 (P2) | `toride-backup`, `toride-cloud`, `toride-monitor`, `toride-tailscale` | ~53 | Operations |
-| **Total** | **14 new crates** | **~169 modules** | |
+| Phase | Crates | Modules |
+|-------|--------|---------|
+| Phase 0 (Shared) | `toride-runner`, `toride-fs`, `toride-diagnostic-types`, `toride-service` | ~20 |
+| Phase 1 (P0) | `toride-updates`, `toride-harden` | ~30 |
+| Phase 2 (P1) | `toride-users`, `toride-wireguard`, `toride-audit` | ~48 |
+| Phase 3 (P1) | `toride-proxy` | ~18 |
+| Phase 4 (P2) | `toride-backup`, `toride-cloud`, `toride-monitor`, `toride-tailscale` | ~53 |
+| **Total** | **14 new crates** | **~169 modules** |
 
 The workspace grows from 16 to 30 crates. Phase 0 extracts ~950 lines of duplicated code from existing crates into 4 shared libraries, eliminating 3 Runner traits, 9 atomic_write implementations, and scattered Severity/Finding definitions. Every subsequent crate is built on this proven shared foundation.
 
