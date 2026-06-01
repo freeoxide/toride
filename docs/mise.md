@@ -1,8 +1,8 @@
-# Rust Library Plan: Typed Mise Wrapper for Dynamic Language/Tool Version Management
+# Rust Library Plan: `toride-mise` Typed Mise Wrapper
 
 ## 0. Product Goal
 
-Build a Rust library/crate that lets other Rust applications manage developer tools and language runtimes through `mise`.
+Build `toride-mise`, a Rust workspace crate that lets Toride and other Rust applications manage developer tools and language runtimes through `mise`.
 
 This is not a CLI app.
 
@@ -29,6 +29,35 @@ The core philosophy:
 
 > Use mise as the proven engine. Use Rust to provide a safe, typed, ergonomic library API around it.
 
+### 0.1 Repository Placement
+
+This crate belongs in the existing Toride workspace:
+
+```text
+crates/toride-mise/
+  Cargo.toml
+  src/
+```
+
+The root workspace manifest should include it through the existing `members = ["crates/*", "crates/toride-ssh/crates/*"]` pattern.
+
+Follow existing workspace conventions:
+
+* crate name: `toride-mise`
+* library name: `toride_mise`
+* edition: `2024`
+* lints inherited from workspace
+* shared dependency versions in root `[workspace.dependencies]`
+* no standalone root `src/` crate layout
+* command execution modeled after existing Toride command-runner patterns, but async-native for this crate
+
+Current repo realities to account for:
+
+* Rust code is a Cargo workspace, not a single package.
+* `web/` is an Astro/npm project with `package-lock.json`.
+* `web/package.json` requires Node `>=22.12.0`, so Node helpers should support project bootstrap and verification flows without assuming a committed mise config already exists.
+* There is currently no repo-level mise config; `toride-mise` must not assume one during tests or examples.
+
 ## 1. Why Mise Is the Right Engine
 
 Mise already solves the hard parts:
@@ -51,26 +80,26 @@ Mise already solves the hard parts:
 * detecting outdated versions
 * running commands inside a selected runtime
 
-This means our crate should avoid home-cooked installers.
+This means `toride-mise` should avoid home-cooked installers.
 
 Bad approach:
 
 ```text
-our crate downloads Node itself
-our crate installs Go itself
-our crate compiles Ruby itself
-our crate shells into nvm/gvm/pyenv manually
-our crate parses every language’s upstream release feed
+toride-mise downloads Node itself
+toride-mise installs Go itself
+toride-mise compiles Ruby itself
+toride-mise shells into nvm/gvm/pyenv manually
+toride-mise parses every language's upstream release feed
 ```
 
 Good approach:
 
 ```text
-our crate asks mise what versions exist
-our crate asks mise to install the requested version
-our crate reads mise JSON output
-our crate writes/edits mise.toml safely
-our crate exposes a typed Rust API
+toride-mise asks mise what versions exist
+toride-mise asks mise to install the requested version
+toride-mise reads mise JSON output
+toride-mise writes/edits mise.toml safely
+toride-mise exposes a typed Rust API
 ```
 
 ## 2. Hard Decision: Wrapper, Not Vendored Internal API
@@ -83,11 +112,11 @@ Problems:
 
 * mise is primarily an application, not a stable public library API
 * internal modules can change without semver guarantees for external users
-* you inherit mise’s full dependency graph
+* you inherit mise's full dependency graph
 * you need to keep rebasing patches
 * private assumptions will break between releases
 * async/runtime/globals/config paths may not be designed for embedding
-* your crate becomes tightly coupled to mise internals
+* the crate becomes tightly coupled to mise internals
 * upstream security fixes require painful merges
 * build times and binary size may explode
 * your public API accidentally mirrors mise internals
@@ -97,63 +126,50 @@ Problems:
 This is the better architecture:
 
 ```text
-Rust app
-  ↓
-our typed crate
-  ↓
+Rust app / Toride app
+  |
+toride-mise
+  |
 mise command adapter
-  ↓
+  |
 mise binary
-  ↓
+  |
 mise backends / registry / installs / config
 ```
 
-This is not “raw dogging commands” if done properly.
+This is not unstructured shelling-out if done properly.
 
-We will not use `std::process::Command` directly everywhere.
+The primary runner uses `tokio::process::Command`, not the blocking standard-library process API.
 
-We will use a proven command execution crate, preferably:
+We will use async process execution as the primary path:
 
-* `duct` for simple, robust command execution
-* or `tokio::process` only behind an async feature
+* `tokio::process` for process execution
+* `tokio::time` for timeouts
 * `which` for binary discovery
 * `serde_json` for JSON output
 * `camino` for UTF-8 paths
 * `fs-err` for better filesystem errors
 * `tempfile` for tests
-* `thiserror` or `miette` for errors
+* `thiserror` for library errors
+* optional `miette` for richer app-facing diagnostics
 * `tracing` for observability
 
 The wrapper must be centralized in one adapter layer so the rest of the crate never manually constructs shell commands.
 
-## 3. Crate Name Ideas
+## 3. Crate Name
 
-Good names:
-
-* `mise-manager`
-* `mise-control`
-* `mise-sdk`
-* `mise-rs-sdk`
-* `mise-wrapper`
-* `devtool-manager`
-* `runtime-manager`
-* `toolchain-manager`
-* `toolenv`
-
-Best practical name:
+Use:
 
 ```text
-mise-manager
+toride-mise
 ```
 
 Reason:
 
-* clear
-* boring
-* exact
-* library-oriented
-* not overbranded
-* easy to understand on crates.io
+* matches the workspace naming pattern
+* makes ownership clear
+* avoids occupying a generic crates.io namespace prematurely
+* can still be published later as a normal library crate
 
 ## 4. Target Users
 
@@ -172,6 +188,7 @@ Examples:
 * language runtime selectors
 * monorepo tooling
 * self-hosted deployment helpers
+* Toride's own app/runtime management flows
 
 Not for:
 
@@ -230,29 +247,30 @@ let mise = Mise::builder()
     .cwd("/path/to/project")
     .no_config(false)
     .no_env(false)
+    .no_hooks(false)
     .locked(false)
     .build()?;
 ```
 
-### 6.3 Sync-first design
+### 6.3 Async-first design
 
-Start sync-first.
+Start async-first.
 
-Most server/admin crates are easier to consume with blocking APIs.
-
-```rust
-mise.install("node@22")?;
-mise.use_tool(UseRequest::global("node@22"))?;
-let env = mise.env_json(["node@22"])?;
-```
-
-Optional later:
+This crate will be consumed by async applications and potentially by Toride's TUI/app runtime. Blocking process calls in the primary API are an avoidable footgun because they can freeze event loops, UI rendering, and background task scheduling.
 
 ```rust
-features = ["async"]
+mise.install(["node@22"]).await?;
+mise.use_tool(UseRequest::global("node@22")).await?;
+let env = mise.env_json(["node@22"]).await?;
 ```
 
-Use `tokio::process` only behind that feature.
+If a blocking facade is needed later, add it explicitly as a thin compatibility layer:
+
+```rust
+features = ["blocking"]
+```
+
+Do not make blocking execution the default architecture.
 
 ## 7. Command Adapter Layer
 
@@ -269,14 +287,17 @@ src/command/
 ### 7.1 Runner trait
 
 ```rust
+#[async_trait::async_trait]
 pub trait CommandRunner {
-    fn run(&self, cmd: MiseCommand) -> Result<CommandOutput, MiseError>;
+    async fn run(&self, cmd: MiseCommand) -> Result<CommandOutput, MiseError>;
 }
 ```
 
+Use `async-trait` here because the runner will be injected behind trait objects in clients and tests. If we later remove the macro, use an explicit boxed future shape rather than losing object-safe test injection.
+
 ### 7.2 Real runner
 
-Uses `duct`.
+Uses `tokio::process::Command`.
 
 Responsibilities:
 
@@ -286,11 +307,12 @@ Responsibilities:
 * capture stdout
 * capture stderr
 * capture exit code
-* support timeouts
+* enforce timeouts with `tokio::time::timeout`
 * redact secrets in logs
 * normalize UTF-8 output
 * parse JSON only at API boundary
 * include command context in errors
+* never block an async runtime thread
 
 ### 7.3 Fake runner for tests
 
@@ -350,7 +372,10 @@ Do not collapse everything into strings.
 Recommended structure:
 
 ```text
-src/
+crates/toride-mise/
+  Cargo.toml
+  fixtures/
+  src/
   lib.rs
 
   client.rs
@@ -438,12 +463,25 @@ The entire crate should revolve around a normalized tool spec.
 
 ```rust
 pub struct ToolSpec {
+    pub raw: String,
     pub backend: Option<String>,
     pub name: String,
     pub version: Option<VersionRequest>,
-    pub options: BTreeMap<String, toml::Value>,
+    pub options: BTreeMap<String, ToolOptionValue>,
+}
+
+pub enum ToolOptionValue {
+    Bool(bool),
+    Integer(i64),
+    String(String),
+    StringList(Vec<String>),
+    Raw(String),
 }
 ```
+
+`raw` is required.
+
+Parsing is for validation, display, and typed helpers. Rendering must be lossless and should use `raw` unless the caller intentionally constructed a new `ToolSpec` through the builder.
 
 Examples:
 
@@ -490,14 +528,17 @@ Many tool versions are not pure semver:
 * `nightly`
 * `1.82`
 
+Do not assume the parser understands every future mise backend. Unknown-but-valid-looking specs should be preserved and passed through when the caller opts into permissive mode.
+
 ## 11. Registry Support
 
 Expose registry APIs:
 
 ```rust
-mise.registry() -> Result<Vec<RegistryTool>>
-mise.registry_tool("poetry") -> Result<RegistryTool>
-mise.registry_by_backend("aqua") -> Result<Vec<RegistryTool>>
+mise.registry().await?;
+mise.registry_tool("poetry").await?;
+mise.registry_by_backend("aqua").await?;
+mise.search_registry(SearchRequest::new("jq")).await?;
 ```
 
 Model:
@@ -515,14 +556,18 @@ Use `mise registry --json`.
 
 Support `--security` as optional because it can be slower.
 
+Use `mise search` for fuzzy registry lookup. It is text/table output today, so expose raw output and parse conservatively.
+
 ## 12. Version Discovery
 
 Expose:
 
 ```rust
-mise.list_remote("node")?;
-mise.list_remote_prefix("node", "22")?;
-mise.list_remote_json("github:cli/cli")?;
+mise.list_remote("node").await?;
+mise.list_remote_prefix("node", "22").await?;
+mise.list_remote_json("github:cli/cli").await?;
+mise.latest("node@22").await?;
+mise.latest_installed("node").await?;
 ```
 
 Request model:
@@ -557,12 +602,13 @@ Use this for dynamic UI dropdowns.
 Expose:
 
 ```rust
-mise.list()?;
-mise.list_installed()?;
-mise.list_current()?;
-mise.list_missing()?;
-mise.list_prunable()?;
-mise.list_outdated()?;
+mise.list().await?;
+mise.list_installed().await?;
+mise.list_current().await?;
+mise.list_missing().await?;
+mise.list_prunable().await?;
+mise.list_outdated().await?;
+mise.tool_info("node").await?;
 ```
 
 Request model:
@@ -582,6 +628,8 @@ pub struct ListToolsRequest {
 ```
 
 Use `mise ls --json`.
+
+Use `mise tool --json <tool>` for single-tool backend/requested/installed/active/config-source detail.
 
 Return:
 
@@ -603,7 +651,10 @@ pub struct ToolStatus {
 Expose:
 
 ```rust
-mise.install(["node@22", "python@3.12"])?;
+mise.install(["node@22", "python@3.12"]).await?;
+mise.install_into("node@22", "/opt/toride/tools/node-22").await?;
+mise.link(LinkRequest::new("node@22", "/opt/toride/tools/node-22")).await?;
+mise.reshim().await?;
 ```
 
 Request:
@@ -613,9 +664,15 @@ pub struct InstallRequest {
     pub tools: Vec<ToolSpec>,
     pub jobs: Option<usize>,
     pub force: bool,
+    pub verbose: bool,
     pub raw: bool,
+    pub shared: Option<Utf8PathBuf>,
+    pub system: bool,
     pub locked: bool,
     pub yes: bool,
+    pub dry_run: bool,
+    pub dry_run_code: bool,
+    pub minimum_release_age: Option<String>,
 }
 ```
 
@@ -623,9 +680,13 @@ Support:
 
 * install all tools from current config
 * install selected tools
+* install into explicit app-managed directories
+* link externally managed installs only when explicitly requested
 * install with jobs
 * install in locked mode
 * install with force
+* install to explicit shared/system locations only when the caller opts in
+* install dry-run and dry-run-code previews
 * install with current working directory
 
 Important behavior:
@@ -639,7 +700,7 @@ Important behavior:
 Expose:
 
 ```rust
-mise.uninstall(["node@20.0.0"])?;
+mise.uninstall(["node@20.0.0"]).await?;
 ```
 
 Request:
@@ -647,7 +708,9 @@ Request:
 ```rust
 pub struct UninstallRequest {
     pub tools: Vec<ToolSpec>,
+    pub all: bool,
     pub dry_run: bool,
+    pub dry_run_code: bool,
 }
 ```
 
@@ -664,8 +727,8 @@ That is a different operation: `unuse`.
 Expose:
 
 ```rust
-mise.use_tool(UseRequest::local("node@22"))?;
-mise.use_tool(UseRequest::global("python@3.12"))?;
+mise.use_tool(UseRequest::local("node@22")).await?;
+mise.use_tool(UseRequest::global("python@3.12")).await?;
 ```
 
 Request:
@@ -675,9 +738,15 @@ pub struct UseRequest {
     pub tools: Vec<ToolSpec>,
     pub scope: UseScope,
     pub pin: bool,
+    pub fuzzy: bool,
     pub force: bool,
+    pub jobs: Option<usize>,
     pub path: Option<Utf8PathBuf>,
     pub env_name: Option<String>,
+    pub dry_run: bool,
+    pub dry_run_code: bool,
+    pub raw: bool,
+    pub minimum_release_age: Option<String>,
 }
 ```
 
@@ -701,13 +770,15 @@ Support flags:
 * force reinstall
 * fuzzy versions
 * multiple tools in one call
+* dry-run and dry-run-code previews
+* minimum release age
 
 ### 16.2 Pin
 
 Pin should be a first-class helper:
 
 ```rust
-mise.pin(["node@lts", "npm@latest"])?;
+mise.pin(["node@lts", "npm@latest"]).await?;
 ```
 
 Internally uses `mise use --pin`.
@@ -723,17 +794,34 @@ Purpose:
 Expose:
 
 ```rust
-mise.unuse(["node"])?;
-mise.unuse_global(["node"])?;
+mise.unuse(["node@22"]).await?;
+mise.unuse_global(["node@22"]).await?;
 ```
 
 This removes tool entries from config.
+
+Request:
+
+```rust
+pub struct UnuseRequest {
+    pub tools: Vec<ToolSpec>,
+    pub scope: UseScope,
+    pub no_prune: bool,
+}
+```
+
+Important mise behavior:
+
+* `mise unuse` also prunes the installed version if no other config uses it.
+* Expose `no_prune` because config removal and install deletion are different risk levels.
+* Prefer exact installed specs where possible.
+* If the wrapper accepts an unversioned tool name, resolve it explicitly before invoking mise or return a clear ambiguity error.
 
 Important distinction:
 
 ```text
 uninstall = remove installed files
-unuse = remove config reference
+unuse = remove config reference, and may prune unless --no-prune is set
 ```
 
 Both are needed.
@@ -745,7 +833,7 @@ This is one of the most important parts for library consumers.
 Expose:
 
 ```rust
-let env = mise.env(EnvRequest::for_tools(["node@22"]))?;
+let env = mise.env(EnvRequest::for_tools(["node@22"])).await?;
 ```
 
 Use `mise env --json` or `mise env --json-extended`.
@@ -784,11 +872,12 @@ Support:
 Rust app wants to spawn a Node script with Node 22:
 
 ```rust
-let env = mise.env_for(["node@22"])?;
-Command::new("node")
+let env = mise.env_for(["node@22"]).await?;
+tokio::process::Command::new("node")
     .envs(env.vars)
     .arg("script.js")
-    .status()?;
+    .status()
+    .await?;
 ```
 
 But preferably, use `mise exec`.
@@ -802,7 +891,8 @@ mise.exec()
     .tool("node@22")
     .arg("node")
     .arg("--version")
-    .run()?;
+    .run()
+    .await?;
 ```
 
 Request:
@@ -846,11 +936,11 @@ Caveat:
 Expose:
 
 ```rust
-mise.where_tool("node@22")?;
-mise.which("node")?;
-mise.which_with_tool("npm", "node@22")?;
-mise.which_version("node")?;
-mise.which_plugin("node")?;
+mise.where_tool("node@22").await?;
+mise.which("node").await?;
+mise.which_with_tool("npm", "node@22").await?;
+mise.which_version("node").await?;
+mise.which_plugin("node").await?;
 ```
 
 Types:
@@ -885,29 +975,30 @@ This gives app UIs a way to show exactly which binary will run.
 Expose:
 
 ```rust
-mise.config_ls()?;
-mise.config_get("tools.node")?;
+mise.config_ls().await?;
+mise.config_get("tools.node").await?;
 ```
 
 Support:
 
 * config hierarchy
 * local/global/project config
-* `mise.toml`
-* `mise.local.toml`
 * environment configs
-* `.mise/config.toml`
-* `.config/mise.toml`
-* `conf.d/*.toml`
+* source-aware output where mise provides it
+* current mise precedence rules without hard-coding them in `toride-mise`
+
+Do not maintain a hand-written authoritative config path list in this crate.
+
+Use `mise config ls`, `mise config get`, and source metadata first. Config path discovery should ask mise where possible because mise's supported paths and precedence rules evolve.
 
 ### 20.2 Write config
 
 Expose:
 
 ```rust
-mise.config_set("tools.node", "22")?;
-mise.config_set_typed("settings.jobs", 4)?;
-mise.config_set_list("settings.disable_tools", ["node", "rust"])?;
+mise.config_set("tools.node", "22").await?;
+mise.config_set_typed("settings.jobs", 4).await?;
+mise.config_set_list("settings.disable_tools", ["node", "rust"]).await?;
 ```
 
 Use `mise config set` when possible.
@@ -950,12 +1041,13 @@ pub extra: BTreeMap<String, toml::Value>
 Expose:
 
 ```rust
-mise.settings()?;
-mise.settings_all()?;
-mise.settings_local()?;
-mise.settings_get("python")?;
-mise.settings_set("jobs", "8")?;
-mise.settings_unset("jobs")?;
+mise.settings().await?;
+mise.settings_all().await?;
+mise.settings_local().await?;
+mise.settings_get("python").await?;
+mise.settings_set("jobs", "8").await?;
+mise.settings_add("disable_tools", "node").await?;
+mise.settings_unset("jobs").await?;
 ```
 
 Support:
@@ -982,10 +1074,10 @@ Settings matter for:
 Expose:
 
 ```rust
-mise.lock()?;
-mise.lock_tool("node")?;
-mise.lock_platforms(["linux-x64", "macos-arm64"])?;
-mise.lock_dry_run()?;
+mise.lock().await?;
+mise.lock_tool("node").await?;
+mise.lock_platforms(["linux-x64", "macos-arm64"]).await?;
+mise.lock_dry_run().await?;
 ```
 
 Request:
@@ -1005,10 +1097,12 @@ pub struct LockRequest {
 Also expose:
 
 ```rust
-mise.install_locked()?;
+mise.install_locked().await?;
 ```
 
-This sets `--locked` or environment/settings equivalent.
+This must use per-command `--locked` or an isolated command environment such as `MISE_LOCKED=1`.
+
+Do not mutate global mise settings inside this helper. `settings.locked=true` is global in scope and can affect unrelated global tools. Only the explicit settings API may change settings.
 
 Purpose:
 
@@ -1025,10 +1119,10 @@ Purpose:
 Expose:
 
 ```rust
-mise.outdated()?;
-mise.outdated_tool("node")?;
-mise.outdated_local()?;
-mise.outdated_inactive()?;
+mise.outdated().await?;
+mise.outdated_tool("node").await?;
+mise.outdated_local().await?;
+mise.outdated_inactive().await?;
 ```
 
 Return:
@@ -1054,10 +1148,10 @@ Support:
 Expose:
 
 ```rust
-mise.upgrade()?;
-mise.upgrade_tools(["node@22", "python@3.12"])?;
-mise.upgrade_bump()?;
-mise.upgrade_dry_run()?;
+mise.upgrade().await?;
+mise.upgrade_tools(["node@22", "python@3.12"]).await?;
+mise.upgrade_bump().await?;
+mise.upgrade_dry_run().await?;
 ```
 
 Request:
@@ -1069,8 +1163,11 @@ pub struct UpgradeRequest {
     pub dry_run: bool,
     pub dry_run_code: bool,
     pub inactive: bool,
+    pub local_only: bool,
+    pub raw: bool,
     pub exclude: Vec<String>,
     pub jobs: Option<usize>,
+    pub minimum_release_age: Option<String>,
 }
 ```
 
@@ -1085,9 +1182,9 @@ Important behavior:
 Expose:
 
 ```rust
-mise.prune_dry_run()?;
-mise.prune_tools()?;
-mise.prune_configs()?;
+mise.prune_dry_run().await?;
+mise.prune_tools().await?;
+mise.prune_configs().await?;
 ```
 
 Request:
@@ -1117,10 +1214,21 @@ This is needed for cleanup UIs.
 Expose:
 
 ```rust
-mise.cache_clear()?;
-mise.cache_clear_tools(["node", "python"])?;
-mise.cache_path()?;
-mise.cache_prune()?;
+mise.cache_clear().await?;
+mise.cache_clear_tools(["node", "python"]).await?;
+mise.cache_path().await?;
+mise.cache_prune(CachePruneRequest::new()).await?;
+mise.cache_prune(CachePruneRequest::dry_run(["node"])).await?;
+```
+
+Request:
+
+```rust
+pub struct CachePruneRequest {
+    pub tools: Vec<String>,
+    pub dry_run: bool,
+    pub verbose: bool,
+}
 ```
 
 Purpose:
@@ -1130,13 +1238,52 @@ Purpose:
 * force new upstream metadata
 * cleanup disk usage
 
-## 26. Doctor / Diagnostics API
+## 26. Backends / Plugins / Aliases / Tasks / Bin Paths
+
+Complete integration also needs typed wrappers for the mise surfaces that support tool management but do not fit a single language helper.
 
 Expose:
 
 ```rust
-mise.doctor()?;
-mise.doctor_path()?;
+mise.backends().await?;
+mise.bin_paths(BinPathsRequest::new()).await?;
+
+mise.plugins().list().await?;
+mise.plugins().list_remote().await?;
+mise.plugins().install(PluginInstallRequest::new("node")).await?;
+mise.plugins().link(PluginLinkRequest::new("custom", "/path/to/plugin")).await?;
+mise.plugins().uninstall(["node"]).await?;
+mise.plugins().update(["node"]).await?;
+
+mise.tool_aliases().list("node").await?;
+mise.tool_aliases().get("node", "lts").await?;
+mise.tool_aliases().set("node", "lts", "22").await?;
+mise.tool_aliases().unset("node", "lts").await?;
+
+mise.tasks().list(TaskListRequest::new()).await?;
+mise.tasks().add(TaskAddRequest::new("build").run(["cargo", "build"])).await?;
+mise.tasks().deps(TaskDepsRequest::new(["build"])).await?;
+mise.tasks().edit_path("build").await?;
+mise.tasks().info("build").await?;
+mise.tasks().run(TaskRunRequest::new("build")).await?;
+mise.tasks().validate(TaskValidateRequest::new()).await?;
+```
+
+Rules:
+
+* Parse JSON where the command supports JSON.
+* Preserve raw output for commands that are text-only.
+* Treat task execution like `mise exec`: explicit command result, timeout, output mode, and cancellation behavior.
+* Do not invoke editor-driven commands directly; expose path/query forms such as `mise tasks edit --path`.
+* Plugin install/link/update/uninstall are destructive or networked operations and need dry-run or plan-style APIs where mise supports them.
+
+## 27. Doctor / Diagnostics API
+
+Expose:
+
+```rust
+mise.doctor().await?;
+mise.doctor_path().await?;
 ```
 
 Return:
@@ -1150,9 +1297,9 @@ pub struct DoctorReport {
 }
 ```
 
-Initially this can be raw-text parsed lightly.
+Use `mise doctor --json` as the primary path.
 
-Later, if mise adds structured JSON for doctor, switch to JSON.
+Keep raw-text fallback for older mise versions or unexpected JSON failures, but do not prefer text parsing when structured output exists.
 
 Diagnostics should include wrapper-side checks too:
 
@@ -1171,15 +1318,15 @@ Diagnostics should include wrapper-side checks too:
 * network/proxy env availability
 * permissions on mise data/cache dirs
 
-## 27. Trust / Security API
+## 28. Trust / Security API
 
 Mise has trust/untrust concepts around config.
 
 Expose:
 
 ```rust
-mise.trust(path)?;
-mise.untrust(path)?;
+mise.trust(path).await?;
+mise.untrust(path).await?;
 ```
 
 Also provide safe defaults:
@@ -1193,6 +1340,8 @@ pub struct SecurityPolicy {
     pub minimum_release_age: Option<String>,
 }
 ```
+
+`locked` maps to command-scoped behavior. It must not write `settings.locked=true` unless the caller uses the settings API directly.
 
 For hostile/untrusted project directories, allow:
 
@@ -1217,11 +1366,11 @@ untrusted repo mode:
   maybe require explicit trust before install
 ```
 
-## 28. Language-Specific Convenience Layer
+## 29. Language-Specific Convenience Layer
 
 The crate should have generic APIs first, then small typed helpers.
 
-### 28.1 Node.js
+### 29.1 Node.js
 
 Capabilities:
 
@@ -1235,9 +1384,9 @@ Capabilities:
 API:
 
 ```rust
-mise.node().install("22")?;
-mise.node().use_global("22")?;
-mise.node().pin_lts_with_npm_latest()?;
+mise.node().install("22").await?;
+mise.node().use_global("22").await?;
+mise.node().pin_lts_with_npm_latest().await?;
 ```
 
 Important behavior:
@@ -1246,7 +1395,7 @@ Important behavior:
 * npm can be pinned separately.
 * Do not run `npm install -g` from this crate unless using `npm:` backend intentionally.
 
-### 28.2 Bun
+### 29.2 Bun
 
 Capabilities:
 
@@ -1257,10 +1406,10 @@ Capabilities:
 
 Important caveat:
 
-* Do not use `bun upgrade` behind mise’s back.
+* Do not use `bun upgrade` behind mise's back.
 * All upgrades should go through mise.
 
-### 28.3 Deno
+### 29.3 Deno
 
 Capabilities:
 
@@ -1271,10 +1420,10 @@ Capabilities:
 
 Important caveat:
 
-* Do not use `deno upgrade` behind mise’s back.
+* Do not use `deno upgrade` behind mise's back.
 * All upgrades should go through mise.
 
-### 28.4 Go
+### 29.4 Go
 
 Capabilities:
 
@@ -1286,8 +1435,8 @@ Capabilities:
 API:
 
 ```rust
-mise.go().use_global("1.23")?;
-mise.go().install_cli("github.com/jesseduffield/lazygit", "latest")?;
+mise.go().use_global("1.23").await?;
+mise.go().install_cli("github.com/jesseduffield/lazygit", "latest").await?;
 ```
 
 Important:
@@ -1296,7 +1445,7 @@ Important:
 * For prebuilt binaries, prefer `aqua` or `github` when available.
 * Do not recreate gvm behavior.
 
-### 28.5 Python
+### 29.5 Python
 
 Capabilities:
 
@@ -1310,8 +1459,8 @@ Capabilities:
 API:
 
 ```rust
-mise.python().use_local("3.12")?;
-mise.python().use_multiple_global(["3.11", "3.12"])?;
+mise.python().use_local("3.12").await?;
+mise.python().use_multiple_global(["3.11", "3.12"]).await?;
 ```
 
 Important:
@@ -1320,7 +1469,7 @@ Important:
 * Python package tools should use `pipx:` or `uv`/project tooling outside this core crate.
 * Keep runtime management separate from dependency management.
 
-### 28.6 Rust
+### 29.6 Rust
 
 Capabilities:
 
@@ -1333,9 +1482,9 @@ Capabilities:
 API:
 
 ```rust
-mise.rust().use_global("stable")?;
-mise.rust().use_local("1.82")?;
-mise.rust().with_components("1.83.0", ["rust-src", "llvm-tools"])?;
+mise.rust().use_global("stable").await?;
+mise.rust().use_local("1.82").await?;
+mise.rust().with_components("1.83.0", ["rust-src", "llvm-tools"]).await?;
 ```
 
 Important:
@@ -1345,7 +1494,7 @@ Important:
 * Do not replace rustup.
 * Allow isolation via env like `MISE_RUSTUP_HOME` and `MISE_CARGO_HOME`.
 
-### 28.7 Ruby
+### 29.7 Ruby
 
 Capabilities:
 
@@ -1357,8 +1506,8 @@ Capabilities:
 API:
 
 ```rust
-mise.ruby().use_global("3.3")?;
-mise.ruby().set_precompiled(true)?;
+mise.ruby().use_global("3.3").await?;
+mise.ruby().set_precompiled(true).await?;
 ```
 
 Important:
@@ -1367,7 +1516,7 @@ Important:
 * Wrapper should classify this as `DependencyMissing` when possible.
 * Do not implement ruby-build yourself.
 
-### 28.8 Java
+### 29.8 Java
 
 Capabilities:
 
@@ -1379,34 +1528,34 @@ Capabilities:
 API:
 
 ```rust
-mise.java().use_global("temurin-21")?;
-mise.java().java_home()?;
+mise.java().use_global("temurin-21").await?;
+mise.java().java_home().await?;
 ```
 
 Important:
 
 * Shims alone may not set `JAVA_HOME`; generated env / activation matters.
 
-### 28.9 Generic tools
+### 29.9 Generic tools
 
 Everything else must still work.
 
 ```rust
-mise.tool("terraform").use_local("1.9")?;
-mise.tool("aws-cli").install("latest")?;
-mise.tool("github:cli/cli").install("latest")?;
-mise.tool("aqua:aws/aws-cli").install("latest")?;
-mise.tool("cargo:ripgrep").install("latest")?;
-mise.tool("npm:prettier").install("3")?;
-mise.tool("pipx:black").install("latest")?;
-mise.tool("gem:rubocop").install("latest")?;
+mise.tool("terraform").use_local("1.9").await?;
+mise.tool("aws-cli").install("latest").await?;
+mise.tool("github:cli/cli").install("latest").await?;
+mise.tool("aqua:aws/aws-cli").install("latest").await?;
+mise.tool("cargo:ripgrep").install("latest").await?;
+mise.tool("npm:prettier").install("3").await?;
+mise.tool("pipx:black").install("latest").await?;
+mise.tool("gem:rubocop").install("latest").await?;
 ```
 
 This is the real power.
 
 Do not overfit to languages.
 
-## 29. Backend Coverage
+## 30. Backend Coverage
 
 The crate should understand backend prefixes:
 
@@ -1417,6 +1566,7 @@ aqua:
 cargo:
 conda:
 dotnet:
+forgejo:
 gem:
 github:
 gitlab:
@@ -1443,7 +1593,7 @@ Important backend policy:
 * warn when a backend requires a runtime already installed
 * expose backend security info where mise provides it
 
-## 30. Mise Binary Management
+## 31. Mise Binary Management
 
 The crate should not assume `mise` is installed.
 
@@ -1455,7 +1605,7 @@ MiseBinary::from_path(path)
 MiseBinary::ensure_installed()
 ```
 
-### 30.1 Discovery order
+### 31.1 Discovery order
 
 ```text
 explicit path passed by user
@@ -1465,7 +1615,7 @@ well-known install paths
 app-bundled binary path
 ```
 
-### 30.2 Installing mise
+### 31.2 Installing mise
 
 This is optional and should be behind a feature:
 
@@ -1484,7 +1634,7 @@ Do not silently curl-shell-install in library code.
 
 A library should never surprise-install global tools unless explicitly asked.
 
-## 31. Version Compatibility
+## 32. Version Compatibility
 
 On client creation:
 
@@ -1523,6 +1673,14 @@ Returns:
 pub struct MiseCapabilities {
     pub json_ls: bool,
     pub json_env: bool,
+    pub json_doctor: bool,
+    pub json_tool: bool,
+    pub json_bin_paths: bool,
+    pub json_settings_extended: bool,
+    pub json_tasks_ls: bool,
+    pub json_tasks_info: bool,
+    pub json_tasks_validate: bool,
+    pub dry_run_code: bool,
     pub registry_security: bool,
     pub lockfile: bool,
     pub sandbox_exec: bool,
@@ -1531,7 +1689,7 @@ pub struct MiseCapabilities {
 
 This prevents brittle assumptions.
 
-## 32. Config Safety
+## 33. Config Safety
 
 Writing config is dangerous if sloppy.
 
@@ -1558,7 +1716,7 @@ pub struct ConfigWriteResult {
 }
 ```
 
-## 33. Execution Safety
+## 34. Execution Safety
 
 Never build shell strings.
 
@@ -1589,7 +1747,7 @@ Also:
 * capture output optionally
 * allow cancellation in async mode
 
-## 34. Output Modes
+## 35. Output Modes
 
 Some consumers need captured output; some need streaming.
 
@@ -1614,7 +1772,7 @@ pub struct ExecResult {
 
 For streaming, return status and optionally collected tail.
 
-## 35. Hooks and Env Handling
+## 36. Hooks and Env Handling
 
 Mise can load environment variables and hooks from config.
 
@@ -1641,7 +1799,7 @@ Default:
 * for normal trusted project use: allow all
 * for automation over unknown repos: no hooks until trusted
 
-## 36. Project Context
+## 37. Project Context
 
 A central concept:
 
@@ -1655,17 +1813,17 @@ pub struct MiseProject {
 Capabilities:
 
 ```rust
-project.detect_config_files()?;
-project.list_tools()?;
-project.install_missing()?;
-project.env()?;
-project.exec(["node", "--version"])?;
-project.lock()?;
+project.detect_config_files().await?;
+project.list_tools().await?;
+project.install_missing().await?;
+project.env().await?;
+project.exec(["node", "--version"]).await?;
+project.lock().await?;
 ```
 
 This is useful for IDEs/agents.
 
-## 37. Dynamic Runtime Manager API
+## 38. Dynamic Runtime Manager API
 
 For app-level use, expose a generic manager:
 
@@ -1678,52 +1836,54 @@ pub struct RuntimeManager {
 Methods:
 
 ```rust
-manager.ensure("node", "22")?;
+manager.ensure("node", "22").await?;
 manager.ensure_many([
     ("node", "22"),
     ("bun", "latest"),
     ("python", "3.12"),
-])?;
+]).await?;
 
-manager.run_with("node@22", ["node", "--version"])?;
-manager.resolve_bin("node")?;
+manager.run_with("node@22", ["node", "--version"]).await?;
+manager.resolve_bin("node").await?;
 ```
 
 This gives the high-level UX you want.
 
-## 38. Example Public API
+## 39. Example Public API
 
-### 38.1 Install Node and run npm
+### 39.1 Install Node and run npm
 
 ```rust
-let mise = Mise::discover()?;
+let mise = Mise::discover().await?;
 
-mise.use_tool(UseRequest::local("node@22"))?;
+mise.use_tool(UseRequest::local("node@22")).await?;
 
 let result = mise.exec(ExecRequest::new()
     .tool("node@22")
-    .command(["npm", "install"]))?;
+    .command(["npm", "install"]))
+    .await?;
 ```
 
-### 38.2 Ensure Python and get env
+### 39.2 Ensure Python and get env
 
 ```rust
-let mise = Mise::discover()?;
+let mise = Mise::discover().await?;
 
-mise.install(["python@3.12"])?;
+mise.install(["python@3.12"]).await?;
 
 let env = mise.env(EnvRequest::new()
     .tool("python@3.12")
-    .json_extended(true))?;
+    .json_extended(true))
+    .await?;
 ```
 
-### 38.3 Global Bun
+### 39.3 Global Bun
 
 ```rust
-mise.use_tool(UseRequest::global("bun@latest"))?;
+mise.use_tool(UseRequest::global("bun@latest")).await?;
 ```
 
-### 38.4 Rust with components
+### 39.4 Rust with components
 
 ```rust
 mise.use_tool(
@@ -1732,10 +1892,10 @@ mise.use_tool(
             .version("1.83.0")
             .option("components", "rust-src,llvm-tools")
     )
-)?;
+).await?;
 ```
 
-### 38.5 Check project health
+### 39.5 Check project health
 
 ```rust
 let report = mise.diagnostics()
@@ -1743,76 +1903,109 @@ let report = mise.diagnostics()
     .check_config()
     .check_missing_tools()
     .check_outdated()
-    .run()?;
+    .run()
+    .await?;
 ```
 
-## 39. Feature Flags
+## 40. Feature Flags
 
 Recommended crate features:
 
 ```toml
-default = ["sync", "json"]
+default = ["json", "toml", "diagnostics"]
 
-sync = ["duct"]
-async = ["tokio/process"]
-json = ["serde", "serde_json"]
-toml = ["toml_edit", "toml"]
+json = ["dep:serde", "dep:serde_json"]
+toml = ["dep:toml_edit", "dep:toml"]
 diagnostics = []
-bootstrap = ["reqwest"]
+bootstrap = ["dep:reqwest"]
 tracing = ["dep:tracing"]
 miette = ["dep:miette"]
+blocking = []
 ```
 
-Avoid pulling heavy deps by default.
+Async execution is not a feature flag. It is the baseline API.
 
-## 40. Dependencies
+`blocking` may add a small wrapper facade later, but it must not introduce a separate implementation path.
 
-Recommended dependencies:
+## 41. Dependencies
+
+Use the root workspace for shared dependency versions. The current workspace already owns `tokio`, `serde`, `serde_json`, `thiserror`, `tracing`, `dirs`, `async-trait`, and `which`; keep using those entries instead of pinning duplicate versions in `crates/toride-mise/Cargo.toml`.
+
+Recommended root `[workspace.dependencies]` state after adding the crate:
 
 ```toml
-duct = "0.13"
 which = "8"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-toml = "0.9"
-toml_edit = "0.23"
-camino = { version = "1", features = ["serde1"] }
-fs-err = "3"
 thiserror = "2"
 tracing = "0.1"
-tempfile = "3"
+dirs = "6"
+async-trait = "0.1"
+camino = { version = "1", features = ["serde1"] }
+fs-err = "3"
 semver = "1"
-shell-words = "1"
+toml = "1"
+toml_edit = "0.23"
+insta = "1"
+tempfile = "3"
 ```
 
-Optional:
+Feature-gated package versions should still live at the workspace root. Mark them optional only in `crates/toride-mise/Cargo.toml`:
 
 ```toml
-tokio = { version = "1", features = ["process", "io-util", "macros"], optional = true }
-miette = { version = "7", optional = true }
-reqwest = { version = "0.12", optional = true }
+miette = "7"
+reqwest = { version = "0.13", default-features = false, features = ["charset", "http2", "rustls"] }
 ```
 
-## 41. Testing Strategy
+Recommended `crates/toride-mise/Cargo.toml` dependency shape:
 
-### 41.1 Unit tests
+```toml
+[dependencies]
+tokio = { workspace = true, features = ["process", "io-util", "time", "macros"] }
+which = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
+thiserror = { workspace = true }
+tracing = { workspace = true, optional = true }
+
+camino = { workspace = true }
+fs-err = { workspace = true }
+semver = { workspace = true }
+toml = { workspace = true, optional = true }
+toml_edit = { workspace = true, optional = true }
+miette = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+insta = { workspace = true }
+```
+
+Do not pin duplicate dependency versions inside `toride-mise` when the root workspace already owns that dependency.
+
+## 42. Testing Strategy
+
+### 42.1 Unit tests
 
 Use fake runner.
 
 Test:
 
 * command construction
-* args escaping
+* argument vector construction
 * JSON parsing
 * error classification
 * config model
 * tool spec parsing
+* lossless tool spec round-tripping
 * path handling
 * lockfile request construction
 * registry parsing
 * env parsing
+* timeout behavior with async runner tests
 
-### 41.2 Snapshot tests
+### 42.2 Snapshot tests
 
 Use `insta`.
 
@@ -1823,14 +2016,14 @@ Snapshot:
 * error outputs
 * diagnostics report rendering
 
-### 41.3 Integration tests
+### 42.3 Integration tests
 
 Require real mise.
 
 Gate behind:
 
 ```text
-MISE_MANAGER_INTEGRATION=1
+TORIDE_MISE_INTEGRATION=1
 ```
 
 Tests:
@@ -1839,15 +2032,16 @@ Tests:
 * `mise registry --json`
 * `mise ls --json`
 * `mise env --json`
+* `mise doctor --json`
 * install tiny/fast tools only
 * avoid massive downloads by default
 
-### 41.4 Expensive tests
+### 42.4 Expensive tests
 
 Gate behind:
 
 ```text
-MISE_MANAGER_EXPENSIVE=1
+TORIDE_MISE_EXPENSIVE=1
 ```
 
 Can test:
@@ -1859,7 +2053,7 @@ Can test:
 * install Go
 * install Ruby only in CI image with dependencies
 
-### 41.5 CI Matrix
+### 42.5 CI Matrix
 
 Test on:
 
@@ -1869,12 +2063,12 @@ Test on:
 * macOS x86_64 if available
 * Windows later, if path and shell behavior is supported
 
-## 42. Fixture Strategy
+## 43. Fixture Strategy
 
 Keep JSON fixtures from real mise output:
 
 ```text
-fixtures/
+crates/toride-mise/fixtures/
   ls/
     installed.json
     missing.json
@@ -1896,7 +2090,7 @@ fixtures/
 
 Tests should not depend on current upstream versions.
 
-## 43. Error Classification Heuristics
+## 44. Error Classification Heuristics
 
 Mise stderr can be human text.
 
@@ -1925,7 +2119,7 @@ Do not over-parse.
 
 Expose raw stderr always.
 
-## 44. Security Considerations
+## 45. Security Considerations
 
 Important for AI agents and automation:
 
@@ -1939,15 +2133,19 @@ Important for AI agents and automation:
 * redact secrets in logs
 * never run shell strings by default
 * do not trust project config automatically in agent workflows
+* require explicit opt-in for shared/system install targets and external links
 * show dry-run plans before destructive actions
 * require explicit confirmation for prune/uninstall helpers at app level
 * do not silently install mise itself
 * avoid invoking language-native self-updaters like `bun upgrade`, `deno upgrade`, etc.
+* do not mutate global mise settings as a side effect of convenience helpers
 
-## 45. Destructive Operation Policy
+## 46. Destructive Operation Policy
 
-Destructive operations:
+Destructive or high-risk mutating operations:
 
+* install into shared/system locations
+* link external tool paths
 * uninstall
 * unuse
 * prune
@@ -1955,6 +2153,7 @@ Destructive operations:
 * config overwrite
 * settings unset
 * lockfile overwrite
+* plugin install/link/update/uninstall
 
 For library API:
 
@@ -1964,7 +2163,7 @@ For library API:
 * never prompt inside the library
 * prompting belongs to the app/CLI layer
 
-## 46. Documentation Plan
+## 47. Documentation Plan
 
 Docs should be practical.
 
@@ -2006,87 +2205,141 @@ README should include:
 * diagnostics example
 * security note for untrusted repos
 
-## 47. MVP Scope
+## 48. Complete Integration Scope
 
-MVP should not try to cover everything.
+There is no MVP/V1/V2 product split.
 
-### MVP commands
+`toride-mise` should be designed as a complete typed integration over the mise command surface needed for tool/runtime management, environment generation, command execution, diagnostics, and safe automation.
+
+Implementation can still be sequenced internally, but public architecture should not treat core capabilities as optional future products.
+
+### 48.1 Command Coverage
+
+Required command coverage:
 
 * discover mise binary
 * `mise --version`
+* `mise version --json`
 * `mise registry --json`
+* `mise registry --json --security`
+* `mise search`
+* `mise backends ls`
 * `mise ls --json`
 * `mise ls-remote --json`
+* `mise latest`
+* `mise tool --json`
 * `mise install`
+* `mise install-into`
+* `mise link`
 * `mise uninstall`
 * `mise use`
 * `mise unuse`
 * `mise env --json`
+* `mise env --json-extended`
 * `mise exec`
 * `mise where`
 * `mise which`
 * `mise outdated --json`
+* `mise upgrade`
 * `mise prune --dry-run`
 * `mise cache clear`
+* `mise cache path`
+* `mise cache prune`
+* `mise reshim`
 * `mise settings ls --json`
+* `mise settings ls --json-extended`
+* `mise settings get`
+* `mise settings set`
+* `mise settings add`
+* `mise settings unset`
+* `mise config ls`
+* `mise config get`
 * `mise config set`
+* `mise lock`
 * `mise lock --dry-run`
+* `mise doctor --json`
+* `mise doctor path`
+* `mise trust`
+* `mise untrust`
+* `mise plugins ls`
+* `mise plugins ls-remote`
+* `mise plugins install`
+* `mise plugins link`
+* `mise plugins uninstall`
+* `mise plugins update`
+* `mise tool-alias get`
+* `mise tool-alias ls`
+* `mise tool-alias set`
+* `mise tool-alias unset`
+* `mise tasks ls`
+* `mise tasks add`
+* `mise tasks deps`
+* `mise tasks edit`
+* `mise tasks info --json`
+* `mise run`
+* `mise tasks run`
+* `mise tasks validate --json`
+* `mise bin-paths --json`
+* `mise bin-paths --bin-names --json`
 
-### MVP language helpers
+### 48.2 Helper Coverage
 
-* generic
-* node
-* bun
-* deno
-* go
-* python
-* rust
-* ruby
+Required helper coverage:
 
-### MVP must-have safety
+* generic tool helpers
+* Node.js helpers
+* Bun helpers
+* Deno helpers
+* Go helpers
+* Python helpers
+* Rust helpers
+* Ruby helpers
+* Java helpers
+* backend helpers
+* plugin helpers
+* lockfile helpers
+* config and settings helpers
+* shell/env helpers
+* diagnostics helpers
+* trust/security helpers
 
-* no shell strings
+### 48.3 Must-Have Safety
+
+Required safety behavior:
+
+* async-native process execution
+* no shell strings by default
 * typed errors
-* dry-run support
+* dry-run support wherever mise supports it
+* dry-run-code support wherever mise supports it
 * timeout support
+* cancellation-safe async APIs
 * no-hooks/no-env/no-config support
-* locked support
+* per-command locked support
 * redacted logging
+* JSON-first parsing with raw-output fallback
+* lossless tool spec round-tripping
+* no global setting mutation from convenience helpers
+* explicit opt-in for shared/system install paths and external tool links
+* explicit opt-in for bootstrap/installing mise itself
+* explicit app-layer confirmation for destructive operations
 
-## 48. V1 Scope
+### 48.4 Implementation Sequencing
 
-After MVP:
+Sequencing is allowed for engineering delivery, but all slices belong to the complete integration.
 
-* async feature
-* streaming output
-* richer doctor parsing
-* lockfile model
-* settings set/unset typed API
-* config get/list typed API
-* registry security parsing
-* shell activation helpers
-* Java helper
-* tool alias APIs
-* plugin APIs
-* backend listing APIs
-* task APIs if needed
+Suggested sequence:
 
-## 49. V2 Scope
+1. Workspace crate, async runner, fake runner, error model, binary discovery.
+2. JSON command adapters and fixtures for registry/list/list-remote/env/doctor.
+3. Mutation commands with dry-run and destructive-operation results.
+4. Config/settings/lockfile/trust APIs.
+5. Exec/path/sandbox/output streaming APIs.
+6. Language helpers and generic backend helpers.
+7. Plugins, tool aliases, tasks, cache, and advanced diagnostics.
+8. Bootstrap/app-bundled mise support behind explicit features.
 
-Later:
-
-* mise bootstrap/install feature
-* app-bundled mise binary support
-* Windows polish
-* richer config merge model
-* UI-friendly progress events
-* structured install progress parsing
-* sandbox policy API
-* MCP integration wrapper if useful
-* OCI experimental wrappers if needed
-* dependency APIs if mise deps become central to our use case
-
-## 50. What We Should Not Build
+## 49. What We Should Not Build
 
 Do not build:
 
@@ -2107,46 +2360,33 @@ Do not build:
 
 Let mise do all of that.
 
-## 51. Open Questions
+## 50. Resolved Implementation Decisions
 
-Before implementation:
+Use these decisions unless a later design review explicitly changes them:
 
-1. Should the crate require mise to already be installed?
-2. Should bootstrap be a separate crate?
-3. Should async be included in MVP or later?
-4. Should command execution stream progress in MVP?
-5. Should we support Windows in MVP?
-6. Should the library expose task APIs now or later?
-7. Should we support project trust APIs in MVP?
-8. Should we parse TOML directly or only use mise config commands?
-9. Should we expose language helpers as feature flags?
-10. Should we pin a minimum mise version?
+1. The crate is `toride-mise` under `crates/toride-mise`.
+2. The target is complete integration, not an MVP subset.
+3. The primary API is async-native.
+4. Blocking behavior is optional facade work only.
+5. Doctor uses JSON first and text fallback second.
+6. Locked installs use per-command `--locked` or isolated env, not global setting mutation.
+7. Config reads/writes ask mise where possible instead of hard-coding path precedence.
+8. Tool specs are parsed for typed access but preserved losslessly.
+9. Language helpers are included because generic + ergonomic typed helpers are both part of the value.
+10. A minimum supported mise version must be defined and tested by `toride-mise`.
 
-Recommended answers:
-
-1. Require mise installed in MVP.
-2. Bootstrap later, optional feature.
-3. Sync MVP, async later.
-4. Capture MVP, stream later.
-5. Linux/macOS MVP, Windows later.
-6. Tasks later.
-7. Basic trust/no-hooks policy in MVP.
-8. Use mise config commands first, TOML direct-edit only where needed.
-9. Keep helpers included but lightweight.
-10. Yes, define and test minimum supported mise version.
-
-## 52. Final Architecture
+## 51. Final Architecture
 
 ```text
-Consumer Rust App
+Toride / Consumer Rust App
     |
-    | calls typed Rust API
+    | calls typed async Rust API
     v
-mise-manager crate
+toride-mise crate
     |
     | validates requests
     | builds args safely
-    | runs through duct/tokio adapter
+    | runs through tokio::process adapter
     | parses JSON where possible
     | maps errors
     v
@@ -2157,19 +2397,19 @@ mise binary
 installed tools and language runtimes
 ```
 
-## 53. Final Recommendation
+## 52. Final Recommendation
 
-Build the crate as a typed mise engine wrapper.
+Build `toride-mise` as a typed mise engine wrapper.
 
 Do not vendor mise internals.
 
 Do not recreate language managers.
 
-Do not call language-native upgrade/install flows behind mise’s back.
+Do not call language-native upgrade/install flows behind mise's back.
 
-Use mise’s documented CLI, JSON outputs, lockfiles, config system, registry, and backend architecture.
+Use mise's documented CLI, JSON outputs, lockfiles, config system, registry, and backend architecture.
 
-The value of our crate is not “installing Node better than mise.”
+The value of `toride-mise` is not "installing Node better than mise."
 
 The value is:
 
