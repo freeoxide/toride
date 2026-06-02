@@ -244,6 +244,63 @@ fn draw_animated_border(
     }
 }
 
+// ── Transition gradient ─────────────────────────────────────────────────────────
+
+/// Render a radial gradient directly into the frame buffer with animated
+/// parameters for transitions. Unlike `render_gradient_bg`, this bypasses the
+/// `GradientCache` and writes straight to `buf` every frame.
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_lossless,
+    reason = "color math: f64->u8 truncation is intentional for RGB blending"
+)]
+pub fn render_transition_gradient(
+    buf: &mut Buffer,
+    area: Rect,
+    p: Palette,
+    center_offset: (f64, f64),
+    edge_delta: f64,
+    brightness_dip: f64,
+    eased_progress: f32,
+) {
+    let (cr, cg, cb) = rgb_components(p.bg);
+
+    // Apply brightness dip that peaks at mid-progress via a sin bell curve.
+    let dip_factor = 1.0 + brightness_dip * (std::f64::consts::PI * eased_progress as f64).sin();
+    let base_red = f64::from(cr) * dip_factor;
+    let base_green = f64::from(cg) * dip_factor;
+    let base_blue = f64::from(cb) * dip_factor;
+
+    // Edge color modulated at midpoint.
+    let edge_factor = 0.6 + edge_delta * (std::f64::consts::PI * eased_progress as f64).sin();
+    let er = base_red * edge_factor;
+    let eg = base_green * edge_factor;
+    let eb = base_blue * edge_factor;
+
+    // Animated gradient center.
+    let cx = f64::from(u16::midpoint(area.left(), area.right()))
+        + center_offset.0 * eased_progress as f64 * f64::from(area.width);
+    let cy = f64::from(u16::midpoint(area.top(), area.bottom()))
+        + center_offset.1 * eased_progress as f64 * f64::from(area.height);
+
+    let max_dist = (cx - f64::from(area.left()))
+        .hypot(cy - f64::from(area.top()))
+        .max(1.0);
+
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            let dx = (f64::from(x) - cx).abs();
+            let dy = (f64::from(y) - cy).abs();
+            let t = (dx.hypot(dy) / max_dist).min(1.0).powi(3);
+            let r = lerp(base_red, er, t) as u8;
+            let g = lerp(base_green, eg, t) as u8;
+            let b = lerp(base_blue, eb, t) as u8;
+            buf[Position::new(x, y)].set_bg(Color::Rgb(r, g, b));
+        }
+    }
+}
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 
 fn rgb_components(color: Color) -> (u8, u8, u8) {

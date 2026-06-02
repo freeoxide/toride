@@ -2,6 +2,7 @@ use color_eyre::eyre::Result;
 use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, MouseEvent, MouseEventKind};
 use futures::StreamExt;
 use ratatui::{DefaultTerminal, Frame};
+use tachyonfx::Interpolation;
 use tokio::select;
 use tokio::sync::oneshot;
 
@@ -9,12 +10,34 @@ use crate::action::Action;
 use crate::status::TorideStatus;
 use crate::ui::help::HelpScreen;
 use crate::ui::status::StatusScreen;
+use crate::ui::transition::{TransitionCache, TransitionState};
 use crate::ui::welcome::WelcomeScreen;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum Screen {
     Welcome,
     Status,
     Help,
+}
+
+impl Screen {
+    fn key(self) -> u8 {
+        self as u8
+    }
+
+    #[allow(
+        clippy::wildcard_in_or_patterns,
+        clippy::match_same_arms,
+        reason = "fallback for unknown screen keys"
+    )]
+    fn from_key(key: u8) -> Self {
+        match key {
+            0 => Screen::Welcome,
+            1 => Screen::Status,
+            2 => Screen::Help,
+            _ => Screen::Welcome,
+        }
+    }
 }
 
 pub struct App {
@@ -23,6 +46,9 @@ pub struct App {
     status: StatusScreen,
     help: HelpScreen,
     should_quit: bool,
+    transition: Option<TransitionState>,
+    transition_cache: TransitionCache,
+    nav_stack: Vec<Screen>,
 }
 
 impl Default for App {
@@ -40,33 +66,132 @@ impl App {
             status: StatusScreen::new(),
             help: HelpScreen::new(),
             should_quit: false,
+            transition: None,
+            transition_cache: TransitionCache::new(),
+            nav_stack: vec![Screen::Welcome],
         }
     }
 
     fn update(&mut self, action: Action) {
+        // During transition, ignore all actions
+        if self.transition.is_some() {
+            return;
+        }
+
         match action {
             Action::Quit => self.should_quit = true,
-            Action::Continue => {
-                self.screen = Screen::Status;
+            Action::Continue => self.start_transition(Screen::Status),
+            Action::Help => self.start_transition(Screen::Help),
+            Action::Back => self.go_back(),
+        }
+    }
+
+    fn start_transition(&mut self, to: Screen) {
+        let from = self.screen;
+        let state = TransitionState::new(from.key(), to.key(), &mut self.transition_cache, false);
+        self.transition = Some(state);
+        // Don't change self.screen yet — that happens when transition completes
+    }
+
+    fn go_back(&mut self) {
+        if self.nav_stack.len() <= 1 {
+            return;
+        }
+        let from = self.screen;
+        self.nav_stack.pop(); // remove current
+        let to = *self.nav_stack.last().unwrap();
+        let state = TransitionState::new(from.key(), to.key(), &mut self.transition_cache, true);
+        self.transition = Some(state);
+    }
+
+    fn view(&mut self, frame: &mut Frame) {
+        if let Some(ts) = self.transition.take() {
+            let raw_progress = ts.progress();
+            let eased = Interpolation::CubicInOut.alpha(raw_progress);
+
+            // Determine which screen to show foreground for
+            let show_to = if ts.reverse {
+                raw_progress > 0.5
+            } else {
+                raw_progress >= 0.5
+            };
+
+            // Render transition gradient
+            let area = frame.area();
+            let p = crate::ui::theme::CHARM;
+            #[allow(clippy::cast_lossless, reason = "eased is f32 from tachyonfx, offset needs f64")]
+            let offset = if ts.reverse {
+                // Reverse: offset decreases back to zero
+                (
+                    ts.params.center_offset.0 * (1.0 - eased as f64),
+                    ts.params.center_offset.1 * (1.0 - eased as f64),
+                )
+            } else {
+                (
+                    ts.params.center_offset.0 * eased as f64,
+                    ts.params.center_offset.1 * eased as f64,
+                )
+            };
+            crate::ui::gradient::render_transition_gradient(
+                frame.buffer_mut(),
+                area,
+                p,
+                offset,
+                ts.params.edge_delta,
+                ts.params.brightness_dip,
+                eased,
+            );
+
+            // Render foreground of appropriate screen
+            if show_to {
+                let to_screen = Screen::from_key(ts.to);
+                self.view_screen_foreground(to_screen, frame);
+            } else {
+                self.view_screen_foreground(self.screen, frame);
             }
-            Action::Help => {
-                self.screen = Screen::Help;
+
+            // Check completion — reconstitute transition only if not done
+            if ts.is_done() {
+                let to_screen = Screen::from_key(ts.to);
+                self.screen = to_screen;
+                if !ts.reverse {
+                    self.nav_stack.push(to_screen);
+                }
+                // Invalidate the target screen's gradient cache
+                self.invalidate_screen_cache(to_screen);
+                self.transition = None;
+            } else {
+                self.transition = Some(ts);
             }
-            Action::Back => {
-                self.screen = Screen::Welcome;
+        } else {
+            match self.screen {
+                Screen::Welcome => self.welcome.view(frame),
+                Screen::Status => self.status.view(frame),
+                Screen::Help => self.help.view(frame),
             }
         }
     }
 
-    fn view(&mut self, frame: &mut Frame) {
-        match self.screen {
-            Screen::Welcome => self.welcome.view(frame),
-            Screen::Status => self.status.view(frame),
-            Screen::Help => self.help.view(frame),
+    fn view_screen_foreground(&mut self, screen: Screen, frame: &mut Frame) {
+        match screen {
+            Screen::Welcome => self.welcome.view_foreground(frame),
+            Screen::Status => self.status.view_foreground(frame),
+            Screen::Help => self.help.view_foreground(frame),
+        }
+    }
+
+    fn invalidate_screen_cache(&mut self, screen: Screen) {
+        match screen {
+            Screen::Welcome => self.welcome.invalidate_cache(),
+            Screen::Status => self.status.invalidate_cache(),
+            Screen::Help => self.help.invalidate_cache(),
         }
     }
 
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+        if self.transition.is_some() {
+            return None;
+        }
         match self.screen {
             Screen::Welcome => self.welcome.handle_key(code),
             Screen::Status => self.status_handle_key(code),
@@ -89,6 +214,9 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        if self.transition.is_some() {
+            return None;
+        }
         match mouse.kind {
             MouseEventKind::Down(_)
                 | MouseEventKind::Up(_)
@@ -178,8 +306,8 @@ impl App {
                     }
                 }
 
-                // Animation tick (~30fps for welcome screen border only)
-                _ = anim_tick.tick(), if matches!(self.screen, Screen::Welcome) => {}
+                // Animation tick (~30fps for welcome screen border + transitions)
+                _ = anim_tick.tick(), if self.transition.is_some() || matches!(self.screen, Screen::Welcome) => {}
             }
 
             if self.should_quit {

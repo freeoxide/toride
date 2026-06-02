@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use crossterm::event::{KeyCode, MouseEvent};
 use ratatui::{
     Frame,
@@ -35,6 +37,7 @@ pub struct WelcomeScreen {
     border: AnimatedBorder,
     buttons: [InteractiveButton<Action>; 3],
     focus: FocusManager<usize>,
+    shimmer_start: Instant,
 }
 
 impl Default for WelcomeScreen {
@@ -60,6 +63,7 @@ impl WelcomeScreen {
             border: AnimatedBorder::new(theme::CHARM.accent),
             buttons,
             focus,
+            shimmer_start: Instant::now(),
         };
         screen.sync_focus_to_buttons();
         screen
@@ -100,10 +104,14 @@ impl WelcomeScreen {
     }
 
     pub fn view(&mut self, frame: &mut Frame) {
-        self.view_with_palette(frame, theme::CHARM);
+        self.view_with_palette(frame, theme::CHARM, false);
     }
 
-    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette) {
+    pub fn view_foreground(&mut self, frame: &mut Frame) {
+        self.view_with_palette(frame, theme::CHARM, true);
+    }
+
+    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
         let area = frame.area();
         let viewport = Viewport::from_area(area);
 
@@ -113,8 +121,10 @@ impl WelcomeScreen {
         }
 
         // Gradient background
-        let buf = frame.buffer_mut();
-        self.gradient_cache.render_or_copy(buf, area, p);
+        if !skip_bg {
+            let buf = frame.buffer_mut();
+            self.gradient_cache.render_or_copy(buf, area, p);
+        }
 
         // Adaptive center column
         let center = responsive::center_area(area);
@@ -143,12 +153,18 @@ impl WelcomeScreen {
 
         // ── Animated border ───────────────────────────────────────────────
         let border_rect = content_border_rect(logo_area, keys_area, area);
+        let buf = frame.buffer_mut();
         self.border.draw(buf, border_rect);
 
         // ── Logo ──────────────────────────────────────────────────────────
         let logo_style = Style::new().fg(p.accent).bold();
         let logo_lines = responsive::truncate_logo(LOGO, center.width, logo_style);
         frame.render_widget(Paragraph::new(logo_lines).centered(), logo_area);
+
+        // Shimmer sweep across logo
+        let elapsed = self.shimmer_start.elapsed().as_secs_f32();
+        let buf = frame.buffer_mut();
+        apply_logo_shimmer(buf, logo_area, p.accent, elapsed);
 
         // ── Version ───────────────────────────────────────────────────────
         let version_line = Line::from(vec![
@@ -228,5 +244,40 @@ fn content_border_rect(logo_area: Rect, keys_area: Rect, frame_area: Rect) -> Re
         y,
         width: right.saturating_sub(x),
         height: bottom.saturating_sub(y),
+    }
+}
+
+// ── Logo shimmer ───────────────────────────────────────────────────────────────
+
+fn apply_logo_shimmer(
+    buf: &mut ratatui::buffer::Buffer,
+    logo_area: ratatui::layout::Rect,
+    _accent: ratatui::style::Color,
+    elapsed: f32,
+) {
+    use ratatui::layout::Position;
+    use tachyonfx::ColorSpace;
+
+    let sweep_period = 3.0f32;
+    let sweep_pos = (elapsed % sweep_period) / sweep_period;
+    let sigma = 0.06f32;
+
+    for y in logo_area.top()..logo_area.bottom() {
+        for x in logo_area.left()..logo_area.right() {
+            let cell = &mut buf[Position::new(x, y)];
+            if cell.symbol() == " " {
+                continue;
+            }
+
+            let cell_norm = f32::from(x - logo_area.left()) / f32::from(logo_area.width.max(1));
+            let dist = cell_norm - sweep_pos;
+            let brightness = (-dist * dist / (2.0 * sigma * sigma)).exp();
+
+            if brightness > 0.01 {
+                let fg = cell.fg;
+                let lightened = ColorSpace::Hsl.lighten(&fg, brightness * 0.4);
+                cell.set_fg(lightened);
+            }
+        }
     }
 }

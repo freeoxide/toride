@@ -72,10 +72,14 @@ impl StatusScreen {
     }
 
     pub fn view(&mut self, frame: &mut Frame) {
-        self.view_with_palette(frame, theme::CHARM);
+        self.view_with_palette(frame, theme::CHARM, false);
     }
 
-    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette) {
+    pub fn view_foreground(&mut self, frame: &mut Frame) {
+        self.view_with_palette(frame, theme::CHARM, true);
+    }
+
+    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
         let area = frame.area();
         let viewport = Viewport::from_area(area);
 
@@ -84,8 +88,10 @@ impl StatusScreen {
         }
 
         // Gradient background
-        let buf = frame.buffer_mut();
-        self.gradient_cache.render_or_copy(buf, area, p);
+        if !skip_bg {
+            let buf = frame.buffer_mut();
+            self.gradient_cache.render_or_copy(buf, area, p);
+        }
 
         // Adaptive center column
         let center = responsive::center_area(area);
@@ -125,6 +131,7 @@ impl StatusScreen {
                 ))])
             };
         }
+        #[allow(clippy::cast_possible_truncation)]
         let line_count = self.cached_lines.as_ref().unwrap().len() as u16;
 
         let content_block = Block::default()
@@ -132,6 +139,7 @@ impl StatusScreen {
             .style(Style::new().bg(p.bg_inset));
         let inner = content_block.inner(content_area);
         let viewport_height = inner.height as usize;
+        #[allow(clippy::cast_possible_truncation)]
         self.clamp_scroll(line_count, viewport_height as u16);
 
         let lines = self.cached_lines.as_ref().unwrap();
@@ -192,6 +200,7 @@ impl StatusScreen {
 
 // ── Status line builder ──────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_lines)]
 fn build_status_lines(
     status: &TorideStatus,
     viewport: Viewport,

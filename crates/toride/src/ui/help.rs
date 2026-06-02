@@ -42,10 +42,14 @@ impl HelpScreen {
     }
 
     pub fn view(&mut self, frame: &mut Frame) {
-        self.view_with_palette(frame, theme::CHARM);
+        self.view_with_palette(frame, theme::CHARM, false);
     }
 
-    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette) {
+    pub fn view_foreground(&mut self, frame: &mut Frame) {
+        self.view_with_palette(frame, theme::CHARM, true);
+    }
+
+    fn view_with_palette(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
         let area = frame.area();
         let viewport = Viewport::from_area(area);
 
@@ -54,8 +58,10 @@ impl HelpScreen {
         }
 
         // Gradient background
-        let buf = frame.buffer_mut();
-        self.gradient_cache.render_or_copy(buf, area, p);
+        if !skip_bg {
+            let buf = frame.buffer_mut();
+            self.gradient_cache.render_or_copy(buf, area, p);
+        }
 
         // Adaptive center column
         let center = responsive::center_area(area);
