@@ -1,5 +1,5 @@
 use color_eyre::eyre::Result;
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind};
+use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, MouseEvent, MouseEventKind};
 use futures::StreamExt;
 use ratatui::{DefaultTerminal, Frame};
 use tokio::select;
@@ -69,7 +69,7 @@ impl App {
         }
     }
 
-    fn handle_key(&self, code: KeyCode) -> Option<Action> {
+    fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         match self.screen {
             Screen::Welcome => self.welcome_handle_key(code),
             Screen::Status => self.status_handle_key(code),
@@ -86,10 +86,35 @@ impl App {
         }
     }
 
-    fn status_handle_key(&self, code: KeyCode) -> Option<Action> {
+    fn status_handle_key(&mut self, code: KeyCode) -> Option<Action> {
         match code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.status.scroll_down();
+                None
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.status.scroll_up();
+                None
+            }
             KeyCode::Char('b') | KeyCode::Esc => Some(Action::Back),
             KeyCode::Char('q') => Some(Action::Quit),
+            _ => None,
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        match mouse.kind {
+            MouseEventKind::Down(_) if matches!(self.screen, Screen::Welcome) => {
+                Some(Action::Continue)
+            }
+            MouseEventKind::ScrollDown if matches!(self.screen, Screen::Status) => {
+                self.status.scroll_down();
+                None
+            }
+            MouseEventKind::ScrollUp if matches!(self.screen, Screen::Status) => {
+                self.status.scroll_up();
+                None
+            }
             _ => None,
         }
     }
@@ -117,6 +142,7 @@ impl App {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
                             self.handle_key(key.code)
                         }
+                        Event::Mouse(mouse) => self.handle_mouse(mouse),
                         Event::Resize(..) => {
                             self.welcome.invalidate_cache();
                             self.status.invalidate_cache();
