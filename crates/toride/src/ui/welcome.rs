@@ -235,7 +235,7 @@ impl WelcomeScreen {
         );
 
         // ── Interactive buttons ───────────────────────────────────────────
-        self.render_buttons(frame, keys_area, p, elapsed, viewport);
+        self.render_buttons(frame, keys_area, p, viewport);
     }
 
     fn render_buttons(
@@ -243,7 +243,6 @@ impl WelcomeScreen {
         frame: &mut Frame,
         keys_area: Rect,
         p: Palette,
-        elapsed: f32,
         viewport: Viewport,
     ) {
         let labels = if viewport >= Viewport::Compact {
@@ -268,10 +267,6 @@ impl WelcomeScreen {
         // Clear click registry for this frame
         self.click_registry.clear();
 
-        let cycle_len = self.color_cycle.len();
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        let elapsed_idx = (elapsed * 12.0) as usize;
-
         let mut cursor_x = btn_row_x;
         for (i, (&label, &width)) in labels.iter().zip(btn_widths.iter()).enumerate() {
             // Check hover
@@ -288,17 +283,11 @@ impl WelcomeScreen {
                 toggled: self.buttons[i].toggled,
             };
 
-            let is_active = render_state.focused;
-
             let mut btn_style = ButtonStyle::new(ButtonVariant::SingleLine);
-            btn_style.focused_fg = p.bg;
-            btn_style.focused_bg = if is_active {
-                self.color_cycle[(elapsed_idx + i * 7) % cycle_len]
-            } else {
-                p.accent
-            };
             btn_style.unfocused_fg = p.text;
             btn_style.unfocused_bg = KEY_BG;
+            btn_style.focused_fg = p.bg;
+            btn_style.focused_bg = p.accent;
             btn_style.pressed_fg = p.bg;
             btn_style.pressed_bg = p.accent2;
 
