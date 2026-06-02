@@ -5,6 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph},
 };
+use rattles::Rattler;
 
 use crate::action::Action;
 use crate::status::TorideStatus;
@@ -20,6 +21,7 @@ pub struct StatusScreen {
     cached_lines: Option<Vec<Line<'static>>>,
     scroll: usize,
     status: Option<TorideStatus>,
+    spinner: Rattler<rattles::presets::braille::Dots>,
 }
 
 impl Default for StatusScreen {
@@ -35,6 +37,7 @@ impl StatusScreen {
             cached_lines: None,
             scroll: 0,
             status: None,
+            spinner: rattles::presets::braille::dots(),
         }
     }
 
@@ -77,6 +80,41 @@ impl StatusScreen {
 
     pub fn view_foreground(&mut self, frame: &mut Frame) {
         self.view_with_palette(frame, theme::CHARM, true);
+    }
+
+    fn render_loading(
+        &mut self,
+        frame: &mut Frame,
+        content_area: ratatui::layout::Rect,
+        p: Palette,
+        footer_area: ratatui::layout::Rect,
+    ) {
+        let spinner_frame = self.spinner.current_frame();
+        let loading_line = Line::from(vec![
+            Span::styled(
+                format!("  {spinner_frame} "),
+                Style::new().fg(p.accent),
+            ),
+            Span::styled("Collecting status...", Style::new().fg(p.text_dim)),
+        ]);
+
+        let content_block = Block::default()
+            .padding(Padding::horizontal(1))
+            .style(Style::new().bg(p.bg_inset));
+        frame.render_widget(
+            Paragraph::new(loading_line).block(content_block),
+            content_area,
+        );
+
+        // Footer
+        let footer_block = Block::default()
+            .borders(Borders::TOP)
+            .border_style(Style::new().fg(p.border))
+            .style(Style::new().bg(p.bg_alt));
+        frame.render_widget(
+            Paragraph::new(Line::from("")).centered().block(footer_block),
+            footer_area,
+        );
     }
 
     fn view_with_palette(&mut self, frame: &mut Frame, p: Palette, skip_bg: bool) {
@@ -122,14 +160,12 @@ impl StatusScreen {
 
         // ── Content ─────────────────────────────────────────────────────
         if self.cached_lines.is_none() {
-            self.cached_lines = if let Some(ref status) = self.status {
-                Some(build_status_lines(status, viewport, p))
+            if let Some(ref status) = self.status {
+                self.cached_lines = Some(build_status_lines(status, viewport, p));
             } else {
-                Some(vec![Line::from(Span::styled(
-                    "  Collecting status...",
-                    Style::new().fg(p.text_dim),
-                ))])
-            };
+                // Loading — don't cache so the spinner frame advances each tick
+                return self.render_loading(frame, content_area, p, footer_area);
+            }
         }
         #[allow(clippy::cast_possible_truncation)]
         let line_count = self.cached_lines.as_ref().unwrap().len() as u16;

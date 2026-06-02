@@ -306,8 +306,8 @@ impl App {
                     }
                 }
 
-                // Animation tick (~30fps for welcome screen border + transitions)
-                _ = anim_tick.tick(), if self.transition.is_some() || matches!(self.screen, Screen::Welcome) => {}
+                // Animation tick (~30fps for shimmer, border, spinner, and transitions)
+                _ = anim_tick.tick(), if self.transition.is_some() || matches!(self.screen, Screen::Welcome | Screen::Status) => {}
             }
 
             if self.should_quit {
