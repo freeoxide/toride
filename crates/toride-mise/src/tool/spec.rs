@@ -275,13 +275,17 @@ fn parse_option_value(v: &str) -> ToolOptionValue {
 /// Detect and strip a known backend prefix (`xxx:`) from the head of `s`.
 ///
 /// Returns `(Some("backend"), rest)` or `(None, s)`.
+///
+/// If the remainder after stripping the backend prefix is empty (e.g. `"npm:"`),
+/// the whole string is kept as the name with no backend.
 fn split_backend(s: &str) -> (Option<String>, &str) {
     let Some(colon) = s.find(':') else {
         return (None, s);
     };
     let candidate = &s[..colon];
-    if KNOWN_BACKENDS.contains(&candidate) {
-        (Some(candidate.to_owned()), &s[colon + 1 ..])
+    let remainder = &s[colon + 1 ..];
+    if KNOWN_BACKENDS.contains(&candidate) && !remainder.is_empty() {
+        (Some(candidate.to_owned()), remainder)
     } else {
         (None, s)
     }
@@ -291,6 +295,12 @@ fn split_backend(s: &str) -> (Option<String>, &str) {
 ///
 /// The version portion is classified as [`VersionRequest::Latest`],
 /// [`VersionRequest::Prefix`], or [`VersionRequest::Exact`].
+///
+/// Edge cases:
+/// - If the name portion before `@` is empty (e.g. `"@22"`), the leading `@`
+///   is treated as part of the name with no version split.
+/// - If the version portion after `@` is empty (e.g. `"node@"`), the trailing
+///   `@` is treated as part of the name with no version split.
 fn split_name_version(s: &str) -> (&str, Option<VersionRequest>) {
     // We split on the *first* `@` so that `go:github.com/foo@v1@bar` (if it
     // ever appears) keeps the name portion intact.
@@ -300,6 +310,11 @@ fn split_name_version(s: &str) -> (&str, Option<VersionRequest>) {
 
     let name = &s[..at];
     let ver_str = &s[at + 1 ..];
+
+    // Guard: empty name or empty version means the `@` is not a delimiter.
+    if name.is_empty() || ver_str.is_empty() {
+        return (s, None);
+    }
 
     let version = classify_version(ver_str);
     (name, Some(version))
@@ -327,8 +342,17 @@ fn classify_version(s: &str) -> VersionRequest {
     }
 
     // If the version looks like an exact semver (contains at least one dot and
-    // starts with a digit) we treat it as exact.
-    if s.contains('.') && s.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
+    // starts with a digit or a 'v' followed by a digit) we treat it as exact.
+    // This handles common version formats: "1.2.3", "v1.2.3", "V1.2.3".
+    let digits_start = s
+        .strip_prefix('v')
+        .or_else(|| s.strip_prefix('V'));
+    if s.contains('.')
+        && (s.bytes().next().is_some_and(|b| b.is_ascii_digit())
+            || digits_start.is_some_and(|rest| {
+                rest.bytes().next().is_some_and(|b| b.is_ascii_digit()) && rest.contains('.')
+            }))
+    {
         return VersionRequest::Exact(s.to_owned());
     }
 

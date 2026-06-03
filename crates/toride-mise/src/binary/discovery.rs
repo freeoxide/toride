@@ -56,10 +56,10 @@ impl MiseBinary {
         }
 
         // 3. Well-known paths
-        let candidates = [
-            dirs_home_local_bin(),
-            Utf8PathBuf::from("/usr/local/bin/mise"),
-        ];
+        let candidates: Vec<Utf8PathBuf> = dirs_home_local_bin()
+            .into_iter()
+            .chain(std::iter::once(Utf8PathBuf::from("/usr/local/bin/mise")))
+            .collect();
 
         for candidate in candidates {
             if candidate.is_file() {
@@ -110,10 +110,8 @@ impl MiseBinary {
 // ---------------------------------------------------------------------------
 
 /// Returns `~/.local/bin/mise` if the home directory can be determined.
-fn dirs_home_local_bin() -> Utf8PathBuf {
-    dirs::home_dir()
-        .map(|h| Utf8PathBuf::from_path_buf(h.join(".local/bin/mise")).unwrap_or_default())
-        .unwrap_or_default()
+fn dirs_home_local_bin() -> Option<Utf8PathBuf> {
+    dirs::home_dir().map(|h| Utf8PathBuf::from_path_buf(h.join(".local/bin/mise")).unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------

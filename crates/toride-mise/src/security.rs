@@ -145,10 +145,16 @@ impl Mise {
     #[must_use]
     #[allow(clippy::needless_pass_by_value)]
     pub fn with_security(policy: SecurityPolicy) -> MiseBuilder {
-        MiseBuilder::new()
+        let mut builder = MiseBuilder::new()
             .no_hooks(!policy.allow_hooks)
             .no_env(!policy.allow_env_from_config)
-            .locked(policy.locked)
+            .locked(policy.locked);
+
+        if policy.require_trusted_config {
+            builder = builder.mode(crate::client::MiseMode::Untrusted);
+        }
+
+        builder
     }
 }
 

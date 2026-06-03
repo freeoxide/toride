@@ -113,16 +113,19 @@ impl ExecRequest {
 /// Controls sandboxing behaviour when executing commands through mise.
 ///
 /// When attached to an [`ExecRequest`], the fields are translated into the
-/// corresponding `--sandbox`, `--deny-*`, and `--allow-*` mise flags.
+/// corresponding `--deny-*` and `--allow-*` mise flags.
+///
+/// In real mise, `--deny-read` and `--deny-write` are bare boolean flags that
+/// block all filesystem reads/writes respectively. Fine-grained path-based
+/// denial does not exist. Similarly, `--allow-net` requires a host argument
+/// and `--allow-env` requires an env-var pattern.
 #[derive(Debug, Clone, Default)]
 #[allow(clippy::struct_excessive_bools)]
 pub struct SandboxPolicy {
-    /// Whether sandboxing is enabled.
-    pub enabled: bool,
-    /// Paths to explicitly deny read access to.
-    pub deny_read: Vec<PathBuf>,
-    /// Paths to explicitly deny write access to.
-    pub deny_write: Vec<PathBuf>,
+    /// Whether to deny all filesystem reads.
+    pub deny_read: bool,
+    /// Whether to deny all filesystem writes.
+    pub deny_write: bool,
     /// Whether to deny network access.
     pub deny_net: bool,
     /// Whether to deny environment variable access.
@@ -131,10 +134,10 @@ pub struct SandboxPolicy {
     pub allow_read: Vec<PathBuf>,
     /// Paths to explicitly allow write access to.
     pub allow_write: Vec<PathBuf>,
-    /// Whether to allow network access.
-    pub allow_net: bool,
-    /// Whether to allow environment variable access.
-    pub allow_env: bool,
+    /// Hosts to allow network access to (e.g. `"github.com"`).
+    pub allow_net: Vec<String>,
+    /// Env var patterns to allow (e.g. `"MYAPP_*"`).
+    pub allow_env: Vec<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -213,18 +216,15 @@ impl Mise {
             args.push(cwd.to_string());
         }
 
-        // Sandbox flags.
+        // Sandbox flags. In real mise, sandboxing is implicit when any --deny-*
+        // or --allow-* flags are present; there is no --sandbox flag.
         if let Some(ref policy) = req.sandbox {
-            if policy.enabled {
-                args.push("--sandbox".into());
-            }
-            for path in &policy.deny_read {
+            // --deny-read / --deny-write are bare boolean flags (no value).
+            if policy.deny_read {
                 args.push("--deny-read".into());
-                args.push(path.to_string_lossy().into_owned());
             }
-            for path in &policy.deny_write {
+            if policy.deny_write {
                 args.push("--deny-write".into());
-                args.push(path.to_string_lossy().into_owned());
             }
             if policy.deny_net {
                 args.push("--deny-net".into());
@@ -240,11 +240,15 @@ impl Mise {
                 args.push("--allow-write".into());
                 args.push(path.to_string_lossy().into_owned());
             }
-            if policy.allow_net {
+            // --allow-net requires a host argument in real mise.
+            for host in &policy.allow_net {
                 args.push("--allow-net".into());
+                args.push(host.clone());
             }
-            if policy.allow_env {
+            // --allow-env requires an env-var pattern argument in real mise.
+            for pattern in &policy.allow_env {
                 args.push("--allow-env".into());
+                args.push(pattern.clone());
             }
         }
 

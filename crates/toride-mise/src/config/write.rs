@@ -163,21 +163,28 @@ impl Mise {
     /// Reads the file (or creates an empty document), applies the key/value
     /// edit, and writes the result back.
     #[cfg(feature = "toml")]
+    #[allow(clippy::too_many_lines)]
     fn config_set_toml_edit(
         path: &Utf8PathBuf,
         key: &str,
         value: &str,
         _existed: bool,
     ) -> MiseResult<()> {
+        use crate::config::model::SettingsEntry;
         use crate::error::ConfigError;
 
-        let content = if path.as_std_path().exists() {
-            fs_err::read_to_string(path.as_std_path()).map_err(|e| ConfigError::ReadFailed {
-                path: path.to_string(),
-                reason: e.to_string(),
-            })?
-        } else {
-            String::new()
+        // Read unconditionally — handle file-not-found gracefully instead of
+        // a TOCTOU-prone exists() + read() pair.
+        let content = match fs_err::read_to_string(path.as_std_path()) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(e) => {
+                return Err(ConfigError::ReadFailed {
+                    path: path.to_string(),
+                    reason: e.to_string(),
+                }
+                .into());
+            }
         };
 
         let mut doc = content.parse::<toml_edit::DocumentMut>().map_err(|e| {
@@ -196,8 +203,21 @@ impl Mise {
 
         for (i, part) in parts.iter().enumerate() {
             if i == parts.len() - 1 {
-                // Leaf key — set the value.
-                table[*part] = toml_edit::value(value);
+                // Leaf key — set the value with proper TOML typing.
+                let entry = SettingsEntry::from_raw(value);
+                let toml_value = match entry {
+                    SettingsEntry::Bool(b) => toml_edit::value(b),
+                    SettingsEntry::Int(n) => toml_edit::value(n),
+                    SettingsEntry::String(s) => toml_edit::value(s),
+                    SettingsEntry::Array(items) => {
+                        let mut arr = toml_edit::Array::new();
+                        for item in items {
+                            arr.push(item);
+                        }
+                        toml_edit::Item::Value(toml_edit::Value::Array(arr))
+                    }
+                };
+                table[*part] = toml_value;
             } else {
                 // Intermediate segment — ensure a sub-table exists.
                 if !table.contains_key(part) {
@@ -221,15 +241,39 @@ impl Mise {
         }
 
         // Write atomically: write to a hidden tempfile in the same directory,
-        // then rename over the target (atomic on POSIX).
+        // then rename over the target (atomic on POSIX).  Use a high-resolution
+        // timestamp for uniqueness to avoid data races from concurrent calls.
         let content = doc.to_string();
         let parent_dir = path.parent().unwrap_or(path);
         let temp_name = format!(
-            ".{}.tmp.{}",
+            ".{}.tmp.{}.{}",
             path.file_name().unwrap_or("config"),
-            std::process::id()
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos()
         );
         let temp_path = parent_dir.join(&temp_name);
+
+        // RAII guard to clean up the temp file on error.
+        #[allow(clippy::items_after_statements)]
+        struct TempGuard {
+            path: Option<std::path::PathBuf>,
+        }
+
+        #[allow(clippy::items_after_statements)]
+        impl Drop for TempGuard {
+            fn drop(&mut self) {
+                if let Some(ref p) = self.path {
+                    let _ = std::fs::remove_file(p);
+                }
+            }
+        }
+
+        let _guard = TempGuard {
+            path: Some(temp_path.as_std_path().to_owned()),
+        };
 
         fs_err::write(temp_path.as_std_path(), &content).map_err(|e| ConfigError::WriteFailed {
             path: temp_path.to_string(),

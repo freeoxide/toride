@@ -207,17 +207,6 @@ impl Mise {
         self.list_remote_with(&req).await
     }
 
-    /// List all remote versions for a tool in explicit JSON mode.
-    ///
-    /// Invokes `mise ls-remote <tool> --json`.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
-    pub async fn list_remote_json(&self, tool: &str) -> MiseResult<Vec<RemoteVersion>> {
-        self.run_json(["ls-remote", tool, "--json"]).await
-    }
 }
 
 // ---------------------------------------------------------------------------

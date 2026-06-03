@@ -17,7 +17,7 @@
 //! use toride_mise::{Mise, MiseBuilder};
 //!
 //! let mise = MiseBuilder::new().build()?;
-//! let tools = mise.list_installed()?;
+//! let tools = mise.list_installed().await?;
 //! ```
 
 #![deny(unsafe_code)]

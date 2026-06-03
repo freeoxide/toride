@@ -177,24 +177,21 @@ pub struct OutdatedToolEntry {
 /// ```
 pub type EnvOutput = BTreeMap<String, String>;
 
-/// Output of `mise env --json-extended`.
+/// A single entry in the `mise env --json-extended` output.
 ///
-/// When using the extended format, each entry includes source and tool metadata.
+/// Real mise wraps each value in an object: `{"PATH": {"value": "/usr/bin:..."}}`.
 #[derive(Debug, Clone, Deserialize)]
-pub struct EnvExtendedOutput {
-    /// The environment variable name.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// The resolved value.
+pub struct EnvExtendedEntry {
+    /// The resolved value of the environment variable.
     #[serde(default)]
     pub value: Option<String>,
-    /// The source that provided this variable.
-    #[serde(default)]
-    pub source: Option<String>,
-    /// The tool that contributed this variable, if applicable.
-    #[serde(default)]
-    pub tool: Option<String>,
 }
+
+/// Output of `mise env --json-extended`.
+///
+/// A map from environment variable name to an [`EnvExtendedEntry`].
+/// Real mise outputs: `{"PATH": {"value": "/usr/bin:/bin"}}`.
+pub type EnvExtendedOutput = BTreeMap<String, EnvExtendedEntry>;
 
 // ---------------------------------------------------------------------------
 // mise doctor --json
@@ -203,23 +200,43 @@ pub struct EnvExtendedOutput {
 /// Output of `mise doctor --json`.
 ///
 /// Contains diagnostic information about the mise installation and environment.
+/// All fields are `Option`-wrapped so that variations across mise versions are
+/// handled gracefully.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DoctorOutput {
-    /// The mise version string.
+    /// The mise version string (e.g. `"2026.5.18 macos-arm64 (2026-05-31)"`).
     #[serde(default)]
     pub version: Option<String>,
-    /// The detected operating system.
+    /// Whether mise shell integration is activated.
     #[serde(default)]
-    pub os: Option<String>,
-    /// The detected CPU architecture.
+    pub activated: Option<bool>,
+    /// Whether shims directory is on PATH.
     #[serde(default)]
-    pub arch: Option<String>,
-    /// Directory paths reported by mise (data, config, shims, state).
+    pub shims_on_path: Option<bool>,
+    /// Whether a self-update is available.
+    #[serde(default)]
+    pub self_update_available: Option<bool>,
+    /// Aqua registry information.
+    #[serde(default)]
+    pub aqua: Option<DoctorAqua>,
+    /// Build information (target, features, rust version, etc.).
+    #[serde(default)]
+    pub build_info: Option<DoctorBuildInfo>,
+    /// Directory paths reported by mise.
     #[serde(default)]
     pub dirs: Option<DoctorDirs>,
     /// List of detected config files.
     #[serde(default)]
     pub config_files: Option<Vec<String>>,
+    /// List of environment files.
+    #[serde(default)]
+    pub env_files: Option<Vec<String>>,
+    /// Environment variables set by mise.
+    #[serde(default)]
+    pub env_vars: Option<serde_json::Value>,
+    /// List of ignored config files.
+    #[serde(default)]
+    pub ignored_config_files: Option<Vec<String>>,
     /// List of installed / active tool entries.
     #[serde(default)]
     pub tools: Option<Vec<DoctorToolEntry>>,
@@ -229,33 +246,79 @@ pub struct DoctorOutput {
     /// PATH entries as seen by mise.
     #[serde(default)]
     pub paths: Option<Vec<String>>,
-    /// Shell information (name, version, config path).
-    ///
-    /// Real mise outputs this as a JSON object like
-    /// `{"name":"/bin/zsh","version":"zsh 5.9 ..."}`.
+    /// Shell information (name, version).
     #[serde(default)]
     pub shell: Option<DoctorShell>,
-    /// Loaded plugins or backends.
-    ///
-    /// Real mise outputs this as a JSON object (map), not an array.
+    /// Loaded plugins or backends (a JSON object map).
     #[serde(default)]
     pub plugins: Option<serde_json::Value>,
+    /// Current settings.
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
+    /// The resolved toolset (a JSON object map).
+    #[serde(default)]
+    pub toolset: Option<serde_json::Value>,
+    /// The detected operating system (from `mise version --json`, not always
+    /// present in `doctor --json`).
+    #[serde(default)]
+    pub os: Option<String>,
+    /// The detected CPU architecture.
+    #[serde(default)]
+    pub arch: Option<String>,
+}
+
+/// Aqua registry information inside [`DoctorOutput`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct DoctorAqua {
+    /// The aqua registry repository (e.g. `"aquaproj/aqua-registry"`).
+    #[serde(default)]
+    pub baked_in_registry_repository: Option<String>,
+    /// The aqua registry tag (e.g. `"v4.519.0"`).
+    #[serde(default)]
+    pub baked_in_registry_tag: Option<String>,
+    /// The number of tools in the baked-in registry.
+    #[serde(default)]
+    pub baked_in_registry_tools: Option<u64>,
+}
+
+/// Build information inside [`DoctorOutput`].
+#[derive(Debug, Clone, Deserialize)]
+pub struct DoctorBuildInfo {
+    /// The compile target triple (e.g. `"aarch64-apple-darwin"`).
+    #[serde(default)]
+    pub target: Option<String>,
+    /// Enabled feature flags (comma-separated string).
+    #[serde(default)]
+    pub features: Option<String>,
+    /// The build timestamp.
+    #[serde(default)]
+    pub built: Option<String>,
+    /// The Rust compiler version used to build mise.
+    #[serde(default)]
+    pub rust_version: Option<String>,
+    /// The build profile (e.g. `"release"`).
+    #[serde(default)]
+    pub profile: Option<String>,
 }
 
 /// Directory paths reported by `mise doctor --json`.
 ///
 /// Nested inside the `dirs` key of the doctor output.
+/// Real mise uses keys `cache`, `config`, `data`, `shims`, `state`.
 #[derive(Debug, Clone, Deserialize)]
 pub struct DoctorDirs {
+    /// Path to the mise cache directory.
+    #[serde(default)]
+    pub cache: Option<String>,
     /// Path to the mise data directory.
-    #[serde(default, alias = "data")]
-    pub data_dir: Option<String>,
+    #[serde(default)]
+    pub data: Option<String>,
     /// Path to the mise state directory.
-    #[serde(default, alias = "state")]
-    pub state_dir: Option<String>,
+    #[serde(default)]
+    pub state: Option<String>,
     /// Path to the mise config directory.
-    #[serde(default, alias = "config")]
-    pub config_dir: Option<String>,
+    #[serde(default)]
+    pub config: Option<String>,
     /// Path to the mise shims directory.
     #[serde(default)]
     pub shims: Option<String>,
@@ -386,6 +449,42 @@ impl VersionOutput {
             commit: None,
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// mise version --json
+// ---------------------------------------------------------------------------
+
+/// Output of `mise version --json`.
+///
+/// Real mise (2026.x) outputs:
+///
+/// ```json
+/// {
+///   "version": "2026.5.18 macos-arm64 (2026-05-31)",
+///   "latest": "2026.5.18",
+///   "os": "macos",
+///   "arch": "arm64",
+///   "build_time": "2026-05-31 21:11:31 +00:00"
+/// }
+/// ```
+#[derive(Debug, Clone, Deserialize)]
+pub struct MiseVersionJson {
+    /// The full version string (e.g. `"2026.5.18 macos-arm64 (2026-05-31)"`).
+    #[serde(default)]
+    pub version: Option<String>,
+    /// The latest available version (e.g. `"2026.5.18"`).
+    #[serde(default)]
+    pub latest: Option<String>,
+    /// The OS identifier (e.g. `"macos"`, `"linux"`).
+    #[serde(default)]
+    pub os: Option<String>,
+    /// The CPU architecture (e.g. `"arm64"`, `"x86_64"`).
+    #[serde(default)]
+    pub arch: Option<String>,
+    /// The build timestamp (e.g. `"2026-05-31 21:11:31 +00:00"`).
+    #[serde(default)]
+    pub build_time: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -534,6 +633,7 @@ mod tests {
         let json = r#"{
             "version": "2024.12.1",
             "dirs": {
+                "cache": "/home/user/Library/Caches/mise",
                 "data": "/home/user/.local/share/mise",
                 "state": "/home/user/.local/state/mise",
                 "config": "/home/user/.config/mise",
@@ -545,15 +645,19 @@ mod tests {
         assert_eq!(output.version.as_deref(), Some("2024.12.1"));
         let dirs = output.dirs.as_ref().unwrap();
         assert_eq!(
-            dirs.data_dir.as_deref(),
+            dirs.cache.as_deref(),
+            Some("/home/user/Library/Caches/mise")
+        );
+        assert_eq!(
+            dirs.data.as_deref(),
             Some("/home/user/.local/share/mise")
         );
         assert_eq!(
-            dirs.state_dir.as_deref(),
+            dirs.state.as_deref(),
             Some("/home/user/.local/state/mise")
         );
         assert_eq!(
-            dirs.config_dir.as_deref(),
+            dirs.config.as_deref(),
             Some("/home/user/.config/mise")
         );
         assert_eq!(
@@ -581,6 +685,65 @@ mod tests {
     }
 
     #[test]
+    fn doctor_output_real_mise_format() {
+        // Matches the actual output from mise 2026.5.18
+        let json = r#"{
+            "activated": false,
+            "aqua": {
+                "baked_in_registry_repository": "aquaproj/aqua-registry",
+                "baked_in_registry_tag": "v4.519.0",
+                "baked_in_registry_tools": 2207
+            },
+            "build_info": {
+                "target": "aarch64-apple-darwin",
+                "features": "openssl, rustls-native-roots, self_update",
+                "built": "Sun, 31 May 2026 21:11:31 +0000",
+                "rust_version": "rustc 1.94.1 (e408947bf 2026-03-25)",
+                "profile": "release"
+            },
+            "config_files": [],
+            "dirs": {
+                "cache": "/Users/test/Library/Caches/mise",
+                "config": "/Users/test/.config/mise",
+                "data": "/Users/test/.local/share/mise",
+                "shims": "/Users/test/.local/share/mise/shims",
+                "state": "/Users/test/.local/state/mise"
+            },
+            "env_files": [],
+            "env_vars": {},
+            "ignored_config_files": [],
+            "paths": ["/Users/test/.local/bin", "/usr/bin"],
+            "plugins": {},
+            "self_update_available": true,
+            "settings": {},
+            "shell": {
+                "name": "/bin/zsh",
+                "version": "zsh 5.9 (arm64-apple-darwin25.0)"
+            },
+            "shims_on_path": false,
+            "toolset": {},
+            "version": "2026.5.18 macos-arm64 (2026-05-31)"
+        }"#;
+        let output: DoctorOutput = serde_json::from_str(json).unwrap();
+        assert_eq!(output.activated, Some(false));
+        assert!(output.aqua.is_some());
+        let aqua = output.aqua.as_ref().unwrap();
+        assert_eq!(aqua.baked_in_registry_tools, Some(2207));
+        assert!(output.build_info.is_some());
+        let bi = output.build_info.as_ref().unwrap();
+        assert_eq!(bi.target.as_deref(), Some("aarch64-apple-darwin"));
+        assert_eq!(bi.profile.as_deref(), Some("release"));
+        assert!(output.dirs.is_some());
+        let dirs = output.dirs.as_ref().unwrap();
+        assert_eq!(dirs.cache.as_deref(), Some("/Users/test/Library/Caches/mise"));
+        assert_eq!(dirs.data.as_deref(), Some("/Users/test/.local/share/mise"));
+        assert_eq!(output.self_update_available, Some(true));
+        assert_eq!(output.shims_on_path, Some(false));
+        assert!(output.shell.is_some());
+        assert!(output.plugins.is_some());
+    }
+
+    #[test]
     fn settings_extended_output() {
         let json = r#"{
             "always_keep_download": {
@@ -592,5 +755,35 @@ mod tests {
         let entry = &output["always_keep_download"];
         assert_eq!(entry.value, Some(serde_json::Value::Bool(false)));
         assert_eq!(entry.source.as_deref(), Some("~/.config/mise/config.toml"));
+    }
+
+    #[test]
+    fn version_json_real_output() {
+        let json = r#"{
+            "version": "2026.5.18 macos-arm64 (2026-05-31)",
+            "latest": "2026.5.18",
+            "os": "macos",
+            "arch": "arm64",
+            "build_time": "2026-05-31 21:11:31 +00:00"
+        }"#;
+        let v: MiseVersionJson = serde_json::from_str(json).unwrap();
+        assert_eq!(v.version.as_deref(), Some("2026.5.18 macos-arm64 (2026-05-31)"));
+        assert_eq!(v.latest.as_deref(), Some("2026.5.18"));
+        assert_eq!(v.os.as_deref(), Some("macos"));
+        assert_eq!(v.arch.as_deref(), Some("arm64"));
+        assert_eq!(v.build_time.as_deref(), Some("2026-05-31 21:11:31 +00:00"));
+    }
+
+    #[test]
+    fn env_extended_real_output() {
+        let json = r#"{
+            "PATH": {
+                "value": "/Users/test/.local/bin:/usr/bin"
+            }
+        }"#;
+        let output: EnvExtendedOutput = serde_json::from_str(json).unwrap();
+        assert!(output.contains_key("PATH"));
+        let entry = &output["PATH"];
+        assert_eq!(entry.value.as_deref(), Some("/Users/test/.local/bin:/usr/bin"));
     }
 }

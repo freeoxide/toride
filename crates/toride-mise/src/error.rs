@@ -36,7 +36,10 @@ pub enum FailureKind {
 /// Examine stderr text and return the best-matching [`FailureKind`].
 ///
 /// The heuristics are intentionally ordered from most specific to least
-/// specific so that the first match wins.
+/// specific so that the first match wins.  Keyword-specific checks (lockfile,
+/// dependency, network, checksum, permission, config) are placed **before**
+/// the broad "not found" / "unknown tool" catch-all so that compound messages
+/// like `"lockfile not found"` are classified correctly.
 pub fn classify_stderr(stderr: &str) -> FailureKind {
     let lower = stderr.to_ascii_lowercase();
 
@@ -53,11 +56,6 @@ pub fn classify_stderr(stderr: &str) -> FailureKind {
         || lower.contains("command not found")
     {
         return FailureKind::BinaryMissing;
-    }
-
-    // Tool not found / unknown tool.
-    if lower.contains("not found") || lower.contains("unknown tool") {
-        return FailureKind::ToolUnknown;
     }
 
     // Network / download failures.
@@ -101,9 +99,15 @@ pub fn classify_stderr(stderr: &str) -> FailureKind {
         return FailureKind::ConfigInvalid;
     }
 
-    // Lockfile issues.
+    // Lockfile issues — checked before the generic "not found" catch-all so
+    // that "lockfile not found" maps to LockfileMissing, not ToolUnknown.
     if lower.contains("lockfile") {
         return FailureKind::LockfileMissing;
+    }
+
+    // Tool not found / unknown tool — broad catch-all, must come last.
+    if lower.contains("not found") || lower.contains("unknown tool") {
+        return FailureKind::ToolUnknown;
     }
 
     FailureKind::Unknown
@@ -251,58 +255,6 @@ pub enum ConfigError {
         /// The invalid value.
         value: String,
     },
-}
-
-/// Errors that can occur while installing a tool via mise.
-#[derive(Debug, thiserror::Error)]
-pub enum ToolInstallError {
-    /// The requested tool is not known to mise.
-    #[error("tool not found: {tool}")]
-    ToolNotFound {
-        /// Tool name.
-        tool: String,
-    },
-
-    /// The requested version does not exist for the tool.
-    #[error("version not found: {tool}@{version}")]
-    VersionNotFound {
-        /// Tool name.
-        tool: String,
-        /// Requested version.
-        version: String,
-    },
-
-    /// A network error occurred during download.
-    #[error("network error: {detail}")]
-    NetworkFailed {
-        /// Error detail.
-        detail: String,
-    },
-
-    /// A checksum verification failed.
-    #[error("checksum mismatch: {detail}")]
-    ChecksumFailed {
-        /// Error detail.
-        detail: String,
-    },
-
-    /// A system dependency is missing.
-    #[error("missing dependency: {detail}")]
-    DependencyMissing {
-        /// Error detail.
-        detail: String,
-    },
-
-    /// Permission was denied for an operation.
-    #[error("permission denied: {detail}")]
-    PermissionDenied {
-        /// Error detail.
-        detail: String,
-    },
-
-    /// An underlying mise command failed.
-    #[error(transparent)]
-    MiseFailed(#[from] MiseError),
 }
 
 // ---------------------------------------------------------------------------
@@ -475,6 +427,24 @@ mod failure_kind_tests {
         assert_eq!(
             classify_stderr("lockfile is missing"),
             FailureKind::LockfileMissing
+        );
+    }
+
+    #[test]
+    fn lockfile_not_found_classified_correctly() {
+        // "lockfile not found" must map to LockfileMissing, not ToolUnknown.
+        assert_eq!(
+            classify_stderr("lockfile not found"),
+            FailureKind::LockfileMissing
+        );
+    }
+
+    #[test]
+    fn dependency_not_found_classified_correctly() {
+        // "dependency not found" must map to DependencyMissing, not ToolUnknown.
+        assert_eq!(
+            classify_stderr("dependency not found: libssl"),
+            FailureKind::DependencyMissing
         );
     }
 

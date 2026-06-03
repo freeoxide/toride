@@ -162,12 +162,25 @@ impl DoctorReport {
         raw: String,
     ) -> Self {
         let mut warnings = Vec::new();
-        let errors = Vec::new();
+        let mut errors = Vec::new();
 
         // Convert top-level warnings to diagnostics.
         if let Some(ref warns) = parsed.warnings {
             for w in warns {
                 warnings.push(Diagnostic::new(DiagnosticKind::Other, w));
+            }
+        }
+
+        // Extract errors from the doctor output if present.
+        // DoctorOutput currently uses warnings only; if a future version adds
+        // an `errors` field we will pick it up here. For now, classify warnings
+        // that contain error-like patterns as errors instead.
+        if let Some(ref warns) = parsed.warnings {
+            for w in warns {
+                let lower = w.to_ascii_lowercase();
+                if lower.contains("error") || lower.contains("failed") || lower.contains("fatal") {
+                    errors.push(Diagnostic::new(DiagnosticKind::Other, w));
+                }
             }
         }
 
@@ -286,10 +299,13 @@ impl<'a> DiagnosticsBuilder<'a> {
                     // Try reading the version.
                     match self.mise.version_json().await {
                         Ok(v) => {
-                            if !v.is_at_least(&semver::Version::new(2024, 1, 0)) {
+                            let parsed = crate::binary::MiseVersion::parse(
+                                v.version.as_deref().unwrap_or("0.0.0"),
+                            );
+                            if !parsed.is_at_least(&semver::Version::new(2024, 1, 0)) {
                                 warnings.push(Diagnostic::new(
                                     DiagnosticKind::VersionUnsupported,
-                                    format!("mise version {} may be too old", v.raw),
+                                    format!("mise version {} may be too old", parsed.raw),
                                 ));
                             }
                         }
@@ -339,7 +355,13 @@ impl<'a> DiagnosticsBuilder<'a> {
                 }
                 DiagnosticKind::LockfileMissing => {
                     // Check if .mise.lock or mise.lock exists in cwd.
-                    let has_lockfile = self.mise.cwd.as_ref().is_some_and(|cwd| {
+                    // Fall back to std::env::current_dir() when no cwd is configured.
+                    let cwd = self
+                        .mise
+                        .cwd
+                        .clone()
+                        .or_else(|| std::env::current_dir().ok().and_then(|p| camino::Utf8PathBuf::from_path_buf(p).ok()));
+                    let has_lockfile = cwd.as_ref().is_some_and(|cwd| {
                         cwd.join(".mise.lock").is_file() || cwd.join("mise.lock").is_file()
                     });
                     if !has_lockfile {

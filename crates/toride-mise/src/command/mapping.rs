@@ -12,8 +12,17 @@ use crate::error::MiseError;
 /// is embedded in the resulting error variant for easier debugging.
 pub fn map_runner_error(error: toride_runner::Error, _command: &str) -> MiseError {
     match error {
-        toride_runner::Error::BinaryNotFound(_) | toride_runner::Error::SpawnFailed { .. } => {
-            MiseError::BinaryNotFound
+        toride_runner::Error::BinaryNotFound(_) => MiseError::BinaryNotFound,
+
+        toride_runner::Error::SpawnFailed { ref detail, .. } => {
+            let lower = detail.to_ascii_lowercase();
+            if lower.contains("not found") || lower.contains("no such file") {
+                MiseError::BinaryNotFound
+            } else {
+                MiseError::Io(std::io::Error::other(format!(
+                    "failed to spawn process: {detail}"
+                )))
+            }
         }
 
         toride_runner::Error::CommandFailed {
@@ -122,13 +131,26 @@ mod tests {
     }
 
     #[test]
-    fn spawn_failed_maps_to_binary_not_found() {
+    fn spawn_failed_with_not_found_maps_to_binary_not_found() {
+        let err = toride_runner::Error::SpawnFailed {
+            program: "mise".into(),
+            detail: "No such file or directory".into(),
+        };
+        let mapped = map_runner_error(err, "mise current");
+        assert!(matches!(mapped, MiseError::BinaryNotFound));
+    }
+
+    #[test]
+    fn spawn_failed_with_permission_denied_maps_to_io() {
         let err = toride_runner::Error::SpawnFailed {
             program: "mise".into(),
             detail: "permission denied".into(),
         };
         let mapped = map_runner_error(err, "mise current");
-        assert!(matches!(mapped, MiseError::BinaryNotFound));
+        match mapped {
+            MiseError::Io(e) => assert!(e.to_string().contains("permission denied")),
+            other => panic!("expected Io, got {other:?}"),
+        }
     }
 
     #[test]

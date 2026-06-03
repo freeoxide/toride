@@ -20,7 +20,7 @@ use std::sync::Arc;
 
 use camino::Utf8PathBuf;
 
-use crate::client::{Mise, MiseMode};
+use crate::client::Mise;
 use crate::error::MiseResult;
 
 // ---------------------------------------------------------------------------
@@ -53,6 +53,8 @@ pub struct MiseBuilder {
     no_hooks: bool,
     /// Pass `--locked` to enforce lockfile usage.
     locked: bool,
+    /// Trust mode for mise invocations.
+    mode: crate::client::MiseMode,
     /// When `true`, call [`Mise::verify_version`] immediately after construction
     /// if `minimum_version` is set.
     verify_version: bool,
@@ -75,6 +77,7 @@ impl MiseBuilder {
             no_env: false,
             no_hooks: false,
             locked: false,
+            mode: crate::client::MiseMode::default(),
             verify_version: false,
             minimum_version: None,
         }
@@ -178,6 +181,13 @@ impl MiseBuilder {
         self
     }
 
+    /// Set the trust mode.
+    #[must_use]
+    pub fn mode(mut self, mode: crate::client::MiseMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     /// Enable version verification after construction.
     ///
     /// When set to `true` and a [`MiseBuilder::minimum_version`] is configured,
@@ -225,7 +235,7 @@ impl MiseBuilder {
             binary,
             cwd: self.cwd,
             env: self.env,
-            mode: MiseMode::default(),
+            mode: self.mode,
             load_policy: crate::client::LoadPolicy::default(),
             locked: self.locked,
             no_config: self.no_config,

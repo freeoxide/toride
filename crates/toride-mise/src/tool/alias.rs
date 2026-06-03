@@ -33,22 +33,37 @@ impl Mise {
     /// List tool aliases, optionally filtered by tool name.
     ///
     /// When `tool` is `Some`, only aliases for that tool are returned by passing
-    /// `--tool <name>` to the CLI.
+    /// it as a positional argument to the CLI.
     ///
-    /// Invokes `mise tool-alias ls [--tool <tool>] --output=json`.
+    /// Invokes `mise tool-alias ls [TOOL]` and parses the plain-text table
+    /// output. Real mise does not support `--json` for this command; it prints
+    /// rows like: `node  lts  22`.
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
     pub async fn tool_aliases_list(&self, tool: Option<&str>) -> MiseResult<Vec<ToolAlias>> {
         let mut args: Vec<String> = vec!["tool-alias".into(), "ls".into()];
         if let Some(t) = tool {
-            args.push("--tool".into());
             args.push(t.into());
         }
-        args.push("--output=json".into());
-        self.run_json(args).await
+        let output = self.run_checked(args).await?;
+        let mut aliases = Vec::new();
+        for line in output.stdout_trimmed().lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 3 {
+                aliases.push(ToolAlias {
+                    tool: parts[0].to_owned(),
+                    alias: parts[1].to_owned(),
+                    version: parts[2].to_owned(),
+                });
+            }
+        }
+        Ok(aliases)
     }
 
     /// Get the version a tool alias resolves to.

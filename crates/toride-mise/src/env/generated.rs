@@ -182,14 +182,28 @@ pub struct EnvEntry<'a> {
 }
 
 /// A single extended environment entry as returned by `mise env --json-extended`.
+///
+/// Real mise returns `{"PATH":{"value":"/usr/bin:...","source":"..."}}` where
+/// the env-var name is the JSON object key and the value is a nested object.
+/// This struct represents the inner object only; the key is extracted from the
+/// map iteration in [`Mise::env_extended`].
 #[derive(Debug, Clone, serde::Deserialize)]
+pub struct ExtendedEnvValue {
+    /// The resolved value of the environment variable.
+    pub value: String,
+    /// The tool or source that contributed this variable, if known.
+    #[serde(default)]
+    pub source: Option<String>,
+}
+
+/// A flattened extended environment entry combining the key and its value/source.
+#[derive(Debug, Clone)]
 pub struct ExtendedEnvEntry {
     /// The variable name.
     pub key: String,
     /// The variable value.
     pub value: String,
     /// The tool that contributed this variable, if known.
-    #[serde(default)]
     pub source: Option<String>,
 }
 
@@ -277,7 +291,20 @@ impl Mise {
             });
         }
 
-        let vars: BTreeMap<String, String> = self.run_json(args).await?;
+        // For JSON mode, handle empty output gracefully.
+        let output = self.run_checked(args).await?;
+        let raw = output.stdout_trimmed();
+        let trimmed = raw.trim();
+
+        let vars: BTreeMap<String, String> = if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
+            BTreeMap::new()
+        } else {
+            serde_json::from_str(trimmed).map_err(|e| crate::error::MiseError::JsonParse {
+                command: self.binary_name().to_owned(),
+                source: e,
+                stdout: trimmed.to_owned(),
+            })?
+        };
 
         Ok(MiseEnv {
             vars,
@@ -311,6 +338,11 @@ impl Mise {
     /// Invokes `mise env --json-extended <tools…>` and returns the parsed
     /// array of [`ExtendedEnvEntry`] values including source metadata.
     ///
+    /// Real mise returns a nested JSON object like
+    /// `{"PATH":{"value":"/usr/bin:...","source":"..."}}` rather than an
+    /// array. This method deserialises the map and flattens it into a
+    /// `Vec<ExtendedEnvEntry>`.
+    ///
     /// # Errors
     ///
     /// Returns [`MiseError`](crate::error::MiseError) if the command fails or
@@ -318,7 +350,33 @@ impl Mise {
     pub async fn env_extended(&self, tools: Vec<String>) -> MiseResult<Vec<ExtendedEnvEntry>> {
         let mut args: Vec<String> = vec!["env".into(), "--json-extended".into()];
         args.extend(tools);
-        self.run_json(args).await
+
+        let output = self.run_checked(args).await?;
+        let raw = output.stdout_trimmed();
+        let trimmed = raw.trim();
+
+        // Handle empty / null / {} gracefully.
+        if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
+            return Ok(Vec::new());
+        }
+
+        let map: BTreeMap<String, ExtendedEnvValue> =
+            serde_json::from_str(trimmed).map_err(|e| crate::error::MiseError::JsonParse {
+                command: self.binary_name().to_owned(),
+                source: e,
+                stdout: trimmed.to_owned(),
+            })?;
+
+        let entries = map
+            .into_iter()
+            .map(|(key, inner)| ExtendedEnvEntry {
+                key,
+                value: inner.value,
+                source: inner.source,
+            })
+            .collect();
+
+        Ok(entries)
     }
 }
 

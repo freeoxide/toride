@@ -73,7 +73,7 @@ impl MiseCapabilities {
     /// | 2024.1.0 | `json_ls`, `json_env` |
     /// | 2024.3.0 | `json_doctor`, `json_tool`, `json_bin_paths` |
     /// | 2024.7.0 | `json_settings_extended`, `json_tasks_ls` |
-    /// | 2024.10.0 | `json_tasks_info`, `dry_run_code` |
+    /// | 2024.10.0 | `json_tasks_info`, `json_tasks_validate`, `dry_run_code` |
     /// | 2024.12.0 | `registry_security`, `lockfile` |
     /// | 2025.1.0 | `sandbox_exec` |
     pub fn from_version(v: &MiseVersion) -> Self {

@@ -108,6 +108,16 @@ impl Mise {
         req: &ExecRequest,
         sink: &mut dyn toride_runner::CommandEventSink,
     ) -> MiseResult<toride_runner::CommandOutput> {
+        // Validate command before branching, matching exec/mod.rs behaviour.
+        if req.command.is_empty() {
+            return Err(crate::error::MiseError::CommandFailed {
+                command: "mise exec".into(),
+                exit_code: None,
+                stdout: String::new(),
+                stderr: "no command provided for mise exec".into(),
+            });
+        }
+
         if let Some(ref streaming_runner) = self.streaming_runner {
             let args = build_exec_args(req);
             let spec = self.build_command(args);
@@ -194,6 +204,9 @@ impl Mise {
 // ---------------------------------------------------------------------------
 
 /// Build the argument list for a `mise exec` invocation from an [`ExecRequest`].
+///
+/// Mirrors the arg-building logic in [`Mise::exec`](crate::client::Mise::exec)
+/// so that streaming and non-streaming paths produce identical flags.
 fn build_exec_args(req: &ExecRequest) -> Vec<String> {
     let mut args: Vec<String> = Vec::new();
     args.push("exec".into());
@@ -215,9 +228,46 @@ fn build_exec_args(req: &ExecRequest) -> Vec<String> {
         args.push("--no-deps".into());
     }
 
+    // Raw mode — must match the non-streaming exec path.
+    if req.raw {
+        args.push("--raw".into());
+    }
+
     if let Some(ref cwd) = req.cwd {
         args.push("--cwd".into());
         args.push(cwd.to_string());
+    }
+
+    // Sandbox flags — must match the non-streaming exec path.
+    if let Some(ref policy) = req.sandbox {
+        if policy.deny_read {
+            args.push("--deny-read".into());
+        }
+        if policy.deny_write {
+            args.push("--deny-write".into());
+        }
+        if policy.deny_net {
+            args.push("--deny-net".into());
+        }
+        if policy.deny_env {
+            args.push("--deny-env".into());
+        }
+        for path in &policy.allow_read {
+            args.push("--allow-read".into());
+            args.push(path.to_string_lossy().into_owned());
+        }
+        for path in &policy.allow_write {
+            args.push("--allow-write".into());
+            args.push(path.to_string_lossy().into_owned());
+        }
+        for host in &policy.allow_net {
+            args.push("--allow-net".into());
+            args.push(host.clone());
+        }
+        for pattern in &policy.allow_env {
+            args.push("--allow-env".into());
+            args.push(pattern.clone());
+        }
     }
 
     args.push("--".into());

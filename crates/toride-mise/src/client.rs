@@ -389,9 +389,9 @@ impl Mise {
         let output = self.run_checked(args).await?;
         let raw = output.stdout_trimmed();
 
-        // Fast path: if the output is `{}` or `null`, return an empty vec.
+        // Fast path: if the output is empty, `{}`, or `null`, return an empty vec.
         let trimmed = raw.trim();
-        if trimmed == "{}" || trimmed == "null" {
+        if trimmed.is_empty() || trimmed == "{}" || trimmed == "null" {
             return Ok(Vec::new());
         }
 
@@ -406,20 +406,14 @@ impl Mise {
     /// Query the mise version as structured JSON.
     ///
     /// Invokes `mise version --json` and parses the output into a
-    /// [`MiseVersion`](crate::binary::MiseVersion).
+    /// [`MiseVersionJson`](crate::serde_utils::json_outputs::MiseVersionJson).
     ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
-    pub async fn version_json(&self) -> MiseResult<crate::binary::MiseVersion> {
-        #[derive(serde::Deserialize)]
-        struct VersionJson {
-            version: String,
-        }
-
-        let vj: VersionJson = self.run_json(["version", "--json"]).await?;
-        Ok(crate::binary::MiseVersion::parse(&vj.version))
+    pub async fn version_json(&self) -> MiseResult<crate::serde_utils::json_outputs::MiseVersionJson> {
+        self.run_json(["version", "--json"]).await
     }
 
     /// Verify that the installed mise version meets the minimum requirement.

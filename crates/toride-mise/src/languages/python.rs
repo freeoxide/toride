@@ -105,8 +105,7 @@ impl<'a> PythonHelper<'a> {
         for v in versions {
             args.push(format!("python@{v}"));
         }
-        let arg_refs: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
-        self.mise.run_checked(arg_refs).await?;
+        self.mise.run_checked(args).await?;
         Ok(())
     }
 

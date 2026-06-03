@@ -48,14 +48,14 @@ impl<'de> serde::Deserialize<'de> for RegistryTool {
         struct Raw {
             #[serde(alias = "name")]
             short: String,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "deserialize_description")]
             description: String,
             #[serde(default, deserialize_with = "deserialize_backends")]
             backends: Vec<String>,
             /// Legacy single-backend field (older test fakes).
             #[serde(default, deserialize_with = "deserialize_single_backend")]
             backend: Vec<String>,
-            #[serde(default)]
+            #[serde(default, deserialize_with = "deserialize_aliases")]
             aliases: Vec<String>,
             #[serde(default)]
             security: Option<Vec<SecurityFeature>>,
@@ -106,6 +106,72 @@ where
     }
 
     deserializer.deserialize_any(SingleBackendVisitor)
+}
+
+/// Deserializer that turns `null` into an empty string for the description field.
+fn deserialize_description<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    use std::fmt;
+
+    struct DescriptionVisitor;
+
+    impl de::Visitor<'_> for DescriptionVisitor {
+        type Value = String;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a string or null")
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(v.to_owned())
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(String::new())
+        }
+    }
+
+    deserializer.deserialize_any(DescriptionVisitor)
+}
+
+/// Deserializer that turns `null` into an empty vec for the aliases field.
+fn deserialize_aliases<'de, D>(deserializer: D) -> Result<Vec<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de;
+    use std::fmt;
+
+    struct AliasesVisitor;
+
+    impl<'de> de::Visitor<'de> for AliasesVisitor {
+        type Value = Vec<String>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a sequence of strings, a single string, or null")
+        }
+
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::new();
+            while let Some(s) = seq.next_element::<String>()? {
+                out.push(s);
+            }
+            Ok(out)
+        }
+
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(vec![v.to_owned()])
+        }
+
+        fn visit_unit<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(Vec::new())
+        }
+    }
+
+    deserializer.deserialize_any(AliasesVisitor)
 }
 
 /// Security metadata for a registry tool entry.

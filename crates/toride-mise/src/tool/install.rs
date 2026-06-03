@@ -386,7 +386,11 @@ impl Mise {
         if req.raw {
             args.push("--raw".into());
         }
-        if let Some(ref env_name) = req.env_name {
+        // Only add --env from env_name when the scope is NOT already Env (which
+        // adds its own --env flag above).  This avoids emitting two --env flags.
+        if let Some(ref env_name) = req.env_name
+            && !matches!(req.scope, UseScope::Env(_))
+        {
             args.push("--env".into());
             args.push(env_name.clone());
         }
@@ -399,8 +403,11 @@ impl Mise {
             args.push(jobs.to_string());
         }
 
-        // Explicit path override supersedes scope path.
-        if let Some(ref path) = req.path {
+        // Explicit path override supersedes scope-based path. Only emit one
+        // --path flag to avoid passing two to mise.
+        if let Some(ref path) = req.path
+            && !matches!(req.scope, UseScope::Path(_))
+        {
             args.push("--path".into());
             args.push(path.to_string());
         }

@@ -189,7 +189,7 @@ let mise = Mise::with_security(policy).build()?;
 ```
 
 This is especially important when working with **untrusted repositories**.
-Always set `hooks: false` (the default) to prevent config-level hook scripts
+Always set `allow_hooks: false` (the default) to prevent config-level hook scripts
 from running during automated workflows.
 
 ## Feature flags
