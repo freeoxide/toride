@@ -1,0 +1,17 @@
+---
+source: crates/toride-mise/tests/snapshots.rs
+expression: spec
+---
+CommandSpec {
+    program: "mise",
+    args: [
+        "env",
+        "--shell",
+        "bash",
+    ],
+    stdin: None,
+    timeout: None,
+    env: [],
+    cwd: None,
+    redact: false,
+}

@@ -1,0 +1,16 @@
+---
+source: crates/toride-mise/tests/snapshots.rs
+expression: spec
+---
+CommandSpec {
+    program: "mise",
+    args: [
+        "uninstall",
+        "node@22.0.0",
+    ],
+    stdin: None,
+    timeout: None,
+    env: [],
+    cwd: None,
+    redact: false,
+}

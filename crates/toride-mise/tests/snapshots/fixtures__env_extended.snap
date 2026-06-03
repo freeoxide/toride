@@ -1,0 +1,20 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: entries
+---
+[
+    EnvExtendedEntry {
+        name: Some(
+            "PATH",
+        ),
+        value: Some(
+            "/path",
+        ),
+        source: Some(
+            "mise",
+        ),
+        tool: Some(
+            "node@22",
+        ),
+    },
+]

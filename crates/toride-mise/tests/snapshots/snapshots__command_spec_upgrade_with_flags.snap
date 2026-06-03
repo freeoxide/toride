@@ -1,0 +1,20 @@
+---
+source: crates/toride-mise/tests/snapshots.rs
+expression: spec
+---
+CommandSpec {
+    program: "mise",
+    args: [
+        "upgrade",
+        "--bump",
+        "--dry-run",
+        "--jobs",
+        "4",
+        "node",
+    ],
+    stdin: None,
+    timeout: None,
+    env: [],
+    cwd: None,
+    redact: false,
+}

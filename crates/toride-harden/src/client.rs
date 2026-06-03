@@ -138,7 +138,10 @@ impl HardenClient {
     pub fn check(&self, spec: &HardenSpec) -> Result<Vec<SysctlParam>> {
         let current = sysctl::read_all(self.runner.as_ref())?;
         let desired: Vec<SysctlParam> = spec.all_parameters().into_iter().cloned().collect();
-        Ok(changed_params(&current, &desired).into_iter().cloned().collect())
+        Ok(changed_params(&current, &desired)
+            .into_iter()
+            .cloned()
+            .collect())
     }
 
     /// Check shared memory mounts and return their status.

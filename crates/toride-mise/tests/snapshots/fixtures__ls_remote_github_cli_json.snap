@@ -1,0 +1,8 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: pretty
+---
+[
+  "2.42.1",
+  "2.42.0"
+]

@@ -79,7 +79,11 @@ mod tests {
     fn parse_apply_command() {
         let cli = parse_args(["toride-harden", "apply", "server"]).unwrap();
         match cli.command {
-            Commands::Apply { profile, dry_run, no_backup } => {
+            Commands::Apply {
+                profile,
+                dry_run,
+                no_backup,
+            } => {
                 assert_eq!(profile, "server");
                 assert!(!dry_run);
                 assert!(!no_backup);

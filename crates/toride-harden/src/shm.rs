@@ -34,11 +34,7 @@ pub fn check_shm_mounts(runner: &dyn Runner) -> Result<Vec<MountInfo>> {
     // Filter to shm-like mounts
     let shm_mounts: Vec<MountInfo> = all_mounts
         .into_iter()
-        .filter(|m| {
-            m.target == "/dev/shm"
-                || m.target == "/run/shm"
-                || m.target.contains("shm")
-        })
+        .filter(|m| m.target == "/dev/shm" || m.target == "/run/shm" || m.target.contains("shm"))
         .collect();
 
     Ok(shm_mounts)

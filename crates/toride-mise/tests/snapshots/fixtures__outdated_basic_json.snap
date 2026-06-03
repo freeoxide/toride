@@ -1,0 +1,11 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: pretty
+---
+{
+  "node": {
+    "current": "22.0.0",
+    "latest": "22.1.0",
+    "requested": "22"
+  }
+}

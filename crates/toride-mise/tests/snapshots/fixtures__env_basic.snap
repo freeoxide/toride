@@ -1,0 +1,8 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: env
+---
+{
+    "NODE_VERSION": "22.0.0",
+    "PATH": "/home/user/.local/share/mise/installs/node/22.0.0/bin",
+}

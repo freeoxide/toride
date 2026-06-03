@@ -32,6 +32,11 @@ impl Runner for DuctRunner {
     fn run(&self, spec: &CommandSpec) -> Result<CommandOutput> {
         let mut cmd = duct::cmd(&spec.program, &spec.args);
 
+        // Apply working directory if specified.
+        if let Some(ref cwd) = spec.cwd {
+            cmd = cmd.dir(cwd);
+        }
+
         // Apply environment variables.
         for (key, value) in &spec.env {
             cmd = cmd.env(key, value);
@@ -62,11 +67,11 @@ impl Runner for DuctRunner {
                 // Timeout expired — kill the process tree.
                 let _ = handle.kill();
                 let _ = handle.wait();
-                return Err(Error::CommandTimeout(format!(
-                    "{} (timeout: {}s)",
-                    spec.program,
-                    timeout.as_secs()
-                )));
+                return Err(Error::CommandTimeout {
+                    program: spec.program.clone(),
+                    args: spec.args.clone(),
+                    timeout,
+                });
             }
             Err(e) => {
                 return Err(Error::CommandFailed {

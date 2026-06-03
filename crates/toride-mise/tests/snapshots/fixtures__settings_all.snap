@@ -1,0 +1,14 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: settings
+---
+{
+    "jobs": SettingsExtendedEntry {
+        value: Some(
+            Number(4),
+        ),
+        source: Some(
+            "~/.config/mise/config.toml",
+        ),
+    },
+}

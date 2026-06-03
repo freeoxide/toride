@@ -54,7 +54,10 @@ impl HardenReport {
         }
 
         if !self.skipped.is_empty() {
-            lines.push(format!("Skipped {} parameter(s) (already set):", self.skipped.len()));
+            lines.push(format!(
+                "Skipped {} parameter(s) (already set):",
+                self.skipped.len()
+            ));
             for p in &self.skipped {
                 lines.push(format!("  {} = {}", p.key, p.value));
             }

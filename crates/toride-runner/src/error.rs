@@ -1,5 +1,7 @@
 //! Crate-wide error types for toride-runner.
 
+use std::time::Duration;
+
 /// Convenience alias for `Result<T, Error>`.
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -29,8 +31,42 @@ pub enum Error {
     },
 
     /// Command execution timed out.
-    #[error("command timed out: {0}")]
-    CommandTimeout(String),
+    #[error("command timed out: {program} (timeout: {}s)", .timeout.as_secs())]
+    CommandTimeout {
+        /// Program that timed out.
+        program: String,
+        /// Arguments that were passed.
+        args: Vec<String>,
+        /// The timeout duration that was exceeded.
+        timeout: Duration,
+    },
+
+    /// Failed to spawn a child process.
+    #[error("failed to spawn '{program}': {detail}")]
+    SpawnFailed {
+        /// Program name.
+        program: String,
+        /// Underlying error message.
+        detail: String,
+    },
+
+    /// Failed to wait for a child process.
+    #[error("failed to wait for '{program}': {detail}")]
+    WaitFailed {
+        /// Program name.
+        program: String,
+        /// Underlying error message.
+        detail: String,
+    },
+
+    /// Failed to write to the child's stdin.
+    #[error("failed to write stdin for '{program}': {detail}")]
+    StdinFailed {
+        /// Program name.
+        program: String,
+        /// Underlying error message.
+        detail: String,
+    },
 
     /// Command output could not be parsed.
     #[error("failed to parse command output: {0}")]

@@ -75,8 +75,8 @@ pub fn enable_sysctl_service(runner: &dyn Runner) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use toride_runner::fake::FakeRunner;
     use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
 
     #[test]
     fn reload_sysctl_success() {

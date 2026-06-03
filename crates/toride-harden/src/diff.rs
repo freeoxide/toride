@@ -22,7 +22,10 @@ pub fn diff_sysctl(current: &[(String, String)], desired: &[SysctlParam]) -> Str
 
 /// Compare current values against desired parameters and return only the
 /// parameters that differ (would need to be applied).
-pub fn changed_params<'a>(current: &[(String, String)], desired: &'a [SysctlParam]) -> Vec<&'a SysctlParam> {
+pub fn changed_params<'a>(
+    current: &[(String, String)],
+    desired: &'a [SysctlParam],
+) -> Vec<&'a SysctlParam> {
     let current_map: std::collections::HashMap<&str, &str> = current
         .iter()
         .map(|(k, v)| (k.as_str(), v.as_str()))

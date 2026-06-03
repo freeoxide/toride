@@ -19,9 +19,8 @@ pub fn read_dropin(paths: &HardenPaths, name: &str) -> Result<Vec<SysctlParam>> 
         .dropin_path(name)
         .ok_or_else(|| Error::ConfigParse(format!("invalid drop-in name: {name}")))?;
 
-    let content = std::fs::read_to_string(&path).map_err(|e| {
-        Error::ConfigParse(format!("cannot read {}: {e}", path.display()))
-    })?;
+    let content = std::fs::read_to_string(&path)
+        .map_err(|e| Error::ConfigParse(format!("cannot read {}: {e}", path.display())))?;
 
     Ok(parse_sysctl_conf(&content))
 }
@@ -40,15 +39,13 @@ pub fn write_dropin(paths: &HardenPaths, name: &str, params: &[SysctlParam]) -> 
 
     // Ensure directory exists
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            Error::ConfigWrite(format!("cannot create {}: {e}", parent.display()))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::ConfigWrite(format!("cannot create {}: {e}", parent.display())))?;
     }
 
     let content = render_sysctl_d_dropin(name, params);
-    toride_fs::atomic_write(&path, &content).map_err(|e| {
-        Error::ConfigWrite(format!("cannot write {}: {e}", path.display()))
-    })?;
+    toride_fs::atomic_write(&path, &content)
+        .map_err(|e| Error::ConfigWrite(format!("cannot write {}: {e}", path.display())))?;
 
     tracing::info!("config: wrote drop-in {}", path.display());
     Ok(())

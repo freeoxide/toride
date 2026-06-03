@@ -1,0 +1,19 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: outdated
+---
+{
+    "node": OutdatedToolEntry {
+        requested: Some(
+            "22",
+        ),
+        current: Some(
+            "22.0.0",
+        ),
+        latest: Some(
+            "22.1.0",
+        ),
+        name: None,
+        backend: None,
+    },
+}

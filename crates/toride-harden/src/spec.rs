@@ -21,7 +21,11 @@ pub struct SysctlParam {
 
 impl SysctlParam {
     /// Create a new sysctl parameter.
-    pub fn new(key: impl Into<String>, value: impl Into<String>, description: impl Into<String>) -> Self {
+    pub fn new(
+        key: impl Into<String>,
+        value: impl Into<String>,
+        description: impl Into<String>,
+    ) -> Self {
         Self {
             key: key.into(),
             value: value.into(),

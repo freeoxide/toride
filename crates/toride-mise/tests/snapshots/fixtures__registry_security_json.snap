@@ -1,0 +1,14 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: pretty
+---
+[
+  {
+    "backend": "core",
+    "full_name": "core,node",
+    "name": "node",
+    "security": {
+      "verified": true
+    }
+  }
+]

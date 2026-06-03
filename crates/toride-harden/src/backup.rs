@@ -176,10 +176,7 @@ mod tests {
         let snapshot = BackupSnapshot {
             timestamp: "12345".into(),
             sysctl_conf: Some("kernel.aslr = 2\n".into()),
-            dropins: vec![(
-                "99-test".into(),
-                "kernel.kptr_restrict = 1\n".into(),
-            )],
+            dropins: vec![("99-test".into(), "kernel.kptr_restrict = 1\n".into())],
         };
 
         restore_backup(&paths, &snapshot).unwrap();

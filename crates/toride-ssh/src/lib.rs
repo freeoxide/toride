@@ -34,6 +34,7 @@
 // Re-export core types (Error, Result, SshKey, CliRunner, etc.)
 pub use toride_ssh_core::*;
 
+<<<<<<< Updated upstream
 // Re-export config subsystem
 pub use toride_ssh_config as config;
 
@@ -53,6 +54,47 @@ pub use toride_ssh_doctor as doctor;
 pub use toride_ssh_forward as forward;
 #[cfg(feature = "known-hosts")]
 pub use toride_ssh_known_hosts as known_hosts;
+=======
+// ---------------------------------------------------------------------------
+// Always-on core modules
+// ---------------------------------------------------------------------------
+
+/// SSH config file parsing, editing, and resolution.
+pub mod config;
+/// SSH key management (inventory, generation, repair).
+pub mod key;
+/// Helpers for running external SSH tools (`ssh-keygen`, `ssh-keyscan`, etc.).
+pub mod runner;
+/// Undo/restore mechanism for file mutations.
+pub mod undo;
+
+// ---------------------------------------------------------------------------
+// Feature-gated subsystem modules
+// ---------------------------------------------------------------------------
+
+/// SSH agent management (listing, adding, removing keys).
+#[cfg(feature = "agent")]
+pub mod agent;
+/// `authorized_keys` file parsing and management.
+#[cfg(feature = "authorized-keys")]
+pub mod authorized_keys;
+/// SSH certificate and CA operations.
+#[cfg(feature = "certificate")]
+pub mod certificate;
+/// SSH diagnostic checks (local and remote).
+#[cfg(feature = "doctor")]
+pub mod doctor;
+/// Port forwarding management via ControlMaster.
+#[cfg(feature = "forward")]
+pub mod forward;
+/// `known_hosts` file management and host key scanning.
+#[cfg(feature = "known-hosts")]
+pub mod known_hosts;
+pub use runner::cli_runner::{CliRunner, DefaultCliRunner, MockCliRunner};
+
+pub use paths::SshPaths;
+pub use types::*;
+>>>>>>> Stashed changes
 
 use std::sync::Arc;
 

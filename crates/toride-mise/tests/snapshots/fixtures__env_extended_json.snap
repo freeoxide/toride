@@ -1,0 +1,12 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: pretty
+---
+[
+  {
+    "name": "PATH",
+    "source": "mise",
+    "tool": "node@22",
+    "value": "/path"
+  }
+]

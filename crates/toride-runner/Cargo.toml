@@ -8,8 +8,10 @@ license = "MIT"
 [features]
 default = ["duct-runner"]
 duct-runner = ["dep:duct"]
+tokio-runner = ["dep:tokio", "dep:async-trait"]
 fake = []
 serde = ["dep:serde", "dep:serde_json"]
+stream = ["tokio-runner"]
 
 [dependencies]
 thiserror = { workspace = true }
@@ -18,11 +20,14 @@ which = { workspace = true }
 duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "macros"], optional = true }
+async-trait = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta = "1"
 tempfile = "3"
 proptest = "1"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }
 
 [lints]
 workspace = true

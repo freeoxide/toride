@@ -1,0 +1,19 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: tools
+---
+[
+    RegistryToolEntry {
+        name: Some(
+            "node",
+        ),
+        description: None,
+        backend: Some(
+            "core",
+        ),
+        full_name: Some(
+            "core,node",
+        ),
+        aliases: None,
+    },
+]

@@ -201,7 +201,7 @@ fn server_params() -> Vec<SysctlParam> {
     params.push(SysctlParam::new(
         "net.ipv4.conf.all.rp_filter",
         "1",
-            "Enable reverse path filtering (source validation)",
+        "Enable reverse path filtering (source validation)",
     ));
     params.push(SysctlParam::new(
         "net.ipv4.conf.default.rp_filter",
@@ -241,9 +241,17 @@ mod tests {
 
     #[test]
     fn all_profiles_produce_params() {
-        for profile in &[HardeningProfile::Desktop, HardeningProfile::Server, HardeningProfile::Router] {
+        for profile in &[
+            HardeningProfile::Desktop,
+            HardeningProfile::Server,
+            HardeningProfile::Router,
+        ] {
             let params = profile.params();
-            assert!(!params.is_empty(), "{} profile should have parameters", profile.name());
+            assert!(
+                !params.is_empty(),
+                "{} profile should have parameters",
+                profile.name()
+            );
         }
     }
 
@@ -272,8 +280,14 @@ mod tests {
 
     #[test]
     fn from_name_roundtrip() {
-        assert_eq!(HardeningProfile::from_name("desktop"), Some(HardeningProfile::Desktop));
-        assert_eq!(HardeningProfile::from_name("SERVER"), Some(HardeningProfile::Server));
+        assert_eq!(
+            HardeningProfile::from_name("desktop"),
+            Some(HardeningProfile::Desktop)
+        );
+        assert_eq!(
+            HardeningProfile::from_name("SERVER"),
+            Some(HardeningProfile::Server)
+        );
         assert_eq!(HardeningProfile::from_name("unknown"), None);
     }
 

@@ -1,0 +1,5 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: version
+---
+2024.12.1 macos-arm64 (2024-12-15)

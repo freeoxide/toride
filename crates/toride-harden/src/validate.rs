@@ -57,15 +57,7 @@ pub fn validate_sysctl_key(key: &str) -> Result<()> {
     // Validate top-level domain
     let top_level = key.split('.').next().unwrap_or(key);
     let valid_tops = [
-        "kernel",
-        "net",
-        "fs",
-        "vm",
-        "dev",
-        "proc",
-        "debug",
-        "user",
-        "abi",
+        "kernel", "net", "fs", "vm", "dev", "proc", "debug", "user", "abi",
     ];
     if !valid_tops.contains(&top_level) {
         return Err(Error::SysctlParse(format!(
@@ -161,11 +153,15 @@ fn expected_values(key: &str) -> Option<Vec<&'static str>> {
         "net.ipv4.conf.all.accept_redirects"
         | "net.ipv4.conf.default.accept_redirects"
         | "net.ipv6.conf.all.accept_redirects" => Some(vec!["0", "1"]),
-        "net.ipv4.conf.all.send_redirects"
-        | "net.ipv4.conf.default.send_redirects" => Some(vec!["0", "1"]),
-        "net.ipv4.conf.all.accept_source_route"
-        | "net.ipv4.conf.default.accept_source_route" => Some(vec!["0", "1"]),
-        "fs.protected_hardlinks" | "fs.protected_symlinks" | "fs.protected_fifos"
+        "net.ipv4.conf.all.send_redirects" | "net.ipv4.conf.default.send_redirects" => {
+            Some(vec!["0", "1"])
+        }
+        "net.ipv4.conf.all.accept_source_route" | "net.ipv4.conf.default.accept_source_route" => {
+            Some(vec!["0", "1"])
+        }
+        "fs.protected_hardlinks"
+        | "fs.protected_symlinks"
+        | "fs.protected_fifos"
         | "fs.protected_regular" => Some(vec!["0", "1", "2"]),
         "kernel.randomize_va_space" => Some(vec!["0", "1", "2"]),
         _ => None,

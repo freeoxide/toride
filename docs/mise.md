@@ -49,7 +49,7 @@ Follow existing workspace conventions:
 * lints inherited from workspace
 * shared dependency versions in root `[workspace.dependencies]`
 * no standalone root `src/` crate layout
-* command execution modeled after existing Toride command-runner patterns, but async-native for this crate
+* command execution delegated to `toride-runner` (`AsyncRunner`, `TokioRunner`, `FakeRunner`, streaming support already implemented behind `tokio-runner` and `stream` features)
 
 Current repo realities to account for:
 
@@ -139,16 +139,27 @@ mise backends / registry / installs / config
 
 This is not unstructured shelling-out if done properly.
 
-The primary runner uses `tokio::process::Command`, not the blocking standard-library process API.
+The primary runner uses `toride-runner`'s `TokioRunner` (backed by `tokio::process::Command`), not the blocking standard-library process API.
 
-We will use async process execution as the primary path:
+Process execution is delegated to the shared `toride-runner` crate which already provides:
 
-* `tokio::process` for process execution
-* `tokio::time` for timeouts
-* `which` for binary discovery
-* `serde_json` for JSON output
+* `AsyncRunner` trait — async-first runner contract with `run` and `run_checked`
+* `TokioRunner` — real async runner using `tokio::process::Command` with timeouts, stdin piping, env/cwd, and process kill on timeout
+* `FakeRunner` — test double implementing both sync `Runner` and async `AsyncRunner` traits, with strict mode and response queuing
+* `AsyncStreamingRunner` — streaming extension emitting `CommandEvent` variants (`Started`, `StdoutLine`, `StderrLine`, `StdoutChunk`, `StderrChunk`, `Exited`) to an `CommandEventSink`
+* `CommandSpec` — typed command specification (program, args, stdin, timeout, env, cwd, redact)
+* `CommandOutput` — structured result (stdout, stderr, exit_code, success)
+* `OutputMode` — capture/stream/inherit selection
+* `Error` — structured errors (`CommandFailed`, `CommandTimeout`, `SpawnFailed`, `BinaryNotFound`, etc.)
+
+`toride-mise` must not reimplement any of this. It adds a thin adapter that translates mise-specific request types into `CommandSpec` and maps `toride_runner::Error` into `MiseError`.
+
+Additional dependencies for mise-specific logic:
+
+* `serde_json` for JSON output parsing
 * `camino` for UTF-8 paths
 * `fs-err` for better filesystem errors
+* `semver` for version parsing
 * `tempfile` for tests
 * `thiserror` for library errors
 * optional `miette` for richer app-facing diagnostics
@@ -232,6 +243,7 @@ Language-specific convenience helpers
 
 ```rust
 pub struct Mise {
+    runner: Arc<dyn AsyncRunner>,  // from toride-runner
     binary: MiseBinary,
     cwd: Option<Utf8PathBuf>,
     env: BTreeMap<String, String>,
@@ -239,10 +251,13 @@ pub struct Mise {
 }
 ```
 
+The `runner` field holds a `toride_runner::AsyncRunner` trait object. In production this is `TokioRunner`; in tests it is `FakeRunner`. All command execution flows through this runner — the crate never calls `tokio::process::Command` directly.
+
 ### 6.2 Builder
 
 ```rust
 let mise = Mise::builder()
+    .runner(Arc::new(TokioRunner))  // or Arc::new(FakeRunner::new()) in tests
     .binary("mise")
     .cwd("/path/to/project")
     .no_config(false)
@@ -251,6 +266,8 @@ let mise = Mise::builder()
     .locked(false)
     .build()?;
 ```
+
+If no runner is provided, the builder defaults to `TokioRunner`.
 
 ### 6.3 Async-first design
 
@@ -274,57 +291,120 @@ Do not make blocking execution the default architecture.
 
 ## 7. Command Adapter Layer
 
-All command execution must go through one internal module:
+All command execution is delegated to `toride-runner` (`crates/toride-runner`), which already provides the async runner infrastructure this crate needs. `toride-mise` adds only a thin adapter module that translates mise-specific requests into `toride-runner` types:
 
 ```text
 src/command/
-  mod.rs
-  runner.rs
-  output.rs
-  errors.rs
+  mod.rs          — re-exports and adapter wiring
+  adapter.rs      — builds CommandSpecs from MiseRequest types
+  mapping.rs      — maps toride_runner::Error → MiseError
 ```
 
-### 7.1 Runner trait
+### 7.1 Runner trait — provided by toride-runner
+
+`toride-runner` already defines the async runner contract. `toride-mise` does not define its own trait.
 
 ```rust
-#[async_trait::async_trait]
-pub trait CommandRunner {
-    async fn run(&self, cmd: MiseCommand) -> Result<CommandOutput, MiseError>;
+// From toride_runner (feature "tokio-runner"):
+#[async_trait]
+pub trait AsyncRunner: Send + Sync {
+    async fn run(&self, spec: &CommandSpec) -> Result<CommandOutput>;
+    async fn run_checked(&self, spec: &CommandSpec) -> Result<CommandOutput>; // default impl
 }
 ```
 
-Use `async-trait` here because the runner will be injected behind trait objects in clients and tests. If we later remove the macro, use an explicit boxed future shape rather than losing object-safe test injection.
+`toride-mise` holds an `Arc<dyn AsyncRunner>` internally. The `Mise` client struct injects this runner, and all command execution flows through it:
 
-### 7.2 Real runner
+```rust
+pub struct Mise {
+    runner: Arc<dyn AsyncRunner>,
+    binary: MiseBinary,
+    cwd: Option<Utf8PathBuf>,
+    env: BTreeMap<String, String>,
+    mode: MiseMode,
+}
+```
 
-Uses `tokio::process::Command`.
+### 7.2 Real runner — TokioRunner from toride-runner
 
-Responsibilities:
+`toride-runner` provides `TokioRunner` behind the `tokio-runner` feature. It handles all responsibilities that were previously planned as mise-internal:
 
 * set cwd
 * set env
-* pass args without shell interpolation
-* capture stdout
-* capture stderr
+* pass args without shell interpolation (via `CommandSpec` builder)
+* capture stdout and stderr
 * capture exit code
-* enforce timeouts with `tokio::time::timeout`
-* redact secrets in logs
+* enforce timeouts with `tokio::time::timeout` (default 60s)
+* redact secrets in display output (via `CommandSpec::redact(true)`)
 * normalize UTF-8 output
-* parse JSON only at API boundary
-* include command context in errors
+* kill child process on timeout
+* structured errors with command context (`Error::CommandFailed`, `Error::CommandTimeout`, `Error::SpawnFailed`)
 * never block an async runtime thread
 
-### 7.3 Fake runner for tests
+`toride-mise` uses `TokioRunner` in production and `FakeRunner` in tests. The adapter layer only builds `CommandSpec` instances and interprets `CommandOutput`.
 
-Allows snapshot/unit tests without real mise installed.
+### 7.3 Fake runner — FakeRunner from toride-runner
+
+`toride-runner` provides `FakeRunner` behind the `fake` feature. It implements both sync `Runner` and async `AsyncRunner` traits.
 
 ```rust
-pub struct FakeRunner {
-    responses: Vec<FakeResponse>,
+// From toride_runner (feature "fake"):
+pub struct FakeRunner { /* internal state */ }
+
+impl Runner for FakeRunner { ... }           // always
+impl AsyncRunner for FakeRunner { ... }      // behind "tokio-runner"
+```
+
+Capabilities:
+
+* lenient mode: unmatched calls return empty success
+* strict mode: error on unmatched calls
+* response queuing: `push_response()` / `push_result()` for FIFO responses
+* exact-match responses: `respond(spec, output)` / `respond_err(spec, error)`
+* call recording: `calls()` returns snapshot of all recorded `CommandSpec`s
+* assertions: `assert_called_with()`, `assert_no_unmatched_calls()`
+
+This is critical because we do not want every unit test to download tools.
+
+### 7.4 Streaming — AsyncStreamingRunner from toride-runner
+
+`toride-runner` provides streaming execution behind the `stream` feature:
+
+```rust
+// From toride_runner (feature "stream"):
+#[async_trait]
+pub trait AsyncStreamingRunner: AsyncRunner {
+    async fn run_streaming(
+        &self,
+        spec: &CommandSpec,
+        sink: &mut dyn CommandEventSink,
+    ) -> Result<CommandOutput>;
 }
 ```
 
-This is critical because we do not want every unit test to download tools.
+Events:
+
+```rust
+pub enum CommandEvent {
+    Started { program: String, args: Vec<String> },
+    StdoutChunk(Vec<u8>),
+    StderrChunk(Vec<u8>),
+    StdoutLine(String),   // newline-stripped
+    StderrLine(String),   // newline-stripped
+    Exited { exit_code: Option<i32> },
+}
+```
+
+`toride-mise` uses streaming for long-running operations like `mise install` (progress reporting) and `mise exec` (live output forwarding). The sink trait provides backpressure and abort-on-error semantics.
+
+### 7.5 Adapter layer responsibilities
+
+The `src/command/` module in `toride-mise` is intentionally thin. It does NOT reimplement process execution. Its only jobs are:
+
+1. **Build `CommandSpec`**: translate mise request types (`InstallRequest`, `UseRequest`, `ListToolsRequest`, etc.) into `CommandSpec` instances with correct program (`"mise"`), args, env, cwd, and timeout.
+2. **Map errors**: convert `toride_runner::Error` into `MiseError` with mise-specific context.
+3. **Parse output**: extract structured data from `CommandOutput::stdout` (JSON parsing, line splitting, etc.).
+4. **Wire runner**: construct `Mise` client with `TokioRunner` by default, or `FakeRunner` in test configs.
 
 ## 8. Error Model
 
@@ -384,10 +464,8 @@ crates/toride-mise/
 
   command/
     mod.rs
-    runner.rs
-    real.rs
-    fake.rs
-    output.rs
+    adapter.rs        — builds CommandSpecs from MiseRequest types
+    mapping.rs        — maps toride_runner::Error → MiseError
 
   binary/
     mod.rs
@@ -1726,51 +1804,66 @@ Bad:
 format!("mise exec {} -- {}", tool, command)
 ```
 
-Good:
+Good — use `toride-runner`'s `CommandSpec` builder:
 
 ```rust
-cmd.arg("exec")
-   .arg(tool)
-   .arg("--")
-   .args(command)
+let spec = CommandSpec::new("mise")
+    .arg("exec")
+    .arg(tool)
+    .arg("--")
+    .args(command)
+    .timeout(Duration::from_secs(30))
+    .redact(true);
+let output = self.runner.run_checked(&spec).await?;
 ```
+
+This guarantees:
+
+* args are passed as a vector, never interpolated into a shell string
+* timeout is enforced by the runner, not by the caller
+* secrets can be redacted in display/debug output via `CommandSpec::redact(true)`
+* errors include the full command context (`Error::CommandFailed { program, args, exit_code, stderr }`)
 
 Also:
 
-* validate tool specs
+* validate tool specs before building `CommandSpec`
 * reject empty command
 * no shell by default
 * support shell execution only explicitly
 * redact env secrets
-* timeout support
-* stream output optionally
-* capture output optionally
-* allow cancellation in async mode
+* timeout support (built into `CommandSpec` and enforced by `TokioRunner`)
+* stream output via `AsyncStreamingRunner` + `CommandEventSink`
+* capture output via standard `AsyncRunner::run`
+* cancellation-safe: dropping the async future kills the child process
 
 ## 35. Output Modes
 
 Some consumers need captured output; some need streaming.
 
-Expose:
+These are provided by `toride-runner`:
 
 ```rust
-ExecOutputMode::Capture
-ExecOutputMode::Stream
-ExecOutputMode::Inherit
-```
-
-Result:
-
-```rust
-pub struct ExecResult {
-    pub status: ExitStatus,
-    pub stdout: String,
-    pub stderr: String,
-    pub duration: Duration,
+// From toride_runner::OutputMode (always available):
+pub enum OutputMode {
+    Capture,   // default — buffer stdout/stderr into CommandOutput
+    Stream,    // real-time events via CommandEventSink
+    Inherit,   // pass-through to parent stdio
 }
 ```
 
-For streaming, return status and optionally collected tail.
+Captured output uses `CommandOutput`:
+
+```rust
+// From toride_runner::CommandOutput:
+pub struct CommandOutput {
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+}
+```
+
+For streaming, use `AsyncStreamingRunner` with a `CommandEventSink`. Events include `Started`, `StdoutLine`, `StderrLine`, `StdoutChunk`, `StderrChunk`, and `Exited`. The sink receives backpressure-aware events and can abort streaming by returning an error.
 
 ## 36. Hooks and Env Handling
 
@@ -1929,18 +2022,31 @@ Async execution is not a feature flag. It is the baseline API.
 
 ## 41. Dependencies
 
-Use the root workspace for shared dependency versions. The current workspace already owns `tokio`, `serde`, `serde_json`, `thiserror`, `tracing`, `dirs`, `async-trait`, and `which`; keep using those entries instead of pinning duplicate versions in `crates/toride-mise/Cargo.toml`.
+Use the root workspace for shared dependency versions. The current workspace already owns `tokio`, `serde`, `serde_json`, `thiserror`, `tracing`, `dirs`, `async-trait`, `which`, `duct`, and `camino`; keep using those entries instead of pinning duplicate versions in `crates/toride-mise/Cargo.toml`.
 
-Recommended root `[workspace.dependencies]` state after adding the crate:
+### 41.1 Primary execution dependency: toride-runner
+
+`toride-mise` depends on `toride-runner` for all process execution. This provides transitively:
+
+* `tokio` (process, io-util, time, rt, macros) — async runtime and process management
+* `async-trait` — async trait support for `AsyncRunner` and `AsyncStreamingRunner`
+* `duct` — only needed if the `duct-runner` feature is enabled (not required for `toride-mise`)
+
+The runner types `CommandSpec`, `CommandOutput`, `OutputMode`, `Error`, `AsyncRunner`, `TokioRunner`, `FakeRunner`, `AsyncStreamingRunner`, `CommandEvent`, and `CommandEventSink` all come from `toride-runner`.
+
+`toride-mise` does NOT need `tokio`, `async-trait`, or `duct` as direct dependencies. They come through `toride-runner`.
+
+### 41.2 Additional workspace dependencies
+
+Dependencies not provided by `toride-runner` that are already in the workspace:
 
 ```toml
-which = "8"
+which = "8"           # binary discovery (also used by toride-runner internally)
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
 tracing = "0.1"
 dirs = "6"
-async-trait = "0.1"
 camino = { version = "1", features = ["serde1"] }
 fs-err = "3"
 semver = "1"
@@ -1954,16 +2060,18 @@ Feature-gated package versions should still live at the workspace root. Mark the
 
 ```toml
 miette = "7"
-reqwest = { version = "0.13", default-features = false, features = ["charset", "http2", "rustls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 ```
 
-Recommended `crates/toride-mise/Cargo.toml` dependency shape:
+Note: `reqwest` version must match the workspace root (`0.12`), not the version proposed earlier.
+
+### 41.3 Recommended `crates/toride-mise/Cargo.toml` dependency shape
 
 ```toml
 [dependencies]
-tokio = { workspace = true, features = ["process", "io-util", "time", "macros"] }
+toride-runner = { path = "../toride-runner", features = ["tokio-runner", "stream", "fake"] }
+
 which = { workspace = true }
-async-trait = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 thiserror = { workspace = true }
@@ -1980,22 +2088,47 @@ reqwest = { workspace = true, optional = true }
 [dev-dependencies]
 tempfile = { workspace = true }
 insta = { workspace = true }
+toride-runner = { path = "../toride-runner", features = ["tokio-runner", "stream", "fake", "duct-runner"] }
 ```
 
-Do not pin duplicate dependency versions inside `toride-mise` when the root workspace already owns that dependency.
+Notes:
+
+* `tokio`, `async-trait`, and `duct` are NOT direct dependencies — they come through `toride-runner`.
+* The `toride-runner` dependency enables `tokio-runner` (async execution), `stream` (streaming events), and `fake` (test doubles) by default.
+* In dev-dependencies, `duct-runner` is also enabled for parity tests that verify sync and async runners produce identical results.
+* Do not pin duplicate dependency versions inside `toride-mise` when the root workspace already owns that dependency.
 
 ## 42. Testing Strategy
 
 ### 42.1 Unit tests
 
-Use fake runner.
+Use `toride_runner::FakeRunner` (feature `fake`), which implements both `Runner` (sync) and `AsyncRunner` (async behind `tokio-runner`).
+
+```rust
+let fake = FakeRunner::new();
+fake.push_response(CommandOutput::from_stdout(r#"{"node": "22.0.0"}"#));
+
+let mise = Mise::builder()
+    .runner(Arc::new(fake))
+    .build()?;
+
+let result = mise.list_current().await?;
+assert_eq!(result[0].version, "22.0.0");
+```
+
+For strict verification:
+
+```rust
+let fake = FakeRunner::strict();
+// Errors if any call is made without a matching response
+```
 
 Test:
 
-* command construction
+* command construction (verify `FakeRunner::calls()` produces correct `CommandSpec` args)
 * argument vector construction
-* JSON parsing
-* error classification
+* JSON parsing from `CommandOutput::stdout`
+* error mapping from `toride_runner::Error` to `MiseError`
 * config model
 * tool spec parsing
 * lossless tool spec round-tripping
@@ -2003,7 +2136,8 @@ Test:
 * lockfile request construction
 * registry parsing
 * env parsing
-* timeout behavior with async runner tests
+* timeout behavior — `FakeRunner` can return `Error::CommandTimeout` directly to test error paths
+* exact-call assertions via `FakeRunner::assert_called_with()`
 
 ### 42.2 Snapshot tests
 
@@ -2011,9 +2145,9 @@ Use `insta`.
 
 Snapshot:
 
-* generated command args
-* parsed JSON fixtures
-* error outputs
+* generated `CommandSpec` args (program + args vector)
+* parsed JSON fixtures from `CommandOutput::stdout`
+* error outputs (mapped `MiseError` display)
 * diagnostics report rendering
 
 ### 42.3 Integration tests
@@ -2094,9 +2228,17 @@ Tests should not depend on current upstream versions.
 
 Mise stderr can be human text.
 
-Create a conservative classifier:
+The adapter layer maps `toride_runner::Error` first, then classifies remaining stderr:
 
 ```rust
+// toride_runner::Error variants that map directly:
+//   CommandFailed { program, args, exit_code, stderr } → MiseError::CommandFailed
+//   CommandTimeout { program, args, timeout }          → MiseError::Timeout
+//   SpawnFailed { program, detail }                     → MiseError::BinaryNotFound or Io
+//   BinaryNotFound(String)                              → MiseError::BinaryNotFound
+//
+// For CommandFailed cases, classify stderr text:
+
 pub enum FailureKind {
     BinaryMissing,
     ToolUnknown,
@@ -2117,7 +2259,7 @@ Start conservative.
 
 Do not over-parse.
 
-Expose raw stderr always.
+Expose raw stderr always (available from `toride_runner::Error::CommandFailed { stderr, .. }`).
 
 ## 45. Security Considerations
 
@@ -2307,16 +2449,17 @@ Required helper coverage:
 
 Required safety behavior:
 
-* async-native process execution
-* no shell strings by default
-* typed errors
+* async-native process execution via `toride-runner` (`AsyncRunner` / `TokioRunner`)
+* no shell strings by default (enforced by `CommandSpec` builder — args are a `Vec<String>`)
+* typed errors — `toride_runner::Error` mapped to `MiseError` with mise-specific context
 * dry-run support wherever mise supports it
 * dry-run-code support wherever mise supports it
-* timeout support
-* cancellation-safe async APIs
+* timeout support (built into `CommandSpec` and enforced by `TokioRunner`)
+* cancellation-safe async APIs (dropping the future kills the child process)
+* streaming output via `AsyncStreamingRunner` + `CommandEventSink` with backpressure
 * no-hooks/no-env/no-config support
 * per-command locked support
-* redacted logging
+* redacted logging (via `CommandSpec::redact(true)`)
 * JSON-first parsing with raw-output fallback
 * lossless tool spec round-tripping
 * no global setting mutation from convenience helpers
@@ -2330,14 +2473,16 @@ Sequencing is allowed for engineering delivery, but all slices belong to the com
 
 Suggested sequence:
 
-1. Workspace crate, async runner, fake runner, error model, binary discovery.
-2. JSON command adapters and fixtures for registry/list/list-remote/env/doctor.
+1. Workspace crate skeleton, wire `toride-runner` dependency (`tokio-runner` + `stream` + `fake` features), `MiseError` error model (mapping `toride_runner::Error`), `MiseBinary` discovery, `Mise` client struct with `Arc<dyn AsyncRunner>`.
+2. Command adapter layer: build `CommandSpec` from mise request types, map errors. JSON command adapters and fixtures for registry/list/list-remote/env/doctor.
 3. Mutation commands with dry-run and destructive-operation results.
 4. Config/settings/lockfile/trust APIs.
-5. Exec/path/sandbox/output streaming APIs.
+5. Exec/path/sandbox APIs using `AsyncStreamingRunner` for live output, `OutputMode` for capture/inherit selection.
 6. Language helpers and generic backend helpers.
 7. Plugins, tool aliases, tasks, cache, and advanced diagnostics.
 8. Bootstrap/app-bundled mise support behind explicit features.
+
+Note: Step 1 no longer includes building an async runner or fake runner — those come from `toride-runner` (`TokioRunner`, `FakeRunner`, `AsyncStreamingRunner`). The mise crate only adds the adapter layer on top.
 
 ## 49. What We Should Not Build
 
@@ -2366,7 +2511,7 @@ Use these decisions unless a later design review explicitly changes them:
 
 1. The crate is `toride-mise` under `crates/toride-mise`.
 2. The target is complete integration, not an MVP subset.
-3. The primary API is async-native.
+3. The primary API is async-native, powered by `toride-runner` (`AsyncRunner`, `TokioRunner`).
 4. Blocking behavior is optional facade work only.
 5. Doctor uses JSON first and text fallback second.
 6. Locked installs use per-command `--locked` or isolated env, not global setting mutation.
@@ -2374,6 +2519,10 @@ Use these decisions unless a later design review explicitly changes them:
 8. Tool specs are parsed for typed access but preserved losslessly.
 9. Language helpers are included because generic + ergonomic typed helpers are both part of the value.
 10. A minimum supported mise version must be defined and tested by `toride-mise`.
+11. All process execution is delegated to `toride-runner`. `toride-mise` never calls `tokio::process::Command` or `duct` directly.
+12. The command adapter layer is thin: build `CommandSpec`, map `Error`, parse `CommandOutput`.
+13. Test doubles use `toride_runner::FakeRunner` which implements both `Runner` and `AsyncRunner`.
+14. Streaming uses `toride_runner::AsyncStreamingRunner` + `CommandEventSink` from the `stream` feature.
 
 ## 51. Final Architecture
 
@@ -2385,10 +2534,16 @@ Toride / Consumer Rust App
 toride-mise crate
     |
     | validates requests
-    | builds args safely
-    | runs through tokio::process adapter
+    | builds CommandSpec via adapter
+    | delegates to toride-runner
     | parses JSON where possible
-    | maps errors
+    | maps toride_runner::Error → MiseError
+    v
+toride-runner (AsyncRunner / TokioRunner / AsyncStreamingRunner)
+    |
+    | tokio::process::Command
+    | timeout enforcement
+    | output capture / streaming
     v
 mise binary
     |

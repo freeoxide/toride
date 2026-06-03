@@ -99,8 +99,8 @@ pub fn find_sysctl(runner: &dyn Runner) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use toride_runner::fake::FakeRunner;
     use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
 
     fn sysctl_read_runner() -> FakeRunner {
         FakeRunner::new().push_response(CommandOutput::from_stdout("1\n"))

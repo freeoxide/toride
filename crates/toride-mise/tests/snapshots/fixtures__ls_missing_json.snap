@@ -1,0 +1,13 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: pretty
+---
+[
+  {
+    "active": false,
+    "install_path": null,
+    "name": "python",
+    "source": null,
+    "version": null
+  }
+]

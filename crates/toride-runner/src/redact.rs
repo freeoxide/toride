@@ -5,8 +5,11 @@
 
 /// Common command-line flags whose values should be redacted.
 ///
-/// This list is intentionally broad — callers can supply their own via
-/// [`redact_args`] if domain-specific flags are needed.
+/// This list contains only long-form flags to avoid ambiguity. Short flags
+/// like `-p` (port, protocol, PID) and `-k` (KRL generation) mean different
+/// things across tools and would cause false-positive redaction. Domain crates
+/// should add their own short flags via the `flags` parameter to
+/// [`redact_args`] when they know the context.
 pub const REDACT_FLAGS: &[&str] = &[
     "--password",
     "--passwd",
@@ -18,8 +21,6 @@ pub const REDACT_FLAGS: &[&str] = &[
     "--private-key",
     "--ssh-key",
     "--passphrase",
-    "-p",
-    "-k",
 ];
 
 /// Redact sensitive values from a list of command arguments.

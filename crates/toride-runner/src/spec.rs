@@ -3,6 +3,7 @@
 //! Use the builder-style methods to construct a spec, then pass it to
 //! any [`Runner`](crate::Runner) implementation.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// A declarative specification of a command to execute.
@@ -29,6 +30,11 @@ pub struct CommandSpec {
     pub timeout: Option<Duration>,
     /// Extra environment variables (`(key, value)` pairs).
     pub env: Vec<(String, String)>,
+    /// Working directory for the command. Defaults to the current directory.
+    pub cwd: Option<PathBuf>,
+    /// Whether to redact sensitive arguments in display/logging output.
+    /// Does **not** affect the actual args passed to the child process.
+    pub redact: bool,
 }
 
 impl CommandSpec {
@@ -41,6 +47,8 @@ impl CommandSpec {
             stdin: None,
             timeout: None,
             env: Vec::new(),
+            cwd: None,
+            redact: false,
         }
     }
 
@@ -95,6 +103,22 @@ impl CommandSpec {
             .extend(pairs.into_iter().map(|(k, v)| (k.into(), v.into())));
         self
     }
+
+    /// Set the working directory for the command.
+    #[must_use]
+    pub fn cwd(mut self, cwd: impl Into<PathBuf>) -> Self {
+        self.cwd = Some(cwd.into());
+        self
+    }
+
+    /// Enable redaction of sensitive arguments in display/logging output.
+    ///
+    /// This does **not** affect the actual arguments passed to the child process.
+    #[must_use]
+    pub fn redact(mut self, redact: bool) -> Self {
+        self.redact = redact;
+        self
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -104,12 +128,17 @@ impl serde::Serialize for CommandSpec {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CommandSpec", 5)?;
+        let mut s = serializer.serialize_struct("CommandSpec", 7)?;
         s.serialize_field("program", &self.program)?;
         s.serialize_field("args", &self.args)?;
         s.serialize_field("stdin", &self.stdin)?;
-        s.serialize_field("timeout", &self.timeout.map(|d| d.as_secs()))?;
+        s.serialize_field("timeout_nanos", &self.timeout.map(|d| d.as_nanos() as u64))?;
         s.serialize_field("env", &self.env)?;
+        s.serialize_field(
+            "cwd",
+            &self.cwd.as_ref().map(|p| p.to_string_lossy().into_owned()),
+        )?;
+        s.serialize_field("redact", &self.redact)?;
         s.end()
     }
 }
@@ -125,17 +154,103 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             program: String,
             args: Vec<String>,
             stdin: Option<String>,
+            #[serde(default)]
+            timeout_nanos: Option<u64>,
+            #[serde(default)]
             timeout: Option<u64>,
             env: Vec<(String, String)>,
+            #[serde(default)]
+            cwd: Option<String>,
+            #[serde(default)]
+            redact: bool,
         }
 
         let h = CommandSpecHelper::deserialize(deserializer)?;
+
+        // Prefer nanosecond precision if available, fall back to seconds for
+        // backward compatibility with previously-serialized data.
+        let timeout = h
+            .timeout_nanos
+            .map(Duration::from_nanos)
+            .or(h.timeout.map(Duration::from_secs));
+
         Ok(CommandSpec {
             program: h.program,
             args: h.args,
             stdin: h.stdin,
-            timeout: h.timeout.map(Duration::from_secs),
+            timeout,
             env: h.env,
+            cwd: h.cwd.map(PathBuf::from),
+            redact: h.redact,
         })
+    }
+}
+
+#[cfg(all(test, feature = "serde"))]
+mod serde_tests {
+    use super::*;
+
+    #[test]
+    fn sub_second_timeout_round_trip() {
+        let spec = CommandSpec::new("sleep")
+            .arg("1")
+            .timeout(Duration::from_millis(50));
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            roundtripped.timeout,
+            Some(Duration::from_millis(50)),
+            "sub-second timeout should survive serde round-trip"
+        );
+    }
+
+    #[test]
+    fn nanos_timeout_round_trip() {
+        let spec = CommandSpec::new("cmd").timeout(Duration::from_nanos(123_456_789));
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            roundtripped.timeout,
+            Some(Duration::from_nanos(123_456_789)),
+            "nanosecond timeout should survive serde round-trip"
+        );
+    }
+
+    #[test]
+    fn backward_compat_seconds_timeout() {
+        // Simulate data serialized with the old `as_secs()` format.
+        let json = r#"{"program":"cmd","args":[],"stdin":null,"timeout":5,"env":[]}"#;
+        let spec: CommandSpec = serde_json::from_str(json).unwrap();
+
+        assert_eq!(spec.timeout, Some(Duration::from_secs(5)));
+    }
+
+    #[test]
+    fn cwd_and_redact_round_trip() {
+        let spec = CommandSpec::new("make")
+            .cwd("/project")
+            .redact(true)
+            .env("KEY", "val");
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtripped.cwd, Some(PathBuf::from("/project")));
+        assert!(roundtripped.redact);
+        assert_eq!(roundtripped.env, vec![("KEY".into(), "val".into())]);
+    }
+
+    #[test]
+    fn missing_optional_fields_default() {
+        let json = r#"{"program":"cmd","args":["a"],"stdin":null,"timeout_nanos":null,"env":[]}"#;
+        let spec: CommandSpec = serde_json::from_str(json).unwrap();
+
+        assert!(spec.cwd.is_none());
+        assert!(!spec.redact);
+        assert!(spec.timeout.is_none());
     }
 }

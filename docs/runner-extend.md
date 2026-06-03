@@ -106,12 +106,21 @@ serde = ["dep:serde", "dep:serde_json"]
 stream = ["tokio-runner"]
 ```
 
-Dependency additions:
+Both `tokio` and `async-trait` already exist as workspace dependencies. The
+optional dep declarations must reference them as `workspace = true` with a
+minimal feature set to avoid pulling the full tokio runtime into sync-only
+builds:
 
 ```toml
-tokio = { workspace = true, features = ["process", "io-util", "time"], optional = true }
+[dependencies]
+tokio = { workspace = true, features = ["process", "io-util", "time", "rt", "macros"], optional = true }
 async-trait = { workspace = true, optional = true }
 ```
+
+Note: the workspace defines `tokio` with `features = ["full"]`. When a crate
+enables the `tokio-runner` feature, it gets the subset listed above. If the
+same build also pulls in tokio via another crate with `full`, Cargo merges the
+features — there is no conflict, just a larger final feature set.
 
 `toride-mise` should depend on:
 
@@ -272,10 +281,25 @@ This matches current `Runner`/`DuctRunner` semantics while avoiding runtime bloc
 
 Current errors are sufficient for the sync migration, but async process execution needs more precise classification.
 
+Existing variants to keep unchanged:
+
+```rust
+pub enum Error {
+    // ... existing variants (kept as-is) ...
+    Io(String),
+    BinaryNotFound(String),
+    OutputParse(String),
+    Other(String),
+}
+```
+
 Recommended additions:
 
 ```rust
 pub enum Error {
+    // ... existing variants above ...
+
+    // New variants for async process execution:
     SpawnFailed {
         program: String,
         source: String,
@@ -301,6 +325,8 @@ pub enum Error {
     },
 }
 ```
+
+The existing `CommandTimeout(String)` variant becomes `CommandTimeout { program, args, timeout }` — a source-breaking change for pattern matches. This is safe because `Error` is `#[non_exhaustive]` and no consumer pattern-matches on `CommandTimeout` directly; they all convert via `From<toride_runner::Error>`.
 
 Rules:
 
@@ -651,3 +677,13 @@ The runner layer owns:
 * fake command recording
 
 That boundary keeps `toride-runner` reusable and keeps `toride-mise` semantically correct.
+
+## 19. Out of Scope: `toride-ssh` `CliRunner`
+
+`toride-ssh` defines its own `CliRunner` trait in `crates/toride-ssh/crates/core/src/runner.rs` with a different shape:
+
+* `run_for_output`, `run_checked_for_output` — return parsed domain types, not `CommandOutput`
+* `tool_exists` — binary presence check
+* `read_file`, `write_file` — file I/O helpers
+
+This trait is intentionally separate from `toride_runner::Runner`. The `toride-ssh` sub-crates (`doctor`, `agent`, `key`, `known-hosts`) depend on its domain-specific methods. Unification with `toride-runner` would require either embedding SSH semantics into the shared runner or creating a bridge adapter. Neither is warranted now; revisit only if the duplication becomes a maintenance burden.

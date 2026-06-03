@@ -67,11 +67,7 @@ impl HardenPaths {
 
     /// Check if a path is a toride-harden managed path (safe to write).
     pub fn is_managed_path(&self, path: &Path) -> bool {
-        let managed = [
-            &self.sysctl_d,
-            &self.sysctl_conf,
-            &self.backup_dir,
-        ];
+        let managed = [&self.sysctl_d, &self.sysctl_conf, &self.backup_dir];
 
         managed
             .iter()
@@ -94,7 +90,10 @@ mod tests {
     #[test]
     fn with_root_rebases_all_paths() {
         let paths = HardenPaths::with_root(Path::new("/tmp/test-root"));
-        assert_eq!(paths.sysctl_conf, PathBuf::from("/tmp/test-root/etc/sysctl.conf"));
+        assert_eq!(
+            paths.sysctl_conf,
+            PathBuf::from("/tmp/test-root/etc/sysctl.conf")
+        );
         assert_eq!(paths.sysctl_d, PathBuf::from("/tmp/test-root/etc/sysctl.d"));
     }
 

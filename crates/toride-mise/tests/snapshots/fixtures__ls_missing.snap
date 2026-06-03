@@ -1,0 +1,17 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: tools
+---
+[
+    ToolStatus {
+        name: Some(
+            "python",
+        ),
+        version: None,
+        source: None,
+        active: Some(
+            false,
+        ),
+        install_path: None,
+    },
+]

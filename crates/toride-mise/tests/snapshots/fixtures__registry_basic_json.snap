@@ -1,0 +1,11 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: pretty
+---
+[
+  {
+    "backend": "core",
+    "description": "Node.js",
+    "name": "node"
+  }
+]

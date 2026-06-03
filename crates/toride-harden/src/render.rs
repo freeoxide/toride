@@ -114,6 +114,9 @@ mod tests {
 
     #[test]
     fn render_sysctl_w_formats_assignment() {
-        assert_eq!(render_sysctl_w("kernel.kptr_restrict", "1"), "kernel.kptr_restrict=1");
+        assert_eq!(
+            render_sysctl_w("kernel.kptr_restrict", "1"),
+            "kernel.kptr_restrict=1"
+        );
     }
 }

@@ -1,0 +1,30 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: tools
+---
+[
+    ToolStatus {
+        name: Some(
+            "node",
+        ),
+        version: Some(
+            "22.0.0",
+        ),
+        source: Some(
+            ToolSource {
+                path: Some(
+                    ".mise.toml",
+                ),
+                requested: Some(
+                    "22",
+                ),
+            },
+        ),
+        active: Some(
+            true,
+        ),
+        install_path: Some(
+            "/home/user/.local/share/mise/installs/node/22.0.0",
+        ),
+    },
+]

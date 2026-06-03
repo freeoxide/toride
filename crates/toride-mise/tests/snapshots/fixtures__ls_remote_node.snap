@@ -1,0 +1,9 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: versions
+---
+[
+    "22.0.0",
+    "22.0.1",
+    "21.0.0",
+]

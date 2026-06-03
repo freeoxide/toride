@@ -68,16 +68,36 @@ fn check_dmesg_restrict(runner: &dyn Runner) -> Vec<Finding> {
 fn check_kptr_restrict(runner: &dyn Runner) -> Vec<Finding> {
     match kernel::read_kptr_restrict(runner) {
         Ok(val) => match val.as_str() {
-            "1" | "2" => vec![Finding::new("kernel.kptr-restrict", Severity::Ok, "kptr_restrict is enabled")
-                .domain("harden")],
-            "0" => vec![Finding::new("kernel.kptr-restrict.disabled", Severity::Important, "kptr_restrict is disabled")
+            "1" | "2" => vec![
+                Finding::new(
+                    "kernel.kptr-restrict",
+                    Severity::Ok,
+                    "kptr_restrict is enabled",
+                )
+                .domain("harden"),
+            ],
+            "0" => vec![
+                Finding::new(
+                    "kernel.kptr-restrict.disabled",
+                    Severity::Important,
+                    "kptr_restrict is disabled",
+                )
                 .domain("harden")
-                .detail("kernel.kptr_restrict = 0: kernel pointers are exposed to unprivileged users.")
-                .fix_hint("sysctl -w kernel.kptr_restrict=1")],
+                .detail(
+                    "kernel.kptr_restrict = 0: kernel pointers are exposed to unprivileged users.",
+                )
+                .fix_hint("sysctl -w kernel.kptr_restrict=1"),
+            ],
             _ => vec![],
         },
-        Err(e) => vec![Finding::new("kernel.kptr-restrict.error", Severity::Important, format!("Cannot read kptr_restrict: {e}"))
-            .domain("harden")],
+        Err(e) => vec![
+            Finding::new(
+                "kernel.kptr-restrict.error",
+                Severity::Important,
+                format!("Cannot read kptr_restrict: {e}"),
+            )
+            .domain("harden"),
+        ],
     }
 }
 
@@ -103,16 +123,34 @@ fn check_ip_forward(runner: &dyn Runner) -> Vec<Finding> {
 fn check_accept_redirects(runner: &dyn Runner) -> Vec<Finding> {
     match kernel::read_accept_redirects(runner) {
         Ok(val) => match val.as_str() {
-            "0" => vec![Finding::new("net.ipv4.accept-redirects", Severity::Ok, "ICMP redirects are rejected")
-                .domain("harden")],
-            "1" => vec![Finding::new("net.ipv4.conf.all.accept-redirects.enabled", Severity::Warning, "ICMP redirects are accepted")
+            "0" => vec![
+                Finding::new(
+                    "net.ipv4.accept-redirects",
+                    Severity::Ok,
+                    "ICMP redirects are rejected",
+                )
+                .domain("harden"),
+            ],
+            "1" => vec![
+                Finding::new(
+                    "net.ipv4.conf.all.accept-redirects.enabled",
+                    Severity::Warning,
+                    "ICMP redirects are accepted",
+                )
                 .domain("harden")
                 .detail("Accepting ICMP redirects allows potential man-in-the-middle attacks.")
-                .fix_hint("sysctl -w net.ipv4.conf.all.accept_redirects=0")],
+                .fix_hint("sysctl -w net.ipv4.conf.all.accept_redirects=0"),
+            ],
             _ => vec![],
         },
-        Err(e) => vec![Finding::new("net.ipv4.accept-redirects.error", Severity::Important, format!("Cannot read accept_redirects: {e}"))
-            .domain("harden")],
+        Err(e) => vec![
+            Finding::new(
+                "net.ipv4.accept-redirects.error",
+                Severity::Important,
+                format!("Cannot read accept_redirects: {e}"),
+            )
+            .domain("harden"),
+        ],
     }
 }
 
@@ -121,9 +159,15 @@ fn check_shm_mounts(runner: &dyn Runner) -> Vec<Finding> {
     match shm::check_shm_mounts(runner) {
         Ok(mounts) => {
             if mounts.is_empty() {
-                return vec![Finding::new("shm.dev-shm", Severity::Info, "No dedicated /dev/shm mount found")
+                return vec![
+                    Finding::new(
+                        "shm.dev-shm",
+                        Severity::Info,
+                        "No dedicated /dev/shm mount found",
+                    )
                     .domain("harden")
-                    .detail("/dev/shm may be on the root filesystem without nosuid/nodev/noexec.")];
+                    .detail("/dev/shm may be on the root filesystem without nosuid/nodev/noexec."),
+                ];
             }
 
             let mut findings = Vec::new();
@@ -131,24 +175,46 @@ fn check_shm_mounts(runner: &dyn Runner) -> Vec<Finding> {
                 let missing = shm::missing_security_options(mount);
                 if missing.is_empty() {
                     findings.push(
-                        Finding::new("shm.dev-shm", Severity::Ok, format!("{} is properly hardened", mount.target))
-                            .domain("harden")
+                        Finding::new(
+                            "shm.dev-shm",
+                            Severity::Ok,
+                            format!("{} is properly hardened", mount.target),
+                        )
+                        .domain("harden"),
                     );
                 } else {
                     let missing_str = missing.join(", ");
                     findings.push(
-                        Finding::new("shm.dev-shm.noexec.missing", Severity::Warning,
-                            format!("{} is missing security options: {}", mount.target, missing_str))
-                            .domain("harden")
-                            .detail(format!("{} should be mounted with nosuid,nodev,noexec.", mount.target))
-                            .fix_hint(&format!("mount -o remount,nosuid,nodev,noexec {}", mount.target))
+                        Finding::new(
+                            "shm.dev-shm.noexec.missing",
+                            Severity::Warning,
+                            format!(
+                                "{} is missing security options: {}",
+                                mount.target, missing_str
+                            ),
+                        )
+                        .domain("harden")
+                        .detail(format!(
+                            "{} should be mounted with nosuid,nodev,noexec.",
+                            mount.target
+                        ))
+                        .fix_hint(&format!(
+                            "mount -o remount,nosuid,nodev,noexec {}",
+                            mount.target
+                        )),
                     );
                 }
             }
             findings
         }
-        Err(e) => vec![Finding::new("shm.dev-shm.error", Severity::Important, format!("Cannot check shm mounts: {e}"))
-            .domain("harden")],
+        Err(e) => vec![
+            Finding::new(
+                "shm.dev-shm.error",
+                Severity::Important,
+                format!("Cannot check shm mounts: {e}"),
+            )
+            .domain("harden"),
+        ],
     }
 }
 
@@ -156,16 +222,36 @@ fn check_shm_mounts(runner: &dyn Runner) -> Vec<Finding> {
 fn check_protected_hardlinks(runner: &dyn Runner) -> Vec<Finding> {
     match kernel::read_protected_hardlinks(runner) {
         Ok(val) => match val.as_str() {
-            "1" | "2" => vec![Finding::new("fs.protected-hardlinks", Severity::Ok, "Protected hardlinks are enabled")
-                .domain("harden")],
-            "0" => vec![Finding::new("fs.protected-hardlinks.disabled", Severity::Important, "Protected hardlinks are disabled")
+            "1" | "2" => vec![
+                Finding::new(
+                    "fs.protected-hardlinks",
+                    Severity::Ok,
+                    "Protected hardlinks are enabled",
+                )
+                .domain("harden"),
+            ],
+            "0" => vec![
+                Finding::new(
+                    "fs.protected-hardlinks.disabled",
+                    Severity::Important,
+                    "Protected hardlinks are disabled",
+                )
                 .domain("harden")
-                .detail("fs.protected_hardlinks = 0: hardlink-based privilege escalation is possible.")
-                .fix_hint("sysctl -w fs.protected_hardlinks=1")],
+                .detail(
+                    "fs.protected_hardlinks = 0: hardlink-based privilege escalation is possible.",
+                )
+                .fix_hint("sysctl -w fs.protected_hardlinks=1"),
+            ],
             _ => vec![],
         },
-        Err(e) => vec![Finding::new("fs.protected-hardlinks.error", Severity::Important, format!("Cannot read: {e}"))
-            .domain("harden")],
+        Err(e) => vec![
+            Finding::new(
+                "fs.protected-hardlinks.error",
+                Severity::Important,
+                format!("Cannot read: {e}"),
+            )
+            .domain("harden"),
+        ],
     }
 }
 
@@ -173,24 +259,44 @@ fn check_protected_hardlinks(runner: &dyn Runner) -> Vec<Finding> {
 fn check_protected_symlinks(runner: &dyn Runner) -> Vec<Finding> {
     match kernel::read_protected_symlinks(runner) {
         Ok(val) => match val.as_str() {
-            "1" | "2" => vec![Finding::new("fs.protected-symlinks", Severity::Ok, "Protected symlinks are enabled")
-                .domain("harden")],
-            "0" => vec![Finding::new("fs.protected-symlinks.disabled", Severity::Important, "Protected symlinks are disabled")
+            "1" | "2" => vec![
+                Finding::new(
+                    "fs.protected-symlinks",
+                    Severity::Ok,
+                    "Protected symlinks are enabled",
+                )
+                .domain("harden"),
+            ],
+            "0" => vec![
+                Finding::new(
+                    "fs.protected-symlinks.disabled",
+                    Severity::Important,
+                    "Protected symlinks are disabled",
+                )
                 .domain("harden")
-                .detail("fs.protected_symlinks = 0: symlink-based privilege escalation is possible.")
-                .fix_hint("sysctl -w fs.protected_symlinks=1")],
+                .detail(
+                    "fs.protected_symlinks = 0: symlink-based privilege escalation is possible.",
+                )
+                .fix_hint("sysctl -w fs.protected_symlinks=1"),
+            ],
             _ => vec![],
         },
-        Err(e) => vec![Finding::new("fs.protected-symlinks.error", Severity::Important, format!("Cannot read: {e}"))
-            .domain("harden")],
+        Err(e) => vec![
+            Finding::new(
+                "fs.protected-symlinks.error",
+                Severity::Important,
+                format!("Cannot read: {e}"),
+            )
+            .domain("harden"),
+        ],
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use toride_runner::fake::FakeRunner;
     use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
 
     /// Build a FakeRunner that returns specific values for sysctl -n queries.
     ///
@@ -215,8 +321,14 @@ mod tests {
         let runner = build_runner(&["2", "1", "1", "0", "0", "1", "1"]);
 
         let findings = doctor(&runner);
-        let ok_count = findings.iter().filter(|f| f.severity == Severity::Ok).count();
-        assert!(ok_count >= 5, "Expected at least 5 OK findings, got {ok_count}");
+        let ok_count = findings
+            .iter()
+            .filter(|f| f.severity == Severity::Ok)
+            .count();
+        assert!(
+            ok_count >= 5,
+            "Expected at least 5 OK findings, got {ok_count}"
+        );
     }
 
     #[test]
@@ -232,7 +344,11 @@ mod tests {
         let runner = build_runner(&["2", "1", "0", "0", "0", "1", "1"]);
 
         let findings = doctor(&runner);
-        assert!(findings.iter().any(|f| f.id == "kernel.kptr-restrict.disabled"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.id == "kernel.kptr-restrict.disabled")
+        );
     }
 
     #[test]
@@ -240,6 +356,10 @@ mod tests {
         let runner = build_runner(&["2", "1", "1", "1", "0", "1", "1"]);
 
         let findings = doctor(&runner);
-        assert!(findings.iter().any(|f| f.id == "net.ipv4.ip-forward.enabled"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.id == "net.ipv4.ip-forward.enabled")
+        );
     }
 }

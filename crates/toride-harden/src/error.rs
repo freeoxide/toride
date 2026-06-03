@@ -86,9 +86,11 @@ impl From<toride_runner::Error> for Error {
                 exit_code,
                 stderr,
             },
-            toride_runner::Error::CommandTimeout(msg) => Self::CommandTimeout {
-                program: msg,
-                timeout_secs: 60,
+            toride_runner::Error::CommandTimeout {
+                program, timeout, ..
+            } => Self::CommandTimeout {
+                program,
+                timeout_secs: timeout.as_secs(),
             },
             toride_runner::Error::BinaryNotFound(name) => Self::BinaryNotFound(name),
             toride_runner::Error::Io(msg) => Self::Io(msg),

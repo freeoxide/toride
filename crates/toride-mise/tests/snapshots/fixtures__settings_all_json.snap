@@ -1,0 +1,10 @@
+---
+source: crates/toride-mise/tests/fixtures.rs
+expression: pretty
+---
+{
+  "jobs": {
+    "source": "~/.config/mise/config.toml",
+    "value": 4
+  }
+}
