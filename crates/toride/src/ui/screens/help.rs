@@ -1,101 +1,51 @@
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,
-    layout::{Constraint, Layout},
+    layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
 
 use crate::action::Action;
-use crate::ui::responsive::{self, Viewport};
-use crate::ui::screens::AppScreen;
+use crate::ui::responsive::Viewport;
 use crate::ui::theme::Palette;
-use crate::ui::widgets::gradient::GradientCache;
 
-pub struct HelpScreen {
-    gradient_cache: GradientCache,
-}
+/// Lightweight help modal content renderer.
+///
+/// No longer a navigable screen — rendered as an overlay on top of the active
+/// screen when `App::help_visible` is `true`.
+pub struct HelpScreen;
 
-impl Default for HelpScreen {
-    fn default() -> Self {
-        Self::new()
+impl HelpScreen {
+    #[must_use]
+    pub fn new() -> Self {
+        Self
     }
-}
 
-impl AppScreen for HelpScreen {
-    fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+    /// Handle a key press while the help modal is open.
+    pub fn handle_key(code: KeyCode) -> Option<Action> {
         match code {
-            KeyCode::Char('b') | KeyCode::Esc => Some(Action::Back),
+            KeyCode::Char('b') | KeyCode::Esc | KeyCode::Char('?') => Some(Action::CloseHelp),
             KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
         }
     }
 
-    fn view(&mut self, frame: &mut Frame, palette: Palette) {
-        let area = frame.area();
-        let viewport = Viewport::from_area(area);
-
-        if responsive::render_too_small(frame, palette) {
-            return;
-        }
-
-        let buf = frame.buffer_mut();
-        self.gradient_cache.render_or_copy(buf, area, palette);
-
-        Self::render_content(frame, palette, viewport);
-    }
-
-    fn view_foreground(&mut self, frame: &mut Frame, palette: Palette) {
-        let area = frame.area();
-        let viewport = Viewport::from_area(area);
-
-        if responsive::render_too_small(frame, palette) {
-            return;
-        }
-
-        Self::render_content(frame, palette, viewport);
-    }
-
-    fn invalidate_cache(&mut self) {
-        self.gradient_cache.invalidate();
-    }
-
-    fn needs_animation(&self) -> bool {
-        false
-    }
-}
-
-impl HelpScreen {
-    pub fn new() -> Self {
-        Self {
-            gradient_cache: GradientCache::new(),
-        }
-    }
-
-    fn render_content(frame: &mut Frame, p: Palette, viewport: Viewport) {
-        let area = frame.area();
-        let center = responsive::center_area(area);
-
-        // Vertical layout
-        let [
-            _top,
-            title_area,
-            _g1,
-            bindings_area,
-            _g2,
-            keys_area,
-            _bottom,
-        ] = Layout::vertical([
-            Constraint::Fill(1),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Length(7),
-            Constraint::Length(1),
-            Constraint::Length(1),
-            Constraint::Fill(1),
-        ])
-        .areas(center);
+    /// Render help content into the given area (inside the modal border).
+    pub fn render(frame: &mut Frame, content_area: Rect, p: Palette, viewport: Viewport) {
+        // Vertical layout within content area
+        let [_top, title_area, _g1, bindings_area, _g2, keys_area, _bottom] =
+            Layout::vertical([
+                Constraint::Fill(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(7),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Fill(1),
+            ])
+            .areas(content_area);
 
         // ── Title ───────────────────────────────────────────────────────
         frame.render_widget(
@@ -114,11 +64,11 @@ impl HelpScreen {
         let entries: Vec<Line<'_>> = if viewport >= Viewport::Compact {
             vec![
                 keybinding_line("Enter", "Show system status", key_style, lbl_style),
-                keybinding_line("?", "Show this help", key_style, lbl_style),
+                keybinding_line("?", "Toggle this help", key_style, lbl_style),
                 keybinding_line("q", "Quit", key_style, lbl_style),
                 keybinding_line("j / Down", "Scroll down", key_style, lbl_style),
                 keybinding_line("k / Up", "Scroll up", key_style, lbl_style),
-                keybinding_line("b / Esc", "Back to welcome", key_style, lbl_style),
+                keybinding_line("b / Esc", "Close dialog", key_style, lbl_style),
             ]
         } else {
             vec![
@@ -126,19 +76,19 @@ impl HelpScreen {
                 keybinding_line("?", "Help", key_style, lbl_style),
                 keybinding_line("q", "Quit", key_style, lbl_style),
                 keybinding_line("j/k", "Scroll", key_style, lbl_style),
-                keybinding_line("b", "Back", key_style, lbl_style),
+                keybinding_line("b", "Close", key_style, lbl_style),
             ]
         };
 
         frame.render_widget(Paragraph::new(entries).centered(), bindings_area);
 
-        // ── Back hint ───────────────────────────────────────────────────
-        let back_line = Line::from(vec![
-            Span::styled(" b ", key_style),
+        // ── Close hint ──────────────────────────────────────────────────
+        let close_line = Line::from(vec![
+            Span::styled(" Esc ", key_style),
             Span::raw(" "),
-            Span::styled("back", Style::new().fg(p.text_muted)),
+            Span::styled("close", Style::new().fg(p.text_muted)),
         ]);
-        frame.render_widget(Paragraph::new(back_line).centered(), keys_area);
+        frame.render_widget(Paragraph::new(close_line).centered(), keys_area);
     }
 }
 
@@ -156,7 +106,6 @@ mod tests {
 
     use super::HelpScreen;
     use crate::action::Action;
-    use crate::ui::screens::AppScreen;
 
     #[test]
     fn new_creates_screen() {
@@ -164,34 +113,29 @@ mod tests {
     }
 
     #[test]
-    fn handle_key_back_on_b() {
-        let mut screen = HelpScreen::new();
-        assert_eq!(screen.handle_key(KeyCode::Char('b')), Some(Action::Back));
+    fn handle_key_close_help_on_b() {
+        assert_eq!(HelpScreen::handle_key(KeyCode::Char('b')), Some(Action::CloseHelp));
     }
 
     #[test]
-    fn handle_key_back_on_esc() {
-        let mut screen = HelpScreen::new();
-        assert_eq!(screen.handle_key(KeyCode::Esc), Some(Action::Back));
+    fn handle_key_close_help_on_esc() {
+        assert_eq!(HelpScreen::handle_key(KeyCode::Esc), Some(Action::CloseHelp));
+    }
+
+    #[test]
+    fn handle_key_close_help_on_question_mark() {
+        assert_eq!(HelpScreen::handle_key(KeyCode::Char('?')), Some(Action::CloseHelp));
     }
 
     #[test]
     fn handle_key_quit_on_q() {
-        let mut screen = HelpScreen::new();
-        assert_eq!(screen.handle_key(KeyCode::Char('q')), Some(Action::Quit));
+        assert_eq!(HelpScreen::handle_key(KeyCode::Char('q')), Some(Action::Quit));
     }
 
     #[test]
     fn handle_key_none_for_other_keys() {
-        let mut screen = HelpScreen::new();
-        assert_eq!(screen.handle_key(KeyCode::Char('a')), None);
-        assert_eq!(screen.handle_key(KeyCode::Enter), None);
-        assert_eq!(screen.handle_key(KeyCode::Up), None);
-    }
-
-    #[test]
-    fn needs_animation_returns_false() {
-        let screen = HelpScreen::new();
-        assert!(!screen.needs_animation());
+        assert_eq!(HelpScreen::handle_key(KeyCode::Char('a')), None);
+        assert_eq!(HelpScreen::handle_key(KeyCode::Enter), None);
+        assert_eq!(HelpScreen::handle_key(KeyCode::Up), None);
     }
 }

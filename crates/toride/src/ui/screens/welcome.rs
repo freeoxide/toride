@@ -55,7 +55,6 @@ impl AppScreen for WelcomeScreen {
         // Direct shortcuts always work
         match code {
             KeyCode::Char('q') | KeyCode::Esc => return Some(Action::Quit),
-            KeyCode::Char('?') => return Some(Action::Help),
             KeyCode::Enter | KeyCode::Char(' ') => {
                 let action = match self.focus.current() {
                     Some(&idx) => BTN_ACTIONS[idx],
@@ -325,12 +324,6 @@ mod tests {
     fn handle_key_returns_quit_for_esc() {
         let mut screen = WelcomeScreen::new();
         assert_eq!(screen.handle_key(KeyCode::Esc), Some(Action::Quit));
-    }
-
-    #[test]
-    fn handle_key_returns_help_for_question_mark() {
-        let mut screen = WelcomeScreen::new();
-        assert_eq!(screen.handle_key(KeyCode::Char('?')), Some(Action::Help));
     }
 
     #[test]

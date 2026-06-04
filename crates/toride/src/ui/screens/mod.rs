@@ -101,19 +101,88 @@ mod tests {
         insta::assert_snapshot!("welcome_screen_30x10", output);
     }
 
-    // ── HelpScreen snapshot ────────────────────────────────────────────────
+    // ── HelpScreen modal snapshot ────────────────────────────────────────────
 
     #[test]
     fn help_screen_snapshot() {
-        let mut screen = super::help::HelpScreen::new();
-        let output = render_to_string(&mut screen, 80, 24);
+        use ratatui::layout::Rect;
+        use ratatui::style::Style;
+        use ratatui::widgets::{Block, Clear};
+
+        use crate::ui::responsive::Viewport;
+
+        let mut terminal = test_terminal(80, 24);
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                // Simulate the modal rendering pipeline
+                let dimmed_bg = match CHARM.bg {
+                    ratatui::style::Color::Rgb(r, g, b) => {
+                        ratatui::style::Color::Rgb(r / 3, g / 3, b / 3)
+                    }
+                    other => other,
+                };
+                f.render_widget(Clear, area);
+                f.render_widget(
+                    Block::default().style(Style::new().bg(dimmed_bg)),
+                    area,
+                );
+                let modal = Rect::new(
+                    (area.width.saturating_sub(52)) / 2,
+                    (area.height.saturating_sub(16)) / 2,
+                    52,
+                    16,
+                );
+                let block = Block::bordered()
+                    .border_style(Style::new().fg(CHARM.border_hi))
+                    .style(Style::new().bg(CHARM.panel));
+                let content = block.inner(modal);
+                f.render_widget(block, modal);
+                super::help::HelpScreen::render(f, content, CHARM, Viewport::from_area(area));
+            })
+            .unwrap();
+        let output = terminal.backend().to_string();
         insta::assert_snapshot!("help_screen_80x24", output);
     }
 
     #[test]
     fn help_screen_minimal_viewport() {
-        let mut screen = super::help::HelpScreen::new();
-        let output = render_to_string(&mut screen, 35, 12);
+        use ratatui::layout::Rect;
+        use ratatui::style::Style;
+        use ratatui::widgets::{Block, Clear};
+
+        use crate::ui::responsive::Viewport;
+
+        let mut terminal = test_terminal(35, 12);
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                let dimmed_bg = match CHARM.bg {
+                    ratatui::style::Color::Rgb(r, g, b) => {
+                        ratatui::style::Color::Rgb(r / 3, g / 3, b / 3)
+                    }
+                    other => other,
+                };
+                f.render_widget(Clear, area);
+                f.render_widget(
+                    Block::default().style(Style::new().bg(dimmed_bg)),
+                    area,
+                );
+                let modal = Rect::new(
+                    (area.width.saturating_sub(52)) / 2,
+                    (area.height.saturating_sub(16)) / 2,
+                    52.min(area.width),
+                    16.min(area.height),
+                );
+                let block = Block::bordered()
+                    .border_style(Style::new().fg(CHARM.border_hi))
+                    .style(Style::new().bg(CHARM.panel));
+                let content = block.inner(modal);
+                f.render_widget(block, modal);
+                super::help::HelpScreen::render(f, content, CHARM, Viewport::from_area(area));
+            })
+            .unwrap();
+        let output = terminal.backend().to_string();
         insta::assert_snapshot!("help_screen_35x12", output);
     }
 

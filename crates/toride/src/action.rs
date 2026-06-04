@@ -5,8 +5,10 @@
 pub enum Action {
     /// Proceed to the next screen (Welcome → Status).
     Continue,
-    /// Open the help screen.
+    /// Toggle the help modal.
     Help,
+    /// Close the help modal.
+    CloseHelp,
     /// Navigate back to the previous screen.
     Back,
     /// Quit the application.
@@ -43,6 +45,7 @@ mod tests {
         let variants = [
             Action::Continue,
             Action::Help,
+            Action::CloseHelp,
             Action::Back,
             Action::Quit,
             Action::ScrollDown,
@@ -81,6 +84,7 @@ mod tests {
         let variants = [
             Action::Continue,
             Action::Help,
+            Action::CloseHelp,
             Action::Back,
             Action::Quit,
             Action::ScrollDown,

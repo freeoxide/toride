@@ -16,8 +16,6 @@ pub enum Screen {
     Welcome = 0,
     /// System status dashboard.
     Status = 1,
-    /// Help / keybindings screen.
-    Help = 2,
 }
 
 impl Screen {
@@ -38,7 +36,6 @@ impl Screen {
         match key {
             0 => Screen::Welcome,
             1 => Screen::Status,
-            2 => Screen::Help,
             _ => Screen::Welcome,
         }
     }
@@ -126,12 +123,11 @@ mod tests {
     fn screen_key_values() {
         assert_eq!(Screen::Welcome.key(), 0);
         assert_eq!(Screen::Status.key(), 1);
-        assert_eq!(Screen::Help.key(), 2);
     }
 
     #[test]
     fn screen_from_key_roundtrip() {
-        for screen in [Screen::Welcome, Screen::Status, Screen::Help] {
+        for screen in [Screen::Welcome, Screen::Status] {
             assert_eq!(Screen::from_key(screen.key()), screen);
         }
     }
@@ -196,18 +192,11 @@ mod tests {
         let mut nav = Navigator::new();
         let mut cache = TransitionCache::new();
 
-        // Welcome -> Status -> Help
+        // Welcome -> Status
         let _ts = nav.start_forward(Screen::Status, &mut cache);
         nav.commit_forward(Screen::Status);
-        let _ts = nav.start_forward(Screen::Help, &mut cache);
-        nav.commit_forward(Screen::Help);
-        assert_eq!(nav.current(), Screen::Help);
-        assert!(nav.can_go_back());
-
-        // Back: Help -> Status
-        let ts = nav.start_backward(&mut cache).unwrap();
-        nav.commit_back(Screen::from_key(ts.to));
         assert_eq!(nav.current(), Screen::Status);
+        assert!(nav.can_go_back());
 
         // Back: Status -> Welcome
         let ts = nav.start_backward(&mut cache).unwrap();
@@ -243,27 +232,13 @@ mod tests {
     }
 
     #[test]
-    fn navigator_complex_navigation_welcome_status_help_back_back() {
+    fn navigator_complex_navigation_welcome_status_back() {
         let mut nav = Navigator::new();
         let mut cache = TransitionCache::new();
 
         // Welcome -> Status
         let _ts = nav.start_forward(Screen::Status, &mut cache);
         nav.commit_forward(Screen::Status);
-        assert_eq!(nav.current(), Screen::Status);
-        assert!(nav.can_go_back());
-        assert_eq!(nav.nav_stack.len(), 2);
-
-        // Status -> Help
-        let _ts = nav.start_forward(Screen::Help, &mut cache);
-        nav.commit_forward(Screen::Help);
-        assert_eq!(nav.current(), Screen::Help);
-        assert!(nav.can_go_back());
-        assert_eq!(nav.nav_stack.len(), 3);
-
-        // Back: Help -> Status
-        let ts = nav.start_backward(&mut cache).unwrap();
-        nav.commit_back(Screen::from_key(ts.to));
         assert_eq!(nav.current(), Screen::Status);
         assert!(nav.can_go_back());
         assert_eq!(nav.nav_stack.len(), 2);
@@ -286,23 +261,13 @@ mod tests {
         nav.commit_forward(Screen::Status);
         assert_eq!(nav.current(), Screen::Status);
 
-        // Commit forward: Status -> Help
-        let _ts = nav.start_forward(Screen::Help, &mut cache);
-        nav.commit_forward(Screen::Help);
-        assert_eq!(nav.current(), Screen::Help);
-
-        // Commit forward: Help -> Status (navigating back to a previous screen forward)
-        let _ts = nav.start_forward(Screen::Status, &mut cache);
-        nav.commit_forward(Screen::Status);
-        assert_eq!(nav.current(), Screen::Status);
-
         // Commit forward: Status -> Welcome
         let _ts = nav.start_forward(Screen::Welcome, &mut cache);
         nav.commit_forward(Screen::Welcome);
         assert_eq!(nav.current(), Screen::Welcome);
 
-        // After 4 forward commits starting from new, stack has 5 entries.
-        assert_eq!(nav.nav_stack.len(), 5);
+        // After 2 forward commits starting from new, stack has 3 entries.
+        assert_eq!(nav.nav_stack.len(), 3);
         assert!(nav.can_go_back());
     }
 
@@ -318,28 +283,19 @@ mod tests {
         nav.commit_forward(Screen::Status);
         assert_eq!(nav.nav_stack.len(), 2);
 
-        // After 2 forwards: stack has 3 entries [Welcome, Status, Help]
-        nav.commit_forward(Screen::Help);
-        assert_eq!(nav.nav_stack.len(), 3);
-
-        // After 1 back: stack has 2 entries [Welcome, Status]
-        let ts = nav.start_backward(&mut cache).unwrap();
-        nav.commit_back(Screen::from_key(ts.to));
-        assert_eq!(nav.nav_stack.len(), 2);
-
-        // After another forward: stack has 3 entries [Welcome, Status, Help]
-        let _ts = nav.start_forward(Screen::Help, &mut cache);
-        nav.commit_forward(Screen::Help);
-        assert_eq!(nav.nav_stack.len(), 3);
-
-        // After 2 backs: stack has 1 entry [Welcome]
-        let ts = nav.start_backward(&mut cache).unwrap();
-        nav.commit_back(Screen::from_key(ts.to));
+        // After 1 back: stack has 1 entry [Welcome]
         let ts = nav.start_backward(&mut cache).unwrap();
         nav.commit_back(Screen::from_key(ts.to));
         assert_eq!(nav.nav_stack.len(), 1);
 
-        // Cannot go back further
+        // After another forward: stack has 2 entries [Welcome, Status]
+        let _ts = nav.start_forward(Screen::Status, &mut cache);
+        nav.commit_forward(Screen::Status);
+        assert_eq!(nav.nav_stack.len(), 2);
+
+        // Cannot go back further after one back
+        let ts = nav.start_backward(&mut cache).unwrap();
+        nav.commit_back(Screen::from_key(ts.to));
         assert!(nav.start_backward(&mut cache).is_none());
         assert_eq!(nav.nav_stack.len(), 1);
     }

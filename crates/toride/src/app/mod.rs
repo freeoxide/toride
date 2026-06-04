@@ -32,6 +32,7 @@ pub struct App {
     welcome: WelcomeScreen,
     status: StatusScreen,
     help: HelpScreen,
+    help_visible: bool,
     active_theme: Theme,
     should_quit: bool,
     needs_redraw: bool,
@@ -55,6 +56,7 @@ impl App {
             welcome: WelcomeScreen::new(),
             status: StatusScreen::new(),
             help: HelpScreen::new(),
+            help_visible: false,
             active_theme: Theme::default(),
             should_quit: false,
             needs_redraw: false,
@@ -69,7 +71,6 @@ impl App {
         match self.nav.current() {
             Screen::Welcome => &mut self.welcome,
             Screen::Status => &mut self.status,
-            Screen::Help => &mut self.help,
         }
     }
 
@@ -81,7 +82,14 @@ impl App {
         match action {
             Action::Quit => self.should_quit = true,
             Action::Continue => self.start_forward(Screen::Status),
-            Action::Help => self.start_forward(Screen::Help),
+            Action::Help => {
+                self.help_visible = !self.help_visible;
+                self.needs_redraw = true;
+            }
+            Action::CloseHelp => {
+                self.help_visible = false;
+                self.needs_redraw = true;
+            }
             Action::Back => self.go_back(),
             Action::CycleTheme => {
                 let all = Theme::all();
@@ -94,7 +102,6 @@ impl App {
                 self.welcome.set_border_color(next.palette().accent);
                 self.welcome.invalidate_cache();
                 self.status.invalidate_cache();
-                self.help.invalidate_cache();
                 self.needs_redraw = true;
             }
             // Scroll actions (and any future screen-local actions) are routed
@@ -143,7 +150,6 @@ impl App {
                         Event::Resize(..) => {
                             self.welcome.invalidate_cache();
                             self.status.invalidate_cache();
-                            self.help.invalidate_cache();
                             self.needs_redraw = true;
                             None
                         }
@@ -227,11 +233,21 @@ mod tests {
     }
 
     #[test]
-    fn update_help_starts_transition_to_help() {
+    fn update_help_toggles_modal() {
         let mut app = App::new();
-        assert!(app.transition.is_none());
+        assert!(!app.help_visible);
         app.update(Action::Help);
-        assert!(app.transition.is_some());
+        assert!(app.help_visible);
+        app.update(Action::Help);
+        assert!(!app.help_visible);
+    }
+
+    #[test]
+    fn update_close_help_hides_modal() {
+        let mut app = App::new();
+        app.help_visible = true;
+        app.update(Action::CloseHelp);
+        assert!(!app.help_visible);
     }
 
     #[test]
