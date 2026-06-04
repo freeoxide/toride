@@ -105,9 +105,9 @@ mod tests {
 
     #[test]
     fn help_screen_snapshot() {
-        use ratatui::layout::Rect;
+        use ratatui::layout::{Position, Rect};
         use ratatui::style::Style;
-        use ratatui::widgets::{Block, Clear};
+        use ratatui::widgets::Block;
 
         use crate::ui::responsive::Viewport;
 
@@ -115,18 +115,20 @@ mod tests {
         terminal
             .draw(|f| {
                 let area = f.area();
-                // Simulate the modal rendering pipeline
+                // Simulate in-place dimming (same as App::render_help_modal)
                 let dimmed_bg = match CHARM.bg {
                     ratatui::style::Color::Rgb(r, g, b) => {
                         ratatui::style::Color::Rgb(r / 3, g / 3, b / 3)
                     }
                     other => other,
                 };
-                f.render_widget(Clear, area);
-                f.render_widget(
-                    Block::default().style(Style::new().bg(dimmed_bg)),
-                    area,
-                );
+                let buf = f.buffer_mut();
+                for cell in buf.content.iter_mut() {
+                    let bg = blend_cell_color(cell.bg, dimmed_bg, 0.55);
+                    cell.set_bg(bg);
+                    let fg = blend_cell_color(cell.fg, dimmed_bg, 0.45);
+                    cell.set_fg(fg);
+                }
                 let modal = Rect::new(
                     (area.width.saturating_sub(52)) / 2,
                     (area.height.saturating_sub(16)) / 2,
@@ -149,7 +151,7 @@ mod tests {
     fn help_screen_minimal_viewport() {
         use ratatui::layout::Rect;
         use ratatui::style::Style;
-        use ratatui::widgets::{Block, Clear};
+        use ratatui::widgets::Block;
 
         use crate::ui::responsive::Viewport;
 
@@ -163,11 +165,14 @@ mod tests {
                     }
                     other => other,
                 };
-                f.render_widget(Clear, area);
-                f.render_widget(
-                    Block::default().style(Style::new().bg(dimmed_bg)),
-                    area,
-                );
+                let buf = f.buffer_mut();
+                for pos in buf.area().cells() {
+                    let cell = &mut buf[pos];
+                    let bg = blend_cell_color(cell.bg, dimmed_bg, 0.55);
+                    cell.set_bg(bg);
+                    let fg = blend_cell_color(cell.fg, dimmed_bg, 0.45);
+                    cell.set_fg(fg);
+                }
                 let modal = Rect::new(
                     (area.width.saturating_sub(52)) / 2,
                     (area.height.saturating_sub(16)) / 2,
@@ -184,6 +189,27 @@ mod tests {
             .unwrap();
         let output = terminal.backend().to_string();
         insta::assert_snapshot!("help_screen_35x12", output);
+    }
+
+    /// Linearly interpolate a color toward a target (mirrors `blend_toward` in render.rs).
+    fn blend_cell_color(
+        color: ratatui::style::Color,
+        target: ratatui::style::Color,
+        t: f32,
+    ) -> ratatui::style::Color {
+        let ratatui::style::Color::Rgb(cr, cg, cb) = color else {
+            return color;
+        };
+        let ratatui::style::Color::Rgb(tr, tg, tb) = target else {
+            return color;
+        };
+        #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+        let r = (cr as f32 + (tr as f32 - cr as f32) * t).round() as u8;
+        #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+        let g = (cg as f32 + (tg as f32 - cg as f32) * t).round() as u8;
+        #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+        let b = (cb as f32 + (tb as f32 - cb as f32) * t).round() as u8;
+        ratatui::style::Color::Rgb(r, g, b)
     }
 
     // ── StatusScreen loading snapshot ───────────────────────────────────────

@@ -8,7 +8,7 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::Style,
-    widgets::{Block, Clear},
+    widgets::Block,
 };
 use tachyonfx::Interpolation;
 
@@ -99,13 +99,16 @@ impl App {
         let area = frame.area();
         let viewport = Viewport::from_area(area);
 
-        // 1. Dimmed scrim over the entire area
-        let dimmed_bg = dim_color(p.bg);
-        frame.render_widget(Clear, area);
-        frame.render_widget(
-            Block::default().style(Style::new().bg(dimmed_bg)),
-            area,
-        );
+        // 1. Dim the existing screen content in-place (no Clear — keeps the
+        //    underlying screen visible through a darkened scrim).
+        let buf = frame.buffer_mut();
+        let scrim_bg = dim_color(p.bg);
+        for cell in buf.content.iter_mut() {
+            let dimmed = blend_toward(cell.bg, scrim_bg, 0.55);
+            cell.set_bg(dimmed);
+            let dimmed_fg = blend_toward(cell.fg, scrim_bg, 0.45);
+            cell.set_fg(dimmed_fg);
+        }
 
         // 2. Centered modal box
         let modal_area = modal_area(area);
@@ -144,10 +147,31 @@ fn modal_area(area: Rect) -> Rect {
     Rect::new(area.x + x, area.y + y, w, h)
 }
 
-/// Darken an RGB color to ~1/3 brightness for the scrim effect.
+/// Darken an RGB color to ~1/3 brightness (used as the scrim blend target).
 fn dim_color(color: ratatui::style::Color) -> ratatui::style::Color {
     match color {
         ratatui::style::Color::Rgb(r, g, b) => ratatui::style::Color::Rgb(r / 3, g / 3, b / 3),
         other => other,
     }
+}
+
+/// Linearly interpolate `color` toward `target` by `t` (0.0 = unchanged, 1.0 = target).
+fn blend_toward(
+    color: ratatui::style::Color,
+    target: ratatui::style::Color,
+    t: f32,
+) -> ratatui::style::Color {
+    let ratatui::style::Color::Rgb(cr, cg, cb) = color else {
+        return color;
+    };
+    let ratatui::style::Color::Rgb(tr, tg, tb) = target else {
+        return color;
+    };
+    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    let r = (cr as f32 + (tr as f32 - cr as f32) * t).round() as u8;
+    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    let g = (cg as f32 + (tg as f32 - cg as f32) * t).round() as u8;
+    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    let b = (cb as f32 + (tb as f32 - cb as f32) * t).round() as u8;
+    ratatui::style::Color::Rgb(r, g, b)
 }
