@@ -52,6 +52,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 /// Daemon liveness and health snapshot.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -204,12 +205,11 @@ fn is_process_alive(_pid: u32) -> bool {
 /// On Linux, reads `/proc/<pid>/stat` for process start time.
 #[cfg(target_os = "macos")]
 fn uptime_for_pid(pid: u32) -> Option<u64> {
-    use std::process::Command;
-    let output = Command::new("ps")
-        .args(["-o", "etime=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    let elapsed = String::from_utf8(output.stdout).ok()?;
+    let spec = CommandSpec::new("ps")
+        .args(["-o", "etime=", "-p", &pid.to_string()]);
+    let runner = DuctRunner;
+    let output = runner.run(&spec).ok()?;
+    let elapsed = output.stdout;
     parse_elapsed_time(elapsed.trim())
 }
 

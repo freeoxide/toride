@@ -60,6 +60,7 @@ use std::fmt;
 use std::path::Path;
 
 use serde::Serialize;
+use toride_runner::{CommandSpec, DuctRunner, Runner};
 use sysinfo::{
     Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
     ProcessesToUpdate, RefreshKind, System,
@@ -155,6 +156,20 @@ fn parse_vram_to_bytes(v: &str) -> Option<u64> {
     }
 }
 
+
+/// Run a command via [`DuctRunner`] and return its stdout on success.
+///
+/// Returns `None` if the command fails to execute, times out, or exits
+/// with a non-zero status. This is the shared helper for migrating raw
+/// `std::process::Command` calls to the `toride-runner` abstraction.
+fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
+    let mut spec = CommandSpec::new(program);
+    for arg in args {
+        spec = spec.arg(*arg);
+    }
+    let runner = DuctRunner;
+    runner.run(&spec).ok().filter(|o| o.success).map(|o| o.stdout)
+}
 
 // ── OS info helpers ──────────────────────────────────────────────────────
 
@@ -295,9 +310,7 @@ fn read_cached_bytes() -> u64 {
     }
     #[cfg(target_os = "macos")]
     {
-        use std::process::Command;
-        if let Ok(output) = Command::new("vm_stat").output()
-            && let Ok(text) = String::from_utf8(output.stdout)
+        if let Some(text) = run_cmd("vm_stat", &[])
         {
             let mut page_size: u64 = 16384;
             let mut purgeable_pages: u64 = 0;
@@ -380,7 +393,6 @@ fn read_interface_extras(name: &str) -> InterfaceExtras {
 
 #[cfg(target_os = "macos")]
 fn read_interface_extras(name: &str) -> InterfaceExtras {
-    use std::process::Command;
     let mut extras = InterfaceExtras {
         link_status: None,
         speed_bps: None,
@@ -388,8 +400,7 @@ fn read_interface_extras(name: &str) -> InterfaceExtras {
         drops_received: 0,
         drops_transmitted: 0,
     };
-    if let Ok(output) = Command::new("ifconfig").arg(name).output()
-        && let Ok(text) = String::from_utf8(output.stdout)
+    if let Some(text) = run_cmd("ifconfig", &[name])
     {
         for line in text.lines() {
             let trimmed = line.trim();
@@ -458,9 +469,7 @@ fn detect_gateway() -> Option<String> {
     }
     #[cfg(target_os = "macos")]
     {
-        use std::process::Command;
-        let output = Command::new("netstat").args(["-rn"]).output().ok()?;
-        let text = String::from_utf8_lossy(&output.stdout);
+        let text = run_cmd("netstat", &["-rn"])?;
         for line in text.lines() {
             let trimmed = line.trim();
             if trimmed.starts_with("default") {
@@ -503,9 +512,7 @@ fn detect_dns_servers() -> Vec<String> {
     #[cfg(target_os = "macos")]
     {
         if servers.is_empty() {
-            use std::process::Command;
-            if let Ok(output) = Command::new("scutil").args(["--dns"]).output()
-                && let Ok(text) = String::from_utf8(output.stdout)
+            if let Some(text) = run_cmd("scutil", &["--dns"])
             {
                 for line in text.lines() {
                     let trimmed = line.trim();
@@ -709,14 +716,9 @@ struct CpuTopology {
 #[cfg(target_os = "macos")]
 #[allow(clippy::cast_possible_truncation)] // core/thread/socket counts fit in u32
 fn read_cpu_topology() -> CpuTopology {
-    use std::process::Command;
-
     fn sysctl_u64(name: &str) -> Option<u64> {
-        Command::new("sysctl")
-            .args(["-n", name])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8_lossy(&o.stdout).trim().parse().ok())
+        run_cmd("sysctl", &["-n", name])
+            .and_then(|s| s.trim().parse().ok())
     }
 
     let sockets = sysctl_u64("hw.packages")
@@ -905,18 +907,13 @@ fn read_cpu_topology() -> CpuTopology {
 /// Read hardware inventory from macOS `system_profiler`.
 #[cfg(target_os = "macos")]
 fn read_hardware_inventory() -> HardwareInventory {
-    use std::process::Command;
-
     let mut inv = HardwareInventory {
         manufacturer: Some("Apple".to_string()),
         bios_vendor: Some("Apple".to_string()),
         ..HardwareInventory::default()
     };
 
-    if let Ok(output) = Command::new("system_profiler")
-        .args(["SPHardwareDataType", "-json"])
-        .output()
-        && let Ok(text) = String::from_utf8(output.stdout)
+    if let Some(text) = run_cmd("system_profiler", &["SPHardwareDataType", "-json"])
         && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
         && let Some(hw) = json["SPHardwareDataType"]
             .as_array()
@@ -2068,11 +2065,7 @@ impl SystemStatus {
         // Try system_profiler on macOS
         #[cfg(target_os = "macos")]
         {
-            use std::process::Command;
-            if let Ok(output) = Command::new("system_profiler")
-                .args(["SPDisplaysDataType", "-json"])
-                .output()
-                && let Ok(text) = String::from_utf8(output.stdout)
+            if let Some(text) = run_cmd("system_profiler", &["SPDisplaysDataType", "-json"])
                 && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
                 && let Some(displays) = json["SPDisplaysDataType"].as_array()
             {
@@ -2123,53 +2116,47 @@ impl SystemStatus {
         // Try nvidia-smi on Linux
         #[cfg(target_os = "linux")]
         {
-            use std::process::Command;
-            if let Ok(output) = Command::new("nvidia-smi")
-                .args(["--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics", "--format=csv,noheader,nounits"])
-                .output()
+            if let Some(text) = run_cmd("nvidia-smi", &["--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics", "--format=csv,noheader,nounits"])
             {
-                if output.status.success() {
-                    let text = String::from_utf8_lossy(&output.stdout);
-                    for line in text.lines() {
-                        let parts: Vec<&str> = line.split(", ").collect();
-                        if parts.len() >= 16 {
-                            let name = parts[0].trim().to_string();
-                            let vram_mb: Option<u64> = parts[1].trim().parse().ok();
-                            let driver = parts[2].trim().to_string();
-                            let temperature: Option<f32> = parts[3].trim().parse().ok();
-                            let utilization: Option<f32> = parts[4].trim().parse().ok();
-                            let pci_bus_id = Some(parts[5].trim().to_string());
-                            let device_id = Some(parts[6].trim().to_string());
-                            let used_vram_mb: Option<u64> = parts[7].trim().parse().ok();
-                            let free_vram_mb: Option<u64> = parts[8].trim().parse().ok();
-                            let memory_utilization: Option<f32> = parts[9].trim().parse().ok();
-                            let encoder_utilization: Option<f32> = parts[10].trim().parse().ok();
-                            let decoder_utilization: Option<f32> = parts[11].trim().parse().ok();
-                            let fan_speed_rpm: Option<u32> = parts[12].trim().parse().ok();
-                            let power_draw_watts: Option<f32> = parts[13].trim().parse().ok();
-                            let power_limit_watts: Option<f32> = parts[14].trim().parse().ok();
-                            let clock_speed_mhz: Option<u32> = parts[15].trim().parse().ok();
-                            gpus.push(GpuInfo {
-                                name,
-                                vendor: "NVIDIA".to_string(),
-                                vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
-                                driver_version: Some(driver),
-                                gpu_type: Some("Discrete".to_string()),
-                                temperature,
-                                utilization,
-                                device_id,
-                                pci_bus_id,
-                                used_vram_bytes: used_vram_mb.map(|mb| mb * 1024 * 1024),
-                                free_vram_bytes: free_vram_mb.map(|mb| mb * 1024 * 1024),
-                                memory_utilization,
-                                encoder_utilization,
-                                decoder_utilization,
-                                fan_speed_rpm,
-                                power_draw_watts,
-                                power_limit_watts,
-                                clock_speed_mhz,
-                            });
-                        }
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split(", ").collect();
+                    if parts.len() >= 16 {
+                        let name = parts[0].trim().to_string();
+                        let vram_mb: Option<u64> = parts[1].trim().parse().ok();
+                        let driver = parts[2].trim().to_string();
+                        let temperature: Option<f32> = parts[3].trim().parse().ok();
+                        let utilization: Option<f32> = parts[4].trim().parse().ok();
+                        let pci_bus_id = Some(parts[5].trim().to_string());
+                        let device_id = Some(parts[6].trim().to_string());
+                        let used_vram_mb: Option<u64> = parts[7].trim().parse().ok();
+                        let free_vram_mb: Option<u64> = parts[8].trim().parse().ok();
+                        let memory_utilization: Option<f32> = parts[9].trim().parse().ok();
+                        let encoder_utilization: Option<f32> = parts[10].trim().parse().ok();
+                        let decoder_utilization: Option<f32> = parts[11].trim().parse().ok();
+                        let fan_speed_rpm: Option<u32> = parts[12].trim().parse().ok();
+                        let power_draw_watts: Option<f32> = parts[13].trim().parse().ok();
+                        let power_limit_watts: Option<f32> = parts[14].trim().parse().ok();
+                        let clock_speed_mhz: Option<u32> = parts[15].trim().parse().ok();
+                        gpus.push(GpuInfo {
+                            name,
+                            vendor: "NVIDIA".to_string(),
+                            vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
+                            driver_version: Some(driver),
+                            gpu_type: Some("Discrete".to_string()),
+                            temperature,
+                            utilization,
+                            device_id,
+                            pci_bus_id,
+                            used_vram_bytes: used_vram_mb.map(|mb| mb * 1024 * 1024),
+                            free_vram_bytes: free_vram_mb.map(|mb| mb * 1024 * 1024),
+                            memory_utilization,
+                            encoder_utilization,
+                            decoder_utilization,
+                            fan_speed_rpm,
+                            power_draw_watts,
+                            power_limit_watts,
+                            clock_speed_mhz,
+                        });
                     }
                 }
             }
@@ -2860,11 +2847,7 @@ impl GpuProvider for SysinfoProvider {
         // Try system_profiler on macOS
         #[cfg(target_os = "macos")]
         {
-            use std::process::Command;
-            if let Ok(output) = Command::new("system_profiler")
-                .args(["SPDisplaysDataType", "-json"])
-                .output()
-                && let Ok(text) = String::from_utf8(output.stdout)
+            if let Some(text) = run_cmd("system_profiler", &["SPDisplaysDataType", "-json"])
                 && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
                 && let Some(displays) = json["SPDisplaysDataType"].as_array()
             {
@@ -2915,53 +2898,47 @@ impl GpuProvider for SysinfoProvider {
         // Try nvidia-smi on Linux
         #[cfg(target_os = "linux")]
         {
-            use std::process::Command;
-            if let Ok(output) = Command::new("nvidia-smi")
-                .args(["--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics", "--format=csv,noheader,nounits"])
-                .output()
+            if let Some(text) = run_cmd("nvidia-smi", &["--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics", "--format=csv,noheader,nounits"])
             {
-                if output.status.success() {
-                    let text = String::from_utf8_lossy(&output.stdout);
-                    for line in text.lines() {
-                        let parts: Vec<&str> = line.split(", ").collect();
-                        if parts.len() >= 16 {
-                            let name = parts[0].trim().to_string();
-                            let vram_mb: Option<u64> = parts[1].trim().parse().ok();
-                            let driver = parts[2].trim().to_string();
-                            let temperature: Option<f32> = parts[3].trim().parse().ok();
-                            let utilization: Option<f32> = parts[4].trim().parse().ok();
-                            let pci_bus_id = Some(parts[5].trim().to_string());
-                            let device_id = Some(parts[6].trim().to_string());
-                            let used_vram_mb: Option<u64> = parts[7].trim().parse().ok();
-                            let free_vram_mb: Option<u64> = parts[8].trim().parse().ok();
-                            let memory_utilization: Option<f32> = parts[9].trim().parse().ok();
-                            let encoder_utilization: Option<f32> = parts[10].trim().parse().ok();
-                            let decoder_utilization: Option<f32> = parts[11].trim().parse().ok();
-                            let fan_speed_rpm: Option<u32> = parts[12].trim().parse().ok();
-                            let power_draw_watts: Option<f32> = parts[13].trim().parse().ok();
-                            let power_limit_watts: Option<f32> = parts[14].trim().parse().ok();
-                            let clock_speed_mhz: Option<u32> = parts[15].trim().parse().ok();
-                            gpus.push(GpuInfo {
-                                name,
-                                vendor: "NVIDIA".to_string(),
-                                vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
-                                driver_version: Some(driver),
-                                gpu_type: Some("Discrete".to_string()),
-                                temperature,
-                                utilization,
-                                device_id,
-                                pci_bus_id,
-                                used_vram_bytes: used_vram_mb.map(|mb| mb * 1024 * 1024),
-                                free_vram_bytes: free_vram_mb.map(|mb| mb * 1024 * 1024),
-                                memory_utilization,
-                                encoder_utilization,
-                                decoder_utilization,
-                                fan_speed_rpm,
-                                power_draw_watts,
-                                power_limit_watts,
-                                clock_speed_mhz,
-                            });
-                        }
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split(", ").collect();
+                    if parts.len() >= 16 {
+                        let name = parts[0].trim().to_string();
+                        let vram_mb: Option<u64> = parts[1].trim().parse().ok();
+                        let driver = parts[2].trim().to_string();
+                        let temperature: Option<f32> = parts[3].trim().parse().ok();
+                        let utilization: Option<f32> = parts[4].trim().parse().ok();
+                        let pci_bus_id = Some(parts[5].trim().to_string());
+                        let device_id = Some(parts[6].trim().to_string());
+                        let used_vram_mb: Option<u64> = parts[7].trim().parse().ok();
+                        let free_vram_mb: Option<u64> = parts[8].trim().parse().ok();
+                        let memory_utilization: Option<f32> = parts[9].trim().parse().ok();
+                        let encoder_utilization: Option<f32> = parts[10].trim().parse().ok();
+                        let decoder_utilization: Option<f32> = parts[11].trim().parse().ok();
+                        let fan_speed_rpm: Option<u32> = parts[12].trim().parse().ok();
+                        let power_draw_watts: Option<f32> = parts[13].trim().parse().ok();
+                        let power_limit_watts: Option<f32> = parts[14].trim().parse().ok();
+                        let clock_speed_mhz: Option<u32> = parts[15].trim().parse().ok();
+                        gpus.push(GpuInfo {
+                            name,
+                            vendor: "NVIDIA".to_string(),
+                            vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
+                            driver_version: Some(driver),
+                            gpu_type: Some("Discrete".to_string()),
+                            temperature,
+                            utilization,
+                            device_id,
+                            pci_bus_id,
+                            used_vram_bytes: used_vram_mb.map(|mb| mb * 1024 * 1024),
+                            free_vram_bytes: free_vram_mb.map(|mb| mb * 1024 * 1024),
+                            memory_utilization,
+                            encoder_utilization,
+                            decoder_utilization,
+                            fan_speed_rpm,
+                            power_draw_watts,
+                            power_limit_watts,
+                            clock_speed_mhz,
+                        });
                     }
                 }
             }

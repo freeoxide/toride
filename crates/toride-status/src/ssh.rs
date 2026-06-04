@@ -77,34 +77,13 @@
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
 
 use serde::Serialize;
+use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 /// Default timeout for SSH subprocess calls.
 const SSH_TIMEOUT: Duration = Duration::from_secs(5);
-
-/// Run a command with a timeout. Returns the exit status, or None if timed out.
-fn run_with_timeout(cmd: &mut Command, timeout: Duration) -> Option<std::process::ExitStatus> {
-    let mut child = cmd.spawn().ok()?;
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => return Some(status),
-            Ok(None) => {
-                if start.elapsed() > timeout {
-                    child.kill().ok();
-                    // Reap the zombie
-                    let _ = child.wait();
-                    return None;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => return None,
-        }
-    }
-}
 
 /// SSH subsystem status snapshot.
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -253,16 +232,11 @@ fn check_socket_connectable(path: &Path) -> bool {
 /// Returns `true` if the command exits with status 0.
 #[allow(clippy::unnecessary_wraps)] // run_with_timeout returns Option; signature must accommodate timeout/failure
 fn check_mux_master(control_path: &Path) -> bool {
-    let mut cmd = Command::new("ssh");
-    cmd.arg("-O")
-        .arg("check")
-        .arg("-S")
-        .arg(control_path)
-        .arg("dummy")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    run_with_timeout(&mut cmd, SSH_TIMEOUT)
-        .is_some_and(|s| s.success())
+    let spec = CommandSpec::new("ssh")
+        .args(["-O", "check", "-S", &control_path.to_string_lossy(), "dummy"])
+        .timeout(SSH_TIMEOUT);
+    let runner = DuctRunner;
+    runner.run(&spec).is_ok_and(|o| o.success)
 }
 
 /// Check if the SSH config parses without errors.
@@ -271,15 +245,11 @@ fn check_mux_master(control_path: &Path) -> bool {
 /// A hostname argument is required by `ssh -G`; without it, ssh exits 255.
 #[allow(clippy::unnecessary_wraps)] // run_with_timeout returns Option; signature must accommodate timeout/failure
 fn check_config(config_path: &Path) -> bool {
-    let mut cmd = Command::new("ssh");
-    cmd.arg("-G")
-        .arg("-F")
-        .arg(config_path)
-        .arg("localhost")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null());
-    run_with_timeout(&mut cmd, SSH_TIMEOUT)
-        .is_some_and(|s| s.success())
+    let spec = CommandSpec::new("ssh")
+        .args(["-G", "-F", &config_path.to_string_lossy(), "localhost"])
+        .timeout(SSH_TIMEOUT);
+    let runner = DuctRunner;
+    runner.run(&spec).is_ok_and(|o| o.success)
 }
 
 /// Check if the SSH agent is running by verifying `SSH_AUTH_SOCK` exists and
@@ -308,38 +278,17 @@ fn check_agent() -> bool {
 ///
 /// Runs `ssh-add -l` and counts the number of lines in the output.
 /// Returns 0 if the agent is not running or has no keys.
+#[allow(clippy::cast_possible_truncation)] // SSH key count will never exceed u32::MAX
 fn count_keys() -> u32 {
-    let mut cmd = Command::new("ssh-add");
-    cmd.arg("-l")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null());
-    let Ok(mut child) = cmd.spawn() else {
-        return 0;
-    };
-    let start = std::time::Instant::now();
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                if !status.success() {
-                    return 0;
-                }
-                let Ok(output) = child.wait_with_output() else {
-                    return 0;
-                };
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                #[allow(clippy::cast_possible_truncation)] // SSH key count will never exceed u32::MAX
-                return stdout.lines().filter(|l| !l.trim().is_empty()).count() as u32;
-            }
-            Ok(None) => {
-                if start.elapsed() > SSH_TIMEOUT {
-                    child.kill().ok();
-                    let _ = child.wait();
-                    return 0;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            Err(_) => return 0,
+    let spec = CommandSpec::new("ssh-add")
+        .arg("-l")
+        .timeout(SSH_TIMEOUT);
+    let runner = DuctRunner;
+    match runner.run(&spec) {
+        Ok(output) if output.success => {
+            output.stdout.lines().filter(|l| !l.trim().is_empty()).count() as u32
         }
+        _ => 0,
     }
 }
 
