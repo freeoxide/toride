@@ -2,79 +2,72 @@
 //!
 //! Provides functions to check and manage the status of services that are
 //! related to user authentication and access control (e.g. `sshd`).
+//!
+//! Standard systemctl operations (`is-active`, `restart`) are delegated to
+//! [`toride_service::ServiceManager`]. Custom operations that are not covered
+//! by the shared crate (e.g. `reload`) use [`toride_runner::CommandSpec`]
+//! directly.
 
 use crate::{Error, Result};
 
+// ---------------------------------------------------------------------------
+// Free functions -- thin wrappers around toride_service
+// ---------------------------------------------------------------------------
+
 /// Check if a systemd service is active.
 ///
-/// Executes `systemctl is-active <service>`.
+/// Delegates to [`toride_service::ServiceManager::is_active`].
 ///
 /// # Errors
 ///
-/// - [`Error::BinaryNotFound`] if `systemctl` is not on `$PATH`.
-/// - [`Error::CommandFailed`] if `systemctl` returns an unexpected error.
+/// - [`Error::Other`] if `systemctl` cannot be executed.
 pub fn is_service_active(service: &str) -> Result<bool> {
-    let systemctl =
-        which::which("systemctl").map_err(|_| Error::BinaryNotFound("systemctl".into()))?;
-
-    let result = duct::cmd(&systemctl, ["is-active", service])
-        .stderr_capture()
-        .read();
-
-    match result {
-        Ok(output) => Ok(output.trim() == "active"),
-        Err(_) => Ok(false),
-    }
+    let mgr = new_manager()?;
+    mgr.is_active(service).map_err(|e| Error::Other(e.to_string()))
 }
 
 /// Restart a systemd service.
 ///
-/// Executes `systemctl restart <service>`.
+/// Delegates to [`toride_service::ServiceManager::restart`].
 ///
 /// # Errors
 ///
-/// - [`Error::BinaryNotFound`] if `systemctl` is not on `$PATH`.
-/// - [`Error::CommandFailed`] if `systemctl` returns a non-zero exit code.
+/// - [`Error::Other`] if `systemctl` returns a non-zero exit code.
 pub fn restart_service(service: &str) -> Result<()> {
-    let systemctl =
-        which::which("systemctl").map_err(|_| Error::BinaryNotFound("systemctl".into()))?;
-
-    duct::cmd(&systemctl, ["restart", service])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "systemctl".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
-
+    let mgr = new_manager()?;
+    mgr.restart(service).map_err(|e| Error::Other(e.to_string()))?;
     tracing::info!("restarted service {service}");
     Ok(())
 }
 
 /// Reload a systemd service (send SIGHUP).
 ///
-/// Executes `systemctl reload <service>`.
+/// Executes `systemctl reload <service>` via [`toride_runner::CommandSpec`].
+/// This operation is not provided by `toride-service`, so it is implemented
+/// locally using the shared runner infrastructure.
 ///
 /// # Errors
 ///
-/// - [`Error::BinaryNotFound`] if `systemctl` is not on `$PATH`.
-/// - [`Error::CommandFailed`] if `systemctl` returns a non-zero exit code.
+/// - [`Error::Other`] if `systemctl` returns a non-zero exit code.
 pub fn reload_service(service: &str) -> Result<()> {
-    let systemctl =
-        which::which("systemctl").map_err(|_| Error::BinaryNotFound("systemctl".into()))?;
+    use toride_runner::{CommandSpec, Runner};
 
-    duct::cmd(&systemctl, ["reload", service])
-        .stderr_to_stdout()
-        .read()
-        .map_err(|e| Error::CommandFailed {
-            program: "systemctl".to_owned(),
-            code: None,
-            stderr: e.to_string(),
-        })?;
+    let runner = toride_runner::DuctRunner;
+    let spec = CommandSpec::new("systemctl").arg("reload").arg(service);
+    let output = runner.run(&spec).map_err(|e| Error::Other(e.to_string()))?;
 
-    tracing::info!("reloaded service {service}");
-    Ok(())
+    if output.success {
+        tracing::info!("reloaded service {service}");
+        Ok(())
+    } else {
+        let stderr = output.stderr.trim();
+        let detail = if stderr.is_empty() {
+            format!("systemctl reload {service} failed")
+        } else {
+            format!("systemctl reload {service} failed: {stderr}")
+        };
+        Err(Error::Other(detail))
+    }
 }
 
 /// Ensure `sshd` is running after PAM or authentication changes.
@@ -92,34 +85,90 @@ pub fn reload_sshd_if_active() -> Result<()> {
     Ok(())
 }
 
+// ---------------------------------------------------------------------------
+// ServiceManager -- local facade extending the shared manager
+// ---------------------------------------------------------------------------
+
 /// Service manager handle for user-related services.
-pub struct ServiceManager;
+///
+/// Wraps [`toride_service::ServiceManager`] for standard systemctl operations
+/// and adds a `reload` method via [`toride_runner::CommandSpec`].
+pub struct ServiceManager {
+    inner: toride_service::ServiceManager,
+    runner: toride_runner::DuctRunner,
+}
 
 impl ServiceManager {
     /// Create a new service manager.
-    #[must_use]
-    pub fn new() -> Self {
-        Self
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the underlying `toride_service::ServiceManager`
+    /// cannot be constructed.
+    pub fn new() -> Result<Self> {
+        let inner = new_manager()?;
+        Ok(Self {
+            inner,
+            runner: toride_runner::DuctRunner,
+        })
     }
 
     /// Check if a service is active.
     pub fn is_active(&self, service: &str) -> Result<bool> {
-        is_service_active(service)
+        self.inner
+            .is_active(service)
+            .map_err(|e| Error::Other(e.to_string()))
     }
 
     /// Restart a service.
     pub fn restart(&self, service: &str) -> Result<()> {
-        restart_service(service)
+        self.inner
+            .restart(service)
+            .map_err(|e| Error::Other(e.to_string()))
     }
 
-    /// Reload a service.
+    /// Reload a service (send SIGHUP).
+    ///
+    /// Uses [`toride_runner::CommandSpec`] directly since `reload` is not
+    /// exposed by [`toride_service::ServiceManager`].
     pub fn reload(&self, service: &str) -> Result<()> {
-        reload_service(service)
+        use toride_runner::Runner;
+
+        let spec = toride_runner::CommandSpec::new("systemctl")
+            .arg("reload")
+            .arg(service);
+        let output = self
+            .runner
+            .run(&spec)
+            .map_err(|e| Error::Other(e.to_string()))?;
+
+        if output.success {
+            tracing::info!("reloaded service {service}");
+            Ok(())
+        } else {
+            let stderr = output.stderr.trim();
+            let detail = if stderr.is_empty() {
+                format!("systemctl reload {service} failed")
+            } else {
+                format!("systemctl reload {service} failed: {stderr}")
+            };
+            Err(Error::Other(detail))
+        }
     }
 }
 
 impl Default for ServiceManager {
     fn default() -> Self {
-        Self::new()
+        Self::new().expect("failed to create ServiceManager")
     }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Build a `toride_service::ServiceManager` backed by a `DuctRunner`.
+fn new_manager() -> Result<toride_service::ServiceManager> {
+    let runner = Box::new(toride_runner::DuctRunner);
+    Ok(toride_service::ServiceManager::new(runner))
 }

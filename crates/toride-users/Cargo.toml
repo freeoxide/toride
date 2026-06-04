@@ -14,7 +14,7 @@ default = ["client", "doctor"]
 client = ["dep:duct"]
 
 ## Service management for user-related daemons.
-service = ["client"]
+service = ["client", "dep:toride-service"]
 
 ## Diagnostic engine for user/access control security checks.
 doctor = ["service"]
@@ -35,6 +35,7 @@ cli = ["dep:clap"]
 toride-runner = { path = "../toride-runner" }
 toride-fs = { path = "../toride-fs" }
 toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+toride-service = { path = "../toride-service", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
