@@ -162,6 +162,7 @@ pub fn validate_tailnet_name(name: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::AclAction;
 
     #[test]
     fn acl_policy_empty_src_rejected() {

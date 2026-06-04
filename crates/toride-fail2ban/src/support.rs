@@ -131,13 +131,13 @@ pub fn detect_platform() -> PlatformInfo {
 pub fn default_ban_commands(firewall: Firewall) -> PlatformCommands {
     match firewall {
         Firewall::Iptables => PlatformCommands::new(
-            vec!["iptables -I INPUT -s <ip> -j DROP".to_string()],
+            vec!["if echo '<ip>' | grep -q ':'; then ip6tables -I INPUT -s <ip> -j DROP; else iptables -I INPUT -s <ip> -j DROP; fi".to_string()],
             vec![],
             vec![],
         ),
         Firewall::Nftables => PlatformCommands::new(
             vec![
-                "nft add set ip filter toride_banned \\{ type ipv4_addr \\; \\} 2>/dev/null; nft add element ip filter toride_banned \\{ <ip> \\}".to_string(),
+                "if echo '<ip>' | grep -q ':'; then nft add set ip6 filter toride_banned \\{ type ipv6_addr \\; \\} 2>/dev/null; nft add element ip6 filter toride_banned \\{ <ip> \\}; else nft add set ip filter toride_banned \\{ type ipv4_addr \\; \\} 2>/dev/null; nft add element ip filter toride_banned \\{ <ip> \\}; fi".to_string(),
             ],
             vec![],
             vec![],
@@ -165,12 +165,12 @@ pub fn default_ban_commands(firewall: Firewall) -> PlatformCommands {
 pub fn default_unban_commands(firewall: Firewall) -> PlatformCommands {
     match firewall {
         Firewall::Iptables => PlatformCommands::new(
-            vec!["iptables -D INPUT -s <ip> -j DROP".to_string()],
+            vec!["if echo '<ip>' | grep -q ':'; then ip6tables -D INPUT -s <ip> -j DROP; else iptables -D INPUT -s <ip> -j DROP; fi".to_string()],
             vec![],
             vec![],
         ),
         Firewall::Nftables => PlatformCommands::new(
-            vec!["nft delete element ip filter toride_banned \\{ <ip> \\}".to_string()],
+            vec!["if echo '<ip>' | grep -q ':'; then nft delete element ip6 filter toride_banned \\{ <ip> \\}; else nft delete element ip filter toride_banned \\{ <ip> \\}; fi".to_string()],
             vec![],
             vec![],
         ),

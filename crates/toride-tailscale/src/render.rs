@@ -22,7 +22,7 @@ use crate::spec::{AclAction, AclRule, DnsConfig};
 /// }];
 /// let json = render_acl_json(&rules);
 /// assert!(json.contains("\"action\""));
-/// assert!(json.contains("\"allow\""));
+/// assert!(json.contains("\"accept\""));
 /// ```
 pub fn render_acl_json(rules: &[AclRule]) -> String {
     let entries: Vec<serde_json::Value> = rules

@@ -298,6 +298,65 @@ fn default_ban_commands_unknown_returns_empty() {
 }
 
 // ---------------------------------------------------------------------------
+// IPv6 support tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn default_ban_commands_iptables_includes_ipv6_variant() {
+    let cmds = default_ban_commands(Firewall::Iptables);
+    assert!(
+        cmds.linux[0].contains("ip6tables"),
+        "iptables ban command should include ip6tables for IPv6: {}",
+        cmds.linux[0]
+    );
+    assert!(
+        cmds.linux[0].contains("grep -q ':'"),
+        "iptables ban command should detect IPv6 by colon: {}",
+        cmds.linux[0]
+    );
+}
+
+#[test]
+fn default_ban_commands_nftables_includes_ipv6_variant() {
+    let cmds = default_ban_commands(Firewall::Nftables);
+    assert!(
+        cmds.linux[0].contains("ip6 filter"),
+        "nftables ban command should include ip6 table for IPv6: {}",
+        cmds.linux[0]
+    );
+    assert!(
+        cmds.linux[0].contains("ipv6_addr"),
+        "nftables ban command should include ipv6_addr type: {}",
+        cmds.linux[0]
+    );
+}
+
+#[test]
+fn default_unban_commands_iptables_includes_ipv6_variant() {
+    let cmds = default_unban_commands(Firewall::Iptables);
+    assert!(
+        cmds.linux[0].contains("ip6tables"),
+        "iptables unban command should include ip6tables for IPv6: {}",
+        cmds.linux[0]
+    );
+    assert!(
+        cmds.linux[0].contains("grep -q ':'"),
+        "iptables unban command should detect IPv6 by colon: {}",
+        cmds.linux[0]
+    );
+}
+
+#[test]
+fn default_unban_commands_nftables_includes_ipv6_variant() {
+    let cmds = default_unban_commands(Firewall::Nftables);
+    assert!(
+        cmds.linux[0].contains("ip6 filter"),
+        "nftables unban command should include ip6 table for IPv6: {}",
+        cmds.linux[0]
+    );
+}
+
+// ---------------------------------------------------------------------------
 // default_unban_commands tests
 // ---------------------------------------------------------------------------
 

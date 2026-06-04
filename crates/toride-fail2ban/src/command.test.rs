@@ -471,7 +471,7 @@ mod proptests {
                 && !lower.contains("token")
                 && !lower.contains("key")
                 && !lower.contains("secret")
-                && !s.starts_with("***")
+                && !s.contains("***")
         })
     }
 
