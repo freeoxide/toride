@@ -155,8 +155,9 @@ impl Sidebar {
             // into the blank rows above and below (expanded mode only).
             if is_sel {
                 let bg = if focused { p.sel_bg } else { p.bg_inset };
+                let bar = if focused { p.accent } else { p.text_muted };
                 if !collapsed {
-                    Self::render_pill_caps(frame, inner, p, bg, y, foot_y);
+                    Self::render_pill_caps(frame, inner, p, bg, bar, y, foot_y);
                 }
                 frame.render_widget(
                     Paragraph::new(Self::item_line(
@@ -164,6 +165,11 @@ impl Sidebar {
                     ))
                     .style(Style::new().bg(bg)),
                     row,
+                );
+                // Border = the first cell recoloured to the accent.
+                frame.render_widget(
+                    Paragraph::new(Span::styled(" ", Style::new().bg(bar))),
+                    Rect::new(inner.x, y, 1, 1),
                 );
             } else {
                 frame.render_widget(
@@ -206,12 +212,15 @@ impl Sidebar {
     /// highlight reads as a padded pill rather than a thin one-row band.
     ///
     /// The cap above fills the bottom quarter of its cell; the cap below fills
-    /// the top quarter — both in the selection background `bg`.
+    /// the top quarter — both in the selection background `bg`. The first cell
+    /// of each cap is recoloured to `bar` so the left border keeps the same
+    /// rounded silhouette as the highlight.
     fn render_pill_caps(
         frame: &mut Frame,
         inner: Rect,
         p: Palette,
         bg: ratatui::style::Color,
+        bar: ratatui::style::Color,
         y: u16,
         foot_y: u16,
     ) {
@@ -226,6 +235,10 @@ impl Sidebar {
                 ))),
                 top,
             );
+            frame.render_widget(
+                Paragraph::new(Span::styled("▂", Style::new().fg(bar).bg(p.bg_alt))),
+                Rect::new(inner.x, y - 1, 1, 1),
+            );
         }
 
         if y + 1 < foot_y {
@@ -236,6 +249,10 @@ impl Sidebar {
                     Style::new().fg(p.bg_alt).bg(bg),
                 ))),
                 bottom,
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled("▆", Style::new().fg(p.bg_alt).bg(bar))),
+                Rect::new(inner.x, y + 1, 1, 1),
             );
         }
     }
@@ -257,6 +274,7 @@ impl Sidebar {
         focused: bool,
         collapsed: bool,
     ) -> Line<'static> {
+        let _ = (is_selected, focused);
         let num_style = Style::new().fg(p.text_muted);
         let highlight = is_active || is_selected;
         let (icon_color, label_color) = if highlight {
@@ -265,13 +283,9 @@ impl Sidebar {
             (p.text_dim, p.text)
         };
 
-        // Left selection bar: accent when focused, dimmed otherwise.
-        let bar = if is_selected {
-            let c = if focused { p.accent } else { p.text_muted };
-            Span::styled("▌", Style::new().fg(c))
-        } else {
-            Span::raw(" ")
-        };
+        // Column 0 is reserved for the selection border, which is painted
+        // separately by recolouring that cell — see `render` / `render_pill_caps`.
+        let bar = Span::raw(" ");
 
         if collapsed {
             return Line::from(vec![
