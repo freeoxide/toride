@@ -40,6 +40,10 @@ pub enum Error {
     #[error("anomaly threshold error: {0}")]
     AnomalyThreshold(String),
 
+    /// An error occurred during port/socket inspection.
+    #[error("ports error: {0}")]
+    PortsError(String),
+
     /// A generic or unexpected error.
     #[error("{0}")]
     Other(String),

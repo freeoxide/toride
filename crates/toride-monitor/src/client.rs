@@ -216,6 +216,61 @@ impl MonitorClient {
     }
 
     // -----------------------------------------------------------------------
+    // Port inspection convenience methods
+    // -----------------------------------------------------------------------
+
+    /// List all listening TCP/UDP ports with process info.
+    ///
+    /// Uses native OS APIs via `netstat2` — no `lsof` or `ss` required.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    pub fn list_listening_ports(&self) -> Result<Vec<crate::ports::PortEntry>> {
+        crate::ports::PortReader::new(&self.paths).list_listening()
+    }
+
+    /// List all network connections (every TCP/UDP socket in any state).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    pub fn list_all_ports(&self) -> Result<Vec<crate::ports::PortEntry>> {
+        crate::ports::PortReader::new(&self.paths).list_all()
+    }
+
+    /// Find what process is using a specific port.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    pub fn find_port(&self, port: u16) -> Result<Vec<crate::ports::PortEntry>> {
+        crate::ports::PortReader::new(&self.paths).find_by_port(port)
+    }
+
+    /// Find all ports used by a process whose name contains `name`
+    /// (case-insensitive).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    pub fn find_ports_by_process(
+        &self,
+        name: &str,
+    ) -> Result<Vec<crate::ports::PortEntry>> {
+        crate::ports::PortReader::new(&self.paths).find_by_process(name)
+    }
+
+    /// Check whether a port is free (nothing listening on it).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    pub fn is_port_free(&self, port: u16) -> Result<bool> {
+        crate::ports::PortReader::new(&self.paths).is_port_free(port)
+    }
+
+    // -----------------------------------------------------------------------
     // Private helpers
     // -----------------------------------------------------------------------
 

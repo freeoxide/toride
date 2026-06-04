@@ -38,6 +38,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
 dirs = { workspace = true }
+netstat2 = "0.11"
 
 # --- Optional (feature-gated) ---
 duct = { version = "1", features = ["timeout"], optional = true }

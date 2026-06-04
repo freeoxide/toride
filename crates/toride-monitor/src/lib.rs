@@ -35,6 +35,7 @@ pub mod conntrack;
 pub mod error;
 pub mod output;
 pub mod parse;
+pub mod ports;
 pub mod paths;
 pub mod report;
 pub mod spec;
