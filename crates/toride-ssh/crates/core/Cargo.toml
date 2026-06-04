@@ -14,6 +14,8 @@ dirs = { workspace = true }
 which = { workspace = true }
 async-trait = { workspace = true }
 toride-fs = { path = "../../../toride-fs" }
+toride-runner = { path = "../../../toride-runner", features = ["tokio-runner", "fake"] }
+toride-diagnostic-types = { path = "../../../toride-diagnostic-types" }
 duct = "1"
 libc = "0.2"
 base64 = "0.22"

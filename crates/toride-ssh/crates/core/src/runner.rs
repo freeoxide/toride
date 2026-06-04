@@ -6,12 +6,17 @@
 //! async runtime.
 //!
 //! The [`CliRunner`] trait abstracts over command execution for testability.
+//! Production code uses [`DefaultCliRunner`] which delegates to
+//! [`toride_runner::TokioRunner`]; tests swap in [`MockCliRunner`].
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;
 use std::sync::Mutex;
 
 use async_trait::async_trait;
+use toride_runner::AsyncRunner;
+use toride_runner::CommandSpec;
+use toride_runner::tokio_runner::TokioRunner;
 
 use crate::{Error, Result};
 
@@ -137,25 +142,28 @@ pub trait CliRunner: Send + Sync {
 }
 
 // ---------------------------------------------------------------------------
-// DefaultCliRunner  (production – wraps `duct`)
+// DefaultCliRunner  (production – delegates to `toride_runner::TokioRunner`)
 // ---------------------------------------------------------------------------
 
-/// Production [`CliRunner`] that shells out via `duct` inside
-/// `tokio::task::spawn_blocking`.
+/// Production [`CliRunner`] that delegates to [`TokioRunner`] from
+/// `toride-runner`, which uses `tokio::process` internally.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DefaultCliRunner;
 
 #[async_trait]
 impl CliRunner for DefaultCliRunner {
     async fn run(&self, cmd: &str, args: Vec<String>) -> Result<String> {
-        let cmd = cmd.to_owned();
-        tokio::task::spawn_blocking(move || {
-            duct::cmd(&*cmd, &args)
-                .read()
-                .map_err(|e| Error::CommandFailed(e.to_string()))
-        })
-        .await
-        .map_err(|e| Error::TaskFailed(e.to_string()))?
+        let spec = CommandSpec::new(cmd).args(args);
+        let runner = TokioRunner;
+        let output = runner.run(&spec).await.map_err(|e| Error::CommandFailed(e.to_string()))?;
+        if !output.success {
+            return Err(Error::CommandFailed(format!(
+                "command `{cmd}` failed with exit {:?}: {}",
+                output.exit_code,
+                output.stderr.trim()
+            )));
+        }
+        Ok(output.stdout)
     }
 
     async fn run_with_env(
@@ -164,18 +172,17 @@ impl CliRunner for DefaultCliRunner {
         args: Vec<String>,
         env: Vec<(String, String)>,
     ) -> Result<String> {
-        let cmd = cmd.to_owned();
-        tokio::task::spawn_blocking(move || {
-            let mut expression = duct::cmd(&*cmd, &args);
-            for (key, value) in &env {
-                expression = expression.env(key, value);
-            }
-            expression
-                .read()
-                .map_err(|e| Error::CommandFailed(e.to_string()))
-        })
-        .await
-        .map_err(|e| Error::TaskFailed(e.to_string()))?
+        let spec = CommandSpec::new(cmd).args(args).envs(env);
+        let runner = TokioRunner;
+        let output = runner.run(&spec).await.map_err(|e| Error::CommandFailed(e.to_string()))?;
+        if !output.success {
+            return Err(Error::CommandFailed(format!(
+                "command `{cmd}` failed with exit {:?}: {}",
+                output.exit_code,
+                output.stderr.trim()
+            )));
+        }
+        Ok(output.stdout)
     }
 
     fn tool_exists(&self, name: &str) -> bool {

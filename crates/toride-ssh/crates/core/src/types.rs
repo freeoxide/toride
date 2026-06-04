@@ -9,6 +9,10 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
+/// Re-export [`toride_diagnostic_types::Severity`] for consumers that need the
+/// shared ecosystem severity type (used by doctor reports, UI, etc.).
+pub use toride_diagnostic_types::Severity as DiagnosticSeverity;
+
 /// SSH key algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KeyType {
