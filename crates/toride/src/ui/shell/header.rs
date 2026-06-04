@@ -26,7 +26,7 @@ pub struct HeaderData<'a> {
 /// Render the header bar into `area`.
 pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderData) {
     let block = Block::default()
-        .borders(Borders::BOTTOM)
+        .borders(Borders::TOP)
         .border_style(Style::new().fg(p.border))
         .style(Style::new().bg(p.bg_alt));
     let inner = block.inner(area);

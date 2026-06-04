@@ -16,7 +16,7 @@ use crate::ui::theme::Palette;
 /// right-aligned `? help` hint is always appended on the right.
 pub fn render_footer(frame: &mut Frame, area: Rect, p: Palette, keys: &[(&str, &str)]) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::BOTTOM)
         .border_style(Style::new().fg(p.border))
         .style(Style::new().bg(p.bg_alt));
     let inner = block.inner(area);
