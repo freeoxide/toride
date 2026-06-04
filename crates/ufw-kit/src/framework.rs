@@ -3,28 +3,25 @@
 //! Manages controlled blocks within UFW framework files
 //! (`before.rules`, `after.rules`, etc.) using marker comments.
 
-use std::fs::File;
 use std::path::Path;
 
-use fs2::FileExt;
+use toride_fs::with_lock;
 
 use crate::error::{Error, Result};
 use crate::spec::FrameworkRuleBlock;
 
-/// Acquire an exclusive lock on a lock file derived from `path`.
+/// Acquire an exclusive lock on a lock file derived from `path` and run `f`
+/// while the lock is held.
 ///
 /// The lock file uses a `.lock` extension alongside the target file so the
 /// actual framework file is never corrupted by lock metadata.
-/// Returns the locked file handle — the lock is held until it is dropped.
-fn acquire_lock(path: &Path) -> Result<File> {
+fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock_path = path.with_extension("lock");
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = File::create(&lock_path)?;
-    file.lock_exclusive()
-        .map_err(|e| Error::Io(format!("failed to acquire lock on {}: {e}", lock_path.display())))?;
-    Ok(file)
+    with_lock(&lock_path, || f().map_err(|e| toride_fs::Error::Io(std::io::Error::other(e.to_string()))))
+        .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Start marker for a managed block.
@@ -142,51 +139,51 @@ pub fn write_framework_file(
     content: &str,
     backup_dir: Option<&Path>,
 ) -> Result<Option<String>> {
-    let _lock = acquire_lock(path)?;
+    with_file_lock(path, || {
+        // Read existing content for rollback
+        let previous = if path.exists() {
+            Some(
+                std::fs::read_to_string(path)
+                    .map_err(|e| Error::FrameworkBlockError(format!("read existing: {e}")))?,
+            )
+        } else {
+            None
+        };
 
-    // Read existing content for rollback
-    let previous = if path.exists() {
-        Some(
-            std::fs::read_to_string(path)
-                .map_err(|e| Error::FrameworkBlockError(format!("read existing: {e}")))?,
-        )
-    } else {
-        None
-    };
+        // Backup existing file if requested
+        if let Some(dir) = backup_dir {
+            if let Some(existing) = &previous {
+                std::fs::create_dir_all(dir)
+                    .map_err(|e| Error::BackupFailed(format!("create backup dir: {e}")))?;
 
-    // Backup existing file if requested
-    if let Some(dir) = backup_dir {
-        if let Some(existing) = &previous {
-            std::fs::create_dir_all(dir)
-                .map_err(|e| Error::BackupFailed(format!("create backup dir: {e}")))?;
-
-            let name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy()
-                .into_owned();
-            std::fs::write(dir.join(name), existing)
-                .map_err(|e| Error::BackupFailed(format!("write backup: {e}")))?;
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned();
+                std::fs::write(dir.join(name), existing)
+                    .map_err(|e| Error::BackupFailed(format!("write backup: {e}")))?;
+            }
         }
-    }
 
-    let dir = path
-        .parent()
-        .ok_or_else(|| Error::FrameworkBlockError("no parent directory".into()))?;
+        let dir = path
+            .parent()
+            .ok_or_else(|| Error::FrameworkBlockError("no parent directory".into()))?;
 
-    std::fs::create_dir_all(dir)
-        .map_err(|e| Error::FrameworkBlockError(format!("create dir: {e}")))?;
+        std::fs::create_dir_all(dir)
+            .map_err(|e| Error::FrameworkBlockError(format!("create dir: {e}")))?;
 
-    let mut tmp = tempfile::NamedTempFile::new_in(dir)
-        .map_err(|e| Error::FrameworkBlockError(format!("create temp: {e}")))?;
+        let mut tmp = tempfile::NamedTempFile::new_in(dir)
+            .map_err(|e| Error::FrameworkBlockError(format!("create temp: {e}")))?;
 
-    std::io::Write::write_all(&mut tmp, content.as_bytes())
-        .map_err(|e| Error::FrameworkBlockError(format!("write temp: {e}")))?;
+        std::io::Write::write_all(&mut tmp, content.as_bytes())
+            .map_err(|e| Error::FrameworkBlockError(format!("write temp: {e}")))?;
 
-    tmp.persist(path)
-        .map_err(|e| Error::FrameworkBlockError(format!("persist: {e}")))?;
+        tmp.persist(path)
+            .map_err(|e| Error::FrameworkBlockError(format!("persist: {e}")))?;
 
-    Ok(previous)
+        Ok(previous)
+    })
 }
 
 /// Rollback a framework file to its previous content.

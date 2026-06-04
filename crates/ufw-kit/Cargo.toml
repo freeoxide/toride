@@ -30,7 +30,6 @@ toride-service = { path = "../toride-service" }
 ipnet = "2"
 tempfile = "3"
 similar = "2"
-fs2 = "0.4"
 
 [dev-dependencies]
 insta = { version = "1", features = ["serde"] }

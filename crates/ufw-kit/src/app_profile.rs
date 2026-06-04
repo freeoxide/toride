@@ -3,31 +3,28 @@
 //! Handles writing, updating, and removing UFW application profiles
 //! in `/etc/ufw/applications.d/`.
 
-use std::fs::File;
 use std::path::Path;
 
-use fs2::FileExt;
 use toride_fs::atomic_write as fs_atomic_write;
+use toride_fs::with_lock;
 
 use crate::backup;
 use crate::error::{Error, Result};
 use crate::paths::UfwPaths;
 use crate::spec::AppProfileSpec;
 
-/// Acquire an exclusive lock on a lock file derived from `path`.
+/// Acquire an exclusive lock on a lock file derived from `path` and run `f`
+/// while the lock is held.
 ///
 /// The lock file uses a `.lock` extension alongside the target file so the
 /// actual app profile file is never corrupted by lock metadata.
-/// Returns the locked file handle — the lock is held until it is dropped.
-fn acquire_lock(path: &Path) -> Result<File> {
+fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     let lock_path = path.with_extension("lock");
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    let file = File::create(&lock_path)?;
-    file.lock_exclusive()
-        .map_err(|e| Error::Io(format!("failed to acquire lock on {}: {e}", lock_path.display())))?;
-    Ok(file)
+    with_lock(&lock_path, || f().map_err(|e| toride_fs::Error::Io(std::io::Error::other(e.to_string()))))
+        .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Ensure an application profile exists and is up to date.
@@ -45,36 +42,36 @@ pub fn ensure_app_profile(
     let path = paths.app_profile_path(namespace, &spec.name);
     let new_content = spec.render();
 
-    let _lock = acquire_lock(&path)?;
-
-    // Check if already exists with same content
-    if path.exists() {
-        let existing = std::fs::read_to_string(&path)
-            .map_err(|e| Error::AppProfileWriteFailed(format!("read existing: {e}")))?;
-        if existing == new_content {
-            return Ok(false); // Already up to date
+    with_file_lock(&path, || {
+        // Check if already exists with same content
+        if path.exists() {
+            let existing = std::fs::read_to_string(&path)
+                .map_err(|e| Error::AppProfileWriteFailed(format!("read existing: {e}")))?;
+            if existing == new_content {
+                return Ok(false); // Already up to date
+            }
         }
-    }
 
-    // Backup before write if requested
-    if let Some(dir) = backup_dir {
-        let bundle = backup::create_backup(paths)
-            .map_err(|e| Error::BackupFailed(format!("pre-write backup: {e}")))?;
-        backup::write_backup(&bundle, dir)
-            .map_err(|e| Error::BackupFailed(format!("write backup: {e}")))?;
-    }
+        // Backup before write if requested
+        if let Some(dir) = backup_dir {
+            let bundle = backup::create_backup(paths)
+                .map_err(|e| Error::BackupFailed(format!("pre-write backup: {e}")))?;
+            backup::write_backup(&bundle, dir)
+                .map_err(|e| Error::BackupFailed(format!("write backup: {e}")))?;
+        }
 
-    // Ensure directory exists
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| Error::AppProfileWriteFailed(format!("create dir: {e}")))?;
-    }
+        // Ensure directory exists
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| Error::AppProfileWriteFailed(format!("create dir: {e}")))?;
+        }
 
-    // Atomic write
-    fs_atomic_write(&path, &new_content)
-        .map_err(|e| Error::AppProfileWriteFailed(format!("atomic write: {e}")))?;
+        // Atomic write
+        fs_atomic_write(&path, &new_content)
+            .map_err(|e| Error::AppProfileWriteFailed(format!("atomic write: {e}")))?;
 
-    Ok(true)
+        Ok(true)
+    })
 }
 
 /// Remove an application profile.
