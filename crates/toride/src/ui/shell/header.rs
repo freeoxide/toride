@@ -26,7 +26,7 @@ pub struct HeaderData<'a> {
 /// Render the header bar into `area`.
 pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderData) {
     let block = Block::default()
-        .borders(Borders::TOP)
+        .borders(Borders::TOP | Borders::BOTTOM)
         .border_style(Style::new().fg(p.border))
         .style(Style::new().bg(p.bg_alt));
     let inner = block.inner(area);
@@ -74,7 +74,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     fn render(data: &HeaderData) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(60, 2)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(60, 3)).unwrap();
         terminal
             .draw(|f| render_header(f, f.area(), CHARM, data))
             .unwrap();

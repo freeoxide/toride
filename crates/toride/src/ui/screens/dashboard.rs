@@ -78,6 +78,7 @@ pub struct DashboardScreen {
     active: usize,
     focus: Focus,
     module_sel: usize,
+    module_scroll: usize,
     updates_scroll: usize,
     activity_scroll: usize,
     open_module: Option<usize>,
@@ -105,6 +106,7 @@ impl DashboardScreen {
             active: 0,
             focus: Focus::Sidebar,
             module_sel: 0,
+            module_scroll: 0,
             updates_scroll: 0,
             activity_scroll: 0,
             open_module: None,
@@ -419,7 +421,7 @@ impl DashboardScreen {
         ]
     }
 
-    fn render_modules_panel(&self, frame: &mut Frame, area: Rect, p: Palette, cols: u16) {
+    fn render_modules_panel(&mut self, frame: &mut Frame, area: Rect, p: Palette, cols: u16) {
         let focused = self.focus == Focus::Modules;
         let inner = render_panel(frame, area, p, " MODULES ", p.accent, focused);
         if inner.height == 0 {
@@ -430,8 +432,20 @@ impl DashboardScreen {
         if rows == 0 {
             return;
         }
-        let per_row = cols.max(1);
-        let capacity = usize::from(rows) * usize::from(per_row);
+        let per_row = usize::from(cols.max(1));
+
+        // Clamp scroll so the selected module stays visible.
+        let sel_row = self.module_sel / per_row;
+        if sel_row < self.module_scroll {
+            self.module_scroll = sel_row;
+        } else if sel_row >= self.module_scroll + usize::from(rows) {
+            self.module_scroll = sel_row - usize::from(rows) + 1;
+        }
+        let total_rows = (self.data.modules.len() + per_row - 1) / per_row;
+        let max_scroll = total_rows.saturating_sub(usize::from(rows));
+        self.module_scroll = self.module_scroll.min(max_scroll);
+
+        let base = self.module_scroll * per_row;
 
         let row_rects = Layout::vertical(
             (0..rows)
@@ -442,13 +456,13 @@ impl DashboardScreen {
 
         for (r, row_rect) in row_rects.iter().enumerate() {
             let cells = Layout::horizontal(
-                (0..per_row).map(|_| Constraint::Fill(1)).collect::<Vec<_>>(),
+                (0..cols.max(1)).map(|_| Constraint::Fill(1)).collect::<Vec<_>>(),
             )
             .spacing(1)
             .split(*row_rect);
             for (c, cell) in cells.iter().enumerate() {
-                let idx = r * usize::from(per_row) + c;
-                if idx >= self.data.modules.len() || idx >= capacity {
+                let idx = base + r * per_row + c;
+                if idx >= self.data.modules.len() {
                     continue;
                 }
                 let m = &self.data.modules[idx];

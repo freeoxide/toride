@@ -15,10 +15,10 @@ pub use sidebar::{SIDEBAR_W, SIDEBAR_W_COLLAPSED, Sidebar};
 
 use ratatui::layout::{Constraint, Layout, Rect};
 
-/// Header height (top border + content row).
-pub const HEADER_H: u16 = 2;
-/// Footer height (content row + bottom border).
-pub const FOOTER_H: u16 = 2;
+/// Header height (top border + content row + bottom border).
+pub const HEADER_H: u16 = 3;
+/// Footer height (top border + content row + bottom border).
+pub const FOOTER_H: u16 = 3;
 
 /// The four regions of the shell.
 #[derive(Clone, Copy, Debug)]
