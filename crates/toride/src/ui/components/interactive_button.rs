@@ -52,6 +52,12 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
         }
     }
 
+    /// The action this button emits on click / activation.
+    #[must_use]
+    pub fn action(&self) -> A {
+        self.action
+    }
+
     /// Whether this button currently has keyboard focus.
     #[must_use]
     pub fn is_focused(&self) -> bool {

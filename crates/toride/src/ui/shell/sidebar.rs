@@ -16,6 +16,7 @@ use ratatui::{
 };
 
 use crate::data::SidebarItem;
+use crate::ui::helpers::color::{lerp_color, to_rgb};
 use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 
