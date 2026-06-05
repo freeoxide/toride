@@ -361,7 +361,7 @@ impl DashboardScreen {
         // Detect hover transitions and manage fade-in effect.
         if self.gauge_hover != self.prev_gauge_hover {
             self.prev_gauge_hover = self.gauge_hover;
-            if self.gauge_hover.is_some() && self.open_module.is_none() {
+            if self.gauge_hover.is_some() {
                 self.tooltip_fx = EffectManager::default();
                 self.tooltip_fx.add_effect(
                     fx::fade_from_fg(p.panel, (300, Interpolation::SineOut))
@@ -371,23 +371,21 @@ impl DashboardScreen {
             }
         }
 
-        if self.open_module.is_none() {
-            if let Some(gauge) = self.gauge_hover {
-                if let Some(status) = &self.status {
-                    let rates = LiveRates {
-                        net_rx: self.net_rx_rate,
-                        net_tx: self.net_tx_rate,
-                        disk_read: self.disk_read_rate,
-                        disk_write: self.disk_write_rate,
-                    };
-                    if let Some(rect) = render_gauge_tooltip(
-                        frame, p, gauge, &self.gauge_hitboxes,
-                        shell.header, status, &rates,
-                    ) {
-                        self.tooltip_fx.process_effects(
-                            dt.into(), frame.buffer_mut(), rect,
-                        );
-                    }
+        if let Some(gauge) = self.gauge_hover {
+            if let Some(status) = &self.status {
+                let rates = LiveRates {
+                    net_rx: self.net_rx_rate,
+                    net_tx: self.net_tx_rate,
+                    disk_read: self.disk_read_rate,
+                    disk_write: self.disk_write_rate,
+                };
+                if let Some(rect) = render_gauge_tooltip(
+                    frame, p, gauge, &self.gauge_hitboxes,
+                    shell.header, status, &rates,
+                ) {
+                    self.tooltip_fx.process_effects(
+                        dt.into(), frame.buffer_mut(), rect,
+                    );
                 }
             }
         }
@@ -716,12 +714,29 @@ impl AppScreen for DashboardScreen {
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         use crossterm::event::MouseButton;
+
+        // Header gauge hover always works (even with modals open).
+        if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
+            self.gauge_hover = self.gauge_at(mouse.column, mouse.row);
+        }
+
+        // Module detail modal open: block all background interaction.
+        if self.open_module.is_some() {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.open_module = None;
+            }
+            return None;
+        }
+
         match mouse.kind {
-            // Hover: highlight whatever sidebar item is under the cursor.
+            // Hover: highlight sidebar item under the cursor.
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 let idx = self.sidebar.item_at(mouse.column, mouse.row);
                 self.sidebar.set_hovered(idx);
-                self.gauge_hover = self.gauge_at(mouse.column, mouse.row);
+                // Delegate hover to SSH content when that section is active.
+                if self.active_section() == Section::Ssh {
+                    self.ssh_content.handle_mouse(mouse);
+                }
             }
             // Click: select + activate the clicked element.
             MouseEventKind::Down(MouseButton::Left) => {
@@ -729,14 +744,24 @@ impl AppScreen for DashboardScreen {
                     self.sidebar.select_to(idx);
                     self.active = idx;
                     self.focus = Focus::Sidebar;
-                } else if let Some(idx) = self.module_at(mouse.column, mouse.row) {
-                    self.module_sel = idx;
-                    self.focus = Focus::Modules;
-                    self.open_module = Some(idx);
+                } else if self.active_section() == Section::Dashboard {
+                    // Module clicks only work in the Dashboard section.
+                    if let Some(idx) = self.module_at(mouse.column, mouse.row) {
+                        self.module_sel = idx;
+                        self.focus = Focus::Modules;
+                        self.open_module = Some(idx);
+                    }
+                } else if self.active_section() == Section::Ssh {
+                    return self.ssh_content.handle_mouse(mouse);
                 }
             }
-            MouseEventKind::ScrollDown => self.scroll_focused(true),
-            MouseEventKind::ScrollUp => self.scroll_focused(false),
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
+                if self.active_section() == Section::Ssh && self.focus != Focus::Sidebar {
+                    return self.ssh_content.handle_mouse(mouse);
+                }
+                self.scroll_focused(down);
+            }
             _ => {}
         }
         None

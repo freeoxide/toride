@@ -102,6 +102,12 @@ impl Modal {
         self
     }
 
+    /// Compute the centered rect for this modal within `area` without rendering.
+    #[must_use]
+    pub fn rect(&self, area: Rect) -> Rect {
+        Self::centered_rect(self.width, self.height, area)
+    }
+
     /// Set the border style. Defaults to [`ModalBorder::Default`].
     #[must_use]
     pub fn border(mut self, border: ModalBorder) -> Self {

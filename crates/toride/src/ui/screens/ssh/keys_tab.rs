@@ -4,7 +4,7 @@
 //! fingerprint, encryption status, permissions, and badge indicators. Supports
 //! keyboard navigation, selection, and a detail modal.
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::Rect,
@@ -31,6 +31,10 @@ pub struct KeysTab {
     scroll: usize,
     /// Whether the detail modal is open, and for which key index.
     detail_open: Option<usize>,
+    /// Hitbox rects for list rows (rebuilt each frame).
+    row_hitboxes: Vec<Rect>,
+    /// Which row is hovered by the mouse.
+    hovered_row: Option<usize>,
 }
 
 impl KeysTab {
@@ -42,6 +46,8 @@ impl KeysTab {
             selected: 0,
             scroll: 0,
             detail_open: None,
+            row_hitboxes: Vec::new(),
+            hovered_row: None,
         }
     }
 
@@ -70,6 +76,55 @@ impl KeysTab {
         if self.selected >= self.keys.len() {
             self.selected = self.keys.len() - 1;
         }
+    }
+
+    /// Close the detail modal (if open).
+    pub fn close_modal(&mut self) {
+        self.detail_open = None;
+    }
+
+    /// Handle a mouse event for the key list.
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Detail modal open: block background, click to close.
+        if self.detail_open.is_some() {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.detail_open = None;
+            }
+            return None;
+        }
+
+        match mouse.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                self.hovered_row = self.row_at(mouse.column, mouse.row);
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(idx) = self.row_at(mouse.column, mouse.row) {
+                    self.selected = idx;
+                    self.detail_open = Some(idx);
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                if self.selected < self.keys.len().saturating_sub(1) {
+                    self.selected += 1;
+                    self.clamp_scroll();
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if self.selected > 0 {
+                    self.selected -= 1;
+                    self.clamp_scroll();
+                }
+            }
+            _ => {}
+        }
+        None
+    }
+
+    /// Check if a screen coordinate falls within a list row hitbox.
+    fn row_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.row_hitboxes.iter().position(|rect| {
+            col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+        })
     }
 }
 
@@ -139,6 +194,7 @@ impl SshTab for KeysTab {
     }
 
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
+        self.row_hitboxes.clear();
         if self.keys.is_empty() {
             self.render_empty(frame, area, p);
         } else {
@@ -201,24 +257,28 @@ impl KeysTab {
             }
             let key = &self.keys[idx];
             let is_selected = idx == self.selected;
+            let is_hovered = self.hovered_row == Some(idx);
             let y = inner.y + row as u16;
             let row_area = Rect::new(inner.x, y, inner.width, 1);
 
-            // Selection highlight
-            if is_selected {
+            // Store hitbox for mouse detection.
+            self.row_hitboxes.push(row_area);
+
+            // Selection or hover highlight.
+            if is_selected || is_hovered {
                 for x in row_area.x..row_area.right() {
                     if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
-                        cell.set_bg(p.sel_bg);
+                        cell.set_bg(if is_selected { p.sel_bg } else { p.bg_alt });
                     }
                 }
             }
 
             let mut spans = Vec::new();
 
-            // Icon
+            // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
-                Style::new().fg(if is_selected { p.accent } else { p.text_dim }),
+                Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
             ));
 
             // Key name (truncated to fit)

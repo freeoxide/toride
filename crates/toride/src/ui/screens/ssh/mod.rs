@@ -5,7 +5,7 @@
 //! subsystem (Keys, Known Hosts, Config, Agent, Forwarding, Diagnostics) and
 //! delegates rendering and input handling to the active tab.
 
-use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -46,6 +46,10 @@ pub struct SshContent {
     focus: Focus,
     /// Keys sub-tab state.
     keys: KeysTab,
+    /// Hitbox rects for tab bar labels (rebuilt each frame).
+    tab_hitboxes: Vec<Rect>,
+    /// Which tab is hovered by the mouse.
+    hovered_tab: Option<usize>,
 }
 
 impl SshContent {
@@ -56,6 +60,8 @@ impl SshContent {
             tab: SshSection::Keys,
             focus: Focus::List,
             keys: KeysTab::new(),
+            tab_hitboxes: Vec::new(),
+            hovered_tab: None,
         }
     }
 
@@ -124,10 +130,45 @@ impl SshContent {
         }
     }
 
-    /// Handle a mouse event.
-    pub fn handle_mouse(&mut self, _mouse: MouseEvent) -> Option<Action> {
-        // TODO: mouse support for tab bar clicks and list item clicks
+    /// Handle a mouse event for the SSH content area.
+    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // If the active tab has a modal open, intercept all mouse events.
+        if self.keys.has_modal() {
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
+                self.keys.close_modal();
+            }
+            return None;
+        }
+
+        match mouse.kind {
+            MouseEventKind::Moved | MouseEventKind::Drag(_) => {
+                self.hovered_tab = self.tab_at(mouse.column, mouse.row);
+                self.keys.handle_mouse(mouse);
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Tab bar click takes priority.
+                if let Some(idx) = self.tab_at(mouse.column, mouse.row) {
+                    self.tab = SshSection::all()[idx];
+                    self.focus = Focus::TabBar;
+                } else {
+                    // Delegate to active tab for list area interaction.
+                    self.focus = Focus::List;
+                    self.keys.handle_mouse(mouse);
+                }
+            }
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
+                self.keys.handle_mouse(mouse);
+            }
+            _ => {}
+        }
         None
+    }
+
+    /// Check if a screen coordinate falls within a tab bar label hitbox.
+    fn tab_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.tab_hitboxes.iter().position(|rect| {
+            col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
+        })
     }
 
     fn active_tab(&self) -> &dyn SshTab {
@@ -170,23 +211,33 @@ impl SshContent {
         self.render_content(frame, content_area, p);
     }
 
-    fn render_tab_bar(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_tab_bar(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
+        self.tab_hitboxes.clear();
         let tabs = SshSection::all();
-        let mut spans: Vec<Span> = Vec::new();
+        let mut x = area.x;
 
         for (i, tab) in tabs.iter().enumerate() {
             let is_active = *tab == self.tab;
             let is_focused = self.focus == Focus::TabBar && is_active;
+            let is_hovered = self.hovered_tab == Some(i);
 
             if i > 0 {
-                spans.push(Span::styled("  ", Style::default()));
+                x += 2; // gap between tabs
             }
 
-            let style = if is_active && is_focused {
+            let label = format!(" {} ", tab.label());
+            let label_w = label.len() as u16;
+
+            // Record hitbox for mouse detection.
+            self.tab_hitboxes.push(Rect::new(x, area.y, label_w, 1));
+
+            let style = if is_active && (is_focused || is_hovered) {
                 Style::new()
                     .fg(p.bg)
                     .bg(p.accent)
                     .add_modifier(Modifier::BOLD)
+            } else if is_hovered {
+                Style::new().fg(p.accent)
             } else if is_active {
                 Style::new()
                     .fg(p.accent)
@@ -195,10 +246,14 @@ impl SshContent {
                 Style::new().fg(p.text_dim)
             };
 
-            spans.push(Span::styled(format!(" {} ", tab.label()), style));
-        }
+            let tab_area = Rect::new(x, area.y, label_w, 1);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(label, style))),
+                tab_area,
+            );
 
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+            x += label_w;
+        }
     }
 
     fn render_content(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
@@ -233,6 +288,10 @@ impl Default for SshContent {
 trait SshTab {
     /// Handle a tab-specific key press (including scroll).
     fn handle_key(&mut self, code: KeyCode) -> Option<Action>;
+    /// Handle a tab-specific mouse event.
+    fn handle_mouse(&mut self, _mouse: MouseEvent) -> Option<Action> {
+        None
+    }
     /// Render the tab content.
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette);
 }
