@@ -218,6 +218,7 @@ impl DashboardScreen {
         self.ssh_content.set_diagnostics(bundle.diagnostics);
         self.ssh_content.set_authorized_keys(bundle.authorized_keys);
         self.ssh_content.set_certificates(bundle.certificates);
+        self.ssh_content.set_security(bundle.security);
     }
 
     /// The currently active section.

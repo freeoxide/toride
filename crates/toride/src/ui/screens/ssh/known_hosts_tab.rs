@@ -299,7 +299,7 @@ impl KnownHostsTab {
 
             // Host name (truncated to 22 chars)
             let host_w = 22.min(inner.width.saturating_sub(4) as usize);
-            let host_display = truncate_str(&host.host, host_w);
+            let host_display = truncate_str(host.primary_host(), host_w);
             let host_chars = host_display.chars().count();
             spans.push(Span::styled(
                 host_display,
@@ -307,6 +307,14 @@ impl KnownHostsTab {
                     .fg(p.text)
                     .add_modifier(Modifier::BOLD),
             ));
+
+            // "+N more" badge when multiple hosts
+            if host.hosts.len() > 1 {
+                spans.push(Span::styled(
+                    format!(" +{}", host.hosts.len() - 1),
+                    Style::new().fg(p.text_dim),
+                ));
+            }
 
             // Padding
             let padded = format!("{:width$}", "", width = host_w.saturating_sub(host_chars));
@@ -339,6 +347,11 @@ impl KnownHostsTab {
                 spans.push(Span::styled(" 🔒", Style::new().fg(p.warn)));
             }
 
+            // Source badge
+            if host.source == "global" {
+                spans.push(Span::styled(" sys", Style::new().fg(p.accent2)));
+            }
+
             let line = Line::from(spans);
             frame.render_widget(Paragraph::new(line), row_area);
         }
@@ -368,7 +381,7 @@ impl KnownHostsTab {
     }
 
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, host: &KnownHostEntry) {
-        let modal = Modal::new("Host Detail").dimensions(54, 12);
+        let modal = Modal::new("Host Detail").dimensions(58, 16);
         self.detail_modal_rect = Some(modal.rect(frame.area()));
         modal.render(frame, p, |frame, content_area| {
                 let marker_display = match host.marker.as_deref() {
@@ -378,10 +391,12 @@ impl KnownHostsTab {
                     None => "none",
                 };
 
+                let hosts_display = host.hosts.join(", ");
+
                 let lines = vec![
                     Line::from(vec![
-                        Span::styled("Host:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(&host.host, Style::new().fg(p.text).bold()),
+                        Span::styled("Hosts:  ", Style::new().fg(p.text_dim)),
+                        Span::styled(&hosts_display, Style::new().fg(p.text).bold()),
                     ]),
                     Line::from(vec![
                         Span::styled("Type:   ", Style::new().fg(p.text_dim)),
@@ -414,9 +429,17 @@ impl KnownHostsTab {
                     Line::from(vec![
                         Span::styled("Comment:", Style::new().fg(p.text_dim)),
                         Span::styled(
-                            if host.has_comment { "yes" } else { "no" },
-                            Style::new().fg(if host.has_comment { p.text } else { p.text_muted }),
+                            host.comment.as_deref().unwrap_or("none"),
+                            Style::new().fg(if host.comment.is_some() { p.text } else { p.text_muted }),
                         ),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Line:   ", Style::new().fg(p.text_dim)),
+                        Span::styled(host.line.to_string(), Style::new().fg(p.text)),
+                    ]),
+                    Line::from(vec![
+                        Span::styled("Source: ", Style::new().fg(p.text_dim)),
+                        Span::styled(&host.source, Style::new().fg(p.text)),
                     ]),
                     Line::raw(""),
                     Line::from(
@@ -445,28 +468,34 @@ mod tests {
     fn sample_hosts() -> Vec<KnownHostEntry> {
         vec![
             KnownHostEntry {
-                host: "github.com".into(),
+                hosts: vec!["github.com".into()],
                 key_type: "ssh-ed25519".into(),
                 fingerprint: "SHA256:abc123def456".into(),
                 is_hashed: false,
                 marker: None,
-                has_comment: false,
+                comment: None,
+                line: 1,
+                source: "user".into(),
             },
             KnownHostEntry {
-                host: "gitlab.com".into(),
+                hosts: vec!["gitlab.com".into()],
                 key_type: "ssh-rsa".into(),
                 fingerprint: "SHA256:xyz789".into(),
                 is_hashed: true,
                 marker: Some("@cert-authority".into()),
-                has_comment: true,
+                comment: Some("work CA".into()),
+                line: 5,
+                source: "global".into(),
             },
             KnownHostEntry {
-                host: "revoked.example.com".into(),
+                hosts: vec!["revoked.example.com".into()],
                 key_type: "ecdsa-sha2-nistp256".into(),
                 fingerprint: "SHA256:revokedkey".into(),
                 is_hashed: false,
                 marker: Some("@revoked".into()),
-                has_comment: false,
+                comment: None,
+                line: 10,
+                source: "user".into(),
             },
         ]
     }

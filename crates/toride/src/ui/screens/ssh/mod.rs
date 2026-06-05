@@ -26,6 +26,7 @@ use self::diagnostics_tab::DiagnosticsTab;
 use self::forwarding_tab::ForwardingTab;
 use self::keys_tab::KeysTab;
 use self::known_hosts_tab::KnownHostsTab;
+use self::security_tab::SecurityTab;
 
 pub mod agent_tab;
 pub mod authorized_keys_tab;
@@ -35,6 +36,7 @@ pub mod diagnostics_tab;
 pub mod forwarding_tab;
 pub mod keys_tab;
 pub mod known_hosts_tab;
+pub mod security_tab;
 
 // ── Focus ────────────────────────────────────────────────────────────────────
 
@@ -57,6 +59,8 @@ pub struct SshContent {
     tab: SshSection,
     /// Which region has keyboard focus.
     focus: Focus,
+    /// Security overview sub-tab state.
+    security: SecurityTab,
     /// Keys sub-tab state.
     keys: KeysTab,
     /// Known hosts sub-tab state.
@@ -84,8 +88,9 @@ impl SshContent {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            tab: SshSection::Keys,
+            tab: SshSection::Security,
             focus: Focus::List,
+            security: SecurityTab::new(),
             keys: KeysTab::new(),
             known_hosts: KnownHostsTab::new(),
             config: ConfigTab::new(),
@@ -151,6 +156,11 @@ impl SshContent {
     /// Provide certificate data.
     pub fn set_certificates(&mut self, entries: Vec<CertificateEntry>) {
         self.certificates.set_entries(entries);
+    }
+
+    /// Provide security overview data.
+    pub fn set_security(&mut self, data: crate::ssh_data::SshSecurityData) {
+        self.security.set_data(data);
     }
 
     // ── Input handling ──────────────────────────────────────────────────────
@@ -249,6 +259,7 @@ impl SshContent {
 
     fn active_tab(&self) -> &dyn SshTab {
         match self.tab {
+            SshSection::Security => &self.security,
             SshSection::Keys => &self.keys,
             SshSection::KnownHosts => &self.known_hosts,
             SshSection::Config => &self.config,
@@ -262,6 +273,7 @@ impl SshContent {
 
     fn active_tab_mut(&mut self) -> &mut dyn SshTab {
         match self.tab {
+            SshSection::Security => &mut self.security,
             SshSection::Keys => &mut self.keys,
             SshSection::KnownHosts => &mut self.known_hosts,
             SshSection::Config => &mut self.config,
@@ -389,8 +401,8 @@ pub struct SshKeyEntry {
 /// Presentation model for a known_hosts entry in the Hosts tab.
 #[derive(Clone, Debug)]
 pub struct KnownHostEntry {
-    /// Host name or pattern (e.g. "github.com" or "[192.168.1.1]:2222").
-    pub host: String,
+    /// All hostname patterns (e.g. `["github.com", "gh.com"]`).
+    pub hosts: Vec<String>,
     /// Key type (e.g. "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256").
     pub key_type: String,
     /// SHA-256 fingerprint.
@@ -399,8 +411,20 @@ pub struct KnownHostEntry {
     pub is_hashed: bool,
     /// Optional marker (e.g. "@cert-authority", "@revoked").
     pub marker: Option<String>,
-    /// Whether the entry has a trailing comment.
-    pub has_comment: bool,
+    /// Actual comment text from the entry.
+    pub comment: Option<String>,
+    /// 1-based line number in the known_hosts file.
+    pub line: usize,
+    /// Source file: "user" or "global".
+    pub source: String,
+}
+
+impl KnownHostEntry {
+    /// Primary host name (first pattern, or "(hashed)" if all are hashed).
+    #[must_use]
+    pub fn primary_host(&self) -> &str {
+        self.hosts.first().map_or("(hashed)", |s| s.as_str())
+    }
 }
 
 /// Presentation model for an SSH config Host block in the Config tab.
@@ -546,9 +570,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn new_defaults_to_keys_tab() {
+    fn new_defaults_to_security_tab() {
         let content = SshContent::new();
-        assert_eq!(content.tab(), SshSection::Keys);
+        assert_eq!(content.tab(), SshSection::Security);
     }
 
     #[test]
@@ -569,7 +593,7 @@ mod tests {
             .draw(|f| content.view(f, f.area(), CHARM))
             .unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("Keys"), "tab bar visible: {output}");
+        assert!(output.contains("Security"), "tab bar visible: {output}");
     }
 
     #[test]
@@ -578,6 +602,7 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
 
         let mut content = SshContent::new();
+        content.tab = SshSection::Keys;
         content.set_keys(vec![
             SshKeyEntry {
                 name: "id_ed25519".into(),
@@ -602,13 +627,13 @@ mod tests {
     fn tab_cycling_left_right() {
         let mut content = SshContent::new();
         content.focus = Focus::TabBar;
+        assert_eq!(content.tab(), SshSection::Security);
+        content.handle_key(KeyCode::Right);
         assert_eq!(content.tab(), SshSection::Keys);
         content.handle_key(KeyCode::Right);
         assert_eq!(content.tab(), SshSection::KnownHosts);
-        content.handle_key(KeyCode::Right);
-        assert_eq!(content.tab(), SshSection::Config);
         content.handle_key(KeyCode::Left);
-        assert_eq!(content.tab(), SshSection::KnownHosts);
+        assert_eq!(content.tab(), SshSection::Keys);
     }
 
     #[test]

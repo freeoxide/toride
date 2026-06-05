@@ -5,12 +5,17 @@
 //!
 //! Currently seeds mock data. Will be wired to [`SshManager`] in a later phase.
 
+use std::collections::HashMap;
+use std::path::Path;
+
+use ratatui::style::Color;
 use tokio::sync::oneshot;
 
 use crate::ui::screens::ssh::{
     AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
     DiagnosticEntry, ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshKeyEntry,
 };
+use crate::ui::theme::Palette;
 
 /// Aggregated SSH data for all tabs.
 pub struct SshDataBundle {
@@ -32,6 +37,8 @@ pub struct SshDataBundle {
     pub authorized_keys: Vec<AuthorizedKeyEntry>,
     /// SSH certificate entries.
     pub certificates: Vec<CertificateEntry>,
+    /// Security overview data.
+    pub security: SshSecurityData,
 }
 
 /// Manages periodic async collection of SSH data.
@@ -102,6 +109,7 @@ fn collect_mock_data() -> SshDataBundle {
         diagnostics: collect_mock_diagnostics(),
         authorized_keys: collect_mock_authorized_keys(),
         certificates: collect_mock_certificates(),
+        security: collect_mock_security(),
     }
 }
 
@@ -143,44 +151,54 @@ fn collect_mock_keys() -> Vec<SshKeyEntry> {
 fn collect_mock_known_hosts() -> Vec<KnownHostEntry> {
     vec![
         KnownHostEntry {
-            host: "github.com".into(),
+            hosts: vec!["github.com".into()],
             key_type: "ssh-ed25519".into(),
             fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".into(),
             is_hashed: false,
             marker: None,
-            has_comment: false,
+            comment: None,
+            line: 1,
+            source: "user".into(),
         },
         KnownHostEntry {
-            host: "gitlab.com".into(),
+            hosts: vec!["gitlab.com".into()],
             key_type: "ssh-ed25519".into(),
             fingerprint: "SHA256:WSCtr3bEeJGgcb0UrkMFWxQJqchWXzwWMNESdgqxo".into(),
             is_hashed: false,
             marker: None,
-            has_comment: false,
+            comment: None,
+            line: 2,
+            source: "user".into(),
         },
         KnownHostEntry {
-            host: "[192.168.1.1]:2222".into(),
+            hosts: vec!["[192.168.1.1]:2222".into()],
             key_type: "ssh-rsa".into(),
             fingerprint: "SHA256:abc123def456ghi789jkl012mno345pqr678".into(),
             is_hashed: false,
             marker: None,
-            has_comment: true,
+            comment: Some("home router".into()),
+            line: 3,
+            source: "user".into(),
         },
         KnownHostEntry {
-            host: "|1|ba4dEeFgHiJkLmNoPqRsTu|XxYyZz0123456789".into(),
+            hosts: vec!["|1|ba4dEeFgHiJkLmNoPqRsTu|XxYyZz0123456789".into()],
             key_type: "ecdsa-sha2-nistp256".into(),
             fingerprint: "SHA256:qwe456rty789uio012pqr345stu678vwx".into(),
             is_hashed: true,
             marker: None,
-            has_comment: false,
+            comment: None,
+            line: 4,
+            source: "user".into(),
         },
         KnownHostEntry {
-            host: "old.server.example.com".into(),
+            hosts: vec!["old.server.example.com".into()],
             key_type: "ssh-ed25519".into(),
             fingerprint: "SHA256:xyz789abc456def123ghi456jkl789mno012".into(),
             is_hashed: false,
             marker: Some("@revoked".into()),
-            has_comment: false,
+            comment: None,
+            line: 5,
+            source: "user".into(),
         },
     ]
 }
@@ -455,6 +473,273 @@ fn collect_mock_certificates() -> Vec<CertificateEntry> {
     ]
 }
 
+// ── Security Overview Types ──────────────────────────────────────────────────
+
+/// Security grade computed from sshd_config and diagnostic results.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecurityGrade {
+    A,
+    B,
+    C,
+    D,
+    F,
+}
+
+impl SecurityGrade {
+    /// Human-readable label.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            SecurityGrade::A => "A",
+            SecurityGrade::B => "B",
+            SecurityGrade::C => "C",
+            SecurityGrade::D => "D",
+            SecurityGrade::F => "F",
+        }
+    }
+
+    /// Palette color for the grade.
+    #[must_use]
+    pub fn color(self, p: Palette) -> Color {
+        match self {
+            SecurityGrade::A => p.ok,
+            SecurityGrade::B => p.accent3,
+            SecurityGrade::C => p.warn,
+            SecurityGrade::D => p.warn,
+            SecurityGrade::F => p.err,
+        }
+    }
+}
+
+/// A single security check result for the dashboard.
+#[derive(Clone, Debug)]
+pub struct SecurityCheck {
+    /// Human-readable label (e.g. "Password authentication").
+    pub label: String,
+    /// Current value (e.g. "no", "yes", "22").
+    pub detail: String,
+    /// Whether this setting is in a secure/passing state.
+    pub passing: bool,
+    /// Whether this is informational (not a pass/fail check).
+    pub informational: bool,
+}
+
+/// Aggregated security data for the overview dashboard.
+#[derive(Clone, Debug)]
+pub struct SshSecurityData {
+    /// Parsed sshd_config key-value pairs.
+    pub sshd_config: HashMap<String, String>,
+    /// Number of authorized keys.
+    pub authorized_key_count: usize,
+    /// Authorized key comments for listing.
+    pub authorized_key_labels: Vec<String>,
+    /// Number of entries in known_hosts.
+    pub known_hosts_count: usize,
+    /// How many known_hosts entries have hashed hostnames.
+    pub known_hosts_hashed_count: usize,
+    /// Security-relevant diagnostics (warnings/errors only).
+    pub security_diagnostics: Vec<DiagnosticEntry>,
+}
+
+impl SshSecurityData {
+    /// Compute an overall security grade.
+    #[must_use]
+    pub fn grade(&self) -> SecurityGrade {
+        let mut score = 100u32;
+        let cfg = &self.sshd_config;
+
+        // Major deductions for insecure settings
+        if cfg
+            .get("passwordauthentication")
+            .map_or(true, |v| v != "no")
+        {
+            score -= 25;
+        }
+        if cfg.get("permitrootlogin").map_or(false, |v| v == "yes") {
+            score -= 20;
+        }
+        if cfg
+            .get("permitemptypasswords")
+            .map_or(false, |v| v == "yes")
+        {
+            score -= 15;
+        }
+        if cfg
+            .get("pubkeyauthentication")
+            .map_or(false, |v| v == "no")
+        {
+            score -= 15;
+        }
+        // Minor deductions for warnings
+        let warn_count = self
+            .security_diagnostics
+            .iter()
+            .filter(|d| d.severity == "warning" || d.severity == "error")
+            .count() as u32;
+        score -= warn_count.min(5) * 5;
+
+        match score {
+            90..=100 => SecurityGrade::A,
+            75..=89 => SecurityGrade::B,
+            55..=74 => SecurityGrade::C,
+            35..=54 => SecurityGrade::D,
+            _ => SecurityGrade::F,
+        }
+    }
+
+    /// Individual check results for the dashboard.
+    #[must_use]
+    pub fn checks(&self) -> Vec<SecurityCheck> {
+        let cfg = &self.sshd_config;
+        vec![
+            SecurityCheck {
+                label: "Password authentication".into(),
+                detail: cfg
+                    .get("passwordauthentication")
+                    .cloned()
+                    .unwrap_or_else(|| "yes (default)".into()),
+                passing: cfg
+                    .get("passwordauthentication")
+                    .map_or(false, |v| v == "no"),
+                informational: false,
+            },
+            SecurityCheck {
+                label: "Root login".into(),
+                detail: cfg
+                    .get("permitrootlogin")
+                    .cloned()
+                    .unwrap_or_else(|| "prohibit-password (default)".into()),
+                passing: cfg
+                    .get("permitrootlogin")
+                    .map_or(true, |v| v != "yes"),
+                informational: false,
+            },
+            SecurityCheck {
+                label: "SSH port".into(),
+                detail: cfg
+                    .get("port")
+                    .cloned()
+                    .unwrap_or_else(|| "22 (default)".into()),
+                passing: true,
+                informational: true,
+            },
+            SecurityCheck {
+                label: "Public key auth".into(),
+                detail: cfg
+                    .get("pubkeyauthentication")
+                    .cloned()
+                    .unwrap_or_else(|| "yes (default)".into()),
+                passing: cfg
+                    .get("pubkeyauthentication")
+                    .map_or(true, |v| v != "no"),
+                informational: false,
+            },
+            SecurityCheck {
+                label: "Max auth attempts".into(),
+                detail: cfg
+                    .get("maxauthtries")
+                    .cloned()
+                    .unwrap_or_else(|| "6 (default)".into()),
+                passing: true,
+                informational: true,
+            },
+            SecurityCheck {
+                label: "Agent forwarding".into(),
+                detail: cfg
+                    .get("allowagentforwarding")
+                    .cloned()
+                    .unwrap_or_else(|| "yes (default)".into()),
+                passing: cfg
+                    .get("allowagentforwarding")
+                    .map_or(false, |v| v == "no"),
+                informational: false,
+            },
+            SecurityCheck {
+                label: "X11 forwarding".into(),
+                detail: cfg
+                    .get("x11forwarding")
+                    .cloned()
+                    .unwrap_or_else(|| "no (default)".into()),
+                passing: cfg
+                    .get("x11forwarding")
+                    .map_or(true, |v| v != "yes"),
+                informational: false,
+            },
+            SecurityCheck {
+                label: "Empty passwords".into(),
+                detail: cfg
+                    .get("permitemptypasswords")
+                    .cloned()
+                    .unwrap_or_else(|| "no (default)".into()),
+                passing: cfg
+                    .get("permitemptypasswords")
+                    .map_or(true, |v| v != "yes"),
+                informational: false,
+            },
+        ]
+    }
+}
+
+/// Parse `/etc/ssh/sshd_config` for key-value pairs.
+///
+/// Skips comments, empty lines, `Match` and `Include` blocks.
+/// Returns an empty map if the file doesn't exist or isn't readable.
+fn parse_sshd_config() -> HashMap<String, String> {
+    let path = Path::new("/etc/ssh/sshd_config");
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return HashMap::new(),
+    };
+
+    let mut config = HashMap::new();
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let lower = trimmed.to_ascii_lowercase();
+        if lower.starts_with("match ") || lower.starts_with("include ") {
+            continue;
+        }
+        if let Some((key, value)) = trimmed.split_once(char::is_whitespace) {
+            config.insert(key.to_lowercase(), value.to_owned());
+        }
+    }
+    config
+}
+
+fn collect_mock_security() -> SshSecurityData {
+    let mut sshd_config = HashMap::new();
+    sshd_config.insert("passwordauthentication".into(), "no".into());
+    sshd_config.insert("permitrootlogin".into(), "prohibit-password".into());
+    sshd_config.insert("port".into(), "22".into());
+    sshd_config.insert("pubkeyauthentication".into(), "yes".into());
+    sshd_config.insert("maxauthtries".into(), "3".into());
+    sshd_config.insert("allowagentforwarding".into(), "no".into());
+    sshd_config.insert("x11forwarding".into(), "no".into());
+    sshd_config.insert("permitemptypasswords".into(), "no".into());
+
+    SshSecurityData {
+        sshd_config,
+        authorized_key_count: 4,
+        authorized_key_labels: vec![
+            "alice@workstation".into(),
+            "deploy@ci-runner".into(),
+            "bob@laptop".into(),
+            "(no comment)".into(),
+        ],
+        known_hosts_count: 5,
+        known_hosts_hashed_count: 1,
+        security_diagnostics: vec![DiagnosticEntry {
+            id: "key_permissions".into(),
+            severity: "warning".into(),
+            module: "local".into(),
+            message: "Private key id_rsa has overly permissive mode (0644)".into(),
+            hint: Some("Run chmod 600 ~/.ssh/id_rsa".into()),
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,5 +820,32 @@ mod tests {
         assert!(!bundle.authorized_keys.is_empty());
         assert!(!bundle.certificates.is_empty());
         assert!(bundle.agent_status.reachable);
+        assert!(bundle.security.authorized_key_count > 0);
+        assert!(!bundle.security.sshd_config.is_empty());
+        assert_eq!(bundle.security.checks().len(), 8);
+    }
+
+    #[test]
+    fn security_grade_a_when_secure() {
+        let security = collect_mock_security();
+        assert_eq!(security.grade(), SecurityGrade::A);
+    }
+
+    #[test]
+    fn security_grade_d_when_mostly_insecure() {
+        let mut security = collect_mock_security();
+        security.sshd_config.insert("passwordauthentication".into(), "yes".into());
+        security.sshd_config.insert("permitrootlogin".into(), "yes".into());
+        assert_eq!(security.grade(), SecurityGrade::D);
+    }
+
+    #[test]
+    fn security_grade_f_when_fully_insecure() {
+        let mut security = collect_mock_security();
+        security.sshd_config.insert("passwordauthentication".into(), "yes".into());
+        security.sshd_config.insert("permitrootlogin".into(), "yes".into());
+        security.sshd_config.insert("permitemptypasswords".into(), "yes".into());
+        security.sshd_config.insert("pubkeyauthentication".into(), "no".into());
+        assert_eq!(security.grade(), SecurityGrade::F);
     }
 }

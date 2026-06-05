@@ -176,6 +176,8 @@ impl Section {
 /// Sub-tabs within the SSH management content area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SshSection {
+    /// Security overview dashboard (landing tab).
+    Security,
     /// SSH key management (list, generate, delete, rename, etc.).
     Keys,
     /// Trusted hosts from `known_hosts`.
@@ -199,6 +201,7 @@ impl SshSection {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
+            SshSection::Security => "Security",
             SshSection::Keys => "Keys",
             SshSection::KnownHosts => "Hosts",
             SshSection::Config => "Config",
@@ -214,6 +217,7 @@ impl SshSection {
     #[must_use]
     pub fn all() -> &'static [SshSection] {
         &[
+            SshSection::Security,
             SshSection::Keys,
             SshSection::KnownHosts,
             SshSection::Config,

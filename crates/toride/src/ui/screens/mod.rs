@@ -13,6 +13,7 @@ pub use ssh::{
     AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
     DiagnosticEntry, ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshContent, SshKeyEntry,
 };
+pub use crate::ssh_data::{SecurityCheck, SecurityGrade, SshSecurityData};
 pub use welcome::WelcomeScreen;
 
 use crossterm::event::{KeyCode, MouseEvent};
