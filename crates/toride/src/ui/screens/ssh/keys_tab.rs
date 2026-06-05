@@ -31,6 +31,8 @@ pub struct KeysTab {
     scroll: usize,
     /// Whether the detail modal is open, and for which key index.
     detail_open: Option<usize>,
+    /// Rendered rect of the detail modal (for click-outside detection).
+    detail_modal_rect: Option<Rect>,
     /// Hitbox rects for list rows (rebuilt each frame).
     row_hitboxes: Vec<Rect>,
     /// Which row is hovered by the mouse.
@@ -46,6 +48,7 @@ impl KeysTab {
             selected: 0,
             scroll: 0,
             detail_open: None,
+            detail_modal_rect: None,
             row_hitboxes: Vec::new(),
             hovered_row: None,
         }
@@ -85,10 +88,17 @@ impl KeysTab {
 
     /// Handle a mouse event for the key list.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Detail modal open: block background, click to close.
+        // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                self.detail_open = None;
+                if let Some(mr) = self.detail_modal_rect {
+                    let col = mouse.column;
+                    let row = mouse.row;
+                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
+                        self.detail_open = None;
+                        self.detail_modal_rect = None;
+                    }
+                }
             }
             return None;
         }
@@ -203,8 +213,8 @@ impl SshTab for KeysTab {
 
         // Render detail modal if open
         if let Some(idx) = self.detail_open {
-            if let Some(key) = self.keys.get(idx) {
-                self.render_detail_modal(frame, p, key);
+            if let Some(key) = self.keys.get(idx).cloned() {
+                self.render_detail_modal(frame, p, &key);
             }
         }
     }
@@ -368,10 +378,10 @@ impl KeysTab {
         frame.render_widget(Paragraph::new(hints), footer_area);
     }
 
-    fn render_detail_modal(&self, frame: &mut Frame, p: Palette, key: &SshKeyEntry) {
-        Modal::new("Key Detail")
-            .dimensions(54, 12)
-            .render(frame, p, |frame, content_area| {
+    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, key: &SshKeyEntry) {
+        let modal = Modal::new("Key Detail").dimensions(54, 12);
+        self.detail_modal_rect = Some(modal.rect(frame.area()));
+        modal.render(frame, p, |frame, content_area| {
                 let lines = vec![
                     Line::from(vec![
                         Span::styled("Name:  ", Style::new().fg(p.text_dim)),

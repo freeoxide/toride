@@ -71,6 +71,12 @@ impl SshContent {
         self.tab
     }
 
+    /// Whether any sub-tab has a modal currently open.
+    #[must_use]
+    pub fn has_modal(&self) -> bool {
+        self.keys.has_modal()
+    }
+
     /// Provide live SSH key data (called from the data collector).
     pub fn set_keys(&mut self, keys: Vec<SshKeyEntry>) {
         self.keys.set_keys(keys);

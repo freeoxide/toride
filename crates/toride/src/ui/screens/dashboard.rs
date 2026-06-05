@@ -96,6 +96,8 @@ pub struct DashboardScreen {
     updates_scroll: usize,
     activity_scroll: usize,
     open_module: Option<usize>,
+    /// Rendered rect of the module detail modal (for click-outside detection).
+    module_modal_rect: Option<Rect>,
     gauge_hover: Option<GaugeKind>,
     gauge_hitboxes: [Rect; 4],
     /// Hitbox rects for module cards (rebuilt each frame).
@@ -143,6 +145,7 @@ impl DashboardScreen {
             updates_scroll: 0,
             activity_scroll: 0,
             open_module: None,
+            module_modal_rect: None,
             gauge_hover: None,
             gauge_hitboxes: [Rect::default(); 4],
             module_hitboxes: Vec::new(),
@@ -351,7 +354,13 @@ impl DashboardScreen {
         if let Some(idx) = self.open_module
             && let Some(m) = self.data.modules.get(idx)
         {
-            render_module_modal(frame, p, m);
+            let modal = Modal::new("module").dimensions(54, 10);
+            self.module_modal_rect = Some(modal.rect(frame.area()));
+            modal.render(frame, p, |frame, area| {
+                render_module_modal_content(frame, area, p, m);
+            });
+        } else {
+            self.module_modal_rect = None;
         }
 
         // ── Header gauge tooltip overlay ────────────────────────────────────
@@ -659,6 +668,14 @@ impl AppScreen for DashboardScreen {
                 return None;
             }
             KeyCode::Esc => {
+                // If SSH content has a modal open, let it handle Esc first
+                // (regardless of dashboard focus — the modal proves the user
+                // is interacting with SSH content).
+                if self.active_section() == Section::Ssh
+                    && self.ssh_content.has_modal()
+                {
+                    return self.ssh_content.handle_key(code);
+                }
                 if self.focus == Focus::Sidebar {
                     return Some(Action::Back);
                 }
@@ -723,7 +740,15 @@ impl AppScreen for DashboardScreen {
         // Module detail modal open: block all background interaction.
         if self.open_module.is_some() {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                self.open_module = None;
+                // Only close if click is outside the modal rect.
+                if let Some(mr) = self.module_modal_rect {
+                    let col = mouse.column;
+                    let row = mouse.row;
+                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
+                        self.open_module = None;
+                        self.module_modal_rect = None;
+                    }
+                }
             }
             return None;
         }
@@ -893,30 +918,28 @@ fn render_placeholder(frame: &mut Frame, area: Rect, p: Palette, section: Sectio
     frame.render_widget(Paragraph::new(msg).centered(), centered);
 }
 
-fn render_module_modal(frame: &mut Frame, p: Palette, m: &Module) {
-    Modal::new("module").dimensions(54, 10).render(frame, p, |frame, area| {
-        let lines = vec![
-            Line::from(vec![
-                Span::styled(format!("{} ", m.icon), Style::new().fg(p.accent2)),
-                Span::styled(m.name.clone(), Style::new().fg(p.text).bold()),
-                Span::raw("   "),
-                Span::styled(
-                    format!("{} {}", m.status.glyph(), m.status.label()),
-                    Style::new().fg(m.status.color(p)),
-                ),
-            ]),
-            Line::raw(""),
-            Line::from(Span::styled(m.summary.clone(), Style::new().fg(p.text_dim))),
-            Line::from(Span::styled(m.detail.clone(), Style::new().fg(p.text_muted))),
-            Line::raw(""),
-            Line::from(vec![
-                accent_badge("↵ open", p),
-                Span::raw("   "),
-                neutral_badge("esc close", p),
-            ]),
-        ];
-        frame.render_widget(Paragraph::new(lines), area);
-    });
+fn render_module_modal_content(frame: &mut Frame, area: Rect, p: Palette, m: &Module) {
+    let lines = vec![
+        Line::from(vec![
+            Span::styled(format!("{} ", m.icon), Style::new().fg(p.accent2)),
+            Span::styled(m.name.clone(), Style::new().fg(p.text).bold()),
+            Span::raw("   "),
+            Span::styled(
+                format!("{} {}", m.status.glyph(), m.status.label()),
+                Style::new().fg(m.status.color(p)),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(Span::styled(m.summary.clone(), Style::new().fg(p.text_dim))),
+        Line::from(Span::styled(m.detail.clone(), Style::new().fg(p.text_muted))),
+        Line::raw(""),
+        Line::from(vec![
+            accent_badge("↵ open", p),
+            Span::raw("   "),
+            neutral_badge("esc close", p),
+        ]),
+    ];
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 // ── Header gauge tooltip ─────────────────────────────────────────────────────
