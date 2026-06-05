@@ -43,6 +43,10 @@ pub struct Sidebar {
     anim: AnimatedFloats,
     /// Clickable rect for each item, refreshed every render (index = item).
     hitboxes: Vec<Rect>,
+    /// Topmost visible item index (scroll viewport offset).
+    scroll_offset: usize,
+    /// Number of items visible in the last render (cached for scroll methods).
+    last_visible: usize,
 }
 
 impl Sidebar {
@@ -59,6 +63,8 @@ impl Sidebar {
             hovered: None,
             anim,
             hitboxes: Vec::new(),
+            scroll_offset: 0,
+            last_visible: 0,
         }
     }
 
@@ -145,6 +151,31 @@ impl Sidebar {
         self.selected = idx.min(self.len - 1);
     }
 
+    /// Scroll the viewport by `delta` items (positive = down, negative = up).
+    /// Does not change the selection. Used for mouse wheel scrolling.
+    pub fn scroll(&mut self, delta: i32) {
+        let visible = self.last_visible;
+        if visible == 0 || self.len <= visible {
+            return;
+        }
+        let max_offset = self.len - visible;
+        let new = self.scroll_offset as i32 + delta;
+        self.scroll_offset = new.clamp(0, max_offset as i32) as usize;
+    }
+
+    /// Clamp scroll offset so the selected item is visible in the viewport.
+    /// `visible` is the number of items that fit in the list area.
+    fn clamp_scroll_to_selection(&mut self, visible: usize) {
+        if visible == 0 {
+            return;
+        }
+        if self.selected < self.scroll_offset {
+            self.scroll_offset = self.selected;
+        } else if self.selected >= self.scroll_offset + visible {
+            self.scroll_offset = self.selected - visible + 1;
+        }
+    }
+
     /// Toggle the collapsed icon-rail state.
     pub fn toggle_collapse(&mut self) {
         self.collapsed = !self.collapsed;
@@ -207,6 +238,12 @@ impl Sidebar {
         // Each item gets a blank row beneath it for vertical breathing room.
         let step: u16 = if collapsed { 1 } else { ROW_STEP };
 
+        // Compute number of visible items and clamp scroll offset.
+        let list_rows = list_bottom.saturating_sub(list_top) as usize;
+        let visible = if step > 0 { list_rows / step as usize } else { 0 };
+        self.last_visible = visible;
+        self.clamp_scroll_to_selection(visible);
+
         // Advance the highlight animation and refresh hit-test rects.
         self.tick_anim();
         self.hitboxes.clear();
@@ -217,7 +254,11 @@ impl Sidebar {
         let h_border = if focused { p.accent } else { p.text_muted };
 
         for (i, item) in items.iter().enumerate() {
-            let Ok(idx) = u16::try_from(i) else { break };
+            // Skip items above the scroll viewport.
+            if i < self.scroll_offset {
+                continue;
+            }
+            let Ok(idx) = u16::try_from(i - self.scroll_offset) else { break };
             let y = list_top + idx * step;
             if y > list_bottom {
                 break;

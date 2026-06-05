@@ -13,7 +13,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::Style,
     text::{Line, Span},
-    widgets::{Clear, Paragraph},
+    widgets::Paragraph,
 };
 
 use crate::action::Action;
@@ -27,7 +27,10 @@ use crate::ui::shell::{
     shell_layout, header::HeaderData,
 };
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{Card, Modal, accent_badge, neutral_badge, render_panel, render_titled_panel, tag_badge};
+use crate::ui::widgets::{
+    Card, Modal, Tooltip, accent_badge, kv, kv_with_suffix, neutral_badge,
+    render_panel, render_titled_panel, tag_badge, title_line, title_line_with_detail,
+};
 use crate::ui::screens::base::ScreenBase;
 use tachyonfx::{EffectManager, Interpolation, fx};
 
@@ -94,6 +97,8 @@ pub struct DashboardScreen {
     open_module: Option<usize>,
     gauge_hover: Option<GaugeKind>,
     gauge_hitboxes: [Rect; 4],
+    /// Hitbox rects for module cards (rebuilt each frame).
+    module_hitboxes: Vec<Rect>,
     /// Live network throughput (bytes/sec).
     net_rx_rate: Option<f64>,
     net_tx_rate: Option<f64>,
@@ -137,6 +142,7 @@ impl DashboardScreen {
             open_module: None,
             gauge_hover: None,
             gauge_hitboxes: [Rect::default(); 4],
+            module_hitboxes: Vec::new(),
             net_rx_rate: None,
             net_tx_rate: None,
             disk_read_rate: None,
@@ -236,11 +242,7 @@ impl DashboardScreen {
                 }
             }
             Focus::Sidebar => {
-                if down {
-                    self.sidebar.select_next();
-                } else {
-                    self.sidebar.select_prev();
-                }
+                self.sidebar.scroll(if down { 1 } else { -1 });
             }
         }
     }
@@ -254,6 +256,13 @@ impl DashboardScreen {
             }
         }
         None
+    }
+
+    /// Check if a screen coordinate falls within a module card hitbox.
+    fn module_at(&self, col: u16, row: u16) -> Option<usize> {
+        self.module_hitboxes
+            .iter()
+            .position(|rect| col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom())
     }
 
     // ── Render ─────────────────────────────────────────────────────────────────
@@ -572,6 +581,9 @@ impl DashboardScreen {
         )
         .split(inner);
 
+        // Rebuild module hitboxes for click detection.
+        self.module_hitboxes.clear();
+
         for (r, row_rect) in row_rects.iter().enumerate() {
             let cells = Layout::horizontal(
                 (0..cols.max(1)).map(|_| Constraint::Fill(1)).collect::<Vec<_>>(),
@@ -586,6 +598,11 @@ impl DashboardScreen {
                 let m = &self.data.modules[idx];
                 let card_focused = focused && idx == self.module_sel;
                 render_module_card(frame, *cell, p, m, card_focused);
+                // Record hitbox — index matches position in the module data vec.
+                while self.module_hitboxes.len() <= idx {
+                    self.module_hitboxes.push(Rect::default());
+                }
+                self.module_hitboxes[idx] = *cell;
             }
         }
     }
@@ -689,12 +706,16 @@ impl AppScreen for DashboardScreen {
                 self.sidebar.set_hovered(idx);
                 self.gauge_hover = self.gauge_at(mouse.column, mouse.row);
             }
-            // Click: select + activate the sidebar item, focus the sidebar.
+            // Click: select + activate the clicked element.
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(idx) = self.sidebar.item_at(mouse.column, mouse.row) {
                     self.sidebar.select_to(idx);
                     self.active = idx;
                     self.focus = Focus::Sidebar;
+                } else if let Some(idx) = self.module_at(mouse.column, mouse.row) {
+                    self.module_sel = idx;
+                    self.focus = Focus::Modules;
+                    self.open_module = Some(idx);
                 }
             }
             MouseEventKind::ScrollDown => self.scroll_focused(true),
@@ -884,34 +905,18 @@ fn render_gauge_tooltip(
         GaugeKind::Disk => 2,
         GaugeKind::Net => 3,
     };
-    let anchor = hitboxes[idx];
+    let hitbox = hitboxes[idx];
     let lines = gauge_tooltip_lines(gauge, status, p, rates);
 
-    let max_w = lines.iter().map(|l| l.width()).max().unwrap_or(10);
-    let w = u16::try_from(max_w).unwrap_or(20).saturating_add(4); // 2 padding + 2 border
-    let h = u16::try_from(lines.len()).unwrap_or(1).saturating_add(2); // 2 border rows
-
-    // Position: centered below the header, clamped to frame.
-    let frame_area = frame.area();
-    let x = (anchor.x + anchor.width / 2)
-        .saturating_sub(w / 2)
-        .max(frame_area.x)
-        .min(frame_area.right().saturating_sub(w));
-    let y = header_area.bottom();
-
-    if y + h > frame_area.bottom() || x + w > frame_area.right() {
-        return None;
-    }
-
-    let rect = Rect::new(x, y, w, h);
-
-    // Clear so the tooltip is opaque.
-    frame.render_widget(Clear, rect);
-
-    let inner = render_panel(frame, rect, None, p.text, p.border_hi, p.panel);
-    frame.render_widget(Paragraph::new(lines), inner);
-
-    Some(rect)
+    // Construct an anchor whose `.bottom()` equals `header_area.bottom()` so the
+    // tooltip appears just below the header, centered on the gauge hitbox.
+    let anchor = Rect::new(
+        hitbox.x,
+        header_area.bottom().saturating_sub(1),
+        hitbox.width,
+        1,
+    );
+    Tooltip::new(&lines).anchor(anchor).render(frame, p)
 }
 
 /// Build tooltip content lines for a given gauge kind.
@@ -928,21 +933,13 @@ fn cpu_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<
     let mut lines = Vec::new();
 
     // Title
-    let brand = if sys.static_info.cpu_brand.is_empty() {
-        String::new()
-    } else {
-        format!("  ·  {}", sys.static_info.cpu_brand)
-    };
-    lines.push(Line::from(vec![
-        Span::styled("CPU", Style::new().fg(p.accent).bold()),
-        Span::styled(brand, Style::new().fg(p.text_dim)),
-    ]));
+    lines.push(title_line_with_detail("CPU", &sys.static_info.cpu_brand, p));
 
-    // Usage
+    // Usage — kept manual because value uses `.bold()`, unique to CPU.
     if let Some(usage) = sys.cpu_usage {
         let color = percent_color(usage, p);
         lines.push(Line::from(vec![
-            Span::styled("Usage  ", Style::new().fg(p.text_muted)),
+            Span::styled(format!("{:<7}", "Usage"), Style::new().fg(p.text_muted)),
             Span::styled(format!("{usage:.0}%"), Style::new().fg(color).bold()),
         ]));
     }
@@ -950,23 +947,14 @@ fn cpu_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<
     // Cores
     let phys = sys.physical_cores.map_or_else(|| "—".to_string(), |c| c.to_string());
     let log = sys.static_info.logical_cores;
-    lines.push(Line::from(vec![
-        Span::styled("Cores  ", Style::new().fg(p.text_muted)),
-        Span::styled(format!("{phys} / {log}"), Style::new().fg(p.text)),
-    ]));
+    lines.push(kv("Cores", &format!("{phys} / {log}"), p));
 
     // Load average
     if let Some(load) = &sys.load_average {
-        lines.push(Line::from(vec![
-            Span::styled("Load   ", Style::new().fg(p.text_muted)),
-            Span::styled(
-                format!("{:.2} / {:.2} / {:.2}", load.one, load.five, load.fifteen),
-                Style::new().fg(p.text),
-            ),
-        ]));
+        lines.push(kv("Load", &format!("{:.2} / {:.2} / {:.2}", load.one, load.five, load.fifteen), p));
     }
 
-    // Per-core mini readout
+    // Per-core mini readout (dynamic multi-span — kept manual)
     if !sys.cpu_cores.is_empty() {
         let mut cores: Vec<Span<'static>> = Vec::new();
         for (i, c) in sys.cpu_cores.iter().enumerate() {
@@ -976,7 +964,7 @@ fn cpu_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<
             let color = percent_color(c.usage, p);
             cores.push(Span::styled(format!("{:.0}", c.usage), Style::new().fg(color)));
         }
-        let mut line = vec![Span::styled("Core   ", Style::new().fg(p.text_muted))];
+        let mut line = vec![Span::styled(format!("{:<7}", "Core"), Style::new().fg(p.text_muted))];
         line.append(&mut cores);
         lines.push(Line::from(line));
     }
@@ -988,40 +976,30 @@ fn ram_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<
     let m = &sys.memory;
     let mut lines = Vec::new();
 
-    lines.push(Line::from(Span::styled("Memory", Style::new().fg(p.accent).bold())));
+    lines.push(title_line("Memory", p));
 
     let color = percent_color(m.percentage, p);
-    lines.push(Line::from(vec![
-        Span::styled("Used   ", Style::new().fg(p.text_muted)),
-        Span::styled(
-            format!("{} / {}", format_bytes(m.used_bytes), format_bytes(m.total_bytes)),
-            Style::new().fg(p.text),
-        ),
-        Span::styled(format!("  ({:.0}%)", m.percentage), Style::new().fg(color)),
-    ]));
+    lines.push(kv_with_suffix(
+        "Used",
+        &format!("{} / {}", format_bytes(m.used_bytes), format_bytes(m.total_bytes)),
+        &format!("  ({:.0}%)", m.percentage),
+        color, p,
+    ));
 
-    lines.push(Line::from(vec![
-        Span::styled("Free   ", Style::new().fg(p.text_muted)),
-        Span::styled(format_bytes(m.available_bytes), Style::new().fg(p.text)),
-    ]));
+    lines.push(kv("Free", &format_bytes(m.available_bytes), p));
 
     if m.cached_bytes > 0 {
-        lines.push(Line::from(vec![
-            Span::styled("Cached ", Style::new().fg(p.text_muted)),
-            Span::styled(format_bytes(m.cached_bytes), Style::new().fg(p.text)),
-        ]));
+        lines.push(kv("Cached", &format_bytes(m.cached_bytes), p));
     }
 
     if let Some(swap) = &sys.swap {
         let swap_color = percent_color(swap.percentage, p);
-        lines.push(Line::from(vec![
-            Span::styled("Swap   ", Style::new().fg(p.text_muted)),
-            Span::styled(
-                format!("{} / {}", format_bytes(swap.used_bytes), format_bytes(swap.total_bytes)),
-                Style::new().fg(p.text),
-            ),
-            Span::styled(format!("  ({:.0}%)", swap.percentage), Style::new().fg(swap_color)),
-        ]));
+        lines.push(kv_with_suffix(
+            "Swap",
+            &format!("{} / {}", format_bytes(swap.used_bytes), format_bytes(swap.total_bytes)),
+            &format!("  ({:.0}%)", swap.percentage),
+            swap_color, p,
+        ));
     }
 
     lines
@@ -1031,53 +1009,27 @@ fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette, rates: &Liv
     let d = &sys.disk;
     let mut lines = Vec::new();
 
-    lines.push(Line::from(vec![
-        Span::styled("Disk", Style::new().fg(p.accent).bold()),
-        Span::styled(format!("  ·  {}", d.name), Style::new().fg(p.text_dim)),
-    ]));
-
-    lines.push(Line::from(vec![
-        Span::styled("Mount  ", Style::new().fg(p.text_muted)),
-        Span::styled(d.mount_point.clone(), Style::new().fg(p.text)),
-    ]));
-
-    lines.push(Line::from(vec![
-        Span::styled("FS     ", Style::new().fg(p.text_muted)),
-        Span::styled(d.filesystem.clone(), Style::new().fg(p.text)),
-    ]));
+    lines.push(title_line_with_detail("Disk", &d.name, p));
+    lines.push(kv("Mount", &d.mount_point, p));
+    lines.push(kv("FS", &d.filesystem, p));
 
     let color = percent_color(d.percentage, p);
-    lines.push(Line::from(vec![
-        Span::styled("Used   ", Style::new().fg(p.text_muted)),
-        Span::styled(
-            format!("{} / {}", format_bytes(d.used_bytes), format_bytes(d.total_bytes)),
-            Style::new().fg(p.text),
-        ),
-        Span::styled(format!("  ({:.0}%)", d.percentage), Style::new().fg(color)),
-    ]));
+    lines.push(kv_with_suffix(
+        "Used",
+        &format!("{} / {}", format_bytes(d.used_bytes), format_bytes(d.total_bytes)),
+        &format!("  ({:.0}%)", d.percentage),
+        color, p,
+    ));
 
-    lines.push(Line::from(vec![
-        Span::styled("Free   ", Style::new().fg(p.text_muted)),
-        Span::styled(format_bytes(d.available_bytes), Style::new().fg(p.text)),
-    ]));
-
-    lines.push(Line::from(vec![
-        Span::styled("Type   ", Style::new().fg(p.text_muted)),
-        Span::styled(d.disk_type.clone(), Style::new().fg(p.text)),
-    ]));
+    lines.push(kv("Free", &format_bytes(d.available_bytes), p));
+    lines.push(kv("Type", &d.disk_type, p));
 
     // Disk I/O — live throughput
     if rates.disk_read.is_some() || rates.disk_write.is_some() {
         let read_s = rates.disk_read.map_or_else(|| "—".to_string(), format_rate);
         let write_s = rates.disk_write.map_or_else(|| "—".to_string(), format_rate);
-        lines.push(Line::from(vec![
-            Span::styled("Read   ", Style::new().fg(p.text_muted)),
-            Span::styled(format!("{read_s}/s"), Style::new().fg(p.text)),
-        ]));
-        lines.push(Line::from(vec![
-            Span::styled("Write  ", Style::new().fg(p.text_muted)),
-            Span::styled(format!("{write_s}/s"), Style::new().fg(p.text)),
-        ]));
+        lines.push(kv("Read", &format!("{read_s}/s"), p));
+        lines.push(kv("Write", &format!("{write_s}/s"), p));
     }
 
     lines
@@ -1086,30 +1038,17 @@ fn disk_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette, rates: &Liv
 fn net_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette, rates: &LiveRates) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
-    lines.push(Line::from(Span::styled("Network", Style::new().fg(p.accent).bold())));
+    lines.push(title_line("Network", p));
 
     let dl_rate = rates.net_rx.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
     let ul_rate = rates.net_tx.map_or_else(|| "—".to_string(), |r| format!("{}/s", format_rate(r)));
 
-    lines.push(Line::from(vec![
-        Span::styled("Down   ", Style::new().fg(p.text_muted)),
-        Span::styled(dl_rate, Style::new().fg(p.text)),
-    ]));
-
-    lines.push(Line::from(vec![
-        Span::styled("Up     ", Style::new().fg(p.text_muted)),
-        Span::styled(ul_rate, Style::new().fg(p.text)),
-    ]));
+    lines.push(kv("Down", &dl_rate, p));
+    lines.push(kv("Up", &ul_rate, p));
 
     lines.push(Line::raw(""));
 
-    lines.push(Line::from(vec![
-        Span::styled("Total  ", Style::new().fg(p.text_muted)),
-        Span::styled(
-            format!("{} ↓  {} ↑", format_bytes(sys.network.bytes_received), format_bytes(sys.network.bytes_transmitted)),
-            Style::new().fg(p.text_dim),
-        ),
-    ]));
+    lines.push(kv("Total", &format!("{} ↓  {} ↑", format_bytes(sys.network.bytes_received), format_bytes(sys.network.bytes_transmitted)), p));
 
     lines
 }

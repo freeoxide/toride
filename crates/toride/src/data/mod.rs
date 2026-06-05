@@ -145,10 +145,6 @@ pub enum Section {
     Firewall,
     /// fail2ban management.
     Fail2ban,
-    /// Traefik management.
-    Traefik,
-    /// Dokploy management.
-    Dokploy,
     /// Logs viewer.
     Logs,
     /// About screen.
@@ -168,8 +164,6 @@ impl Section {
             Section::Ssh => "SSH",
             Section::Firewall => "Firewall",
             Section::Fail2ban => "fail2ban",
-            Section::Traefik => "Traefik",
-            Section::Dokploy => "Dokploy",
             Section::Logs => "Logs",
             Section::About => "About",
             Section::Settings => "Settings",
@@ -255,8 +249,6 @@ impl DashboardData {
             SidebarItem { icon: "◆", section: Section::Ssh, badge: None },
             SidebarItem { icon: "▦", section: Section::Firewall, badge: Some("active".into()) },
             SidebarItem { icon: "✦", section: Section::Fail2ban, badge: Some("12".into()) },
-            SidebarItem { icon: "›", section: Section::Traefik, badge: None },
-            SidebarItem { icon: "◉", section: Section::Dokploy, badge: Some("v0.18".into()) },
             SidebarItem { icon: "≡", section: Section::Logs, badge: None },
             SidebarItem { icon: "◇", section: Section::About, badge: None },
             SidebarItem { icon: "⚙", section: Section::Settings, badge: None },
@@ -388,7 +380,7 @@ mod tests {
     fn sidebar_starts_with_dashboard() {
         let d = DashboardData::mock();
         assert_eq!(d.sidebar[0].section, Section::Dashboard);
-        assert_eq!(d.sidebar.len(), 11);
+        assert_eq!(d.sidebar.len(), 9);
     }
 
     #[test]
