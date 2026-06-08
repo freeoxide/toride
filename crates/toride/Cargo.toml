@@ -21,7 +21,8 @@ futures = "0.3"
 color-eyre = "0.6"
 ratatui-interact = "0.5.3"
 
-toride-ssh = { path = "../toride-ssh" }
+toride-ssh = { path = "../toride-ssh", features = ["full"] }
+tracing = { workspace = true }
 toride-status = { path = "../toride-status" }
 rattles = "0.3.1"
 

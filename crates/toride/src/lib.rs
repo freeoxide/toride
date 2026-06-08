@@ -15,6 +15,7 @@ pub mod data;
 pub mod navigation;
 pub mod persistence;
 pub mod prediction;
+pub mod ssh_convert;
 pub mod ssh_data;
 pub mod status_collector;
 pub use toride_status as status;

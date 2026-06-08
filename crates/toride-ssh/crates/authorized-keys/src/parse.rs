@@ -34,7 +34,7 @@ impl AuthorizedKeyEntry {
     /// Compute the SHA-256 fingerprint of this entry's public key.
     ///
     /// Returns `None` if the stored key data cannot be re-parsed (corrupted entry).
-    pub(super) fn fingerprint(&self) -> Option<String> {
+    pub fn fingerprint(&self) -> Option<String> {
         let key_line = self.openssh_key_line();
         match ssh_key::PublicKey::from_openssh(&key_line) {
             Ok(pk) => Some(pk.fingerprint(ssh_key::HashAlg::Sha256).to_string()),
