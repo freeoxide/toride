@@ -1006,12 +1006,11 @@ fn render_activity_row(frame: &mut Frame, row: Rect, p: Palette, e: &ActivityEnt
 }
 
 fn render_placeholder(frame: &mut Frame, area: Rect, p: Palette, section: Section) {
-    let inner = render_panel(frame, area, None, p.text, p.border, p.bg);
     let msg = Line::from(vec![
         Span::styled(section.label(), Style::new().fg(p.accent).bold()),
         Span::styled(" — coming soon", Style::new().fg(p.text_dim)),
     ]);
-    let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
+    let centered = Rect::new(area.x, area.y + area.height / 2, area.width, 1);
     frame.render_widget(Paragraph::new(msg).centered(), centered);
 }
 
