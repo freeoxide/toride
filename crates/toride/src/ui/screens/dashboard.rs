@@ -64,24 +64,44 @@ enum Focus {
     Modules,
     Updates,
     Activity,
+    /// SSH management content (only valid when Section::Ssh is active).
+    Ssh,
 }
 
 impl Focus {
-    fn next(self) -> Self {
-        match self {
-            Focus::Sidebar => Focus::Modules,
-            Focus::Modules => Focus::Updates,
-            Focus::Updates => Focus::Activity,
-            Focus::Activity => Focus::Sidebar,
+    /// Cycle focus forward, respecting which section is active so that
+    /// unimplemented or inactive regions are never reachable.
+    fn next(self, section: Section) -> Self {
+        match section {
+            Section::Dashboard => match self {
+                Focus::Sidebar => Focus::Modules,
+                Focus::Modules => Focus::Updates,
+                Focus::Updates => Focus::Activity,
+                Focus::Activity | Focus::Ssh => Focus::Sidebar,
+            },
+            Section::Ssh => match self {
+                Focus::Sidebar => Focus::Ssh,
+                Focus::Ssh | Focus::Modules | Focus::Updates | Focus::Activity => Focus::Sidebar,
+            },
+            // Unimplemented sections have no focusable content — stay on sidebar.
+            _ => Focus::Sidebar,
         }
     }
 
-    fn prev(self) -> Self {
-        match self {
-            Focus::Sidebar => Focus::Activity,
-            Focus::Modules => Focus::Sidebar,
-            Focus::Updates => Focus::Modules,
-            Focus::Activity => Focus::Updates,
+    /// Cycle focus backward (reverse of [`next`]).
+    fn prev(self, section: Section) -> Self {
+        match section {
+            Section::Dashboard => match self {
+                Focus::Sidebar | Focus::Ssh => Focus::Activity,
+                Focus::Modules => Focus::Sidebar,
+                Focus::Updates => Focus::Modules,
+                Focus::Activity => Focus::Updates,
+            },
+            Section::Ssh => match self {
+                Focus::Sidebar | Focus::Modules | Focus::Updates | Focus::Activity => Focus::Ssh,
+                Focus::Ssh => Focus::Sidebar,
+            },
+            _ => Focus::Sidebar,
         }
     }
 }
@@ -277,6 +297,8 @@ impl DashboardScreen {
             Focus::Sidebar => {
                 self.sidebar.scroll(if down { 1 } else { -1 });
             }
+            // SSH scroll is handled by ssh_content directly via mouse delegation.
+            Focus::Ssh => {}
         }
     }
 
@@ -677,11 +699,11 @@ impl AppScreen for DashboardScreen {
         match code {
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Tab => {
-                self.focus = self.focus.next();
+                self.focus = self.focus.next(self.active_section());
                 return None;
             }
             KeyCode::BackTab => {
-                self.focus = self.focus.prev();
+                self.focus = self.focus.prev(self.active_section());
                 return None;
             }
             KeyCode::Char('\\') => {
@@ -716,8 +738,8 @@ impl AppScreen for DashboardScreen {
         }
 
         // Route input to SSH content when that section is active and focus
-        // is not on the sidebar. Sidebar navigation still works normally.
-        if self.active_section() == Section::Ssh && self.focus != Focus::Sidebar {
+        // is on the Ssh region (Tab cycles Sidebar → Ssh for SSH section).
+        if self.active_section() == Section::Ssh && self.focus == Focus::Ssh {
             return self.ssh_content.handle_key(code);
         }
 
@@ -749,6 +771,8 @@ impl AppScreen for DashboardScreen {
                 KeyCode::Up | KeyCode::Char('k') => self.activity_scroll = self.activity_scroll.saturating_sub(1),
                 _ => {}
             },
+            // SSH keys are routed above — this arm is unreachable but required by the compiler.
+            Focus::Ssh => {}
         }
         None
     }
@@ -803,7 +827,7 @@ impl AppScreen for DashboardScreen {
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
-                if self.active_section() == Section::Ssh && self.focus != Focus::Sidebar {
+                if self.active_section() == Section::Ssh && self.focus == Focus::Ssh {
                     return self.ssh_content.handle_mouse(mouse);
                 }
                 self.scroll_focused(down);
@@ -1195,9 +1219,17 @@ mod tests {
 
     #[test]
     fn focus_cycles_forward_and_back() {
-        assert_eq!(Focus::Sidebar.next(), Focus::Modules);
-        assert_eq!(Focus::Activity.next(), Focus::Sidebar);
-        assert_eq!(Focus::Sidebar.prev(), Focus::Activity);
+        // Dashboard section: Sidebar → Modules → Updates → Activity → Sidebar
+        assert_eq!(Focus::Sidebar.next(Section::Dashboard), Focus::Modules);
+        assert_eq!(Focus::Activity.next(Section::Dashboard), Focus::Sidebar);
+        assert_eq!(Focus::Sidebar.prev(Section::Dashboard), Focus::Activity);
+        // SSH section: Sidebar → Ssh → Sidebar
+        assert_eq!(Focus::Sidebar.next(Section::Ssh), Focus::Ssh);
+        assert_eq!(Focus::Ssh.next(Section::Ssh), Focus::Sidebar);
+        assert_eq!(Focus::Ssh.prev(Section::Ssh), Focus::Sidebar);
+        // Unimplemented sections: stay on Sidebar
+        assert_eq!(Focus::Sidebar.next(Section::Tools), Focus::Sidebar);
+        assert_eq!(Focus::Sidebar.prev(Section::Tools), Focus::Sidebar);
     }
 
     #[test]
