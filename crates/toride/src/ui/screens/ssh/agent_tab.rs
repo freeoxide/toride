@@ -17,9 +17,22 @@ use crate::action::Action;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{Modal, render_titled_panel};
+use crate::ui::widgets::{
+    ConfirmModal, ConfirmResult, FormModal, FormResult, Modal, TextInput, render_titled_panel,
+};
 
 use super::{AgentKeyEntry, AgentStatus, SshTab, char_to_keycode};
+
+// ── ActionModal ───────────────────────────────────────────────────────────────
+
+/// Which action modal is currently open (if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionModal {
+    /// Add key to agent form.
+    Add,
+    /// Remove key from agent confirmation.
+    Remove,
+}
 
 // ── AgentTab ─────────────────────────────────────────────────────────────────
 
@@ -43,6 +56,12 @@ pub struct AgentTab {
     hovered_row: Option<usize>,
     /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
+    /// Which action modal is open (if any).
+    action_modal: Option<ActionModal>,
+    /// Form modal for add key operation.
+    form: FormModal,
+    /// Confirm modal for remove key operation.
+    confirm: ConfirmModal,
 }
 
 impl AgentTab {
@@ -71,6 +90,9 @@ impl AgentTab {
             row_hitboxes: Vec::new(),
             hovered_row: None,
             buttons,
+            action_modal: None,
+            form: FormModal::new(40),
+            confirm: ConfirmModal::new(""),
         }
     }
 
@@ -87,7 +109,7 @@ impl AgentTab {
     /// Whether a modal is currently open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
-        self.detail_open.is_some()
+        self.detail_open.is_some() || self.action_modal.is_some()
     }
 
     /// Clamp scroll so the selected item is visible.
@@ -108,7 +130,12 @@ impl AgentTab {
     }
 
     /// Handle a mouse event for the agent key list.
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+    fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Action modal open: block background input.
+        if self.action_modal.is_some() {
+            return None;
+        }
+
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -181,6 +208,54 @@ impl SshTab for AgentTab {
                 }
                 _ => None,
             }
+        } else if let Some(action) = self.action_modal {
+            // Action modal is open: delegate to it.
+            match action {
+                ActionModal::Add => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            let path = self.form.text_value(0)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            let display_name = if path.is_empty() {
+                                "unknown".to_string()
+                            } else {
+                                // Extract filename from path
+                                std::path::Path::new(&path)
+                                    .file_name()
+                                    .map(|f| f.to_string_lossy().to_string())
+                                    .unwrap_or(path.clone())
+                            };
+                            self.keys.push(AgentKeyEntry {
+                                name: display_name,
+                                key_type: "Unknown".into(),
+                                fingerprint: String::new(),
+                                is_locked: false,
+                                has_constraints: false,
+                            });
+                            self.selected = self.keys.len() - 1;
+                            self.clamp_scroll();
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.action_modal = None;
+                        }
+                    }
+                }
+                ActionModal::Remove => {
+                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
+                        if !self.keys.is_empty() {
+                            self.keys.remove(self.selected);
+                            if self.selected >= self.keys.len() && !self.keys.is_empty() {
+                                self.selected = self.keys.len() - 1;
+                            }
+                            self.clamp_scroll();
+                        }
+                        self.action_modal = None;
+                    }
+                }
+            }
+            None
         } else {
             match code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -203,13 +278,19 @@ impl SshTab for AgentTab {
                     }
                     None
                 }
-                // CRUD shortcuts — Phase 2
+                // CRUD shortcuts
                 KeyCode::Char('a') => {
-                    // TODO: Add key to agent
+                    self.form = FormModal::new(40)
+                        .text_field(TextInput::new("Key Path", 40).placeholder("~/.ssh/id_ed25519"));
+                    self.action_modal = Some(ActionModal::Add);
                     None
                 }
                 KeyCode::Char('d') => {
-                    // TODO: Remove key from agent
+                    if !self.keys.is_empty() {
+                        let name = self.keys[self.selected].name.clone();
+                        self.confirm = ConfirmModal::new(format!("Remove key \"{}\" from agent?", name));
+                        self.action_modal = Some(ActionModal::Remove);
+                    }
                     None
                 }
                 KeyCode::Char('D') => {
@@ -239,15 +320,34 @@ impl SshTab for AgentTab {
                 self.render_detail_modal(frame, p, &key);
             }
         }
+
+        // Render action modal on top
+        match self.action_modal {
+            Some(ActionModal::Add) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Add Key to Agent", 52, 8,
+                    "Enter key path, Esc to cancel",
+                );
+            }
+            Some(ActionModal::Remove) => {
+                self.confirm.render(frame, p, "Remove Key");
+            }
+            None => {}
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        self.handle_mouse_impl(mouse)
     }
 
     fn has_modal(&self) -> bool {
-        self.detail_open.is_some()
+        self.detail_open.is_some() || self.action_modal.is_some()
     }
 
     fn close_modal(&mut self) {
         self.detail_open = None;
         self.detail_modal_rect = None;
+        self.action_modal = None;
     }
 }
 

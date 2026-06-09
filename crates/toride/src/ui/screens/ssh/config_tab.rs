@@ -18,9 +18,24 @@ use crate::action::Action;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{Modal, render_titled_panel};
+use crate::ui::widgets::{
+    ConfirmModal, ConfirmResult, FormModal, FormResult, Modal, TextInput, render_titled_panel,
+};
 
 use super::{ConfigHostEntry, SshTab, char_to_keycode};
+
+// ── ActionModal ───────────────────────────────────────────────────────────────
+
+/// Which action modal is currently open (if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionModal {
+    /// Add host form.
+    Add,
+    /// Remove host confirmation.
+    Remove,
+    /// Edit host form.
+    Edit,
+}
 
 // ── ConfigTab ─────────────────────────────────────────────────────────────────
 
@@ -42,6 +57,12 @@ pub struct ConfigTab {
     hovered_row: Option<usize>,
     /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
+    /// Which action modal is open (if any).
+    action_modal: Option<ActionModal>,
+    /// Form modal for add/edit operations.
+    form: FormModal,
+    /// Confirm modal for remove operations.
+    confirm: ConfirmModal,
 }
 
 impl ConfigTab {
@@ -66,6 +87,9 @@ impl ConfigTab {
             row_hitboxes: Vec::new(),
             hovered_row: None,
             buttons,
+            action_modal: None,
+            form: FormModal::new(40),
+            confirm: ConfirmModal::new(""),
         }
     }
 
@@ -81,7 +105,7 @@ impl ConfigTab {
     /// Whether a modal is currently open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
-        self.detail_open.is_some()
+        self.detail_open.is_some() || self.action_modal.is_some()
     }
 
     /// Clamp scroll so the selected item is visible.
@@ -102,7 +126,12 @@ impl ConfigTab {
     }
 
     /// Handle a mouse event for the host list.
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+    fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Action modal open: block background input.
+        if self.action_modal.is_some() {
+            return None;
+        }
+
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -175,6 +204,94 @@ impl SshTab for ConfigTab {
                 }
                 _ => None,
             }
+        } else if let Some(action) = self.action_modal {
+            // Action modal is open: delegate to it.
+            match action {
+                ActionModal::Add => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            let name = self.form.text_value(0)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            let host_name = self.form.text_value(1)
+                                .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
+                                .unwrap_or(None);
+                            let user = self.form.text_value(2)
+                                .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
+                                .unwrap_or(None);
+                            let port_str = self.form.text_value(3)
+                                .unwrap_or("");
+                            let port = port_str.parse::<u16>().ok();
+                            let display_name = if name.is_empty() {
+                                "new-host".to_string()
+                            } else {
+                                name
+                            };
+                            self.hosts.push(ConfigHostEntry {
+                                name: display_name.clone(),
+                                patterns: vec![display_name],
+                                host_name,
+                                user,
+                                port,
+                                identity_file: None,
+                                proxy_jump: None,
+                                directive_count: 1,
+                                has_diagnostic: false,
+                            });
+                            self.selected = self.hosts.len() - 1;
+                            self.clamp_scroll();
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.action_modal = None;
+                        }
+                    }
+                }
+                ActionModal::Remove => {
+                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
+                        if !self.hosts.is_empty() {
+                            self.hosts.remove(self.selected);
+                            if self.selected >= self.hosts.len() && !self.hosts.is_empty() {
+                                self.selected = self.hosts.len() - 1;
+                            }
+                            self.clamp_scroll();
+                        }
+                        self.action_modal = None;
+                    }
+                }
+                ActionModal::Edit => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            if let Some(host) = self.hosts.get_mut(self.selected) {
+                                let name = self.form.text_value(0)
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_default();
+                                let host_name = self.form.text_value(1)
+                                    .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
+                                    .unwrap_or(None);
+                                let user = self.form.text_value(2)
+                                    .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
+                                    .unwrap_or(None);
+                                let port_str = self.form.text_value(3)
+                                    .unwrap_or("");
+                                let port = port_str.parse::<u16>().ok();
+                                if !name.is_empty() {
+                                    host.name = name.clone();
+                                    host.patterns = vec![name];
+                                }
+                                host.host_name = host_name;
+                                host.user = user;
+                                host.port = port;
+                            }
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.action_modal = None;
+                        }
+                    }
+                }
+            }
+            None
         } else {
             match code {
                 KeyCode::Up | KeyCode::Char('k') => {
@@ -197,17 +314,40 @@ impl SshTab for ConfigTab {
                     }
                     None
                 }
-                // CRUD shortcuts — Phase 2
+                // CRUD shortcuts
                 KeyCode::Char('a') => {
-                    // TODO: Open add host modal
+                    self.form = FormModal::new(40)
+                        .text_field(TextInput::new("Host", 30).placeholder("myserver"))
+                        .text_field(TextInput::new("HostName", 30).placeholder("192.168.1.1"))
+                        .text_field(TextInput::new("User", 30).placeholder("user"))
+                        .text_field(TextInput::new("Port", 30).placeholder("22"));
+                    self.action_modal = Some(ActionModal::Add);
                     None
                 }
                 KeyCode::Char('d') => {
-                    // TODO: Open remove host confirm modal
+                    if !self.hosts.is_empty() {
+                        let name = self.hosts[self.selected].name.clone();
+                        self.confirm = ConfirmModal::new(format!("Remove host \"{}\"?", name));
+                        self.action_modal = Some(ActionModal::Remove);
+                    }
                     None
                 }
                 KeyCode::Char('e') => {
-                    // TODO: Open edit host modal
+                    if !self.hosts.is_empty() {
+                        let host = &self.hosts[self.selected];
+                        self.form = FormModal::new(40)
+                            .text_field(TextInput::new("Host", 30).value(&host.name))
+                            .text_field(TextInput::new("HostName", 30).value(
+                                host.host_name.as_deref().unwrap_or("")
+                            ))
+                            .text_field(TextInput::new("User", 30).value(
+                                host.user.as_deref().unwrap_or("")
+                            ))
+                            .text_field(TextInput::new("Port", 30).value(
+                                host.port.map_or(String::new(), |p| p.to_string())
+                            ));
+                        self.action_modal = Some(ActionModal::Edit);
+                    }
                     None
                 }
                 _ => None,
@@ -229,15 +369,40 @@ impl SshTab for ConfigTab {
                 self.render_detail_modal(frame, p, &host);
             }
         }
+
+        // Render action modal on top
+        match self.action_modal {
+            Some(ActionModal::Add) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Add Host", 52, 16,
+                    "Tab to cycle fields, Enter to submit, Esc to cancel",
+                );
+            }
+            Some(ActionModal::Remove) => {
+                self.confirm.render(frame, p, "Remove Host");
+            }
+            Some(ActionModal::Edit) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Edit Host", 52, 16,
+                    "Tab to cycle fields, Enter to submit, Esc to cancel",
+                );
+            }
+            None => {}
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        self.handle_mouse_impl(mouse)
     }
 
     fn has_modal(&self) -> bool {
-        self.detail_open.is_some()
+        self.detail_open.is_some() || self.action_modal.is_some()
     }
 
     fn close_modal(&mut self) {
         self.detail_open = None;
         self.detail_modal_rect = None;
+        self.action_modal = None;
     }
 }
 

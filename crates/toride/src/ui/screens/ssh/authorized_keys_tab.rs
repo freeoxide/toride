@@ -17,9 +17,23 @@ use crate::action::Action;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{InteractiveModal, ModalEvent, render_titled_panel};
+use crate::ui::widgets::{
+    ConfirmModal, ConfirmResult, FormModal, FormResult, InteractiveModal, ModalEvent,
+    TextInput, render_titled_panel,
+};
 
 use super::{AuthorizedKeyEntry, SshTab, char_to_keycode};
+
+// ── ActionModal ───────────────────────────────────────────────────────────────
+
+/// Which action modal is currently open (if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionModal {
+    /// Add authorized key form.
+    Add,
+    /// Remove authorized key confirmation.
+    Remove,
+}
 
 // ── AuthorizedKeysTab ─────────────────────────────────────────────────────────
 
@@ -41,6 +55,12 @@ pub struct AuthorizedKeysTab {
     hovered_row: Option<usize>,
     /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
+    /// Which action modal is open (if any).
+    action_modal: Option<ActionModal>,
+    /// Form modal for add operation.
+    form: FormModal,
+    /// Confirm modal for remove operation.
+    confirm: ConfirmModal,
 }
 
 impl AuthorizedKeysTab {
@@ -64,6 +84,9 @@ impl AuthorizedKeysTab {
             row_hitboxes: Vec::new(),
             hovered_row: None,
             buttons,
+            action_modal: None,
+            form: FormModal::new(40),
+            confirm: ConfirmModal::new(""),
         }
     }
 
@@ -79,7 +102,7 @@ impl AuthorizedKeysTab {
     /// Whether a modal is currently open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
-        self.detail_modal.is_visible()
+        self.detail_modal.is_visible() || self.action_modal.is_some()
     }
 
     /// Clamp scroll so the selected item is visible.
@@ -95,7 +118,12 @@ impl AuthorizedKeysTab {
     }
 
     /// Handle a mouse event for the authorized keys list.
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+    fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Action modal open: block background input.
+        if self.action_modal.is_some() {
+            return None;
+        }
+
         // Detail modal open: delegate to InteractiveModal for click-outside.
         if self.detail_modal.is_visible() {
             if let ModalEvent::Closed = self.detail_modal.handle_mouse(&mouse) {
@@ -162,6 +190,63 @@ impl SshTab for AuthorizedKeysTab {
             return None;
         }
 
+        // If an action modal is open, delegate to it.
+        if let Some(action) = self.action_modal {
+            match action {
+                ActionModal::Add => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            let key_string = self.form.text_value(0)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            let display_key = if key_string.is_empty() {
+                                String::new()
+                            } else {
+                                key_string
+                            };
+                            // Try to extract key type from the key string
+                            let key_type = if display_key.starts_with("ssh-ed25519") {
+                                "ssh-ed25519"
+                            } else if display_key.starts_with("ssh-rsa") {
+                                "ssh-rsa"
+                            } else if display_key.starts_with("ecdsa-sha2") {
+                                "ecdsa-sha2-nistp256"
+                            } else {
+                                "unknown"
+                            };
+                            self.entries.push(AuthorizedKeyEntry {
+                                key_type: key_type.to_string(),
+                                public_key: display_key,
+                                comment: None,
+                                fingerprint: String::new(),
+                                options: None,
+                                line: self.entries.len() + 1,
+                            });
+                            self.selected = self.entries.len() - 1;
+                            self.clamp_scroll();
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.action_modal = None;
+                        }
+                    }
+                }
+                ActionModal::Remove => {
+                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
+                        if !self.entries.is_empty() {
+                            self.entries.remove(self.selected);
+                            if self.selected >= self.entries.len() && !self.entries.is_empty() {
+                                self.selected = self.entries.len() - 1;
+                            }
+                            self.clamp_scroll();
+                        }
+                        self.action_modal = None;
+                    }
+                }
+            }
+            return None;
+        }
+
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected > 0 {
@@ -184,13 +269,27 @@ impl SshTab for AuthorizedKeysTab {
                 }
                 None
             }
-            // CRUD shortcuts — Phase 2
+            // CRUD shortcuts
             KeyCode::Char('a') => {
-                // TODO: Open add authorized key modal
+                self.form = FormModal::new(40)
+                    .text_field(TextInput::new("Key", 40).placeholder("ssh-ed25519 AAAA... user@host"));
+                self.action_modal = Some(ActionModal::Add);
                 None
             }
             KeyCode::Char('d') => {
-                // TODO: Open remove authorized key confirm modal
+                if !self.entries.is_empty() {
+                    let label = self.entries[self.selected]
+                        .comment
+                        .as_deref()
+                        .unwrap_or(&self.entries[self.selected].public_key);
+                    let display_label = if label.len() > 30 {
+                        format!("{}...", &label[..27])
+                    } else {
+                        label.to_string()
+                    };
+                    self.confirm = ConfirmModal::new(format!("Remove key \"{}\"?", display_label));
+                    self.action_modal = Some(ActionModal::Remove);
+                }
                 None
             }
             _ => None,
@@ -211,15 +310,34 @@ impl SshTab for AuthorizedKeysTab {
                 self.render_detail_modal(frame, p, &entry);
             }
         }
+
+        // Render action modal on top
+        match self.action_modal {
+            Some(ActionModal::Add) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Add Authorized Key", 56, 8,
+                    "Paste public key string, Esc to cancel",
+                );
+            }
+            Some(ActionModal::Remove) => {
+                self.confirm.render(frame, p, "Remove Key");
+            }
+            None => {}
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        self.handle_mouse_impl(mouse)
     }
 
     fn has_modal(&self) -> bool {
-        self.detail_modal.is_visible()
+        self.detail_modal.is_visible() || self.action_modal.is_some()
     }
 
     fn close_modal(&mut self) {
         self.detail_modal.close();
         self.detail_entry_idx = None;
+        self.action_modal = None;
     }
 }
 

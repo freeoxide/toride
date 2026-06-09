@@ -17,9 +17,25 @@ use crate::action::Action;
 use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{InteractiveModal, ModalEvent, render_titled_panel};
+use crate::ui::widgets::{
+    ConfirmModal, ConfirmResult, FormModal, FormResult, InteractiveModal, ModalEvent,
+    TextInput, Dropdown, render_titled_panel,
+};
 
 use super::{SshKeyEntry, SshTab, char_to_keycode};
+
+// ── ActionModal ──────────────────────────────────────────────────────────────
+
+/// Which action modal is currently open (if any).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ActionModal {
+    /// Generate new key form.
+    New,
+    /// Delete confirmation.
+    Delete,
+    /// Rename key form.
+    Rename,
+}
 
 // ── KeysTab ──────────────────────────────────────────────────────────────────
 
@@ -41,6 +57,12 @@ pub struct KeysTab {
     hovered_row: Option<usize>,
     /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
+    /// Which action modal is open (if any).
+    action_modal: Option<ActionModal>,
+    /// Form modal for new key / rename operations.
+    form: FormModal,
+    /// Confirm modal for delete operations.
+    confirm: ConfirmModal,
 }
 
 impl KeysTab {
@@ -66,6 +88,9 @@ impl KeysTab {
             row_hitboxes: Vec::new(),
             hovered_row: None,
             buttons,
+            action_modal: None,
+            form: FormModal::new(40),
+            confirm: ConfirmModal::new(""),
         }
     }
 
@@ -81,7 +106,7 @@ impl KeysTab {
     /// Whether a modal is currently open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
-        self.detail_modal.is_visible()
+        self.detail_modal.is_visible() || self.action_modal.is_some()
     }
 
     /// Clamp scroll so the selected item is visible.
@@ -97,7 +122,12 @@ impl KeysTab {
     }
 
     /// Handle a mouse event for the key list.
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+    fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Action modal open: block background input.
+        if self.action_modal.is_some() {
+            return None;
+        }
+
         // Detail modal open: delegate to InteractiveModal for click-outside.
         if self.detail_modal.is_visible() {
             if let ModalEvent::Closed = self.detail_modal.handle_mouse(&mouse) {
@@ -164,6 +194,79 @@ impl SshTab for KeysTab {
             return None;
         }
 
+        // If an action modal is open, delegate to it.
+        if let Some(action) = self.action_modal {
+            match action {
+                ActionModal::New => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            let name = self.form.text_value(0)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            let key_type = self.form.select_value(1)
+                                .unwrap_or("Ed25519");
+                            let _comment = self.form.text_value(2)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            let display_name = if name.is_empty() {
+                                "id_new".to_string()
+                            } else {
+                                name
+                            };
+                            self.keys.push(SshKeyEntry {
+                                name: display_name,
+                                key_type: key_type.to_string(),
+                                fingerprint: String::new(),
+                                encrypted: false,
+                                permissions: "0600".into(),
+                                has_public: false,
+                                has_cert: false,
+                                host_count: 0,
+                            });
+                            // Select the newly added key
+                            self.selected = self.keys.len() - 1;
+                            self.clamp_scroll();
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.action_modal = None;
+                        }
+                    }
+                }
+                ActionModal::Delete => {
+                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
+                        if !self.keys.is_empty() {
+                            self.keys.remove(self.selected);
+                            if self.selected >= self.keys.len() && !self.keys.is_empty() {
+                                self.selected = self.keys.len() - 1;
+                            }
+                            self.clamp_scroll();
+                        }
+                        self.action_modal = None;
+                    }
+                }
+                ActionModal::Rename => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            if let Some(key) = self.keys.get_mut(self.selected) {
+                                let new_name = self.form.text_value(0)
+                                    .map(|s| s.to_string())
+                                    .unwrap_or_default();
+                                if !new_name.is_empty() {
+                                    key.name = new_name;
+                                }
+                            }
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.action_modal = None;
+                        }
+                    }
+                }
+            }
+            return None;
+        }
+
         match code {
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.selected > 0 {
@@ -186,17 +289,30 @@ impl SshTab for KeysTab {
                 }
                 None
             }
-            // CRUD shortcuts — Phase 2
+            // CRUD shortcuts
             KeyCode::Char('n') => {
-                // TODO: Open generate key modal
+                self.form = FormModal::new(40)
+                    .text_field(TextInput::new("Name", 30).placeholder("id_ed25519"))
+                    .select_field(Dropdown::new("Type", vec!["Ed25519", "RSA 4096", "ECDSA P-256"], 16))
+                    .text_field(TextInput::new("Comment", 30).placeholder("user@host"));
+                self.action_modal = Some(ActionModal::New);
                 None
             }
             KeyCode::Char('d') => {
-                // TODO: Open delete confirm modal
+                if !self.keys.is_empty() {
+                    let name = self.keys[self.selected].name.clone();
+                    self.confirm = ConfirmModal::new(format!("Delete key \"{}\"?", name));
+                    self.action_modal = Some(ActionModal::Delete);
+                }
                 None
             }
             KeyCode::Char('r') => {
-                // TODO: Open rename modal
+                if !self.keys.is_empty() {
+                    let current_name = self.keys[self.selected].name.clone();
+                    self.form = FormModal::new(40)
+                        .text_field(TextInput::new("Name", 30).value(&current_name));
+                    self.action_modal = Some(ActionModal::Rename);
+                }
                 None
             }
             KeyCode::Char('i') => {
@@ -225,15 +341,40 @@ impl SshTab for KeysTab {
                 self.render_detail_modal(frame, p, &key);
             }
         }
+
+        // Render action modal on top of everything
+        match self.action_modal {
+            Some(ActionModal::New) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Generate New Key", 52, 11,
+                    "Tab to cycle fields, Enter to submit, Esc to cancel",
+                );
+            }
+            Some(ActionModal::Delete) => {
+                self.confirm.render(frame, p, "Delete Key");
+            }
+            Some(ActionModal::Rename) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Rename Key", 52, 8,
+                    "Enter to confirm, Esc to cancel",
+                );
+            }
+            None => {}
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        self.handle_mouse_impl(mouse)
     }
 
     fn has_modal(&self) -> bool {
-        self.detail_modal.is_visible()
+        self.detail_modal.is_visible() || self.action_modal.is_some()
     }
 
     fn close_modal(&mut self) {
         self.detail_modal.close();
         self.detail_key_idx = None;
+        self.action_modal = None;
     }
 }
 

@@ -100,7 +100,7 @@ impl DiagnosticsTab {
     }
 
     /// Handle a mouse event for the diagnostic entry list.
-    pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+    fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
@@ -223,6 +223,10 @@ impl SshTab for DiagnosticsTab {
                 self.render_detail_modal(frame, p, &entry);
             }
         }
+    }
+
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+        self.handle_mouse_impl(mouse)
     }
 
     fn has_modal(&self) -> bool {
