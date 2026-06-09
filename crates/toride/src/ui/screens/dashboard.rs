@@ -877,9 +877,7 @@ impl AppScreen for DashboardScreen {
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
-                if self.focus.is_focused(&ShellFocus::Content)
-                    && self.active_section() == Section::Ssh
-                {
+                if self.active_section() == Section::Ssh {
                     return self.ssh_content.handle_mouse(mouse);
                 }
                 self.scroll_focused(down);
