@@ -119,7 +119,9 @@ impl KeysTab {
     /// Whether a modal is currently open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
-        self.detail_modal.is_visible() || self.action_modal.is_some()
+        self.detail_modal.is_visible()
+            || self.action_modal.is_some()
+            || self.passphrase_test_result.is_some()
     }
 
     /// Clamp scroll so the selected item is visible.
@@ -136,6 +138,12 @@ impl KeysTab {
 
     /// Handle a mouse event for the key list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
+        // Passphrase test result banner: click anywhere to dismiss.
+        if self.passphrase_test_result.is_some() {
+            self.passphrase_test_result = None;
+            return None;
+        }
+
         // Confirm modal open: delegate mouse clicks to its buttons.
         if self.action_modal == Some(ActionModal::Delete) {
             if let Some(result) = self.confirm.handle_mouse(&mouse) {
@@ -227,6 +235,12 @@ impl SshTab for KeysTab {
                 ModalEvent::Closed => self.detail_key_idx = None,
                 ModalEvent::Consumed | ModalEvent::Button(_) => {}
             }
+            return None;
+        }
+
+        // If passphrase test result banner is showing, dismiss on any key.
+        if self.passphrase_test_result.is_some() {
+            self.passphrase_test_result = None;
             return None;
         }
 
@@ -735,15 +749,21 @@ impl KeysTab {
             Ok(label) => ("✓", label.as_str(), p.ok),
             Err(msg) => ("✗", msg.as_str(), p.err),
         };
-        let modal = Modal::new("Passphrase Test").dimensions(40, 5);
+        let modal = Modal::new("Passphrase Test").dimensions(42, 7);
         modal.render(frame, p, |frame, content_area| {
-            let line = Line::from(vec![
+            let result_line = Line::from(vec![
                 Span::styled(format!("{icon} "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
                 Span::styled(msg, Style::new().fg(color)),
             ]);
-            let y = content_area.y + content_area.height.saturating_sub(2) / 2;
-            let row_area = Rect::new(content_area.x, y, content_area.width, 1);
-            frame.render_widget(Paragraph::new(line).centered(), row_area);
+            let hint_line = Line::from(Span::styled(
+                "press any key to close",
+                Style::new().fg(p.text_muted),
+            ));
+            let y = content_area.y + content_area.height.saturating_sub(4) / 2;
+            let row1 = Rect::new(content_area.x, y, content_area.width, 1);
+            let row2 = Rect::new(content_area.x, y + 2, content_area.width, 1);
+            frame.render_widget(Paragraph::new(result_line).centered(), row1);
+            frame.render_widget(Paragraph::new(hint_line).centered(), row2);
         });
     }
 
