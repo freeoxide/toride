@@ -483,6 +483,7 @@ impl FormModal {
 
         let rects = Layout::vertical(constraints).split(area);
 
+        let field_count = self.fields.len();
         let mut rect_idx = 0;
         for (i, field) in self.fields.iter_mut().enumerate() {
             let field_area = rects[rect_idx];
@@ -508,7 +509,7 @@ impl FormModal {
             }
 
             rect_idx += 1; // field chunk
-            if i < self.fields.len() - 1 {
+            if i < field_count - 1 {
                 rect_idx += 1; // inter-field gap
             }
         }
@@ -821,7 +822,7 @@ mod tests {
             form.render_in_modal(f, CHARM, "Test Form", 50, 10);
         }).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("add"), "add button visible: {output}");
-        assert!(output.contains("cancel"), "cancel button visible: {output}");
+        assert!(output.contains("↵"), "add button visible: {output}");
+        assert!(output.contains("esc"), "cancel button visible: {output}");
     }
 }
