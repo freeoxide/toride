@@ -19,7 +19,7 @@ use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
-    ConfirmModal, ConfirmResult, FormModal, FormResult, InteractiveModal, ModalEvent,
+    ConfirmModal, ConfirmResult, FormModal, FormResult, InteractiveModal, Modal, ModalEvent,
     TextInput, Dropdown, render_titled_panel,
 };
 
@@ -36,6 +36,8 @@ enum ActionModal {
     Delete,
     /// Rename key form.
     Rename,
+    /// Test passphrase form.
+    TestPassphrase,
 }
 
 // ── KeysTab ──────────────────────────────────────────────────────────────────
@@ -60,12 +62,16 @@ pub struct KeysTab {
     buttons: ButtonRow<char>,
     /// Which action modal is open (if any).
     action_modal: Option<ActionModal>,
-    /// Form modal for new key / rename operations.
+    /// Form modal for new key / rename / passphrase test operations.
     form: FormModal,
     /// Confirm modal for delete operations.
     confirm: ConfirmModal,
     /// Pending write operations to be forwarded to SshContent.
     pending_ops: Vec<SshOp>,
+    /// Key name being tested for passphrase (set when TestPassphrase modal opens).
+    test_passphrase_key: Option<String>,
+    /// Result of the last passphrase test: Ok(label) or Err(msg).
+    passphrase_test_result: Option<Result<String, String>>,
 }
 
 impl KeysTab {
@@ -78,9 +84,10 @@ impl KeysTab {
                 InteractiveButton::new("n new", "n", 'n'),
                 InteractiveButton::new("d del", "d", 'd'),
                 InteractiveButton::new("r rename", "r", 'r'),
+                InteractiveButton::new("p passphrase", "p", 'p'),
                 InteractiveButton::new("i install", "i", 'i'),
             ],
-            vec![1, 1, 1, 1, 1],
+            vec![1, 1, 1, 1, 1, 1],
         );
         Self {
             keys: Vec::new(),
@@ -95,6 +102,8 @@ impl KeysTab {
             form: FormModal::new(40),
             confirm: ConfirmModal::new(""),
             pending_ops: Vec::new(),
+            test_passphrase_key: None,
+            passphrase_test_result: None,
         }
     }
 
@@ -326,6 +335,39 @@ impl SshTab for KeysTab {
                         FormResult::Pending => {}
                     }
                 }
+                ActionModal::TestPassphrase => {
+                    match self.form.handle_key(code) {
+                        FormResult::Submitted => {
+                            let passphrase = self.form.text_value(0)
+                                .map(|s| s.to_string())
+                                .unwrap_or_default();
+                            if let Some(name) = self.test_passphrase_key.take() {
+                                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
+                                let key_path = format!("{home}/.ssh/{name}");
+                                let output = std::process::Command::new("ssh-keygen")
+                                    .args(["-y", "-f", &key_path, "-P", &passphrase])
+                                    .output();
+                                self.passphrase_test_result = Some(match output {
+                                    Ok(o) if o.status.success() => {
+                                        Ok(format!("passphrase correct for '{name}'"))
+                                    }
+                                    Ok(_) => {
+                                        Err("wrong passphrase".to_string())
+                                    }
+                                    Err(e) => {
+                                        Err(format!("failed to test: {e}"))
+                                    }
+                                });
+                            }
+                            self.action_modal = None;
+                        }
+                        FormResult::Cancelled => {
+                            self.action_modal = None;
+                            self.test_passphrase_key = None;
+                        }
+                        FormResult::Pending => {}
+                    }
+                }
             }
             return None;
         }
@@ -379,6 +421,16 @@ impl SshTab for KeysTab {
                 }
                 None
             }
+            KeyCode::Char('p') => {
+                if !self.keys.is_empty() {
+                    let name = self.keys[self.selected].name.clone();
+                    self.form = FormModal::new(40)
+                        .text_field(TextInput::new("Passphrase", 30).placeholder("enter passphrase to test").secret(true));
+                    self.test_passphrase_key = Some(name);
+                    self.action_modal = Some(ActionModal::TestPassphrase);
+                }
+                None
+            }
             KeyCode::Char('i') => {
                 // TODO: Open install to remote modal
                 None
@@ -423,7 +475,19 @@ impl SshTab for KeysTab {
                     "Enter to confirm, Esc to cancel",
                 );
             }
-            None => {}
+            Some(ActionModal::TestPassphrase) => {
+                self.form.render_in_modal_with_hint(
+                    frame, p, "Test Passphrase", 48, 11,
+                    "Enter passphrase and press Enter to verify",
+                );
+            }
+            None => {
+                // Show passphrase test result as a temporary banner
+                let result_copy = self.passphrase_test_result.clone();
+                if let Some(ref result) = result_copy {
+                    self.render_passphrase_result(frame, area, p, result);
+                }
+            }
         }
     }
 
@@ -658,6 +722,42 @@ impl KeysTab {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 // (truncate_str is imported from crate::ui::responsive)
 
+impl KeysTab {
+    /// Render the passphrase test result as a small overlay banner.
+    fn render_passphrase_result(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        p: Palette,
+        result: &Result<String, String>,
+    ) {
+        let (icon, msg, color) = match result {
+            Ok(label) => ("✓", label.as_str(), p.ok),
+            Err(msg) => ("✗", msg.as_str(), p.err),
+        };
+        let modal = Modal::new("Passphrase Test").dimensions(40, 5);
+        modal.render(frame, p, |frame, content_area| {
+            let line = Line::from(vec![
+                Span::styled(format!("{icon} "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(msg, Style::new().fg(color)),
+            ]);
+            let y = content_area.y + content_area.height.saturating_sub(2) / 2;
+            let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+            frame.render_widget(Paragraph::new(line).centered(), row_area);
+        });
+    }
+
+    /// Update the passphrase test result from the async pipeline.
+    pub fn set_passphrase_result(&mut self, result: Result<String, String>) {
+        self.passphrase_test_result = Some(result);
+    }
+
+    /// Clear the passphrase test result banner.
+    pub fn clear_passphrase_result(&mut self) {
+        self.passphrase_test_result = None;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,7 +937,7 @@ mod tests {
         tab.handle_key(KeyCode::Char('n'));
         assert!(tab.action_modal == Some(ActionModal::New));
 
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         eprintln!("=== NEW KEY FORM RENDER ===\n{output}\n===");

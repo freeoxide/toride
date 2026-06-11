@@ -602,6 +602,15 @@ impl FormModal {
     pub fn reset(&mut self) {
         self.focus = FocusTarget::Field(0);
     }
+
+    /// Set a validation error on a specific field and focus it.
+    /// Does nothing if the index is out of bounds.
+    pub fn set_field_error(&mut self, index: usize, message: &str) {
+        if let Some(field) = self.fields.get_mut(index) {
+            field.error = Some(message.to_string());
+            self.focus = FocusTarget::Field(index);
+        }
+    }
 }
 
 #[cfg(test)]
