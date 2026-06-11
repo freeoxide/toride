@@ -251,7 +251,9 @@ impl SshTab for KnownHostsTab {
                             self.hosts.push(KnownHostEntry {
                                 hosts: vec![display_host],
                                 key_type: "unknown".into(),
+                                key_types: vec!["unknown".into()],
                                 fingerprint: String::new(),
+                                fingerprints: vec![],
                                 is_hashed: false,
                                 marker: None,
                                 comment: None,
@@ -483,11 +485,22 @@ impl KnownHostsTab {
             let padded = format!("{:width$}", "", width = host_w.saturating_sub(host_chars));
             spans.push(Span::raw(padded));
 
-            // Key type
-            spans.push(Span::styled(
-                format!(" {} ", host.key_type),
-                Style::new().fg(p.info),
-            ));
+            // Key type — show primary or count when grouped
+            if host.key_types.len() > 1 {
+                spans.push(Span::styled(
+                    format!(" {} ", host.key_type),
+                    Style::new().fg(p.info),
+                ));
+                spans.push(Span::styled(
+                    format!("+{}", host.key_types.len() - 1),
+                    Style::new().fg(p.text_muted),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    format!(" {} ", host.key_type),
+                    Style::new().fg(p.info),
+                ));
+            }
 
             // Fingerprint (truncated to 16 chars)
             let fp_w = 16.min(inner.width.saturating_sub(40) as usize);
@@ -531,80 +544,89 @@ impl KnownHostsTab {
     }
 
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, host: &KnownHostEntry) {
-        let modal = Modal::new("Host Detail").dimensions(58, 16);
+        // Extra height for each additional key type
+        let extra = host.key_types.len().saturating_sub(1) as u16;
+        let modal_h = 16 + extra;
+        let modal = Modal::new("Host Detail").dimensions(58, modal_h);
         self.detail_modal_rect = Some(modal.rect(frame.area()));
         modal.render(frame, p, |frame, content_area| {
-                let marker_display = match host.marker.as_deref() {
-                    Some("@revoked") => "@revoked",
-                    Some("@cert-authority") => "@cert-authority",
-                    Some(other) => other,
-                    None => "none",
-                };
+            let marker_display = match host.marker.as_deref() {
+                Some("@revoked") => "@revoked",
+                Some("@cert-authority") => "@cert-authority",
+                Some(other) => other,
+                None => "none",
+            };
 
-                let hosts_display = host.hosts.join(", ");
+            let hosts_display = host.hosts.join(", ");
 
-                let lines = vec![
-                    Line::from(vec![
-                        Span::styled("Hosts:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&hosts_display, Style::new().fg(p.text).bold()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Type:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(&host.key_type, Style::new().fg(p.info)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("FP:     ", Style::new().fg(p.text_dim)),
-                        Span::styled(&host.fingerprint, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Hashed: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if host.is_hashed { "yes" } else { "no" },
-                            Style::new().fg(if host.is_hashed { p.ok } else { p.text_muted }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Marker: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            marker_display,
-                            Style::new().fg(if host.marker.as_deref() == Some("@revoked") {
-                                p.err
-                            } else if host.marker.as_deref() == Some("@cert-authority") {
-                                p.accent2
-                            } else {
-                                p.text
-                            }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Comment:", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            host.comment.as_deref().unwrap_or("none"),
-                            Style::new().fg(if host.comment.is_some() { p.text } else { p.text_muted }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Line:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(host.line.to_string(), Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Source: ", Style::new().fg(p.text_dim)),
-                        Span::styled(&host.source, Style::new().fg(p.text)),
-                    ]),
-                    Line::raw(""),
-                    Line::from(
-                        Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled("Hosts:  ", Style::new().fg(p.text_dim)),
+                    Span::styled(&hosts_display, Style::new().fg(p.text).bold()),
+                ]),
+            ];
+
+            // Show all key types with their fingerprints
+            for (i, kt) in host.key_types.iter().enumerate() {
+                let fp = host.fingerprints.get(i).map(|s| s.as_str()).unwrap_or("(unknown)");
+                let label = if i == 0 { "Keys:   " } else { "        " };
+                lines.push(Line::from(vec![
+                    Span::styled(label, Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        format!("{kt}  {fp}"),
+                        Style::new().fg(if i == 0 { p.info } else { p.text_dim }),
                     ),
-                ];
+                ]));
+            }
 
-                for (i, line) in lines.into_iter().enumerate() {
-                    let y = content_area.y + i as u16;
-                    if y < content_area.bottom() {
-                        let row_area = Rect::new(content_area.x, y, content_area.width, 1);
-                        frame.render_widget(Paragraph::new(line), row_area);
-                    }
+            lines.push(Line::from(vec![
+                Span::styled("Hashed: ", Style::new().fg(p.text_dim)),
+                Span::styled(
+                    if host.is_hashed { "yes" } else { "no" },
+                    Style::new().fg(if host.is_hashed { p.ok } else { p.text_muted }),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Marker: ", Style::new().fg(p.text_dim)),
+                Span::styled(
+                    marker_display,
+                    Style::new().fg(if host.marker.as_deref() == Some("@revoked") {
+                        p.err
+                    } else if host.marker.as_deref() == Some("@cert-authority") {
+                        p.accent2
+                    } else {
+                        p.text
+                    }),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Comment:", Style::new().fg(p.text_dim)),
+                Span::styled(
+                    host.comment.as_deref().unwrap_or("none"),
+                    Style::new().fg(if host.comment.is_some() { p.text } else { p.text_muted }),
+                ),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Line:   ", Style::new().fg(p.text_dim)),
+                Span::styled(host.line.to_string(), Style::new().fg(p.text)),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("Source: ", Style::new().fg(p.text_dim)),
+                Span::styled(&host.source, Style::new().fg(p.text)),
+            ]));
+            lines.push(Line::raw(""));
+            lines.push(Line::from(
+                Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
+            ));
+
+            for (i, line) in lines.into_iter().enumerate() {
+                let y = content_area.y + i as u16;
+                if y < content_area.bottom() {
+                    let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+                    frame.render_widget(Paragraph::new(line), row_area);
                 }
-            });
+            }
+        });
     }
 }
 
@@ -620,7 +642,9 @@ mod tests {
             KnownHostEntry {
                 hosts: vec!["github.com".into()],
                 key_type: "ssh-ed25519".into(),
+                key_types: vec!["ssh-ed25519".into()],
                 fingerprint: "SHA256:abc123def456".into(),
+                fingerprints: vec!["SHA256:abc123def456".into()],
                 is_hashed: false,
                 marker: None,
                 comment: None,
@@ -630,7 +654,9 @@ mod tests {
             KnownHostEntry {
                 hosts: vec!["gitlab.com".into()],
                 key_type: "ssh-rsa".into(),
+                key_types: vec!["ssh-rsa".into()],
                 fingerprint: "SHA256:xyz789".into(),
+                fingerprints: vec!["SHA256:xyz789".into()],
                 is_hashed: true,
                 marker: Some("@cert-authority".into()),
                 comment: Some("work CA".into()),
@@ -640,7 +666,9 @@ mod tests {
             KnownHostEntry {
                 hosts: vec!["revoked.example.com".into()],
                 key_type: "ecdsa-sha2-nistp256".into(),
+                key_types: vec!["ecdsa-sha2-nistp256".into()],
                 fingerprint: "SHA256:revokedkey".into(),
+                fingerprints: vec!["SHA256:revokedkey".into()],
                 is_hashed: false,
                 marker: Some("@revoked".into()),
                 comment: None,

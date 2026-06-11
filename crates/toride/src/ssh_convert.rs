@@ -17,35 +17,80 @@ use crate::ui::screens::ssh::{
 // ── Known Hosts ─────────────────────────────────────────────────────────────
 
 /// Convert library known_hosts entries to UI entries.
+///
+/// Groups multiple key lines for the same host into a single entry.
+/// For example, if `github.com` has ed25519, ecdsa, and rsa keys,
+/// they become one entry with `key_types: ["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"]`.
 pub fn convert_known_hosts(
     entries: Vec<toride_ssh::known_hosts::KnownHostEntry>,
 ) -> Vec<KnownHostEntry> {
-    entries
-        .into_iter()
-        .map(|e| {
-            let is_hashed = e.hosts.iter().any(|h| h.starts_with("|1|"));
-            let fingerprint = match e.fingerprint() {
-                Ok(fp) => format!("{fp}"),
-                Err(err) => {
-                    tracing::warn!(
-                        "known_hosts line {}: fingerprint failed: {err}",
-                        e.line_number
-                    );
-                    "(unknown)".into()
-                }
-            };
+    // Index: sorted comma-joined host string → (key_types, fingerprints, first entry)
+    let mut groups: std::collections::BTreeMap<String, GroupAccum> =
+        std::collections::BTreeMap::new();
+
+    for e in &entries {
+        let is_hashed = e.hosts.iter().any(|h| h.starts_with("|1|"));
+        let fingerprint = match e.fingerprint() {
+            Ok(fp) => format!("{fp}"),
+            Err(err) => {
+                tracing::warn!(
+                    "known_hosts line {}: fingerprint failed: {err}",
+                    e.line_number
+                );
+                "(unknown)".into()
+            }
+        };
+        // Use sorted comma-joined hosts as the grouping key so
+        // ["github.com"] and ["github.com"] match even if line order differs.
+        let mut host_key = e.hosts.clone();
+        host_key.sort();
+        let host_key = host_key.join(",");
+
+        let acc = groups.entry(host_key).or_insert_with(|| GroupAccum {
+            hosts: e.hosts.clone(),
+            is_hashed,
+            marker: e.markers.first().cloned(),
+            comment: e.comment.clone(),
+            line: e.line_number,
+            source: "user".into(),
+            key_types: Vec::new(),
+            fingerprints: Vec::new(),
+        });
+        acc.key_types.push(e.key_type.clone());
+        acc.fingerprints.push(fingerprint);
+    }
+
+    groups
+        .into_values()
+        .map(|g| {
+            let key_type = g.key_types.first().cloned().unwrap_or_default();
+            let fingerprint = g.fingerprints.first().cloned().unwrap_or_default();
             KnownHostEntry {
-                hosts: e.hosts,
-                key_type: e.key_type,
+                hosts: g.hosts,
+                key_type,
+                key_types: g.key_types,
                 fingerprint,
-                is_hashed,
-                marker: e.markers.into_iter().next(),
-                comment: e.comment,
-                line: e.line_number,
-                source: "user".into(),
+                fingerprints: g.fingerprints,
+                is_hashed: g.is_hashed,
+                marker: g.marker,
+                comment: g.comment,
+                line: g.line,
+                source: g.source,
             }
         })
         .collect()
+}
+
+/// Accumulator for grouping known_hosts lines by host.
+struct GroupAccum {
+    hosts: Vec<String>,
+    is_hashed: bool,
+    marker: Option<String>,
+    comment: Option<String>,
+    line: usize,
+    source: String,
+    key_types: Vec<String>,
+    fingerprints: Vec<String>,
 }
 
 // ── Authorized Keys ─────────────────────────────────────────────────────────

@@ -553,21 +553,28 @@ pub struct SshKeyEntry {
 }
 
 /// Presentation model for a known_hosts entry in the Hosts tab.
+///
+/// Multiple key lines for the same host are **grouped** into a single entry
+/// with `key_types` listing all algorithms and `fingerprints` the matching FP.
 #[derive(Clone, Debug)]
 pub struct KnownHostEntry {
     /// All hostname patterns (e.g. `["github.com", "gh.com"]`).
     pub hosts: Vec<String>,
-    /// Key type (e.g. "ssh-ed25519", "ssh-rsa", "ecdsa-sha2-nistp256").
+    /// Key type of the first line (used as primary label).
     pub key_type: String,
-    /// SHA-256 fingerprint.
+    /// All key types for this host (e.g. `["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"]`).
+    pub key_types: Vec<String>,
+    /// SHA-256 fingerprint of the first key.
     pub fingerprint: String,
+    /// All fingerprints, one per key type (same order as `key_types`).
+    pub fingerprints: Vec<String>,
     /// Whether the hostname is hashed (`|1|...`).
     pub is_hashed: bool,
     /// Optional marker (e.g. "@cert-authority", "@revoked").
     pub marker: Option<String>,
     /// Actual comment text from the entry.
     pub comment: Option<String>,
-    /// 1-based line number in the known_hosts file.
+    /// 1-based line number in the known_hosts file (first occurrence).
     pub line: usize,
     /// Source file: "user" or "global".
     pub source: String,

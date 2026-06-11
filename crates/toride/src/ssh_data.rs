@@ -997,7 +997,13 @@ mod mock {
             KnownHostEntry {
                 hosts: vec!["github.com".into()],
                 key_type: "ssh-ed25519".into(),
+                key_types: vec!["ssh-ed25519".into(), "ecdsa-sha2-nistp256".into(), "ssh-rsa".into()],
                 fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".into(),
+                fingerprints: vec![
+                    "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".into(),
+                    "SHA256:p2QDBXBNJXm3QqRJLcYPjMn+al+gPCfvAy8Oo5WKIqs".into(),
+                    "SHA256:uNiVztksCsDhccIuweeDlI0Q5J0q+Z7RDwt5kM+VmEc".into(),
+                ],
                 is_hashed: false,
                 marker: None,
                 comment: None,
@@ -1007,7 +1013,9 @@ mod mock {
             KnownHostEntry {
                 hosts: vec!["gitlab.com".into()],
                 key_type: "ssh-ed25519".into(),
+                key_types: vec!["ssh-ed25519".into()],
                 fingerprint: "SHA256:WSCtr3bEeJGgcb0UrkMFWxQJqchWXzwWMNESdgqxo".into(),
+                fingerprints: vec!["SHA256:WSCtr3bEeJGgcb0UrkMFWxQJqchWXzwWMNESdgqxo".into()],
                 is_hashed: false,
                 marker: None,
                 comment: None,
@@ -1017,7 +1025,9 @@ mod mock {
             KnownHostEntry {
                 hosts: vec!["[192.168.1.1]:2222".into()],
                 key_type: "ssh-rsa".into(),
+                key_types: vec!["ssh-rsa".into()],
                 fingerprint: "SHA256:abc123def456ghi789jkl012mno345pqr678".into(),
+                fingerprints: vec!["SHA256:abc123def456ghi789jkl012mno345pqr678".into()],
                 is_hashed: false,
                 marker: None,
                 comment: Some("home router".into()),
@@ -1027,7 +1037,9 @@ mod mock {
             KnownHostEntry {
                 hosts: vec!["|1|ba4dEeFgHiJkLmNoPqRsTu|XxYyZz0123456789".into()],
                 key_type: "ecdsa-sha2-nistp256".into(),
+                key_types: vec!["ecdsa-sha2-nistp256".into()],
                 fingerprint: "SHA256:qwe456rty789uio012pqr345stu678vwx".into(),
+                fingerprints: vec!["SHA256:qwe456rty789uio012pqr345stu678vwx".into()],
                 is_hashed: true,
                 marker: None,
                 comment: None,
@@ -1037,7 +1049,9 @@ mod mock {
             KnownHostEntry {
                 hosts: vec!["old.server.example.com".into()],
                 key_type: "ssh-ed25519".into(),
+                key_types: vec!["ssh-ed25519".into()],
                 fingerprint: "SHA256:xyz789abc456def123ghi456jkl789mno012".into(),
+                fingerprints: vec!["SHA256:xyz789abc456def123ghi456jkl789mno012".into()],
                 is_hashed: false,
                 marker: Some("@revoked".into()),
                 comment: None,
