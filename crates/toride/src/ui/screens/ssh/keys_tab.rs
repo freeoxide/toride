@@ -127,8 +127,31 @@ impl KeysTab {
 
     /// Handle a mouse event for the key list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Action modal open: block background input.
-        if self.action_modal.is_some() {
+        // Confirm modal open: delegate mouse clicks to its buttons.
+        if self.action_modal == Some(ActionModal::Delete) {
+            if let Some(result) = self.confirm.handle_mouse(&mouse) {
+                return match result {
+                    ConfirmResult::Confirmed => self.handle_key(KeyCode::Enter),
+                    ConfirmResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                };
+            }
+            return None;
+        }
+        // Form modal open: delegate mouse to form buttons.
+        if self.action_modal.is_some() && self.action_modal != Some(ActionModal::Delete) {
+            if let Some(result) = self.form.handle_mouse(&mouse) {
+                return match result {
+                    FormResult::Submitted => self.handle_key(KeyCode::Enter),
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                    FormResult::Pending => None,
+                };
+            }
             return None;
         }
 
@@ -212,23 +235,30 @@ impl SshTab for KeysTab {
                             let comment = self.form.text_value(2)
                                 .map(|s| s.to_string())
                                 .unwrap_or_default();
+                            let passphrase = self.form.text_value(3)
+                                .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
+                                .unwrap_or(None);
+                            let has_passphrase = passphrase.is_some();
                             let display_name = if name.is_empty() {
                                 "id_new".to_string()
-                            } else {
+                            } else if name.starts_with("id_") {
                                 name.clone()
+                            } else {
+                                format!("id_{name}")
                             };
                             // Persist to disk
                             self.pending_ops.push(SshOp::KeyCreate {
                                 name: display_name.clone(),
                                 key_type: key_type.to_string(),
                                 comment,
+                                passphrase,
                             });
                             // Optimistic in-memory update
                             self.keys.push(SshKeyEntry {
                                 name: display_name,
                                 key_type: key_type.to_string(),
                                 fingerprint: String::new(),
-                                encrypted: false,
+                                encrypted: has_passphrase,
                                 permissions: "0600".into(),
                                 has_public: false,
                                 has_cert: false,
@@ -246,19 +276,23 @@ impl SshTab for KeysTab {
                     }
                 }
                 ActionModal::Delete => {
-                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
-                        if !self.keys.is_empty() {
-                            let name = self.keys[self.selected].name.clone();
-                            // Persist to disk
-                            self.pending_ops.push(SshOp::KeyDelete { name });
-                            // Optimistic in-memory update
-                            self.keys.remove(self.selected);
-                            if self.selected >= self.keys.len() && !self.keys.is_empty() {
-                                self.selected = self.keys.len() - 1;
+                    match self.confirm.handle_key(code) {
+                        Some(ConfirmResult::Confirmed) => {
+                            if !self.keys.is_empty() {
+                                let name = self.keys[self.selected].name.clone();
+                                // Persist to disk
+                                self.pending_ops.push(SshOp::KeyDelete { name });
+                                // Optimistic in-memory update
+                                self.keys.remove(self.selected);
+                                if self.selected >= self.keys.len() && !self.keys.is_empty() {
+                                    self.selected = self.keys.len() - 1;
+                                }
+                                self.clamp_scroll();
                             }
-                            self.clamp_scroll();
+                            self.action_modal = None;
                         }
-                        self.action_modal = None;
+                        Some(ConfirmResult::Cancelled) => self.action_modal = None,
+                        None => {}
                     }
                 }
                 ActionModal::Rename => {
@@ -266,9 +300,14 @@ impl SshTab for KeysTab {
                         FormResult::Submitted => {
                             if let Some(key) = self.keys.get_mut(self.selected) {
                                 let old_name = key.name.clone();
-                                let new_name = self.form.text_value(0)
+                                let raw_name = self.form.text_value(0)
                                     .map(|s| s.to_string())
                                     .unwrap_or_default();
+                                let new_name = if raw_name.starts_with("id_") {
+                                    raw_name
+                                } else {
+                                    format!("id_{raw_name}")
+                                };
                                 if !new_name.is_empty() && new_name != old_name {
                                     // Persist to disk
                                     self.pending_ops.push(SshOp::KeyRename {
@@ -318,7 +357,8 @@ impl SshTab for KeysTab {
                 self.form = FormModal::new(40)
                     .text_field(TextInput::new("Name", 30).placeholder("id_ed25519").required())
                     .select_field(Dropdown::new("Type", vec!["Ed25519", "RSA 4096", "ECDSA P-256"], 16))
-                    .text_field(TextInput::new("Comment", 30).placeholder("user@host"));
+                    .text_field(TextInput::new("Comment", 30).placeholder("user@host"))
+                    .text_field(TextInput::new("Passphrase", 30).placeholder("(optional, leave empty for none)").secret(true));
                 self.action_modal = Some(ActionModal::New);
                 None
             }
@@ -334,7 +374,7 @@ impl SshTab for KeysTab {
                 if !self.keys.is_empty() {
                     let current_name = self.keys[self.selected].name.clone();
                     self.form = FormModal::new(40)
-                        .text_field(TextInput::new("Name", 30).value(&current_name).required());
+                        .text_field(TextInput::new("New Name", 30).value(&current_name).required());
                     self.action_modal = Some(ActionModal::Rename);
                 }
                 None
@@ -370,7 +410,7 @@ impl SshTab for KeysTab {
         match self.action_modal {
             Some(ActionModal::New) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Generate New Key", 52, 14,
+                    frame, p, "Generate New Key", 52, 22,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }
@@ -379,7 +419,7 @@ impl SshTab for KeysTab {
             }
             Some(ActionModal::Rename) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Rename Key", 52, 11,
+                    frame, p, "Rename Key", 52, 13,
                     "Enter to confirm, Esc to cancel",
                 );
             }
@@ -785,5 +825,26 @@ mod tests {
         tab.selected = 5;
         tab.set_keys(sample_keys()); // 2 items
         assert!(tab.selected < 2);
+    }
+
+    #[test]
+    fn render_new_key_form() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = KeysTab::new();
+        // Open the "New Key" form by pressing 'n'
+        tab.handle_key(KeyCode::Char('n'));
+        assert!(tab.action_modal == Some(ActionModal::New));
+
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        eprintln!("=== NEW KEY FORM RENDER ===\n{output}\n===");
+        assert!(output.contains("Generate New Key"), "modal title: {output}");
+        assert!(output.contains("Name"), "name label: {output}");
+        assert!(output.contains("Type"), "type label: {output}");
+        assert!(output.contains("Comment"), "comment label: {output}");
+        assert!(output.contains("Passphrase"), "passphrase label: {output}");
     }
 }

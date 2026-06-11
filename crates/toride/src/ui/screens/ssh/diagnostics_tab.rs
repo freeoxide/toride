@@ -287,7 +287,7 @@ impl SshTab for DiagnosticsTab {
         match self.action_modal {
             Some(ActionModal::Run) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Run Diagnostics", 52, 14,
+                    frame, p, "Run Diagnostics", 52, 16,
                     "Tab to cycle fields, Enter to run, Esc to cancel",
                 );
             }

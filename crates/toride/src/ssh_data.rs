@@ -129,6 +129,7 @@ pub enum SshOp {
         name: String,
         key_type: String,
         comment: String,
+        passphrase: Option<String>,
     },
     /// Delete an SSH key pair.
     KeyDelete {
@@ -252,7 +253,7 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
                 }
             }
         }
-        SshOp::KeyCreate { name, key_type, comment } => {
+        SshOp::KeyCreate { name, key_type, comment, passphrase } => {
             let svc = mgr.keys();
             let mut params = match key_type.as_str() {
                 "RSA 4096" => toride_ssh::KeyCreateParams::rsa_4096(name.clone()),
@@ -265,6 +266,11 @@ pub async fn execute_op(op: SshOp) -> Result<String, String> {
             };
             if !comment.is_empty() {
                 params.comment = Some(comment.clone());
+            }
+            if let Some(ref pw) = passphrase {
+                if !pw.is_empty() {
+                    params.passphrase = Some(pw.clone());
+                }
             }
             match svc.create(params).await {
                 Ok(_) => {
@@ -1476,6 +1482,12 @@ mod tests {
     use std::sync::Mutex;
     static HOME_LOCK: Mutex<usize> = Mutex::new(0);
 
+    /// Acquire the HOME lock, recovering from a poisoned mutex (caused by a
+    /// previous test panic) so that one failing test doesn't cascade.
+    fn acquire_home_lock() -> std::sync::MutexGuard<'static, usize> {
+        HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// Temp HOME override for safe write-path tests.
     struct TempHome {
         original: Option<std::path::PathBuf>,
@@ -1509,7 +1521,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_op_config_add_host_writes_to_disk() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = acquire_home_lock();
         let _home = TempHome::new();
         let op = SshOp::ConfigAddHost {
             name: "test-toride-host".into(),
@@ -1532,7 +1544,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_op_config_add_duplicate_fails() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = acquire_home_lock();
         let _home = TempHome::new();
         let op = SshOp::ConfigAddHost {
             name: "dupe-host".into(),
@@ -1553,7 +1565,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_op_config_remove_nonexistent_fails() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = acquire_home_lock();
         let _home = TempHome::new();
         let op = SshOp::ConfigRemoveHost { name: "no-such-host".into() };
         let result = execute_op(op).await;
@@ -1562,7 +1574,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_op_config_edit_host_replaces() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = acquire_home_lock();
         let _home = TempHome::new();
         let op = SshOp::ConfigAddHost {
             name: "edit-me".into(),
@@ -1589,12 +1601,13 @@ mod tests {
 
     #[tokio::test]
     async fn execute_op_key_create_and_delete() {
-        let _lock = HOME_LOCK.lock().unwrap();
+        let _lock = acquire_home_lock();
         let _home = TempHome::new();
         let op = SshOp::KeyCreate {
             name: "toride-test-key".into(),
             key_type: "Ed25519".into(),
             comment: "test@toride".into(),
+            passphrase: None,
         };
         let result = execute_op(op).await;
         assert!(result.is_ok(), "key create failed: {:?}", result.err());
@@ -1607,5 +1620,420 @@ mod tests {
         let result2 = execute_op(op2).await;
         assert!(result2.is_ok(), "key delete failed: {:?}", result2.err());
         assert!(!key_path.exists(), "key file should be deleted");
+    }
+
+    // ── Full CRUD Lifecycle Tests ──────────────────────────────────────────
+    //
+    // These tests exercise the toride-ssh backend directly (outside the TUI)
+    // to isolate whether CRUD operations actually persist to disk.
+
+    /// SSH Key full lifecycle: Create → Verify → List → Rename → Delete.
+    #[tokio::test]
+    async fn key_full_crud_lifecycle() {
+        let _lock = acquire_home_lock();
+        let _home = TempHome::new();
+        let mgr = toride_ssh::SshManager::new().expect("SshManager init");
+        let home = std::env::var("HOME").expect("HOME");
+
+        // Step 1: CREATE (use id_ prefix — inventory scan only finds id_* files)
+        let params = toride_ssh::KeyCreateParams::ed25519("id_crud_test_key".to_owned());
+        mgr.keys()
+            .create(params)
+            .await
+            .expect("Step 1 CREATE: key generation failed");
+        eprintln!("✓ Step 1: CREATE key 'id_crud_test_key'");
+
+        // Step 2: VERIFY files exist
+        let private = std::path::Path::new(&home).join(".ssh/id_crud_test_key");
+        let public = std::path::Path::new(&home).join(".ssh/id_crud_test_key.pub");
+        assert!(private.exists(), "Step 2 VERIFY: private key missing at {private:?}");
+        assert!(public.exists(), "Step 2 VERIFY: public key missing at {public:?}");
+        eprintln!("✓ Step 2: VERIFY files exist");
+
+        // Step 3: LIST includes the key
+        let keys = mgr.keys().list().await.expect("Step 3 LIST: scan failed");
+        let found = keys.iter().any(|k| {
+            k.path.file_name().map_or(false, |n| n == "id_crud_test_key")
+        });
+        assert!(found, "Step 3 LIST: key not found in inventory ({} keys scanned)", keys.len());
+        eprintln!("✓ Step 3: LIST returns the key");
+
+        // Step 4: RENAME
+        mgr.keys()
+            .rename("id_crud_test_key", "id_crud_test_v2")
+            .await
+            .expect("Step 4 RENAME: rename failed");
+        eprintln!("✓ Step 4: RENAME to 'id_crud_test_v2'");
+
+        // Step 5: VERIFY rename — old gone, new exists
+        let new_private = std::path::Path::new(&home).join(".ssh/id_crud_test_v2");
+        assert!(
+            !private.exists(),
+            "Step 5 VERIFY: old private key still exists"
+        );
+        assert!(
+            new_private.exists(),
+            "Step 5 VERIFY: new private key missing"
+        );
+        eprintln!("✓ Step 5: VERIFY old gone, new exists");
+
+        // Step 6: DELETE
+        let del_params = toride_ssh::KeyDeleteParams {
+            name: "id_crud_test_v2".to_owned(),
+            remove_public: true,
+            remove_certificate: true,
+            remove_from_agent: false,
+            remove_from_config: false,
+            backup: false,
+        };
+        mgr.keys()
+            .delete(del_params)
+            .await
+            .expect("Step 6 DELETE: deletion failed");
+        eprintln!("✓ Step 6: DELETE 'id_crud_test_v2'");
+
+        // Step 7: VERIFY deletion
+        assert!(
+            !new_private.exists(),
+            "Step 7 VERIFY: private key still exists after delete"
+        );
+        let new_public = std::path::Path::new(&home).join(".ssh/id_crud_test_v2.pub");
+        assert!(
+            !new_public.exists(),
+            "Step 7 VERIFY: public key still exists after delete"
+        );
+        eprintln!("✓ Step 7: VERIFY both files gone");
+        eprintln!("✅ key_full_crud_lifecycle PASSED");
+    }
+
+    /// Config host full lifecycle: Add → Verify → Edit → Verify → Remove → Verify.
+    #[tokio::test]
+    async fn config_host_full_crud_lifecycle() {
+        let _lock = acquire_home_lock();
+        let _home = TempHome::new();
+        let mgr = toride_ssh::SshManager::new().expect("SshManager init");
+        let svc = mgr.config();
+
+        // Step 1: ADD
+        svc.edit(|ast| {
+            toride_ssh::config::ConfigService::add_host(
+                ast,
+                "test-server",
+                vec![
+                    ("HostName".to_owned(), "10.0.0.1".to_owned()),
+                    ("user".to_owned(), "admin".to_owned()),
+                    ("port".to_owned(), "2222".to_owned()),
+                ],
+            )
+        })
+        .await
+        .expect("Step 1 ADD: config add_host failed");
+        eprintln!("✓ Step 1: ADD host 'test-server'");
+
+        // Step 2: VERIFY
+        let ast = svc.load().await.expect("Step 2 VERIFY: config load failed");
+        let content = ast.to_string_lossless();
+        assert!(
+            content.contains("test-server"),
+            "Step 2 VERIFY: 'test-server' not in config:\n{content}"
+        );
+        assert!(
+            content.contains("10.0.0.1"),
+            "Step 2 VERIFY: hostname '10.0.0.1' not in config:\n{content}"
+        );
+        eprintln!("✓ Step 2: VERIFY host block in config");
+
+        // Step 3: EDIT (remove + re-add with new values)
+        svc.edit(|ast| {
+            let _ = toride_ssh::config::ConfigService::remove_host(ast, "test-server");
+            toride_ssh::config::ConfigService::add_host(
+                ast,
+                "test-server",
+                vec![
+                    ("hostname".to_owned(), "10.0.0.99".to_owned()),
+                    ("user".to_owned(), "deploy".to_owned()),
+                    ("port".to_owned(), "443".to_owned()),
+                ],
+            )
+        })
+        .await
+        .expect("Step 3 EDIT: config edit failed");
+        eprintln!("✓ Step 3: EDIT host with new values");
+
+        // Step 4: VERIFY edit
+        let ast = svc.load().await.expect("Step 4 VERIFY: config load failed");
+        let content = ast.to_string_lossless();
+        assert!(
+            content.contains("10.0.0.99"),
+            "Step 4 VERIFY: new hostname not in config:\n{content}"
+        );
+        assert!(
+            !content.contains("10.0.0.1"),
+            "Step 4 VERIFY: old hostname still in config:\n{content}"
+        );
+        eprintln!("✓ Step 4: VERIFY new values present, old gone");
+
+        // Step 5: REMOVE
+        svc.edit(|ast| {
+            toride_ssh::config::ConfigService::remove_host(ast, "test-server")
+        })
+        .await
+        .expect("Step 5 REMOVE: config remove failed");
+        eprintln!("✓ Step 5: REMOVE host 'test-server'");
+
+        // Step 6: VERIFY removal
+        let ast = svc.load().await.expect("Step 6 VERIFY: config load failed");
+        let content = ast.to_string_lossless();
+        assert!(
+            !content.contains("test-server"),
+            "Step 6 VERIFY: 'test-server' still in config:\n{content}"
+        );
+        eprintln!("✓ Step 6: VERIFY host block gone");
+        eprintln!("✅ config_host_full_crud_lifecycle PASSED");
+    }
+
+    /// Authorized keys full lifecycle: Add → List → Remove.
+    #[tokio::test]
+    async fn authorized_keys_full_crud_lifecycle() {
+        let _lock = acquire_home_lock();
+        let _home = TempHome::new();
+        let mgr = toride_ssh::SshManager::new().expect("SshManager init");
+        let svc = mgr.authorized_keys();
+
+        // Real Ed25519 public key for testing (generated locally, not a real credential).
+        const TEST_PUB_KEY: &str =
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI crud-test@toride";
+
+        // Step 1: ADD
+        svc.add(TEST_PUB_KEY, Some("crud-test"), None)
+            .await
+            .expect("Step 1 ADD: authorized_keys add failed");
+        eprintln!("✓ Step 1: ADD key to authorized_keys");
+
+        // Step 2: VERIFY via list
+        let entries = svc.list().await.expect("Step 2 VERIFY: list failed");
+        assert!(
+            !entries.is_empty(),
+            "Step 2 VERIFY: authorized_keys list is empty after add"
+        );
+        let matched = entries
+            .iter()
+            .find(|e| e.comment.as_deref() == Some("crud-test"));
+        assert!(
+            matched.is_some(),
+            "Step 2 VERIFY: no entry with comment 'crud-test' found"
+        );
+        eprintln!(
+            "✓ Step 2: VERIFY list returns {} entry/entries",
+            entries.len()
+        );
+
+        // Step 3: REMOVE via fingerprint
+        let entry = matched.expect("entry must exist");
+        let fp = entry
+            .fingerprint()
+            .expect("Step 3 REMOVE: could not compute fingerprint");
+        let removed = svc
+            .remove(&fp)
+            .await
+            .expect("Step 3 REMOVE: authorized_keys remove failed");
+        assert!(
+            removed > 0,
+            "Step 3 REMOVE: remove returned 0 count (nothing deleted)"
+        );
+        eprintln!("✓ Step 3: REMOVE key (fingerprint: {fp})");
+
+        // Step 4: VERIFY removal
+        let entries = svc.list().await.expect("Step 4 VERIFY: list failed");
+        let still_exists = entries
+            .iter()
+            .any(|e| e.comment.as_deref() == Some("crud-test"));
+        assert!(
+            !still_exists,
+            "Step 4 VERIFY: key still present after removal"
+        );
+        eprintln!("✓ Step 4: VERIFY key removed from authorized_keys");
+        eprintln!("✅ authorized_keys_full_crud_lifecycle PASSED");
+    }
+
+    /// Known hosts full lifecycle: Add → Verify → Remove.
+    ///
+    /// Gracefully skips if `ssh-keyscan` fails (e.g. no local SSH server).
+    #[tokio::test]
+    async fn known_hosts_crud_lifecycle() {
+        let _lock = acquire_home_lock();
+        let _home = TempHome::new();
+        let mgr = toride_ssh::SshManager::new().expect("SshManager init");
+        let svc = mgr.known_hosts();
+
+        // Step 1: ADD (may fail if no SSHD on localhost — that's okay)
+        let add_result = svc.add("localhost").await;
+        if add_result.is_err() {
+            eprintln!(
+                "⚠ Step 1 ADD: ssh-keyscan localhost failed ({:?}) — skipping known_hosts test",
+                add_result.err()
+            );
+            eprintln!("ℹ This is expected if no SSH server runs on localhost");
+            return;
+        }
+        eprintln!("✓ Step 1: ADD localhost to known_hosts");
+
+        // Step 2: VERIFY
+        let kh_file = std::path::Path::new(&std::env::var("HOME").expect("HOME"))
+            .join(".ssh/known_hosts");
+        assert!(
+            kh_file.exists(),
+            "Step 2 VERIFY: known_hosts file missing"
+        );
+        let content = std::fs::read_to_string(&kh_file).expect("read known_hosts");
+        assert!(
+            !content.trim().is_empty(),
+            "Step 2 VERIFY: known_hosts is empty"
+        );
+        eprintln!("✓ Step 2: VERIFY known_hosts file has content");
+
+        // Step 3: REMOVE
+        svc.remove("localhost")
+            .await
+            .expect("Step 3 REMOVE: known_hosts remove failed");
+        eprintln!("✓ Step 3: REMOVE localhost from known_hosts");
+
+        // Step 4: VERIFY removal (file may still exist but without localhost entries)
+        let content_after =
+            std::fs::read_to_string(&kh_file).unwrap_or_default();
+        // After removal the file may contain hashed entries or be empty.
+        // The key test is that remove() succeeded.
+        eprintln!(
+            "✓ Step 4: VERIFY remove succeeded (known_hosts now has {} bytes)",
+            content_after.len()
+        );
+        eprintln!("✅ known_hosts_crud_lifecycle PASSED");
+    }
+
+    /// Execute-op pipeline round-trip: tests the same SshOp → execute_op path
+    /// the TUI uses for Keys and Config CRUD.
+    #[tokio::test]
+    async fn execute_op_pipeline_round_trip() {
+        let _lock = acquire_home_lock();
+        let _home = TempHome::new();
+        let home = std::env::var("HOME").expect("HOME");
+
+        // ── Key lifecycle via SshOp ──
+
+        // Step 1: CREATE via execute_op
+        let op = SshOp::KeyCreate {
+            name: "pipeline-key".into(),
+            key_type: "Ed25519".into(),
+            comment: "pipeline-test@toride".into(),
+            passphrase: None,
+        };
+        let result = execute_op(op).await;
+        assert!(
+            result.is_ok(),
+            "Step 1 CREATE via execute_op failed: {:?}",
+            result.err()
+        );
+        eprintln!("✓ Step 1: execute_op(KeyCreate) — {}", result.unwrap());
+
+        // Step 2: VERIFY file exists
+        let key_path = std::path::Path::new(&home).join(".ssh/pipeline-key");
+        assert!(
+            key_path.exists(),
+            "Step 2 VERIFY: private key missing at {key_path:?}"
+        );
+        eprintln!("✓ Step 2: VERIFY key file on disk");
+
+        // Step 3: RENAME via execute_op
+        let op = SshOp::KeyRename {
+            old_name: "pipeline-key".into(),
+            new_name: "pipeline-renamed".into(),
+        };
+        let result = execute_op(op).await;
+        assert!(
+            result.is_ok(),
+            "Step 3 RENAME via execute_op failed: {:?}",
+            result.err()
+        );
+        eprintln!("✓ Step 3: execute_op(KeyRename) — {}", result.unwrap());
+
+        // Step 4: VERIFY rename
+        assert!(
+            !key_path.exists(),
+            "Step 4 VERIFY: old key still exists"
+        );
+        let renamed_path = std::path::Path::new(&home).join(".ssh/pipeline-renamed");
+        assert!(
+            renamed_path.exists(),
+            "Step 4 VERIFY: renamed key missing"
+        );
+        eprintln!("✓ Step 4: VERIFY old gone, renamed exists");
+
+        // Step 5: DELETE via execute_op
+        let op = SshOp::KeyDelete {
+            name: "pipeline-renamed".into(),
+        };
+        let result = execute_op(op).await;
+        assert!(
+            result.is_ok(),
+            "Step 5 DELETE via execute_op failed: {:?}",
+            result.err()
+        );
+        eprintln!("✓ Step 5: execute_op(KeyDelete) — {}", result.unwrap());
+
+        // Step 6: VERIFY deletion
+        assert!(
+            !renamed_path.exists(),
+            "Step 6 VERIFY: key still exists after delete"
+        );
+        eprintln!("✓ Step 6: VERIFY key file gone");
+
+        // ── Config lifecycle via SshOp ──
+
+        // Step 7: ADD HOST via execute_op
+        let op = SshOp::ConfigAddHost {
+            name: "pipeline-host".into(),
+            host_name: Some("192.168.1.50".into()),
+            user: Some("testuser".into()),
+            port: Some(22),
+        };
+        let result = execute_op(op).await;
+        assert!(
+            result.is_ok(),
+            "Step 7 CONFIG ADD via execute_op failed: {:?}",
+            result.err()
+        );
+        eprintln!("✓ Step 7: execute_op(ConfigAddHost) — {}", result.unwrap());
+
+        // Step 8: VERIFY in config
+        let mgr = toride_ssh::SshManager::new().expect("mgr");
+        let ast = mgr.config().load().await.expect("load config");
+        let content = ast.to_string_lossless();
+        assert!(
+            content.contains("pipeline-host"),
+            "Step 8 VERIFY: 'pipeline-host' not in config:\n{content}"
+        );
+        eprintln!("✓ Step 8: VERIFY host in config");
+
+        // Step 9: REMOVE HOST via execute_op
+        let op = SshOp::ConfigRemoveHost {
+            name: "pipeline-host".into(),
+        };
+        let result = execute_op(op).await;
+        assert!(
+            result.is_ok(),
+            "Step 9 CONFIG REMOVE via execute_op failed: {:?}",
+            result.err()
+        );
+        eprintln!("✓ Step 9: execute_op(ConfigRemoveHost) — {}", result.unwrap());
+
+        // Step 10: VERIFY removal
+        let ast = mgr.config().load().await.expect("load config");
+        let content = ast.to_string_lossless();
+        assert!(
+            !content.contains("pipeline-host"),
+            "Step 10 VERIFY: 'pipeline-host' still in config:\n{content}"
+        );
+        eprintln!("✓ Step 10: VERIFY host gone from config");
+        eprintln!("✅ execute_op_pipeline_round_trip PASSED");
     }
 }

@@ -135,8 +135,31 @@ impl AgentTab {
 
     /// Handle a mouse event for the agent key list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Action modal open: block background input.
-        if self.action_modal.is_some() {
+        // Confirm modal open: delegate mouse clicks to its buttons.
+        if self.action_modal == Some(ActionModal::Remove) {
+            if let Some(result) = self.confirm.handle_mouse(&mouse) {
+                return match result {
+                    ConfirmResult::Confirmed => self.handle_key(KeyCode::Enter),
+                    ConfirmResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                };
+            }
+            return None;
+        }
+        // Form modal open: delegate mouse to form buttons.
+        if self.action_modal.is_some() && self.action_modal != Some(ActionModal::Remove) {
+            if let Some(result) = self.form.handle_mouse(&mouse) {
+                return match result {
+                    FormResult::Submitted => self.handle_key(KeyCode::Enter),
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                    FormResult::Pending => None,
+                };
+            }
             return None;
         }
 
@@ -255,20 +278,24 @@ impl SshTab for AgentTab {
                     }
                 }
                 ActionModal::Remove => {
-                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
-                        if !self.keys.is_empty() {
-                            let name = self.keys[self.selected].name.clone();
-                            // Persist to disk — derive a plausible key path
-                            let path = format!("~/.ssh/{name}");
-                            self.pending_ops.push(SshOp::AgentRemoveKey { path });
-                            // Optimistic in-memory update
-                            self.keys.remove(self.selected);
-                            if self.selected >= self.keys.len() && !self.keys.is_empty() {
-                                self.selected = self.keys.len() - 1;
+                    match self.confirm.handle_key(code) {
+                        Some(ConfirmResult::Confirmed) => {
+                            if !self.keys.is_empty() {
+                                let name = self.keys[self.selected].name.clone();
+                                // Persist to disk — derive a plausible key path
+                                let path = format!("~/.ssh/{name}");
+                                self.pending_ops.push(SshOp::AgentRemoveKey { path });
+                                // Optimistic in-memory update
+                                self.keys.remove(self.selected);
+                                if self.selected >= self.keys.len() && !self.keys.is_empty() {
+                                    self.selected = self.keys.len() - 1;
+                                }
+                                self.clamp_scroll();
                             }
-                            self.clamp_scroll();
+                            self.action_modal = None;
                         }
-                        self.action_modal = None;
+                        Some(ConfirmResult::Cancelled) => self.action_modal = None,
+                        None => {}
                     }
                 }
             }
@@ -342,7 +369,7 @@ impl SshTab for AgentTab {
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Key to Agent", 52, 11,
+                    frame, p, "Add Key to Agent", 52, 13,
                     "Enter key path, Esc to cancel",
                 );
             }

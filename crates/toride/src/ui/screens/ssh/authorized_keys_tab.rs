@@ -123,8 +123,31 @@ impl AuthorizedKeysTab {
 
     /// Handle a mouse event for the authorized keys list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Action modal open: block background input.
-        if self.action_modal.is_some() {
+        // Confirm modal open: delegate mouse clicks to its buttons.
+        if self.action_modal == Some(ActionModal::Remove) {
+            if let Some(result) = self.confirm.handle_mouse(&mouse) {
+                return match result {
+                    ConfirmResult::Confirmed => self.handle_key(KeyCode::Enter),
+                    ConfirmResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                };
+            }
+            return None;
+        }
+        // Form modal open: delegate mouse to form buttons.
+        if self.action_modal.is_some() && self.action_modal != Some(ActionModal::Remove) {
+            if let Some(result) = self.form.handle_mouse(&mouse) {
+                return match result {
+                    FormResult::Submitted => self.handle_key(KeyCode::Enter),
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                    FormResult::Pending => None,
+                };
+            }
             return None;
         }
 
@@ -203,35 +226,37 @@ impl SshTab for AuthorizedKeysTab {
                             let key_string = self.form.text_value(0)
                                 .map(|s| s.to_string())
                                 .unwrap_or_default();
-                            let display_key = if key_string.is_empty() {
-                                String::new()
+                            if key_string.is_empty() {
+                                self.action_modal = None;
+                                return None;
+                            }
+                            // Parse the pasted key: "key-type base64-data [comment]"
+                            let parts: Vec<&str> = key_string.splitn(3, ' ').collect();
+                            let key_type = parts.first().map(|s| *s).unwrap_or("unknown");
+                            let base64_key = parts.get(1).map(|s| *s).unwrap_or("");
+                            let comment = parts.get(2).map(|s| s.to_string());
+                            // Compute fingerprint for Remove support
+                            let openssh_line = if parts.len() >= 2 {
+                                format!("{} {}", key_type, base64_key)
                             } else {
                                 key_string.clone()
                             };
-                            // Try to extract key type from the key string
-                            let key_type = if display_key.starts_with("ssh-ed25519") {
-                                "ssh-ed25519"
-                            } else if display_key.starts_with("ssh-rsa") {
-                                "ssh-rsa"
-                            } else if display_key.starts_with("ecdsa-sha2") {
-                                "ecdsa-sha2-nistp256"
-                            } else {
-                                "unknown"
-                            };
+                            let fingerprint = ssh_key::PublicKey::from_openssh(&openssh_line)
+                                .ok()
+                                .map(|pk| pk.fingerprint(ssh_key::HashAlg::Sha256).to_string())
+                                .unwrap_or_default();
                             // Persist to disk
-                            if !key_string.is_empty() {
-                                self.pending_ops.push(SshOp::AuthorizedKeyAdd {
-                                    public_key: key_string,
-                                    comment: None,
-                                    options: None,
-                                });
-                            }
+                            self.pending_ops.push(SshOp::AuthorizedKeyAdd {
+                                public_key: key_string.clone(),
+                                comment: comment.clone(),
+                                options: None,
+                            });
                             // Optimistic in-memory update
                             self.entries.push(AuthorizedKeyEntry {
                                 key_type: key_type.to_string(),
-                                public_key: display_key,
-                                comment: None,
-                                fingerprint: String::new(),
+                                public_key: base64_key.to_string(),
+                                comment,
+                                fingerprint,
                                 options: None,
                                 line: self.entries.len() + 1,
                             });
@@ -246,21 +271,25 @@ impl SshTab for AuthorizedKeysTab {
                     }
                 }
                 ActionModal::Remove => {
-                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
-                        if !self.entries.is_empty() {
-                            let fingerprint = self.entries[self.selected].fingerprint.clone();
-                            // Persist to disk
-                            if !fingerprint.is_empty() {
-                                self.pending_ops.push(SshOp::AuthorizedKeyRemove { fingerprint });
+                    match self.confirm.handle_key(code) {
+                        Some(ConfirmResult::Confirmed) => {
+                            if !self.entries.is_empty() {
+                                let fingerprint = self.entries[self.selected].fingerprint.clone();
+                                // Persist to disk
+                                if !fingerprint.is_empty() {
+                                    self.pending_ops.push(SshOp::AuthorizedKeyRemove { fingerprint });
+                                }
+                                // Optimistic in-memory update
+                                self.entries.remove(self.selected);
+                                if self.selected >= self.entries.len() && !self.entries.is_empty() {
+                                    self.selected = self.entries.len() - 1;
+                                }
+                                self.clamp_scroll();
                             }
-                            // Optimistic in-memory update
-                            self.entries.remove(self.selected);
-                            if self.selected >= self.entries.len() && !self.entries.is_empty() {
-                                self.selected = self.entries.len() - 1;
-                            }
-                            self.clamp_scroll();
+                            self.action_modal = None;
                         }
-                        self.action_modal = None;
+                        Some(ConfirmResult::Cancelled) => self.action_modal = None,
+                        None => {}
                     }
                 }
             }
@@ -302,8 +331,9 @@ impl SshTab for AuthorizedKeysTab {
                         .comment
                         .as_deref()
                         .unwrap_or(&self.entries[self.selected].public_key);
-                    let display_label = if label.len() > 30 {
-                        format!("{}...", &label[..27])
+                    let display_label = if label.chars().count() > 30 {
+                        let truncated: String = label.chars().take(27).collect();
+                        format!("{truncated}...")
                     } else {
                         label.to_string()
                     };
@@ -335,7 +365,7 @@ impl SshTab for AuthorizedKeysTab {
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Authorized Key", 56, 11,
+                    frame, p, "Add Authorized Key", 56, 13,
                     "Paste public key string, Esc to cancel",
                 );
             }

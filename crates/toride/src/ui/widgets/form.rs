@@ -2,9 +2,10 @@
 //!
 //! Composes [`TextInput`] and [`Dropdown`] fields into a vertically stacked
 //! form inside a [`Modal`] overlay. Manages field focus cycling (Tab / Shift+Tab),
-//! validation on submit, error display, and themed rendering.
+//! validation on submit, error display, and themed rendering. Includes interactive
+//! Add/Cancel buttons with mouse support.
 
-use crossterm::event::KeyCode;
+use crossterm::event::{KeyCode, MouseEvent};
 use ratatui::{
     Frame,
     layout::{Constraint, Layout, Rect},
@@ -12,6 +13,8 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::responsive::Viewport;
 use crate::ui::theme::Palette;
 
 use super::{
@@ -31,6 +34,17 @@ pub enum FormResult {
     /// Key consumed but form still active (typing, cursor movement, field
     /// cycling, or validation failed on submit).
     Pending,
+}
+
+// ── FocusTarget ──────────────────────────────────────────────────────────────
+
+/// Where focus currently sits in the form.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FocusTarget {
+    /// Focus is on a form field (index).
+    Field(usize),
+    /// Focus is on the button row.
+    Buttons,
 }
 
 // ── FormField ─────────────────────────────────────────────────────────────────
@@ -126,26 +140,36 @@ impl FormField {
 // ── FormModal ─────────────────────────────────────────────────────────────────
 
 /// A form modal containing an ordered list of fields with focus management,
-/// validation, and error display.
+/// validation, error display, and interactive Add/Cancel buttons.
 ///
 /// Construct with [`FormModal::new`], add fields with builder methods, then
 /// call [`render`](Self::render) inside a modal content closure.
 pub struct FormModal {
     fields: Vec<FormField>,
-    /// Index of the currently focused field.
-    focus: usize,
+    /// Current focus target (field index or buttons).
+    focus: FocusTarget,
     /// Visual width available for the form content.
     width: u16,
+    /// Interactive Add/Cancel buttons.
+    buttons: ButtonRow<FormResult>,
 }
+
+/// Horizontal gap between buttons.
+const BTN_GAP: u16 = 4;
 
 impl FormModal {
     /// Create a new form with the given content width.
     #[must_use]
     pub fn new(width: u16) -> Self {
+        let buttons = vec![
+            InteractiveButton::new("add", "↵", FormResult::Submitted),
+            InteractiveButton::new("cancel", "esc", FormResult::Cancelled),
+        ];
         Self {
             fields: Vec::new(),
-            focus: 0,
+            focus: FocusTarget::Field(0),
             width,
+            buttons: ButtonRow::new(buttons, vec![BTN_GAP, 0]),
         }
     }
 
@@ -201,10 +225,19 @@ impl FormModal {
         }
     }
 
-    /// Get the current focus index.
+    /// Get the current focus index (field only — returns 0 if buttons focused).
     #[must_use]
     pub fn focus(&self) -> usize {
-        self.focus
+        match self.focus {
+            FocusTarget::Field(i) => i,
+            FocusTarget::Buttons => self.fields.len().saturating_sub(1),
+        }
+    }
+
+    /// Whether focus is currently on the button row.
+    #[must_use]
+    pub fn buttons_focused(&self) -> bool {
+        self.focus == FocusTarget::Buttons
     }
 
     /// Whether the form has any fields.
@@ -215,11 +248,11 @@ impl FormModal {
 
     // ── Key handling ────────────────────────────────────────────────────────
 
-    /// Handle a key event, routing it to the currently focused field.
+    /// Handle a key event, routing it to the currently focused field or button.
     ///
-    /// On submit (Enter on last field), runs validation on all fields. If any
-    /// fail, sets error state, focuses the first invalid field, and returns
-    /// `FormResult::Pending`. Otherwise returns `FormResult::Submitted`.
+    /// On submit (Enter on Add button or last field), runs validation on all
+    /// fields. If any fail, sets error state, focuses the first invalid field,
+    /// and returns `FormResult::Pending`. Otherwise returns `FormResult::Submitted`.
     pub fn handle_key(&mut self, code: KeyCode) -> FormResult {
         if self.fields.is_empty() {
             if matches!(code, KeyCode::Esc) {
@@ -228,42 +261,103 @@ impl FormModal {
             return FormResult::Submitted;
         }
 
-        // Clear error on the current field when the user interacts with it.
-        self.fields[self.focus].clear_error();
+        match self.focus {
+            FocusTarget::Field(field_idx) => {
+                // Clear error on the current field when the user interacts.
+                self.fields[field_idx].clear_error();
 
-        let action = match &mut self.fields[self.focus].kind {
-            FieldKind::Text(t) => t.handle_key(code),
-            FieldKind::Select(d) => d.handle_key(code),
-        };
+                let action = match &mut self.fields[field_idx].kind {
+                    FieldKind::Text(t) => t.handle_key(code),
+                    FieldKind::Select(d) => d.handle_key(code),
+                };
 
-        match action {
-            InputAction::Cancel => FormResult::Cancelled,
-            InputAction::Submit => {
-                // Enter on last field → validate all; otherwise move to next.
-                if self.focus == self.fields.len() - 1 {
+                match action {
+                    InputAction::Cancel => FormResult::Cancelled,
+                    InputAction::Submit => {
+                        // Enter on last field → validate all; otherwise move to next.
+                        if field_idx == self.fields.len() - 1 {
+                            // Move to buttons
+                            self.focus = FocusTarget::Buttons;
+                            FormResult::Pending
+                        } else {
+                            self.focus = FocusTarget::Field(field_idx + 1);
+                            FormResult::Pending
+                        }
+                    }
+                    InputAction::NextField => {
+                        // Tab: from last field → buttons, otherwise → next field
+                        if field_idx == self.fields.len() - 1 {
+                            self.focus = FocusTarget::Buttons;
+                        } else {
+                            self.focus = FocusTarget::Field(field_idx + 1);
+                        }
+                        FormResult::Pending
+                    }
+                    InputAction::PrevField => {
+                        // Shift+Tab: from first field → buttons, otherwise → prev field
+                        if field_idx == 0 {
+                            self.focus = FocusTarget::Buttons;
+                        } else {
+                            self.focus = FocusTarget::Field(field_idx - 1);
+                        }
+                        FormResult::Pending
+                    }
+                    InputAction::None => FormResult::Pending,
+                }
+            }
+            FocusTarget::Buttons => self.handle_button_key(code),
+        }
+    }
+
+    /// Handle key events while the button row is focused.
+    fn handle_button_key(&mut self, code: KeyCode) -> FormResult {
+        match code {
+            KeyCode::Enter => {
+                let result = self.buttons.activate_focused().unwrap_or(FormResult::Cancelled);
+                if result == FormResult::Submitted {
                     if self.validate_all() {
                         FormResult::Submitted
                     } else {
                         FormResult::Pending
                     }
                 } else {
-                    self.focus = (self.focus + 1) % self.fields.len();
-                    FormResult::Pending
+                    FormResult::Cancelled
                 }
             }
-            InputAction::NextField => {
-                self.focus = (self.focus + 1) % self.fields.len();
+            KeyCode::Tab => {
+                // Tab from buttons → first field
+                self.focus = FocusTarget::Field(0);
                 FormResult::Pending
             }
-            InputAction::PrevField => {
-                if self.focus == 0 {
-                    self.focus = self.fields.len() - 1;
-                } else {
-                    self.focus -= 1;
-                }
+            KeyCode::BackTab => {
+                // Shift+Tab from buttons → cycle buttons, or back to last field
+                self.buttons.cycle_focus_prev();
                 FormResult::Pending
             }
-            InputAction::None => FormResult::Pending,
+            KeyCode::Right => {
+                self.buttons.cycle_focus_next();
+                FormResult::Pending
+            }
+            KeyCode::Left => {
+                self.buttons.cycle_focus_prev();
+                FormResult::Pending
+            }
+            KeyCode::Esc => FormResult::Cancelled,
+            _ => FormResult::Pending,
+        }
+    }
+
+    /// Handle a mouse event. Returns `Some(FormResult)` if a button was clicked.
+    pub fn handle_mouse(&mut self, mouse: &MouseEvent) -> Option<FormResult> {
+        let result = self.buttons.handle_mouse(mouse)?;
+        if result == FormResult::Submitted {
+            if self.validate_all() {
+                Some(FormResult::Submitted)
+            } else {
+                Some(FormResult::Pending)
+            }
+        } else {
+            Some(FormResult::Cancelled)
         }
     }
 
@@ -274,21 +368,49 @@ impl FormModal {
             return false;
         }
 
-        let action = match &mut self.fields[self.focus].kind {
-            FieldKind::Text(t) => t.handle_key(code),
-            FieldKind::Select(d) => d.handle_key(code),
+        let action = match self.focus {
+            FocusTarget::Field(i) => match &mut self.fields[i].kind {
+                FieldKind::Text(t) => t.handle_key(code),
+                FieldKind::Select(d) => d.handle_key(code),
+            },
+            FocusTarget::Buttons => {
+                // On buttons, consume Tab/BackTab for cycling
+                match code {
+                    KeyCode::Tab => {
+                        self.focus = FocusTarget::Field(0);
+                        return true;
+                    }
+                    KeyCode::BackTab => {
+                        self.buttons.cycle_focus_prev();
+                        return true;
+                    }
+                    _ => return true,
+                }
+            }
         };
 
         match action {
             InputAction::NextField => {
-                self.focus = (self.focus + 1) % self.fields.len();
+                match self.focus {
+                    FocusTarget::Field(i) if i == self.fields.len() - 1 => {
+                        self.focus = FocusTarget::Buttons;
+                    }
+                    FocusTarget::Field(i) => {
+                        self.focus = FocusTarget::Field(i + 1);
+                    }
+                    FocusTarget::Buttons => {}
+                }
                 true
             }
             InputAction::PrevField => {
-                if self.focus == 0 {
-                    self.focus = self.fields.len() - 1;
-                } else {
-                    self.focus -= 1;
+                match self.focus {
+                    FocusTarget::Field(0) => {
+                        self.focus = FocusTarget::Buttons;
+                    }
+                    FocusTarget::Field(i) => {
+                        self.focus = FocusTarget::Field(i - 1);
+                    }
+                    FocusTarget::Buttons => {}
                 }
                 true
             }
@@ -314,7 +436,7 @@ impl FormModal {
         }
 
         if let Some(idx) = first_invalid {
-            self.focus = idx;
+            self.focus = FocusTarget::Field(idx);
         }
 
         all_valid
@@ -322,43 +444,49 @@ impl FormModal {
 
     // ── Rendering ───────────────────────────────────────────────────────────
 
-    /// Render all form fields vertically within the given area.
+    /// Render all form fields and buttons vertically within the given area.
     ///
     /// Each field gets a 3-row-tall slot (border + content + border), plus an
     /// extra 1-row error line if the field has a validation error, with a
-    /// 1-row gap between fields.
+    /// 1-row gap between fields. Buttons render below the last field.
     pub fn render(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         if self.fields.is_empty() {
             return;
         }
 
+        let viewport = Viewport::from_area(area);
         let field_h: u16 = 3; // border + content + border
         let error_h: u16 = 1; // error text below field
         let gap: u16 = 1;
+        let button_h: u16 = 1;
+        let button_gap: u16 = 1;
 
-        // Build dynamic constraints: each field is 3 rows, plus 1 if it has
-        // an error, plus 1-row gap between fields.
-        let constraints: Vec<Constraint> = (0..self.fields.len())
-            .flat_map(|i| {
-                let field_rows = if self.fields[i].has_error() {
-                    field_h + error_h
-                } else {
-                    field_h
-                };
-                let mut cs = vec![Constraint::Length(field_rows)];
-                if i < self.fields.len() - 1 {
-                    cs.push(Constraint::Length(gap));
-                }
-                cs
-            })
-            .collect();
+        // Build dynamic constraints: fields + errors + gaps + buttons.
+        let mut constraints: Vec<Constraint> = Vec::new();
+
+        for i in 0..self.fields.len() {
+            let field_rows = if self.fields[i].has_error() {
+                field_h + error_h
+            } else {
+                field_h
+            };
+            constraints.push(Constraint::Length(field_rows));
+            if i < self.fields.len() - 1 {
+                constraints.push(Constraint::Length(gap));
+            }
+        }
+
+        // Gap before buttons
+        constraints.push(Constraint::Length(button_gap));
+        // Button row
+        constraints.push(Constraint::Length(button_h));
 
         let rects = Layout::vertical(constraints).split(area);
 
         let mut rect_idx = 0;
         for (i, field) in self.fields.iter_mut().enumerate() {
             let field_area = rects[rect_idx];
-            let focused = i == self.focus;
+            let focused = self.focus == FocusTarget::Field(i);
             let error_msg = field.error.clone();
 
             match &field.kind {
@@ -379,7 +507,18 @@ impl FormModal {
                 }
             }
 
-            rect_idx += 2; // skip field chunk + gap
+            rect_idx += 1; // field chunk
+            if i < self.fields.len() - 1 {
+                rect_idx += 1; // inter-field gap
+            }
+        }
+
+        // Render buttons
+        // rect_idx now points to the button_gap chunk; buttons are at rect_idx + 1
+        if rect_idx + 1 < rects.len() {
+            let button_area = rects[rect_idx + 1];
+            let buf = frame.buffer_mut();
+            self.buttons.render(buf, button_area, p, viewport);
         }
     }
 
@@ -429,7 +568,7 @@ impl FormModal {
             });
     }
 
-    /// Calculate the total form height needed (fields + error rows + gaps).
+    /// Calculate the total form height needed (fields + error rows + gaps + buttons).
     #[must_use]
     pub fn total_height(&self) -> u16 {
         if self.fields.is_empty() {
@@ -440,7 +579,8 @@ impl FormModal {
         let gap: u16 = 1;
         let n = self.fields.len() as u16;
         let error_count = self.fields.iter().filter(|f| f.has_error()).count() as u16;
-        n * field_h + error_count * error_h + n.saturating_sub(1) * gap
+        // fields + errors + gaps between fields + gap before buttons + button row
+        n * field_h + error_count * error_h + n.saturating_sub(1) * gap + 1 + 1
     }
 
     /// Calculate the maximum possible form height (all fields with errors).
@@ -453,12 +593,13 @@ impl FormModal {
         let error_h: u16 = 1;
         let gap: u16 = 1;
         let n = self.fields.len() as u16;
-        n * (field_h + error_h) + n.saturating_sub(1) * gap
+        // Same as total_height but with all fields having errors
+        n * (field_h + error_h) + n.saturating_sub(1) * gap + 1 + 1
     }
 
     /// Reset focus to the first field (does NOT reset field values or errors).
     pub fn reset(&mut self) {
-        self.focus = 0;
+        self.focus = FocusTarget::Field(0);
     }
 }
 
@@ -489,9 +630,10 @@ mod tests {
     }
 
     #[test]
-    fn focus_starts_at_zero() {
+    fn focus_starts_at_first_field() {
         let form = sample_form();
         assert_eq!(form.focus(), 0);
+        assert!(!form.buttons_focused());
     }
 
     #[test]
@@ -528,62 +670,71 @@ mod tests {
     }
 
     #[test]
-    fn tab_cycles_forward() {
+    fn tab_cycles_fields_then_buttons() {
         let mut form = sample_form();
         form.handle_key(KeyCode::Tab);
         assert_eq!(form.focus(), 1);
         form.handle_key(KeyCode::Tab);
         assert_eq!(form.focus(), 2);
         form.handle_key(KeyCode::Tab);
-        assert_eq!(form.focus(), 0); // wraps
+        assert!(form.buttons_focused());
+        // Tab from buttons wraps to first field
+        form.handle_key(KeyCode::Tab);
+        assert_eq!(form.focus(), 0);
     }
 
     #[test]
-    fn backtab_cycles_backward() {
+    fn backtab_cycles_backwards() {
         let mut form = sample_form();
         form.handle_key(KeyCode::BackTab);
-        assert_eq!(form.focus(), 2); // wraps to last
+        assert!(form.buttons_focused()); // wraps to buttons
         form.handle_key(KeyCode::BackTab);
-        assert_eq!(form.focus(), 1);
+        // BackTab on buttons cycles button focus, stays on buttons
+        assert!(form.buttons_focused());
     }
 
     #[test]
-    fn enter_on_last_field_validates() {
-        // Use a form where all fields are filled / not required
+    fn enter_on_last_field_moves_to_buttons() {
+        let mut form = sample_form();
+        form.focus = FocusTarget::Field(2);
+        let result = form.handle_key(KeyCode::Enter);
+        assert!(form.buttons_focused());
+        assert_eq!(result, FormResult::Pending);
+    }
+
+    #[test]
+    fn enter_on_add_button_validates() {
         let mut form = FormModal::new(40)
             .text_field(TextInput::new("Name", 30).required().value("my-key"))
             .text_field(TextInput::new("Comment", 30).placeholder("optional"));
-        // Focus last field and submit — Name has a value, should pass validation
-        form.focus = 1;
+        // Go to buttons and press Enter on Add
+        form.focus = FocusTarget::Buttons;
         let result = form.handle_key(KeyCode::Enter);
         assert_eq!(result, FormResult::Submitted);
     }
 
     #[test]
-    fn enter_on_last_field_fails_validation_when_required_empty() {
+    fn enter_on_add_button_fails_validation() {
         let mut form = sample_form();
-        // Name (field 0) is required but empty. Navigate to last field and submit.
-        form.focus = 2;
+        // Name (field 0) is required but empty. Go to buttons and press Enter.
+        form.focus = FocusTarget::Buttons;
         let result = form.handle_key(KeyCode::Enter);
-        // Validation runs on ALL fields. Name is empty → fails.
         assert_eq!(result, FormResult::Pending);
-        // Focus should jump to the first invalid field (Name = index 0)
-        assert_eq!(form.focus(), 0);
+        assert_eq!(form.focus(), 0); // jumps to first invalid field
         assert!(form.fields[0].has_error());
-    }
-
-    #[test]
-    fn enter_on_non_last_field_moves_to_next() {
-        let mut form = sample_form();
-        form.focus = 0;
-        let result = form.handle_key(KeyCode::Enter);
-        assert_eq!(form.focus(), 1);
-        assert_eq!(result, FormResult::Pending);
     }
 
     #[test]
     fn esc_cancels() {
         let mut form = sample_form();
+        let result = form.handle_key(KeyCode::Esc);
+        assert_eq!(result, FormResult::Cancelled);
+    }
+
+    #[test]
+    fn esc_cancels_from_buttons() {
+        let mut form = sample_form();
+        form.focus = FocusTarget::Buttons;
         let result = form.handle_key(KeyCode::Esc);
         assert_eq!(result, FormResult::Cancelled);
     }
@@ -599,7 +750,7 @@ mod tests {
     #[test]
     fn dropdown_cycling_in_form() {
         let mut form = sample_form();
-        form.focus = 1; // Focus the dropdown
+        form.focus = FocusTarget::Field(1); // Focus the dropdown
         form.handle_key(KeyCode::Down);
         assert_eq!(form.select_value(1), Some("RSA 4096"));
     }
@@ -607,8 +758,8 @@ mod tests {
     #[test]
     fn total_height_calculation() {
         let form = sample_form(); // 3 fields, no errors
-        // 3 * 3 (field heights) + 2 * 1 (gaps) = 11
-        assert_eq!(form.total_height(), 11);
+        // 3 * 3 (field heights) + 2 * 1 (gaps) + 1 (gap before buttons) + 1 (buttons) = 13
+        assert_eq!(form.total_height(), 13);
     }
 
     #[test]
@@ -628,10 +779,9 @@ mod tests {
         for ch in "abc".chars() {
             form.handle_key(KeyCode::Char(ch));
         }
-        // Navigate to last field and submit
-        form.focus = 0;
+        // Go to buttons and submit
+        form.focus = FocusTarget::Buttons;
         let result = form.handle_key(KeyCode::Enter);
-        // "abc" is not a valid port → validation should fail
         assert_eq!(result, FormResult::Pending);
         assert!(form.fields[0].has_error());
     }
@@ -640,7 +790,7 @@ mod tests {
     fn validation_passes_with_valid_data() {
         let mut form = FormModal::new(40)
             .text_field(TextInput::new("Name", 30).required().value("my-key"));
-        // Submit (only 1 field, so we're on last)
+        form.focus = FocusTarget::Buttons;
         let result = form.handle_key(KeyCode::Enter);
         assert_eq!(result, FormResult::Submitted);
     }
@@ -649,13 +799,29 @@ mod tests {
     fn error_clears_on_typing() {
         let mut form = sample_form();
         // Force an error by submitting with empty Name
-        form.focus = 2;
+        form.focus = FocusTarget::Buttons;
         form.handle_key(KeyCode::Enter);
         assert!(form.fields[0].has_error());
 
         // Now focus the Name field and type
-        form.focus = 0;
+        form.focus = FocusTarget::Field(0);
         form.handle_key(KeyCode::Char('a'));
         assert!(!form.fields[0].has_error());
+    }
+
+    #[test]
+    fn render_shows_buttons() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut form = FormModal::new(40)
+            .text_field(TextInput::new("Name", 30).required().value("test"));
+        let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
+        terminal.draw(|f| {
+            form.render_in_modal(f, CHARM, "Test Form", 50, 10);
+        }).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(output.contains("add"), "add button visible: {output}");
+        assert!(output.contains("cancel"), "cancel button visible: {output}");
     }
 }

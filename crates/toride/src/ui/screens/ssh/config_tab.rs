@@ -131,8 +131,31 @@ impl ConfigTab {
 
     /// Handle a mouse event for the host list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Action modal open: block background input.
-        if self.action_modal.is_some() {
+        // Confirm modal open: delegate mouse clicks to its buttons.
+        if self.action_modal == Some(ActionModal::Remove) {
+            if let Some(result) = self.confirm.handle_mouse(&mouse) {
+                return match result {
+                    ConfirmResult::Confirmed => self.handle_key(KeyCode::Enter),
+                    ConfirmResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                };
+            }
+            return None;
+        }
+        // Form modal open: delegate mouse to form buttons.
+        if self.action_modal.is_some() && self.action_modal != Some(ActionModal::Remove) {
+            if let Some(result) = self.form.handle_mouse(&mouse) {
+                return match result {
+                    FormResult::Submitted => self.handle_key(KeyCode::Enter),
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                    FormResult::Pending => None,
+                };
+            }
             return None;
         }
 
@@ -233,7 +256,7 @@ impl SshTab for ConfigTab {
                             };
                             // Persist to disk
                             self.pending_ops.push(SshOp::ConfigAddHost {
-                                name: name.clone(),
+                                name: display_name.clone(),
                                 host_name: host_name.clone(),
                                 user: user.clone(),
                                 port,
@@ -261,19 +284,23 @@ impl SshTab for ConfigTab {
                     }
                 }
                 ActionModal::Remove => {
-                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
-                        if !self.hosts.is_empty() {
-                            let name = self.hosts[self.selected].name.clone();
-                            // Persist to disk
-                            self.pending_ops.push(SshOp::ConfigRemoveHost { name });
-                            // Optimistic in-memory update
-                            self.hosts.remove(self.selected);
-                            if self.selected >= self.hosts.len() && !self.hosts.is_empty() {
-                                self.selected = self.hosts.len() - 1;
+                    match self.confirm.handle_key(code) {
+                        Some(ConfirmResult::Confirmed) => {
+                            if !self.hosts.is_empty() {
+                                let name = self.hosts[self.selected].name.clone();
+                                // Persist to disk
+                                self.pending_ops.push(SshOp::ConfigRemoveHost { name });
+                                // Optimistic in-memory update
+                                self.hosts.remove(self.selected);
+                                if self.selected >= self.hosts.len() && !self.hosts.is_empty() {
+                                    self.selected = self.hosts.len() - 1;
+                                }
+                                self.clamp_scroll();
                             }
-                            self.clamp_scroll();
+                            self.action_modal = None;
                         }
-                        self.action_modal = None;
+                        Some(ConfirmResult::Cancelled) => self.action_modal = None,
+                        None => {}
                     }
                 }
                 ActionModal::Edit => {
@@ -349,7 +376,7 @@ impl SshTab for ConfigTab {
                 KeyCode::Char('a') => {
                     self.form = FormModal::new(40)
                         .text_field(TextInput::new("Host", 30).placeholder("myserver").required())
-                        .text_field(TextInput::new("HostName", 30).placeholder("192.168.1.1").required())
+                        .text_field(TextInput::new("HostName", 30).placeholder("192.168.1.1"))
                         .text_field(TextInput::new("User", 30).placeholder("user"))
                         .text_field_validated(TextInput::new("Port", 30).placeholder("22"), Box::new(Port));
                     self.action_modal = Some(ActionModal::Add);
@@ -370,7 +397,7 @@ impl SshTab for ConfigTab {
                             .text_field(TextInput::new("Host", 30).value(&host.name).required())
                             .text_field(TextInput::new("HostName", 30).value(
                                 host.host_name.as_deref().unwrap_or("")
-                            ).required())
+                            ))
                             .text_field(TextInput::new("User", 30).value(
                                 host.user.as_deref().unwrap_or("")
                             ))
@@ -405,7 +432,7 @@ impl SshTab for ConfigTab {
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Host", 52, 20,
+                    frame, p, "Add Host", 52, 22,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }
@@ -414,7 +441,7 @@ impl SshTab for ConfigTab {
             }
             Some(ActionModal::Edit) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Edit Host", 52, 20,
+                    frame, p, "Edit Host", 52, 22,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }

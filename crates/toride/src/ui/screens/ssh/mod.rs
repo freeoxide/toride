@@ -265,6 +265,7 @@ impl SshContent {
         // click-outside detection.
         if self.active_tab().has_modal() {
             self.active_tab_mut().handle_mouse(mouse);
+            self.collect_ops();
             return None;
         }
 
@@ -292,6 +293,7 @@ impl SshContent {
             }
             _ => {}
         }
+        self.collect_ops();
         None
     }
 
@@ -758,11 +760,13 @@ pub(crate) fn char_to_keycode(c: char) -> KeyCode {
 }
 
 /// Truncate an error message to fit within `max_width` characters.
+/// Uses character-based truncation to avoid panicking on multi-byte UTF-8.
 fn truncate_error(msg: &str, max_width: usize) -> String {
-    if msg.len() <= max_width {
+    if msg.chars().count() <= max_width {
         msg.to_string()
     } else if max_width > 2 {
-        format!("{}..", &msg[..max_width.saturating_sub(2)])
+        let truncated: String = msg.chars().take(max_width.saturating_sub(2)).collect();
+        format!("{truncated}..")
     } else {
         String::new()
     }

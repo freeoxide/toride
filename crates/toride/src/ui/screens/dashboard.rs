@@ -760,6 +760,15 @@ impl AppScreen for DashboardScreen {
         }
 
         match code {
+            // When SSH content has a modal (form/confirm) open, pass 'q' through
+            // so the user can type it into text fields instead of quitting.
+            KeyCode::Char('q')
+                if self.active_section() == Section::Ssh
+                    && self.focus.is_focused(&ShellFocus::Content)
+                    && self.ssh_content.has_modal() =>
+            {
+                return self.ssh_content.handle_key(code);
+            }
             KeyCode::Char('q') => return Some(Action::Quit),
             // Tab/BackTab on Sidebar: cycle shell focus. On Content: forward to section.
             KeyCode::Tab => {
@@ -803,6 +812,15 @@ impl AppScreen for DashboardScreen {
                 }
                 self.focus.set(ShellFocus::Sidebar);
                 return None;
+            }
+            // When SSH content has a modal open, pass digits through to the form
+            // instead of switching sidebar sections.
+            KeyCode::Char(d @ '1'..='9')
+                if self.active_section() == Section::Ssh
+                    && self.focus.is_focused(&ShellFocus::Content)
+                    && self.ssh_content.has_modal() =>
+            {
+                return self.ssh_content.handle_key(code);
             }
             KeyCode::Char(d @ '1'..='9') => {
                 let idx = (d as usize) - ('1' as usize);

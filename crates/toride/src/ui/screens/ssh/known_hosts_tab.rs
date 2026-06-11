@@ -129,8 +129,31 @@ impl KnownHostsTab {
 
     /// Handle a mouse event for the host list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Action modal open: block background input.
-        if self.action_modal.is_some() {
+        // Confirm modal open: delegate mouse clicks to its buttons.
+        if self.action_modal == Some(ActionModal::Remove) {
+            if let Some(result) = self.confirm.handle_mouse(&mouse) {
+                return match result {
+                    ConfirmResult::Confirmed => self.handle_key(KeyCode::Enter),
+                    ConfirmResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                };
+            }
+            return None;
+        }
+        // Form modal open: delegate mouse to form buttons.
+        if self.action_modal.is_some() && self.action_modal != Some(ActionModal::Remove) {
+            if let Some(result) = self.form.handle_mouse(&mouse) {
+                return match result {
+                    FormResult::Submitted => self.handle_key(KeyCode::Enter),
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                        None
+                    }
+                    FormResult::Pending => None,
+                };
+            }
             return None;
         }
 
@@ -246,19 +269,23 @@ impl SshTab for KnownHostsTab {
                     }
                 }
                 ActionModal::Remove => {
-                    if let Some(ConfirmResult::Confirmed) = self.confirm.handle_key(code) {
-                        if !self.hosts.is_empty() {
-                            let host = self.hosts[self.selected].primary_host().to_string();
-                            // Persist to disk
-                            self.pending_ops.push(SshOp::KnownHostRemove { host });
-                            // Optimistic in-memory update
-                            self.hosts.remove(self.selected);
-                            if self.selected >= self.hosts.len() && !self.hosts.is_empty() {
-                                self.selected = self.hosts.len() - 1;
+                    match self.confirm.handle_key(code) {
+                        Some(ConfirmResult::Confirmed) => {
+                            if !self.hosts.is_empty() {
+                                let host = self.hosts[self.selected].primary_host().to_string();
+                                // Persist to disk
+                                self.pending_ops.push(SshOp::KnownHostRemove { host });
+                                // Optimistic in-memory update
+                                self.hosts.remove(self.selected);
+                                if self.selected >= self.hosts.len() && !self.hosts.is_empty() {
+                                    self.selected = self.hosts.len() - 1;
+                                }
+                                self.clamp_scroll();
                             }
-                            self.clamp_scroll();
+                            self.action_modal = None;
                         }
-                        self.action_modal = None;
+                        Some(ConfirmResult::Cancelled) => self.action_modal = None,
+                        None => {}
                     }
                 }
             }
@@ -332,7 +359,7 @@ impl SshTab for KnownHostsTab {
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Known Host", 52, 11,
+                    frame, p, "Add Known Host", 52, 13,
                     "Enter hostname, Esc to cancel",
                 );
             }
