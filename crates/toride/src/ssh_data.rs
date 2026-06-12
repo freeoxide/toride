@@ -634,8 +634,37 @@ async fn collect_real_data() -> SshDataBundle {
     let forwarding = forward_r.unwrap_or_default();
     let certificates = cert_r.unwrap_or_default();
 
-    let security =
-        build_security_data(&known_hosts, &authorized_keys, &diagnostics);
+    // Security data involves blocking filesystem I/O (sshd_config, /etc/passwd).
+    // Run it on the blocking thread pool to avoid stalling the tokio worker.
+    let security = {
+        let known_hosts = known_hosts.clone();
+        let authorized_keys = authorized_keys.clone();
+        let diagnostics = diagnostics.clone();
+        tokio::task::spawn_blocking(move || {
+            build_security_data(&known_hosts, &authorized_keys, &diagnostics)
+        }).await.unwrap_or_else(|e| {
+            tracing::warn!("security data collection panicked: {e}");
+            SshSecurityData {
+                sshd_config: HashMap::new(),
+                authorized_key_count: 0,
+                authorized_key_labels: Vec::new(),
+                known_hosts_count: 0,
+                known_hosts_hashed_count: 0,
+                security_diagnostics: Vec::new(),
+                access_info: SshAccessInfo {
+                    allowed_users: vec![],
+                    denied_users: vec![],
+                    allowed_groups: vec![],
+                    denied_groups: vec![],
+                    auth_methods: vec![],
+                    password_auth: true,
+                    pubkey_auth: true,
+                    permit_root_login: "prohibit-password".to_string(),
+                },
+                system_users: Vec::new(),
+            }
+        })
+    };
 
     SshDataBundle {
         keys,
@@ -674,7 +703,17 @@ fn empty_bundle() -> SshDataBundle {
             known_hosts_count: 0,
             known_hosts_hashed_count: 0,
             security_diagnostics: Vec::new(),
-            access_info: SshAccessInfo::default(),
+            access_info: SshAccessInfo {
+                allowed_users: vec![],
+                denied_users: vec![],
+                allowed_groups: vec![],
+                denied_groups: vec![],
+                auth_methods: vec![],
+                // Use OpenSSH defaults when sshd_config is unavailable.
+                password_auth: true,
+                pubkey_auth: true,
+                permit_root_login: "prohibit-password".to_string(),
+            },
             system_users: Vec::new(),
         },
     }
@@ -845,12 +884,20 @@ async fn collect_certificates(
 }
 
 /// Build security overview data from already-collected real data.
+///
+/// Reads `/etc/ssh/sshd_config` once and passes the content to both
+/// `parse_sshd_config` and `parse_sshd_access_info` to avoid a TOCTOU
+/// inconsistency from reading the file twice.
 fn build_security_data(
     known_hosts: &[KnownHostEntry],
     authorized_keys: &[AuthorizedKeyEntry],
     diagnostics: &[DiagnosticEntry],
 ) -> SshSecurityData {
-    let sshd_config = parse_sshd_config();
+    // Read sshd_config once — shared by both parse_sshd_config and parse_sshd_access_info.
+    let sshd_contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config"))
+        .unwrap_or_default();
+
+    let sshd_config = parse_sshd_config_from(&sshd_contents);
 
     let known_hosts_hashed_count = known_hosts.iter().filter(|h| h.is_hashed).count();
 
@@ -876,7 +923,7 @@ fn build_security_data(
         known_hosts_count: known_hosts.len(),
         known_hosts_hashed_count,
         security_diagnostics,
-        access_info: parse_sshd_access_info(),
+        access_info: parse_sshd_access_info_from(&sshd_contents),
         system_users: parse_system_users(),
     }
 }
@@ -1096,13 +1143,18 @@ impl SshSecurityData {
 ///
 /// Skips comments, empty lines, `Match` and `Include` blocks.
 /// Returns an empty map if the file doesn't exist or isn't readable.
+///
+/// **Note:** `Match` and `Include` blocks are silently skipped. Directives
+/// inside a `Match` block are not parsed, so the security dashboard may not
+/// reflect conditional overrides.
 fn parse_sshd_config() -> HashMap<String, String> {
-    let path = Path::new("/etc/ssh/sshd_config");
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return HashMap::new(),
-    };
+    let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config"))
+        .unwrap_or_default();
+    parse_sshd_config_from(&contents)
+}
 
+/// Parse sshd_config content (already read from disk) into key-value pairs.
+fn parse_sshd_config_from(contents: &str) -> HashMap<String, String> {
     let mut config = HashMap::new();
     for line in contents.lines() {
         let trimmed = line.trim();
@@ -1124,18 +1176,40 @@ fn parse_sshd_config() -> HashMap<String, String> {
 ///
 /// Extracts AllowUsers, DenyUsers, AllowGroups, DenyGroups,
 /// AuthenticationMethods, and auth booleans.
+///
+/// **Note:** `Match` and `Include` blocks are silently skipped. Directives
+/// inside a `Match` block (e.g. `PasswordAuthentication yes`) are not parsed,
+/// so the security dashboard may not reflect conditional overrides.
+///
+/// **Note:** On macOS, `/etc/ssh/sshd_config` may not exist or may not reflect
+/// the actual sshd configuration, which is managed by launchd. Additionally,
+/// system users are parsed from `/etc/passwd`, which is not the primary user
+/// database on macOS (Directory Service is). Results on macOS may be incomplete.
 fn parse_sshd_access_info() -> SshAccessInfo {
-    let mut info = SshAccessInfo::default();
-    let path = Path::new("/etc/ssh/sshd_config");
+    let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config"))
+        .unwrap_or_default();
+    parse_sshd_access_info_from(&contents)
+}
 
-    let contents = match std::fs::read_to_string(path) {
-        Ok(c) => c,
-        Err(_) => return info,
-    };
+/// Parse access control information from pre-read sshd_config content.
+fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
+    let mut info = SshAccessInfo::default();
+
+    // Track which directives were explicitly seen so we can apply
+    // OpenSSH defaults only when the directive is absent.
+    let mut seen_pubkey = false;
+    let mut seen_password = false;
+    let mut seen_permit_root = false;
 
     for line in contents.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+
+        // Skip Match and Include blocks — directives inside them are not parsed.
+        let lower = line.to_ascii_lowercase();
+        if lower.starts_with("match ") || lower.starts_with("include ") {
             continue;
         }
 
@@ -1163,20 +1237,32 @@ fn parse_sshd_access_info() -> SshAccessInfo {
             }
             "passwordauthentication" => {
                 info.password_auth = value.eq_ignore_ascii_case("yes");
+                seen_password = true;
             }
             "pubkeyauthentication" => {
                 info.pubkey_auth = value.eq_ignore_ascii_case("yes");
+                seen_pubkey = true;
             }
             "permitrootlogin" => {
                 info.permit_root_login = value.to_string();
+                seen_permit_root = true;
             }
             _ => {}
         }
     }
 
-    // PubkeyAuthentication defaults to yes per OpenSSH spec
-    if !info.pubkey_auth {
+    // Apply OpenSSH defaults when directives are absent.
+    // PubkeyAuthentication defaults to "yes" per OpenSSH spec.
+    if !seen_pubkey {
         info.pubkey_auth = true;
+    }
+    // PasswordAuthentication defaults to "yes" in OpenSSH.
+    if !seen_password {
+        info.password_auth = true;
+    }
+    // PermitRootLogin defaults to "prohibit-password" since OpenSSH 7.0.
+    if !seen_permit_root {
+        info.permit_root_login = "prohibit-password".to_string();
     }
 
     info
@@ -1232,7 +1318,7 @@ fn parse_system_users() -> Vec<SystemUserInfo> {
                         .count();
                     (true, count)
                 }
-                Err(_) => (true, 0),
+                Err(_) => (false, 0),
             }
         } else {
             (false, 0)
@@ -1283,7 +1369,6 @@ mod mock {
                 has_public: true,
                 has_cert: false,
                 used_by_hosts: vec!["github.com".into(), "gitlab.com".into()],
-                host_count: 2,
             },
             SshKeyEntry {
                 name: "id_rsa".into(),
@@ -1294,7 +1379,6 @@ mod mock {
                 has_public: true,
                 has_cert: true,
                 used_by_hosts: vec![],
-                host_count: 0,
             },
             SshKeyEntry {
                 name: "deploy_key".into(),
@@ -1305,7 +1389,6 @@ mod mock {
                 has_public: true,
                 has_cert: false,
                 used_by_hosts: vec!["prod-server".into(), "staging".into(), "dev".into(), "backup".into(), "monitor".into()],
-                host_count: 5,
             },
         ]
     }
@@ -1764,8 +1847,10 @@ mod tests {
         assert!(result.is_some());
         let bundle = result.unwrap();
         // Real data — just verify it doesn't crash and returns a bundle
-        assert!(bundle.keys.is_empty() || !bundle.keys.is_empty());
-        assert!(bundle.known_hosts.is_empty() || !bundle.known_hosts.is_empty());
+        // Verify the bundle is well-formed: security data is present.
+        assert!(bundle.security.access_info.pubkey_auth, "pubkey_auth should default to true");
+        assert!(!bundle.security.access_info.permit_root_login.is_empty(),
+            "permit_root_login should have a default value");
     }
 
     #[tokio::test]
@@ -1835,6 +1920,138 @@ mod tests {
             .sshd_config
             .insert("pubkeyauthentication".into(), "no".into());
         assert_eq!(security.grade(), SecurityGrade::F);
+    }
+
+    #[test]
+    fn security_grade_b_with_password_auth() {
+        // Start with a clean slate (no warnings) to test B in isolation.
+        let mut security = mock::collect_mock_security();
+        security.security_diagnostics = vec![]; // Clear warnings
+        security.sshd_config.insert("passwordauthentication".into(), "yes".into());
+        // 100 - 25 (password) = 75 => B
+        assert_eq!(security.grade(), SecurityGrade::B);
+    }
+
+    #[test]
+    fn security_grade_c_with_password_and_root_login() {
+        // Start with a clean slate (no warnings) to test C in isolation.
+        let mut security = mock::collect_mock_security();
+        security.security_diagnostics = vec![]; // Clear warnings
+        security.sshd_config.insert("passwordauthentication".into(), "yes".into());
+        security.sshd_config.insert("permitrootlogin".into(), "yes".into());
+        // 100 - 25 (password) - 20 (root) = 55 => C
+        assert_eq!(security.grade(), SecurityGrade::C);
+    }
+
+    // ── parse_sshd_config_from tests ─────────────────────────────────────────
+
+    #[test]
+    fn parse_sshd_config_from_empty() {
+        let config = parse_sshd_config_from("");
+        assert!(config.is_empty());
+    }
+
+    #[test]
+    fn parse_sshd_config_from_skips_comments() {
+        let contents = "# this is a comment\nPort 2222\n";
+        let config = parse_sshd_config_from(contents);
+        assert_eq!(config.get("port"), Some(&"2222".to_string()));
+        assert_eq!(config.len(), 1);
+    }
+
+    #[test]
+    fn parse_sshd_config_from_skips_empty_lines() {
+        let contents = "\n\nPort 2222\n\n";
+        let config = parse_sshd_config_from(contents);
+        assert_eq!(config.get("port"), Some(&"2222".to_string()));
+    }
+
+    #[test]
+    fn parse_sshd_config_from_skips_match_and_include() {
+        // Note: the parser skips lines starting with "match " or "include "
+        // but does NOT skip indented directives inside a Match block.
+        // This is a known limitation documented in the function docs.
+        let contents = "Port 2222\nMatch Address 192.168.0.0/16\nInclude /etc/ssh/sshd_config.d/*.conf\n";
+        let config = parse_sshd_config_from(contents);
+        assert_eq!(config.len(), 1);
+        assert_eq!(config.get("port"), Some(&"2222".to_string()));
+    }
+
+    #[test]
+    fn parse_sshd_config_from_keys_are_lowercased() {
+        let contents = "PasswordAuthentication no\nPermitRootLogin yes\n";
+        let config = parse_sshd_config_from(contents);
+        assert_eq!(config.get("passwordauthentication"), Some(&"no".to_string()));
+        assert_eq!(config.get("permitrootlogin"), Some(&"yes".to_string()));
+    }
+
+    #[test]
+    fn parse_sshd_config_from_various_whitespace() {
+        // Note: split_once(char::is_whitespace) splits on the first space only,
+        // so leading spaces in the value portion are preserved.
+        let contents = "Port 2222\nMaxAuthTries 3\n";
+        let config = parse_sshd_config_from(contents);
+        assert_eq!(config.get("port"), Some(&"2222".to_string()));
+        assert_eq!(config.get("maxauthtries"), Some(&"3".to_string()));
+    }
+
+    // ── parse_sshd_access_info_from tests ────────────────────────────────────
+
+    #[test]
+    fn parse_access_info_defaults_when_empty() {
+        let info = parse_sshd_access_info_from("");
+        assert!(info.pubkey_auth, "pubkey_auth should default to true");
+        assert!(info.password_auth, "password_auth should default to true");
+        assert_eq!(info.permit_root_login, "prohibit-password");
+        assert!(info.allowed_users.is_empty());
+        assert!(info.denied_users.is_empty());
+    }
+
+    #[test]
+    fn parse_access_info_explicit_values() {
+        let contents = "\
+            PasswordAuthentication no\n\
+            PubkeyAuthentication yes\n\
+            PermitRootLogin no\n\
+            AllowUsers alice bob\n\
+            DenyUsers guest\n\
+            AllowGroups ssh-users\n\
+            DenyGroups no-ssh\n\
+            AuthenticationMethods publickey,keyboard-interactive\n";
+        let info = parse_sshd_access_info_from(contents);
+        assert!(!info.password_auth);
+        assert!(info.pubkey_auth);
+        assert_eq!(info.permit_root_login, "no");
+        assert_eq!(info.allowed_users, vec!["alice", "bob"]);
+        assert_eq!(info.denied_users, vec!["guest"]);
+        assert_eq!(info.allowed_groups, vec!["ssh-users"]);
+        assert_eq!(info.denied_groups, vec!["no-ssh"]);
+        assert_eq!(info.auth_methods, vec!["publickey", "keyboard-interactive"]);
+    }
+
+    #[test]
+    fn parse_access_info_pubkey_no_is_preserved() {
+        let contents = "PubkeyAuthentication no\n";
+        let info = parse_sshd_access_info_from(contents);
+        assert!(!info.pubkey_auth, "explicit 'no' should be preserved");
+    }
+
+    #[test]
+    fn parse_access_info_password_no_is_preserved() {
+        let contents = "PasswordAuthentication no\n";
+        let info = parse_sshd_access_info_from(contents);
+        assert!(!info.password_auth, "explicit 'no' should be preserved");
+    }
+
+    #[test]
+    fn parse_access_info_skips_match_lines() {
+        // The parser skips lines starting with "match " but does not
+        // skip indented content inside Match blocks — that's a known limitation.
+        let contents = "\
+            PasswordAuthentication no\n\
+            Match Address 192.168.0.0/16\n";
+        let info = parse_sshd_access_info_from(contents);
+        assert!(!info.password_auth, "PasswordAuthentication no should be preserved");
     }
 
     // ── Write-path integration tests ─────────────────────────────────────────

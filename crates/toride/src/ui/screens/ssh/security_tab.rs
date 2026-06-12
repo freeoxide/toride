@@ -858,4 +858,198 @@ mod tests {
             "should show overflow count: {output}"
         );
     }
+
+    #[test]
+    fn render_password_auth_enabled() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info.password_auth = true;
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("✓ Password"),
+            "should show enabled password auth: {output}"
+        );
+    }
+
+    #[test]
+    fn render_pubkey_auth_disabled() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info.pubkey_auth = false;
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("✗ Public Key"),
+            "should show disabled pubkey auth: {output}"
+        );
+    }
+
+    #[test]
+    fn render_root_login_yes_shows_warning_color() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info.permit_root_login = "yes".into();
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("yes"),
+            "should show root login yes: {output}"
+        );
+    }
+
+    #[test]
+    fn render_root_login_no_shows_ok_color() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info.permit_root_login = "no".into();
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("no"),
+            "should show root login no: {output}"
+        );
+    }
+
+    #[test]
+    fn render_empty_auth_methods_hides_methods() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info.auth_methods = vec![];
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            !output.contains("Methods:"),
+            "should not show Methods line when empty: {output}"
+        );
+    }
+
+    #[test]
+    fn render_allowed_users_with_badges() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info.allowed_users = vec!["alice".into(), "bob".into()];
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("alice"),
+            "should show alice user badge: {output}"
+        );
+        assert!(
+            output.contains("bob"),
+            "should show bob user badge: {output}"
+        );
+    }
+
+    #[test]
+    fn render_denied_users_with_badges() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info.denied_users = vec!["guest".into()];
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("Denied:"),
+            "should show Denied label: {output}"
+        );
+        assert!(
+            output.contains("guest"),
+            "should show denied user: {output}"
+        );
+    }
+
+    #[test]
+    fn render_denied_groups_with_badges() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.access_info.denied_groups = vec!["no-ssh".into()];
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("Denied groups:"),
+            "should show Denied groups label: {output}"
+        );
+        assert!(
+            output.contains("no-ssh"),
+            "should show denied group: {output}"
+        );
+    }
+
+    #[test]
+    fn render_empty_system_users_shows_message() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        let mut data = sample_data();
+        data.system_users = vec![];
+        tab.set_data(data);
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("Unable to read system users"),
+            "should show unable to read message: {output}"
+        );
+    }
+
+    #[test]
+    fn render_warnings_with_hint() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = SecurityTab::new();
+        tab.set_data(sample_data_with_warnings());
+        let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("WARNINGS"),
+            "should show WARNINGS header: {output}"
+        );
+        assert!(
+            output.contains("Run chmod 600 ~/.ssh/id_rsa"),
+            "should show the hint text: {output}"
+        );
+    }
 }

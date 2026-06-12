@@ -294,7 +294,6 @@ impl SshTab for KeysTab {
                                 has_public: false,
                                 has_cert: false,
                                 used_by_hosts: vec![],
-                                host_count: 0,
                             });
                             // Select the newly added key
                             self.selected = self.keys.len() - 1;
@@ -558,7 +557,9 @@ impl SshTab for KeysTab {
     }
 
     fn has_modal(&self) -> bool {
-        self.detail_modal.is_visible() || self.action_modal.is_some()
+        self.detail_modal.is_visible()
+            || self.action_modal.is_some()
+            || self.passphrase_test_result.is_some()
     }
 
     fn close_modal(&mut self) {
@@ -712,9 +713,9 @@ impl KeysTab {
             }
 
             // Host count badge
-            if key.host_count > 0 {
+            if key.host_count() > 0 {
                 spans.push(Span::styled(
-                    format!(" →{}", key.host_count),
+                    format!(" →{}", key.host_count()),
                     Style::new().fg(p.text_muted),
                 ));
             }
@@ -905,7 +906,6 @@ mod tests {
                 has_public: true,
                 has_cert: false,
                 used_by_hosts: vec!["github.com".into(), "gh.com".into()],
-                host_count: 2,
             },
             SshKeyEntry {
                 name: "id_rsa".into(),
@@ -916,7 +916,6 @@ mod tests {
                 has_public: true,
                 has_cert: true,
                 used_by_hosts: vec![],
-                host_count: 0,
             },
         ]
     }
@@ -1080,5 +1079,75 @@ mod tests {
         assert!(output.contains("Type"), "type label: {output}");
         assert!(output.contains("Comment"), "comment label: {output}");
         assert!(output.contains("Passphrase"), "passphrase label: {output}");
+    }
+
+    #[test]
+    fn render_detail_modal_with_hosts_shows_referenced_by() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = KeysTab::new();
+        tab.set_keys(sample_keys());
+        tab.detail_key_idx = Some(0);
+        tab.detail_modal.open();
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("Referenced by"),
+            "should show Referenced by header: {output}"
+        );
+        assert!(
+            output.contains("github.com"),
+            "should show host name github.com: {output}"
+        );
+    }
+
+    #[test]
+    fn render_detail_modal_with_many_hosts_shows_overflow() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = KeysTab::new();
+        let keys = vec![SshKeyEntry {
+            name: "id_many_hosts".into(),
+            key_type: "Ed25519".into(),
+            fingerprint: "SHA256:abc123".into(),
+            encrypted: false,
+            permissions: "0600".into(),
+            has_public: true,
+            has_cert: false,
+            used_by_hosts: vec![
+                "host1".into(), "host2".into(), "host3".into(),
+                "host4".into(), "host5".into(), "host6".into(),
+                "host7".into(),
+            ],
+        }];
+        tab.set_keys(keys);
+        tab.detail_key_idx = Some(0);
+        tab.detail_modal.open();
+        let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("+2 more"),
+            "should show +N more overflow for 7 hosts: {output}"
+        );
+    }
+
+    #[test]
+    fn render_list_shows_host_count_badge() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut tab = KeysTab::new();
+        tab.set_keys(sample_keys());
+        let mut terminal = Terminal::new(TestBackend::new(100, 30)).unwrap();
+        terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
+        let output = terminal.backend().to_string();
+        assert!(
+            output.contains("→2"),
+            "should show host count badge ->2 for first key: {output}"
+        );
     }
 }

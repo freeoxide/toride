@@ -201,7 +201,6 @@ pub fn convert_keys(keys: Vec<toride_ssh::SshKey>) -> Vec<SshKeyEntry> {
             has_public: k.has_public_pair,
             has_cert: k.has_certificate,
             used_by_hosts: k.used_by_hosts.clone(),
-            host_count: k.used_by_hosts.len(),
         })
         .collect()
 }
@@ -474,4 +473,181 @@ fn format_unix_timestamp(secs: u64) -> String {
     chrono::DateTime::from_timestamp(secs as i64, 0)
         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
         .unwrap_or_else(|| "(invalid)".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── truncate_key ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn truncate_key_short_returns_unchanged() {
+        assert_eq!(truncate_key("abc", 10), "abc");
+    }
+
+    #[test]
+    fn truncate_key_exact_len_returns_unchanged() {
+        assert_eq!(truncate_key("abcde", 5), "abcde");
+    }
+
+    #[test]
+    fn truncate_key_long_truncates() {
+        let result = truncate_key("abcdefghij", 8);
+        assert!(result.contains(".."), "should contain '..': {result}");
+        assert!(result.len() <= 8, "should be <= 8 chars: {result}");
+    }
+
+    #[test]
+    fn truncate_key_empty_string() {
+        assert_eq!(truncate_key("", 5), "");
+    }
+
+    // ── format_options ────────────────────────────────────────────────────────
+
+    #[test]
+    fn format_options_empty() {
+        let opts = toride_ssh::authorized_keys::Options::default();
+        assert_eq!(format_options(&opts), "");
+    }
+
+    #[test]
+    fn format_options_command_only() {
+        let mut opts = toride_ssh::authorized_keys::Options::default();
+        opts.command = Some("/bin/bash".into());
+        let result = format_options(&opts);
+        assert!(result.contains("command=\"/bin/bash\""), "got: {result}");
+    }
+
+    #[test]
+    fn format_options_multiple_boolean_flags() {
+        let mut opts = toride_ssh::authorized_keys::Options::default();
+        opts.no_pty = true;
+        opts.no_port_forwarding = true;
+        opts.restrict = true;
+        let result = format_options(&opts);
+        assert!(result.contains("no-pty"), "got: {result}");
+        assert!(result.contains("no-port-forwarding"), "got: {result}");
+        assert!(result.contains("restrict"), "got: {result}");
+    }
+
+    // ── format_duration_since ────────────────────────────────────────────────
+
+    #[test]
+    fn format_duration_since_none_returns_empty() {
+        assert_eq!(format_duration_since(None), "");
+    }
+
+    #[test]
+    fn format_duration_since_past_time() {
+        let past = std::time::SystemTime::now()
+            - std::time::Duration::from_secs(2 * 86400 + 3 * 3600 + 15 * 60);
+        let result = format_duration_since(Some(past));
+        assert!(result.contains("2d"), "should contain days: {result}");
+        assert!(result.contains("3h"), "should contain hours: {result}");
+        assert!(result.contains("15m"), "should contain minutes: {result}");
+    }
+
+    #[test]
+    fn format_duration_since_sub_hour() {
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(45 * 60);
+        let result = format_duration_since(Some(past));
+        assert!(!result.contains("d"), "should not contain days: {result}");
+        assert!(!result.contains("h"), "should not contain hours: {result}");
+        assert!(result.contains("45m"), "should contain minutes: {result}");
+    }
+
+    // ── format_unix_timestamp ────────────────────────────────────────────────
+
+    #[test]
+    fn format_unix_timestamp_forever() {
+        assert_eq!(format_unix_timestamp(u64::MAX), "forever");
+    }
+
+    #[test]
+    fn format_unix_timestamp_epoch() {
+        let result = format_unix_timestamp(0);
+        assert!(result.starts_with("1970"), "epoch should start with 1970: {result}");
+    }
+
+    #[test]
+    fn format_unix_timestamp_known_value() {
+        // 2024-01-01 00:00:00 UTC = 1704067200
+        let result = format_unix_timestamp(1704067200);
+        assert!(result.starts_with("2024"), "should start with 2024: {result}");
+    }
+
+    // ── format_key_type ──────────────────────────────────────────────────────
+
+    #[test]
+    fn format_key_type_ed25519() {
+        assert_eq!(format_key_type(&KeyType::Ed25519), "Ed25519");
+    }
+
+    #[test]
+    fn format_key_type_rsa_with_bits() {
+        assert_eq!(format_key_type(&KeyType::Rsa { bits: 4096 }), "RSA 4096");
+    }
+
+    #[test]
+    fn format_key_type_rsa_without_bits() {
+        assert_eq!(format_key_type(&KeyType::Rsa { bits: 0 }), "RSA");
+    }
+
+    #[test]
+    fn format_key_type_ecdsa_variants() {
+        assert_eq!(format_key_type(&KeyType::EcdsaP256), "ECDSA P-256");
+        assert_eq!(format_key_type(&KeyType::EcdsaP384), "ECDSA P-384");
+        assert_eq!(format_key_type(&KeyType::EcdsaP521), "ECDSA P-521");
+    }
+
+    // ── convert_config_ast ───────────────────────────────────────────────────
+
+    #[test]
+    fn convert_config_ast_empty() {
+        let ast = toride_ssh::config::ast::ConfigAst { nodes: vec![] };
+        let entries = convert_config_ast(&ast);
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn convert_config_ast_host_block() {
+        use toride_ssh::config::ast::{ConfigNode, DirectiveData, HostBlockData};
+        let ast = toride_ssh::config::ast::ConfigAst {
+            nodes: vec![ConfigNode::HostBlock(Box::new(HostBlockData {
+                header: "myhost".into(),
+                patterns: vec!["myhost".into()],
+                nodes: vec![
+                    ConfigNode::Directive(Box::new(DirectiveData {
+                        keyword: "HostName".into(),
+                        separator: toride_ssh::config::ast::Separator::Space,
+                        value: "example.com".into(),
+                        comment: None,
+                        indent: String::new(),
+                    })),
+                    ConfigNode::Directive(Box::new(DirectiveData {
+                        keyword: "User".into(),
+                        separator: toride_ssh::config::ast::Separator::Space,
+                        value: "alice".into(),
+                        comment: None,
+                        indent: String::new(),
+                    })),
+                    ConfigNode::Directive(Box::new(DirectiveData {
+                        keyword: "Port".into(),
+                        separator: toride_ssh::config::ast::Separator::Space,
+                        value: "2222".into(),
+                        comment: None,
+                        indent: String::new(),
+                    })),
+                ],
+            }))],
+        };
+        let entries = convert_config_ast(&ast);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "myhost");
+        assert_eq!(entries[0].host_name.as_deref(), Some("example.com"));
+        assert_eq!(entries[0].user.as_deref(), Some("alice"));
+        assert_eq!(entries[0].port, Some(2222));
+        assert_eq!(entries[0].directive_count, 3);
+    }
 }

@@ -551,8 +551,16 @@ pub struct SshKeyEntry {
     pub has_cert: bool,
     /// Host aliases in ~/.ssh/config that reference this key via IdentityFile.
     pub used_by_hosts: Vec<String>,
+}
+
+impl SshKeyEntry {
     /// Number of config hosts referencing this key.
-    pub host_count: usize,
+    ///
+    /// Computed from `used_by_hosts.len()` to avoid denormalization drift.
+    #[must_use]
+    pub fn host_count(&self) -> usize {
+        self.used_by_hosts.len()
+    }
 }
 
 /// Presentation model for a known_hosts entry in the Hosts tab.
@@ -812,8 +820,7 @@ mod tests {
                 permissions: "0600".into(),
                 has_public: true,
                 has_cert: false,
-                used_by_hosts: vec![],
-                host_count: 2,
+                used_by_hosts: vec!["github.com".into(), "gh.com".into()],
             },
         ]);
         let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
