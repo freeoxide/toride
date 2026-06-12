@@ -1350,6 +1350,13 @@ fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
 /// Parse system users with valid login shells from /etc/passwd.
 ///
 /// Checks each user's home directory for ~/.ssh/authorized_keys.
+/// Discover real SSH users on the system.
+///
+/// Unlike a brute-force `/etc/passwd` dump, this only returns users who
+/// have SSH actually configured — a real login shell, an existing home
+/// directory, and a `.ssh/` directory with at least one key file or
+/// config. This filters out the 100+ system daemon accounts that litter
+/// `/etc/passwd` on both macOS and Linux.
 fn parse_system_users() -> Vec<SystemUserInfo> {
     let contents = match std::fs::read_to_string("/etc/passwd") {
         Ok(c) => c,
@@ -1375,16 +1382,38 @@ fn parse_system_users() -> Vec<SystemUserInfo> {
         }
 
         let username = parts[0];
+        let uid: u32 = match parts[2].parse() {
+            Ok(u) => u,
+            Err(_) => continue,
+        };
         let home_dir = parts[5];
         let shell = parts[6];
 
-        // Skip users with invalid shells
+        // Skip system accounts (uid 0 = root, <500 on macOS, <1000 on Linux).
+        if uid < 500 {
+            continue;
+        }
+
+        // Skip users with invalid / non-interactive shells.
         if invalid_shells.iter().any(|s| shell == *s) || shell.is_empty() {
             continue;
         }
 
-        // Check for authorized_keys
-        let ak_path = std::path::Path::new(home_dir).join(".ssh/authorized_keys");
+        // Only include users whose home directory actually exists.
+        let home = std::path::Path::new(home_dir);
+        if !home.is_dir() {
+            continue;
+        }
+
+        // Only include users who have .ssh/ set up — if there's no .ssh
+        // directory at all, this user has never used SSH on this machine.
+        let ssh_dir = home.join(".ssh");
+        if !ssh_dir.is_dir() {
+            continue;
+        }
+
+        // Count keys in authorized_keys.
+        let ak_path = ssh_dir.join("authorized_keys");
         let (has_authorized_keys, key_count) = if ak_path.exists() {
             match std::fs::read_to_string(&ak_path) {
                 Ok(contents) => {
@@ -1395,7 +1424,7 @@ fn parse_system_users() -> Vec<SystemUserInfo> {
                             !l.is_empty() && !l.starts_with('#')
                         })
                         .count();
-                    (true, count)
+                    (count > 0, count)
                 }
                 Err(_) => (false, 0),
             }
