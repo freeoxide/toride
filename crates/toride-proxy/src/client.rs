@@ -29,9 +29,17 @@ impl ProxyClient {
     /// Uses a [`toride_runner::DuctRunner`] with the default timeout
     /// and resolves system paths.
     ///
+    /// Construction never fails on a missing `nginx` binary: this method only
+    /// builds the runner and resolves default [`ProxyPaths`] — it does NOT
+    /// shell out and does NOT check for `nginx`. A missing binary is surfaced
+    /// later by the doctor as a `Critical` finding rather than as a
+    /// construction error. The only way construction returns an error is a
+    /// genuine I/O failure in path resolution.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the nginx binary cannot be found.
+    /// Returns an error only on a genuine I/O failure while resolving system
+    /// paths. A missing `nginx` binary is NOT an error here.
     #[cfg(feature = "client")]
     pub fn system() -> Result<Self> {
         let runner = toride_runner::duct_runner::DuctRunner;

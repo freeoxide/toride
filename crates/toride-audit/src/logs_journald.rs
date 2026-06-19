@@ -4,6 +4,7 @@
 //! audit log aggregation and querying.
 
 use crate::{AuditPaths, Error, Result};
+use toride_runner::CommandSpec;
 
 // ---------------------------------------------------------------------------
 // JournaldManager
@@ -37,24 +38,18 @@ impl<'a> JournaldManager<'a> {
     ///
     /// Returns [`Error::BinaryNotFound`] if `journalctl` is not available.
     pub fn query(&self, since: Option<&str>, unit: Option<&str>) -> Result<String> {
-        let bin = which::which("journalctl")
-            .map_err(|_| Error::BinaryNotFound("journalctl".to_owned()))?;
+        // Presence check (the runner would also fail, but this gives a clearer error).
+        which::which("journalctl").map_err(|_| Error::BinaryNotFound("journalctl".to_owned()))?;
 
-        let mut args: Vec<String> = Vec::new();
-
+        let mut spec = CommandSpec::new("journalctl");
         if let Some(s) = since {
-            args.push("--since".to_owned());
-            args.push(s.to_owned());
+            spec = spec.arg("--since").arg(s);
         }
-
         if let Some(u) = unit {
-            args.push("--unit".to_owned());
-            args.push(u.to_owned());
+            spec = spec.arg("--unit").arg(u);
         }
-
-        let arg_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
-        let output = self.runner.run_output(bin, &arg_refs)?;
-        Ok(output)
+        let output = self.runner.run(&spec)?;
+        Ok(output.stdout)
     }
 
     /// Query journal entries for the audit daemon.
@@ -74,10 +69,10 @@ impl<'a> JournaldManager<'a> {
     ///
     /// Returns [`Error::BinaryNotFound`] if `journalctl` is not available.
     pub fn disk_usage(&self) -> Result<String> {
-        let bin = which::which("journalctl")
-            .map_err(|_| Error::BinaryNotFound("journalctl".to_owned()))?;
-        let output = self.runner.run_output(bin, &["--disk-usage"])?;
-        Ok(output)
+        which::which("journalctl").map_err(|_| Error::BinaryNotFound("journalctl".to_owned()))?;
+        let spec = CommandSpec::new("journalctl").arg("--disk-usage");
+        let output = self.runner.run(&spec)?;
+        Ok(output.stdout)
     }
 
     /// Vacuum journal entries older than the specified time.
@@ -93,10 +88,9 @@ impl<'a> JournaldManager<'a> {
     /// Returns [`Error::BinaryNotFound`] if `journalctl` is not available.
     /// Returns [`Error::CommandFailed`] if the vacuum fails.
     pub fn vacuum_time(&self, time: &str) -> Result<()> {
-        let bin = which::which("journalctl")
-            .map_err(|_| Error::BinaryNotFound("journalctl".to_owned()))?;
-        self.runner
-            .run_checked(bin, &[&format!("--vacuum-time={time}")])?;
+        which::which("journalctl").map_err(|_| Error::BinaryNotFound("journalctl".to_owned()))?;
+        let spec = CommandSpec::new("journalctl").arg(format!("--vacuum-time={time}"));
+        self.runner.run_checked(&spec)?;
         Ok(())
     }
 }

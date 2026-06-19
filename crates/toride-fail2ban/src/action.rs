@@ -34,6 +34,7 @@ fn shell_escape(value: &str) -> String {
 /// shell expansion (`$`, backtick, etc.). This function scans the template for
 /// that pattern and returns an error if found.
 fn check_dq_placeholders(template: &str) -> Result<(), crate::Error> {
+    // Only check string-valued placeholders that go through shell_escape.
     const PLACEHOLDERS: &[&str] = &["<ip>", "<jail>", "<log-path>"];
     let bytes = template.as_bytes();
     let mut in_single_quote = false;
@@ -58,7 +59,8 @@ fn check_dq_placeholders(template: &str) -> Result<(), crate::Error> {
                 for &ph in PLACEHOLDERS {
                     if remaining.starts_with(ph) {
                         return Err(crate::Error::InvalidConfig(format!(
-                            "template contains {ph} inside double quotes which bypasses                              shell escaping; use single quotes or no quotes around placeholders"
+                            "template contains {ph} inside double quotes which bypasses \
+                             shell escaping; use single quotes or no quotes around placeholders"
                         )));
                     }
                 }
@@ -82,14 +84,14 @@ fn expand_template(template: &str, replacements: &[(&str, &str)]) -> String {
     let bytes = template.as_bytes();
 
     while pos < bytes.len() {
-        if bytes[pos] == b'<'
-            && let Some(close) = template[pos..].find('>')
-        {
-            let placeholder = &template[pos..=(pos + close)];
-            if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
-                result.push_str(value);
-                pos += placeholder.len();
-                continue;
+        if bytes[pos] == b'<' {
+            if let Some(close) = template[pos..].find('>') {
+                let placeholder = &template[pos..pos + close + 1];
+                if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
+                    result.push_str(value);
+                    pos += placeholder.len();
+                    continue;
+                }
             }
         }
         let ch = template[pos..]
@@ -173,6 +175,7 @@ impl ActionExec {
     /// All string values are shell-escaped to prevent command injection.
     /// Numeric values (`<prefix>`, `<ban-time>`, `<fail-count>`) are not escaped
     /// since they are guaranteed to be numeric.
+    ///
     /// # Errors
     ///
     /// Returns `InvalidConfig` if a shell-escaped placeholder (`<ip>`, `<jail>`,

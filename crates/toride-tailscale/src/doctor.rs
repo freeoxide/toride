@@ -223,14 +223,24 @@ impl<'a> Doctor<'a> {
     }
 
     /// Check that the `tailscale` binary is on `$PATH`.
+    ///
+    /// The PATH scan (`which::which`) is a synchronous, blocking filesystem walk. It is wrapped
+    /// in `spawn_blocking` so the tokio worker thread is never stalled — matching the invariant
+    /// documented by the toride data layer (cloud/fail2ban/tailscale collectors wrap *all*
+    /// shell-out / PATH lookups in `spawn_blocking`). On a cold cache or a networked filesystem
+    /// the scan can take tens of milliseconds; offloading it keeps the runtime responsive.
     async fn check_binary(&self) -> Vec<Finding> {
-        match which::which("tailscale") {
-            Ok(_) => vec![Finding::ok(
+        let found = tokio::task::spawn_blocking(|| which::which("tailscale").is_ok())
+            .await
+            .unwrap_or(false);
+        if found {
+            vec![Finding::ok(
                 "tailscale.binary",
                 "tailscale binary found on PATH",
-            )],
-            Err(_) => vec![Finding::critical("tailscale.binary", "tailscale binary not found on PATH")
-                .with_fix("Install Tailscale: https://tailscale.com/download")],
+            )]
+        } else {
+            vec![Finding::critical("tailscale.binary", "tailscale binary not found on PATH")
+                .with_fix("Install Tailscale: https://tailscale.com/download")]
         }
     }
 

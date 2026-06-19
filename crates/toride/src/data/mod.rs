@@ -20,6 +20,10 @@ pub enum ModuleStatus {
     Active,
     /// Configured and ready to use.
     Ready,
+    /// Available but reporting elevated findings (warnings/errors).
+    Degraded,
+    /// Backend unavailable / not reachable — the section cannot be inspected.
+    Offline,
 }
 
 impl ModuleStatus {
@@ -30,13 +34,19 @@ impl ModuleStatus {
             ModuleStatus::Installed => "installed",
             ModuleStatus::Active => "active",
             ModuleStatus::Ready => "ready",
+            ModuleStatus::Degraded => "degraded",
+            ModuleStatus::Offline => "offline",
         }
     }
 
     /// Status glyph shown before the label.
     #[must_use]
     pub fn glyph(self) -> &'static str {
-        "✓"
+        match self {
+            ModuleStatus::Installed | ModuleStatus::Active | ModuleStatus::Ready => "✓",
+            ModuleStatus::Degraded => "!",
+            ModuleStatus::Offline => "✗",
+        }
     }
 
     /// Palette colour for the status text.
@@ -46,6 +56,8 @@ impl ModuleStatus {
             ModuleStatus::Installed => p.ok,
             ModuleStatus::Active => p.accent3,
             ModuleStatus::Ready => p.info,
+            ModuleStatus::Degraded => p.warn,
+            ModuleStatus::Offline => p.err,
         }
     }
 }
@@ -145,6 +157,28 @@ pub enum Section {
     Firewall,
     /// fail2ban management.
     Fail2ban,
+    /// Tailscale mesh VPN management (read-only).
+    Tailscale,
+    /// Kernel-hardening management (sysctl profiles, shm mounts, doctor).
+    Harden,
+    /// WireGuard VPN tunnel management (read-only).
+    WireGuard,
+    /// Automatic security updates management (read-only).
+    Updates,
+    /// User & access-control management (read-only).
+    Users,
+    /// Audit daemon / AIDE integrity / log aggregation (read-only).
+    Audit,
+    /// Outbound traffic monitoring & anomaly detection (read-only).
+    Monitor,
+    /// Backup scheduling & repository management via restic/borg (read-only).
+    Backup,
+    /// Reverse proxy, TLS certs & WAF management (read-only).
+    Proxy,
+    /// Cloud provider security groups / firewalls / agent (read-only).
+    Cloud,
+    /// Mise runtime version manager (installed tools, outdated, config, doctor).
+    Mise,
     /// Logs viewer.
     Logs,
     /// About screen.
@@ -164,6 +198,17 @@ impl Section {
             Section::Ssh => "SSH",
             Section::Firewall => "Firewall",
             Section::Fail2ban => "fail2ban",
+            Section::Tailscale => "Tailscale",
+            Section::Harden => "Harden",
+            Section::WireGuard => "WireGuard",
+            Section::Updates => "Updates",
+            Section::Users => "Users",
+            Section::Audit => "Audit",
+            Section::Monitor => "Monitor",
+            Section::Backup => "Backup",
+            Section::Proxy => "Proxy",
+            Section::Cloud => "Cloud",
+            Section::Mise => "Mise",
             Section::Logs => "Logs",
             Section::About => "About",
             Section::Settings => "Settings",
@@ -324,6 +369,17 @@ impl DashboardData {
             SidebarItem { icon: "◆", section: Section::Ssh, badge: None },
             SidebarItem { icon: "▦", section: Section::Firewall, badge: Some("active".into()) },
             SidebarItem { icon: "✦", section: Section::Fail2ban, badge: Some("12".into()) },
+            SidebarItem { icon: "⛓", section: Section::Tailscale, badge: None },
+            SidebarItem { icon: "⚙", section: Section::Harden, badge: None },
+            SidebarItem { icon: "◇", section: Section::WireGuard, badge: None },
+            SidebarItem { icon: "↻", section: Section::Updates, badge: None },
+            SidebarItem { icon: "◉", section: Section::Users, badge: None },
+            SidebarItem { icon: "⚖", section: Section::Audit, badge: None },
+            SidebarItem { icon: "◎", section: Section::Monitor, badge: None },
+            SidebarItem { icon: "▣", section: Section::Backup, badge: None },
+            SidebarItem { icon: "⊕", section: Section::Proxy, badge: None },
+            SidebarItem { icon: "☁", section: Section::Cloud, badge: None },
+            SidebarItem { icon: "Ⓜ", section: Section::Mise, badge: None },
             SidebarItem { icon: "≡", section: Section::Logs, badge: None },
             SidebarItem { icon: "◇", section: Section::About, badge: None },
             SidebarItem { icon: "⚙", section: Section::Settings, badge: None },
@@ -455,7 +511,7 @@ mod tests {
     fn sidebar_starts_with_dashboard() {
         let d = DashboardData::mock();
         assert_eq!(d.sidebar[0].section, Section::Dashboard);
-        assert_eq!(d.sidebar.len(), 9);
+        assert_eq!(d.sidebar.len(), 20);
     }
 
     #[test]
@@ -471,5 +527,25 @@ mod tests {
         let p = Palette::default();
         assert_ne!(ModuleStatus::Installed.color(p), ModuleStatus::Active.color(p));
         assert_ne!(ActivityKind::Ok.color(p), ActivityKind::Warn.color(p));
+    }
+
+    /// Regression for the green-✓-on-offline bug: `offline` must not share the
+    /// installed glyph (`✓`) or ok colour, and `degraded` must use the warn
+    /// glyph (`!`) / colour rather than the ready `✓` / info colour.
+    #[test]
+    fn offline_and_degraded_have_distinct_glyphs_and_colors() {
+        let p = Palette::default();
+        // Offline: ✗ in err, never the healthy ✓ / ok.
+        assert_eq!(ModuleStatus::Offline.glyph(), "✗");
+        assert_eq!(ModuleStatus::Offline.label(), "offline");
+        assert_eq!(ModuleStatus::Offline.color(p), p.err);
+        assert_ne!(ModuleStatus::Offline.glyph(), ModuleStatus::Installed.glyph());
+        assert_ne!(ModuleStatus::Offline.color(p), ModuleStatus::Installed.color(p));
+        // Degraded: ! in warn, never the ready ✓ / info.
+        assert_eq!(ModuleStatus::Degraded.glyph(), "!");
+        assert_eq!(ModuleStatus::Degraded.label(), "degraded");
+        assert_eq!(ModuleStatus::Degraded.color(p), p.warn);
+        assert_ne!(ModuleStatus::Degraded.glyph(), ModuleStatus::Ready.glyph());
+        assert_ne!(ModuleStatus::Degraded.color(p), ModuleStatus::Ready.color(p));
     }
 }

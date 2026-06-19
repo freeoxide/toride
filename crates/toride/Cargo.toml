@@ -31,6 +31,25 @@ toride-status = { path = "../toride-status" }
 rattles = "0.3.1"
 libc = "0.2"
 
+# ── Live-data backend crates (read-only Phase 1 integrations) ────────────────
+# Feature sets chosen for live read data + doctor diagnostics; write-paths land
+# in Phase 2. Most crates default to ["client","doctor"]; the three below add
+# the extra surfaces their live view needs.
+toride-fail2ban = { path = "../toride-fail2ban" }
+toride-monitor = { path = "../toride-monitor" }
+toride-wireguard = { path = "../toride-wireguard" }
+toride-harden = { path = "../toride-harden" }
+toride-updates = { path = "../toride-updates" }
+toride-users = { path = "../toride-users" }
+toride-proxy = { path = "../toride-proxy" }
+toride-cloud = { path = "../toride-cloud" }
+toride-backup = { path = "../toride-backup" }
+toride-tailscale = { path = "../toride-tailscale" }
+toride-audit = { path = "../toride-audit", features = ["client", "doctor", "auditd", "integrity", "logs"] }
+toride-mise = { path = "../toride-mise", features = ["json", "toml", "diagnostics", "tracing"] }
+ufw-kit = { path = "../ufw-kit", features = ["client", "doctor", "tokio"] }
+which = { workspace = true }
+
 [dev-dependencies]
 insta = "1"
 serde_json = { workspace = true }

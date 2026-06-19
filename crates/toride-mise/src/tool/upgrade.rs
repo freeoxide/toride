@@ -212,11 +212,43 @@ impl Mise {
     ///
     /// Invokes `mise outdated --json` and returns structured results.
     ///
+    /// **Note:** real `mise outdated --json` emits a JSON *object* keyed by
+    /// tool name (e.g. `{"node":{"requested":"22","current":"22.0.0","latest":"22.1.0"}}`),
+    /// which cannot be deserialised into `Vec<OutdatedTool>` (a sequence). Use
+    /// [`Mise::outdated_map`] for the canonical, parseable shape. This method
+    /// is retained for callers that pass a mise version known to emit a list.
+    ///
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
     pub async fn outdated(&self) -> MiseResult<Vec<OutdatedTool>> {
+        self.run_json(["outdated", "--json"]).await
+    }
+
+    /// Query outdated tools using the canonical JSON shape emitted by real
+    /// `mise outdated --json`.
+    ///
+    /// Real `mise outdated --json` emits a JSON *object* keyed by tool name:
+    ///
+    /// ```json
+    /// {"node":{"requested":"22","current":"22.0.0","latest":"22.1.0"}}
+    /// ```
+    ///
+    /// This is the [`OutdatedOutput`] = `BTreeMap<String, OutdatedToolEntry>`
+    /// canonical type, which deserialises correctly where a `Vec` would fail
+    /// with "invalid type: map, expected a sequence". Prefer this over
+    /// [`Mise::outdated`] when consuming the live `mise outdated --json`
+    /// payload.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised
+    /// into [`OutdatedOutput`].
+    pub async fn outdated_map(
+        &self,
+    ) -> MiseResult<crate::serde_utils::json_outputs::OutdatedOutput> {
         self.run_json(["outdated", "--json"]).await
     }
 

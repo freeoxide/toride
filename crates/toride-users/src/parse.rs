@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::{Error, Result};
+use crate::Result;
 
 // ---------------------------------------------------------------------------
 // PasswdEntry
@@ -51,10 +51,17 @@ impl std::fmt::Display for PasswdEntry {
 ///
 /// Blank lines and comments (starting with `#`) are skipped.
 ///
-/// # Errors
+/// This parser is LENIENT at the per-line granularity, mirroring
+/// [`parse_sudoers`]: a line that does not have exactly 7 colon-separated
+/// fields, or whose UID/GID fails `u32` parsing, is logged with
+/// `tracing::warn!` and skipped — every other valid line still survives. This
+/// matters because `/etc/passwd` is free-form text that an operator may
+/// hand-edit; a single malformed line must not discard the whole file (which
+/// would otherwise render the read as an empty table and hide every valid
+/// entry).
 ///
-/// Returns [`Error::Validation`] if a line has fewer than 7 colon-separated
-/// fields or the UID/GID cannot be parsed as `u32`.
+/// IO failures (the file could not be read at all) are still surfaced as
+/// `Err` from [`read_passwd`].
 pub fn parse_passwd(content: &str) -> Result<Vec<PasswdEntry>> {
     let mut entries = Vec::new();
     for line in content.lines() {
@@ -64,17 +71,26 @@ pub fn parse_passwd(content: &str) -> Result<Vec<PasswdEntry>> {
         }
         let fields: Vec<&str> = line.split(':').collect();
         if fields.len() != 7 {
-            return Err(Error::Validation(format!(
-                "passwd line has {} fields (expected 7): {line:?}",
+            tracing::warn!(
+                "skipping malformed passwd line ({} fields, expected 7): {line:?}",
                 fields.len()
-            )));
+            );
+            continue;
         }
-        let uid = fields[2].parse::<u32>().map_err(|e| {
-            Error::Validation(format!("invalid UID {:?}: {e}", fields[2]))
-        })?;
-        let gid = fields[3].parse::<u32>().map_err(|e| {
-            Error::Validation(format!("invalid GID {:?}: {e}", fields[3]))
-        })?;
+        let uid = match fields[2].parse::<u32>() {
+            Ok(u) => u,
+            Err(e) => {
+                tracing::warn!("skipping passwd line with invalid UID {:?}: {e}", fields[2]);
+                continue;
+            }
+        };
+        let gid = match fields[3].parse::<u32>() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!("skipping passwd line with invalid GID {:?}: {e}", fields[3]);
+                continue;
+            }
+        };
         entries.push(PasswdEntry {
             username: fields[0].to_owned(),
             password: fields[1].to_owned(),
@@ -121,10 +137,15 @@ impl std::fmt::Display for GroupEntry {
 
 /// Parse the contents of `/etc/group` into a list of entries.
 ///
-/// # Errors
+/// This parser is LENIENT at the per-line granularity, mirroring
+/// [`parse_sudoers`] and [`parse_passwd`]: a line that does not have exactly 4
+/// colon-separated fields, or whose GID fails `u32` parsing, is logged with
+/// `tracing::warn!` and skipped — every other valid line still survives. As
+/// with `/etc/passwd`, `/etc/group` is free-form text that an operator may
+/// hand-edit, so a single malformed line must not discard the whole file.
 ///
-/// Returns [`Error::Validation`] if a line has fewer than 4 colon-separated
-/// fields or the GID cannot be parsed as `u32`.
+/// IO failures (the file could not be read at all) are still surfaced as
+/// `Err` from [`read_group`].
 pub fn parse_group(content: &str) -> Result<Vec<GroupEntry>> {
     let mut entries = Vec::new();
     for line in content.lines() {
@@ -134,14 +155,19 @@ pub fn parse_group(content: &str) -> Result<Vec<GroupEntry>> {
         }
         let fields: Vec<&str> = line.split(':').collect();
         if fields.len() != 4 {
-            return Err(Error::Validation(format!(
-                "group line has {} fields (expected 4): {line:?}",
+            tracing::warn!(
+                "skipping malformed group line ({} fields, expected 4): {line:?}",
                 fields.len()
-            )));
+            );
+            continue;
         }
-        let gid = fields[2].parse::<u32>().map_err(|e| {
-            Error::Validation(format!("invalid GID {:?}: {e}", fields[2]))
-        })?;
+        let gid = match fields[2].parse::<u32>() {
+            Ok(g) => g,
+            Err(e) => {
+                tracing::warn!("skipping group line with invalid GID {:?}: {e}", fields[2]);
+                continue;
+            }
+        };
         let members = if fields[3].is_empty() {
             Vec::new()
         } else {
@@ -240,8 +266,9 @@ pub fn parse_sudoers(content: &str) -> Result<Vec<SudoersEntry>> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the file cannot be read, or [`Error::Validation`]
-/// if parsing fails.
+/// Returns [`Error::Io`] if the file cannot be read. Malformed lines are
+/// skipped by [`parse_passwd`] (logged via `tracing::warn!`), never propagated
+/// as `Err`.
 pub fn read_passwd(path: &Path) -> Result<Vec<PasswdEntry>> {
     let content = std::fs::read_to_string(path)?;
     parse_passwd(&content)
@@ -251,8 +278,9 @@ pub fn read_passwd(path: &Path) -> Result<Vec<PasswdEntry>> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the file cannot be read, or [`Error::Validation`]
-/// if parsing fails.
+/// Returns [`Error::Io`] if the file cannot be read. Malformed lines are
+/// skipped by [`parse_group`] (logged via `tracing::warn!`), never propagated
+/// as `Err`.
 pub fn read_group(path: &Path) -> Result<Vec<GroupEntry>> {
     let content = std::fs::read_to_string(path)?;
     parse_group(&content)
@@ -262,9 +290,227 @@ pub fn read_group(path: &Path) -> Result<Vec<GroupEntry>> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the file cannot be read, or [`Error::SudoError`]
-/// if parsing fails.
+/// Returns [`Error::Io`] if the file cannot be read. Malformed rule lines are
+/// skipped by [`parse_sudoers`], never propagated as `Err`.
 pub fn read_sudoers(path: &Path) -> Result<Vec<SudoersEntry>> {
     let content = std::fs::read_to_string(path)?;
     parse_sudoers(&content)
+}
+
+// ── Tests ───────────────────────────────────────────────────────────────────
+//
+// These exercise the PARSER edge cases — the unhappy paths the audit flagged as
+// having zero coverage. They pin the per-line lenient degradation behavior: a
+// single malformed line must never discard the whole file, matching
+// `parse_sudoers`'s long-standing `continue` precedent.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_passwd ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_passwd_empty_input_is_ok_empty() {
+        assert!(parse_passwd("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_passwd_whitespace_only_input_is_ok_empty() {
+        assert!(parse_passwd("   \n\t\n  ").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_passwd_comment_only_input_is_ok_empty() {
+        assert!(parse_passwd("# a comment\n# another\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_passwd_valid_line_parses_fields() {
+        let entries =
+            parse_passwd("root:x:0:0:root:/root:/bin/bash\n").expect("valid line parses");
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        assert_eq!(e.username, "root");
+        assert_eq!(e.password, "x");
+        assert_eq!(e.uid, 0);
+        assert_eq!(e.gid, 0);
+        assert_eq!(e.gecos, "root");
+        assert_eq!(e.home, "/root");
+        assert_eq!(e.shell, "/bin/bash");
+    }
+
+    #[test]
+    fn parse_passwd_malformed_line_is_skipped_not_fatal() {
+        // A valid entry, a degenerate line, then another valid entry. The two
+        // valid entries must survive — this is the core per-line degradation
+        // contract that previously failed fast and lost everything.
+        let input = concat!(
+            "root:x:0:0:root:/root:/bin/bash\n",
+            "BADMALFORMEDLINE\n",
+            "daemon:x:1:1:daemon:/usr/sbin:/usr/sbin/nologin\n",
+        );
+        let entries = parse_passwd(input).expect("partial read must be Ok, not Err");
+        assert_eq!(entries.len(), 2, "both valid entries survive the bad line");
+        assert_eq!(entries[0].username, "root");
+        assert_eq!(entries[1].username, "daemon");
+    }
+
+    #[test]
+    fn parse_passwd_non_numeric_uid_is_skipped() {
+        // A well-formed field count but a non-numeric UID — previously
+        // returned Err and dropped the whole file.
+        let input =
+            "weird:x:notanumber:0:weird:/home/weird:/bin/bash\nroot:x:0:0:root:/root:/bin/bash\n";
+        let entries = parse_passwd(input).expect("bad-UID line skipped, not fatal");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].username, "root");
+    }
+
+    #[test]
+    fn parse_passwd_non_numeric_gid_is_skipped() {
+        let input =
+            "weird:x:0:notanumber:weird:/home/weird:/bin/bash\nroot:x:0:0:root:/root:/bin/bash\n";
+        let entries = parse_passwd(input).expect("bad-GID line skipped, not fatal");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].username, "root");
+    }
+
+    #[test]
+    fn parse_passwd_too_few_fields_is_skipped() {
+        let input = "only:three:fields\nroot:x:0:0:root:/root:/bin/bash\n";
+        let entries = parse_passwd(input).expect("short line skipped, not fatal");
+        assert_eq!(entries.len(), 1);
+    }
+
+    #[test]
+    fn parse_passwd_too_many_fields_is_skipped() {
+        let input =
+            "a:b:c:d:e:f:g:extra\nroot:x:0:0:root:/root:/bin/bash\n";
+        let entries = parse_passwd(input).expect("long line skipped, not fatal");
+        assert_eq!(entries.len(), 1);
+    }
+
+    // ── parse_group ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_group_empty_input_is_ok_empty() {
+        assert!(parse_group("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_group_comment_only_input_is_ok_empty() {
+        assert!(parse_group("# group file\n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_group_valid_line_parses_fields() {
+        let entries = parse_group("sudo:x:27:deployer,ops\n").expect("valid line parses");
+        assert_eq!(entries.len(), 1);
+        let g = &entries[0];
+        assert_eq!(g.name, "sudo");
+        assert_eq!(g.password, "x");
+        assert_eq!(g.gid, 27);
+        assert_eq!(g.members, vec!["deployer".to_string(), "ops".to_string()]);
+    }
+
+    #[test]
+    fn parse_group_empty_members_field_is_ok_empty_vec() {
+        let entries = parse_group("nogroup:x:65534:\n").expect("empty members parse");
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].members.is_empty());
+    }
+
+    #[test]
+    fn parse_group_malformed_line_is_skipped_not_fatal() {
+        let input = "sudo:x:27:deployer\nBADMALFORMEDLINE\nwheel:x:10:root\n";
+        let entries = parse_group(input).expect("partial read must be Ok, not Err");
+        assert_eq!(entries.len(), 2, "both valid groups survive the bad line");
+        assert_eq!(entries[0].name, "sudo");
+        assert_eq!(entries[1].name, "wheel");
+    }
+
+    #[test]
+    fn parse_group_non_numeric_gid_is_skipped() {
+        let input = "weird:x:notanumber:user\nsudo:x:27:deployer\n";
+        let entries = parse_group(input).expect("bad-GID line skipped, not fatal");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].name, "sudo");
+    }
+
+    #[test]
+    fn parse_group_wrong_field_count_is_skipped() {
+        // !=4 fields.
+        let input = "only:two\nsudo:x:27:deployer\na:b:c:d:extra\n";
+        let entries = parse_group(input).expect("wrong-count lines skipped, not fatal");
+        assert_eq!(entries.len(), 1);
+    }
+
+    // ── parse_sudoers ────────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_sudoers_empty_input_is_ok_empty() {
+        assert!(parse_sudoers("").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_sudoers_comment_and_directive_only_is_ok_empty() {
+        let input = "# comment\nDefaults env_reset\n@include /etc/sudoers.d\n@includedir /etc/sudoers.d\n";
+        assert!(parse_sudoers(input).unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_sudoers_line_with_too_few_tokens_is_skipped() {
+        // <3 space-parts — the existing `continue` path.
+        let input = "onlyoneword\nroot ALL\n";
+        let entries = parse_sudoers(input).expect("short lines skipped, not fatal");
+        assert!(
+            entries.is_empty(),
+            "lines with <3 tokens produce no entries; got {entries:?}"
+        );
+    }
+
+    #[test]
+    fn parse_sudoers_valid_rule_parses_fields() {
+        // The simplified parser splits on spaces with `splitn(4, ' ')`, so the
+        // `=` must be its own whitespace-separated token (i.e. `who hosts = …`,
+        // not `who hosts=(…)` which glues the `=` onto the host).
+        let input = "%sudo ALL = (root) NOPASSWD: ALL\n";
+        let entries = parse_sudoers(input).expect("valid rule parses");
+        assert_eq!(entries.len(), 1);
+        let s = &entries[0];
+        assert_eq!(s.who, "%sudo");
+        assert_eq!(s.hosts, "ALL");
+        assert_eq!(s.runas.as_deref(), Some("root"));
+        assert!(s.nopasswd);
+        assert_eq!(s.commands, "ALL");
+    }
+
+    #[test]
+    fn parse_sudoers_unmatched_paren_falls_back_to_no_runas() {
+        // `= (runas` with no closing paren — the fall-back branch sets runas=None
+        // and keeps the rest verbatim. Space-separated so the `=` is its own
+        // token and the `(runas` reaches the runas-extraction logic.
+        let input = "bob ALL = (root NOPASSWD: /bin/true\n";
+        let entries = parse_sudoers(input).expect("unmatched paren is not fatal");
+        assert_eq!(entries.len(), 1);
+        let s = &entries[0];
+        assert_eq!(s.who, "bob");
+        assert!(
+            s.runas.is_none(),
+            "unmatched paren must fall back to runas=None; got {:?}",
+            s.runas
+        );
+    }
+
+    #[test]
+    fn parse_sudoers_malformed_line_mid_file_is_skipped() {
+        // A valid rule, a degenerate line, then another valid rule. Space-
+        // separated `=` so the rules parse cleanly.
+        let input = "%sudo ALL = (root) ALL\nBADMALFORMED\nroot ALL = (ALL) ALL\n";
+        let entries = parse_sudoers(input).expect("partial read must be Ok, not Err");
+        assert_eq!(entries.len(), 2, "both valid rules survive the bad line");
+        assert_eq!(entries[0].who, "%sudo");
+        assert_eq!(entries[1].who, "root");
+    }
 }

@@ -68,7 +68,7 @@ impl AideConfig {
 
         for line in content.lines() {
             let trimmed = line.trim();
-            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with('@@') {
+            if trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with("@@") {
                 continue;
             }
 

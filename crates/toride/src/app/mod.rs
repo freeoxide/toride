@@ -19,6 +19,19 @@ use tokio::sync::mpsc;
 use crate::action::Action;
 use crate::navigation::{Navigator, Screen};
 use crate::ssh_data::{SshDataCollector, SshOpError, execute_op};
+use crate::fail2ban_data::Fail2banCollector;
+use crate::ufw_kit_data::FirewallCollector;
+use crate::toride_harden_data::HardenCollector;
+use crate::toride_monitor_data::MonitorCollector;
+use crate::toride_proxy_data::ProxyCollector;
+use crate::toride_audit_data::AuditCollector;
+use crate::toride_backup_data::BackupCollector;
+use crate::toride_cloud_data::CloudCollector;
+use crate::toride_updates_data::UpdatesCollector;
+use crate::toride_users_data::UsersCollector;
+use crate::toride_wireguard_data::WireguardCollector;
+use crate::toride_tailscale_data::TailscaleCollector;
+use crate::toride_mise_data::MiseCollector;
 use crate::status_collector::StatusCollector;
 use crate::ui::screens::AppScreen;
 use crate::ui::screens::help::HelpScreen;
@@ -50,6 +63,44 @@ pub struct App {
     transition_cache: TransitionCache,
     collector: StatusCollector,
     ssh_collector: SshDataCollector,
+    /// Fail2ban read-only data collector (no write path, no cooldown).
+    fail2ban_collector: Fail2banCollector,
+    /// UFW firewall read-only data collector (no write path, no cooldown).
+    ufw_kit_collector: FirewallCollector,
+    /// Kernel-hardening read-only data collector (no write path, no cooldown).
+    toride_harden_collector: HardenCollector,
+    /// WireGuard read-only data collector (no write path, no cooldown).
+    toride_wireguard_collector: WireguardCollector,
+    /// Updates read-only data collector (no write path, no cooldown).
+    toride_updates_collector: UpdatesCollector,
+    /// User & access-control read-only data collector (no write path, no
+    /// cooldown).
+    toride_users_collector: UsersCollector,
+    /// Audit (auditd/AIDE/logs) read-only data collector (no write path, no
+    /// cooldown).
+    toride_audit_collector: AuditCollector,
+    /// Outbound traffic monitor read-only data collector (no write path, no
+    /// cooldown).
+    toride_monitor_collector: MonitorCollector,
+    /// Backup (restic/borg) read-only data collector (no write path, no
+    /// cooldown).
+    toride_backup_collector: BackupCollector,
+    /// Reverse-proxy (nginx/certbot/WAF) read-only data collector (no write
+    /// path, no cooldown).
+    toride_proxy_collector: ProxyCollector,
+    /// Cloud provider (security groups / firewalls / agent) read-only data
+    /// collector (no write path, no cooldown).
+    toride_cloud_collector: CloudCollector,
+    /// Tailscale mesh VPN (status / peers / netcheck / DNS) read-only data
+    /// collector. Queries the local daemon over HTTP (localhost:41642) — no write
+    /// path, no cooldown. Each network probe is individually timeout-bounded so an
+    /// absent `tailscaled` cannot hang collection.
+    toride_tailscale_collector: TailscaleCollector,
+    /// Mise runtime version manager read-only data collector (no write path,
+    /// no cooldown). Shells out to the local `mise` binary via its async runner;
+    /// each command is timeout-bounded so an absent mise degrades to
+    /// `available == false` rather than hanging the collector task.
+    toride_mise_collector: MiseCollector,
     /// Receiver for SSH write operation error messages.
     ssh_error_rx: mpsc::UnboundedReceiver<SshOpError>,
     /// Sender clone passed to spawned SSH write tasks.
@@ -132,6 +183,19 @@ impl App {
             transition_cache: TransitionCache::new(),
             collector: StatusCollector::new(),
             ssh_collector: SshDataCollector::new(),
+            fail2ban_collector: Fail2banCollector::new(),
+            ufw_kit_collector: FirewallCollector::new(),
+            toride_harden_collector: HardenCollector::new(),
+            toride_wireguard_collector: WireguardCollector::new(),
+            toride_updates_collector: UpdatesCollector::new(),
+            toride_users_collector: UsersCollector::new(),
+            toride_audit_collector: AuditCollector::new(),
+            toride_monitor_collector: MonitorCollector::new(),
+            toride_backup_collector: BackupCollector::new(),
+            toride_proxy_collector: ProxyCollector::new(),
+            toride_cloud_collector: CloudCollector::new(),
+            toride_tailscale_collector: TailscaleCollector::new(),
+            toride_mise_collector: MiseCollector::new(),
             ssh_write_cooldown: None,
         }
     }
@@ -409,6 +473,123 @@ impl App {
                     }
                 }
 
+                // Receive collected fail2ban data (read-only: no cooldown, no
+                // optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view).
+                Some(b) = self.fail2ban_collector.poll(), if self.fail2ban_collector.is_pending() => {
+                    self.dashboard.set_fail2ban_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected UFW firewall data (read-only: no cooldown,
+                // no optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view).
+                Some(b) = self.ufw_kit_collector.poll(), if self.ufw_kit_collector.is_pending() => {
+                    self.dashboard.set_ufw_kit_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected kernel-hardening data (read-only: no
+                // cooldown, no optimistic-update reconciliation — every refresh
+                // cleanly overwrites the previous view).
+                Some(b) = self.toride_harden_collector.poll(), if self.toride_harden_collector.is_pending() => {
+                    self.dashboard.set_toride_harden_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected WireGuard data (read-only: no cooldown, no
+                // optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view).
+                Some(b) = self.toride_wireguard_collector.poll(), if self.toride_wireguard_collector.is_pending() => {
+                    self.dashboard.set_toride_wireguard_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected updates data (read-only: no cooldown, no
+                // optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view).
+                Some(b) = self.toride_updates_collector.poll(), if self.toride_updates_collector.is_pending() => {
+                    self.dashboard.set_toride_updates_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected user & access-control data (read-only: no
+                // cooldown, no optimistic-update reconciliation — every refresh
+                // cleanly overwrites the previous view). Per-file read failures
+                // degrade that field but keep available == true; only a
+                // collection panic flips the panel to the degraded state.
+                Some(b) = self.toride_users_collector.poll(), if self.toride_users_collector.is_pending() => {
+                    self.dashboard.set_toride_users_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected audit data (read-only: no cooldown, no
+                // optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view). Same 60s findings cache as
+                // the other read-only sections.
+                Some(b) = self.toride_audit_collector.poll(), if self.toride_audit_collector.is_pending() => {
+                    self.dashboard.set_toride_audit_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected outbound-traffic monitor data (read-only:
+                // no cooldown, no optimistic-update reconciliation — every
+                // refresh cleanly overwrites the previous view). Same 60s
+                // findings cache as the other read-only sections.
+                Some(b) = self.toride_monitor_collector.poll(), if self.toride_monitor_collector.is_pending() => {
+                    self.dashboard.set_toride_monitor_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected backup data (read-only: no cooldown, no
+                // optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view). Same 60s findings cache as
+                // the other read-only sections.
+                Some(b) = self.toride_backup_collector.poll(), if self.toride_backup_collector.is_pending() => {
+                    self.dashboard.set_toride_backup_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected reverse-proxy data (read-only: no cooldown,
+                // no optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view). Same 60s findings cache as
+                // the other read-only sections.
+                Some(b) = self.toride_proxy_collector.poll(), if self.toride_proxy_collector.is_pending() => {
+                    self.dashboard.set_toride_proxy_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected cloud-provider data (read-only: no cooldown,
+                // no optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view). Same 60s findings cache as
+                // the other read-only sections.
+                Some(b) = self.toride_cloud_collector.poll(), if self.toride_cloud_collector.is_pending() => {
+                    self.dashboard.set_toride_cloud_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected Tailscale data (read-only: no cooldown, no
+                // optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view). Same 60s findings cache as the
+                // other read-only sections. Probes are individually timeout-bounded
+                // so an absent tailscaled degrades to findings (available == true)
+                // rather than hanging the collector task.
+                Some(b) = self.toride_tailscale_collector.poll(), if self.toride_tailscale_collector.is_pending() => {
+                    self.dashboard.set_toride_tailscale_data(b);
+                    self.needs_redraw = true;
+                }
+
+                // Receive collected mise data (read-only: no cooldown, no
+                // optimistic-update reconciliation — every refresh cleanly
+                // overwrites the previous view). Same 60s findings cache as the
+                // other read-only sections. Each mise command is individually
+                // timeout-bounded so an absent mise degrades to available ==
+                // false (BinaryNotFound) or to findings rather than hanging.
+                Some(b) = self.toride_mise_collector.poll(), if self.toride_mise_collector.is_pending() => {
+                    self.dashboard.set_toride_mise_data(b);
+                    self.needs_redraw = true;
+                }
+
                 // Receive SSH write errors from the serialized write task.
                 // On a reverting error (disk state known unchanged → the
                 // optimistic UI update is now a lie) clear the write cooldown
@@ -510,6 +691,73 @@ impl App {
                             self.ssh_write_cooldown = None;
                             self.ssh_collector.start();
                         }
+                        // Fail2ban is read-only: no cooldown, no optimistic
+                        // updates. The collector's internal 60s findings cache
+                        // throttles the expensive doctor suite.
+                        self.fail2ban_collector.start();
+                        // UFW firewall is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as fail2ban.
+                        self.ufw_kit_collector.start();
+                        // Kernel-hardening is read-only: no cooldown, no
+                        // optimistic updates. Same 60s findings cache as
+                        // fail2ban / ufw-kit.
+                        self.toride_harden_collector.start();
+                        // WireGuard is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as fail2ban /
+                        // ufw-kit / harden.
+                        self.toride_wireguard_collector.start();
+                        // Updates is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as the other
+                        // read-only sections.
+                        self.toride_updates_collector.start();
+                        // Users is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as the other
+                        // read-only sections. Per-file read failures on
+                        // macOS (/etc/shadow, /etc/sudoers, /etc/pam.d) are
+                        // degraded per-field, not fatal.
+                        self.toride_users_collector.start();
+                        // Audit is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as the other
+                        // read-only sections.
+                        self.toride_audit_collector.start();
+                        // Monitor is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as the other
+                        // read-only sections. Degrades to available=false on
+                        // macOS (iptables/conntrack/ss/journalctl missing).
+                        self.toride_monitor_collector.start();
+                        // Backup is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as the other
+                        // read-only sections. Degrades per-field when binaries
+                        // are missing (surfaces as Critical doctor findings,
+                        // keeping available == true).
+                        self.toride_backup_collector.start();
+                        // Reverse-proxy is read-only: no cooldown, no
+                        // optimistic updates. Same 60s findings cache as the
+                        // other read-only sections. Degrades to available=false
+                        // on macOS (nginx/certbot/systemctl missing) and to
+                        // Critical findings when only some binaries are absent.
+                        self.toride_proxy_collector.start();
+                        // Cloud is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as the other
+                        // read-only sections. On a macOS dev box with no cloud
+                        // VM, provider resolves to Unknown (env vars + DMI files
+                        // don't match) and the section stays available == true
+                        // so the operator sees the provider.unknown Warning
+                        // finding rather than a blank panel.
+                        self.toride_cloud_collector.start();
+                        // Tailscale is read-only: no cooldown, no optimistic
+                        // updates. Same 60s findings cache as the other read-only
+                        // sections. The backend talks to the local daemon over HTTP
+                        // (localhost:41642); each probe is timeout-bounded so an
+                        // absent tailscaled degrades to a critical finding rather
+                        // than hanging the collector.
+                        self.toride_tailscale_collector.start();
+                        // Mise is read-only: no cooldown, no optimistic updates.
+                        // Same 60s findings cache as the other read-only sections.
+                        // The backend shells out to the local `mise` binary via its
+                        // async runner; each command is timeout-bounded so an absent
+                        // mise degrades to available == false rather than hanging.
+                        self.toride_mise_collector.start();
                         self.needs_redraw = true;
                     }
                 }

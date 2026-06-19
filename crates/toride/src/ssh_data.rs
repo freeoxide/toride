@@ -51,7 +51,13 @@ pub struct SshDataBundle {
 
 /// Manages periodic async collection of SSH data.
 pub struct SshDataCollector {
-    rx: Option<oneshot::Receiver<SshDataBundle>>,
+    /// Carries the bundle AND whether the cached diagnostics were reused for
+    /// this poll. The freshness timestamp must only be advanced when the doctor
+    /// was actually re-run (`used_cache == false`); otherwise every cache-hit
+    /// poll would reset the TTL clock with the SAME (already-cached)
+    /// diagnostics and the cache would never expire for the lifetime of the
+    /// app (identical to the fail2ban findings cache).
+    rx: Option<oneshot::Receiver<(SshDataBundle, bool)>>,
     /// Cached diagnostics from the last collection (avoids re-running every 2s).
     cached_diagnostics: Option<Vec<DiagnosticEntry>>,
     /// When the diagnostics cache was last refreshed.
@@ -90,25 +96,36 @@ impl SshDataCollector {
         let cached_diag = self.cached_diagnostics.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
-            let bundle = collect_real_data(use_cache, cached_diag).await;
-            let _ = tx.send(bundle);
+            let (bundle, used_cache) = collect_real_data(use_cache, cached_diag).await;
+            let _ = tx.send((bundle, used_cache));
         });
     }
 
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed.
+    /// pending or if the collection failed. On success the cached diagnostics
+    /// are updated to the freshly-returned diagnostics, but the freshness
+    /// timestamp is only advanced when the doctor was actually re-run (not on a
+    /// cache-hit poll) — otherwise the 60s TTL would be re-armed forever with
+    /// the same cached data on every 2s refresh.
     pub async fn poll(&mut self) -> Option<SshDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some(ref bundle) = result {
+                if let Some((ref bundle, used_cache)) = result {
                     self.cached_diagnostics = Some(bundle.diagnostics.clone());
-                    self.diagnostics_fresh_at = Some(std::time::Instant::now());
+                    // Only advance the freshness clock when the doctor was
+                    // actually re-run. On a cache-hit poll the diagnostics are
+                    // the SAME data we already cached, so resetting the TTL
+                    // here would let the cache live forever as long as the 2s
+                    // refresh tick keeps firing inside the TTL window.
+                    if !used_cache {
+                        self.diagnostics_fresh_at = Some(std::time::Instant::now());
+                    }
                 }
                 self.rx = None;
-                result
+                result.map(|(bundle, _)| bundle)
             }
             None => None,
         }
@@ -1352,15 +1369,20 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
 ///
 /// When `use_cache` is true and `cached_diag` is provided, diagnostics are
 /// reused from the cache instead of re-running the full check suite.
+///
+/// Returns `(bundle, used_cache)` where `used_cache` records whether the
+/// diagnostics were actually taken from the cache on a successful collection.
+/// The caller advances the TTL clock ONLY when `used_cache == false`, so a
+/// cache-hit poll never resets the freshness timestamp with stale data.
 async fn collect_real_data(
     use_cache: bool,
     cached_diag: Option<Vec<DiagnosticEntry>>,
-) -> SshDataBundle {
+) -> (SshDataBundle, bool) {
     let mgr = match toride_ssh::SshManager::new() {
         Ok(m) => m,
         Err(e) => {
             tracing::warn!("SshManager::new() failed: {e}");
-            return empty_bundle();
+            return (empty_bundle(), false);
         }
     };
 
@@ -1434,18 +1456,21 @@ async fn collect_real_data(
         })
     };
 
-    SshDataBundle {
-        keys,
-        known_hosts,
-        config_hosts,
-        agent_status,
-        agent_keys,
-        forwarding,
-        diagnostics,
-        authorized_keys,
-        certificates,
-        security,
-    }
+    (
+        SshDataBundle {
+            keys,
+            known_hosts,
+            config_hosts,
+            agent_status,
+            agent_keys,
+            forwarding,
+            diagnostics,
+            authorized_keys,
+            certificates,
+            security,
+        },
+        use_cache,
+    )
 }
 
 /// Empty bundle used when SshManager fails to initialize.

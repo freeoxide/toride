@@ -86,3 +86,25 @@ pub mod cli;
 pub use error::{Error, Result};
 pub use profile::HardeningProfile;
 pub use spec::HardenSpec;
+
+/// Re-export of the diagnostic [`toride_diagnostic_types::Finding`] type so
+/// downstream crates (notably the `toride` TUI) can name the doctor findings
+/// returned by [`doctor::doctor`] WITHOUT taking a direct dependency on
+/// `toride-diagnostic-types`. Mirrors `ufw-kit`'s re-export of the same types
+/// from its `spec` module.
+#[cfg(feature = "doctor")]
+pub use toride_diagnostic_types::Finding;
+/// Re-export of the diagnostic [`toride_diagnostic_types::Severity`] enum.
+#[cfg(feature = "doctor")]
+pub use toride_diagnostic_types::Severity;
+
+/// Re-export of the [`toride_runner::DuctRunner`] constructor type so downstream
+/// crates (notably the `toride` TUI) can build a fresh runner for the
+/// [`doctor::doctor`] free function WITHOUT taking a direct dependency on
+/// `toride-runner`. Mirrors `toride-fail2ban`'s `command::DuctRunner` re-export.
+#[cfg(feature = "client")]
+pub use toride_runner::DuctRunner;
+/// Re-export of the [`toride_runner::Runner`] trait (companion to
+/// [`DuctRunner`], needed to name `&dyn Runner` at the call site).
+#[cfg(feature = "client")]
+pub use toride_runner::Runner;

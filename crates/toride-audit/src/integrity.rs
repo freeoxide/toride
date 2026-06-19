@@ -5,6 +5,7 @@
 //! checks, and report generation.
 
 use crate::{AuditPaths, Error, Result};
+use toride_runner::CommandSpec;
 
 // ---------------------------------------------------------------------------
 // IntegrityStatus
@@ -51,9 +52,9 @@ impl<'a> IntegrityManager<'a> {
     /// Returns [`Error::BinaryNotFound`] if `aide` is not available.
     /// Returns [`Error::CommandFailed`] if initialization fails.
     pub fn initialize(&self) -> Result<()> {
-        let bin = which::which("aide")
-            .map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
-        self.runner.run_checked(bin, &["--init"])?;
+        which::which("aide").map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
+        let spec = CommandSpec::new("aide").arg("--init");
+        self.runner.run_checked(&spec)?;
         Ok(())
     }
 
@@ -65,10 +66,10 @@ impl<'a> IntegrityManager<'a> {
     ///
     /// Returns [`Error::BinaryNotFound`] if `aide` is not available.
     pub fn check(&self) -> Result<String> {
-        let bin = which::which("aide")
-            .map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
-        let output = self.runner.run_output(bin, &["--check"])?;
-        Ok(output)
+        which::which("aide").map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
+        let spec = CommandSpec::new("aide").arg("--check");
+        let output = self.runner.run(&spec)?;
+        Ok(output.stdout)
     }
 
     /// Update the AIDE database after a check.
@@ -81,9 +82,9 @@ impl<'a> IntegrityManager<'a> {
     /// Returns [`Error::BinaryNotFound`] if `aide` is not available.
     /// Returns [`Error::CommandFailed`] if the update fails.
     pub fn update(&self) -> Result<()> {
-        let bin = which::which("aide")
-            .map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
-        self.runner.run_checked(bin, &["--update"])?;
+        which::which("aide").map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
+        let spec = CommandSpec::new("aide").arg("--update");
+        self.runner.run_checked(&spec)?;
         Ok(())
     }
 

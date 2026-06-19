@@ -3,6 +3,7 @@
 //! [`ProxyReport`] captures the state of proxy configuration, certificate
 //! expiry information, and diagnostic findings.
 
+use crate::doctor::DoctorFinding;
 use crate::spec::ServerBlock;
 
 /// Certificate expiry information for a domain.
@@ -85,6 +86,10 @@ pub struct ProxyReport {
     pub server_blocks: Vec<ServerBlock>,
     /// Certificate information for TLS-enabled domains.
     pub certificates: Vec<CertInfo>,
+    /// Diagnostic findings produced by the doctor. Populated by
+    /// [`Doctor::run`](crate::doctor::Doctor::run); empty when no checks
+    /// emitted findings.
+    pub findings: Vec<DoctorFinding>,
 }
 
 impl ProxyReport {
@@ -95,6 +100,7 @@ impl ProxyReport {
             status: ProxyStatus::Unknown("not checked".into()),
             server_blocks: Vec::new(),
             certificates: Vec::new(),
+            findings: Vec::new(),
         }
     }
 
@@ -158,6 +164,7 @@ mod tests {
                 CertInfo::new("a.com", "LE", "2024-01-01", "2024-04-01", 30),
                 CertInfo::new("b.com", "LE", "2023-01-01", "2023-04-01", -365),
             ],
+            findings: Vec::new(),
         };
         assert!(report.has_expired_certs());
         let expiring = report.certs_expiring_within(60);

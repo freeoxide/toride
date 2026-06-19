@@ -238,7 +238,7 @@ impl Audit {
 
     /// Create an `Audit` instance with production defaults.
     ///
-    /// Uses a [`toride_runner::DuctRunner`] with the default 30-second timeout
+    /// Uses a [`toride_runner::DuctRunner`] with the default 60-second timeout
     /// and resolves system paths from standard Linux locations.
     #[cfg(feature = "client")]
     pub fn system() -> Result<Self> {
