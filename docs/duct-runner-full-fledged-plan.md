@@ -48,6 +48,17 @@ runner abstraction yet.
 
 Audit date: 2026-06-26.
 
+Latest plan-only audit: 2026-06-26.
+
+Scope guard for this audit:
+
+- This pass is documentation-only. Do not implement Phase 5 code from this
+  audit without a separate implementation request.
+- The plan must be precise enough that a later implementation can be reviewed
+  against it without guessing API semantics.
+- Any planned runner behavior must explain how it avoids hidden unbounded memory
+  or disk growth, not merely how it reports an error after capture.
+
 The plan was checked against the current code three ways:
 
 - API surface: `CommandSpec`, `DuctRunner`, `ConfiguredDuctRunner`,
@@ -59,7 +70,7 @@ The plan was checked against the current code three ways:
 - Tests: runner and sidebar tests were re-run after the plan update before
   committing.
 
-Completed during the current pass:
+Completed before this plan-only audit:
 
 - configurable fallback timeout
 - no-default-timeout mode
@@ -123,6 +134,9 @@ Completed during the current pass:
 - Output is lossy UTF-8 only (`String::from_utf8_lossy`).
 - `CommandOutput` cannot preserve raw bytes.
 - No output size limit to guard against commands producing unbounded data.
+- The safe shape for output limits is not “capture everything, then check
+  length”; Duct and Tokio must avoid unbounded memory or disk growth when a
+  limit is configured.
 - No streaming support for sync callers beyond the current explicit unsupported
   error for `OutputMode::Stream`.
 - No line/event callback for progress output.
@@ -310,15 +324,83 @@ Exit criteria:
 
 Prevent pathological command output from destabilizing the app.
 
-- Add output byte limits.
-- Decide whether exceeding the limit is an error or truncated output with metadata.
-- Consider adding raw-byte output support if commands need non-UTF-8 data.
-- Add tests for large output and limit behavior.
+Status: planned. Do not implement as part of a plan-only audit.
+
+Decisions:
+
+- Add `CommandSpec::output_limit: Option<usize>`.
+- Interpret the limit as a combined byte cap for captured stdout plus stderr.
+- `None` preserves current unlimited capture behavior.
+- `OutputMode::Inherit` ignores the limit because output is not captured.
+- `OutputMode::Stream` remains explicitly unsupported by DuctRunner until a sync
+  streaming API exists.
+- Exceeding the limit is an error, not silent truncation.
+- Add a structured error variant such as
+  `Error::OutputLimitExceeded { program, limit }`.
+- Keep `CommandOutput` lossy UTF-8 for Phase 5; raw bytes are a separate API
+  change and should not be mixed into the first output-limit PR.
+
+Implementation notes:
+
+- DuctRunner must not use `stdout_capture()` / `stderr_capture()` when
+  `output_limit` is set, because that can still allocate unbounded memory before
+  the limit is checked.
+- Preferred Duct approach: redirect stdout and stderr to owned pipes, read both
+  pipes with cap-aware reader threads, keep only up to the configured combined
+  byte limit in memory, and signal the main thread to kill/reap the handle when
+  the next chunk would exceed the cap.
+- Temporary files are acceptable only if the implementation also enforces a disk
+  cap while the process is running. Redirecting to temp files and checking size
+  after process exit is not sufficient because it can still consume unbounded
+  disk.
+- TokioRunner should enforce the same semantics by counting bytes while reading
+  stdout/stderr pipes. It must stop retaining bytes beyond the limit and must
+  kill/reap the child when the cap is crossed.
+- Streaming Tokio execution should count emitted stdout/stderr chunks and return
+  `OutputLimitExceeded` as soon as the next chunk would exceed the cap.
+- If a process exceeds the output limit before exiting, the process should be
+  killed immediately and reaped. Allowing it to finish is only acceptable for a
+  separately documented discard-drain strategy that proves bounded memory and
+  disk use.
+- Limit accounting is byte-based, not character-based. UTF-8 replacement through
+  `String::from_utf8_lossy` happens only after the byte-limit decision.
+- For stderr/stdout split behavior, preserve separate strings when under limit.
+  If the combined limit is exceeded, return an error and do not expose partial
+  output.
+
+Required tests:
+
+- DuctRunner preserves current unlimited capture behavior by default.
+- DuctRunner returns `OutputLimitExceeded` when stdout alone exceeds the limit.
+- DuctRunner returns `OutputLimitExceeded` when stderr alone exceeds the limit.
+- DuctRunner counts stdout plus stderr together.
+- DuctRunner does not allocate unbounded captured output when a limit is set.
+  Use a command that writes substantially more than the limit and assert a fast,
+  bounded error path.
+- DuctRunner kills and reaps a still-running process after output-limit breach.
+- TokioRunner matches DuctRunner limit behavior for stdout, stderr, combined
+  output, and default unlimited capture.
+- TokioRunner kills and reaps a still-running process after output-limit breach.
+- Streaming Tokio execution returns `OutputLimitExceeded` before emitting output
+  beyond the configured cap.
+- `OutputMode::Inherit` with an output limit still returns empty captured output
+  and the real exit code.
+- Serde defaults older specs to `output_limit: None` and round-trips explicit
+  limits.
+- FakeRunner exact matching includes `output_limit` if the field is added to
+  `CommandSpec`.
+- Non-UTF-8 output under the byte limit remains lossy UTF-8 exactly as today.
+  Non-UTF-8 output over the byte limit fails by byte count before decoding.
 
 Exit criteria:
 
-- No unbounded memory growth for captured commands when callers opt into limits.
+- No unbounded memory or disk growth for captured commands when callers opt into
+  limits.
 - Non-UTF-8 behavior is explicit.
+- The default behavior for callers that do not set `output_limit` is unchanged.
+- DuctRunner, TokioRunner, FakeRunner, serde, and streaming tests cover the new
+  field and behavior.
+- Cleanup behavior on output-limit breach is documented and tested.
 
 ### Phase 6: Process-Tree Cleanup
 
@@ -354,15 +436,19 @@ pathological command output.
 
 Suggested files for Phase 5:
 
+- `crates/toride-runner/Cargo.toml` if a direct pipe/tempfile dependency is
+  needed for bounded capture
 - `crates/toride-runner/src/duct_runner.rs`
+- `crates/toride-runner/src/error.rs`
+- `crates/toride-runner/src/fake.rs`
 - `crates/toride-runner/src/spec.rs`
-- `crates/toride-runner/src/output.rs`
+- `crates/toride-runner/src/streaming_tests.rs`
 - `crates/toride-runner/src/tokio_runner.rs`
 
 Suggested tests:
 
 - DuctRunner preserves current unlimited capture behavior by default.
-- DuctRunner fails or truncates predictably when an output limit is exceeded.
+- DuctRunner fails with `OutputLimitExceeded` when an output limit is exceeded.
 - TokioRunner matches the same output-limit behavior.
 - Non-UTF-8 output behavior is explicit and tested.
 - Serde round trips new `CommandSpec` fields and defaults older JSON safely.
@@ -380,5 +466,7 @@ The Duct wrapper is full-fledged when:
 - sensitive args/env are redacted in diagnostics and checked errors.
 - timeout cleanup behavior is documented and tested.
 - output handling has clear capture, inherit, and streaming/unsupported-stream semantics.
+- captured output limits are bounded in memory and disk use, with explicit
+  `OutputLimitExceeded` behavior.
 - parity tests cover all shared Duct/Tokio behavior.
 - crate docs explain capability boundaries clearly.
