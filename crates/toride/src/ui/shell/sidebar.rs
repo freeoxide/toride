@@ -139,16 +139,19 @@ impl Sidebar {
     /// Move the selection down one item, wrapping at the end.
     pub fn select_next(&mut self) {
         self.selected = (self.selected + 1) % self.len;
+        self.clamp_scroll_to_selection(self.last_visible);
     }
 
     /// Move the selection up one item, wrapping at the start.
     pub fn select_prev(&mut self) {
         self.selected = (self.selected + self.len - 1) % self.len;
+        self.clamp_scroll_to_selection(self.last_visible);
     }
 
     /// Select a specific item index (clamped to range).
     pub fn select_to(&mut self, idx: usize) {
         self.selected = idx.min(self.len - 1);
+        self.clamp_scroll_to_selection(self.last_visible);
     }
 
     /// Scroll the viewport by `delta` items (positive = down, negative = up).
@@ -177,11 +180,24 @@ impl Sidebar {
         if visible == 0 {
             return;
         }
+        self.clamp_scroll_bounds(visible);
         if self.selected < self.scroll_offset {
             self.scroll_offset = self.selected;
         } else if self.selected >= self.scroll_offset + visible {
             self.scroll_offset = self.selected - visible + 1;
         }
+    }
+
+    /// Clamp scroll offset to the legal viewport range without anchoring it to
+    /// the current selection. Used during render so mouse-wheel scrolling can
+    /// freely move the selected item off-screen.
+    fn clamp_scroll_bounds(&mut self, visible: usize) {
+        if visible == 0 || self.len <= visible {
+            self.scroll_offset = 0;
+            return;
+        }
+        let max_offset = self.len - visible;
+        self.scroll_offset = self.scroll_offset.min(max_offset);
     }
 
     /// Toggle the collapsed icon-rail state.
@@ -245,11 +261,11 @@ impl Sidebar {
         // Each item gets a blank row beneath it for vertical breathing room.
         let step: u16 = if collapsed { 1 } else { ROW_STEP };
 
-        // Compute number of visible items and clamp scroll offset.
+        // Compute number of visible items and keep the viewport in range.
         let list_rows = list_bottom.saturating_sub(list_top) as usize;
         let visible = if step > 0 { list_rows / step as usize } else { 0 };
         self.last_visible = visible;
-        self.clamp_scroll_to_selection(visible);
+        self.clamp_scroll_bounds(visible);
 
         // Advance the highlight animation and refresh hit-test rects.
         self.tick_anim();
@@ -443,5 +459,28 @@ mod tests {
         assert_eq!(s.item_at(1, 2), Some(5));
         assert_eq!(s.item_at(1, 3), Some(6));
         assert_eq!(s.item_at(1, 4), Some(7));
+    }
+
+    #[test]
+    fn render_bounds_clamp_does_not_anchor_to_selection() {
+        let mut s = Sidebar::new(20);
+        s.last_visible = 3;
+        s.select_to(1);
+        s.scroll(8);
+
+        s.clamp_scroll_bounds(3);
+
+        assert_eq!(s.selected(), 1);
+        assert_eq!(s.scroll_offset(), 8);
+    }
+
+    #[test]
+    fn selection_change_keeps_selected_item_visible() {
+        let mut s = Sidebar::new(20);
+        s.last_visible = 3;
+        s.select_to(8);
+
+        assert_eq!(s.selected(), 8);
+        assert_eq!(s.scroll_offset(), 6);
     }
 }
