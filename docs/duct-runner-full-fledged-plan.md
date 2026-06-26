@@ -116,6 +116,9 @@ Completed before this plan-only audit:
 - If a key appears in both `env_remove` and `env`, the explicit `env` value
   wins.
 - Crate-level examples still need to document this policy for callers.
+- On Unix, `clear_env` leaves `PATH` empty, so a PATH-relative program fails to
+  spawn. Callers must use an absolute program path or add an explicit `PATH` via
+  `env`. This must be documented, not just implied by the tests using `/bin/sh`.
 - Fake runner exact-match comparison still ignores timeout and redaction. That
   is currently intentional for timeout because it is a runtime policy concern,
   but it should be re-audited when environment policy and additional
@@ -166,6 +169,11 @@ Completed before this plan-only audit:
   metadata, specific non-zero exit codes, and stdout/stderr separation with
   larger output. Shared Duct/Tokio parity coverage still needs to be expanded.
 - No parity for cwd resolution edge cases.
+- TokioRunner has no options struct: it hardcodes a 60s timeout and cannot
+  disable the default or toggle command logging, while `ConfiguredDuctRunner`
+  can. Configurable and no-default timeout is currently Duct-only. Resolve
+  before claiming full parity: add `TokioRunnerOptions` or document the
+  difference as intentional and test it.
 
 ### API Shape
 
@@ -356,17 +364,40 @@ Implementation notes:
   the limit is checked.
 - Preferred Duct approach: redirect stdout and stderr to owned pipes, read both
   pipes with cap-aware reader threads, keep only up to the configured combined
-  byte limit in memory, and signal the main thread to kill/reap the handle when
-  the next chunk would exceed the cap.
+  byte limit in memory, and kill/reap the handle when the next chunk would
+  exceed the cap. While the main thread is blocked in `wait_timeout`, a reader
+  thread must be able to kill the process, so share the `duct::Handle` across
+  threads (it is `Send + Sync`, `kill()` takes `&self`) and have the reader call
+  `handle.kill()` directly.
+- The combined stdout+stderr cap is shared across two concurrent readers, so use
+  a shared counter (such as `AtomicUsize`) and define which reader wins the
+  breach race and performs the kill.
+- The cap-aware readers must use bounded reads (fixed-size buffer / `read`),
+  never `read_line`/`read_to_end`, because those buffer an unbounded amount
+  before the cap can be checked. A single newline-free stream
+  (e.g. `yes | tr -d '\n'`) would otherwise allocate without limit before the
+  cap can trigger.
 - Temporary files are acceptable only if the implementation also enforces a disk
   cap while the process is running. Redirecting to temp files and checking size
   after process exit is not sufficient because it can still consume unbounded
   disk.
 - TokioRunner should enforce the same semantics by counting bytes while reading
   stdout/stderr pipes. It must stop retaining bytes beyond the limit and must
-  kill/reap the child when the cap is crossed.
-- Streaming Tokio execution should count emitted stdout/stderr chunks and return
-  `OutputLimitExceeded` as soon as the next chunk would exceed the cap.
+  kill/reap the child when the cap is crossed. This requires first converting the
+  non-streaming Tokio path from read-after-`wait()` to concurrent draining (read
+  both pipes while waiting). The current model reads pipes only after the process
+  exits, so it cannot enforce a mid-run cap and carries a latent pipe-buffer
+  deadlock (a child that fills the ~64 KB OS pipe buffer with no reader blocks on
+  write, so `wait()` never returns and only the timeout saves it). The
+  concurrent-draining conversion fixes that deadlock too. Do it as a reviewable
+  prerequisite step, ideally in its own commit, before adding the limit.
+- Streaming Tokio execution should count emitted stdout/stderr bytes and return
+  `OutputLimitExceeded` as soon as the next chunk would exceed the cap. The
+  streaming path currently uses `read_line`, which buffers a whole line before
+  emitting anything; switch the limited path to bounded reads so a single
+  newline-free line cannot allocate unbounded memory before the cap triggers, and
+  abort/join the detached stderr reader task on the breach path so it stops
+  reading.
 - If a process exceeds the output limit before exiting, the process should be
   killed immediately and reaped. Allowing it to finish is only acceptable for a
   separately documented discard-drain strategy that proves bounded memory and
@@ -390,8 +421,14 @@ Required tests:
 - TokioRunner matches DuctRunner limit behavior for stdout, stderr, combined
   output, and default unlimited capture.
 - TokioRunner kills and reaps a still-running process after output-limit breach.
+- TokioRunner (no limit set) captures output larger than the OS pipe buffer
+  (well over 64 KB) without deadlocking, proving the concurrent-draining
+  conversion.
 - Streaming Tokio execution returns `OutputLimitExceeded` before emitting output
   beyond the configured cap.
+- Streaming/limited execution bounds memory on a single newline-free stream: a
+  command emitting many bytes with no newline under a limit fails fast with
+  `OutputLimitExceeded` rather than buffering the whole line.
 - `OutputMode::Inherit` with an output limit still returns empty captured output
   and the real exit code.
 - Serde defaults older specs to `output_limit: None` and round-trips explicit
@@ -410,6 +447,8 @@ Exit criteria:
 - DuctRunner, TokioRunner, FakeRunner, serde, and streaming tests cover the new
   field and behavior.
 - Cleanup behavior on output-limit breach is documented and tested.
+- The TokioRunner non-streaming path drains pipes concurrently with waiting, and
+  the limited paths use bounded reads instead of `read_line`.
 
 ### Phase 6: Command Intent And Output Policy
 
@@ -432,6 +471,11 @@ Candidate `CommandSpec` additions:
   - use runner default
   - no timeout
   - explicit timeout
+  Add this as a *new* field; do not change the existing public
+  `timeout: Option<Duration>` field into an enum, since that would break the
+  public API and serde shape. Define precedence explicitly (e.g. `timeout_policy`
+  wins when set, otherwise fall back to `timeout` then runner default) and keep
+  serde defaulting old payloads to "use runner default."
 - `shell: Option<ShellSpec>` for deliberate shell execution.
 - output disposition fields only if `OutputMode` is not enough, for example:
   - merge stderr into stdout
@@ -573,6 +617,8 @@ Required parity coverage:
 - clean env
 - redacted checked failures where both runners expose checked execution
 - timeout metadata and cleanup classification
+- configurable default timeout and no-default-timeout mode, once TokioRunner
+  exposes options; until then, document the asymmetry explicitly
 - output mode `Capture`
 - output mode `Inherit`, if TokioRunner supports it by then; otherwise document
   the difference
@@ -594,7 +640,8 @@ Documentation scope:
   - no default timeout via configured DuctRunner
   - additive env
   - env removal
-  - clean env
+  - clean env (and the Unix `PATH` footgun: clean env requires an absolute
+    program path or an explicit `PATH` entry)
   - redaction
   - output limits after Phase 5
   - shell opt-in after Phase 6 if implemented
@@ -625,6 +672,15 @@ Exit criteria:
 Phases 1-4 are implemented. The next highest-value slice is Phase 5: output
 safety. It is the remaining gap most likely to destabilize the app under
 pathological command output.
+
+Sequence Phase 5 in reviewable steps:
+
+1. Convert the TokioRunner non-streaming path to concurrent pipe draining — its
+   own commit, no behavior change beyond fixing the latent pipe-buffer deadlock;
+   add the >64 KB no-deadlock test.
+2. Add `CommandSpec::output_limit`, the `OutputLimitExceeded` error, and the
+   bounded-read enforcement across Duct, Tokio, and streaming.
+3. Add serde defaults and FakeRunner matching for the new field.
 
 Suggested files for Phase 5:
 
