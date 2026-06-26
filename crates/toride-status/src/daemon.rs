@@ -222,7 +222,7 @@ fn uptime_for_pid(pid: u32) -> Option<u64> {
     let after_comm = stat.rfind(')')?;
     let rest = stat.get(after_comm + 2..)?;
     let start_ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
-    let ticks_per_sec = sysconf::sysconf(sysconf::SysconfVariable::ClkTck).unwrap_or(100) as u64;
+    let ticks_per_sec = sysconf::sysconf(sysconf::SysconfVariable::ScClkTck).unwrap_or(100) as u64;
     let boot_time = read_boot_time()?;
     let start_secs = boot_time + start_ticks / ticks_per_sec;
     let now = std::time::SystemTime::now()
