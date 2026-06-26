@@ -50,14 +50,16 @@ Audit date: 2026-06-26.
 
 Latest plan-only audit: 2026-06-26.
 
-Scope guard for this audit:
+Scope guard for plan-only audits:
 
-- This pass is documentation-only. Do not implement Phase 5 code from this
-  audit without a separate implementation request.
+- These audit passes are documentation-only. Do not implement Phase 5, Phase 6,
+  or Phase 7 code from this audit without a separate implementation request.
 - The plan must be precise enough that a later implementation can be reviewed
   against it without guessing API semantics.
 - Any planned runner behavior must explain how it avoids hidden unbounded memory
   or disk growth, not merely how it reports an error after capture.
+- Cleanup and parity plans must identify evidence that proves behavior, not just
+  list broad intentions.
 
 The plan was checked against the current code three ways:
 
@@ -406,27 +408,130 @@ Exit criteria:
 
 Only do this if direct-child cleanup is insufficient for real Toride commands.
 
-- Audit commands that spawn grandchildren.
-- Add process-group/job-object mode behind options.
-- Add platform-specific tests where practical.
-- Document guarantees and limitations.
+Status: planned. Do not implement as part of a plan-only audit.
+
+Decision gate:
+
+- Do not add process-tree cleanup by default unless real Toride command usage
+  shows that child processes commonly spawn grandchildren that survive timeout
+  or output-limit cleanup.
+- Before implementation, audit call sites and command specs that can invoke
+  shells, service managers, package managers, SSH tooling, or other process
+  launchers.
+- If the audit finds no real process-tree risk, document direct-child-only
+  cleanup as the supported policy and move platform process groups to a later
+  optional hardening phase.
+
+If stronger cleanup is needed, add an explicit policy:
+
+- Add a runner option such as `process_cleanup: ProcessCleanupPolicy`.
+- Initial variants should be conservative:
+  - `DirectChild` as the default and current behavior.
+  - `ProcessTree` or `ProcessGroup` as opt-in behavior.
+- Do not make process-tree cleanup implicit. It can change signal behavior for
+  commands that intentionally spawn detached work.
+- Preserve current behavior for existing callers.
+
+Platform plan:
+
+- Unix/macOS: start the child in a new process group/session where practical and
+  signal the group on timeout or output-limit breach.
+- Windows: use job objects if implemented; otherwise keep `DirectChild` and
+  document that process-tree cleanup is unsupported on Windows.
+- If one platform cannot provide equivalent behavior, expose that difference in
+  docs and tests rather than pretending parity exists.
+
+Required tests and evidence:
+
+- A direct child is killed and reaped on timeout under the default policy.
+- Under opt-in process-tree cleanup, a grandchild that would normally survive is
+  terminated on supported platforms.
+- A command that exits normally is not over-killed.
+- Cleanup after output-limit breach uses the same policy as timeout cleanup.
+- Unsupported platforms either skip process-tree tests with an explicit reason
+  or assert a documented direct-child-only behavior.
+- Tests must avoid global process-name matching where possible. Prefer marker
+  files, child PIDs, or controlled scripts in temp directories.
+- No zombies remain after timeout/output-limit cleanup in the tested paths.
 
 Exit criteria:
 
-- Timeout cleanup guarantees are stronger than direct-child-only.
-- Tests prove grandchildren do not survive where supported.
+- The selected cleanup policy is explicit in `DuctRunnerOptions` or crate docs.
+- Timeout and output-limit cleanup use the same documented cleanup semantics.
+- Tests prove grandchildren do not survive where process-tree cleanup is
+  supported.
+- Tests prove direct-child-only behavior remains stable where process-tree
+  cleanup is not supported or not enabled.
+- Crate docs describe Unix/macOS and Windows guarantees separately.
 
 ### Phase 7: Full Parity and Documentation
 
-- Expand `parity_tests.rs` for the shared feature set.
-- Document where DuctRunner and TokioRunner intentionally differ.
-- Add examples for capture, inherited stdio, custom timeout, clean env, redaction, and checked execution.
-- Update crate-level docs.
+Status: planned. Do not implement as part of a plan-only audit.
+
+Parity scope:
+
+- Expand `parity_tests.rs` only for behavior shared by DuctRunner and
+  TokioRunner.
+- Do not force parity for intentional differences such as async streaming versus
+  sync unsupported streaming.
+- Each shared `CommandSpec` field should have at least one parity test or a
+  documented reason why parity is not meaningful.
+
+Required parity coverage:
+
+- success output and zero exit
+- non-zero exit with exact exit code
+- stdout/stderr separation
+- stdin
+- cwd
+- additive env
+- env removal
+- clean env
+- redacted checked failures where both runners expose checked execution
+- timeout metadata and cleanup classification
+- output mode `Capture`
+- output mode `Inherit`, if TokioRunner supports it by then; otherwise document
+  the difference
+- output limit behavior after Phase 5
+- process cleanup policy after Phase 6 if implemented
+
+Documentation scope:
+
+- Crate-level docs must show which runner to choose:
+  - DuctRunner for synchronous callers.
+  - TokioRunner for async callers and streaming.
+  - FakeRunner for tests.
+- Public examples should cover:
+  - captured output
+  - inherited stdio
+  - checked execution
+  - custom timeout
+  - no default timeout via configured DuctRunner
+  - additive env
+  - env removal
+  - clean env
+  - redaction
+  - output limits after Phase 5
+- Capability tables should distinguish supported, unsupported, and intentionally
+  different behavior across DuctRunner, TokioRunner, streaming Tokio, and
+  FakeRunner.
+- Docs must explicitly state lossy UTF-8 behavior and any future raw-byte
+  limitations.
+- Docs must state process cleanup guarantees by platform after Phase 6 is
+  decided.
+
+Required verification:
+
+- `cargo test -p toride-runner --features 'duct-runner tokio-runner serde stream fake'`
+- rustdoc examples compile or are deliberately marked `ignore` with a reason.
+- Search docs for stale claims after each phase status changes.
 
 Exit criteria:
 
 - Users can choose Duct vs Tokio based on documented tradeoffs.
 - The sync runner no longer has hidden behavior gaps.
+- The parity suite covers every shared behavior that the docs claim is shared.
+- Public docs and examples match the implemented feature set.
 
 ## Recommended Next PR
 
