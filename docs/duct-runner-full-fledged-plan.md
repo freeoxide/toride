@@ -41,14 +41,70 @@ runner abstraction yet.
   clean environment, DuctRunner and TokioRunner both honor the policy,
   FakeRunner exact matching includes the new fields, and serde keeps older
   specs compatible.
-- Phases 5-8 remain open: output limits, command intent and output policy,
-  process-tree cleanup policy, expanded parity coverage, and docs/examples.
+- Phase 5 is implemented: `CommandSpec::output_limit` enforces a combined
+  stdout+stderr byte cap with a structured `Error::OutputLimitExceeded`,
+  bounded-read enforcement across DuctRunner (cap-aware `os_pipe` reader
+  threads), TokioRunner (concurrent-draining + `tokio::select!` bounded reads),
+  and streaming (bounded reads replacing `read_line`, interleaved stdout/stderr,
+  retained+aborted stderr task). The non-streaming TokioRunner path was first
+  converted to concurrent pipe draining, fixing a latent pipe-buffer deadlock.
+  Serde round-trips the field in both hand-written halves, and `output_limit`
+  is excluded from FakeRunner exact matching.
+- Phases 6-8 remain open: command intent and output policy, process-tree
+  cleanup policy, expanded parity coverage, and docs/examples.
 
 ## Progress Audit
 
 Audit date: 2026-06-26.
 
 Latest plan-only audit: 2026-06-26.
+Latest implementation audit (Phase 5): 2026-06-26.
+
+Implementation audit (Phase 5) verified the following evidence:
+
+- `cargo test -p toride-runner --features 'duct-runner tokio-runner serde stream fake'`
+  → 135 unit tests + 7 doc-tests pass; 0 failures.
+- `cargo test ... output_limit` is stable across repeated runs (~0.6 s, no
+  hangs), including the bounded-memory and newline-free-stream cases.
+- `cargo fmt -p toride-runner -- --check` → clean.
+- `cargo clippy -p toride-runner --all-features --all-targets` → no warnings
+  introduced by Phase 5 in the cap-aware logic (remaining warnings are all
+  pre-existing pedantic style warnings the baseline already shipped with).
+- All feature combinations build (`duct-runner`, `tokio-runner`/`stream`,
+  `serde`, `fake`, and each in isolation).
+- The DuctRunner cap-aware EOF behavior was verified against duct's internals:
+  the `Expression` retains the original write-fd `OwnedFd` until dropped, so the
+  expression is scoped to drop immediately after `start()` (a standalone duct
+  reproduction confirmed the hang before the fix and the fix's correctness).
+- `toride-status` fails to compile on this checkout, but the failure
+  (`SysconfVariable::ClkTck`) is pre-existing and unrelated to Phase 5 — it
+  reproduces identically on the unmodified baseline.
+
+Independent sub-agent audits (3 dispatched) found and the fixes were applied:
+
+- **TokioRunner cap path: drain not bounded by timeout.** A quiet under-cap
+  child that never exited was not bounded by the configured timeout because the
+  outer `select!` raced a 1 ms-polling latch against the drain with no outer
+  `tokio::time::timeout`. Fixed by racing the drain against `child.wait()`
+  inside a single outer `tokio::time::timeout`, so a non-emitting child times
+  out. Regression test: `output_limit_quiet_child_times_out`.
+- **TokioRunner cap path: breach misrouted and child not killed promptly.** The
+  biased `select!` usually resolved the drain arm as "Done" rather than
+  "Limit", so a breach was reported as `CommandTimeout` and the child kept
+  running until self-exit/timeout. Fixed by making the drain return a
+  `DrainOutcome::Breach` synchronously (no latch race) and killing+reaping on
+  that arm. Regression test: `output_limit_breach_kills_promptly`.
+- **TokioRunner: stdin write failure leaked the child.** `write_stdin` returned
+  early via `?` on a write error, dropping the still-running `Child` without
+  killing it. Fixed by killing+reaping the child inside `write_stdin` before
+  returning `Error::StdinFailed`.
+- **DuctRunner cap path: late-breach race on the clean path.** A breach by a
+  lingering grandchild's detached reader could occur after the final
+  latch check, returning `Ok` with partial output. Fixed by gating the `Ok`
+  return on both the latch *and* the authoritative shared byte counter
+  (`counter > cap`), which is monotonic and cannot miss a breach.
+- Serde, FakeRunner matching, feature gating, and the streaming path were
+  audited clean (no correctness bugs).
 
 Scope guard for plan-only audits:
 
@@ -95,6 +151,13 @@ Completed before this plan-only audit:
   policy
 - fake-runner exact matching for environment policy
 - env policy serde compatibility and parity tests
+- Phase 5 output safety: `CommandSpec::output_limit`, `Error::OutputLimitExceeded`,
+  bounded-read enforcement in DuctRunner (cap-aware `os_pipe` reader threads),
+  TokioRunner (concurrent-draining + `tokio::select!` bounded reads), and
+  streaming (bounded reads replacing `read_line`, interleaved streams, retained
+  + aborted stderr task); non-streaming TokioRunner converted to concurrent
+  pipe draining (fixes the pipe-buffer deadlock); serde round-trips the field
+  in both halves; `output_limit` excluded from FakeRunner matching
 
 ## Remaining Gaps
 
@@ -145,10 +208,10 @@ Completed before this plan-only audit:
 
 - Output is lossy UTF-8 only (`String::from_utf8_lossy`).
 - `CommandOutput` cannot preserve raw bytes.
-- No output size limit to guard against commands producing unbounded data.
-- The safe shape for output limits is not “capture everything, then check
-  length”; Duct and Tokio must avoid unbounded memory or disk growth when a
-  limit is configured.
+- Output size limits **are** now supported via `CommandSpec::output_limit`
+  (Phase 5). The cap-aware paths avoid unbounded memory/disk growth by
+  enforcing the cap *while* capturing (bounded reads + kill-on-breach), not by
+  capturing everything and checking length afterward.
 - No streaming support for sync callers beyond the current explicit unsupported
   error for `OutputMode::Stream`.
 - No line/event callback for progress output.
@@ -378,7 +441,79 @@ Exit criteria:
 
 Prevent pathological command output from destabilizing the app.
 
-Status: planned. Do not implement as part of a plan-only audit.
+Status: implemented.
+
+Implementation summary:
+
+- `CommandSpec::output_limit: Option<usize>` and a builder method were added.
+- `Error::OutputLimitExceeded { program, args, limit, observed }` carries the
+  same shape as the sibling variants; `args` is redacted via the shared
+  display helper when `spec.redact` is true.
+- `output_limit` is excluded from `FakeRunner` exact matching (runtime policy,
+  like `timeout`) — proven by `specs_match_ignores_output_limit`.
+- Serde round-trips the field in both hand-written halves: the
+  `serialize_struct("CommandSpec", 11)` count and `serialize_field`, plus the
+  `Deserialize` helper field with `#[serde(default)]`. Older payloads default
+  to `output_limit: None` — proven by `output_limit_defaults_to_none_for_old_payloads`.
+
+DuctRunner cap-aware path (`run_duct_command_limited`):
+
+- Two `os_pipe::pipe()` pairs in the parent are passed to the child via
+  `stdout_file`/`stderr_file`. The duct `Expression` is scoped so it drops
+  immediately after `start()` — otherwise the `Expression` keeps the original
+  write-fd `OwnedFd` alive and the read ends never reach EOF.
+- `.unchecked().start()` spawns no internal capture threads (both streams are
+  caller-owned pipes), so the handle holds no hidden buffer.
+- Two cap-aware reader threads drain the read ends with bounded
+  `read(&mut [u8; N])` (8 KB), sharing a combined `AtomicUsize` counter and an
+  `AtomicBool` "killed" latch. Reserve-then-check via `fetch_add` bounds
+  retained memory to `cap + 2 * CAP_READ_BUF`. The thread that pushes the total
+  past `cap` wins the latch (`compare_exchange`) and calls `handle.kill()`
+  directly, unblocking the main `wait_timeout`.
+- Reader bytes are delivered over an `mpsc::channel`; the main thread uses a
+  bounded `recv_timeout` (not an unconditional join) because a grandchild
+  holding an inherited write end keeps the read end from EOF. The clean path
+  waits up to 2 s; error/cleanup paths wait up to 200 ms then detach.
+- On breach/timeout, the child is killed and reaped; no partial output is
+  returned. A late breach (bytes arriving after `wait` returns) is re-checked.
+- On Apple targets, caller-opened pipes cannot set `CLOEXEC` atomically, so
+  pipe creation is guarded by a process-wide mutex (`spawn_under_apple_lock`).
+- `OutputMode::Inherit` ignores the limit (no capture); proven by
+  `output_limit_inherit_mode_is_ignored`.
+
+TokioRunner cap-aware path (`run_tokio_limited`):
+
+- The non-streaming path was first converted from read-after-`wait()` to
+  concurrent draining (`tokio::join!(read_stdout, read_stderr, child.wait())`
+  inside a single outer `tokio::time::timeout`), fixing the latent pipe-buffer
+  deadlock — proven by `large_output_does_not_deadlock` (>512 KB to stdout).
+- The cap-aware path uses bounded `read(&mut [u8; N])` (8 KB) on both streams,
+  interleaved with `tokio::select!`, a shared `AtomicUsize` counter, and an
+  `AtomicBool` latch raced against the drain via `wait_until_true`. The first
+  read crossing the cap kills the child; other arms are dropped. Done streams
+  use `std::future::pending()` so the select focuses on the remaining stream
+  (no busy-polling).
+
+Streaming cap-aware path (`run_streaming_command`):
+
+- `read_line` was replaced with bounded `read(&mut [u8; N])` on both stdout
+  (inline) and stderr (detached task), so a single newline-free stream cannot
+  buffer unbounded memory before the cap fires.
+- stdout and stderr are interleaved with `tokio::select!` (the old
+  drain-stdout-then-stderr sequencing was a latent deadlock and hid stderr
+  from the cap).
+- The stderr task's `JoinHandle` is retained and `abort()`ed on every
+  terminating path (breach, sink error, timeout), so a lingering grandchild
+  inheriting the stderr pipe can't keep the task and its fd alive.
+- The mpsc channel carries fixed-size chunks (64 slots of ≤ 8 KB), not whole
+  lines, so the channel itself is bounded.
+- `StdoutLine`/`StderrLine` events are reconstructed from chunks via a
+  bounded per-stream line accumulator (flushed each read, so ≤ 8 KB), keeping
+  line-event semantics without unbounded buffering.
+
+Limit accounting is byte-based; UTF-8 lossy decoding happens only after the
+byte-limit decision. Non-UTF-8 output over the cap fails by byte count before
+decoding — proven by `output_limit_non_utf8_over_limit_errors_by_byte_count`.
 
 Decisions:
 
@@ -389,19 +524,14 @@ Decisions:
 - `OutputMode::Stream` remains explicitly unsupported by DuctRunner until a sync
   streaming API exists.
 - Exceeding the limit is an error, not silent truncation.
-- Add a structured error variant. Match the context the sibling variants carry
-  (`CommandFailed` and `CommandTimeout` both carry `program` + `args`) rather
-  than a bare `{ program, limit }`: use
-  `Error::OutputLimitExceeded { program, args, limit, observed }`. All fields
-  must be `Clone` (the `Error` enum derives `Clone`) and the variant must have a
-  `#[error("...")]` Display string (thiserror requires it). `Error` is
-  `#[non_exhaustive]`, so adding the variant is non-breaking.
-- `output_limit` is a runtime/safety policy, not command construction, so it is
-  *excluded* from `FakeRunner` exact matching — same reasoning that already
-  excludes `timeout`. Do not add it to `specs_match`. (This supersedes the older
-  "include `output_limit` in exact matching" note.)
-- Keep `CommandOutput` lossy UTF-8 for Phase 5; raw bytes are a separate API
-  change and should not be mixed into the first output-limit PR.
+- Added the structured `Error::OutputLimitExceeded { program, args, limit, observed }`
+  variant. All fields are `Clone` (the `Error` enum derives `Clone`), it has a
+  `#[error("...")]` Display string, and `Error` is `#[non_exhaustive]` so the
+  variant is non-breaking. `args` is redacted at construction via the shared
+  display helper when `spec.redact` is true.
+- `output_limit` is a runtime/safety policy, excluded from `FakeRunner` exact
+  matching — same reasoning that excludes `timeout`.
+- `CommandOutput` stays lossy UTF-8; raw bytes are a separate API change.
 
 Implementation notes:
 
@@ -826,21 +956,22 @@ Exit criteria:
 
 ## Recommended Next PR
 
-Phases 1-4 are implemented. The next highest-value slice is Phase 5: output
-safety. It is the remaining gap most likely to destabilize the app under
-pathological command output.
+Phases 1-5 are implemented. The next highest-value slice is Phase 6: command
+intent and output policy (byte stdin, shell opt-in, timeout policy, output
+disposition). Phase 7 (process-tree cleanup) is gated on a real call-site
+audit showing grandchild-survival risk; Phase 8 (full parity + docs) closes
+out the capability tables and remaining divergences.
 
-Sequence Phase 5 in reviewable steps:
+Phase 5 was sequenced in reviewable steps, all now complete:
 
-1. Convert the TokioRunner non-streaming path to concurrent pipe draining — its
-   own commit, no behavior change beyond fixing the latent pipe-buffer deadlock;
-   add the >64 KB no-deadlock test.
-2. Add `CommandSpec::output_limit`, the `OutputLimitExceeded` error, and the
-   bounded-read enforcement across Duct, Tokio, and streaming. For Duct this means
-   owned `os_pipe` write ends into `stdout_file`/`stderr_file` (not `reader()`),
-   with a process-wide spawn lock on Apple targets.
-3. Add serde defaults for the new field (both hand-written halves). `output_limit`
-   is excluded from FakeRunner matching — add a test proving that.
+1. Converted the TokioRunner non-streaming path to concurrent pipe draining —
+   fixes the latent pipe-buffer deadlock; added the >64 KB no-deadlock test.
+2. Added `CommandSpec::output_limit`, the `OutputLimitExceeded` error, and the
+   bounded-read enforcement across Duct (owned `os_pipe` write ends into
+   `stdout_file`/`stderr_file` with a process-wide spawn lock on Apple
+   targets), Tokio (`tokio::select!` bounded reads), and streaming.
+3. Added serde defaults for the new field (both hand-written halves).
+   `output_limit` is excluded from FakeRunner matching, proven by a test.
 
 Suggested files for Phase 5:
 

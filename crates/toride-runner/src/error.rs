@@ -41,6 +41,27 @@ pub enum Error {
         timeout: Duration,
     },
 
+    /// Command output exceeded the configured byte cap on captured stdout
+    /// plus stderr.
+    ///
+    /// The cap is set via [`CommandSpec::output_limit`](crate::spec::CommandSpec::output_limit).
+    /// When it is breached, the child process is killed and reaped; no partial
+    /// output is returned. Accounted in bytes (UTF-8 decoding is applied only
+    /// after the byte-limit decision).
+    #[error(
+        "command output limit exceeded: {program} (limit: {limit} bytes, observed: {observed} bytes)"
+    )]
+    OutputLimitExceeded {
+        /// Program that produced the excess output.
+        program: String,
+        /// Arguments that were passed (redacted when the spec requests it).
+        args: String,
+        /// The configured byte cap.
+        limit: usize,
+        /// Approximate number of bytes observed before the cap was breached.
+        observed: usize,
+    },
+
     /// Failed to spawn a child process.
     #[error("failed to spawn '{program}': {detail}")]
     SpawnFailed {

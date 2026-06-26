@@ -49,6 +49,18 @@ pub struct CommandSpec {
     /// Whether to redact sensitive arguments in display/logging output.
     /// Does **not** affect the actual args passed to the child process.
     pub redact: bool,
+    /// Optional combined byte cap on captured stdout plus stderr.
+    ///
+    /// When set, runners enforce the cap *while* capturing (not after) by
+    /// killing and reaping the child as soon as the limit is breached, and
+    /// return [`Error::OutputLimitExceeded`](crate::error::Error::OutputLimitExceeded).
+    /// `None` preserves the default unlimited capture behavior. Accounted in
+    /// bytes — UTF-8 decoding happens after the byte-limit decision.
+    ///
+    /// This is a runtime safety policy, not command construction: it is
+    /// excluded from [`FakeRunner`](crate::fake::FakeRunner) exact matching,
+    /// the same way [`CommandSpec::timeout`] is.
+    pub output_limit: Option<usize>,
 }
 
 impl CommandSpec {
@@ -66,6 +78,7 @@ impl CommandSpec {
             cwd: None,
             output_mode: OutputMode::Capture,
             redact: false,
+            output_limit: None,
         }
     }
 
@@ -168,6 +181,19 @@ impl CommandSpec {
         self.redact = redact;
         self
     }
+
+    /// Set a combined byte cap on captured stdout plus stderr.
+    ///
+    /// Runners enforce this cap *while* capturing and return
+    /// [`Error::OutputLimitExceeded`](crate::error::Error::OutputLimitExceeded)
+    /// if it is breached, killing the child in the process. `None` (the
+    /// default) preserves unlimited capture. See
+    /// [`CommandSpec::output_limit`] for full semantics.
+    #[must_use]
+    pub fn output_limit(mut self, limit: usize) -> Self {
+        self.output_limit = Some(limit);
+        self
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -177,7 +203,7 @@ impl serde::Serialize for CommandSpec {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CommandSpec", 10)?;
+        let mut s = serializer.serialize_struct("CommandSpec", 11)?;
         s.serialize_field("program", &self.program)?;
         s.serialize_field("args", &self.args)?;
         s.serialize_field("stdin", &self.stdin)?;
@@ -191,6 +217,7 @@ impl serde::Serialize for CommandSpec {
         )?;
         s.serialize_field("output_mode", &self.output_mode)?;
         s.serialize_field("redact", &self.redact)?;
+        s.serialize_field("output_limit", &self.output_limit)?;
         s.end()
     }
 }
@@ -222,6 +249,8 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             output_mode: OutputMode,
             #[serde(default)]
             redact: bool,
+            #[serde(default)]
+            output_limit: Option<usize>,
         }
 
         let h = CommandSpecHelper::deserialize(deserializer)?;
@@ -244,6 +273,7 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             cwd: h.cwd.map(PathBuf::from),
             output_mode: h.output_mode,
             redact: h.redact,
+            output_limit: h.output_limit,
         })
     }
 }
@@ -345,5 +375,24 @@ mod serde_tests {
         assert_eq!(roundtripped.env, vec![("KEEP".into(), "1".into())]);
         assert_eq!(roundtripped.env_remove, vec!["DROP"]);
         assert!(roundtripped.clear_env);
+    }
+
+    #[test]
+    fn output_limit_round_trip() {
+        let spec = CommandSpec::new("cmd").output_limit(4096);
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtripped.output_limit, Some(4096));
+    }
+
+    #[test]
+    fn output_limit_defaults_to_none_for_old_payloads() {
+        // A payload serialized before output_limit existed must default to None.
+        let json = r#"{"program":"cmd","args":[],"stdin":null,"timeout_nanos":null,"env":[]}"#;
+        let spec: CommandSpec = serde_json::from_str(json).unwrap();
+
+        assert!(spec.output_limit.is_none());
     }
 }

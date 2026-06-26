@@ -395,4 +395,141 @@ mod tests {
             other => panic!("expected Started event, got {other:?}"),
         }
     }
+
+    /// A sink that counts total bytes emitted across stdout/stderr chunk events,
+    /// to prove the cap bounds memory rather than wall-clock time.
+    #[derive(Default)]
+    struct CountingSink {
+        events: Vec<CommandEvent>,
+        total_bytes: usize,
+    }
+
+    #[async_trait]
+    impl CommandEventSink for CountingSink {
+        async fn on_event(&mut self, event: CommandEvent) -> Result<()> {
+            if let CommandEvent::StdoutChunk(b) | CommandEvent::StderrChunk(b) = &event {
+                self.total_bytes = self.total_bytes.saturating_add(b.len());
+            }
+            self.events.push(event);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn streaming_output_limit_preserves_under_cap() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("echo").arg("hello").output_limit(1024);
+        let mut sink = CollectingSink::default();
+
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout_trimmed(), "hello");
+    }
+
+    #[tokio::test]
+    async fn streaming_output_limit_exceeded_on_stdout() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line; done"])
+            .output_limit(64);
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { limit, .. }) if limit == 64
+        ));
+    }
+
+    #[tokio::test]
+    async fn streaming_output_limit_exceeded_on_stderr() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line >&2; done"])
+            .output_limit(64);
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { .. })
+        ));
+    }
+
+    /// A single newline-free stream that writes far more than the cap. Bounded
+    /// reads must trip the cap and fail fast rather than buffering the whole
+    /// line — this proves the streaming path uses bounded reads, not `read_line`.
+    #[tokio::test]
+    async fn streaming_output_limit_bounds_memory_on_newline_free_stream() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "yes | tr -d '\\n' | head -c 100000"])
+            .output_limit(256)
+            .timeout(Duration::from_secs(10));
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        match result {
+            Err(crate::error::Error::OutputLimitExceeded { .. }) => {}
+            other => panic!(
+                "expected OutputLimitExceeded, got {other:?} (cap should fire before timeout)"
+            ),
+        }
+    }
+
+    /// Streaming output-limit breach kills the child; no leftover process.
+    #[tokio::test]
+    async fn streaming_output_limit_kills_child() {
+        let runner = TokioRunner;
+        let marker_dir = tempfile::tempdir().unwrap();
+        let marker = marker_dir.path().join("marker");
+        let script = format!(
+            "for i in $(seq 1 100000); do echo x; done; echo SURVIVED > {}",
+            marker.display()
+        );
+        let spec = CommandSpec::new("bash")
+            .args(["-c", script.as_str()])
+            .output_limit(128);
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { .. })
+        ));
+
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        assert!(
+            !marker.exists(),
+            "output-limited streaming child was not killed (reached SURVIVED)"
+        );
+    }
+
+    /// The total bytes emitted in chunk events stays bounded near the cap, not
+    /// near the full stream size. (Proves bounded memory by behavior.)
+    #[tokio::test]
+    async fn streaming_output_limit_bounds_emitted_bytes() {
+        let runner = TokioRunner;
+        let cap = 256usize;
+        let spec = CommandSpec::new("bash")
+            .args([
+                "-c",
+                "for i in $(seq 1 20000); do echo xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx; done",
+            ])
+            .output_limit(cap)
+            .timeout(Duration::from_secs(10));
+        let mut sink = CountingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { .. })
+        ));
+        // Worst case the cap is exceeded by one bounded read (STREAM_READ_BUF).
+        assert!(
+            sink.total_bytes <= cap + 8 * 1024,
+            "emitted {} bytes, expected <= cap + one read buffer",
+            sink.total_bytes
+        );
+    }
 }

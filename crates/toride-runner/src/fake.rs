@@ -244,9 +244,9 @@ impl AsyncRunner for FakeRunner {
 /// Check if two specs match on the fields used for exact matching.
 ///
 /// Compares `program`, `args`, `stdin`, `env`, `env_remove`, `clear_env`,
-/// `cwd`, and `output_mode`.
-/// Timeout is ignored by default — it is a runtime concern, not
-/// a command-construction concern.
+/// `cwd`, and `output_mode`. `timeout` and `output_limit` are ignored — they
+/// are runtime/safety policy, not command-construction concerns, so two specs
+/// that differ only in those fields still match.
 fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
     a.program == b.program
         && a.args == b.args
@@ -472,6 +472,20 @@ mod tests {
                 .env("KEEP", "1"),
         )
         .unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    /// `output_limit` is a runtime/safety policy, so two specs that differ only
+    /// in `output_limit` must still match (same ruling as `timeout`).
+    #[test]
+    fn specs_match_ignores_output_limit() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd").output_limit(64),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        // Same command, different (or absent) output_limit should still match.
+        let output = run_sync(&runner, &CommandSpec::new("cmd")).unwrap();
         assert_eq!(output.stdout_trimmed(), "ok");
     }
 
