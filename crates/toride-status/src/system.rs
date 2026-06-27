@@ -1244,7 +1244,7 @@ pub struct SystemStatus {
 }
 
 /// Memory usage snapshot.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Default)]
 pub struct MemoryStatus {
     /// Used memory in bytes.
     pub used_bytes: u64,
@@ -1263,7 +1263,7 @@ pub struct MemoryStatus {
 }
 
 /// Disk usage snapshot.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Default)]
 pub struct DiskStatus {
     /// Disk name.
     pub name: String,
@@ -1298,7 +1298,7 @@ pub struct DiskStatus {
 }
 
 /// Network I/O counters.
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Debug, Clone, Copy, Serialize, Default)]
 pub struct NetworkStatus {
     /// Total bytes received.
     pub bytes_received: u64,

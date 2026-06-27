@@ -64,7 +64,43 @@ use crate::TorideStatus;
 pub struct Collector {
     interval: Duration,
     preset: Preset,
+    toggles: MetricToggles,
     previous: Option<(Instant, (std::time::SystemTime, SystemStatus))>,
+}
+
+/// Per-metric collection toggles.
+///
+/// When a toggle is `false`, the corresponding metric is skipped during
+/// collection regardless of the configured [`Preset`]: its fields are zeroed
+/// / emptied in the produced [`SystemStatus`]. Core always-collected fields
+/// (hostname, `os_info`, uptime, load average) are never affected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MetricToggles {
+    /// Whether CPU metrics are collected.
+    pub cpu: bool,
+    /// Whether memory metrics are collected.
+    pub memory: bool,
+    /// Whether disk metrics are collected.
+    pub disks: bool,
+    /// Whether network metrics are collected.
+    pub network: bool,
+    /// Whether process metrics are collected.
+    pub processes: bool,
+    /// Whether GPU metrics are collected.
+    pub gpu: bool,
+}
+
+impl Default for MetricToggles {
+    fn default() -> Self {
+        Self {
+            cpu: true,
+            memory: true,
+            disks: true,
+            network: true,
+            processes: true,
+            gpu: true,
+        }
+    }
 }
 
 /// Delta between two system snapshots, used for rate calculations.
@@ -197,6 +233,14 @@ impl Collector {
         Self {
             interval,
             preset,
+            toggles: MetricToggles {
+                cpu: true,
+                memory: true,
+                disks: true,
+                network: true,
+                processes: true,
+                gpu: true,
+            },
             previous: None,
         }
     }
@@ -232,6 +276,48 @@ impl Collector {
         self.preset
     }
 
+    /// Get the per-metric collection toggles.
+    #[must_use]
+    pub const fn toggles(&self) -> MetricToggles {
+        self.toggles
+    }
+
+    /// Get whether CPU collection is enabled.
+    #[must_use]
+    pub const fn is_cpu_enabled(&self) -> bool {
+        self.toggles.cpu
+    }
+
+    /// Get whether memory collection is enabled.
+    #[must_use]
+    pub const fn is_memory_enabled(&self) -> bool {
+        self.toggles.memory
+    }
+
+    /// Get whether disk collection is enabled.
+    #[must_use]
+    pub const fn is_disks_enabled(&self) -> bool {
+        self.toggles.disks
+    }
+
+    /// Get whether network collection is enabled.
+    #[must_use]
+    pub const fn is_network_enabled(&self) -> bool {
+        self.toggles.network
+    }
+
+    /// Get whether process collection is enabled.
+    #[must_use]
+    pub const fn is_processes_enabled(&self) -> bool {
+        self.toggles.processes
+    }
+
+    /// Get whether GPU collection is enabled.
+    #[must_use]
+    pub const fn is_gpu_enabled(&self) -> bool {
+        self.toggles.gpu
+    }
+
     /// Collect a snapshot and compute delta from the previous one.
     ///
     /// On the first call, returns `None` for the delta because there is
@@ -252,7 +338,8 @@ impl Collector {
     /// assert!(delta.is_none()); // First call has no delta.
     /// ```
     pub fn collect(&mut self) -> (TorideStatus, Option<SystemDelta>) {
-        let status = TorideStatus::collect();
+        let mut status = TorideStatus::collect_with_preset(self.preset);
+        status.apply_toggles(self.toggles);
         let now = Instant::now();
         let now_sys = std::time::SystemTime::now();
         let delta = self.previous.as_ref().map(|(prev_time, (_prev_sys, prev_status))| {
@@ -430,9 +517,25 @@ impl CollectorBuilder {
     }
 
     /// Build the [`Collector`].
+    ///
+    /// The per-metric toggles are honored during collection: any metric
+    /// disabled here is skipped (its fields are zeroed / emptied) regardless
+    /// of the configured preset.
     #[must_use]
     pub fn build(self) -> Collector {
-        Collector::new(self.interval, self.preset)
+        Collector {
+            interval: self.interval,
+            preset: self.preset,
+            toggles: MetricToggles {
+                cpu: self.collect_cpu,
+                memory: self.collect_memory,
+                disks: self.collect_disks,
+                network: self.collect_network,
+                processes: self.collect_processes,
+                gpu: self.collect_gpu,
+            },
+            previous: None,
+        }
     }
 }
 
@@ -1087,5 +1190,116 @@ mod tests {
             .build();
         assert_eq!(collector.interval(), Duration::from_secs(1));
         assert_eq!(collector.preset(), Preset::Minimal);
+    }
+
+    #[test]
+    fn collector_builder_default_toggles_all_enabled() {
+        let collector = Collector::builder().build();
+        assert!(collector.is_cpu_enabled());
+        assert!(collector.is_memory_enabled());
+        assert!(collector.is_disks_enabled());
+        assert!(collector.is_network_enabled());
+        assert!(collector.is_processes_enabled());
+        assert!(collector.is_gpu_enabled());
+    }
+
+    #[test]
+    fn collector_builder_toggles_propagate_to_collector() {
+        let collector = Collector::builder()
+            .cpu(false)
+            .memory(false)
+            .disks(false)
+            .network(false)
+            .processes(false)
+            .gpu(false)
+            .build();
+        assert!(!collector.is_cpu_enabled());
+        assert!(!collector.is_memory_enabled());
+        assert!(!collector.is_disks_enabled());
+        assert!(!collector.is_network_enabled());
+        assert!(!collector.is_processes_enabled());
+        assert!(!collector.is_gpu_enabled());
+    }
+
+    #[test]
+    fn collector_builder_disabled_disks_are_emptied() {
+        // Diagnostics preset would normally include disks; the toggle must
+        // override it and drop the disk data.
+        let mut collector = Collector::builder()
+            .preset(Preset::Diagnostics)
+            .disks(false)
+            .build();
+        let (status, _) = collector.collect();
+        assert!(status.system.disks.is_empty(), "disks should be cleared");
+        assert_eq!(status.system.disk.total_bytes, 0, "root disk should be zeroed");
+        assert_eq!(status.system.disk_io.read_bytes, 0, "disk_io should be zeroed");
+    }
+
+    #[test]
+    fn collector_builder_disabled_gpu_is_emptied() {
+        let mut collector = Collector::builder()
+            .preset(Preset::Diagnostics)
+            .gpu(false)
+            .build();
+        let (status, _) = collector.collect();
+        assert!(status.system.gpu.is_empty(), "gpu should be cleared");
+    }
+
+    #[test]
+    fn collector_builder_disabled_processes_are_emptied() {
+        let mut collector = Collector::builder()
+            .preset(Preset::Diagnostics)
+            .processes(false)
+            .build();
+        let (status, _) = collector.collect();
+        assert!(status.system.processes.processes.is_empty());
+        assert_eq!(status.system.processes.total_count, 0);
+    }
+
+    #[test]
+    fn collector_builder_disabled_memory_is_zeroed() {
+        let mut collector = Collector::builder()
+            .preset(Preset::Diagnostics)
+            .memory(false)
+            .build();
+        let (status, _) = collector.collect();
+        assert_eq!(status.system.memory.total_bytes, 0);
+        assert!(status.system.swap.is_none());
+    }
+
+    #[test]
+    fn collector_builder_disabled_network_is_zeroed() {
+        let mut collector = Collector::builder()
+            .preset(Preset::Diagnostics)
+            .network(false)
+            .build();
+        let (status, _) = collector.collect();
+        assert_eq!(status.system.network.bytes_received, 0);
+        assert_eq!(status.system.network.bytes_transmitted, 0);
+        assert!(status.system.network_interfaces.is_empty());
+    }
+
+    #[test]
+    fn collector_builder_disabled_cpu_is_emptied() {
+        let mut collector = Collector::builder()
+            .preset(Preset::Diagnostics)
+            .cpu(false)
+            .build();
+        let (status, _) = collector.collect();
+        assert!(status.system.cpu_usage.is_none());
+        assert!(status.system.cpu_cores.is_empty());
+        assert!(status.system.physical_cores.is_none());
+    }
+
+    #[test]
+    fn collector_builder_toggles_do_not_drop_unrelated_metrics() {
+        let mut collector = Collector::builder()
+            .preset(Preset::Diagnostics)
+            .disks(false)
+            .build();
+        let (status, _) = collector.collect();
+        // Disabling disks must not, e.g., wipe memory or processes.
+        assert!(status.system.memory.total_bytes > 0, "memory should remain populated");
+        assert!(!status.system.hostname.is_empty(), "hostname should remain populated");
     }
 }

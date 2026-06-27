@@ -54,22 +54,22 @@ OS:
   Uptime: yes
   Boot time: yes
   Load average: yes
-  Virtualization: no
+  Virtualization: yes
 
 GPU:
   Identity: yes
-  NVIDIA NVML: no
-  Utilization: no
-  Temperature: no
-  Memory: no
-  Per-process: no
+  NVIDIA NVML: yes
+  Utilization: yes
+  Temperature: yes
+  Memory: yes
+  Per-process: yes
 
 Battery:
   Available: yes
   Charge percent: yes
   Time remaining: yes
-  Cycle count: yes
-  Health: yes
+  Cycle count: no
+  Health: no
 
 Process:
   List: yes
@@ -78,7 +78,7 @@ Process:
   Command line: yes
   Thread count: yes
   User: yes
-  Disk I/O: no
+  Disk I/O: yes
   Tree: yes
 
 Storage:
@@ -86,8 +86,8 @@ Storage:
   Disk I/O: yes
   Disk type: yes
   Model: yes
-  SMART: no
-  Temperature: no
+  SMART: yes
+  Temperature: yes
 
 Network:
   Interfaces: yes
@@ -99,9 +99,9 @@ Network:
 
 Sensors:
   CPU temperature: yes
-  GPU temperature: no
+  GPU temperature: yes
   Fan speed: yes
-  Voltage: no
+  Voltage: yes
 
 Daemon:
   PID check: yes

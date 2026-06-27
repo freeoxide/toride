@@ -27,7 +27,7 @@ use std::fmt;
 use serde::Serialize;
 
 pub use capabilities::Capabilities;
-pub use collector::{Collector, DiskIoDelta, GpuDelta, ProcessDelta, SystemDelta};
+pub use collector::{Collector, DiskIoDelta, GpuDelta, MetricToggles, ProcessDelta, SystemDelta};
 pub use daemon::DaemonStatus;
 pub use doctor::{CheckStatus, DoctorCheck, DoctorReport};
 pub use error::{StatusError, StatusResult};
@@ -211,6 +211,54 @@ impl TorideStatus {
         }
         if !preset.includes_battery() {
             self.system.battery = None;
+        }
+    }
+
+    /// Zero out fields excluded by per-metric collection toggles.
+    ///
+    /// Unlike [`apply_preset`](Self::apply_preset), these toggles are explicit
+    /// per-metric overrides set via [`Collector`](crate::collector::Collector)'s
+    /// builder. A toggle set to `false` drops the corresponding metric
+    /// regardless of the preset. Core always-collected fields (hostname,
+    /// `os_info`, uptime, load average) are never affected.
+    pub fn apply_toggles(&mut self, toggles: collector::MetricToggles) {
+        if !toggles.cpu {
+            self.system.cpu_usage = None;
+            self.system.cpu_cores.clear();
+            self.system.physical_cores = None;
+        }
+        if !toggles.memory {
+            self.system.memory = system::MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            };
+            self.system.swap = None;
+        }
+        if !toggles.disks {
+            self.system.disk = system::DiskStatus::default();
+            self.system.disks.clear();
+            self.system.disk_io = system::DiskIoSnapshot::default();
+        }
+        if !toggles.network {
+            self.system.network = system::NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            };
+            self.system.network_interfaces.clear();
+        }
+        if !toggles.processes {
+            self.system.processes = system::ProcessSnapshot {
+                processes: Vec::new(),
+                total_count: 0,
+            };
+        }
+        if !toggles.gpu {
+            self.system.gpu.clear();
         }
     }
 

@@ -28,8 +28,9 @@ expression: "format!(\"{}\", report)"
   ✓ ssh.agent: agent running (3 key(s))
   ✓ privacy.hostname: hostname present
   ⚠ privacy.process_details: no process details available
-  ⚠ permissions.process_executable: cannot read /proc/self/exe (permission denied or unsupported)
-  ⚠ permissions.process_cmdline: cannot read /proc/self/cmdline (permission denied or unsupported)
+  ✓ permissions.process_executable: process executable path is readable
+  ✓ permissions.process_cmdline: process command line is readable
+  ✓ permissions.disk_stats: /proc/diskstats is readable
   ✓ permissions.network_stats: network counters are readable
   ✓ permissions.is_admin: not running as root
   ⚠ network.provider: no network interfaces detected
@@ -37,4 +38,4 @@ expression: "format!(\"{}\", report)"
   ✓ privacy.serial_redacted: no serial numbers in collected data
   ✓ privacy.mac_redacted: no MAC addresses in collected data
   ✓ privacy.command_args: no command line arguments in collected data
---- 25 passed, 9 warnings, 0 failures
+--- 28 passed, 7 warnings, 0 failures
