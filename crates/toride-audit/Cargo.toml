@@ -5,6 +5,11 @@ edition = "2024"
 description = "Linux audit daemon, file integrity monitoring, and log management"
 license = "MIT"
 
+[[bin]]
+name = "toride-audit"
+path = "src/bin/toride_audit.rs"
+required-features = ["cli", "client", "doctor", "auditd", "service", "integrity", "logs"]
+
 [features]
 default = ["client", "doctor", "auditd"]
 
@@ -39,11 +44,13 @@ config = ["client", "dep:regex"]
 ## Serialization support for types.
 serde = ["dep:serde", "dep:serde_json"]
 
-## CLI argument parsing.
-cli = ["dep:clap"]
+## CLI argument parsing. Enables the dispatch layer and pulls in every
+## capability feature the dispatch routes to (client, doctor, auditd,
+## service, integrity, logs) so `AuditCli::run` resolves unconditionally.
+cli = ["dep:clap", "client", "doctor", "auditd", "service", "integrity", "logs"]
 
 [dependencies]
-toride-runner = { path = "../toride-runner" }
+toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
 toride-fs = { path = "../toride-fs" }
 toride-diagnostic-types = { path = "../toride-diagnostic-types" }
 toride-service = { path = "../toride-service", optional = true }

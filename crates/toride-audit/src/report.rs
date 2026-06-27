@@ -53,6 +53,28 @@ impl AuditReport {
     }
 }
 
+impl std::fmt::Display for AuditReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.findings.is_empty() {
+            return writeln!(f, "no findings — audit subsystem healthy");
+        }
+        for finding in &self.findings {
+            writeln!(
+                f,
+                "[{}] {} ({})",
+                finding.severity, finding.title, finding.id
+            )?;
+            if !finding.detail.is_empty() {
+                writeln!(f, "    {}", finding.detail)?;
+            }
+            if let Some(fix) = &finding.fix {
+                writeln!(f, "    fix: {fix}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // AuditFinding
 // ---------------------------------------------------------------------------
