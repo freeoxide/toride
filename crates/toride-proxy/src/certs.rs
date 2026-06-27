@@ -74,14 +74,22 @@ impl<'a> CertManager<'a> {
             .args(["--agree-tos", "--non-interactive"])
             .redact(true);
 
-        let output = self.runner.run(&spec)?;
-
-        if !output.success {
-            return Err(Error::CertRenewal(format!(
-                "failed to obtain certificate for {domain}: {}",
-                output.stderr.trim()
-            )));
-        }
+        // Run via `run_checked`, NOT plain `run`. On failure, certbot writes the
+        // ACME account contact email back to stderr (e.g. registration,
+        // account-update, and rate-limit messages of the form
+        // "An unexpected error occurred during registration for
+        // <email>"), so the `--email` value can reappear in the raw
+        // stderr stream even though the spec carries `redact(true)`.
+        // `run_checked` is the path that honors `redact=true`: it routes stderr
+        // through `display::scrub_stderr`, which replaces the `--email` value
+        // (a `REDACT_FLAGS` entry) with `"***"` before surfacing it. The plain
+        // `run` path returns raw, unscrubbed output and would interpolate the
+        // PII email straight into `Error::CertRenewal`, defeating `redact(true)`.
+        self.runner
+            .run_checked(&spec)
+            .map_err(|e| Error::CertRenewal(format!(
+                "failed to obtain certificate for {domain}: {e}"
+            )))?;
 
         tracing::info!("certs: obtained certificate for {}", domain);
         Ok(())
@@ -235,6 +243,72 @@ mod tests {
         assert!(
             !display.contains("webmaster@example.com"),
             "certbot email leaked into redacted display: {display}"
+        );
+    }
+
+    /// Regression for the `run` vs `run_checked` gap: when certbot fails, it
+    /// echoes the ACME account contact email back to stderr.
+    ///
+    /// Real certbot writes the contact email to stderr on ACME
+    /// registration/account/rate-limit errors (e.g. "An unexpected error
+    /// occurred during registration for webmaster@example.com" or
+    /// "There were too many requests of a given type for <email>"). Because
+    /// `--email` carries PII, `obtain_certificate` builds the spec with
+    /// `redact(true)` — and that redaction is only applied on the
+    /// `run_checked` path (`Runner::run_checked` runs stderr through
+    /// `display::scrub_stderr`, which replaces the `--email` value with
+    /// `***` since `--email` is in `REDACT_FLAGS`).
+    ///
+    /// Previously `obtain_certificate` called the plain `run` path, which
+    /// returns raw unscrubbed stderr, and then interpolated it straight into
+    /// `Error::CertRenewal` — leaking the email that `redact(true)` promised
+    /// to scrub. This test proves the fix: the PII email value must be absent
+    /// from the surfaced failure message.
+    #[test]
+    fn obtain_certificate_failure_scrubs_pii_email_from_error() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+
+        // Simulated certbot failure: a rate-limit style stderr that echoes the
+        // contact email, the way real certbot does on ACME registration errors.
+        let pii_email = "webmaster@example.com";
+        let raw_stderr = format!(
+            "Account creation failed for rate limit during registration for {pii_email}. \
+             See https://letsencrypt.org/docs/rate-limits/"
+        );
+
+        let fake = toride_runner::fake::FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stderr(raw_stderr, 1));
+        let mgr = CertManager::new(&fake, &paths);
+
+        let result = mgr.obtain_certificate("example.com", pii_email, "/var/www/html");
+
+        let err = result
+            .expect_err("a failing certbot run must surface an error");
+        let msg = match &err {
+            Error::CertRenewal(msg) => msg.clone(),
+            other => panic!("expected Error::CertRenewal, got {other:?}"),
+        };
+
+        // Preserve the user-facing message shape.
+        assert!(
+            msg.starts_with("failed to obtain certificate for example.com:"),
+            "unexpected CertRenewal message shape: {msg}"
+        );
+
+        // Non-vacuous value-absence check: the PII email MUST NOT leak into the
+        // failure message. If `obtain_certificate` ever falls back to the plain
+        // `run` path (which skips scrub_stderr), the email reappears here.
+        assert!(
+            !msg.contains(pii_email),
+            "PII email leaked into CertRenewal failure message: {msg}"
+        );
+
+        // Sanity: the scrubbed sentinel is present, proving the value was
+        // replaced rather than merely dropped.
+        assert!(
+            msg.contains("***"),
+            "expected redaction sentinel '***' in scrubbed message: {msg}"
         );
     }
 }
