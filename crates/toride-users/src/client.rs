@@ -90,7 +90,7 @@ impl UsersClient {
     /// Password policy operations.
     #[must_use]
     pub fn password(&self) -> PasswordOps<'_> {
-        PasswordOps { _paths: &self.paths }
+        PasswordOps { paths: &self.paths }
     }
 }
 
@@ -112,12 +112,17 @@ pub struct UserOps<'a> {
 impl UserOps<'_> {
     /// Check if a user exists.
     pub fn exists(&self, username: &str) -> Result<bool> {
-        crate::user::user_exists(username)
+        crate::user::user_exists(&self.paths.passwd, username)
     }
 
     /// Get the UID of a user.
     pub fn uid(&self, username: &str) -> Result<u32> {
-        crate::user::get_uid(username)
+        crate::user::get_uid(&self.paths.passwd, username)
+    }
+
+    /// Get the login shell of a user.
+    pub fn get_shell(&self, username: &str) -> Result<String> {
+        crate::user::get_shell(&self.paths.passwd, username)
     }
 
     /// Create a new user account.
@@ -156,7 +161,7 @@ pub struct GroupOps<'a> {
 impl GroupOps<'_> {
     /// Check if a group exists.
     pub fn exists(&self, name: &str) -> Result<bool> {
-        crate::group::group_exists(name)
+        crate::group::group_exists(&self.paths.group, name)
     }
 
     /// Create a new group.
@@ -232,34 +237,34 @@ pub struct TotpOps<'a> {
 impl TotpOps<'_> {
     /// Check if TOTP is configured for a user.
     pub fn is_configured(&self, username: &str) -> Result<bool> {
-        crate::totp::is_totp_configured(username)
+        crate::totp::is_totp_configured(self.paths, username)
     }
 
     /// Enroll a user in TOTP.
     pub fn enroll(&self, username: &str) -> Result<String> {
-        crate::totp::enroll_totp(username)
+        crate::totp::enroll_totp(self.paths, username)
     }
 
     /// Remove TOTP for a user.
     pub fn remove(&self, username: &str) -> Result<()> {
-        crate::totp::remove_totp(username)
+        crate::totp::remove_totp(self.paths, username)
     }
 }
 
 /// Password policy operations.
 pub struct PasswordOps<'a> {
-    _paths: &'a UserPaths,
+    paths: &'a UserPaths,
 }
 
 impl PasswordOps<'_> {
     /// Check if an account is locked.
     pub fn is_locked(&self, username: &str) -> Result<bool> {
-        crate::password::is_account_locked(username)
+        crate::password::is_account_locked(&self.paths.shadow, username)
     }
 
     /// Check if a user has an empty password.
     pub fn has_empty_password(&self, username: &str) -> Result<bool> {
-        crate::password::has_empty_password(username)
+        crate::password::has_empty_password(&self.paths.shadow, username)
     }
 
     /// Lock an account.

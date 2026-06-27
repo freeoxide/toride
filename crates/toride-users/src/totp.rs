@@ -3,15 +3,15 @@
 //! Provides functions to set up and manage TOTP-based two-factor
 //! authentication using the `google-authenticator` PAM module.
 
-use std::path::Path;
-
 use crate::{paths::UserPaths, Error, Result};
 
 /// Check if TOTP is set up for a user.
 ///
-/// Checks for the existence of `~<username>/.google_authenticator`.
-pub fn is_totp_configured(username: &str) -> Result<bool> {
-    let home = get_user_home(username)?;
+/// Checks for the existence of `~<username>/.google_authenticator`. The home
+/// directory is resolved by reading `paths.passwd` so a custom base dir (e.g.
+/// for tests or chrooted operation) is honored.
+pub fn is_totp_configured(paths: &UserPaths, username: &str) -> Result<bool> {
+    let home = get_user_home(paths, username)?;
     let ga_file = home.join(".google_authenticator");
     Ok(ga_file.exists())
 }
@@ -22,8 +22,8 @@ pub fn is_totp_configured(username: &str) -> Result<bool> {
 ///
 /// Returns [`Error::UserNotFound`] if the user's home directory cannot be
 /// determined.
-pub fn totp_file_path(username: &str) -> Result<std::path::PathBuf> {
-    let home = get_user_home(username)?;
+pub fn totp_file_path(paths: &UserPaths, username: &str) -> Result<std::path::PathBuf> {
+    let home = get_user_home(paths, username)?;
     Ok(home.join(".google_authenticator"))
 }
 
@@ -49,9 +49,9 @@ pub fn totp_file_path(username: &str) -> Result<std::path::PathBuf> {
 /// - [`Error::TotpError`] if TOTP is already configured for this user.
 /// - [`Error::CommandFailed`] if the command fails.
 #[cfg(feature = "client")]
-pub fn enroll_totp(username: &str) -> Result<String> {
+pub fn enroll_totp(paths: &UserPaths, username: &str) -> Result<String> {
     // Check if already enrolled
-    if is_totp_configured(username)? {
+    if is_totp_configured(paths, username)? {
         return Err(Error::TotpError(format!(
             "TOTP already configured for user {username}"
         )));
@@ -86,14 +86,15 @@ pub fn enroll_totp(username: &str) -> Result<String> {
 /// Remove TOTP configuration for a user.
 ///
 /// Deletes the `.google_authenticator` file from the user's home directory.
-/// A backup is created before deletion.
+/// A backup is created before deletion. The home directory is resolved by
+/// reading `paths.passwd`.
 ///
 /// # Errors
 ///
 /// - [`Error::TotpError`] if TOTP is not configured for this user.
 /// - [`Error::Io`] if the file cannot be removed.
-pub fn remove_totp(username: &str) -> Result<()> {
-    let path = totp_file_path(username)?;
+pub fn remove_totp(paths: &UserPaths, username: &str) -> Result<()> {
+    let path = totp_file_path(paths, username)?;
 
     if !path.exists() {
         return Err(Error::TotpError(format!(
@@ -121,7 +122,7 @@ pub fn remove_totp(username: &str) -> Result<()> {
 /// Returns any error from enrollment or PAM configuration.
 #[cfg(feature = "client")]
 pub fn enable_totp_ssh(paths: &UserPaths, username: &str) -> Result<String> {
-    let output = enroll_totp(username)?;
+    let output = enroll_totp(paths, username)?;
     crate::pam::enable_totp_for_service(paths, "sshd")?;
     tracing::info!("enabled TOTP for SSH login for user {username}");
     Ok(output)
@@ -133,15 +134,15 @@ pub fn enable_totp_ssh(paths: &UserPaths, username: &str) -> Result<String> {
 ///
 /// Returns any error from removal or PAM configuration.
 pub fn disable_totp_ssh(paths: &UserPaths, username: &str) -> Result<()> {
-    remove_totp(username)?;
+    remove_totp(paths, username)?;
     crate::pam::disable_totp_for_service(paths, "sshd")?;
     tracing::info!("disabled TOTP for SSH login for user {username}");
     Ok(())
 }
 
-/// Resolve the home directory for a user from `/etc/passwd`.
-fn get_user_home(username: &str) -> Result<std::path::PathBuf> {
-    let entries = crate::parse::read_passwd(Path::new("/etc/passwd"))?;
+/// Resolve the home directory for a user from `paths.passwd`.
+fn get_user_home(paths: &UserPaths, username: &str) -> Result<std::path::PathBuf> {
+    let entries = crate::parse::read_passwd(&paths.passwd)?;
     entries
         .iter()
         .find(|e| e.username == username)

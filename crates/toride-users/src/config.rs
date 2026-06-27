@@ -47,16 +47,21 @@ impl UsersConfig {
     ///
     /// Returns [`Error::Other`] if the JSON is malformed.
     pub fn from_json(json: &str) -> Result<Self> {
-        // When serde is not enabled, provide a stub that returns an error
+        // The `config` feature implies `serde` (see Cargo.toml), so this branch
+        // is always compiled when `UsersConfig` is in scope. The serde-off arm
+        // is retained only as a compile-time fallback for hypothetical future
+        // callers that construct the struct without going through the feature.
         #[cfg(feature = "serde")]
         {
-            serde_json::from_str(json)
-                .map_err(|e| Error::Other(format!("config parse error: {e}")))
+            serde_json::from_str(json).map_err(|e| Error::Other(format!("config parse error: {e}")))
         }
         #[cfg(not(feature = "serde"))]
         {
             let _ = json;
-            Err(Error::Other("serde feature is required for config parsing".into()))
+            Err(Error::Other(
+                "serde feature is required for config parsing (the 'config' feature implies it; \
+                 enable 'config')",
+            ))
         }
     }
 
@@ -96,7 +101,10 @@ impl UsersConfig {
         }
         #[cfg(not(feature = "serde"))]
         {
-            Err(Error::Other("serde feature is required for config serialization".into()))
+            Err(Error::Other(
+                "serde feature is required for config serialization (the 'config' feature implies \
+                 it; enable 'config')",
+            ))
         }
     }
 
@@ -133,5 +141,102 @@ impl UsersConfig {
     #[must_use]
     pub fn get_user(&self, username: &str) -> Option<&UserSpec> {
         self.users.iter().find(|u| u.username == username)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{Complexity, PasswordPolicy};
+    use tempfile::TempDir;
+
+    fn sample_spec() -> UserSpec {
+        UserSpec {
+            username: "deployer".to_owned(),
+            shell: "/usr/bin/bash".to_owned(),
+            groups: vec!["sudo".to_owned(), "docker".to_owned()],
+            sudo_access: true,
+            totp_enabled: false,
+            password_policy: PasswordPolicy {
+                max_days: 90,
+                min_days: 1,
+                warn_days: 7,
+                complexity: Complexity::Strong,
+            },
+        }
+    }
+
+    /// Regression for the config/serde feature wiring gap: the `config`
+    /// feature previously did NOT imply `serde`, so `UsersConfig::from_json`
+    /// and `to_json` compiled but failed at runtime with "serde feature is
+    /// required". Now `config` implies `serde`, so a build with just
+    /// `--features config` must round-trip JSON end to end.
+    #[test]
+    fn config_feature_round_trips_json() {
+        let mut cfg = UsersConfig::new();
+        cfg.upsert_user(sample_spec());
+
+        let json = cfg.to_json().expect("to_json must work under config feature");
+        // The user and a representative scalar survive.
+        assert!(json.contains("\"username\""), "json should contain username: {json}");
+        assert!(json.contains("deployer"), "json should contain deployer: {json}");
+
+        let back = UsersConfig::from_json(&json).expect("from_json must work under config feature");
+        assert_eq!(back.users.len(), 1);
+        assert_eq!(back.users[0], sample_spec());
+    }
+
+    /// `read`/`write` against a temp file must round-trip under the `config`
+    /// feature alone (no explicit `serde` flag). Before the fix, `write` -> `
+    /// to_json` returned `Err(Other("serde feature is required..."))`.
+    #[test]
+    fn config_feature_read_write_round_trip() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("users.json");
+
+        let mut cfg = UsersConfig::new();
+        cfg.upsert_user(sample_spec());
+
+        cfg.write(&path).expect("write must succeed under config feature");
+        assert!(path.exists(), "config file should exist after write");
+
+        let loaded = UsersConfig::read(&path).expect("read must succeed under config feature");
+        assert_eq!(loaded.users.len(), 1);
+        assert_eq!(loaded.users[0].username, "deployer");
+        assert_eq!(loaded.users[0].password_policy.complexity, Complexity::Strong);
+    }
+
+    /// Malformed JSON must surface a parse error (not a "serde feature
+    /// required" stub), proving the real serde_json path is wired.
+    #[test]
+    fn malformed_json_returns_parse_error() {
+        let err = UsersConfig::from_json("{ not json").expect_err("malformed json must error");
+        assert!(
+            err.to_string().contains("config parse error"),
+            "expected parse error, got: {err}"
+        );
+    }
+
+    /// `upsert_user` updates an existing entry in place rather than appending.
+    #[test]
+    fn upsert_user_replaces_existing() {
+        let mut cfg = UsersConfig::new();
+        cfg.upsert_user(sample_spec());
+        let mut updated = sample_spec();
+        updated.shell = "/usr/sbin/nologin".to_owned();
+        cfg.upsert_user(updated);
+
+        assert_eq!(cfg.users.len(), 1);
+        assert_eq!(cfg.users[0].shell, "/usr/sbin/nologin");
+    }
+
+    /// `remove_user` returns whether anything was removed.
+    #[test]
+    fn remove_user_reports_removal() {
+        let mut cfg = UsersConfig::new();
+        cfg.upsert_user(sample_spec());
+        assert!(cfg.remove_user("deployer"), "should report removal");
+        assert!(!cfg.remove_user("deployer"), "second removal should be false");
+        assert!(cfg.users.is_empty());
     }
 }

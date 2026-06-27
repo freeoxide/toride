@@ -105,7 +105,7 @@ impl serde::Serialize for Error {
 
         let mut s = serializer.serialize_struct("Error", 2)?;
         s.serialize_field("type", self.tag())?;
-        s.serialize_field("detail", &std::fmt::Display::to_string(self))?;
+        s.serialize_field("detail", &self.to_string())?;
         s.end()
     }
 }

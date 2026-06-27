@@ -5,6 +5,11 @@ edition = "2024"
 description = "OS-level user, sudo, PAM, and 2FA management"
 license = "MIT"
 
+[[bin]]
+name = "toride-users"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [features]
 default = ["client", "doctor"]
 
@@ -20,7 +25,13 @@ service = ["client", "dep:toride-service"]
 doctor = ["service"]
 
 ## Config file parsing and rendering.
-config = ["client", "dep:regex", "dep:dirs"]
+##
+## Implies `serde`: the config surface (`UsersConfig::read`/`write`/
+## `from_json`/`to_json`) is JSON-backed, so enabling `config` pulls in the
+## serde derives and `serde_json` automatically. Without this implication the
+## config API would compile but every call would fail at runtime with
+## "serde feature is required".
+config = ["client", "serde", "dep:regex", "dep:dirs"]
 
 ## TOTP/2FA enrollment via `google-authenticator`.
 totp = ["client"]
@@ -28,8 +39,12 @@ totp = ["client"]
 ## Serde serialization for spec and report types.
 serde = ["dep:serde", "dep:serde_json"]
 
-## CLI argument parsing.
-cli = ["dep:clap"]
+## CLI argument parsing and dispatch.
+##
+## Implies `client`: [`Cli::dispatch`](crate::cli::Cli::dispatch) drives a
+## [`UsersClient`](crate::client::UsersClient), so the `cli` feature pulls in
+## the client facade automatically.
+cli = ["client", "dep:clap"]
 
 [dependencies]
 toride-runner = { path = "../toride-runner" }

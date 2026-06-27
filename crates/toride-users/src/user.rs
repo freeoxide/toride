@@ -4,6 +4,7 @@
 //! system, as well as query user information from `/etc/passwd`.
 
 use crate::{Error, Result};
+use std::path::Path;
 
 /// Create a new user account.
 ///
@@ -141,22 +142,25 @@ pub fn delete_user(username: &str, remove_home: bool) -> Result<()> {
     Ok(())
 }
 
-/// Check if a user exists in `/etc/passwd`.
+/// Check if a user exists in the given `passwd` file.
 ///
-/// This function reads `/etc/passwd` and checks for the given username.
+/// This reads the supplied path (typically `/etc/passwd`, or a redirect via
+/// [`crate::paths::UserPaths`]) and checks for the given username.
 /// It does not require root privileges.
-pub fn user_exists(username: &str) -> Result<bool> {
-    let entries = crate::parse::read_passwd(std::path::Path::new("/etc/passwd"))?;
+pub fn user_exists(passwd: &Path, username: &str) -> Result<bool> {
+    let entries = crate::parse::read_passwd(passwd)?;
     Ok(entries.iter().any(|e| e.username == username))
 }
 
 /// Get the UID of a user.
 ///
+/// `passwd` is the path to the password database (usually `/etc/passwd`).
+///
 /// # Errors
 ///
 /// Returns [`Error::UserNotFound`] if the user does not exist.
-pub fn get_uid(username: &str) -> Result<u32> {
-    let entries = crate::parse::read_passwd(std::path::Path::new("/etc/passwd"))?;
+pub fn get_uid(passwd: &Path, username: &str) -> Result<u32> {
+    let entries = crate::parse::read_passwd(passwd)?;
     entries
         .iter()
         .find(|e| e.username == username)
@@ -166,11 +170,13 @@ pub fn get_uid(username: &str) -> Result<u32> {
 
 /// Get the shell of a user.
 ///
+/// `passwd` is the path to the password database (usually `/etc/passwd`).
+///
 /// # Errors
 ///
 /// Returns [`Error::UserNotFound`] if the user does not exist.
-pub fn get_shell(username: &str) -> Result<String> {
-    let entries = crate::parse::read_passwd(std::path::Path::new("/etc/passwd"))?;
+pub fn get_shell(passwd: &Path, username: &str) -> Result<String> {
+    let entries = crate::parse::read_passwd(passwd)?;
     entries
         .iter()
         .find(|e| e.username == username)

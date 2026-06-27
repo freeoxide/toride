@@ -4,6 +4,7 @@
 //! manage group membership.
 
 use crate::{Error, Result};
+use std::path::Path;
 
 /// Create a new system group.
 ///
@@ -101,8 +102,9 @@ pub fn add_user_to_group(username: &str, group: &str) -> Result<()> {
 /// - [`Error::CommandFailed`] if `usermod` returns a non-zero exit code.
 #[cfg(feature = "client")]
 pub fn remove_user_from_group(username: &str, group: &str) -> Result<()> {
-    // Get current groups for the user, filter out the target group
-    let current = get_user_groups(username)?;
+    // Get current groups for the user, filter out the target group. This
+    // mutates the live system via `usermod`, so it reads the real /etc/group.
+    let current = get_user_groups(std::path::Path::new("/etc/group"), username)?;
     let remaining: Vec<String> = current.into_iter().filter(|g| g != group).collect();
 
     let usermod = which::which("usermod").map_err(|_| Error::BinaryNotFound("usermod".into()))?;
@@ -121,19 +123,24 @@ pub fn remove_user_from_group(username: &str, group: &str) -> Result<()> {
     Ok(())
 }
 
-/// Check if a group exists in `/etc/group`.
-pub fn group_exists(name: &str) -> Result<bool> {
-    let entries = crate::parse::read_group(std::path::Path::new("/etc/group"))?;
+/// Check if a group exists in the given `group` file.
+///
+/// `group` is the path to the group database (usually `/etc/group`, or a
+/// redirect via [`crate::paths::UserPaths`]).
+pub fn group_exists(group: &Path, name: &str) -> Result<bool> {
+    let entries = crate::parse::read_group(group)?;
     Ok(entries.iter().any(|e| e.name == name))
 }
 
 /// Get the GID of a group.
 ///
+/// `group` is the path to the group database (usually `/etc/group`).
+///
 /// # Errors
 ///
 /// Returns [`Error::GroupNotFound`] if the group does not exist.
-pub fn get_gid(name: &str) -> Result<u32> {
-    let entries = crate::parse::read_group(std::path::Path::new("/etc/group"))?;
+pub fn get_gid(group: &Path, name: &str) -> Result<u32> {
+    let entries = crate::parse::read_group(group)?;
     entries
         .iter()
         .find(|e| e.name == name)
@@ -143,11 +150,13 @@ pub fn get_gid(name: &str) -> Result<u32> {
 
 /// Get the list of supplementary groups a user belongs to.
 ///
+/// `group` is the path to the group database (usually `/etc/group`).
+///
 /// # Errors
 ///
 /// Returns [`Error::UserNotFound`] if the user does not exist.
-pub fn get_user_groups(username: &str) -> Result<Vec<String>> {
-    let group_entries = crate::parse::read_group(std::path::Path::new("/etc/group"))?;
+pub fn get_user_groups(group: &Path, username: &str) -> Result<Vec<String>> {
+    let group_entries = crate::parse::read_group(group)?;
     let groups: Vec<String> = group_entries
         .iter()
         .filter(|e| e.members.iter().any(|m| m == username))
