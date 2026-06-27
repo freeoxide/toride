@@ -28,9 +28,9 @@ pub trait AsyncRunner: Send + Sync {
         if !output.success {
             return Err(Error::CommandFailed {
                 program: spec.program.clone(),
-                args: spec.args.join(" "),
+                args: crate::display::redacted_args_display(spec),
                 exit_code: output.exit_code,
-                stderr: output.stderr.clone(),
+                stderr: crate::display::scrub_stderr(spec, &output.stderr),
             });
         }
         Ok(output)
