@@ -36,74 +36,78 @@ impl ServiceManager {
         Ok(Self { provider })
     }
 
+    /// Build a [`toride_service::ServiceManager`] for the provider's agent,
+    /// backed by the default [`toride_runner::DuctRunner`].
+    fn agent_service(&self) -> toride_service::ServiceManager {
+        toride_service::ServiceManager::new(Box::new(toride_runner::DuctRunner))
+    }
+
+    /// Map a [`toride_service::Error`] into the cloud [`crate::error::Error`].
+    fn map_svc_err<T>(r: toride_service::Result<T>) -> Result<T> {
+        r.map_err(|e| crate::error::Error::Other(e.to_string()))
+    }
+
     /// Check if the provider's agent service is running.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the check fails.
+    /// Returns [`crate::error::Error::Other`] if the systemctl probe fails.
     pub fn is_agent_running(&self) -> Result<bool> {
-        // TODO: Implement provider-specific agent checks.
-        Ok(false)
+        Self::map_svc_err(self.agent_service().is_active(self.agent_service_name()))
     }
 
     /// Start the provider's agent service.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the start fails.
+    /// Returns [`crate::error::Error::Other`] if the start fails.
     pub fn start_agent(&self) -> Result<()> {
-        // TODO: Implement provider-specific agent start.
-        Ok(())
+        Self::map_svc_err(self.agent_service().start(self.agent_service_name()))
     }
 
     /// Stop the provider's agent service.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the stop fails.
+    /// Returns [`crate::error::Error::Other`] if the stop fails.
     pub fn stop_agent(&self) -> Result<()> {
-        // TODO: Implement provider-specific agent stop.
-        Ok(())
+        Self::map_svc_err(self.agent_service().stop(self.agent_service_name()))
     }
 
     /// Restart the provider's agent service.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the restart fails.
+    /// Returns [`crate::error::Error::Other`] if the restart fails.
     pub fn restart_agent(&self) -> Result<()> {
-        self.stop_agent()?;
-        self.start_agent()
+        Self::map_svc_err(self.agent_service().restart(self.agent_service_name()))
     }
 
     /// Check if the provider's agent service is enabled at boot.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the check fails.
+    /// Returns [`crate::error::Error::Other`] if the check fails.
     pub fn is_agent_enabled(&self) -> Result<bool> {
-        // TODO: Implement systemd/launchd enabled check.
-        Ok(false)
+        Self::map_svc_err(self.agent_service().is_enabled(self.agent_service_name()))
     }
 
     /// Enable the provider's agent service at boot.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the enable fails.
+    /// Returns [`crate::error::Error::Other`] if the enable fails.
     pub fn enable_agent(&self) -> Result<()> {
-        // TODO: Implement systemd/launchd enable.
-        Ok(())
+        Self::map_svc_err(self.agent_service().enable(self.agent_service_name()))
     }
 
     /// Disable the provider's agent service at boot.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the disable fails.
+    /// Returns [`crate::error::Error::Other`] if the disable fails.
     pub fn disable_agent(&self) -> Result<()> {
-        // TODO: Implement systemd/launchd disable.
-        Ok(())
+        Self::map_svc_err(self.agent_service().disable(self.agent_service_name()))
     }
 
     /// Return the name of the agent service for the current provider.

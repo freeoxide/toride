@@ -51,6 +51,28 @@ impl CloudReport {
     }
 }
 
+impl std::fmt::Display for CloudReport {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "Cloud report for {}: {} security group(s), {} finding(s)",
+            self.provider,
+            self.security_groups.len(),
+            self.findings.len()
+        )?;
+        for finding in &self.findings {
+            writeln!(f, "  [{severity}] {id}: {title}", severity = finding.severity, id = finding.id, title = finding.title)?;
+            if !finding.detail.is_empty() {
+                writeln!(f, "    {detail}", detail = finding.detail)?;
+            }
+            if let Some(fix) = &finding.fix {
+                writeln!(f, "    fix: {fix}")?;
+            }
+        }
+        Ok(())
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Severity
 // ---------------------------------------------------------------------------

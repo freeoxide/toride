@@ -5,13 +5,19 @@ edition = "2024"
 description = "Cloud provider security group and firewall management"
 license = "MIT"
 
+[[bin]]
+name = "toride-cloud"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [features]
 default = ["client", "doctor"]
 
 # === Capability features ===
 
 ## Cloud provider client wrappers and command execution.
-client = ["dep:duct"]
+## Implies serde/serde_json so provider clients can parse provider CLI JSON output.
+client = ["dep:duct", "dep:serde", "dep:serde_json"]
 
 ## Diagnostic engine for cloud provider installations.
 doctor = ["service"]
@@ -26,8 +32,11 @@ config = ["client", "dep:regex"]
 ## Serde serialization for domain types.
 serde = ["dep:serde", "dep:serde_json"]
 
-## CLI argument parsing.
-cli = ["dep:clap"]
+## CLI argument parsing and dispatch.
+## Implies `client` and `doctor` so the dispatch layer can construct a
+## `CloudClient` and run the diagnostic engine, and so the `toride-cloud`
+## binary builds with a single `--features cli` flag.
+cli = ["dep:clap", "client", "doctor"]
 
 [dependencies]
 thiserror = { workspace = true }
