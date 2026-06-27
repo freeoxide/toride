@@ -3,6 +3,7 @@
 //! Generates Nginx server blocks, Caddyfiles, and security header snippets
 //! from typed specifications.
 
+use crate::nginx_headers::SecurityHeaders;
 use crate::spec::{ProxySpec, ServerBlock};
 
 /// Render a single Nginx server block from a [`ServerBlock`] spec.
@@ -81,7 +82,41 @@ pub fn render_nginx_server_block(block: &ServerBlock) -> String {
     lines.join("\n")
 }
 
-/// Render a complete Caddyfile from a [`ProxySpec`].
+/// Render a single Nginx server block with security headers injected.
+///
+/// This wires [`SecurityHeaders::to_nginx_directives`] into the rendered block
+/// so generated configs actually carry the configured security headers. The
+/// directives are placed after the proxy `location` block and before any extra
+/// directives, matching the layout operators expect.
+///
+/// Pass `None` to render without security headers (equivalent to
+/// [`render_nginx_server_block`]).
+pub fn render_nginx_server_block_with_headers(
+    block: &ServerBlock,
+    headers: Option<&SecurityHeaders>,
+) -> String {
+    let Some(headers) = headers else {
+        return render_nginx_server_block(block);
+    };
+
+    let directives = headers.to_nginx_directives();
+    if directives.is_empty() {
+        return render_nginx_server_block(block);
+    }
+
+    // Build a synthetic block whose extra_directives prepend the security
+    // headers, preserving any caller-supplied directives afterwards. This keeps
+    // a single rendering code path rather than duplicating the block layout.
+    let mut combined: Vec<String> = directives
+        .lines()
+        .map(|l| l.to_string())
+        .collect();
+    combined.extend(block.extra_directives.iter().cloned());
+
+    let mut synthetic = block.clone();
+    synthetic.extra_directives = combined;
+    render_nginx_server_block(&synthetic)
+}
 ///
 /// Produces Caddy-format configuration for all server blocks in the spec.
 ///
@@ -245,5 +280,23 @@ mod tests {
         let headers = render_security_headers(true, Some("default-src 'self'"));
         assert!(headers.contains("Content-Security-Policy"));
         assert!(headers.contains("default-src 'self'"));
+    }
+
+    #[test]
+    fn render_block_with_headers_injects_directives() {
+        use crate::nginx_headers::SecurityHeaders;
+        let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000");
+        let rendered = render_nginx_server_block_with_headers(&block, Some(&SecurityHeaders::strict()));
+        assert!(rendered.contains("Strict-Transport-Security"));
+        assert!(rendered.contains("preload"));
+        assert!(rendered.contains("server_name example.com;"));
+    }
+
+    #[test]
+    fn render_block_with_none_headers_matches_plain() {
+        let block = ServerBlock::new("example.com", 80, "127.0.0.1:3000");
+        let plain = render_nginx_server_block(&block);
+        let with_none = render_nginx_server_block_with_headers(&block, None);
+        assert_eq!(plain, with_none);
     }
 }

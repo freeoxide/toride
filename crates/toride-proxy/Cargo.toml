@@ -5,6 +5,11 @@ edition = "2024"
 description = "Reverse proxy, TLS certificate, and WAF management"
 license = "MIT"
 
+[[bin]]
+name = "toride-proxy"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [features]
 default = ["client", "doctor", "nginx"]
 
@@ -29,7 +34,7 @@ caddy = ["client"]
 certs = ["client"]
 
 ## Web Application Firewall stub.
-waf = []
+waf = ["dep:regex"]
 
 ## Configuration file parsing and rendering.
 config = ["client", "dep:regex"]
@@ -38,7 +43,7 @@ config = ["client", "dep:regex"]
 serde = ["dep:serde", "dep:serde_json"]
 
 ## CLI argument parsing.
-cli = ["dep:clap"]
+cli = ["dep:clap", "client", "doctor", "nginx"]
 
 [dependencies]
 # --- Always required ---
@@ -56,7 +61,6 @@ serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
 regex = { version = "1", optional = true }
 similar = "2"
-zeroize = "1"
 clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]

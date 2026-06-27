@@ -5,7 +5,7 @@
 //! feature-gated) so that parsing/rendering is available without the `nginx`
 //! feature.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 
 /// A parsed Nginx configuration directive.
 #[derive(Debug, Clone, PartialEq, Eq)]

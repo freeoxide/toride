@@ -3,9 +3,8 @@
 //! Before applying proxy configuration changes, this module snapshots the
 //! current configuration so that changes can be rolled back if needed.
 
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::paths::ProxyPaths;
-use std::path::Path;
 
 /// A snapshot of proxy configuration files before mutation.
 #[derive(Debug, Clone)]

@@ -3,7 +3,6 @@
 //! Provides helper functions for certificate renewal scheduling, expiry
 //! checking, and renewal workflow management.
 
-use crate::error::{Error, Result};
 use crate::report::CertInfo;
 
 /// Default number of days before expiry to trigger renewal.

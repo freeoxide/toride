@@ -84,11 +84,14 @@ impl<'a> CaddyManager<'a> {
 
     /// Write a Caddyfile from a [`ProxySpec`].
     ///
-    /// Renders the spec to Caddyfile format and writes it to disk.
+    /// Renders the spec to Caddyfile format and writes it to disk. A
+    /// pre-mutation backup of the existing Caddyfile (and nginx config) is
+    /// created first via [`crate::backup::create_backup`] so the change can be
+    /// rolled back. A backup failure is logged but non-fatal.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be written.
+    /// Returns an error if validation or the write fails.
     pub fn write_caddyfile(&self, spec: &ProxySpec) -> Result<()> {
         spec.validate()?;
 
@@ -96,6 +99,19 @@ impl<'a> CaddyManager<'a> {
 
         if let Some(parent) = self.paths.caddyfile.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+
+        // Pre-mutation backup (best-effort, same policy as NginxManager): build
+        // an in-memory snapshot then persist it to backup_dir.
+        match crate::backup::create_backup(self.paths) {
+            Ok(snapshot) => {
+                if let Err(e) = crate::backup::save_backup_to_disk(self.paths, &snapshot) {
+                    tracing::warn!("caddy: persisting pre-write backup failed (continuing): {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("caddy: pre-write backup failed (continuing): {e}");
+            }
         }
 
         toride_fs::atomic_write(&self.paths.caddyfile, &content)?;

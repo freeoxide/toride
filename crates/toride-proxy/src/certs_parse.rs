@@ -233,7 +233,7 @@ fn extract_not_after(stdout: &str) -> Option<String> {
 /// as UTC. Returns `None` for any unparseable input rather than panicking.
 ///
 /// This avoids pulling in `chrono`/`time` for a single fixed format.
-fn parse_openssl_enddate_epoch(s: &str) -> Option<u64> {
+pub fn parse_openssl_enddate_epoch(s: &str) -> Option<u64> {
     let s = s.trim();
     let parts: Vec<&str> = s.split_whitespace().collect();
     // Expected: [Mon, DD, HH:MM:SS, YYYY, GMT]  (GMT optional)
@@ -320,6 +320,19 @@ fn civil_to_epoch_seconds(year: i64, month: u32, day: u32, hour: u32, min: u32, 
     let days = era * 146_097 + doe - 719_468; // days since 1970-01-01
     let secs = days * 86_400 + (hour as i64) * 3_600 + (min as i64) * 60 + sec as i64;
     if secs < 0 { 0 } else { secs as u64 }
+}
+
+/// Compute whole days from `now` (epoch seconds) until `expiry` (epoch seconds).
+///
+/// Returns a signed count: positive when the expiry is in the future, zero on
+/// the expiry day, and negative when already past due. Used by certificate
+/// parsers that need a `days_remaining` value without pulling in a date crate.
+/// Both inputs are treated as UTC (epoch seconds are inherently UTC).
+pub fn days_until(now_secs: u64, expiry_secs: u64) -> i64 {
+    let delta = expiry_secs as i64 - now_secs as i64;
+    // Floor toward negative infinity so a cert that expired 5h ago reports -1,
+    // not 0 — matching how operators read "days remaining".
+    delta.div_euclid(86_400)
 }
 
 /// List all live certificates in the certbot directory.

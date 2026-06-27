@@ -4,8 +4,9 @@
 //! testing, reloading, and restarting the Nginx service.
 
 use crate::error::{Error, Result};
+use crate::nginx_headers::SecurityHeaders;
 use crate::paths::ProxyPaths;
-use crate::render::render_nginx_server_block;
+use crate::render::render_nginx_server_block_with_headers;
 use crate::spec::ServerBlock;
 use toride_runner::{CommandSpec, Runner};
 
@@ -78,19 +79,57 @@ impl<'a> NginxManager<'a> {
     ///
     /// Renders the server block to Nginx config and writes it to
     /// `sites-available`. Optionally creates a symlink in `sites-enabled`.
+    /// A pre-mutation backup of the existing config is created first via
+    /// [`crate::backup::create_backup`] so the change can be rolled back.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be written.
+    /// Returns an error if validation, backup, or the write fails.
     pub fn write_site(&self, block: &ServerBlock, enable: bool) -> Result<()> {
+        self.write_site_with_headers(block, enable, None)
+    }
+
+    /// Write a server block configuration with optional security headers.
+    ///
+    /// Like [`write_site`](Self::write_site) but injects
+    /// [`SecurityHeaders::to_nginx_directives`] into the rendered config when
+    /// `headers` is `Some`. This is the apply path that actually emits the
+    /// security headers rendered by [`crate::nginx_headers`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if validation, backup, or the write fails.
+    pub fn write_site_with_headers(
+        &self,
+        block: &ServerBlock,
+        enable: bool,
+        headers: Option<&SecurityHeaders>,
+    ) -> Result<()> {
         block.validate()?;
 
-        let config = render_nginx_server_block(block);
+        let config = render_nginx_server_block_with_headers(block, headers);
         let site_path = self.paths.nginx_site_path(&block.server_name);
 
         // Ensure the directory exists
         if let Some(parent) = site_path.parent() {
             std::fs::create_dir_all(parent)?;
+        }
+
+        // Create a pre-mutation backup before overwriting. The backup captures
+        // the current sites-available directory (and nginx.conf / Caddyfile)
+        // and persists it to `backup_dir` so the change can be rolled back. A
+        // backup failure is non-fatal — we log and continue rather than
+        // blocking a legitimate write, matching how operators expect "best
+        // effort" snapshots to behave.
+        match crate::backup::create_backup(self.paths) {
+            Ok(snapshot) => {
+                if let Err(e) = crate::backup::save_backup_to_disk(self.paths, &snapshot) {
+                    tracing::warn!("nginx: persisting pre-write backup failed (continuing): {e}");
+                }
+            }
+            Err(e) => {
+                tracing::warn!("nginx: pre-write backup failed (continuing): {e}");
+            }
         }
 
         toride_fs::atomic_write(&site_path, &config)?;
@@ -197,5 +236,57 @@ mod tests {
         let paths = ProxyPaths::default();
         let mgr = NginxManager::new(&fake, &paths);
         assert!(mgr.test_config().is_ok());
+    }
+
+    #[test]
+    fn write_site_with_headers_emits_security_directives() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = NginxManager::new(&fake, &paths);
+
+        let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000");
+        mgr.write_site_with_headers(&block, false, Some(&SecurityHeaders::strict()))
+            .unwrap();
+
+        let written = std::fs::read_to_string(paths.nginx_site_path("example.com")).unwrap();
+        assert!(written.contains("Strict-Transport-Security"));
+        assert!(written.contains("Content-Security-Policy"));
+        assert!(written.contains("server_name example.com"));
+    }
+
+    #[test]
+    fn write_site_creates_backup_before_overwriting() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let sites_dir = &paths.nginx_sites_available;
+        std::fs::create_dir_all(sites_dir).unwrap();
+        // Seed an existing config so the backup has something to capture.
+        std::fs::write(sites_dir.join("example.com"), "server { listen 80; }\n").unwrap();
+
+        let backup_dir = &paths.backup_dir;
+        assert!(!backup_dir.exists());
+
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = NginxManager::new(&fake, &paths);
+
+        let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000");
+        mgr.write_site(&block, false).unwrap();
+
+        // Backup directory must now exist and contain a snapshot file.
+        assert!(backup_dir.is_dir());
+        let entries: Vec<_> = std::fs::read_dir(backup_dir).unwrap().collect();
+        assert!(
+            entries.iter().any(|e| {
+                e.as_ref()
+                    .map(|e| e.file_name().to_string_lossy().starts_with("proxy-backup-"))
+                    .unwrap_or(false)
+            }),
+            "expected a proxy-backup-*.txt snapshot in backup_dir"
+        );
+
+        // The site file was overwritten with the new config.
+        let written = std::fs::read_to_string(sites_dir.join("example.com")).unwrap();
+        assert!(written.contains("listen 443"));
     }
 }
