@@ -200,11 +200,16 @@ fn reset_should_fail_without_force() {
 fn reset_should_succeed_with_force() {
     let runner = FakeRunner::new().respond_ok("ufw", &["--force", "reset"], "Resetting all rules\n");
     let ufw = Ufw::with_runner(runner);
+    // backup_first disabled here so the test is hermetic: reset() backs up via
+    // UfwPaths::default() (real /etc/ufw), whose root-owned files are unreadable
+    // by a non-root test process. Backup behaviour itself is covered in
+    // backup.test.rs against temp paths.
     let opts = ResetOptions {
         force: true,
-        backup_first: true,
+        backup_first: false,
     };
-    assert!(ufw.reset(&opts).is_ok());
+    let result = ufw.reset(&opts);
+    assert!(result.is_ok(), "reset with force failed: {:?}", result.err());
 }
 
 // ---------------------------------------------------------------------------
