@@ -32,6 +32,8 @@ toride-status = { path = "../toride-status" }
 rattles = "0.3.1"
 libc = "0.2"
 dirs = { workspace = true }
+serde = { workspace = true }
+toml = { workspace = true }
 
 # ── Live-data backend crates (read-only Phase 1 integrations) ────────────────
 # Feature sets chosen for live read data + doctor diagnostics; write-paths land

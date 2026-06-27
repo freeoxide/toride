@@ -18,6 +18,7 @@ use tokio::sync::mpsc;
 
 use crate::action::Action;
 use crate::navigation::{Navigator, Screen};
+use crate::persistence;
 use crate::ssh_data::{SshDataCollector, SshOpError, execute_op};
 use crate::fail2ban_data::Fail2banCollector;
 use crate::ufw_kit_data::FirewallCollector;
@@ -185,8 +186,15 @@ impl App {
     /// Create a new application starting at the welcome screen.
     #[must_use]
     pub fn new() -> Self {
+        // Restore the persisted theme so the selected choice survives restarts.
+        // Falls back to the default on any error (missing / corrupt config).
+        let active_theme = persistence::load_theme();
         let (ssh_error_tx, ssh_error_rx) = mpsc::unbounded_channel();
         let (ssh_op_done_tx, ssh_op_done_rx) = mpsc::unbounded_channel();
+        let mut welcome = WelcomeScreen::new();
+        welcome.set_border_color(active_theme.palette().accent);
+        let mut dashboard = DashboardScreen::new();
+        dashboard.set_active_theme(active_theme);
         Self {
             ssh_error_tx,
             ssh_error_rx,
@@ -196,13 +204,13 @@ impl App {
             ssh_revert_pending: false,
             ssh_write_task: None,
             nav: Navigator::new(),
-            welcome: WelcomeScreen::new(),
-            dashboard: DashboardScreen::new(),
+            welcome,
+            dashboard,
             help: HelpScreen::new(),
             help_modal: InteractiveModal::display("Help").dimensions(52, 16),
             quit_visible: false,
             quit_modal: QuitModal::new(),
-            active_theme: Theme::default(),
+            active_theme,
             should_quit: false,
             needs_redraw: false,
             transition: None,
@@ -283,6 +291,11 @@ impl App {
                 self.welcome.set_border_color(next.palette().accent);
                 self.dashboard.set_active_theme(next);
                 self.invalidate_all_caches();
+                // Persist the new theme so it survives the next launch. Best
+                // effort: a write failure (read-only HOME, no config dir) is
+                // logged inside save_theme and swallowed — the choice simply
+                // reverts to the default on next launch instead of crashing.
+                persistence::save_theme(next);
             }
             // Scroll actions (and any future screen-local actions) are routed
             // to the current screen via `handle_action`.

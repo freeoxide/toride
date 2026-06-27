@@ -222,7 +222,7 @@ async fn collect_real_monitor(
         let findings: Vec<FindingEntry> = if use_cache {
             cached_findings.unwrap_or_default()
         } else {
-            let doctor = Doctor::new(client.paths());
+            let doctor = Doctor::new(client.paths(), client.runner());
             match doctor.run(&DoctorScope::All) {
                 Ok(report) => toride_monitor_convert::convert_findings(report.findings),
                 Err(e) => {
@@ -289,7 +289,7 @@ async fn collect_real_monitor(
         // connection count to fall back on) do we do a single fallback
         // `list_all()` read for the table length. Bytes/packets are NEVER
         // re-derived from a second table read.
-        let reader = ConntrackReader::new(client.paths());
+        let reader = ConntrackReader::new(client.paths(), client.runner());
         let fast_count = reader.count().ok();
         // Snapshot-derived count fallback: `ss` already enumerated the
         // outbound flows, so `total_connections` is a valid lower-bound count
@@ -318,8 +318,11 @@ async fn collect_real_monitor(
         };
 
         // ── OUTPUT chain LOG rules ─────────────────────────────────────────
-        let output_rule_count = match toride_monitor::output::OutputChain::new(client.paths())
-            .list_rules()
+        let output_rule_count = match toride_monitor::output::OutputChain::new(
+            client.paths(),
+            client.runner(),
+        )
+        .list_rules()
         {
             Ok(rules) => Some(rules.len()),
             Err(e) => {

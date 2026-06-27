@@ -216,6 +216,20 @@ impl Theme {
             Theme::Gruvbox,
         ]
     }
+
+    /// Resolve a theme from its [`label`](Self::label), case-insensitively.
+    ///
+    /// Used by the persistence layer to map the `theme = "<label>"` value stored
+    /// in `config.toml` back to a [`Theme`] variant. Returns `None` for an
+    /// unknown / unrecognized label so the caller can fall back to the default
+    /// rather than silently coercing a corrupt entry.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Theme> {
+        Theme::all()
+            .iter()
+            .copied()
+            .find(|t| t.label().eq_ignore_ascii_case(label))
+    }
 }
 
 // ── Keybinding style constants ────────────────────────────────────────────────
@@ -291,5 +305,24 @@ mod tests {
                 "{theme:?}: key_style and label_style should be different"
             );
         }
+    }
+
+    #[test]
+    fn from_label_round_trips_every_theme() {
+        for &theme in Theme::all() {
+            assert_eq!(Theme::from_label(theme.label()), Some(theme));
+        }
+    }
+
+    #[test]
+    fn from_label_is_case_insensitive() {
+        assert_eq!(Theme::from_label("charm"), Some(Theme::Charm));
+        assert_eq!(Theme::from_label("TOKYO NIGHT"), Some(Theme::TokyoNight));
+    }
+
+    #[test]
+    fn from_label_returns_none_for_unknown() {
+        assert!(Theme::from_label("nonexistent").is_none());
+        assert!(Theme::from_label("").is_none());
     }
 }

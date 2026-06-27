@@ -199,11 +199,12 @@ async fn collect_real_wireguard(
     use_cache: bool,
     cached_findings: Option<Vec<FindingEntry>>,
 ) -> (WireguardDataBundle, bool) {
-    // Build the WireguardClient on the blocking pool. WireguardClient::new()
-    // probes for the `wg` binary; on macOS (where `wg` is absent) it will
-    // return Err(BinaryNotFound). Build the client INSIDE spawn_blocking
-    // exactly like collect_real_fail2ban / collect_real_harden build their
-    // facades.
+    // Build the WireguardClient on the blocking pool. Construction is lazy
+    // (it does NOT probe for `wg`), so it is effectively infallible here —
+    // binary availability is surfaced by the cheap probes below and by the
+    // doctor suite, and a missing `wg` instead surfaces as an error from the
+    // first show()/list_peers() call inside collection. Built INSIDE
+    // spawn_blocking exactly like collect_real_fail2ban / collect_real_harden.
     let client = match tokio::task::spawn_blocking(|| {
         toride_wireguard::client::WireguardClient::new()
     })
@@ -211,7 +212,8 @@ async fn collect_real_wireguard(
     {
         Ok(Ok(client)) => client,
         Ok(Err(e)) => {
-            // Construction failed (e.g. BinaryNotFound("wg") on macOS).
+            // Construction failed (rare; new() is lazy, so this is not the
+            // missing-`wg` path — that surfaces later during collection).
             tracing::debug!("wireguard construction failed: {e}");
             return (
                 empty_bundle_with_reason(format!("wireguard backend unavailable: {e}")),
@@ -386,10 +388,13 @@ fn empty_bundle() -> WireguardDataBundle {
     }
 }
 
-/// Empty bundle carrying the reason collection failed. Used when construction
-/// failed (`WireguardClient::new()` `Err(BinaryNotFound)`) or when a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
-/// by the UI's degraded panel so the operator sees what actually went wrong.
+/// Empty bundle carrying the reason collection failed. Used when a
+/// `spawn_blocking` task panicked (JoinError) during construction or
+/// collection — `WireguardClient::new()` is lazy and effectively infallible,
+/// so in practice this is reached only on a panic, not on a missing `wg`
+/// binary (which surfaces as a doctor finding / collection error instead).
+/// The reason string is rendered by the UI's degraded panel so the operator
+/// sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> WireguardDataBundle {
     let mut b = empty_bundle();
     b.unavailable_reason = Some(reason);
