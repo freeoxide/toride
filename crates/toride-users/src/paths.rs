@@ -37,6 +37,12 @@ pub struct UserPaths {
     pub security_dir: PathBuf,
     /// `/etc/default/useradd` -- default values for `useradd`.
     pub useradd_defaults: PathBuf,
+    /// `/etc/ssh/sshd_config` -- OpenSSH daemon configuration.
+    ///
+    /// Used by the doctor's root-login check. Lives outside `/etc` proper
+    /// (under `/etc/ssh/`) but is plumbed through [`UserPaths`] so a custom
+    /// base dir (e.g. for tests or chrooted operation) redirects the read.
+    pub sshd_config: PathBuf,
 }
 
 impl UserPaths {
@@ -58,12 +64,16 @@ impl UserPaths {
             login_defs: etc.join("login.defs"),
             security_dir: etc.join("security"),
             useradd_defaults: etc.join("default").join("useradd"),
+            sshd_config: etc.join("ssh").join("sshd_config"),
         }
     }
 
     /// Create a `UserPaths` rooted at an alternative base directory.
     ///
     /// Useful for testing against a chroot or temporary directory tree.
+    ///
+    /// `sshd_config` resolves to `<base>/ssh/sshd_config`, mirroring the
+    /// `/etc/ssh/sshd_config` layout on a real system.
     #[must_use]
     pub fn with_base(base: PathBuf) -> Self {
         Self {
@@ -77,6 +87,7 @@ impl UserPaths {
             login_defs: base.join("login.defs"),
             security_dir: base.join("security"),
             useradd_defaults: base.join("default").join("useradd"),
+            sshd_config: base.join("ssh").join("sshd_config"),
         }
     }
 

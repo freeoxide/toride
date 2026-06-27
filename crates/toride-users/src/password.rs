@@ -146,9 +146,10 @@ pub fn unlock_account(username: &str) -> Result<()> {
 
 /// Check if a user account is locked.
 ///
-/// Checks `/etc/shadow` for a `!` prefix on the password hash.
-pub fn is_account_locked(username: &str) -> Result<bool> {
-    let shadow = std::fs::read_to_string("/etc/shadow")?;
+/// Reads `shadow` (usually `/etc/shadow`, or a redirect via
+/// [`crate::paths::UserPaths`]) for a `!` prefix on the password hash.
+pub fn is_account_locked(shadow: &std::path::Path, username: &str) -> Result<bool> {
+    let shadow = std::fs::read_to_string(shadow)?;
     for line in shadow.lines() {
         let parts: Vec<&str> = line.split(':').collect();
         if parts.len() >= 2 && parts[0] == username {
@@ -160,9 +161,9 @@ pub fn is_account_locked(username: &str) -> Result<bool> {
 
 /// Check if a user has an empty password.
 ///
-/// Checks `/etc/shadow` for an empty password field.
-pub fn has_empty_password(username: &str) -> Result<bool> {
-    let shadow = std::fs::read_to_string("/etc/shadow")?;
+/// Reads `shadow` (usually `/etc/shadow`) for an empty password field.
+pub fn has_empty_password(shadow: &std::path::Path, username: &str) -> Result<bool> {
+    let shadow = std::fs::read_to_string(shadow)?;
     for line in shadow.lines() {
         let parts: Vec<&str> = line.split(':').collect();
         if parts.len() >= 2 && parts[0] == username {

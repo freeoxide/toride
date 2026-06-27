@@ -147,8 +147,52 @@ pub fn validate_sudoers(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// No-op validate for non-client builds.
+/// Validate a sudoers file for non-client builds.
+///
+/// The `client` feature gates the real `visudo -c -f <path>` invocation. When
+/// `client` is disabled this build cannot shell out, so rather than silently
+/// returning `Ok(())` (which would let an invalid sudoers file through
+/// `grant_sudo`), this returns an explicit error telling the caller that
+/// validation is unavailable in this configuration.
+///
+/// Callers that need the no-op behavior (e.g. a deliberately minimal build
+/// that has already validated the content out-of-band) can match
+/// [`Error::SudoError`] and treat it as a warning.
 #[cfg(not(feature = "client"))]
-pub fn validate_sudoers(_path: &Path) -> Result<()> {
-    Ok(())
+pub fn validate_sudoers(path: &Path) -> Result<()> {
+    Err(Error::SudoError(format!(
+        "sudoers validation unavailable without the 'client' feature (cannot run \
+         `visudo -c`); left {} unchecked",
+        path.display()
+    )))
+}
+
+#[cfg(all(test, not(feature = "client")))]
+mod no_client_tests {
+    use super::*;
+
+    /// Regression: the `not(client)` branch of `validate_sudoers` must NOT be a
+    /// silent `Ok(())` no-op, because `grant_sudo` calls it after writing a
+    /// sudoers drop-in and a silent pass lets an invalid file through. It now
+    /// returns an explicit `Error::SudoError` so the caller knows validation
+    /// was skipped. The path appears in the message so the operator can see
+    /// which file was left unchecked.
+    #[test]
+    fn validate_sudoers_without_client_feature_is_explicit_error() {
+        let path = Path::new("/etc/sudoers.d/example");
+        let err = validate_sudoers(path).expect_err("should error without client feature");
+        assert!(
+            matches!(err, Error::SudoError(_)),
+            "expected SudoError, got {err:?}"
+        );
+        let msg = err.to_string();
+        assert!(
+            msg.contains("/etc/sudoers.d/example"),
+            "error should name the unchecked path: {msg}"
+        );
+        assert!(
+            msg.contains("client"),
+            "error should explain the 'client' feature is required: {msg}"
+        );
+    }
 }
