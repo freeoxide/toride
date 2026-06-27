@@ -12,6 +12,10 @@ CommandSpec {
     stdin: None,
     timeout: None,
     env: [],
+    env_remove: [],
+    clear_env: false,
     cwd: None,
+    output_mode: Capture,
     redact: false,
+    output_limit: None,
 }

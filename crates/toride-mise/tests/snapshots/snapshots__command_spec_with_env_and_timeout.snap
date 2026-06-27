@@ -18,6 +18,10 @@ CommandSpec {
             "/tmp/mise",
         ),
     ],
+    env_remove: [],
+    clear_env: false,
     cwd: None,
+    output_mode: Capture,
     redact: true,
+    output_limit: None,
 }
