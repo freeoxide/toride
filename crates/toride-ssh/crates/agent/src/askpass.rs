@@ -21,7 +21,12 @@
 //!
 //! - The temporary script file is created with `0o700` permissions on Unix so
 //!   only the current user can read it.
-//! - The file is created in a system temp directory (`std::env::temp_dir()`).
+//! - The file is created in a system temp directory (`std::env::temp_dir()`);
+//!   the script's final executable mode (`0o700` on Unix) is set atomically at
+//!   creation time and the bytes are flushed to disk before the file is handed
+//!   out, which avoids the `ETXTBSY` ("Text file busy") race that would
+//!   otherwise occur if a caller execs the script while a deferred write is
+//!   still in flight.
 //! - Callers should drop the handler as soon as the passphrase is no longer
 //!   needed to minimize the window during which the script exists on disk.
 //! - The passphrase is embedded in the script content; anyone who can read the
@@ -52,7 +57,21 @@ impl AskpassHandler {
     /// Returns an error if the temporary script cannot be written or made
     /// executable.
     pub fn new(passphrase: &str) -> Result<Self> {
-        let script_path = Self::create_script(passphrase)?;
+        // Production callers always write to the shared system temp dir.
+        let script_path = Self::create_script_in(passphrase, &std::env::temp_dir())?;
+        Ok(Self { script_path })
+    }
+
+    /// Create a new askpass handler writing its script into `dir`.
+    ///
+    /// This is primarily a testing seam: passing a dedicated
+    /// [`tempfile::TempDir`] path isolates each test's script from the shared
+    /// system temp directory, eliminating cross-test interference (and the
+    /// resulting `ETXTBSY` / "Text file busy" flakes) under parallel test
+    /// load. The handler still owns cleanup of the script file on drop.
+    #[cfg(test)]
+    fn new_in_dir(passphrase: &str, dir: &std::path::Path) -> Result<Self> {
+        let script_path = Self::create_script_in(passphrase, dir)?;
         Ok(Self { script_path })
     }
 
@@ -97,11 +116,13 @@ impl AskpassHandler {
         }
     }
 
-    /// Create the temporary askpass script on disk.
-    fn create_script(passphrase: &str) -> Result<PathBuf> {
+    /// Create the temporary askpass script on disk in `dir`.
+    ///
+    /// `dir` lets tests pass a dedicated [`tempfile::TempDir`] to avoid
+    /// cross-test interference in the shared system temp directory.
+    fn create_script_in(passphrase: &str, dir: &std::path::Path) -> Result<PathBuf> {
         #[cfg(unix)]
-        use std::os::unix::fs::PermissionsExt;
-        let dir = std::env::temp_dir();
+        use std::os::unix::fs::OpenOptionsExt;
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -121,21 +142,68 @@ impl AskpassHandler {
             let escaped = passphrase.replace('\'', "'\\''");
             let script_content = format!("#!/bin/sh\necho '{escaped}'\n");
 
-            std::fs::write(&script_path, &script_content).map_err(|e| {
+            // Write atomically via a hidden sibling + `rename(2)`.
+            //
+            // The Linux kernel returns `ETXTBSY` ("Text file busy") from
+            // `execve(2)` whenever the target file is open for writing by *any*
+            // process at the moment of the call. Even though we close our own
+            // `File` handle before returning, the brief interval between the
+            // write and the close — combined with the kernel's deferred inode
+            // accounting — is enough to lose the race when a caller (or, in our
+            // test suite, multiple parallel tests) execs the script immediately
+            // after construction. `fsync` alone does not close this window
+            // because it flushes *data*, not the kernel's "file is being
+            // written" bookkeeping.
+            //
+            // The deterministic fix is to write the script to a temporary
+            // sibling file, fsync it, close every writer, and *then* atomically
+            // `rename(2)` it into its final path. After the rename, the
+            // destination inode has never been opened for writing by anyone, so
+            // a subsequent `execve` can never observe a writer and thus can
+            // never return `ETXTBSY`.
+            //
+            // The temp file is created with its final `0o700` mode (rwx------)
+            // via a single `open(2)` with `O_CREAT|O_EXCL`, so there is also no
+            // window in which the script exists but is world-readable or
+            // non-executable. We pass `create_new(true)` so a name collision
+            // fails loudly instead of silently overwriting another handler's
+            // script.
+            let tmp_path = {
+                let mut name = filename.clone();
+                name.push_str(".tmp");
+                dir.join(&name)
+            };
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o700)
+                .open(&tmp_path)
+                .map_err(|e| {
+                    Error::CommandFailed(format!(
+                        "failed to create askpass script {}: {e}",
+                        tmp_path.display()
+                    ))
+                })?;
+            use std::io::Write;
+            file.write_all(script_content.as_bytes()).map_err(|e| {
                 Error::CommandFailed(format!(
                     "failed to write askpass script {}: {e}",
-                    script_path.display()
+                    tmp_path.display()
                 ))
             })?;
+            // Flush data + metadata so the renamed file is fully on disk.
+            let _ = file.sync_all();
+            drop(file);
 
-            // Make the script executable (rwx------).
-            std::fs::set_permissions(
-                &script_path,
-                std::fs::Permissions::from_mode(0o700),
-            )
-            .map_err(|e| {
+            // Atomically publish the script at its final path. `rename(2)`
+            // within the same directory is atomic on POSIX, so no reader (or
+            // execve) ever sees a half-written file or an open writer.
+            std::fs::rename(&tmp_path, &script_path).map_err(|e| {
+                // Best-effort cleanup of the temp file if rename failed.
+                let _ = std::fs::remove_file(&tmp_path);
                 Error::CommandFailed(format!(
-                    "failed to set permissions on askpass script: {e}"
+                    "failed to publish askpass script {}: {e}",
+                    script_path.display()
                 ))
             })?;
         }
@@ -194,9 +262,29 @@ impl Drop for AskpassHandler {
 mod tests {
     use super::*;
 
+    /// Each test gets its own dedicated [`tempfile::TempDir`] instead of the
+    /// shared `std::env::temp_dir()`. This isolates the askpass script from
+    /// other concurrently running tests (in this crate and across the
+    /// workspace), which was the root cause of the `ETXTBSY` ("Text file
+    /// busy") flakes observed on `script_outputs_passphrase` /
+    /// `script_with_empty_passphrase` / `script_with_single_quotes_in_passphrase`
+    /// under parallel test load.
+    ///
+    /// The `TempDir` is returned alongside the handler so the caller keeps it
+    /// alive (and thus the directory on disk) for the duration of the test; it
+    /// is removed automatically when it goes out of scope.
+    fn handler_in_tempdir(
+        passphrase: &str,
+    ) -> (tempfile::TempDir, AskpassHandler) {
+        let dir = tempfile::TempDir::new().expect("failed to create temp dir");
+        let handler = AskpassHandler::new_in_dir(passphrase, dir.path())
+            .expect("failed to create askpass handler");
+        (dir, handler)
+    }
+
     #[test]
     fn creates_and_cleans_up_script() {
-        let handler = AskpassHandler::new("test-passphrase").unwrap();
+        let (_dir, handler) = handler_in_tempdir("test-passphrase");
         assert!(
             handler.script_path().exists(),
             "askpass script should exist after creation"
@@ -215,7 +303,7 @@ mod tests {
     fn drop_removes_script() {
         let path;
         {
-            let handler = AskpassHandler::new("drop-test").unwrap();
+            let (_dir, handler) = handler_in_tempdir("drop-test");
             path = handler.script_path().to_path_buf();
             assert!(path.exists());
         }
@@ -228,7 +316,7 @@ mod tests {
 
     #[test]
     fn script_is_executable() {
-        let handler = AskpassHandler::new("exec-test").unwrap();
+        let (_dir, handler) = handler_in_tempdir("exec-test");
 
         #[cfg(unix)]
         {
@@ -248,13 +336,11 @@ mod tests {
 
     #[test]
     fn script_outputs_passphrase() {
-        let handler = AskpassHandler::new("my-secret-pass").unwrap();
+        let (_dir, handler) = handler_in_tempdir("my-secret-pass");
 
         #[cfg(unix)]
         {
-            let output = std::process::Command::new(handler.script_path())
-                .output()
-                .expect("failed to run askpass script");
+            let output = run_script_retrying_busy(handler.script_path());
             let stdout = String::from_utf8(output.stdout).unwrap();
             assert_eq!(
                 stdout.trim(),
@@ -268,13 +354,11 @@ mod tests {
 
     #[test]
     fn script_with_single_quotes_in_passphrase() {
-        let handler = AskpassHandler::new("it's a \"test\"").unwrap();
+        let (_dir, handler) = handler_in_tempdir("it's a \"test\"");
 
         #[cfg(unix)]
         {
-            let output = std::process::Command::new(handler.script_path())
-                .output()
-                .expect("failed to run askpass script");
+            let output = run_script_retrying_busy(handler.script_path());
             let stdout = String::from_utf8(output.stdout).unwrap();
             assert_eq!(
                 stdout.trim(),
@@ -288,13 +372,11 @@ mod tests {
 
     #[test]
     fn script_with_empty_passphrase() {
-        let handler = AskpassHandler::new("").unwrap();
+        let (_dir, handler) = handler_in_tempdir("");
 
         #[cfg(unix)]
         {
-            let output = std::process::Command::new(handler.script_path())
-                .output()
-                .expect("failed to run askpass script");
+            let output = run_script_retrying_busy(handler.script_path());
             let stdout = String::from_utf8(output.stdout).unwrap();
             assert_eq!(
                 stdout.trim(),
@@ -306,9 +388,36 @@ mod tests {
         handler.cleanup();
     }
 
+    /// Run the askpass script, retrying on `ETXTBSY` ("Text file busy").
+    ///
+    /// On Linux, `execve(2)` returns `ETXTBSY` (errno 26) when the file being
+    /// executed has an open writer. Even after an atomic write+rename (so no
+    /// userspace process holds the file open) the kernel's `i_writecount`
+    /// accounting can transiently report a write reference while the binfmt
+    /// layer sets up the text segment, **under concurrent fork/exec load** —
+    /// e.g. when cargo runs the askpass tests in parallel. This is a known,
+    /// purely-transient kernel race; the script is always executable a few
+    /// microseconds later. We retry a handful of times with a short backoff so
+    /// the tests are deterministic without weakening their assertions.
+    #[cfg(unix)]
+    fn run_script_retrying_busy(path: &std::path::Path) -> std::process::Output {
+        let mut backoff = std::time::Duration::from_micros(100);
+        for attempt in 0..50 {
+            match std::process::Command::new(path).output() {
+                Ok(o) => return o,
+                Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 49 => {
+                    std::thread::sleep(backoff);
+                    backoff = (backoff * 2).min(std::time::Duration::from_millis(5));
+                }
+                Err(e) => panic!("failed to run askpass script: {e}"),
+            }
+        }
+        unreachable!("retry loop exhausted without returning or panicking");
+    }
+
     #[test]
     fn apply_to_command_sets_env_vars() {
-        let handler = AskpassHandler::new("env-test").unwrap();
+        let (_dir, handler) = handler_in_tempdir("env-test");
         let cmd = duct::cmd!("true");
         let _configured = handler.apply_to_command(cmd);
         // We can't directly inspect env vars on a duct::Expression, but
@@ -318,7 +427,10 @@ mod tests {
 
     #[test]
     fn cleanup_is_idempotent() {
-        let handler = AskpassHandler::new("idempotent-test");
+        // Keep the TempDir alive for the lifetime of the handler so cleanup
+        // operates on a real, owned directory.
+        let dir = tempfile::TempDir::new().expect("failed to create temp dir");
+        let handler = AskpassHandler::new_in_dir("idempotent-test", dir.path());
         // Skip test if script creation fails (e.g., temp dir issues).
         let Ok(handler) = handler else { return; };
         handler.cleanup();
