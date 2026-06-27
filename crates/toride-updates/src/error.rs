@@ -54,6 +54,28 @@ pub enum Error {
 }
 
 // ---------------------------------------------------------------------------
+// Cross-crate conversions
+// ---------------------------------------------------------------------------
+
+/// Convert a [`toride_runner::Error`] into [`Error::CommandFailed`].
+///
+/// This lets the whole crate use `?` on `Runner::run` / `Runner::run_checked`
+/// without per-call `map_err` boilerplate. The runner error is stringified so
+/// its `Display` (program, args, exit code, redacted stderr) is preserved.
+impl From<toride_runner::Error> for Error {
+    fn from(err: toride_runner::Error) -> Self {
+        // Honour the explicit timeout variant so callers can match on it.
+        match err {
+            toride_runner::Error::CommandTimeout { timeout, .. } => {
+                Error::CommandTimeout(timeout)
+            }
+            toride_runner::Error::BinaryNotFound(program) => Error::BinaryNotFound(program),
+            other => Error::CommandFailed(other.to_string()),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Crate-level result alias
 // ---------------------------------------------------------------------------
 

@@ -5,17 +5,32 @@ edition = "2024"
 description = "Automatic security update management for Linux VPS hosts"
 license = "MIT"
 
+[lib]
+name = "toride_updates"
+path = "src/lib.rs"
+
+[[bin]]
+name = "toride-updates"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [features]
 default = ["client", "doctor"]
 client = ["dep:duct"]
 doctor = ["service"]
-service = ["client"]
+# `service` now links toride-service so ServiceManager can delegate real
+# systemctl calls through toride_service::ServiceManager.
+service = ["client", "dep:toride-service"]
 config = ["client", "dep:regex"]
 apt = ["client"]
 dnf = ["client"]
 schedule = ["client"]
 serde = ["dep:serde", "dep:serde_json"]
-cli = ["dep:clap"]
+## CLI argument parsing + dispatch.
+## Implies the full client stack (client/doctor/service/config/schedule/serde)
+## so the `toride-updates` binary can dispatch every subcommand to a real
+## client / doctor / schedule-manager call.
+cli = ["dep:clap", "client", "doctor", "service", "config", "schedule", "serde"]
 
 [dependencies]
 toride-runner = { path = "../toride-runner" }

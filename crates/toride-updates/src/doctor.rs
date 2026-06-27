@@ -18,6 +18,7 @@ use crate::detect::PackageManager;
 use crate::error::Result;
 use crate::paths::UpdatePaths;
 use crate::report;
+use crate::spec::Schedule;
 
 /// Maximum wall-clock time to wait for a single `systemctl` query.
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -225,11 +226,59 @@ impl<'a> Doctor<'a> {
     }
 
     /// Check: schedule.stale-last-run
-    fn check_last_run_fresh(&self, _findings: &mut Vec<toride_diagnostic_types::Finding>) {
+    ///
+    /// Parses the real `/var/log/unattended-upgrades/unattended-upgrades.log`
+    /// for the most recent run's start timestamp (the `YYYY-MM-DD HH:MM:SS,mmm`
+    /// prefix on a `Starting unattended upgrades script` line) and, when the
+    /// configured schedule is daily/weekly/monthly, flags a stale run if the
+    /// elapsed time exceeds the schedule interval by more than a grace period.
+    /// Findings are only emitted for APT hosts (which keep a persistent log);
+    /// DNF status comes from the journal and is not probed here.
+    ///
+    /// The schedule is inferred from `APT::Periodic::Update-Package-Lists` in
+    /// the `20auto-upgrades` config; when that is absent a daily window is
+    /// assumed (the unattended-upgrades default).
+    fn check_last_run_fresh(&self, findings: &mut Vec<toride_diagnostic_types::Finding>) {
         info!("Checking last run freshness");
 
-        // TODO: Parse log file and compare last run timestamp with schedule.
-        let _ = &self.paths;
+        if self.pkg_mgr != PackageManager::Apt {
+            return;
+        }
+
+        let Ok(content) = std::fs::read_to_string(&self.paths.log_file) else {
+            // No log -> the auto-update enabled check already reports the gap.
+            return;
+        };
+
+        // Reuse the shared log parser so the staleness check sees the same
+        // "most recent run" timestamp as the status() path. A run that never
+        // recorded its start marker is treated as "no data" (skip).
+        let Ok(status) = crate::parse::parse_unattended_upgrades_status(&content) else {
+            return;
+        };
+        let Some(last_run) = status.last_run else {
+            return;
+        };
+
+        // The configured schedule determines the freshness window. Infer it
+        // from the apt.conf interval (falling back to daily, the upstream
+        // default) so a stale run is flagged even when 20auto-upgrades is
+        // absent but the log shows an old run.
+        let schedule = infer_schedule_from_apt_conf(&self.paths.auto_upgrades_enabled)
+            .unwrap_or(Schedule::Daily);
+        let max_age = match schedule {
+            Schedule::Daily => Duration::from_secs(36 * 60 * 60), // 1.5 days
+            Schedule::Weekly => Duration::from_secs(8 * 24 * 60 * 60), // ~8 days
+            Schedule::Monthly => Duration::from_secs(33 * 24 * 60 * 60), // ~33 days
+            // Custom schedules: do not second-guess them.
+            Schedule::Custom(_) => return,
+        };
+
+        if let Some(elapsed) = elapsed_since(&last_run) {
+            if elapsed > max_age {
+                findings.push(report::finding_stale_last_run(&last_run));
+            }
+        }
     }
 
     /// Check: permission.config-dir-world-writable
@@ -386,6 +435,99 @@ fn apt_conf_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let quoted = rest.strip_prefix('"')?;
     let end = quoted.find('"')?;
     Some(&quoted[..end])
+}
+
+/// Best-effort schedule inference from `/etc/apt/apt.conf.d/20auto-upgrades`.
+///
+/// Reads the `APT::Periodic::Update-Package-Lists` interval (in days) from the
+/// apt.conf file and maps it to a [`Schedule`]. Returns `None` when the file is
+/// missing, unreadable, or does not set the directive.
+fn infer_schedule_from_apt_conf(path: &std::path::Path) -> Option<Schedule> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return None;
+    };
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.starts_with("//") || line.starts_with('#') {
+            continue;
+        }
+        if let Some(val) = apt_conf_value(line, "APT::Periodic::Update-Package-Lists") {
+            return match val {
+                "1" => Some(Schedule::Daily),
+                "7" => Some(Schedule::Weekly),
+                "30" => Some(Schedule::Monthly),
+                _ => Some(Schedule::Custom(val.to_owned())),
+            };
+        }
+    }
+    None
+}
+
+/// Compute the elapsed [`Duration`] since a `YYYY-MM-DD HH:MM:SS[,mmm]`
+/// timestamp.
+///
+/// Uses the system clock. Returns `None` if the timestamp cannot be parsed, the
+/// wall clock is unavailable, or the timestamp is in the future (a future
+/// last-run is treated as fresh / not stale rather than underflowing). Local
+/// time is assumed (unattended-upgrades logs in local time).
+fn elapsed_since(timestamp: &str) -> Option<Duration> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    let parsed = parse_log_timestamp(timestamp)?;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    now.checked_sub(parsed)
+}
+
+/// Parse a `YYYY-MM-DD HH:MM:SS` (with optional `,mmm` millis suffix) timestamp
+/// into a Duration since the Unix epoch. Treats the timestamp as UTC to keep
+/// the calculation dependency-free; this may over/under-count the freshness
+/// window by the host's UTC offset, which is acceptable for a "stale by days"
+/// heuristic. The real unattended-upgrades log timestamp is
+/// `2025-03-13 20:43:25,923`; the millis suffix is parsed and folded into the
+/// seconds (truncated, since `Duration` here is day-granularity).
+fn parse_log_timestamp(timestamp: &str) -> Option<Duration> {
+    let mut parts = timestamp.split_whitespace();
+    let date = parts.next()?;
+    let time_token = parts.next()?;
+
+    // Strip an optional ",mmm" milliseconds suffix (the real log format).
+    let time = time_token.split_once(',').map_or(time_token, |(c, _)| c);
+
+    let mut d = date.split('-');
+    let year: i64 = d.next()?.parse().ok()?;
+    let month: u32 = d.next()?.parse().ok()?;
+    let day: u32 = d.next()?.parse().ok()?;
+
+    let mut t = time.split(':');
+    let hour: u64 = t.next()?.parse().ok()?;
+    let min: u64 = t.next()?.parse().ok()?;
+    let sec: u64 = t.next()?.parse().ok()?;
+
+    let days_since_epoch = civil_to_days(year, month, day)?;
+    let secs = days_since_epoch as u64 * 86_400 + hour * 3_600 + min * 60 + sec;
+    Some(Duration::from_secs(secs))
+}
+
+/// Convert a proleptic Gregorian date to days since 1970-01-01.
+///
+/// Implements Howard Hinnant's `days_from_civil` algorithm. Returns `None` on
+/// invalid month/day values.
+///
+/// Note: the `doe` (day-of-era) term folds in both the year-within-era
+/// (`yoe * 365 + leap days`) and the day-of-year; omitting the year term
+/// produces dates off by decades.
+fn civil_to_days(year: i64, month: u32, day: u32) -> Option<i64> {
+    if !(1..=12).contains(&month) || day == 0 {
+        return None;
+    }
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let m = month as i64;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let days = era * 146_097 + doe - 719_468;
+    Some(days)
 }
 
 // Unix-specific imports for permission checking.
@@ -555,6 +697,107 @@ mod tests {
         let mut doc = Doctor::new(&runner);
         doc.pkg_mgr = PackageManager::Apt;
         assert_eq!(doc.timer_state("apt-daily-upgrade.timer"), report::TimerState::Absent);
+    }
+
+    /// `check_last_run_fresh` fires the `schedule.stale-last-run` finding when
+    /// the most recent `Starting unattended upgrades script` timestamp in the
+    /// real log is older than the configured daily window.
+    ///
+    /// The log sample uses the real `/var/log/unattended-upgrades/
+    /// unattended-upgrades.log` line format (`YYYY-MM-DD HH:MM:SS,mmm LEVEL
+    /// message`). The fixture uses a date far in the past so the staleness
+    /// check always fires regardless of the host wall clock.
+    ///
+    /// Source for the log format: Ubuntu Server docs, "Automatic updates".
+    /// https://ubuntu.com/server/docs/how-to/software/automatic-updates/
+    #[test]
+    fn check_last_run_fresh_fires_on_stale_real_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("unattended-upgrades.log");
+        // 2001-01-01 is unconditionally > 1.5 days ago on any plausible host.
+        std::fs::write(
+            &log,
+            "2001-01-01 04:00:00,000 INFO Starting unattended upgrades script\n\
+             2001-01-01 04:00:01,000 INFO Packages that will be upgraded: openssl\n\
+             2001-01-01 04:00:09,000 INFO All upgrades installed\n",
+        )
+        .unwrap();
+
+        let runner = FakeRunner::new();
+        let mut doc = Doctor::new(&runner);
+        doc.pkg_mgr = PackageManager::Apt;
+        doc.paths.log_file = log;
+
+        let mut findings = Vec::new();
+        doc.check_last_run_fresh(&mut findings);
+        assert!(
+            findings.iter().any(|f| f.id == "schedule.stale-last-run"),
+            "expected a stale-last-run finding, got: {findings:?}"
+        );
+    }
+
+    /// A fresh run (1 hour ago, UTC) does not fire the staleness finding.
+    #[test]
+    fn check_last_run_fresh_quiet_on_fresh_real_log() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("unattended-upgrades.log");
+        // 1 hour ago in UTC. The parser treats log timestamps as UTC, so a
+        // UTC-based "1 hour ago" is unambiguously inside the daily window and
+        // never underflows regardless of host timezone.
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        let recent_secs = now.as_secs().saturating_sub(3_600);
+        let (y, mo, d, h, mi, s) = epoch_to_ymdhms(recent_secs);
+        let ts = format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}:{s:02},000");
+        std::fs::write(
+            &log,
+            format!(
+                "{ts} INFO Starting unattended upgrades script\n\
+                 {ts} INFO All upgrades installed\n"
+            ),
+        )
+        .unwrap();
+
+        let runner = FakeRunner::new();
+        let mut doc = Doctor::new(&runner);
+        doc.pkg_mgr = PackageManager::Apt;
+        doc.paths.log_file = log;
+
+        let mut findings = Vec::new();
+        doc.check_last_run_fresh(&mut findings);
+        assert!(
+            !findings.iter().any(|f| f.id == "schedule.stale-last-run"),
+            "did not expect a stale-last-run finding, got: {findings:?}"
+        );
+    }
+
+    /// Convert a Unix epoch second count to `(year, month, day, hour, min, sec)`
+    /// (UTC) for building a near-now log timestamp in tests. Uses the inverse
+    /// of `civil_to_days`.
+    fn epoch_to_ymdhms(secs: u64) -> (i64, u32, u32, u64, u64, u64) {
+        let days = (secs / 86_400) as i64;
+        let rem = secs % 86_400;
+        let h = rem / 3_600;
+        let mi = (rem % 3_600) / 60;
+        let s = rem % 60;
+        let (y, mo, d) = days_to_civil(days);
+        (y, mo, d, h, mi, s)
+    }
+
+    /// Inverse of `civil_to_days`: days since 1970-01-01 -> Gregorian date.
+    fn days_to_civil(days: i64) -> (i64, u32, u32) {
+        let days = days + 719_468;
+        let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
+        let doe = days - era * 146_097; // [0, 146096]
+        let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
+        let y = yoe as i64 + era * 400;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+        let mp = (5 * doy + 2) / 153; // [0, 11]
+        let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+        let m = (if mp < 10 { mp + 3 } else { mp - 9 }) as u32; // [1, 12]
+        let y = if m <= 2 { y + 1 } else { y };
+        (y, m, d)
     }
 
     #[test]
