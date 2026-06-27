@@ -1,7 +1,7 @@
 //! Parsers for WireGuard output and configuration files.
 //!
 //! Provides parsers for:
-//! - `wg show` output (tab-separated key-value pairs)
+//! - `wg show all dump` output (machine-readable, tab-separated rows)
 //! - `wg showconf` output (INI-like format)
 //! - Interface `.conf` files (INI format)
 
@@ -9,36 +9,63 @@ use crate::error::{Error, Result};
 use crate::spec::{PeerSpec, WireguardSpec};
 
 // ---------------------------------------------------------------------------
-// parse_wg_show
+// parse_wg_show (the `wg show all dump` format)
 // ---------------------------------------------------------------------------
 
-/// Parse the output of `wg show` into a list of interface summaries.
+/// Parse the output of `wg show all dump` into a list of interface summaries.
 ///
-/// `wg show` prints tab-separated fields. This parser extracts interface names
-/// and their associated metadata into a simplified representation.
+/// Per the `wg`(8) man page, the machine-readable `dump` format prints one line
+/// per interface followed by one line per peer, all tab-separated:
+///
+/// - **Interface row** (5 fields when invoked as `all dump`):
+///   `interface  private-key  public-key  listen-port  fwmark`
+/// - **Peer row** (9 fields when invoked as `all dump`):
+///   `interface  public-key  preshared-key  endpoint  allowed-ips
+///   latest-handshake  transfer-rx  transfer-tx  persistent-keepalive`
+///
+/// (The man page notes: "if `all` is specified, then the first field for all
+/// categories of information is the interface name.") Rows are distinguished by
+/// field count, so `fwmark` / `persistent-keepalive` appearing as the literal
+/// `off` is handled without ambiguity. Only the interface rows contribute to
+/// the returned [`WgShowEntry`] list.
 ///
 /// # Errors
 ///
-/// Returns [`Error::ConfigParse`] if the output cannot be parsed.
+/// Returns [`Error::ConfigParse`] if an interface row is malformed (e.g. a
+/// non-numeric listen-port).
+///
+/// [`wg`(8)]: https://www.mankier.com/8/wg
 pub fn parse_wg_show(output: &str) -> Result<Vec<WgShowEntry>> {
     let mut entries = Vec::new();
     for line in output.lines() {
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() >= 3 {
-            entries.push(WgShowEntry {
-                interface: parts[0].to_owned(),
-                public_key: parts.get(1).unwrap_or(&"").to_string(),
-                listen_port: parts
-                    .get(2)
-                    .and_then(|s| s.parse::<u16>().ok())
-                    .unwrap_or(0),
-            });
+        let trimmed = line.trim_end_matches(['\n', '\r']);
+        if trimmed.is_empty() {
+            continue;
         }
+        // The `wg` tool separates dump fields with a single tab.
+        let parts: Vec<&str> = trimmed.split('\t').collect();
+        // `wg show all dump` interface row (5 fields, interface name leading):
+        //   [interface, private-key, public-key, listen-port, fwmark]
+        // Peer rows have 9 fields and are skipped here. We require exactly 5
+        // fields so a `fwmark` of `off` (or `0x1`) cannot be confused with the
+        // listen-port, which sits one column to its left.
+        if parts.len() != 5 {
+            continue;
+        }
+        let interface = parts[0].to_owned();
+        // parts[1] is the private key; the public key follows it.
+        let public_key = parts[2].to_owned();
+        let listen_port = parts[3].parse::<u16>().unwrap_or(0);
+        entries.push(WgShowEntry {
+            interface,
+            public_key,
+            listen_port,
+        });
     }
     Ok(entries)
 }
 
-/// A simplified entry parsed from `wg show` output.
+/// A simplified entry parsed from `wg show all dump` output.
 #[derive(Debug, Clone)]
 pub struct WgShowEntry {
     /// Interface name (e.g. `wg0`).
@@ -223,12 +250,61 @@ AllowedIPs = 10.0.0.3/32, fd00::3/128
     }
 
     #[test]
-    fn parse_wg_show_output() {
-        let output = "wg0\tABC123==\t51820\nwg1\tDEF456==\t51821\n";
+    fn parse_wg_show_dump_all() {
+        // Real `wg show all dump` output, faithfully reproduced from the
+        // man-page-corroborated example in the Pro Custodibus monitoring guide
+        // (https://www.procustodibus.com/blog/2021/01/how-to-monitor-wireguard-activity/).
+        // The wg(8) man page documents this exact field layout:
+        //   interface row: <iface> <private-key> <public-key> <listen-port> <fwmark>
+        //   peer row:      <iface> <pub-key> <preshared-key> <endpoint> <allowed-ips>
+        //                  <latest-handshake> <transfer-rx> <transfer-tx> <persistent-keepalive>
+        // `fwmark` and `persistent-keepalive` render as the literal `off`.
+        let output = "\
+wg1\tAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE=\t/TOE4TKtAqVsePRVR+5AA43HkAK5DSntkOCO7nYq5xU=\t51821\toff\n\
+wg1\tfE/wdxzl0klVp/IR8UcaoGUMjqaWi3jAd7KzHKFS6Ds=\t(none)\t172.19.0.8:51822\t10.0.0.2/32\t1617235493\t3481633\t33460136\toff\n\
+wg1\tjUd41n3XYa3yXBzyBvWqlLhYgRef5RiBD7jwo70U+Rw=\t(none)\t172.19.0.7:51823\t10.0.0.3/32\t1609974495\t1403752\t19462368\toff\n\
+";
+        let entries = parse_wg_show(output).unwrap();
+        // Only the interface row is surfaced; the two peer rows are skipped.
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].interface, "wg1");
+        assert_eq!(
+            entries[0].public_key,
+            "/TOE4TKtAqVsePRVR+5AA43HkAK5DSntkOCO7nYq5xU="
+        );
+        assert_eq!(entries[0].listen_port, 51821);
+    }
+
+    #[test]
+    fn parse_wg_show_dump_multiple_interfaces() {
+        // Two interfaces, each followed by its peer rows (mirrors how
+        // `wg show all dump` interleaves them per the wg(8) man page).
+        let output = "\
+wg0\tpriv0=\tpub0=\t51820\toff\n\
+wg0\tpeer0key=\t(none)\t10.0.0.2:51820\t10.0.0.2/32\t0\t0\t0\toff\n\
+wg1\tpriv1=\tpub1=\t51821\t0x1\n\
+wg1\tpeer1key=\t(none)\t10.0.0.3:51820\t10.0.0.3/32\t0\t0\t0\toff\n\
+";
         let entries = parse_wg_show(output).unwrap();
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].interface, "wg0");
         assert_eq!(entries[0].listen_port, 51820);
+        // fwmark="0x1" must not be mistaken for the listen-port.
         assert_eq!(entries[1].interface, "wg1");
+        assert_eq!(entries[1].listen_port, 51821);
+    }
+
+    #[test]
+    fn parse_wg_show_dump_skips_peer_rows_only() {
+        // Output containing only peer rows (no interface row) yields nothing.
+        let output = "wg0\tpeerkey=\t(none)\t1.2.3.4:51820\t10.0.0.2/32\t0\t0\t0\toff\n";
+        let entries = parse_wg_show(output).unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_wg_show_empty_output() {
+        let entries = parse_wg_show("").unwrap();
+        assert!(entries.is_empty());
     }
 }

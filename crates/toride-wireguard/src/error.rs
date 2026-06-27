@@ -24,6 +24,12 @@ pub enum Error {
     #[error("WireGuard binary not found: {0}")]
     BinaryNotFound(String),
 
+    /// A command runner error (spawn failure, timeout, output-limit, etc.).
+    ///
+    /// Produced by the `toride-runner` execution layer.
+    #[error("runner error: {0}")]
+    Runner(#[from] toride_runner::Error),
+
     /// An external command returned a non-zero exit code.
     #[error("command failed: {0}")]
     CommandFailed(String),

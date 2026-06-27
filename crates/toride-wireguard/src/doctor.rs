@@ -10,6 +10,8 @@
 use crate::error::{Error, Result};
 use crate::report::{Finding, InterfaceReport, Severity, TransferStats, WireguardReport};
 
+use toride_runner::Runner;
+
 // ---------------------------------------------------------------------------
 // `wg show` verbose parsing (free helpers)
 // ---------------------------------------------------------------------------
@@ -21,6 +23,10 @@ struct ParsedInterface {
     listen_port: u16,
     peer_count: usize,
     active_peers: usize,
+    /// Aggregated bytes received across all peers (sum of `transfer:` rx).
+    bytes_received: u64,
+    /// Aggregated bytes sent across all peers (sum of `transfer:` tx).
+    bytes_sent: u64,
 }
 
 /// Parse the default (verbose) output of `wg show`.
@@ -90,6 +96,16 @@ fn parse_wg_show_verbose(output: &str) -> Result<Vec<ParsedInterface>> {
         } else if trimmed.starts_with("latest handshake:") {
             // This peer has completed at least one handshake.
             peer_active = true;
+        } else if let Some(rest) = trimmed.strip_prefix("transfer:") {
+            // `wg show` prints: "transfer: <rx> received, <tx> sent"
+            // where <rx>/<tx> may be a raw byte count or a humanized value
+            // like "1.2 KiB". Parse both forms and accumulate per-interface.
+            if let Some((rx, tx)) = parse_transfer_line(rest) {
+                if let Some(ref mut iface) = current {
+                    iface.bytes_received = iface.bytes_received.saturating_add(rx);
+                    iface.bytes_sent = iface.bytes_sent.saturating_add(tx);
+                }
+            }
         }
     }
 
@@ -110,6 +126,52 @@ fn parse_wg_show_verbose(output: &str) -> Result<Vec<ParsedInterface>> {
     }
 
     Ok(ifaces)
+}
+
+/// Parse a `transfer:` line payload of the form
+/// `<rx> received, <tx> sent` into `(bytes_received, bytes_sent)`.
+///
+/// Each value may be a raw integer (e.g. `12345`) or a humanized size with a
+/// binary unit suffix (e.g. `1.23 GiB`, `500 MiB`, `3.4 KiB`, `768 B`).
+/// Returns `None` if neither value can be parsed.
+fn parse_transfer_line(payload: &str) -> Option<(u64, u64)> {
+    let mut parts = payload.split(',');
+    let rx_part = parts.next()?;
+    let tx_part = parts.next()?;
+    let rx = parse_byte_value(rx_part, "received")?;
+    let tx = parse_byte_value(tx_part, "sent")?;
+    Some((rx, tx))
+}
+
+/// Parse a single transfer field like `"1.23 KiB received"` or `"500 sent"`.
+fn parse_byte_value(field: &str, keyword: &str) -> Option<u64> {
+    // The field looks like "<value>[ <unit>] <keyword>". Find the keyword and
+    // take the tokens before it.
+    let idx = field.find(keyword)?;
+    let value_part = field[..idx].trim();
+    let mut tokens = value_part.split_whitespace();
+    let number = tokens.next()?;
+    let unit = tokens.next().unwrap_or("");
+    let magnitude: f64 = number.parse().ok()?;
+    let multiplier: f64 = match unit.trim_end_matches('s') {
+        "B" | "" => 1.0,
+        "KiB" | "K" => 1024.0,
+        "MiB" | "M" => 1024.0_f64.powi(2),
+        "GiB" | "G" => 1024.0_f64.powi(3),
+        "TiB" | "T" => 1024.0_f64.powi(4),
+        "PiB" | "P" => 1024.0_f64.powi(5),
+        "EiB" | "E" => 1024.0_f64.powi(6),
+        _ => {
+            // Unknown unit: assume raw bytes if the token parses as a number
+            // suffix was empty, else give up.
+            if unit.is_empty() {
+                1.0
+            } else {
+                return None;
+            }
+        }
+    };
+    Some((magnitude * multiplier) as u64)
 }
 
 /// Extract the permission bits (low 12, including setuid etc.) from a
@@ -201,19 +263,43 @@ pub enum DoctorScope {
 ///
 /// Runs a series of health checks and collects findings into a
 /// [`WireguardReport`].
-pub struct Doctor {
-    _runner: (),
+///
+/// All subprocess invocations (`wg show`, binary discovery) go through the
+/// [`Runner`](toride_runner::Runner) trait, so diagnostics are fully testable
+/// with [`FakeRunner`](toride_runner::FakeRunner).
+pub struct Doctor<R: Runner + Send + Sync = toride_runner::DuctRunner> {
+    runner: std::sync::Arc<R>,
 }
 
-impl Doctor {
-    /// Create a new diagnostic engine.
+impl Doctor<toride_runner::DuctRunner> {
+    /// Create a new diagnostic engine using the default production runner.
+    #[must_use]
     pub fn new() -> Self {
-        Self { _runner: () }
+        Self {
+            runner: std::sync::Arc::new(toride_runner::DuctRunner),
+        }
+    }
+}
+
+impl Default for Doctor<toride_runner::DuctRunner> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<R: Runner + Send + Sync> Doctor<R> {
+    /// Create a diagnostic engine with a custom command runner (for testing).
+    #[must_use]
+    pub fn with_runner(runner: R) -> Self {
+        Self {
+            runner: std::sync::Arc::new(runner),
+        }
     }
 
-    /// Create a diagnostic engine with a custom runner (for testing).
-    pub fn with_runner(_runner: ()) -> Self {
-        Self { _runner: () }
+    /// Return a reference to the underlying runner.
+    #[must_use]
+    pub fn runner(&self) -> &R {
+        &self.runner
     }
 
     /// Run diagnostics with the given scope and return a report.
@@ -328,7 +414,7 @@ impl Doctor {
             return Ok(());
         }
 
-        let output = match Self::run_wg_show() {
+        let output = match self.run_wg_show() {
             Ok(out) => out,
             Err(err) => {
                 report.findings.push(
@@ -374,7 +460,10 @@ impl Doctor {
                 peer_count: parsed_iface.peer_count,
                 active_peers: parsed_iface.active_peers,
                 listen_port: parsed_iface.listen_port,
-                stats: TransferStats::default(),
+                stats: TransferStats {
+                    received: parsed_iface.bytes_received,
+                    sent: parsed_iface.bytes_sent,
+                },
             });
         }
 
@@ -519,25 +608,32 @@ impl Doctor {
         Ok(())
     }
 
-    /// Run `wg show` and return its stdout as a string.
-    fn run_wg_show() -> std::result::Result<String, String> {
-        let output = std::process::Command::new("wg")
-            .arg("show")
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err(format!(
-                "`wg show` exited with status {}",
-                output.status.code().unwrap_or(-1)
-            ));
-        }
-        String::from_utf8(output.stdout).map_err(|e| e.to_string())
-    }
-}
+    /// Run `wg show` through the injected runner and return its stdout.
+    ///
+    /// This routes the command through the same [`Runner`](toride_runner::Runner)
+    /// abstraction the rest of the crate uses (instead of a raw
+    /// `std::process::Command`), so it respects redaction, timeouts, and is
+    /// testable with [`FakeRunner`](toride_runner::FakeRunner).
+    fn run_wg_show(&self) -> std::result::Result<String, String> {
+        use std::time::Duration;
 
-impl Default for Doctor {
-    fn default() -> Self {
-        Self::new()
+        let spec = toride_runner::CommandSpec::new("wg")
+            .arg("show")
+            .timeout(Duration::from_secs(15));
+        let output = self
+            .runner
+            .run(&spec)
+            .map_err(|e| format!("failed to run `wg show`: {e}"))?;
+        if !output.success {
+            let stderr = output.stderr.trim();
+            let detail = if stderr.is_empty() {
+                format!("`wg show` exited with code {:?}", output.exit_code)
+            } else {
+                format!("`wg show` failed: {stderr}")
+            };
+            return Err(detail);
+        }
+        Ok(output.stdout)
     }
 }
 
@@ -626,6 +722,108 @@ peer: X=
     fn parse_verbose_unrecognized_is_error() {
         // Non-empty but no interface header.
         assert!(parse_wg_show_verbose("just some garbage\n").is_err());
+    }
+
+    #[test]
+    fn parse_transfer_line_handles_humanized_and_raw() {
+        // Humanized values with binary units.
+        let (rx, tx) = parse_transfer_line(" 1.2 KiB received, 3.4 KiB sent").unwrap();
+        assert_eq!(rx, (1.2 * 1024.0) as u64);
+        assert_eq!(tx, (3.4 * 1024.0) as u64);
+
+        // Raw byte counts (no unit suffix).
+        let (rx, tx) = parse_transfer_line(" 1024 received, 2048 sent").unwrap();
+        assert_eq!(rx, 1024);
+        assert_eq!(tx, 2048);
+
+        // Larger units.
+        let (rx, _tx) = parse_transfer_line(" 2.5 GiB received, 0 B sent").unwrap();
+        assert_eq!(rx, (2.5 * 1024.0_f64.powi(3)) as u64);
+    }
+
+    #[test]
+    fn parse_transfer_line_rejects_garbage() {
+        assert!(parse_transfer_line("nothing useful here").is_none());
+        assert!(parse_transfer_line("abc received, def sent").is_none());
+    }
+
+    #[test]
+    fn parse_verbose_aggregates_transfer_stats() {
+        let output = "\
+interface: wg0
+  listening port: 51820
+
+peer: AAA=
+  endpoint: 1.2.3.4:51820
+  allowed ips: 10.0.0.2/32
+  latest handshake: 4 seconds ago
+  transfer: 1.0 KiB received, 2.0 KiB sent
+
+peer: BBB=
+  endpoint: 5.6.7.8:51820
+  allowed ips: 10.0.0.3/32
+  transfer: 512 B received, 256 B sent
+";
+        let ifaces = parse_wg_show_verbose(output).unwrap();
+        assert_eq!(ifaces.len(), 1);
+        // 1024 + 512 = 1536 received; 2048 + 256 = 2304 sent.
+        assert_eq!(ifaces[0].bytes_received, 1536);
+        assert_eq!(ifaces[0].bytes_sent, 2304);
+    }
+
+    /// The doctor routes `wg show` through the injected runner (not a raw
+    /// `std::process::Command`), so a FakeRunner-backed doctor can capture the
+    /// exact command and feed canned output.
+    #[test]
+    fn doctor_runs_wg_show_via_runner_and_populates_stats() {
+        use toride_runner::fake::FakeRunner;
+
+        let canned = "\
+interface: wg0
+  listening port: 51820
+
+peer: AAA=
+  latest handshake: 4 seconds ago
+  transfer: 1024 received, 2048 sent
+";
+        let runner = FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stdout(canned));
+        let doc = Doctor::with_runner(runner);
+
+        let mut report = WireguardReport::default();
+        report.wg_binary_found = true;
+        doc.check_interfaces(&mut report).unwrap();
+
+        assert_eq!(report.interfaces.len(), 1);
+        let iface = &report.interfaces[0];
+        assert_eq!(iface.name, "wg0");
+        assert_eq!(iface.peer_count, 1);
+        assert_eq!(iface.active_peers, 1);
+        assert_eq!(iface.stats.received, 1024);
+        assert_eq!(iface.stats.sent, 2048);
+
+        // Confirm `wg show` was the command actually issued.
+        doc.runner()
+            .assert_called_with(&toride_runner::CommandSpec::new("wg").arg("show"));
+    }
+
+    /// When `wg show` fails, a warning finding is emitted (not a hard error).
+    #[test]
+    fn doctor_emits_warning_when_wg_show_fails() {
+        use toride_runner::fake::FakeRunner;
+
+        let runner = FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stderr("permission denied", 1));
+        let doc = Doctor::with_runner(runner);
+
+        let mut report = WireguardReport::default();
+        report.wg_binary_found = true;
+        doc.check_interfaces(&mut report).unwrap();
+
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.check_id == "wireguard.interface.show"));
     }
 
     #[test]

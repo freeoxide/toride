@@ -7,18 +7,27 @@ license = "MIT"
 
 [features]
 default = ["client", "doctor"]
-client = ["dep:duct"]
+client = ["dep:duct", "toride-runner/duct-runner"]
 doctor = ["service"]
-service = ["client"]
+service = ["client", "dep:toride-service"]
 config = ["client", "dep:regex"]
 serde = ["dep:serde", "dep:serde_json"]
-cli = ["dep:clap"]
+# The `cli` feature pulls in clap *and* the runner-backed backing modules
+# (`client`, `doctor`, `service`) so the dispatch in `cli.rs` can wire every
+# `WireguardCommand` to a real client call. The binary target also requires
+# `toride-runner/duct-runner` for the production runner.
+cli = ["dep:clap", "client", "doctor", "service", "toride-runner/duct-runner"]
+
+[[bin]]
+name = "toride-wireguard"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
-toride-runner = { path = "../toride-runner" }
+toride-runner = { path = "../toride-runner", default-features = false }
 toride-fs = { path = "../toride-fs" }
 toride-diagnostic-types = { path = "../toride-diagnostic-types" }
-toride-service = { path = "../toride-service", optional = true }
+toride-service = { path = "../toride-service", optional = true, default-features = false }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
@@ -36,6 +45,7 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
+toride-runner = { path = "../toride-runner", default-features = false, features = ["fake"] }
 
 [lints]
 workspace = true
