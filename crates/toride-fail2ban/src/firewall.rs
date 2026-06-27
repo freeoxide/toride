@@ -32,7 +32,7 @@
 
 use crate::command::Runner;
 use crate::report::{Finding, Severity};
-use crate::Result;
+use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -412,10 +412,10 @@ impl<'a> FirewallChecker<'a> {
     pub fn inspect_nft_ruleset_json(
         &self,
     ) -> Result<serde_json::Value> {
-        todo!(
-            "inspect_nft_ruleset_json: parse `nft -j list ruleset` output \
-             into structured nftables types"
-        )
+        Err(Error::CommandFailed(
+            "inspect_nft_ruleset_json not yet implemented: nft/iptables CLI integration pending"
+                .into(),
+        ))
     }
 
     /// Parse iptables rules into a structured representation.
@@ -440,10 +440,10 @@ impl<'a> FirewallChecker<'a> {
     pub fn inspect_iptables_rules(
         &self,
     ) -> Result<Vec<serde_json::Value>> {
-        todo!(
-            "inspect_iptables_rules: parse `iptables-save` output into \
-             structured iptables rule representations"
-        )
+        Err(Error::CommandFailed(
+            "inspect_iptables_rules not yet implemented: nft/iptables CLI integration pending"
+                .into(),
+        ))
     }
 }
 
