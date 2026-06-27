@@ -64,6 +64,21 @@ impl HardenClient {
         Self { runner, paths }
     }
 
+    /// Borrow the underlying runner (used by the `cli` dispatch to drive the
+    /// free `doctor::doctor` function and other runner-backed probes).
+    #[cfg(feature = "cli")]
+    pub(crate) fn runner(&self) -> &dyn Runner {
+        self.runner.as_ref()
+    }
+
+    /// Borrow the configured paths (used by the `cli` dispatch for the
+    /// `backup` / `restore` commands, which go through the free helpers in
+    /// [`crate::backup`] rather than a client method).
+    #[cfg(feature = "cli")]
+    pub(crate) fn paths(&self) -> &HardenPaths {
+        &self.paths
+    }
+
     /// Apply a complete hardening profile.
     ///
     /// Creates a backup, applies all parameters from the profile, and
@@ -119,7 +134,7 @@ impl HardenClient {
         for param in spec.all_parameters() {
             let current = sysctl::read_sysctl(self.runner.as_ref(), &param.key)
                 .unwrap_or_else(|_| "<unreadable>".into());
-            results.push((param.clone(), current));
+            results.push((param, current));
         }
 
         Ok(results)
@@ -130,14 +145,14 @@ impl HardenClient {
     /// Returns a unified diff string showing what would change.
     pub fn diff(&self, spec: &HardenSpec) -> Result<String> {
         let current = sysctl::read_all(self.runner.as_ref())?;
-        let desired: Vec<SysctlParam> = spec.all_parameters().into_iter().cloned().collect();
+        let desired = spec.all_parameters();
         Ok(diff_sysctl(&current, &desired))
     }
 
     /// Check which parameters would change without applying them.
     pub fn check(&self, spec: &HardenSpec) -> Result<Vec<SysctlParam>> {
         let current = sysctl::read_all(self.runner.as_ref())?;
-        let desired: Vec<SysctlParam> = spec.all_parameters().into_iter().cloned().collect();
+        let desired = spec.all_parameters();
         Ok(changed_params(&current, &desired)
             .into_iter()
             .cloned()

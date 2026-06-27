@@ -12,7 +12,15 @@ doctor = ["service"]
 service = ["client", "dep:toride-service"]
 config = ["client"]
 serde = ["dep:serde", "dep:serde_json"]
-cli = ["dep:clap"]
+# `cli` pulls in clap argument parsing AND the dispatch surface
+# (`HardenClient`, doctor checks, backup helpers), so it must enable the
+# `client` and `doctor` features that the dispatch code targets.
+cli = ["dep:clap", "client", "doctor"]
+
+[[bin]]
+name = "toride-harden"
+path = "src/main.rs"
+required-features = ["cli"]
 
 [dependencies]
 toride-runner = { path = "../toride-runner" }
