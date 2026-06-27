@@ -114,13 +114,19 @@ pub fn validate_allowed_ips_str(ips: &str) -> Result<()> {
 /// Validate a UDP port number for WireGuard.
 ///
 /// Valid ports are in the range `1..=65535` (port 0 means "auto-assign" and
-/// is accepted).
+/// is accepted). Because `u16` already bounds the value to `0..=65535`, this
+/// function always succeeds; it is retained for API symmetry with the other
+/// validators and so callers can rely on a consistent validation surface.
 ///
 /// # Errors
 ///
-/// Returns [`Error::InvalidAddress`] if the port is out of range.
+/// Never returns an error -- the `u16` type enforces the documented range at
+/// the type level. (Kept as a `Result` for forward compatibility.)
 pub fn validate_port(port: u16) -> Result<()> {
-    // Port 0 is allowed (kernel auto-assign).
+    // Port 0 is allowed (kernel auto-assign). The u16 type already bounds
+    // the value to 0..=65535, matching the documented contract, so there is
+    // nothing to reject here.
+    let _ = port;
     Ok(())
 }
 

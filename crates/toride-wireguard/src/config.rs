@@ -4,7 +4,6 @@
 //! WireGuard interface configuration files in INI format.
 
 use std::fs;
-use std::path::Path;
 
 use crate::backup::BackupManager;
 use crate::diff::ConfigDiff;
