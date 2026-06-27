@@ -1,0 +1,29 @@
+[package]
+name = "toride-installer"
+version = "0.1.0"
+edition = "2024"
+description = "Tool-agnostic release-artifact installer framework (pure Rust, reqwest-based). Mise is the wired concrete tool."
+license = "MIT"
+
+[dependencies]
+toride-fs = { path = "../toride-fs" }
+thiserror = { workspace = true }
+camino = { workspace = true }
+async-trait = { workspace = true }
+dirs = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true }
+sha2 = "0.10"
+tar = "0.4"
+flate2 = "1"
+xz2 = "0.1"
+serde = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true }
+camino = { workspace = true }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true
