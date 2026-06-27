@@ -49,7 +49,6 @@
 // Module declarations -- always compiled
 // ---------------------------------------------------------------------------
 
-pub mod backup;
 pub mod borg;
 pub mod error;
 pub mod parse;

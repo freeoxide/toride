@@ -56,8 +56,7 @@ impl BackupServiceManager {
     pub fn start_timer(&self, name: &str) -> Result<()> {
         let unit = self.timer_unit(name);
         tracing::info!(unit = %unit, "starting backup timer");
-        // TODO: delegate to toride-service or run systemctl.
-        Err(Error::CommandFailed("not yet implemented".into()))
+        crate::systemd::start_unit(&unit)
     }
 
     /// Stop the backup timer for the given job.
@@ -68,8 +67,7 @@ impl BackupServiceManager {
     pub fn stop_timer(&self, name: &str) -> Result<()> {
         let unit = self.timer_unit(name);
         tracing::info!(unit = %unit, "stopping backup timer");
-        // TODO: delegate to toride-service or run systemctl.
-        Err(Error::CommandFailed("not yet implemented".into()))
+        crate::systemd::stop_unit(&unit)
     }
 
     /// Enable the backup timer to start at boot.
@@ -80,8 +78,7 @@ impl BackupServiceManager {
     pub fn enable_timer(&self, name: &str) -> Result<()> {
         let unit = self.timer_unit(name);
         tracing::info!(unit = %unit, "enabling backup timer");
-        // TODO: delegate to toride-service or run systemctl.
-        Err(Error::CommandFailed("not yet implemented".into()))
+        crate::systemd::enable_unit(&unit)
     }
 
     /// Check whether the backup timer is currently active.

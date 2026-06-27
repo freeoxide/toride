@@ -16,6 +16,8 @@ use crate::{Error, Result};
 
 /// Supported backup backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "lowercase"))]
 pub enum Backend {
     /// Restic backup backend (default).
     #[default]
@@ -56,6 +58,7 @@ impl FromStr for Backend {
 /// Maps directly to restic's `forget --keep-*` flags or Borg's prune
 /// `--keep-*` flags.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct RetentionPolicy {
     /// Number of hourly snapshots to retain.
     pub keep_hourly: Option<u32>,
@@ -128,6 +131,7 @@ impl Default for RetentionPolicy {
 ///
 /// Supports cron expressions for flexible scheduling.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Schedule {
     /// Cron expression (e.g. `"0 2 * * *"` for daily at 2am).
     pub cron: String,
@@ -175,6 +179,8 @@ impl Schedule {
 
 /// Encryption configuration for backup repositories.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
 pub enum Encryption {
     /// No encryption (not recommended).
     None,
@@ -231,6 +237,7 @@ impl fmt::Display for Encryption {
 /// spec.validate()?;
 /// ```
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct BackupSpec {
     /// Name of this backup job (used for logging, scheduling, and reporting).
     pub name: String,

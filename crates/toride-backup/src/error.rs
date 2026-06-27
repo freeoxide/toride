@@ -78,6 +78,19 @@ pub enum Error {
     ConfigParse(String),
 
     // =======================================================================
+    // Serialization subsystem (gated behind the `serde` feature)
+    // =======================================================================
+
+    /// A JSON serialization/deserialization error from `serde_json`.
+    ///
+    /// Only present when the `serde` feature is enabled, so the various
+    /// `serde_json::from_str(...)?` / `serde_json::to_string(...)?` sites
+    /// throughout the crate can use the `?` operator.
+    #[cfg(feature = "serde")]
+    #[error("json error: {0}")]
+    Serde(#[from] serde_json::Error),
+
+    // =======================================================================
     // Generic
     // =======================================================================
 

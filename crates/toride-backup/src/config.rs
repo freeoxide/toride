@@ -167,3 +167,74 @@ impl serde::Serialize for BackupConfig {
         s.end()
     }
 }
+
+#[cfg(feature = "serde")]
+impl<'de> serde::Deserialize<'de> for BackupConfig {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use std::str::FromStr;
+
+        #[derive(serde::Deserialize)]
+        #[serde(field_identifier, rename_all = "snake_case")]
+        enum Field {
+            DefaultBackend,
+            Jobs,
+        }
+
+        struct BackupConfigVisitor;
+
+        impl<'de> serde::de::Visitor<'de> for BackupConfigVisitor {
+            type Value = BackupConfig;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("struct BackupConfig")
+            }
+
+            fn visit_map<A>(self, mut map: A) -> std::result::Result<Self::Value, A::Error>
+            where
+                A: serde::de::MapAccess<'de>,
+            {
+                let mut default_backend: Option<crate::spec::Backend> = None;
+                let mut jobs: Option<HashMap<String, BackupSpec>> = None;
+
+                while let Some(key) = map.next_key()? {
+                    match key {
+                        Field::DefaultBackend => {
+                            if default_backend.is_some() {
+                                return Err(serde::de::Error::duplicate_field(
+                                    "default_backend",
+                                ));
+                            }
+                            let raw: String = map.next_value()?;
+                            default_backend = Some(
+                                crate::spec::Backend::from_str(&raw)
+                                    .map_err(serde::de::Error::custom)?,
+                            );
+                        }
+                        Field::Jobs => {
+                            if jobs.is_some() {
+                                return Err(serde::de::Error::duplicate_field("jobs"));
+                            }
+                            jobs = Some(map.next_value()?);
+                        }
+                    }
+                }
+
+                Ok(BackupConfig {
+                    jobs: jobs.unwrap_or_default(),
+                    default_backend: default_backend
+                        .unwrap_or_else(crate::spec::Backend::default),
+                })
+            }
+        }
+
+        const FIELDS: &[&str] = &["default_backend", "jobs"];
+        deserializer.deserialize_struct(
+            "BackupConfig",
+            FIELDS,
+            BackupConfigVisitor,
+        )
+    }
+}

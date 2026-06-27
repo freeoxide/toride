@@ -5,13 +5,23 @@ edition = "2024"
 description = "Backup scheduling and management via restic or borg"
 license = "MIT"
 
+[lib]
+name = "toride_backup"
+path = "src/lib.rs"
+
+[[bin]]
+name = "toride-backup"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [features]
 default = ["client", "doctor"]
 
 # === Capability features ===
 
 ## restic/borg CLI wrappers, backup operations, restore workflows.
-client = ["dep:duct"]
+## Implies serde/serde_json so backends can parse restic/borg JSON output.
+client = ["dep:duct", "dep:serde", "dep:serde_json"]
 
 ## Diagnostic engine for backup installations.
 doctor = ["service"]
@@ -28,11 +38,13 @@ config = ["client", "dep:regex"]
 serde = ["dep:serde", "dep:serde_json"]
 
 ## CLI argument parsing.
-cli = ["dep:clap"]
+## Implies the full client stack (client/doctor/service/config/serde) so the
+## `toride-backup` binary can dispatch every subcommand to a real client call.
+cli = ["dep:clap", "client", "doctor", "service", "config", "serde"]
 
 [dependencies]
 # --- Always required ---
-toride-runner = { path = "../toride-runner" }
+toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
 toride-fs = { path = "../toride-fs" }
 toride-diagnostic-types = { path = "../toride-diagnostic-types" }
 dirs = { workspace = true }
