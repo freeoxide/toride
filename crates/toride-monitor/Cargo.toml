@@ -5,13 +5,22 @@ edition = "2024"
 description = "Outbound traffic monitoring and anomaly detection"
 license = "MIT"
 
+[lib]
+name = "toride_monitor"
+path = "src/lib.rs"
+
+[[bin]]
+name = "toride-monitor"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [features]
 default = ["client", "doctor"]
 
 # === Capability features ===
 
-## iptables/ss/conntrack wrappers via duct runner.
-client = ["dep:duct"]
+## iptables/ss/conntrack wrappers via the shared command runner.
+client = ["toride-runner/duct-runner"]
 
 ## Service management for monitoring daemon.
 service = ["client", "dep:toride-service"]
@@ -20,13 +29,18 @@ service = ["client", "dep:toride-service"]
 doctor = ["service"]
 
 ## Config parsing, threshold management, alert rules.
-config = ["client", "dep:regex"]
+config = ["client", "dep:toml", "serde"]
 
 ## Serde serialization for spec and report types.
 serde = ["dep:serde", "dep:serde_json"]
 
 ## CLI argument parsing.
-cli = ["dep:clap"]
+## Implies the full client stack (client/doctor/service/config/serde) so the
+## `toride-monitor` binary can dispatch every subcommand to a real client call.
+cli = ["dep:clap", "client", "doctor", "service", "config", "serde"]
+
+## Webhook alert dispatching via HTTP POST (uses blocking reqwest).
+webhook = ["client", "dep:reqwest", "serde"]
 
 [dependencies]
 # --- Always required ---
@@ -42,10 +56,10 @@ netstat2 = "0.11"
 libc = "0.2"
 
 # --- Optional (feature-gated) ---
-duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
-regex = { version = "1", optional = true }
+toml = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true, features = ["blocking"] }
 clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
@@ -53,6 +67,7 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
+toride-runner = { path = "../toride-runner", features = ["fake"] }
 
 [lints]
 workspace = true

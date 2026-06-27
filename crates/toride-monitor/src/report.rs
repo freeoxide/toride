@@ -13,6 +13,7 @@ use std::time::SystemTime;
 
 /// Information about a single observed outbound connection.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ConnectionInfo {
     /// Source IP address.
     pub src: IpAddr,
@@ -41,6 +42,7 @@ pub struct ConnectionInfo {
 /// Contains parsed connection data from `ss`, `conntrack`, and iptables logs,
 /// along with aggregated statistics.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct MonitorReport {
     /// Timestamp when the snapshot was taken.
     pub timestamp: SystemTime,
@@ -92,6 +94,7 @@ impl MonitorReport {
 
 /// Report of detected anomalies in outbound traffic.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnomalyReport {
     /// Timestamp when the anomaly detection was performed.
     pub timestamp: SystemTime,
@@ -131,6 +134,7 @@ impl AnomalyReport {
 
 /// Severity level for anomaly findings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum AnomalySeverity {
     /// Informational; within normal variance.
     Info,
@@ -159,6 +163,7 @@ impl std::fmt::Display for AnomalySeverity {
 
 /// A single anomaly detected in outbound traffic.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AnomalyFinding {
     /// Machine-readable identifier (e.g. `"anomaly.connection-volume"`).
     pub id: String,
@@ -208,6 +213,7 @@ impl AnomalyFinding {
 
 /// Report of an alert that was dispatched.
 #[derive(Debug, Clone)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct AlertReport {
     /// The anomaly finding that triggered the alert.
     pub finding: AnomalyFinding,

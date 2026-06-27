@@ -5,7 +5,7 @@
 
 use std::path::Path;
 
-use crate::spec::{AlertTarget, AnomalyThreshold, LoggingRule, MonitorSpec};
+use crate::spec::MonitorSpec;
 use crate::validate::{validate_logging_rule, validate_threshold};
 use crate::{Error, Result};
 
@@ -64,7 +64,7 @@ impl MonitorConfig {
     /// - The file cannot be written.
     pub fn save(&self, spec: &MonitorSpec) -> Result<()> {
         validate_spec(spec)?;
-        let content = render_config(spec);
+        let content = render_config(spec)?;
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -87,49 +87,35 @@ impl MonitorConfig {
 
 /// Parse a TOML config string into a [`MonitorSpec`].
 ///
-/// This is a simplified parser. A full implementation would use a TOML
-/// deserialization library.
-fn parse_config(_content: &str) -> Result<MonitorSpec> {
-    // TODO: Implement TOML parsing with serde + toml crate.
-    Ok(MonitorSpec::default())
+/// Deserializes the TOML directly into [`MonitorSpec`], whose fields carry
+/// serde attributes (`#[serde(default ...)]`) so a partial config (e.g. one
+/// that only overrides thresholds) still loads with sensible defaults.
+///
+/// # Errors
+///
+/// Returns [`Error::Other`] with the TOML parse error message if the content
+/// is not valid TOML or does not match the expected schema.
+pub fn parse_config(content: &str) -> Result<MonitorSpec> {
+    toml::from_str(content)
+        .map_err(|e| Error::Other(format!("invalid monitor config: {e}")))
 }
 
 /// Render a [`MonitorSpec`] into a TOML config string.
-fn render_config(spec: &MonitorSpec) -> String {
-    let mut out = String::new();
-
-    out.push_str("# toride-monitor configuration\n\n");
-    out.push_str(&format!("enabled = {}\n\n", spec.enabled));
-
-    out.push_str("[thresholds]\n");
-    out.push_str(&format!("max_connections = {}\n", spec.thresholds.max_connections));
-    out.push_str(&format!(
-        "max_unique_destinations = {}\n",
-        spec.thresholds.max_unique_destinations
-    ));
-    out.push_str(&format!("max_bytes = {}\n", spec.thresholds.max_bytes));
-    out.push_str(&format!(
-        "max_packets_per_second = {}\n",
-        spec.thresholds.max_packets_per_second
-    ));
-    out.push_str(&format!(
-        "window_secs = {}\n",
-        spec.thresholds.window.as_secs()
-    ));
-
-    out.push_str("\n[[logging_rules]]\n");
-    for rule in &spec.logging_rules {
-        out.push_str(&format!("name = \"{}\"\n", rule.name));
-        out.push_str(&format!("destination = \"{}\"\n", rule.destination));
-        out.push_str(&format!("protocol = \"{}\"\n", rule.protocol));
-        out.push_str(&format!("log_prefix = \"{}\"\n", rule.log_prefix));
-        out.push_str(&format!("log_level = \"{}\"\n", rule.log_level));
-        out.push_str(&format!("limit_rate = \"{}\"\n", rule.limit_rate));
-        out.push_str(&format!("limit_burst = {}\n", rule.limit_burst));
-        out.push_str("\n");
-    }
-
-    out
+///
+/// Serializes the full spec — thresholds, logging rules, and alert targets —
+/// so that saving and reloading round-trips losslessly.
+///
+/// # Errors
+///
+/// Returns [`Error::Other`] if serialization fails (e.g. a field cannot be
+/// represented in TOML).
+pub fn render_config(spec: &MonitorSpec) -> Result<String> {
+    // Emit a leading header comment, then the serialised body. We prepend a
+    // standalone comment line because toml::to_string starts directly with the
+    // first key.
+    let body = toml::to_string_pretty(spec)
+        .map_err(|e| Error::Other(format!("failed to serialize config: {e}")))?;
+    Ok(format!("# toride-monitor configuration\n\n{body}"))
 }
 
 /// Validate a complete [`MonitorSpec`].
@@ -139,4 +125,174 @@ fn validate_spec(spec: &MonitorSpec) -> Result<()> {
         validate_logging_rule(rule)?;
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::{AlertTarget, LoggingRule};
+    use std::time::Duration;
+
+    fn sample_spec() -> MonitorSpec {
+        MonitorSpec {
+            enabled: true,
+            logging_rules: vec![LoggingRule {
+                name: "out-tcp".into(),
+                destination: "0.0.0.0/0".into(),
+                dest_port: Some(443),
+                protocol: "tcp".into(),
+                log_prefix: "TORIDE_OUT".into(),
+                log_level: "info".into(),
+                limit_burst: 10,
+                limit_rate: "10/minute".into(),
+            }],
+            thresholds: crate::spec::AnomalyThreshold {
+                max_connections: 42,
+                max_unique_destinations: 7,
+                max_bytes: 1024,
+                max_packets_per_second: 5,
+                window: Duration::from_secs(99),
+            },
+            alert_targets: vec![
+                AlertTarget::Journald {
+                    priority: "warning".into(),
+                },
+                AlertTarget::File {
+                    path: "/var/log/toride.log".into(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn round_trip_full_spec_through_toml() {
+        let spec = sample_spec();
+        let rendered = render_config(&spec).unwrap();
+        // Must contain alert targets (the old hand-rolled renderer omitted them).
+        assert!(rendered.contains("kind = \"journald\""));
+        assert!(rendered.contains("kind = \"file\""));
+        assert!(rendered.contains("/var/log/toride.log"));
+
+        let loaded = parse_config(&rendered).unwrap();
+        assert_eq!(loaded.enabled, spec.enabled);
+        assert_eq!(loaded.logging_rules.len(), 1);
+        assert_eq!(loaded.logging_rules[0].dest_port, Some(443));
+        assert_eq!(loaded.thresholds.max_connections, 42);
+        assert_eq!(loaded.thresholds.window, Duration::from_secs(99));
+        assert_eq!(loaded.alert_targets.len(), 2);
+    }
+
+    #[test]
+    fn multi_rule_spec_round_trips() {
+        // The old renderer emitted a single [[logging_rules]] header followed
+        // by concatenated field blocks, producing invalid TOML for >1 rule.
+        // The serde-based renderer must emit one header per rule.
+        let spec = MonitorSpec {
+            logging_rules: vec![
+                LoggingRule {
+                    name: "r1".into(),
+                    destination: "10.0.0.0/8".into(),
+                    dest_port: None,
+                    protocol: "tcp".into(),
+                    log_prefix: "A".into(),
+                    log_level: "info".into(),
+                    limit_burst: 1,
+                    limit_rate: "1/minute".into(),
+                },
+                LoggingRule {
+                    name: "r2".into(),
+                    destination: "192.168.0.0/16".into(),
+                    dest_port: Some(22),
+                    protocol: "tcp".into(),
+                    log_prefix: "B".into(),
+                    log_level: "notice".into(),
+                    limit_burst: 2,
+                    limit_rate: "2/minute".into(),
+                },
+            ],
+            ..MonitorSpec::default()
+        };
+        let rendered = render_config(&spec).unwrap();
+        let loaded = parse_config(&rendered).unwrap();
+        assert_eq!(loaded.logging_rules.len(), 2);
+        assert_eq!(loaded.logging_rules[0].name, "r1");
+        assert_eq!(loaded.logging_rules[1].name, "r2");
+        assert_eq!(loaded.logging_rules[1].dest_port, Some(22));
+    }
+
+    #[test]
+    fn partial_config_loads_with_defaults() {
+        // A config that only sets thresholds should fill the rest with
+        // serde-provided defaults.
+        let toml = "\
+enabled = false
+
+[thresholds]
+max_connections = 1
+max_unique_destinations = 1
+max_bytes = 1
+max_packets_per_second = 1
+window = 5
+";
+        let spec = parse_config(toml).unwrap();
+        assert!(!spec.enabled);
+        assert_eq!(spec.thresholds.max_connections, 1);
+        assert_eq!(spec.thresholds.window, Duration::from_secs(5));
+        // logging_rules and alert_targets default to empty.
+        assert!(spec.logging_rules.is_empty());
+        assert!(spec.alert_targets.is_empty());
+    }
+
+    #[test]
+    fn invalid_toml_errors() {
+        let result = parse_config("enabled = not a bool");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn save_and_load_round_trip_on_disk() {
+        let dir = std::env::temp_dir().join(format!(
+            "toride_monitor_cfg_{}_{}",
+            std::process::id(),
+            "save"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("monitor.toml");
+        let cfg = MonitorConfig::new(&path);
+
+        let spec = sample_spec();
+        cfg.save(&spec).unwrap();
+        assert!(path.exists());
+
+        let loaded = cfg.load().unwrap();
+        assert_eq!(loaded.thresholds.max_connections, 42);
+        assert_eq!(loaded.alert_targets.len(), 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn load_rejects_invalid_threshold() {
+        let dir = std::env::temp_dir().join(format!(
+            "toride_monitor_cfg_{}_{}",
+            std::process::id(),
+            "invalid"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("monitor.toml");
+        // max_connections = 0 fails threshold validation.
+        std::fs::write(
+            &path,
+            "[thresholds]\nmax_connections = 0\nmax_unique_destinations = 1\n\
+             max_bytes = 1\nmax_packets_per_second = 1\nwindow = 1\n",
+        )
+        .unwrap();
+        let cfg = MonitorConfig::new(&path);
+        assert!(cfg.load().is_err());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

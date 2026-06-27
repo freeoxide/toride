@@ -7,6 +7,9 @@ use crate::paths::MonitorPaths;
 use crate::report::{AnomalyFinding, AnomalySeverity};
 use crate::Result;
 
+/// The systemd unit name under which the toride-monitor daemon runs.
+const MONITOR_UNIT: &str = "toride-monitor.service";
+
 /// Scope of doctor checks to run.
 #[derive(Debug, Clone, Default)]
 pub enum DoctorScope {
@@ -31,13 +34,15 @@ pub enum DoctorScope {
 pub struct Doctor<'a> {
     /// Binary paths for system commands.
     paths: &'a MonitorPaths,
+    /// Command runner used to probe the system.
+    runner: &'a dyn toride_runner::Runner,
 }
 
 impl<'a> Doctor<'a> {
-    /// Create a new `Doctor` with the given paths.
+    /// Create a new `Doctor` with the given paths and runner.
     #[must_use]
-    pub fn new(paths: &'a MonitorPaths) -> Self {
-        Self { paths }
+    pub fn new(paths: &'a MonitorPaths, runner: &'a dyn toride_runner::Runner) -> Self {
+        Self { paths, runner }
     }
 
     /// Run doctor checks within the given scope.
@@ -80,7 +85,7 @@ impl<'a> Doctor<'a> {
             ("iptables-save", &self.paths.iptables_save),
             ("conntrack", &self.paths.conntrack),
             ("ss", &self.paths.ss),
-            ("journalctl", &self.paths.journalctl),
+            ("systemd-cat", &self.paths.systemd_cat),
         ];
 
         for (name, path) in binaries {
@@ -99,7 +104,7 @@ impl<'a> Doctor<'a> {
     /// Check iptables OUTPUT chain logging configuration.
     fn check_logging(&self, findings: &mut Vec<AnomalyFinding>) {
         // Check if iptables LOG rules exist in the OUTPUT chain.
-        let chain = crate::output::OutputChain::new(self.paths);
+        let chain = crate::output::OutputChain::new(self.paths, self.runner);
         match chain.list_rules() {
             Ok(rules) => {
                 if rules.is_empty() {
@@ -132,16 +137,47 @@ impl<'a> Doctor<'a> {
         }
     }
 
-    /// Check monitoring service status.
+    /// Check monitoring service status via systemd.
+    ///
+    /// Queries `systemctl is-active` for the monitor unit and reports the
+    /// result. A unit that is inactive or not installed surfaces as a finding
+    /// rather than an error.
     fn check_service(&self, findings: &mut Vec<AnomalyFinding>) {
-        // TODO: Check systemd unit status, uptime, last run time.
-        findings.push(AnomalyFinding::new(
-            "doctor.service.not-implemented",
-            AnomalySeverity::Info,
-            "Service status check not yet implemented",
-            "N/A".to_string(),
-            "N/A".to_string(),
-        ));
+        let spec =
+            toride_runner::CommandSpec::new("systemctl").args(["is-active", MONITOR_UNIT]);
+        match self.runner.run(&spec) {
+            Ok(output) => {
+                let state = output.stdout.trim();
+                // `systemctl is-active` exits 0 only when active; otherwise it
+                // returns the textual state on stdout and a non-zero code.
+                if output.success && state == "active" {
+                    findings.push(AnomalyFinding::new(
+                        "doctor.service.active",
+                        AnomalySeverity::Info,
+                        "Monitoring service is active",
+                        state.to_owned(),
+                        "active",
+                    ));
+                } else {
+                    findings.push(AnomalyFinding::new(
+                        "doctor.service.inactive",
+                        AnomalySeverity::Warning,
+                        "Monitoring service is not active",
+                        state.to_owned(),
+                        "active",
+                    ).fix(format!("Run `systemctl start {MONITOR_UNIT}`.")));
+                }
+            }
+            Err(e) => {
+                findings.push(AnomalyFinding::new(
+                    "doctor.service.check-failed",
+                    AnomalySeverity::Error,
+                    "Failed to query monitoring service status",
+                    format!("{e}"),
+                    "systemctl should be reachable",
+                ).fix("Verify systemd is running and systemctl is on $PATH."));
+            }
+        }
     }
 
     /// Check configuration validity.
@@ -200,3 +236,63 @@ impl DoctorReport {
         self.findings.is_empty()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::MonitorPaths;
+    use std::path::PathBuf;
+    use toride_runner::{CommandOutput, CommandSpec, FakeRunner};
+
+    fn test_paths() -> MonitorPaths {
+        MonitorPaths {
+            iptables: PathBuf::from("/usr/sbin/iptables"),
+            iptables_save: PathBuf::from("/usr/sbin/iptables-save"),
+            conntrack: PathBuf::from("/usr/sbin/conntrack"),
+            ss: PathBuf::from("/usr/bin/ss"),
+            journalctl: PathBuf::from("/usr/bin/journalctl"),
+            systemd_cat: PathBuf::from("/usr/bin/systemd-cat"),
+        }
+    }
+
+    #[test]
+    fn check_service_reports_active_when_unit_is_running() {
+        // The previously-not-implemented stub is replaced by a real
+        // systemctl is-active probe.
+        let runner = FakeRunner::new().respond(
+            CommandSpec::new("systemctl")
+                .args(["is-active", "toride-monitor.service"]),
+            CommandOutput::new("active\n".into(), String::new(), Some(0)),
+        );
+        let paths = test_paths();
+        let doctor = Doctor::new(&paths, &runner);
+
+        let mut findings = Vec::new();
+        doctor.check_service(&mut findings);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, AnomalySeverity::Info);
+        assert_eq!(findings[0].id, "doctor.service.active");
+    }
+
+    #[test]
+    fn check_service_flags_inactive_unit() {
+        let runner = FakeRunner::new().respond(
+            CommandSpec::new("systemctl")
+                .args(["is-active", "toride-monitor.service"]),
+            CommandOutput::new("inactive\n".into(), String::new(), Some(3)),
+        );
+        let paths = test_paths();
+        let doctor = Doctor::new(&paths, &runner);
+
+        let mut findings = Vec::new();
+        doctor.check_service(&mut findings);
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, AnomalySeverity::Warning);
+        assert_eq!(findings[0].id, "doctor.service.inactive");
+    }
+}
+

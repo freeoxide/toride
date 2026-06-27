@@ -12,18 +12,19 @@ use crate::parse::{parse_ss_output, ss_entry_to_connection};
 use crate::paths::MonitorPaths;
 use crate::report::{AnomalyReport, MonitorReport};
 use crate::spec::{AlertTarget, LoggingRule, MonitorSpec};
-use crate::{Error, Result};
+use crate::Result;
 
 /// High-level client for outbound traffic monitoring.
 ///
-/// Owns resolved system paths and provides convenience methods that compose
-/// the lower-level modules (`output`, `conntrack`, `anomaly`, `alert`) into
-/// common workflows.
+/// Owns a boxed [`toride_runner::Runner`] and resolved [`MonitorPaths`], and
+/// provides convenience methods that compose the lower-level modules
+/// (`output`, `conntrack`, `anomaly`, `alert`) into common workflows.
 ///
 /// # Construction
 ///
 /// - [`MonitorClient::system`] -- production defaults with paths resolved from `$PATH`.
-/// - [`MonitorClient::with_paths`] -- explicit paths (useful for testing).
+/// - [`MonitorClient::with_paths`] -- explicit paths with the production `DuctRunner`.
+/// - [`MonitorClient::with_runner`] -- inject a custom runner (for testing).
 ///
 /// # Example
 ///
@@ -35,31 +36,55 @@ use crate::{Error, Result};
 /// client.alert(&anomalies, &spec.alert_targets)?;
 /// ```
 pub struct MonitorClient {
+    runner: Box<dyn toride_runner::Runner>,
     paths: MonitorPaths,
 }
 
 impl MonitorClient {
     /// Create a `MonitorClient` with paths resolved from `$PATH`.
     ///
+    /// Uses the production [`toride_runner::DuctRunner`] for command execution.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::BinaryNotFound`] if any required binary cannot be
+    /// Returns [`crate::Error::BinaryNotFound`] if any required binary cannot be
     /// found on `$PATH`.
     pub fn system() -> Result<Self> {
         let paths = MonitorPaths::resolve_from_path()?;
-        Ok(Self { paths })
+        Ok(Self {
+            runner: Box::new(toride_runner::DuctRunner),
+            paths,
+        })
     }
 
-    /// Create a `MonitorClient` with explicit paths.
+    /// Create a `MonitorClient` with explicit paths and the production runner.
     #[must_use]
     pub fn with_paths(paths: MonitorPaths) -> Self {
-        Self { paths }
+        Self {
+            runner: Box::new(toride_runner::DuctRunner),
+            paths,
+        }
+    }
+
+    /// Create a `MonitorClient` with a custom runner and explicit paths.
+    ///
+    /// Intended for tests: pass a [`toride_runner::FakeRunner`] to assert on
+    /// command construction and feed canned CLI output.
+    #[must_use]
+    pub fn with_runner(runner: Box<dyn toride_runner::Runner>, paths: MonitorPaths) -> Self {
+        Self { runner, paths }
     }
 
     /// Return a reference to the resolved paths.
     #[must_use]
     pub fn paths(&self) -> &MonitorPaths {
         &self.paths
+    }
+
+    /// Return a reference to the command runner.
+    #[must_use]
+    pub fn runner(&self) -> &dyn toride_runner::Runner {
+        self.runner.as_ref()
     }
 
     /// Set up iptables OUTPUT chain logging rules.
@@ -70,7 +95,7 @@ impl MonitorClient {
     ///
     /// Returns an error if validation fails or any iptables command fails.
     pub fn setup_logging(&self, rules: &[LoggingRule]) -> Result<()> {
-        let chain = OutputChain::new(&self.paths);
+        let chain = OutputChain::new(&self.paths, self.runner.as_ref());
         for rule in rules {
             chain.add_rule(rule)?;
         }
@@ -83,7 +108,7 @@ impl MonitorClient {
     ///
     /// Returns an error if the iptables commands fail.
     pub fn teardown_logging(&self) -> Result<()> {
-        let chain = OutputChain::new(&self.paths);
+        let chain = OutputChain::new(&self.paths, self.runner.as_ref());
         chain.remove_all()
     }
 
@@ -172,7 +197,7 @@ impl MonitorClient {
         anomaly_report: &AnomalyReport,
         targets: &[AlertTarget],
     ) -> Vec<crate::report::AlertReport> {
-        let dispatcher = AlertDispatcher::new(&self.paths);
+        let dispatcher = AlertDispatcher::new(&self.paths, self.runner.as_ref());
         let mut all_reports = Vec::new();
         for finding in &anomaly_report.findings {
             let reports = dispatcher.dispatch(finding, targets);
@@ -276,20 +301,26 @@ impl MonitorClient {
 
     /// Collect outbound connections from `ss` output.
     fn collect_ss_connections(&self) -> Result<Vec<crate::report::ConnectionInfo>> {
-        let output = duct::cmd(&self.paths.ss, ["-tunap"])
-            .stdout_capture()
-            .run()
-            .map_err(|e| Error::CommandFailed(format!("ss: {e}")))?;
+        let spec = toride_runner::CommandSpec::new(
+            self.paths.ss.to_string_lossy().into_owned(),
+        )
+        .args(["-tunap"]);
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let entries = parse_ss_output(&stdout)?;
+        let output = self.runner.run(&spec)?;
+        if !output.success {
+            return Err(crate::Error::CommandFailed(format!(
+                "ss -tunap failed: {}",
+                output.combined_output()
+            )));
+        }
 
+        let entries = parse_ss_output(&output.stdout)?;
         Ok(entries.iter().filter_map(ss_entry_to_connection).collect())
     }
 
     /// Collect total bytes and packets from conntrack.
     fn collect_conntrack_stats(&self) -> Result<(Option<u64>, Option<u64>)> {
-        let reader = ConntrackReader::new(&self.paths);
+        let reader = ConntrackReader::new(&self.paths, self.runner.as_ref());
         match reader.list_all() {
             Ok(entries) => {
                 let total_bytes: u64 = entries.iter().filter_map(|e| e.bytes).sum();

@@ -22,6 +22,9 @@ pub struct MonitorPaths {
     pub ss: PathBuf,
     /// Path to the `journalctl` binary (e.g. `/usr/bin/journalctl`).
     pub journalctl: PathBuf,
+    /// Path to the `systemd-cat` binary (e.g. `/usr/bin/systemd-cat`), the
+    /// journal *writer* used to submit log entries.
+    pub systemd_cat: PathBuf,
 }
 
 impl MonitorPaths {
@@ -36,6 +39,7 @@ impl MonitorPaths {
             conntrack: PathBuf::from("/usr/sbin/conntrack"),
             ss: PathBuf::from("/usr/bin/ss"),
             journalctl: PathBuf::from("/usr/bin/journalctl"),
+            systemd_cat: PathBuf::from("/usr/bin/systemd-cat"),
         }
     }
 
@@ -57,6 +61,8 @@ impl MonitorPaths {
                 .map_err(|_| crate::Error::BinaryNotFound("ss".into()))?,
             journalctl: which::which("journalctl")
                 .map_err(|_| crate::Error::BinaryNotFound("journalctl".into()))?,
+            systemd_cat: which::which("systemd-cat")
+                .map_err(|_| crate::Error::BinaryNotFound("systemd-cat".into()))?,
         })
     }
 }

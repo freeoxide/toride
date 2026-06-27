@@ -47,6 +47,24 @@ pub enum Error {
     /// A generic or unexpected error.
     #[error("{0}")]
     Other(String),
+
+    /// An error propagated from the underlying command runner
+    /// ([`toride_runner`]).
+    #[error("runner error: {0}")]
+    Runner(#[from] toride_runner::Error),
+
+    /// An error propagated from the service-management layer
+    /// ([`toride_service`]). Only present when the `service` feature is on.
+    #[cfg(feature = "service")]
+    #[error("service error: {0}")]
+    Service(String),
+}
+
+#[cfg(feature = "service")]
+impl From<toride_service::Error> for Error {
+    fn from(err: toride_service::Error) -> Self {
+        Self::Service(err.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------

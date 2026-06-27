@@ -7,7 +7,7 @@
 use crate::paths::MonitorPaths;
 use crate::spec::LoggingRule;
 use crate::validate::validate_logging_rule;
-use crate::{Error, Result};
+use crate::Result;
 
 /// Manages iptables OUTPUT chain logging rules.
 ///
@@ -17,13 +17,15 @@ use crate::{Error, Result};
 pub struct OutputChain<'a> {
     /// Binary paths for iptables commands.
     paths: &'a MonitorPaths,
+    /// Command runner used to execute iptables.
+    runner: &'a dyn toride_runner::Runner,
 }
 
 impl<'a> OutputChain<'a> {
-    /// Create a new `OutputChain` manager with the given paths.
+    /// Create a new `OutputChain` manager with the given paths and runner.
     #[must_use]
-    pub fn new(paths: &'a MonitorPaths) -> Self {
-        Self { paths }
+    pub fn new(paths: &'a MonitorPaths, runner: &'a dyn toride_runner::Runner) -> Self {
+        Self { paths, runner }
     }
 
     /// Set up a logging rule in the OUTPUT chain.
@@ -34,59 +36,11 @@ impl<'a> OutputChain<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the iptables command fails, or
+    /// Returns [`crate::Error::CommandFailed`] if the iptables command fails, or
     /// a validation error if the rule is invalid.
-    #[cfg(feature = "client")]
     pub fn add_rule(&self, rule: &LoggingRule) -> Result<()> {
         validate_logging_rule(rule)?;
-
-        let iptables = &self.paths.iptables;
-
-        // Build the iptables command arguments:
-        // iptables -A OUTPUT -p <proto> -d <dest> [-dport <port>] \
-        //   -j LOG --log-prefix "<prefix>" --log-level <level> \
-        //   -m limit --limit <rate> --limit-burst <burst>
-        let mut args: Vec<String> = vec![
-            "-A".into(),
-            "OUTPUT".into(),
-            "-p".into(),
-            rule.protocol.clone(),
-            "-d".into(),
-            rule.destination.clone(),
-        ];
-
-        if let Some(port) = rule.dest_port {
-            args.extend(["--dport".into(), port.to_string()]);
-        }
-
-        args.extend([
-            "-j".into(),
-            "LOG".into(),
-            "--log-prefix".into(),
-            rule.log_prefix.clone(),
-            "--log-level".into(),
-            rule.log_level.clone(),
-            "-m".into(),
-            "limit".into(),
-            "--limit".into(),
-            rule.limit_rate.clone(),
-            "--limit-burst".into(),
-            rule.limit_burst.to_string(),
-        ]);
-
-        let output = duct::cmd(iptables, &args)
-            .stderr_to_stdout()
-            .stdout_capture()
-            .run()
-            .map_err(|e| Error::CommandFailed(format!("iptables: {e}")))?;
-
-        if !output.status.success() {
-            return Err(Error::CommandFailed(format!(
-                "iptables add rule failed: {}",
-                String::from_utf8_lossy(&output.stdout)
-            )));
-        }
-
+        self.run_iptables(&build_append_args(rule))?;
         Ok(())
     }
 
@@ -97,44 +51,9 @@ impl<'a> OutputChain<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the iptables command fails.
-    #[cfg(feature = "client")]
+    /// Returns [`crate::Error::CommandFailed`] if the iptables command fails.
     pub fn remove_rule(&self, rule: &LoggingRule) -> Result<()> {
-        let iptables = &self.paths.iptables;
-
-        let mut args: Vec<String> = vec![
-            "-D".into(),
-            "OUTPUT".into(),
-            "-p".into(),
-            rule.protocol.clone(),
-            "-d".into(),
-            rule.destination.clone(),
-        ];
-
-        if let Some(port) = rule.dest_port {
-            args.extend(["--dport".into(), port.to_string()]);
-        }
-
-        args.extend([
-            "-j".into(),
-            "LOG".into(),
-            "--log-prefix".into(),
-            rule.log_prefix.clone(),
-        ]);
-
-        let output = duct::cmd(iptables, &args)
-            .stderr_to_stdout()
-            .stdout_capture()
-            .run()
-            .map_err(|e| Error::CommandFailed(format!("iptables: {e}")))?;
-
-        if !output.status.success() {
-            return Err(Error::CommandFailed(format!(
-                "iptables remove rule failed: {}",
-                String::from_utf8_lossy(&output.stdout)
-            )));
-        }
-
+        self.run_iptables(&build_delete_args(rule))?;
         Ok(())
     }
 
@@ -145,46 +64,398 @@ impl<'a> OutputChain<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if `iptables-save` fails.
-    #[cfg(feature = "client")]
+    /// Returns [`crate::Error::CommandFailed`] if `iptables-save` fails.
     pub fn list_rules(&self) -> Result<Vec<String>> {
-        let output = duct::cmd::<&std::path::Path, [&std::ffi::OsStr; 0]>(&self.paths.iptables_save, [])
-            .stdout_capture()
-            .run()
-            .map_err(|e| Error::CommandFailed(format!("iptables-save: {e}")))?;
-
-        if !output.status.success() {
-            return Err(Error::CommandFailed(
-                "iptables-save failed".into(),
-            ));
-        }
-
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let rules = stdout
+        let output = self.run_iptables_save()?;
+        let rules = output
+            .stdout
             .lines()
             .filter(|line| line.contains("-A OUTPUT") && line.contains("-j LOG"))
             .map(String::from)
             .collect();
-
         Ok(rules)
     }
 
     /// Remove all OUTPUT chain LOG rules installed by toride.
     ///
-    /// Iterates over matching rules and removes them one by one.
+    /// Reads the current OUTPUT rules via `iptables-save`, converts each
+    /// saved rule into the equivalent `iptables -D` invocation, and runs it.
+    /// A rule that was never installed (i.e. `-D` finds no match) is reported
+    /// as a warning rather than aborting the whole teardown, so a partial
+    /// install can still be cleaned up.
     ///
     /// # Errors
     ///
-    /// Returns an error if any individual removal fails.
-    #[cfg(feature = "client")]
+    /// Returns an error if `iptables-save` fails or if a deletion command
+    /// fails for a reason other than "rule does not exist".
     pub fn remove_all(&self) -> Result<()> {
         let rules = self.list_rules()?;
         for rule_line in &rules {
-            // Convert the saved rule back to arguments for deletion.
-            // Parse out the LOG prefix to identify our rules.
-            tracing::info!("Removing OUTPUT LOG rule: {rule_line}");
+            match self.delete_saved_rule(rule_line) {
+                Ok(()) => tracing::info!("removed OUTPUT LOG rule: {rule_line}"),
+                Err(crate::Error::CommandFailed(msg)) => {
+                    // iptables -D exits 1 with "Rule does not exist" when the
+                    // rule is already gone. Treat that as success so teardown
+                    // is idempotent.
+                    if msg.contains("does not exist") || msg.contains("No chain/target/match")
+                    {
+                        tracing::debug!("rule already absent: {rule_line}");
+                    } else {
+                        return Err(crate::Error::CommandFailed(msg));
+                    }
+                }
+                Err(e) => return Err(e),
+            }
         }
-        // TODO: Implement full rule parsing and removal.
         Ok(())
+    }
+
+    // -----------------------------------------------------------------------
+    // Internal helpers
+    // -----------------------------------------------------------------------
+
+    /// Run an `iptables` subcommand with the given arguments.
+    fn run_iptables(&self, args: &[String]) -> Result<toride_runner::CommandOutput> {
+        let spec = toride_runner::CommandSpec::new(
+            self.paths.iptables.to_string_lossy().into_owned(),
+        )
+        .args(args.iter().cloned());
+        let output = self.runner.run(&spec)?;
+        if !output.success {
+            return Err(crate::Error::CommandFailed(format!(
+                "iptables {} failed: {}",
+                args.join(" "),
+                output.combined_output()
+            )));
+        }
+        Ok(output)
+    }
+
+    /// Run `iptables-save` and return its captured output.
+    fn run_iptables_save(&self) -> Result<toride_runner::CommandOutput> {
+        let spec = toride_runner::CommandSpec::new(
+            self.paths.iptables_save.to_string_lossy().into_owned(),
+        );
+        let output = self.runner.run(&spec)?;
+        if !output.success {
+            return Err(crate::Error::CommandFailed(format!(
+                "iptables-save failed: {}",
+                output.combined_output()
+            )));
+        }
+        Ok(output)
+    }
+
+    /// Convert a single `iptables-save` rule line into `-D` args and delete it.
+    ///
+    /// `iptables-save` emits rules as `-A OUTPUT <rest...>`. Flipping the
+    /// leading `-A` to `-D` yields the exact deletion spec accepted by
+    /// `iptables` (it matches one rule at a time).
+    fn delete_saved_rule(&self, rule_line: &str) -> Result<()> {
+        let tokens = shellish_split(rule_line)?;
+        if tokens.len() < 2 {
+            return Err(crate::Error::CommandFailed(format!(
+                "cannot parse iptables-save rule: {rule_line}"
+            )));
+        }
+        // tokens[0] is "-A"; replace with "-D".
+        let mut delete_args = tokens.clone();
+        if delete_args[0] == "-A" {
+            delete_args[0] = "-D".to_owned();
+        } else {
+            // Not a rule we recognise (e.g. a policy line); skip silently.
+            return Ok(());
+        }
+        self.run_iptables(&delete_args)?;
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Argument construction
+// ---------------------------------------------------------------------------
+
+/// Build the `iptables` append (`-A`) argument vector for a logging rule.
+fn build_append_args(rule: &LoggingRule) -> Vec<String> {
+    let mut args = vec![
+        "-A".into(),
+        "OUTPUT".into(),
+        "-p".into(),
+        rule.protocol.clone(),
+        "-d".into(),
+        rule.destination.clone(),
+    ];
+    extend_match_and_target(&mut args, rule);
+    args
+}
+
+/// Build the `iptables` delete (`-D`) argument vector for a logging rule.
+///
+/// For deletion iptables only needs to match enough of the original rule to
+/// identify it uniquely; the full match+target is the safest spec.
+fn build_delete_args(rule: &LoggingRule) -> Vec<String> {
+    let mut args = vec![
+        "-D".into(),
+        "OUTPUT".into(),
+        "-p".into(),
+        rule.protocol.clone(),
+        "-d".into(),
+        rule.destination.clone(),
+    ];
+    extend_match_and_target(&mut args, rule);
+    args
+}
+
+/// Append the destination-port match plus the `LOG` target and rate limit.
+fn extend_match_and_target(args: &mut Vec<String>, rule: &LoggingRule) {
+    if let Some(port) = rule.dest_port {
+        args.extend(["--dport".into(), port.to_string()]);
+    }
+    args.extend([
+        "-j".into(),
+        "LOG".into(),
+        "--log-prefix".into(),
+        rule.log_prefix.clone(),
+        "--log-level".into(),
+        rule.log_level.clone(),
+        "-m".into(),
+        "limit".into(),
+        "--limit".into(),
+        rule.limit_rate.clone(),
+        "--limit-burst".into(),
+        rule.limit_burst.to_string(),
+    ]);
+}
+
+/// Split an `iptables-save` rule line into argv tokens, honouring double and
+/// single quotes (iptables-save quotes values containing spaces, e.g.
+/// `--log-prefix "TORIDE_OUT "`).
+///
+/// This is a tiny, dependency-free tokenizer sufficient for iptables-save
+/// output; it is intentionally not a general-purpose shell parser.
+fn shellish_split(line: &str) -> Result<Vec<String>> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    let mut chars = line.chars().peekable();
+    let mut in_token = false;
+
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => {
+                in_token = true;
+                // Read until the closing double quote.
+                for inner in chars.by_ref() {
+                    if inner == '"' {
+                        break;
+                    }
+                    current.push(inner);
+                }
+            }
+            '\'' => {
+                in_token = true;
+                for inner in chars.by_ref() {
+                    if inner == '\'' {
+                        break;
+                    }
+                    current.push(inner);
+                }
+            }
+            c if c.is_whitespace() => {
+                if in_token {
+                    tokens.push(std::mem::take(&mut current));
+                    in_token = false;
+                }
+            }
+            other => {
+                in_token = true;
+                current.push(other);
+            }
+        }
+    }
+    if in_token {
+        tokens.push(current);
+    }
+    Ok(tokens)
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::paths::MonitorPaths;
+    use std::path::PathBuf;
+    use toride_runner::{CommandOutput, FakeRunner};
+
+    fn test_paths() -> MonitorPaths {
+        MonitorPaths {
+            iptables: PathBuf::from("/usr/sbin/iptables"),
+            iptables_save: PathBuf::from("/usr/sbin/iptables-save"),
+            conntrack: PathBuf::from("/usr/sbin/conntrack"),
+            ss: PathBuf::from("/usr/bin/ss"),
+            journalctl: PathBuf::from("/usr/bin/journalctl"),
+            systemd_cat: PathBuf::from("/usr/bin/systemd-cat"),
+        }
+    }
+
+    fn sample_rule() -> LoggingRule {
+        LoggingRule {
+            name: "out-tcp".into(),
+            destination: "0.0.0.0/0".into(),
+            dest_port: Some(443),
+            protocol: "tcp".into(),
+            log_prefix: "TORIDE_OUT".into(),
+            log_level: "info".into(),
+            limit_burst: 10,
+            limit_rate: "10/minute".into(),
+        }
+    }
+
+    #[test]
+    fn add_rule_builds_exact_iptables_command() {
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+
+        chain.add_rule(&sample_rule()).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].program, "/usr/sbin/iptables");
+        assert_eq!(
+            calls[0].args,
+            vec![
+                "-A", "OUTPUT", "-p", "tcp", "-d", "0.0.0.0/0", "--dport", "443",
+                "-j", "LOG", "--log-prefix", "TORIDE_OUT", "--log-level", "info",
+                "-m", "limit", "--limit", "10/minute", "--limit-burst", "10",
+            ]
+        );
+    }
+
+    #[test]
+    fn remove_rule_builds_exact_delete_command() {
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+
+        chain.remove_rule(&sample_rule()).unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].args[0], "-D");
+        assert_eq!(calls[0].args[1], "OUTPUT");
+    }
+
+    #[test]
+    fn list_rules_parses_iptables_save_output() {
+        let canned = "\
+*filter
+:INPUT ACCEPT [0:0]
+:OUTPUT ACCEPT [0:0]
+-A OUTPUT -d 0.0.0.0/0 -p tcp --dport 443 -j LOG --log-prefix \"TORIDE_OUT \" --log-level info -m limit --limit 10/minute --limit-burst 10
+-A INPUT -p tcp -j ACCEPT
+COMMIT
+";
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(canned));
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+
+        let rules = chain.list_rules().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].contains("-A OUTPUT"));
+        assert!(rules[0].contains("-j LOG"));
+    }
+
+    #[test]
+    fn remove_all_converts_saved_rules_to_delete_and_invokes_iptables() {
+        // iptables-save emits a single OUTPUT LOG rule; teardown must issue
+        // exactly one `iptables -D OUTPUT ...` call derived from it.
+        let saved_rule = "-A OUTPUT -d 0.0.0.0/0 -p tcp --dport 443 -j LOG --log-prefix \"TORIDE_OUT \" --log-level info -m limit --limit 10/minute --limit-burst 10";
+        let canned = format!("*filter\n:OUTPUT ACCEPT [0:0]\n{saved_rule}\nCOMMIT\n");
+
+        let runner = FakeRunner::new()
+            // iptables-save call.
+            .push_response(CommandOutput::from_stdout(canned))
+            // iptables -D call (deleting the rule above).
+            .push_response(CommandOutput::from_stdout(""));
+
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+
+        chain.remove_all().unwrap();
+
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 2);
+        // First call: iptables-save.
+        assert_eq!(calls[0].program, "/usr/sbin/iptables-save");
+        // Second call: iptables -D derived from the saved line.
+        assert_eq!(calls[1].program, "/usr/sbin/iptables");
+        assert_eq!(calls[1].args[0], "-D");
+        assert_eq!(calls[1].args[1], "OUTPUT");
+        // The deletion args must round-trip the match+target from the saved line.
+        assert!(calls[1].args.contains(&"-j".to_owned()));
+        assert!(calls[1].args.contains(&"LOG".to_owned()));
+        // The quoted log-prefix value must be unquoted in the argv.
+        assert!(calls[1].args.contains(&"TORIDE_OUT ".to_owned()));
+    }
+
+    #[test]
+    fn remove_all_is_idempotent_when_rule_already_absent() {
+        // iptables -D returns exit 1 with "Rule does not exist"; teardown must
+        // swallow that and succeed.
+        let saved_rule = "-A OUTPUT -d 0.0.0.0/0 -p tcp -j LOG --log-prefix \"X \"";
+        let canned = format!("*filter\n{saved_rule}\nCOMMIT\n");
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout(canned))
+            .push_response(CommandOutput::from_stderr(
+                "iptables: Rule does not exist (out of memory?).\n",
+                1,
+            ));
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+
+        assert!(chain.remove_all().is_ok());
+    }
+
+    #[test]
+    fn remove_all_no_rules_issues_only_iptables_save() {
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("*filter\nCOMMIT\n"));
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+
+        chain.remove_all().unwrap();
+
+        // No LOG rules => only the iptables-save call, no deletions.
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+    }
+
+    #[test]
+    fn shellish_split_unquotes_log_prefix() {
+        let line =
+            "-A OUTPUT -j LOG --log-prefix \"TORIDE_OUT \" --log-level info";
+        let toks = shellish_split(line).unwrap();
+        assert_eq!(toks[0], "-A");
+        // The quoted value keeps its trailing space but loses the quotes.
+        assert!(toks.iter().any(|t| t == "TORIDE_OUT "));
+    }
+
+    #[test]
+    fn shellish_split_handles_single_quotes() {
+        let line = "-A OUTPUT -j LOG --log-prefix 'abc'";
+        let toks = shellish_split(line).unwrap();
+        assert!(toks.iter().any(|t| t == "abc"));
+    }
+
+    #[test]
+    fn add_rule_propagates_iptables_failure() {
+        let runner =
+            FakeRunner::new().push_response(CommandOutput::from_stderr("nope", 2));
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+        assert!(chain.add_rule(&sample_rule()).is_err());
     }
 }
