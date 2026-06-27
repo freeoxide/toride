@@ -67,7 +67,14 @@ impl<'a> DnsManager<'a> {
     /// be parsed.
     pub async fn get_config(&self) -> Result<DnsConfigInfo> {
         let raw = self.api.get_dns_config().await?;
+        Ok(Self::parse(&raw))
+    }
 
+    /// Parse a raw DNS-config JSON document into a [`DnsConfigInfo`].
+    ///
+    /// Shared between the HTTP API path (`get_config`) and any CLI path that
+    /// returns the same document.
+    pub fn parse(raw: &serde_json::Value) -> DnsConfigInfo {
         let magic_dns = raw
             .get("MagicDNS")
             .and_then(|v| v.as_bool())
@@ -93,12 +100,14 @@ impl<'a> DnsManager<'a> {
             })
             .unwrap_or_default();
 
-        Ok(DnsConfigInfo {
+        let split_dns = parse_split_dns(raw);
+
+        DnsConfigInfo {
             magic_dns,
             nameservers,
             search_domains,
-            split_dns: Vec::new(),
-        })
+            split_dns,
+        }
     }
 
     /// Check if MagicDNS is currently enabled.
@@ -128,5 +137,124 @@ impl<'a> DnsManager<'a> {
             }
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// JSON parsing helpers
+// ---------------------------------------------------------------------------
+
+/// Parse the `SplitDNS` field into `(domain, nameserver)` pairs.
+///
+/// The Tailscale API encodes split DNS as an object mapping a domain route to
+/// an array of nameserver IPs, e.g.
+/// `{"internal.example.com": ["100.100.100.100"]}`. The first nameserver for
+/// each domain is reported (the list is ordered by preference).
+fn parse_split_dns(raw: &serde_json::Value) -> Vec<(String, String)> {
+    let Some(map) = raw.get("SplitDNS").and_then(|s| s.as_object()) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for (domain, servers) in map {
+        if let Some(arr) = servers.as_array() {
+            if let Some(first) = arr.first().and_then(|v| v.as_str()) {
+                out.push((domain.clone(), first.to_owned()));
+            }
+        } else if let Some(single) = servers.as_str() {
+            // Some payloads use a bare string instead of an array.
+            out.push((domain.clone(), single.to_owned()));
+        }
+    }
+    out.sort_by(|a, b| a.0.cmp(&b.0));
+    out
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample() -> serde_json::Value {
+        serde_json::json!({
+            "MagicDNS": true,
+            "Nameservers": ["1.1.1.1", "8.8.8.8"],
+            "SearchDomains": ["tailnet.example.com"],
+            "SplitDNS": {
+                "internal.example.com": ["100.100.100.100"],
+                "corp.local": ["10.0.0.53", "10.0.0.54"]
+            }
+        })
+    }
+
+    #[test]
+    fn parses_all_dns_fields() {
+        let config = DnsManager::parse(&sample());
+        assert!(config.magic_dns);
+        assert_eq!(config.nameservers, vec!["1.1.1.1", "8.8.8.8"]);
+        assert_eq!(config.search_domains, vec!["tailnet.example.com"]);
+        assert_eq!(
+            config.split_dns,
+            vec![
+                ("corp.local".to_owned(), "10.0.0.53".to_owned()),
+                ("internal.example.com".to_owned(), "100.100.100.100".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn split_dns_uses_first_nameserver_per_domain() {
+        let config = DnsManager::parse(&sample());
+        // corp.local had two nameservers; only the first is reported.
+        let corp = config
+            .split_dns
+            .iter()
+            .find(|(d, _)| d == "corp.local")
+            .unwrap();
+        assert_eq!(corp.1, "10.0.0.53");
+    }
+
+    #[test]
+    fn split_dns_empty_when_field_absent() {
+        let raw = serde_json::json!({ "MagicDNS": false });
+        let config = DnsManager::parse(&raw);
+        assert!(config.split_dns.is_empty());
+        assert!(!config.magic_dns);
+    }
+
+    #[test]
+    fn split_dns_handles_bare_string_values() {
+        let raw = serde_json::json!({
+            "SplitDNS": { "alt.example.com": "9.9.9.9" }
+        });
+        let config = DnsManager::parse(&raw);
+        assert_eq!(
+            config.split_dns,
+            vec![("alt.example.com".to_owned(), "9.9.9.9".to_owned())]
+        );
+    }
+
+    #[test]
+    fn validate_config_rejects_bad_nameserver() {
+        let config = DnsConfigInfo {
+            magic_dns: true,
+            nameservers: vec!["not-an-ip".to_owned()],
+            search_domains: vec![],
+            split_dns: vec![],
+        };
+        assert!(DnsManager::validate_config(&config).is_err());
+    }
+
+    #[test]
+    fn validate_config_accepts_valid_ips() {
+        let config = DnsConfigInfo {
+            magic_dns: true,
+            nameservers: vec!["1.1.1.1".to_owned(), "::1".to_owned()],
+            search_domains: vec![],
+            split_dns: vec![],
+        };
+        assert!(DnsManager::validate_config(&config).is_ok());
     }
 }

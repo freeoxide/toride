@@ -98,19 +98,143 @@ impl NodeStatus {
     }
 
     /// Convert this status into a [`TailscaleReport`].
+    ///
+    /// The exit-node field is populated from the first online peer that
+    /// advertises itself as an exit node (`ExitNodeOption == true`). MagicDNS
+    /// is derived from the top-level `MagicDNSEnabled` boolean.
     pub fn to_report(&self) -> TailscaleReport {
+        let exit_node = self.exit_node_in_use();
+        let dns_enabled = self.magic_dns_enabled();
+
         TailscaleReport {
             connected: self.connection() == ConnectionStatus::Connected,
             node_name: self.name().to_owned(),
             tailnet: self.tailnet().to_owned(),
             ip_addresses: self.ip_addresses(),
-            exit_node: None, // TODO: parse from raw response
-            dns_enabled: true, // TODO: parse from raw response
+            exit_node,
+            dns_enabled,
         }
+    }
+
+    /// Returns the IP of the exit node currently advertised by an online peer,
+    /// if any.
+    ///
+    /// A peer with `ExitNodeOption == true` is one that this tailnet exposes as
+    /// an exit node; we report its first Tailscale IP. `None` when no such peer
+    /// is online.
+    fn exit_node_in_use(&self) -> Option<String> {
+        let peers = self.raw.get("Peer").and_then(|p| p.as_object())?;
+        for peer in peers.values() {
+            let is_exit = peer
+                .get("ExitNodeOption")
+                .and_then(|e| e.as_bool())
+                .unwrap_or(false);
+            let online = peer.get("Online").and_then(|o| o.as_bool()).unwrap_or(false);
+            if is_exit && online {
+                if let Some(ip) = peer
+                    .get("TailscaleIPs")
+                    .and_then(|i| i.as_array())
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                {
+                    return Some(ip.to_owned());
+                }
+            }
+        }
+        None
+    }
+
+    /// Returns whether MagicDNS is enabled, parsed from the top-level
+    /// `MagicDNSEnabled` boolean (defaults to `false` when absent).
+    fn magic_dns_enabled(&self) -> bool {
+        self.raw
+            .get("MagicDNSEnabled")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false)
     }
 
     /// Returns the raw JSON value for direct inspection.
     pub fn raw(&self) -> &serde_json::Value {
         &self.raw
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::report::ConnectionStatus;
+
+    fn sample() -> serde_json::Value {
+        serde_json::json!({
+            "BackendState": "Running",
+            "MagicDNSEnabled": true,
+            "CurrentTailnet": { "Name": "example.ts.net" },
+            "Self": {
+                "HostName": "my-host",
+                "TailscaleIPs": ["100.64.0.1"]
+            },
+            "Peer": {
+                "k1": {
+                    "HostName": "exit-box",
+                    "TailscaleIPs": ["100.64.0.9"],
+                    "Online": true,
+                    "ExitNodeOption": true
+                },
+                "k2": {
+                    "HostName": "laptop",
+                    "TailscaleIPs": ["100.64.0.5"],
+                    "Online": true,
+                    "ExitNodeOption": false
+                }
+            }
+        })
+    }
+
+    #[test]
+    fn report_exits_node_and_dns_from_raw_json() {
+        let status = NodeStatus::from_raw(sample());
+        let report = status.to_report();
+        assert!(report.connected);
+        assert_eq!(report.node_name, "my-host");
+        assert_eq!(report.tailnet, "example.ts.net");
+        assert_eq!(report.ip_addresses, vec!["100.64.0.1"]);
+        assert_eq!(report.exit_node, Some("100.64.0.9".to_owned()));
+        assert!(report.dns_enabled);
+    }
+
+    #[test]
+    fn exit_node_none_when_no_online_exit_peer() {
+        let mut raw = sample();
+        // Mark the only exit node offline.
+        raw["Peer"]["k1"]["Online"] = serde_json::json!(false);
+        let report = NodeStatus::from_raw(raw).to_report();
+        assert_eq!(report.exit_node, None);
+    }
+
+    #[test]
+    fn dns_defaults_false_when_field_absent() {
+        let mut raw = sample();
+        raw.as_object_mut().unwrap().remove("MagicDNSEnabled");
+        let report = NodeStatus::from_raw(raw).to_report();
+        assert!(!report.dns_enabled);
+    }
+
+    #[test]
+    fn connection_state_maps_backend_state() {
+        let cases = [
+            ("Running", ConnectionStatus::Connected),
+            ("NeedsLogin", ConnectionStatus::Disconnected),
+            ("Stopped", ConnectionStatus::Disconnected),
+            ("Starting", ConnectionStatus::Starting),
+            ("Weird", ConnectionStatus::Unknown),
+        ];
+        for (state, expected) in cases {
+            let raw = serde_json::json!({ "BackendState": state });
+            assert_eq!(NodeStatus::from_raw(raw).connection(), expected, "state={state}");
+        }
     }
 }

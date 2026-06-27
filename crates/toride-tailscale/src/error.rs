@@ -76,12 +76,28 @@ pub enum Error {
     DnsError(String),
 
     // =======================================================================
+    // Service subsystem
+    // =======================================================================
+
+    /// An error from the shared service-management layer
+    /// ([`toride_service`]).
+    #[error("service error: {0}")]
+    Service(String),
+
+    // =======================================================================
     // Catch-all
     // =======================================================================
 
     /// A generic error that does not fit into any specific category.
     #[error("{0}")]
     Other(String),
+}
+
+#[cfg(feature = "service")]
+impl From<toride_service::Error> for Error {
+    fn from(err: toride_service::Error) -> Self {
+        Self::Service(err.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------

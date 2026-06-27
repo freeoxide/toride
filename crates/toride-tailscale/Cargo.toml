@@ -5,13 +5,28 @@ edition = "2024"
 description = "Tailscale mesh VPN management via HTTP API"
 license = "MIT"
 
+# A library crate can also ship a binary target. `cargo run -p toride-tailscale
+# --features cli` builds this entry point, which parses the CLI and dispatches
+# to the real client. The binary is only compiled when requested (it lives
+# behind no feature flag of its own, but it `use`s `crate::cli` which is
+# `#[cfg(feature = "cli")]`-gated, so building the bin without `cli` fails the
+# link — exactly the intent).
+[[bin]]
+name = "toride-tailscale"
+path = "src/main.rs"
+required-features = ["cli"]
+
 [features]
 default = ["client", "doctor"]
-client = ["dep:duct", "dep:reqwest", "dep:tokio"]
+client = ["dep:duct", "dep:reqwest", "dep:tokio", "toride-runner/duct-runner"]
 doctor = ["service"]
-service = ["client"]
+service = ["client", "dep:toride-service"]
 serde = ["dep:serde"]
-cli = ["dep:clap"]
+# `cli` implies `client`, `doctor`, and `service`: the dispatch in
+# [`TailscaleArgs::dispatch`](crate::cli::TailscaleArgs::dispatch) drives the
+# real `TailscaleClient`, `Doctor`, and `TailscaleService`, so enabling `cli`
+# pulls those capabilities in automatically.
+cli = ["dep:clap", "client", "doctor", "service"]
 
 [dependencies]
 toride-runner = { path = "../toride-runner" }
@@ -33,6 +48,7 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
+toride-runner = { path = "../toride-runner", features = ["fake"] }
 
 [lints]
 workspace = true
