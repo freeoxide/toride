@@ -284,6 +284,16 @@ impl Audit {
         self
     }
 
+    /// Override the resolved system paths.
+    ///
+    /// Primarily useful in tests to point the facade at a temp directory so
+    /// that file-based operations (rule writes, log listings) do not touch
+    /// the real `/etc`.
+    pub fn with_paths_override(mut self, paths: AuditPaths) -> Self {
+        self.paths = paths;
+        self
+    }
+
     // -----------------------------------------------------------------------
     // Sub-module accessors
     // -----------------------------------------------------------------------

@@ -39,6 +39,22 @@ impl From<ChangeTag> for DiffTag {
     }
 }
 
+impl std::fmt::Display for DiffTag {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Removed => write!(f, "-"),
+            Self::Added => write!(f, "+"),
+            Self::Unchanged => write!(f, " "),
+        }
+    }
+}
+
+impl std::fmt::Display for DiffEntry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} {}", self.tag, self.line)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Diff computation
 // ---------------------------------------------------------------------------
