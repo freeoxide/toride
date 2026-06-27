@@ -396,6 +396,27 @@ mod tests {
         }
     }
 
+    /// A redact(true) spec must never deliver secret flag values in the
+    /// Started event — the streaming path redacts args at emission.
+    #[tokio::test]
+    async fn streaming_started_event_redacts_secret_args() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("curl")
+            .args(["--token", "secret-value", "https://example.com"])
+            .redact(true);
+        let mut sink = CollectingSink::default();
+
+        let _ = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        match &sink.events[0] {
+            CommandEvent::Started { args, .. } => {
+                assert!(args.contains(&"***".to_owned()));
+                assert!(!args.contains(&"secret-value".to_owned()));
+            }
+            other => panic!("expected Started event, got {other:?}"),
+        }
+    }
+
     /// A sink that counts total bytes emitted across stdout/stderr chunk events,
     /// to prove the cap bounds memory rather than wall-clock time.
     #[derive(Default)]

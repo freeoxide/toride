@@ -74,11 +74,24 @@ impl AsyncRunner for TokioRunner {
 /// of whether the process times out. On timeout, kills the direct child and
 /// waits for it to terminate.
 async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<CommandOutput> {
-    // Output-limit enforcement only applies to captured output. Dispatch to the
-    // cap-aware path before the unlimited draining runs, because that path
-    // uses bounded reads instead of `read_to_end` so it can trip the cap
-    // mid-stream and kill the child.
-    if let Some(cap) = spec.output_limit {
+    // OutputMode::Stream is only honored by the streaming runner
+    // (`run_streaming`); the captured-output path rejects it, matching
+    // DuctRunner's behavior.
+    if spec.output_mode == crate::OutputMode::Stream {
+        return Err(Error::Other(
+            "OutputMode::Stream is not supported by TokioRunner::run; use run_streaming instead"
+                .to_owned(),
+        ));
+    }
+
+    // Output-limit enforcement only applies to captured output. Inherit mode
+    // does not capture, so the limit is ignored (the real exit code is still
+    // returned). This mirrors DuctRunner. Dispatch to the cap-aware path before
+    // the unlimited draining runs, because that path uses bounded reads instead
+    // of `read_to_end` so it can trip the cap mid-stream and kill the child.
+    if spec.output_mode == crate::OutputMode::Capture
+        && let Some(cap) = spec.output_limit
+    {
         return Box::pin(run_tokio_limited(spec, timeout, cap)).await;
     }
 
@@ -168,7 +181,7 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
 
             Err(Error::CommandTimeout {
                 program: spec.program.clone(),
-                args: spec.args.clone(),
+                args: crate::display::redacted_args_vec(spec),
                 timeout,
             })
         }
@@ -180,9 +193,21 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
 /// paths. stdin is piped only when the spec carries stdin data.
 fn build_tokio_command(spec: &CommandSpec) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&spec.program);
-    cmd.args(&spec.args)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped());
+    cmd.args(&spec.args);
+
+    // Honor the spec's output mode. Capture pipes both streams so they can be
+    // drained below; Inherit leaves them connected to the parent (the drain
+    // then observes `None` pipes and returns empty captured strings, while the
+    // real exit code is still returned). Stream is rejected upstream by
+    // `run_tokio_command` (it is the streaming runner's domain).
+    let piped = matches!(spec.output_mode, crate::OutputMode::Capture | crate::OutputMode::Stream);
+    if piped {
+        cmd.stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+    } else {
+        cmd.stdout(std::process::Stdio::inherit())
+            .stderr(std::process::Stdio::inherit());
+    }
 
     if let Some(ref cwd) = spec.cwd {
         cmd.current_dir(cwd);
@@ -363,7 +388,7 @@ async fn run_tokio_limited(
             let _ = child.wait().await;
             Err(Error::CommandTimeout {
                 program: spec.program.clone(),
-                args: spec.args.clone(),
+                args: crate::display::redacted_args_vec(spec),
                 timeout,
             })
         }
@@ -373,7 +398,7 @@ async fn run_tokio_limited(
             let _ = child.wait().await;
             Err(Error::OutputLimitExceeded {
                 program: spec.program.clone(),
-                args: redacted_args_for(spec),
+                args: crate::display::redacted_args_display(spec),
                 limit: cap,
                 observed: counter.load(Ordering::Acquire),
             })
@@ -416,15 +441,6 @@ fn finish_under_cap(
         "async command completed"
     );
     CommandOutput::new(stdout, stderr, exit_code)
-}
-
-/// Redacted display of a spec's args for error messages, honoring `spec.redact`.
-fn redacted_args_for(spec: &CommandSpec) -> String {
-    if spec.redact {
-        crate::display::display_command(spec, &[])
-    } else {
-        spec.args.join(" ")
-    }
 }
 
 /// Outcome of the cap-aware draining loop.
@@ -493,10 +509,11 @@ async fn run_streaming_command(
         detail: e.to_string(),
     })?;
 
-    // Emit Started.
+    // Emit Started. Redact args when the spec requests it so a streamed
+    // invocation never delivers secret flag values to the sink.
     sink.on_event(CommandEvent::Started {
         program: spec.program.clone(),
-        args: spec.args.clone(),
+        args: crate::display::redacted_args_vec(spec),
     })
     .await?;
 
@@ -712,7 +729,7 @@ async fn run_streaming_command(
             let _ = child.wait().await;
             Err(Error::CommandTimeout {
                 program: spec.program.clone(),
-                args: spec.args.clone(),
+                args: crate::display::redacted_args_vec(spec),
                 timeout,
             })
         }
@@ -720,19 +737,18 @@ async fn run_streaming_command(
 }
 
 /// Bounded read buffer size for the streaming path.
+#[cfg(feature = "stream")]
 const STREAM_READ_BUF: usize = 8 * 1024;
+#[cfg(feature = "stream")]
 /// Number of in-flight fixed-size chunks the stderr task may queue.
 const STREAM_CHANNEL_CHUNKS: usize = 64;
 
 /// Build the `OutputLimitExceeded` error for a streaming breach.
+#[cfg(feature = "stream")]
 fn stream_breach_error(spec: &CommandSpec, limit: usize, observed: usize) -> Error {
     Error::OutputLimitExceeded {
         program: spec.program.clone(),
-        args: if spec.redact {
-            crate::display::display_command(spec, &[])
-        } else {
-            spec.args.join(" ")
-        },
+        args: crate::display::redacted_args_display(spec),
         limit,
         observed,
     }
@@ -742,6 +758,7 @@ fn stream_breach_error(spec: &CommandSpec, limit: usize, observed: usize) -> Err
 /// trailing partial line into `buf` (flushed at stream EOF). Lines are split on
 /// `\n`, with trailing `\r` trimmed. The buffer is bounded because it holds at
 /// most one partial line per bounded read (≤ `STREAM_READ_BUF` bytes).
+#[cfg(feature = "stream")]
 async fn emit_stdout_lines(
     chunk: &[u8],
     buf: &mut String,
@@ -760,6 +777,7 @@ async fn emit_stdout_lines(
 }
 
 /// Like [`emit_stdout_lines`] but emits `StderrLine` events.
+#[cfg(feature = "stream")]
 async fn emit_stderr_lines(
     chunk: &[u8],
     buf: &mut String,
@@ -1017,6 +1035,100 @@ mod tests {
                 assert_eq!(t, timeout);
             }
             other => panic!("expected CommandTimeout, got {other:?}"),
+        }
+    }
+
+    /// CommandTimeout must store already-redacted args so the derived Debug
+    /// never leaks secret flag values for a redact(true) spec.
+    #[tokio::test]
+    async fn timeout_redacts_args_when_requested() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 10", "--token", "secret-value"])
+            .redact(true)
+            .timeout(Duration::from_millis(50));
+        let result = runner.run(&spec).await;
+
+        match result.unwrap_err() {
+            Error::CommandTimeout { args, .. } => {
+                assert!(
+                    args.contains(&"***".to_owned()),
+                    "expected redacted args, got {args:?}"
+                );
+                assert!(
+                    !args.contains(&"secret-value".to_owned()),
+                    "secret value leaked into CommandTimeout args: {args:?}"
+                );
+            }
+            other => panic!("expected CommandTimeout, got {other:?}"),
+        }
+    }
+
+    /// run_checked (async default) must redact args when spec.redact is true —
+    /// this is the async-runner parity gap with the sync Runner default.
+    #[tokio::test]
+    async fn run_checked_redacts_args_when_requested() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 7", "--token", "secret-value"])
+            .redact(true);
+        let result = runner.run_checked(&spec).await;
+
+        match result.unwrap_err() {
+            Error::CommandFailed { args, .. } => {
+                assert!(args.contains("***"));
+                assert!(!args.contains("secret-value"));
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
+    }
+
+    /// OutputMode::Inherit must connect child stdio to the parent and return
+    /// empty captured strings plus the real exit code — matching DuctRunner.
+    #[tokio::test]
+    async fn inherit_output_mode_returns_empty_captured_output() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 17"])
+            .output_mode(crate::OutputMode::Inherit);
+        let output = runner.run(&spec).await.unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.exit_code, Some(17));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+
+    /// OutputMode::Inherit must ignore output_limit and still return the real
+    /// exit code (parity with DuctRunner's output_limit_inherit_mode_is_ignored).
+    #[tokio::test]
+    async fn inherit_output_mode_ignores_output_limit() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 17"])
+            .output_mode(crate::OutputMode::Inherit)
+            .output_limit(8);
+        let output = runner.run(&spec).await.unwrap();
+
+        assert!(!output.success);
+        assert_eq!(output.exit_code, Some(17));
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+
+    /// OutputMode::Stream is rejected by the captured-output run path (it is
+    /// the streaming runner's domain), matching DuctRunner's explicit error.
+    #[tokio::test]
+    async fn stream_output_mode_is_rejected_by_run() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("echo")
+            .arg("hello")
+            .output_mode(crate::OutputMode::Stream);
+        let result = runner.run(&spec).await;
+
+        match result.unwrap_err() {
+            Error::Other(message) => assert!(message.contains("Stream")),
+            other => panic!("expected unsupported stream error, got {other:?}"),
         }
     }
 

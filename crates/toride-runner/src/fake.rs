@@ -217,6 +217,24 @@ impl Default for FakeRunner {
     }
 }
 
+/// Clone a [`FakeRunner`].
+///
+/// All state (`responses`, `exact_responses`, `calls`, `strict`) is held
+/// behind [`Arc`]`<`[`Mutex`](std::sync::Mutex)`<..>>`, so cloning produces a
+/// second handle to the *same* shared state. This is the desired behavior for
+/// tests that hand the runner to an owning subsystem (which moves it) but
+/// still want to inspect the recorded calls afterward via the clone.
+impl Clone for FakeRunner {
+    fn clone(&self) -> Self {
+        Self {
+            responses: Arc::clone(&self.responses),
+            exact_responses: Arc::clone(&self.exact_responses),
+            calls: Arc::clone(&self.calls),
+            strict: self.strict,
+        }
+    }
+}
+
 impl Runner for FakeRunner {
     fn run(&self, spec: &CommandSpec) -> Result<CommandOutput> {
         // Record the call.
@@ -244,9 +262,12 @@ impl AsyncRunner for FakeRunner {
 /// Check if two specs match on the fields used for exact matching.
 ///
 /// Compares `program`, `args`, `stdin`, `env`, `env_remove`, `clear_env`,
-/// `cwd`, and `output_mode`. `timeout` and `output_limit` are ignored — they
-/// are runtime/safety policy, not command-construction concerns, so two specs
-/// that differ only in those fields still match.
+/// `cwd`, `output_mode`, and `redact`. `timeout` and `output_limit` are
+/// ignored — they are runtime/safety policy, not command-construction
+/// concerns, so two specs that differ only in those fields still match.
+/// `redact` IS compared: it is a command-construction property (whether the
+/// command carries secret-bearing args/env that must be scrubbed from errors
+/// and logs), so a spec that forgot `redact(true)` must fail an exact match.
 fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
     a.program == b.program
         && a.args == b.args
@@ -256,6 +277,7 @@ fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
         && a.clear_env == b.clear_env
         && a.cwd == b.cwd
         && a.output_mode == b.output_mode
+        && a.redact == b.redact
 }
 
 #[cfg(test)]

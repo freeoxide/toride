@@ -14,6 +14,7 @@ pub const REDACT_FLAGS: &[&str] = &[
     "--password",
     "--passwd",
     "--token",
+    "--access-token",
     "--api-key",
     "--apikey",
     "--secret",
@@ -21,6 +22,8 @@ pub const REDACT_FLAGS: &[&str] = &[
     "--private-key",
     "--ssh-key",
     "--passphrase",
+    "--password-command",
+    "--email",
 ];
 
 /// Redact sensitive values from a list of command arguments.
@@ -111,5 +114,43 @@ mod tests {
         let args: Vec<String> = vec!["echo".into(), "hello".into()];
         let result = redact_args(&args, REDACT_FLAGS);
         assert_eq!(result, args);
+    }
+
+    /// Regression: provider/PII secret flags MUST be in REDACT_FLAGS.
+    /// `--access-token`, `--email`, and `--password-command` were previously
+    /// missing, so e.g. `doctl --access-token <token>.redact(true)` silently
+    /// leaked the token into logs/errors despite the redact flag.
+    #[test]
+    fn redact_provider_specific_secret_flags() {
+        // doctl --access-token <token>
+        let args: Vec<String> = vec![
+            "doctl".into(),
+            "--access-token".into(),
+            "tok-abc".into(),
+            "compute".into(),
+            "firewall".into(),
+            "list".into(),
+        ];
+        let result = redact_args(&args, REDACT_FLAGS);
+        assert_eq!(result[2], "***", "doctl --access-token value must be redacted");
+        assert_eq!(result[4], "firewall", "non-secret args preserved");
+
+        // certbot --email <email> (PII)
+        let email_args: Vec<String> =
+            vec!["certbot".into(), "--email".into(), "webmaster@example.com".into()];
+        let email_result = redact_args(&email_args, REDACT_FLAGS);
+        assert_eq!(
+            email_result[2], "***",
+            "certbot --email (PII) must be redacted"
+        );
+
+        // restic/borg --password-command <cmd>
+        let pw_cmd_args: Vec<String> =
+            vec!["restic".into(), "--password-command".into(), "cat /etc/restic/key".into()];
+        let pw_cmd_result = redact_args(&pw_cmd_args, REDACT_FLAGS);
+        assert_eq!(
+            pw_cmd_result[2], "***",
+            "--password-command value must be redacted"
+        );
     }
 }

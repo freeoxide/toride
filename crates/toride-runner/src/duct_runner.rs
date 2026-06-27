@@ -89,6 +89,12 @@ impl DuctRunnerBuilder {
 /// assert!(output.success);
 /// assert_eq!(output.stdout_trimmed(), "hello");
 /// ```
+///
+/// `DuctRunner` is a stateless unit struct, so it is [`Clone`]/[`Default`]
+/// (matching its configured sibling [`ConfiguredDuctRunner`] and the test
+/// [`FakeRunner`](crate::FakeRunner)). This lets a single shared runner be
+/// handed to several owning subsystems via `Clone`.
+#[derive(Debug, Clone, Default)]
 pub struct DuctRunner;
 
 impl Runner for DuctRunner {
@@ -191,7 +197,7 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
                 }
                 return Err(Error::CommandTimeout {
                     program: spec.program.clone(),
-                    args: spec.args.clone(),
+                    args: crate::display::redacted_args_vec(spec),
                     timeout,
                 });
             }
@@ -376,7 +382,7 @@ fn run_duct_command_limited(
             let _ = recv_reader_bytes(&stderr_rx, READER_DETACH_WAIT);
             Err(Error::CommandTimeout {
                 program: spec.program.clone(),
-                args: spec.args.clone(),
+                args: crate::display::redacted_args_vec(spec),
                 timeout,
             })
         }
@@ -394,7 +400,7 @@ fn run_duct_command_limited(
             let _ = recv_reader_bytes(&stderr_rx, READER_DETACH_WAIT);
             Err(Error::OutputLimitExceeded {
                 program: spec.program.clone(),
-                args: redacted_args_display(spec),
+                args: crate::display::redacted_args_display(spec),
                 limit: cap,
                 observed: counter.load(Ordering::Acquire),
             })
@@ -419,7 +425,7 @@ fn run_duct_command_limited(
             if killed.load(Ordering::Acquire) || observed > cap {
                 return Err(Error::OutputLimitExceeded {
                     program: spec.program.clone(),
-                    args: redacted_args_display(spec),
+                    args: crate::display::redacted_args_display(spec),
                     limit: cap,
                     observed,
                 });
@@ -544,15 +550,6 @@ fn recv_reader_bytes(
     duration: Duration,
 ) -> Option<Vec<u8>> {
     rx.recv_timeout(duration).ok()
-}
-
-/// Redacted display of a spec's args for error messages, honoring `spec.redact`.
-fn redacted_args_display(spec: &CommandSpec) -> String {
-    if spec.redact {
-        crate::display::display_command(spec, &[])
-    } else {
-        spec.args.join(" ")
-    }
 }
 
 /// Run a pipe-creation closure under a process-wide mutex on Apple targets,
@@ -791,6 +788,32 @@ mod tests {
                 assert_eq!(program, "sleep");
                 assert_eq!(args, vec!["10"]);
                 assert_eq!(reported, timeout);
+            }
+            other => panic!("expected CommandTimeout, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn timeout_redacts_args_when_requested() {
+        // CommandTimeout must store already-redacted args so the derived Debug
+        // (used by tracing ?err / {:?}) never leaks secret flag values.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 10", "--token", "secret-value"])
+            .redact(true)
+            .timeout(Duration::from_millis(50));
+        let result = runner.run(&spec);
+
+        match result.unwrap_err() {
+            Error::CommandTimeout { args, .. } => {
+                assert!(
+                    args.contains(&"***".to_owned()),
+                    "expected redacted args, got {args:?}"
+                );
+                assert!(
+                    !args.contains(&"secret-value".to_owned()),
+                    "secret value leaked into CommandTimeout args: {args:?}"
+                );
             }
             other => panic!("expected CommandTimeout, got {other:?}"),
         }
