@@ -54,6 +54,22 @@ impl AnimatedFloats {
         }
     }
 
+    /// Snap every value exactly to its corresponding `targets` entry in one
+    /// step (no interpolation). Used under reduced motion so a highlight lands
+    /// on the selected item immediately on the single redraw a keypress
+    /// triggers — otherwise the value would be frozen mid-transition.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `targets.len() != self.values.len()`.
+    pub fn snap_to_targets(&mut self, targets: &[f32]) {
+        assert_eq!(targets.len(), self.values.len(), "targets length mismatch");
+        for (slot, &target) in self.values.iter_mut().zip(targets.iter()) {
+            *slot = target;
+        }
+        self.last_tick = Instant::now();
+    }
+
     /// Get the current value at index `i`.
     #[must_use]
     pub fn get(&self, i: usize) -> f32 {
@@ -157,5 +173,18 @@ mod tests {
     fn is_empty_when_len_zero() {
         let af = AnimatedFloats::new(0, 0.0);
         assert!(af.is_empty());
+    }
+
+    #[test]
+    fn snap_to_targets_lands_immediately() {
+        // Reduced-motion path: values must reach their targets in one step
+        // (no lerp), so a highlight on a single redraw is correct, not mid-fade.
+        let mut af = AnimatedFloats::new(3, 0.0);
+        af.snap_to_targets(&[0.0, 1.0, 0.5]);
+        assert_eq!(af.get(0), 0.0);
+        assert_eq!(af.get(1), 1.0);
+        assert_eq!(af.get(2), 0.5);
+        // And it reports settled against those targets.
+        assert!(af.is_settled(&[0.0, 1.0, 0.5], 0.001));
     }
 }

@@ -1129,6 +1129,7 @@ impl DashboardScreen {
                 ("Tab", "focus"),
                 ("\\", "collapse"),
                 ("Esc", "back"),
+                ("⇧^a", "anim"),
             ],
         );
 
@@ -1188,9 +1189,13 @@ impl DashboardScreen {
             self.prev_gauge_hover = self.gauge_hover;
             if self.gauge_hover.is_some() {
                 self.tooltip_fx = EffectManager::default();
-                self.tooltip_fx.add_effect(
-                    fx::fade_from_fg(p.panel, (300, Interpolation::SineOut))
-                );
+                // Under reduced motion skip the 300ms fade — render the tooltip
+                // fully opaque immediately (an empty EffectManager is a no-op in
+                // process_effects below).
+                if !p.reduced_motion {
+                    self.tooltip_fx
+                        .add_effect(fx::fade_from_fg(p.panel, (300, Interpolation::SineOut)));
+                }
             } else {
                 self.tooltip_fx = EffectManager::default();
             }

@@ -45,6 +45,15 @@ impl App {
             if let KeyCode::Char('t') = key.code {
                 return Some(Action::CycleTheme);
             }
+            // Ctrl+Shift+A cycles the animation preference (Auto → On → Off).
+            // Both casings are accepted (terminals deliver either). Legacy
+            // terminals that collapse Ctrl+Shift+A onto Ctrl+A won't deliver
+            // SHIFT, so this stays inert there — fall back to TORIDE_ANIM / config.
+            if key.modifiers.contains(KeyModifiers::SHIFT)
+                && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A'))
+            {
+                return Some(Action::ToggleAnimations);
+            }
             // Don't forward Ctrl+other to screens
             return None;
         }

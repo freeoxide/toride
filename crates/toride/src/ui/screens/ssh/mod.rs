@@ -198,7 +198,13 @@ impl SshContent {
         let frames = WaveRows::FRAMES;
         let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
         let elapsed = self.loading_start.elapsed().as_secs_f32();
-        let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1);
+        // Freeze the spinner frame under reduced motion — the bar still signals
+        // "applying changes…" (and the remaining-op count) without per-frame cycling.
+        let idx = if p.reduced_motion {
+            0
+        } else {
+            (elapsed * 1000.0) as u32 / interval_ms.max(1)
+        };
         let braille = frames[idx as usize % frames.len()];
         let spinner = braille.first().map_or("·", |s| *s);
 

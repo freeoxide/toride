@@ -33,6 +33,18 @@ pub struct Palette {
     pub info: Color,
     /// Selection / hover background
     pub sel_bg: Color,
+    /// Render hint: when `true`, neutralize cosmetic animations (shimmer,
+    /// animated borders, spinner frame-cycling, transitions) to keep redraws
+    /// rare — essential over high-latency SSH links to a VPS where a 30fps
+    /// redraw loop multiplies network round-trips.
+    ///
+    /// This is a *behaviour* flag carried on the palette (rather than a
+    /// separate threaded parameter) because the palette already flows into
+    /// every render path (screens, shell components, modals). [`App`](crate::app::App)
+    /// owns the source of truth and bakes the resolved value into the palette
+    /// each frame via [`view`](crate::app::App::update). It is deliberately
+    /// excluded from theme identity: built-in palettes always carry `false`.
+    pub reduced_motion: bool,
 }
 
 // ── Catppuccin Mocha ─────────────────────────────────────────────────────────
@@ -54,6 +66,7 @@ pub const CATPPUCCIN: Palette = Palette {
     err: Color::Rgb(243, 139, 168),
     info: Color::Rgb(137, 180, 250),
     sel_bg: Color::Rgb(49, 50, 68),
+    reduced_motion: false,
 };
 
 // ── Tokyo Night ───────────────────────────────────────────────────────────────
@@ -75,6 +88,7 @@ pub const TOKYO_NIGHT: Palette = Palette {
     err: Color::Rgb(247, 118, 142),
     info: Color::Rgb(125, 207, 255),
     sel_bg: Color::Rgb(40, 52, 87),
+    reduced_motion: false,
 };
 
 // ── Rosé Pine ─────────────────────────────────────────────────────────────────
@@ -96,6 +110,7 @@ pub const ROSE_PINE: Palette = Palette {
     err: Color::Rgb(235, 111, 146),
     info: Color::Rgb(156, 207, 216),
     sel_bg: Color::Rgb(42, 39, 63),
+    reduced_motion: false,
 };
 
 // ── Charm ─────────────────────────────────────────────────────────────────────
@@ -117,6 +132,7 @@ pub const CHARM: Palette = Palette {
     err: Color::Rgb(255, 95, 135),
     info: Color::Rgb(98, 225, 255),
     sel_bg: Color::Rgb(42, 31, 68),
+    reduced_motion: false,
 };
 
 // ── Nord ──────────────────────────────────────────────────────────────────────
@@ -138,6 +154,7 @@ pub const NORD: Palette = Palette {
     err: Color::Rgb(191, 97, 106),
     info: Color::Rgb(129, 161, 193),
     sel_bg: Color::Rgb(67, 76, 94),
+    reduced_motion: false,
 };
 
 // ── Gruvbox Dark ──────────────────────────────────────────────────────────────
@@ -159,6 +176,7 @@ pub const GRUVBOX: Palette = Palette {
     err: Color::Rgb(251, 73, 52),
     info: Color::Rgb(131, 165, 152),
     sel_bg: Color::Rgb(60, 56, 54),
+    reduced_motion: false,
 };
 
 // ── Theme enum ────────────────────────────────────────────────────────────────
@@ -248,6 +266,18 @@ impl Palette {
     #[must_use]
     pub fn label_style(self) -> Style {
         Style::new().fg(self.text_muted)
+    }
+
+    /// Return a copy of this palette with the [`reduced_motion`](Self::reduced_motion)
+    /// render hint set to `reduced`.
+    ///
+    /// Used by [`App`](crate::app::App) to bake the resolved motion decision
+    /// into the palette each frame, and by tests to render the reduced-motion
+    /// variant of a screen without constructing a full theme.
+    #[must_use]
+    pub fn with_reduced_motion(mut self, reduced: bool) -> Self {
+        self.reduced_motion = reduced;
+        self
     }
 }
 
