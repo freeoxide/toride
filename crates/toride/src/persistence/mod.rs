@@ -24,9 +24,51 @@ const APP_DIR: &str = "toride";
 /// Config file name within [`APP_DIR`].
 const CONFIG_FILE: &str = "config.toml";
 
+/// User preference for UI animations, persisted as an `animations = "<mode>"`
+/// row in `config.toml` (mirroring how [`Theme`] is stored as a label string).
+///
+/// - `Auto` (default): run the layered VM/container [`virt_detect`](crate::virt_detect)
+///   probe at startup and neutralize animations when the host looks virtualized.
+/// - `On` / `Off`: explicit overrides that skip detection entirely.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum AnimPref {
+    /// Auto-detect: disable animations on VMs/containers/WSL, enable elsewhere.
+    #[default]
+    Auto,
+    /// Force animations on, regardless of the host (override).
+    On,
+    /// Force animations off, regardless of the host (override).
+    Off,
+}
+
+impl AnimPref {
+    /// The TOML label written to / read from `config.toml`.
+    #[must_use]
+    pub fn label(self) -> &'static str {
+        match self {
+            AnimPref::Auto => "auto",
+            AnimPref::On => "on",
+            AnimPref::Off => "off",
+        }
+    }
+
+    /// Resolve a stored label back to a preference (case-insensitive). Returns
+    /// `None` for an unrecognized label so the caller can fall back to the
+    /// default rather than silently coercing a corrupt entry.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<AnimPref> {
+        match label.trim().to_ascii_lowercase().as_str() {
+            "auto" => Some(AnimPref::Auto),
+            "on" | "enable" | "enabled" | "true" | "yes" => Some(AnimPref::On),
+            "off" | "disable" | "disabled" | "false" | "no" | "none" => Some(AnimPref::Off),
+            _ => None,
+        }
+    }
+}
+
 /// On-disk config representation.
 ///
-/// Only the `theme` key is currently modeled; any other keys present in the
+/// The `theme` and `animations` keys are modeled; any other keys present in the
 /// file are preserved on write (the file is round-tripped through a TOML table
 /// so unrelated operator settings are never clobbered).
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -35,6 +77,10 @@ struct ConfigFile {
     /// `None` / absent ⇒ fall back to the default theme.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     theme: Option<String>,
+    /// Animation preference, stored as an [`AnimPref::label`]
+    /// (e.g. `"auto"`, `"on"`, `"off"`). `None` / absent ⇒ `Auto`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    animations: Option<String>,
 }
 
 /// Resolve the config file path: `<config_dir>/toride/config.toml`.
@@ -191,6 +237,136 @@ fn save_theme_to(path: &Path, theme: Theme) {
     }
 }
 
+// ── Animations preference ────────────────────────────────────────────────────
+//
+// Same shape as the theme entry points above: best-effort, never propagates
+// errors, round-trips through the TOML table so unrelated keys survive, and
+// degrades to `Auto` on any failure so the app keeps launching normally.
+
+/// Load the persisted animation preference.
+///
+/// Any failure — no config dir, missing file, unreadable file, malformed TOML,
+/// or an unrecognized label — is logged at debug/warn and yields
+/// [`AnimPref::Auto`] (run the virtualization probe). This keeps the app
+/// launching normally on a fresh install or with a corrupt config.
+#[must_use]
+pub fn load_animations() -> AnimPref {
+    let path = match config_path() {
+        Some(p) => p,
+        None => {
+            tracing::debug!("persistence: dirs::config_dir() returned None");
+            return AnimPref::Auto;
+        }
+    };
+    load_animations_from(&path)
+}
+
+/// Persist the animation preference so it survives the next launch.
+///
+/// Writes `animations = "<label>"`, preserving any other keys already in the
+/// file (round-tripped through a TOML table). Failures are swallowed — a
+/// read-only HOME must never crash the running TUI.
+pub fn save_animations(pref: AnimPref) {
+    let path = match config_path() {
+        Some(p) => p,
+        None => {
+            tracing::debug!("persistence: no config dir; skipping animations save");
+            return;
+        }
+    };
+    save_animations_to(&path, pref);
+}
+
+/// Load the animation preference from an explicit path (testable core).
+fn load_animations_from(path: &Path) -> AnimPref {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                tracing::debug!(
+                    "persistence: no config at {} (using auto animations)",
+                    path.display()
+                );
+            } else {
+                tracing::warn!("persistence: could not read {}: {e}", path.display());
+            }
+            return AnimPref::Auto;
+        }
+    };
+
+    let cfg: ConfigFile = match toml::from_str(&contents) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                "persistence: ignoring corrupt config at {}: {e}",
+                path.display()
+            );
+            return AnimPref::Auto;
+        }
+    };
+
+    match cfg.animations.as_deref().and_then(AnimPref::from_label) {
+        Some(pref) => pref,
+        None => {
+            if let Some(label) = cfg.animations.as_deref() {
+                tracing::warn!(
+                    "persistence: unrecognized animations {label:?} in {}; using auto",
+                    path.display()
+                );
+            }
+            AnimPref::Auto
+        }
+    }
+}
+
+/// Persist the animation preference to an explicit path (testable core).
+fn save_animations_to(path: &Path, pref: AnimPref) {
+    let mut table: toml::Table = std::fs::read_to_string(path)
+        .ok()
+        .and_then(|c| toml::from_str(&c).ok())
+        .unwrap_or_default();
+
+    table.insert(
+        "animations".to_string(),
+        toml::Value::String(pref.label().to_string()),
+    );
+
+    let serialized = match toml::to_string(&table) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("persistence: could not serialize animations: {e}");
+            return;
+        }
+    };
+
+    if let Some(parent) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(parent) {
+            tracing::warn!(
+                "persistence: could not create config dir {}: {e}",
+                parent.display()
+            );
+            return;
+        }
+    }
+
+    let tmp = path.with_extension("toml.tmp");
+    if let Err(e) = std::fs::write(&tmp, &serialized) {
+        tracing::warn!(
+            "persistence: could not write temp config {}: {e}",
+            tmp.display()
+        );
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        tracing::warn!(
+            "persistence: could not rename temp config to {}: {e}",
+            path.display()
+        );
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -312,5 +488,99 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let path = write_config(dir.path(), "log_level = \"info\"\n");
         assert_eq!(load_theme_from(&path), Theme::default());
+    }
+
+    // ── AnimPref label round-trip ─────────────────────────────────────────
+
+    #[test]
+    fn anim_pref_label_round_trips() {
+        for &pref in &[AnimPref::Auto, AnimPref::On, AnimPref::Off] {
+            assert_eq!(AnimPref::from_label(pref.label()), Some(pref));
+        }
+    }
+
+    #[test]
+    fn anim_pref_from_label_is_case_insensitive() {
+        assert_eq!(AnimPref::from_label("AUTO"), Some(AnimPref::Auto));
+        assert_eq!(AnimPref::from_label("On"), Some(AnimPref::On));
+        assert_eq!(AnimPref::from_label("OFF"), Some(AnimPref::Off));
+    }
+
+    #[test]
+    fn anim_pref_accepts_friendly_aliases() {
+        // Common spellings an operator might hand-edit into config.toml.
+        assert_eq!(AnimPref::from_label("disable"), Some(AnimPref::Off));
+        assert_eq!(AnimPref::from_label("enabled"), Some(AnimPref::On));
+        assert_eq!(AnimPref::from_label("true"), Some(AnimPref::On));
+        assert_eq!(AnimPref::from_label("false"), Some(AnimPref::Off));
+    }
+
+    #[test]
+    fn anim_pref_from_label_rejects_unknown() {
+        assert!(AnimPref::from_label("glacial").is_none());
+        assert!(AnimPref::from_label("").is_none());
+    }
+
+    #[test]
+    fn anim_pref_default_is_auto() {
+        assert_eq!(AnimPref::default(), AnimPref::Auto);
+    }
+
+    // ── Animations persistence round-trip ─────────────────────────────────
+
+    #[test]
+    fn save_then_load_round_trips_every_anim_pref() {
+        for &pref in &[AnimPref::Auto, AnimPref::On, AnimPref::Off] {
+            let dir = tempfile::tempdir().unwrap();
+            let path = config_under(dir.path());
+            assert!(!path.exists());
+            save_animations_to(&path, pref);
+            assert!(path.exists(), "save created the config file");
+            assert_eq!(load_animations_from(&path), pref, "round-trip {pref:?}");
+        }
+    }
+
+    #[test]
+    fn save_animations_preserves_theme_and_unrelated_keys() {
+        // Animations + theme + unrelated keys must all survive a write.
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), "theme = \"Nord\"\nlog_level = \"debug\"\n");
+        save_animations_to(&path, AnimPref::Off);
+        let after = fs::read_to_string(&path).unwrap();
+        assert!(after.contains("animations = \"off\""), "animations written: {after}");
+        assert!(after.contains("theme = \"Nord\""), "theme preserved: {after}");
+        assert!(after.contains("log_level = \"debug\""), "unrelated key preserved: {after}");
+        assert_eq!(load_animations_from(&path), AnimPref::Off);
+        assert_eq!(load_theme_from(&path), Theme::Nord);
+    }
+
+    #[test]
+    fn load_animations_missing_file_yields_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_under(dir.path());
+        assert!(!path.exists());
+        assert_eq!(load_animations_from(&path), AnimPref::Auto);
+    }
+
+    #[test]
+    fn load_animations_corrupt_toml_yields_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), "this is = = not valid toml [");
+        assert_eq!(load_animations_from(&path), AnimPref::Auto);
+    }
+
+    #[test]
+    fn load_animations_unknown_label_yields_auto() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), "animations = \"glacial\"\n");
+        assert_eq!(load_animations_from(&path), AnimPref::Auto);
+    }
+
+    #[test]
+    fn load_animations_absent_key_yields_auto() {
+        // A config with no animations key → Auto (None → Auto → run probe).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), "theme = \"Charm\"\n");
+        assert_eq!(load_animations_from(&path), AnimPref::Auto);
     }
 }

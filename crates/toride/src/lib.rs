@@ -57,3 +57,4 @@ pub mod ufw_kit_convert;
 pub mod ufw_kit_data;
 pub mod ui;
 pub mod version;
+pub mod virt_detect;

@@ -143,17 +143,24 @@ impl WelcomeScreen {
         // ── Animated border ───────────────────────────────────────────────
         let border_rect = content_border_rect(logo_area, keys_area, area);
         let buf = frame.buffer_mut();
-        self.border.draw(buf, border_rect);
+        if p.reduced_motion {
+            // Static single-colour outline — no per-frame colour flow.
+            self.border.draw_static(buf, border_rect);
+        } else {
+            self.border.draw(buf, border_rect);
+        }
 
         // ── Logo ──────────────────────────────────────────────────────────
         let logo_style = Style::new().fg(p.accent).bold();
         let logo_lines = responsive::truncate_logo(LOGO, center.width, logo_style);
         frame.render_widget(Paragraph::new(logo_lines).centered(), logo_area);
 
-        // Shimmer sweep across logo
-        let elapsed = self.shimmer_start.elapsed().as_secs_f32();
-        let buf = frame.buffer_mut();
-        apply_logo_shimmer(buf, logo_area, p.accent, elapsed);
+        // Shimmer sweep across logo — skipped under reduced motion (solid accent).
+        if !p.reduced_motion {
+            let elapsed = self.shimmer_start.elapsed().as_secs_f32();
+            let buf = frame.buffer_mut();
+            apply_logo_shimmer(buf, logo_area, p.accent, elapsed);
+        }
 
         // ── Version ───────────────────────────────────────────────────────
         let version_line = Line::from(vec![

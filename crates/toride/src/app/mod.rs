@@ -19,6 +19,7 @@ use tokio::sync::mpsc;
 use crate::action::Action;
 use crate::navigation::{Navigator, Screen};
 use crate::persistence;
+use crate::persistence::AnimPref;
 use crate::ssh_data::{SshDataCollector, SshOpError, execute_op};
 use crate::fail2ban_data::Fail2banCollector;
 use crate::ufw_kit_data::FirewallCollector;
@@ -47,6 +48,7 @@ use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::theme::Theme;
 use crate::ui::transition::{TransitionCache, TransitionState};
 use crate::ui::widgets::InteractiveModal;
+use crate::virt_detect;
 
 /// Top-level application orchestrator.
 ///
@@ -63,6 +65,15 @@ pub struct App {
     quit_visible: bool,
     quit_modal: QuitModal,
     active_theme: Theme,
+    /// Persisted animation preference (Auto / On / Off). The user-facing choice;
+    /// round-tripped through `config.toml` by [`persistence::save_animations`].
+    anim_pref: AnimPref,
+    /// The effective per-frame decision: `true` ⇒ neutralize cosmetic
+    /// animations (gates the 33ms tick, makes transitions instant, and is baked
+    /// into the [`Palette`](crate::ui::theme::Palette) each frame so every render
+    /// consumer sees it). Resolved once at startup from `anim_pref` /
+    /// `TORIDE_ANIM` / the VM probe; flipped by [`Action::ToggleAnimations`].
+    reduced_motion: bool,
     should_quit: bool,
     needs_redraw: bool,
     transition: Option<TransitionState>,
@@ -189,6 +200,9 @@ impl App {
         // Restore the persisted theme so the selected choice survives restarts.
         // Falls back to the default on any error (missing / corrupt config).
         let active_theme = persistence::load_theme();
+        // Resolve the animation preference + effective reduced-motion decision
+        // once (precedence: TORIDE_ANIM env > config.toml > auto-detect probe).
+        let (anim_pref, reduced_motion) = Self::resolve_motion();
         let (ssh_error_tx, ssh_error_rx) = mpsc::unbounded_channel();
         let (ssh_op_done_tx, ssh_op_done_rx) = mpsc::unbounded_channel();
         let mut welcome = WelcomeScreen::new();
@@ -211,6 +225,8 @@ impl App {
             quit_visible: false,
             quit_modal: QuitModal::new(),
             active_theme,
+            anim_pref,
+            reduced_motion,
             should_quit: false,
             needs_redraw: false,
             transition: None,
@@ -237,6 +253,58 @@ impl App {
             tools_collector: ToolsCollector::new(),
             ssh_write_cooldown: None,
         }
+    }
+
+    /// Resolve the animation preference and the effective `reduced_motion`
+    /// decision at startup. Precedence: `TORIDE_ANIM` env var > `config.toml`
+    /// `animations` row > auto-detect via [`virt_detect`].
+    ///
+    /// An unrecognized env value falls back to the config/auto path (logged)
+    /// rather than coercing — the operator can always fix the value.
+    fn resolve_motion() -> (AnimPref, bool) {
+        let pref = match std::env::var("TORIDE_ANIM") {
+            Ok(raw) => match AnimPref::from_label(&raw) {
+                Some(p) => p,
+                None => {
+                    tracing::warn!(
+                        "TORIDE_ANIM={raw:?} unrecognized (expected auto/on/off); \
+                         using config + auto-detect"
+                    );
+                    persistence::load_animations()
+                }
+            },
+            Err(_) => persistence::load_animations(),
+        };
+        let reduced = Self::reduced_for(pref);
+        (pref, reduced)
+    }
+
+    /// Effective `reduced_motion` for a given preference. Runs the
+    /// virtualization probe only for `Auto` (an explicit On/Off overrides it).
+    fn reduced_for(pref: AnimPref) -> bool {
+        match pref {
+            AnimPref::On => false,
+            AnimPref::Off => true,
+            AnimPref::Auto => {
+                let probe = virt_detect::detect();
+                if probe.reduce_motion {
+                    tracing::debug!(
+                        "reduced-motion: virtualization detected ({}); animations off",
+                        probe.label.unwrap_or("unknown")
+                    );
+                } else {
+                    tracing::debug!("reduced-motion: no virtualization detected; animations on");
+                }
+                probe.reduce_motion
+            }
+        }
+    }
+
+    /// Recompute `reduced_motion` from the current `anim_pref`. Used after the
+    /// runtime toggle flips the preference (the probe is cached, so re-running
+    /// it for `Auto` is cheap and reflects the same startup environment).
+    fn recompute_reduced_motion(&mut self) {
+        self.reduced_motion = Self::reduced_for(self.anim_pref);
     }
 
     /// Return a mutable reference to the current screen as `dyn AppScreen`.
@@ -297,6 +365,19 @@ impl App {
                 // reverts to the default on next launch instead of crashing.
                 persistence::save_theme(next);
             }
+            Action::ToggleAnimations => {
+                // Cycle Auto → On → Off → Auto and persist, so a user who lands
+                // on a laggy box mid-session can disable animations without
+                // restarting and the choice sticks across launches.
+                self.anim_pref = match self.anim_pref {
+                    AnimPref::Auto => AnimPref::On,
+                    AnimPref::On => AnimPref::Off,
+                    AnimPref::Off => AnimPref::Auto,
+                };
+                self.recompute_reduced_motion();
+                self.invalidate_all_caches();
+                persistence::save_animations(self.anim_pref);
+            }
             // Scroll actions (and any future screen-local actions) are routed
             // to the current screen via `handle_action`.
             _ => self.current_screen().handle_action(action),
@@ -304,11 +385,31 @@ impl App {
     }
 
     fn start_forward(&mut self, to: Screen) {
+        // Under reduced motion the 33ms tick does not fire (the transition
+        // clause is dropped from the gate), so an animated transition would
+        // never advance and would wedge at progress 0. Skip it: commit the
+        // navigation immediately for an instant single-frame screen swap.
+        if self.reduced_motion {
+            self.nav.commit_forward(to);
+            self.screen_by_enum(to).invalidate_cache();
+            self.needs_redraw = true;
+            return;
+        }
         let state = self.nav.start_forward(to, &mut self.transition_cache);
         self.transition = Some(state);
     }
 
     fn go_back(&mut self) {
+        // Same instant-cut rationale as start_forward (see above).
+        if self.reduced_motion {
+            if let Some(ts) = self.nav.start_backward(&mut self.transition_cache) {
+                let target = Screen::from_key(ts.to);
+                self.nav.commit_back(target);
+                self.screen_by_enum(target).invalidate_cache();
+                self.needs_redraw = true;
+            }
+            return;
+        }
         if let Some(state) = self.nav.start_backward(&mut self.transition_cache) {
             self.transition = Some(state);
         }
@@ -874,11 +975,21 @@ impl App {
                     }
                 }
 
-                // Animation tick (~30fps for shimmer, border, spinner, and transitions)
+                // Animation tick (~30fps for shimmer, border, spinner, and
+                // transitions). Under reduced motion (high-latency VPS) the
+                // always-on transition/screen clauses are dropped so the tick
+                // arms ONLY on a real state change — `needs_redraw` stays
+                // outside the `reduced_motion` guard so input events and the 2s
+                // data refresh still drive redraws. This cuts redraws from ~30/s
+                // to a handful, which is the actual fix for SSH latency lag.
                 _ = anim_tick.tick(),
-                    if self.transition.is_some()
-                        || self.needs_redraw
-                        || matches!(self.nav.current(), Screen::Welcome | Screen::Dashboard) => {}
+                    if self.needs_redraw
+                        || (!self.reduced_motion
+                            && (self.transition.is_some()
+                                || matches!(
+                                    self.nav.current(),
+                                    Screen::Welcome | Screen::Dashboard
+                                ))) => {}
             }
 
             if self.should_quit {
@@ -931,6 +1042,7 @@ mod tests {
     use crate::action::Action;
     use crate::app::App;
     use crate::navigation::Screen;
+    use crate::persistence::AnimPref;
     use crate::ui::theme::Theme;
 
     #[test]
@@ -963,9 +1075,64 @@ mod tests {
     #[test]
     fn update_continue_starts_transition_to_status() {
         let mut app = App::new();
+        // Force the animated-transition path: on a VM host, App::new() resolves
+        // reduced_motion=true and Continue would commit instantly instead.
+        app.reduced_motion = false;
         assert!(app.transition.is_none());
         app.update(Action::Continue);
         assert!(app.transition.is_some());
+    }
+
+    #[test]
+    fn update_continue_instant_under_reduced_motion() {
+        // On a laggy VPS the transition is skipped entirely — navigation
+        // commits in a single frame (the 33ms tick would otherwise never
+        // advance it and wedge at progress 0).
+        let mut app = App::new();
+        app.reduced_motion = true;
+        assert!(app.transition.is_none());
+        app.update(Action::Continue);
+        assert!(app.transition.is_none(), "no animated transition under reduced motion");
+        assert_eq!(app.nav.current(), Screen::Dashboard);
+    }
+
+    #[test]
+    fn go_back_instant_under_reduced_motion() {
+        let mut app = App::new();
+        app.nav.commit_forward(Screen::Dashboard); // Welcome -> Dashboard
+        app.reduced_motion = true;
+        app.update(Action::Back);
+        assert!(app.transition.is_none());
+        assert_eq!(app.nav.current(), Screen::Welcome);
+    }
+
+    #[test]
+    fn toggle_animations_cycles_preference_and_recomputes() {
+        let mut app = App::new();
+        app.anim_pref = AnimPref::Auto;
+        app.recompute_reduced_motion();
+        // Auto reflects the host (true on a VM, false on bare metal) — capture it.
+        let auto_reduced = app.reduced_motion;
+
+        app.update(Action::ToggleAnimations);
+        assert_eq!(app.anim_pref, AnimPref::On);
+        assert!(!app.reduced_motion, "On forces full motion");
+
+        app.update(Action::ToggleAnimations);
+        assert_eq!(app.anim_pref, AnimPref::Off);
+        assert!(app.reduced_motion, "Off forces reduced motion");
+
+        app.update(Action::ToggleAnimations);
+        assert_eq!(app.anim_pref, AnimPref::Auto);
+        assert_eq!(app.reduced_motion, auto_reduced, "Auto re-evaluates to host result");
+    }
+
+    #[test]
+    fn reduced_for_explicit_prefs_are_deterministic() {
+        // On/Off override detection entirely; only Auto probes the host.
+        assert!(!App::reduced_for(AnimPref::On));
+        assert!(App::reduced_for(AnimPref::Off));
+        let _ = App::reduced_for(AnimPref::Auto); // host-dependent; must not panic
     }
 
     #[test]

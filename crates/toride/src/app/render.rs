@@ -10,6 +10,7 @@ use tachyonfx::Interpolation;
 use crate::navigation::Screen;
 use crate::ui::responsive::Viewport;
 use crate::ui::screens::help::HelpScreen;
+use crate::ui::theme::Palette;
 
 use super::App;
 
@@ -17,7 +18,15 @@ impl App {
     /// Main render method. Handles transition rendering and delegates to the
     /// active screen's `view()`.
     pub(super) fn view(&mut self, frame: &mut Frame) {
-        let p = self.active_theme.palette();
+        // Bake the resolved `reduced_motion` decision into the palette each
+        // frame. The palette already flows into every render path (screens,
+        // shell components, modals), so carrying the flag here lets each
+        // consumer neutralize its own animation with no extra parameter
+        // threading. `p` is a borrowed local so all existing `*p` sites compile
+        // unchanged.
+        let mut p_owned = *self.active_theme.palette();
+        p_owned.reduced_motion = self.reduced_motion;
+        let p: &Palette = &p_owned;
 
         if let Some(ts) = self.transition.take() {
             let raw_progress = ts.progress();

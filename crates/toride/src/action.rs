@@ -23,6 +23,9 @@ pub enum Action {
     ScrollUp,
     /// Cycle to the next colour theme (Ctrl+T).
     CycleTheme,
+    /// Cycle the animation preference (Auto → On → Off → Auto) and persist it
+    /// (Ctrl+Shift+A). Lets a user on a laggy VPS disable animations mid-session.
+    ToggleAnimations,
 }
 
 #[cfg(test)]
@@ -57,6 +60,7 @@ mod tests {
             Action::ScrollDown,
             Action::ScrollUp,
             Action::CycleTheme,
+            Action::ToggleAnimations,
         ];
 
         for v in &variants {
@@ -98,6 +102,7 @@ mod tests {
             Action::ScrollDown,
             Action::ScrollUp,
             Action::CycleTheme,
+            Action::ToggleAnimations,
         ];
         for v in &variants {
             let debug = format!("{v:?}");

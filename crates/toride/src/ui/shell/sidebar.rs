@@ -81,9 +81,11 @@ impl Sidebar {
             .map(|visible_idx| self.scroll_offset + visible_idx)
     }
 
-    /// Advance the per-item highlight animation toward each item's target.
-    fn tick_anim(&mut self) {
-        let targets: Vec<f32> = (0..self.anim.len())
+    /// Per-item highlight target strengths (1.0 selected, hover-strength
+    /// hovered, 0 otherwise). Shared by [`tick_anim`](Self::tick_anim),
+    /// [`snap_anim`](Self::snap_anim), and [`is_animating`](Self::is_animating).
+    fn highlight_targets(&self) -> Vec<f32> {
+        (0..self.anim.len())
             .map(|i| {
                 if i == self.selected {
                     1.0
@@ -93,24 +95,27 @@ impl Sidebar {
                     0.0
                 }
             })
-            .collect();
+            .collect()
+    }
+
+    /// Advance the per-item highlight animation toward each item's target.
+    fn tick_anim(&mut self) {
+        let targets = self.highlight_targets();
         self.anim.tick(&targets, ANIM_SECS);
+    }
+
+    /// Snap every highlight to its target in one step (reduced motion). The
+    /// selection pill lands on the newly-selected item immediately on the
+    /// single redraw a keypress triggers, instead of being frozen mid-fade.
+    fn snap_anim(&mut self) {
+        let targets = self.highlight_targets();
+        self.anim.snap_to_targets(&targets);
     }
 
     /// Whether any highlight animation is still in progress.
     #[must_use]
     pub fn is_animating(&self) -> bool {
-        let targets: Vec<f32> = (0..self.anim.len())
-            .map(|i| {
-                if i == self.selected {
-                    1.0
-                } else if self.hovered == Some(i) {
-                    HOVER_STRENGTH
-                } else {
-                    0.0
-                }
-            })
-            .collect();
+        let targets = self.highlight_targets();
         !self.anim.is_settled(&targets, VISIBLE_EPS)
     }
 
@@ -267,8 +272,13 @@ impl Sidebar {
         self.last_visible = visible;
         self.clamp_scroll_bounds(visible);
 
-        // Advance the highlight animation and refresh hit-test rects.
-        self.tick_anim();
+        // Advance the highlight animation and refresh hit-test rects. Under
+        // reduced motion snap to targets so the selection lands immediately.
+        if p.reduced_motion {
+            self.snap_anim();
+        } else {
+            self.tick_anim();
+        }
         self.hitboxes.clear();
 
         // Highlight target colours (depend on focus state).

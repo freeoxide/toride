@@ -69,7 +69,10 @@ pub fn render_header(frame: &mut Frame, area: Rect, p: Palette, data: &HeaderDat
     frame.render_widget(Paragraph::new(Line::from(left)), inner);
 
     // Shimmer sweep across the logo (" 砦 toride" = 9 cells in header row 1).
-    apply_logo_shimmer(frame.buffer_mut(), inner, elapsed);
+    // Skipped under reduced motion (solid accent logo).
+    if !p.reduced_motion {
+        apply_logo_shimmer(frame.buffer_mut(), inner, elapsed);
+    }
 
     let clock = Line::from(Span::styled(
         format!("{} ", data.clock),
@@ -200,13 +203,21 @@ fn throughput_gauge_spans(label: &str, value: &str, color: Color, p: Palette) ->
 }
 
 /// Build the spans for a gauge that is still loading (animated braille spinner).
+///
+/// Under reduced motion the spinner frame is frozen to index 0 — the gauge
+/// still signals "loading" (it only appears when data is pending) without
+/// per-frame cycling.
 fn spinner_gauge_spans(label: &str, elapsed: f32, p: Palette) -> Vec<Span<'static>> {
     use rattles::presets::braille::WaveRows;
     use rattles::Rattle;
 
     let frames = WaveRows::FRAMES;
     let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
-    let idx = (elapsed * 1000.0) as u32 / interval_ms.max(1) as u32;
+    let idx = if p.reduced_motion {
+        0
+    } else {
+        (elapsed * 1000.0) as u32 / interval_ms.max(1) as u32
+    };
     let frame = frames[idx as usize % frames.len()];
     // Take the first line of the frame for inline display.
     let text = frame.first().map_or("·", |s| *s);
@@ -254,5 +265,42 @@ mod tests {
     fn renders_dash_when_unknown() {
         let out = render(&header_data(None, None, None, "--:--"));
         assert!(out.contains('—'), "expected em-dash placeholder: {out}");
+    }
+
+    #[test]
+    fn spinner_freezes_to_first_frame_under_reduced_motion() {
+        // The braille spinner's frame index normally advances with elapsed
+        // time; under reduced motion it must pin to frame 0 and be
+        // time-invariant (a static "loading" glyph, not cycling).
+        use rattles::presets::braille::WaveRows;
+        use rattles::Rattle;
+
+        let reduced = CHARM.with_reduced_motion(true);
+        let first_frame_char = WaveRows::FRAMES[0].first().map_or("·", |s| *s);
+
+        // Reduced: time-invariant and pinned to frame 0.
+        let zero = spinner_gauge_spans("disk", 0.0, reduced);
+        let late = spinner_gauge_spans("disk", 999.0, reduced);
+        assert_eq!(
+            zero[2].content.as_ref(),
+            late[2].content.as_ref(),
+            "reduced-motion spinner must be time-invariant"
+        );
+        assert_eq!(
+            late[2].content.as_ref(),
+            first_frame_char,
+            "reduced-motion spinner must pin to frame 0"
+        );
+
+        // Sanity: full motion DOES advance past frame 0 for some elapsed
+        // (proves the freeze branch above is actually doing something).
+        let full_advances = (1..2000).any(|ms| {
+            let s = spinner_gauge_spans("disk", ms as f32, CHARM);
+            s[2].content.as_ref() != first_frame_char
+        });
+        assert!(
+            full_advances,
+            "full-motion spinner should advance past frame 0 for some elapsed"
+        );
     }
 }

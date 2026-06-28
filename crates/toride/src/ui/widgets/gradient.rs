@@ -74,10 +74,18 @@ impl AnimatedBorder {
         }
     }
 
-    /// Draw the animated border into `buf` around `rect`.
+    /// Draw the animated border into `buf` around `rect`, advancing the colour
+    /// cycle by wall-clock `elapsed` since construction.
     pub fn draw(&self, buf: &mut Buffer, rect: Rect) {
         let elapsed = self.anim_start.elapsed().as_secs_f32();
         draw_animated_border(buf, rect, &self.color_cycle, elapsed);
+    }
+
+    /// Draw the border as a static single-colour outline (the base colour at
+    /// cycle index 0). Used under reduced motion so the border stays visible
+    /// without a per-frame colour flow.
+    pub fn draw_static(&self, buf: &mut Buffer, rect: Rect) {
+        draw_animated_border(buf, rect, &self.color_cycle, 0.0);
     }
 }
 
