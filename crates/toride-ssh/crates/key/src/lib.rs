@@ -1,6 +1,6 @@
 mod generate;
-mod inventory;
 pub mod install;
+mod inventory;
 mod repair;
 
 pub use install::InstallOutcome;
@@ -37,12 +37,14 @@ pub(crate) fn get_permissions(_path: &std::path::Path) -> Option<toride_ssh_core
 /// Maximum length is 255 bytes (typical filesystem limit).
 fn validate_key_name(name: &str) -> Result<()> {
     if name.is_empty() {
-        return Err(Error::InvalidKeyName("key name must not be empty".to_owned()));
+        return Err(Error::InvalidKeyName(
+            "key name must not be empty".to_owned(),
+        ));
     }
     if name.len() > MAX_KEY_NAME_LENGTH {
-        return Err(Error::InvalidKeyName(
-            format!("key name must not exceed {MAX_KEY_NAME_LENGTH} bytes"),
-        ));
+        return Err(Error::InvalidKeyName(format!(
+            "key name must not exceed {MAX_KEY_NAME_LENGTH} bytes"
+        )));
     }
     if name.contains('\0') {
         return Err(Error::InvalidKeyName(
@@ -138,7 +140,10 @@ impl<'a> KeyService<'a> {
 
         let public_path = private_path.with_extension("pub");
 
-        let cert_path = self.paths.ssh_dir().join(format!("{}-cert.pub", params.name));
+        let cert_path = self
+            .paths
+            .ssh_dir()
+            .join(format!("{}-cert.pub", params.name));
 
         // Destructure to avoid cloning the entire params struct into spawn_blocking.
         let backup = params.backup;
@@ -159,7 +164,10 @@ impl<'a> KeyService<'a> {
                 std::fs::rename(&private_path, &backup_path)?;
 
                 if remove_public && public_path.exists() {
-                    let stem = public_path.file_stem().unwrap_or_else(|| OsStr::new("")).to_string_lossy();
+                    let stem = public_path
+                        .file_stem()
+                        .unwrap_or_else(|| OsStr::new(""))
+                        .to_string_lossy();
                     let pub_backup_base = public_path.with_file_name(format!("{stem}.pub.bak"));
                     let pub_backup = unique_backup_path(&pub_backup_base);
                     if let Err(e) = std::fs::rename(&public_path, &pub_backup) {
@@ -168,7 +176,10 @@ impl<'a> KeyService<'a> {
                 }
 
                 if remove_certificate && cert_path.exists() {
-                    let name = cert_path.file_name().unwrap_or_else(|| OsStr::new("")).to_string_lossy();
+                    let name = cert_path
+                        .file_name()
+                        .unwrap_or_else(|| OsStr::new(""))
+                        .to_string_lossy();
                     let cert_backup_base = cert_path.with_file_name(format!("{name}.bak"));
                     let cert_backup = unique_backup_path(&cert_backup_base);
                     if let Err(e) = std::fs::rename(&cert_path, &cert_backup) {
@@ -305,11 +316,8 @@ impl<'a> KeyService<'a> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                std::fs::set_permissions(
-                    &private_path,
-                    std::fs::Permissions::from_mode(0o600),
-                )
-                .map_err(Error::Io)?;
+                std::fs::set_permissions(&private_path, std::fs::Permissions::from_mode(0o600))
+                    .map_err(Error::Io)?;
 
                 if public_path.exists()
                     && let Err(e) = std::fs::set_permissions(
@@ -492,7 +500,7 @@ impl<'a> KeyService<'a> {
 
     /// Remove a public key from a remote host's `authorized_keys`.
     ///
-    /// SSHes into the remote and uses `grep -vF` to strip the matching key
+    /// `SSHes` into the remote and uses `grep -vF` to strip the matching key
     /// line from `~/.ssh/authorized_keys`. See
     /// [`install::uninstall_key_from_remote`] for details.
     ///
@@ -514,16 +522,16 @@ impl<'a> KeyService<'a> {
 ///
 /// This is intentionally non-fatal: the key may not be loaded in the agent,
 /// which is a perfectly normal state. Errors are logged but not propagated.
-async fn remove_key_from_agent(private_path: &std::path::Path, runner: &dyn toride_ssh_core::CliRunner) {
+async fn remove_key_from_agent(
+    private_path: &std::path::Path,
+    runner: &dyn toride_ssh_core::CliRunner,
+) {
     let Some(path_str) = private_path.to_str().map(str::to_owned) else {
         tracing::warn!("invalid key path for ssh-add, skipping agent removal");
         return;
     };
 
-    if let Err(e) = runner
-        .run("ssh-add", vec!["-d".to_owned(), path_str])
-        .await
-    {
+    if let Err(e) = runner.run("ssh-add", vec!["-d".to_owned(), path_str]).await {
         tracing::warn!("ssh-add -d failed (key may not be in agent): {e}");
     }
 }
@@ -547,7 +555,10 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
         .ok_or_else(|| {
             Error::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                format!("SSH directory path is not valid UTF-8: {}", paths.ssh_dir().display()),
+                format!(
+                    "SSH directory path is not valid UTF-8: {}",
+                    paths.ssh_dir().display()
+                ),
             ))
         })?
         .to_owned();
@@ -573,7 +584,11 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
 
         let trailing_newline = content.ends_with('\n');
         // Preserve the original line ending style (\r\n vs \n).
-        let line_ending = if content.contains("\r\n") { "\r\n" } else { "\n" };
+        let line_ending = if content.contains("\r\n") {
+            "\r\n"
+        } else {
+            "\n"
+        };
 
         let new_content: String = content
             .lines()
@@ -618,7 +633,9 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
 
         if final_content != content {
             // Atomic write: temp file + rename to prevent corruption on crash.
-            let parent = config_path.parent().unwrap_or_else(|| std::path::Path::new("."));
+            let parent = config_path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
             let tmp_path = parent.join(format!(
                 ".config.tmp.{}.{}",
                 std::process::id(),

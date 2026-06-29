@@ -25,7 +25,8 @@ fn ensure_app_profile_should_create_new_file() {
     let created = ensure_app_profile(&paths, &spec, "ufw-kit", None).unwrap();
     assert!(created);
 
-    let content = std::fs::read_to_string(dir.path().join("etc/ufw/applications.d/ufw-kit-MyApp")).unwrap();
+    let content =
+        std::fs::read_to_string(dir.path().join("etc/ufw/applications.d/ufw-kit-MyApp")).unwrap();
     assert!(content.contains("[MyApp]"));
     assert!(content.contains("ports=80/tcp"));
 }
@@ -89,7 +90,8 @@ fn ensure_app_profile_should_update_if_changed() {
     let updated = ensure_app_profile(&paths, &spec2, "ufw-kit", None).unwrap();
     assert!(updated);
 
-    let content = std::fs::read_to_string(dir.path().join("etc/ufw/applications.d/ufw-kit-MyApp")).unwrap();
+    let content =
+        std::fs::read_to_string(dir.path().join("etc/ufw/applications.d/ufw-kit-MyApp")).unwrap();
     assert!(content.contains("80/tcp|443/tcp"));
 }
 

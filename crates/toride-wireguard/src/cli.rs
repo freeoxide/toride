@@ -170,16 +170,14 @@ impl WireguardCli {
             }
 
             WireguardCommand::Up => {
-                let svc =
-                    crate::service::WireguardService::with_runner(interface, runner.clone());
+                let svc = crate::service::WireguardService::with_runner(interface, runner.clone());
                 svc.up()?;
                 println!("brought up {interface}");
                 Ok(())
             }
 
             WireguardCommand::Down => {
-                let svc =
-                    crate::service::WireguardService::with_runner(interface, runner.clone());
+                let svc = crate::service::WireguardService::with_runner(interface, runner.clone());
                 svc.down()?;
                 println!("brought down {interface}");
                 Ok(())
@@ -194,8 +192,7 @@ impl WireguardCli {
 
             WireguardCommand::Doctor { scope } => {
                 let scope = parse_scope(scope)?;
-                let report =
-                    crate::doctor::Doctor::with_runner(runner.clone()).run(&scope)?;
+                let report = crate::doctor::Doctor::with_runner(runner.clone()).run(&scope)?;
                 println!("{report:?}");
                 Ok(())
             }
@@ -204,7 +201,10 @@ impl WireguardCli {
                 ConfigAction::Show => {
                     let client = crate::client::WireguardClient::with_runner(runner.clone());
                     let conf = client.showconf(interface)?;
-                    print!("{conf}");
+                    // Never print a live private key to stdout -- redact the
+                    // `PrivateKey = ...` value emitted by `wg showconf` so the
+                    // displayed config is safe to share/log.
+                    print!("{}", redact_private_key(&conf));
                     Ok(())
                 }
 
@@ -247,6 +247,39 @@ impl WireguardCli {
 // ---------------------------------------------------------------------------
 // Dispatch helpers
 // ---------------------------------------------------------------------------
+
+/// Redact the `PrivateKey` value in `wg showconf` output before printing.
+///
+/// `wg showconf` emits an `[Interface]` section with a `PrivateKey = <key>`
+/// line. Printing that verbatim would leak the live private key to stdout
+/// (and into any shell scrollback / pipe capture). This replaces the value
+/// with `***REDACTED***`, preserving the line structure so the output still
+/// reads as a valid-looking config.
+fn redact_private_key(conf: &str) -> String {
+    let mut out = String::with_capacity(conf.len());
+    for line in conf.lines() {
+        let trimmed = line.trim_start();
+        if trimmed
+            .strip_prefix("PrivateKey")
+            .is_some_and(|rest| rest.trim_start().starts_with('='))
+        {
+            // Preserve any leading indentation, then rewrite as
+            // `PrivateKey = ***REDACTED***`.
+            let indent = &line[..line.len() - trimmed.len()];
+            out.push_str(indent);
+            out.push_str("PrivateKey = ***REDACTED***");
+        } else {
+            out.push_str(line);
+        }
+        out.push('\n');
+    }
+    // `conf.lines()` drops a trailing newline; if the original lacked one,
+    // undo the extra newline we appended so we don't grow the output.
+    if !conf.ends_with('\n') && out.ends_with('\n') {
+        out.pop();
+    }
+    out
+}
 
 /// Translate the user-supplied `--scope` string into a [`DoctorScope`].
 fn parse_scope(scope: &str) -> Result<crate::doctor::DoctorScope> {
@@ -293,15 +326,14 @@ mod tests {
 
     #[test]
     fn parse_doctor() {
-        let cli = WireguardCli::try_parse_from(["wireguard", "doctor", "--scope", "security"])
-            .unwrap();
+        let cli =
+            WireguardCli::try_parse_from(["wireguard", "doctor", "--scope", "security"]).unwrap();
         assert!(matches!(cli.command, WireguardCommand::Doctor { .. }));
     }
 
     #[test]
     fn parse_config_show() {
-        let cli =
-            WireguardCli::try_parse_from(["wireguard", "config", "show"]).unwrap();
+        let cli = WireguardCli::try_parse_from(["wireguard", "config", "show"]).unwrap();
         assert!(matches!(
             cli.command,
             WireguardCommand::Config {
@@ -346,18 +378,21 @@ mod tests {
     fn dispatch_show_runs_wg_show_all_dump() {
         // One interface row; the parser only surfaces 5-field interface rows.
         let canned = "wg0\tprivkeyAAAA\tpubkeyBBBB\t51820\toff\n";
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout(canned));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(canned));
         // Keep a clone so we can inspect recorded calls after dispatch.
         let recorder = runner.clone();
         let cli = WireguardCli::try_parse_from(["wireguard", "show"]).unwrap();
         cli.run_with_runner(runner).unwrap();
 
         let calls = recorder.calls();
-        let matched = calls.iter().any(|c| {
-            c.program == "wg" && c.args == vec!["show", "all", "dump"]
-        });
-        assert!(matched, "dispatch did not emit `wg show all dump`: {calls:?}");
+        let matched = calls
+            .iter()
+            .any(|c| c.program == "wg" && c.args == vec!["show", "all", "dump"]);
+        assert!(
+            matched,
+            "dispatch did not emit `wg show all dump`: {calls:?}"
+        );
     }
 
     /// `genkey` must dispatch to [`crate::key::generate_keypair_with`], which
@@ -390,27 +425,39 @@ mod tests {
         assert!(saw_pubkey, "dispatch did not run `wg pubkey`: {calls:?}");
     }
 
+    /// `config show` must redact the live `PrivateKey` value before printing.
+    #[cfg(feature = "client")]
+    #[test]
+    fn dispatch_config_show_redacts_private_key() {
+        let conf = "[Interface]\nPrivateKey = s3cr3tbase64==\nListenPort = 51820\n";
+        assert_eq!(
+            redact_private_key(conf),
+            "[Interface]\nPrivateKey = ***REDACTED***\nListenPort = 51820\n"
+        );
+    }
+
     /// `config show` must dispatch to `WireguardClient::showconf`, emitting
     /// `wg showconf <interface>` to the runner.
     #[cfg(feature = "client")]
     #[test]
     fn dispatch_config_show_runs_wg_showconf() {
         let conf = "[Interface]\nListenPort = 51820\n";
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout(conf));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(conf));
         let recorder = runner.clone();
         let cli =
             WireguardCli::try_parse_from(["wireguard", "-i", "wg2", "config", "show"]).unwrap();
         cli.run_with_runner(runner).unwrap();
 
-        let expected =
-            toride_runner::CommandSpec::new("wg").args(["showconf", "wg2"]);
+        let expected = toride_runner::CommandSpec::new("wg").args(["showconf", "wg2"]);
         let calls = recorder.calls();
-        let matched = calls.iter().any(|c| {
-            c.program == expected.program
-                && c.args == expected.args
-        });
-        assert!(matched, "dispatch did not emit `wg showconf wg2`: {calls:?}");
+        let matched = calls
+            .iter()
+            .any(|c| c.program == expected.program && c.args == expected.args);
+        assert!(
+            matched,
+            "dispatch did not emit `wg showconf wg2`: {calls:?}"
+        );
     }
 
     /// `up` must dispatch to `WireguardService::up`, emitting
@@ -418,8 +465,7 @@ mod tests {
     #[cfg(feature = "service")]
     #[test]
     fn dispatch_up_runs_wg_quick_up() {
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout(""));
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(""));
         let recorder = runner.clone();
         let cli = WireguardCli::try_parse_from(["wireguard", "-i", "wg0", "up"]).unwrap();
         // `wg-quick up` may also trigger a systemctl probe; we only assert the
@@ -430,6 +476,9 @@ mod tests {
         let matched = calls
             .iter()
             .any(|c| c.program == "wg-quick" && c.args == vec!["up", "wg0"]);
-        assert!(matched, "dispatch did not emit `wg-quick up wg0`: {calls:?}");
+        assert!(
+            matched,
+            "dispatch did not emit `wg-quick up wg0`: {calls:?}"
+        );
     }
 }

@@ -4,8 +4,8 @@
 //! suitable for passing directly to `duct::cmd` or similar.
 
 use crate::spec::{
-    Action, Address, DeleteOptions, PortSpec, ProtocolFilter, RouteRuleSpec,
-    RuleLogging, RulePosition, RuleSpec,
+    Action, Address, DeleteOptions, PortSpec, ProtocolFilter, RouteRuleSpec, RuleLogging,
+    RulePosition, RuleSpec,
 };
 
 /// Render a `RuleSpec` into UFW argument vector.
@@ -189,11 +189,7 @@ pub fn render_default_policy_args(
     direction: crate::spec::Direction,
     policy: crate::spec::Policy,
 ) -> Vec<String> {
-    vec![
-        "default".into(),
-        direction.to_string(),
-        policy.to_string(),
-    ]
+    vec!["default".into(), direction.to_string(), policy.to_string()]
 }
 
 /// Render logging level args.

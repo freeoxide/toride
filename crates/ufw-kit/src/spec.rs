@@ -115,7 +115,10 @@ impl Protocol {
     /// Returns `true` if this protocol must not be combined with port clauses.
     #[must_use]
     pub fn rejects_ports(&self) -> bool {
-        matches!(self, Self::Ah | Self::Esp | Self::Gre | Self::Ipv6 | Self::Igmp)
+        matches!(
+            self,
+            Self::Ah | Self::Esp | Self::Gre | Self::Ipv6 | Self::Igmp
+        )
     }
 }
 
@@ -512,10 +515,7 @@ impl RuleSpec {
             match proto {
                 Protocol::Ipv6 => {
                     // All addresses must be IPv6
-                    for (label, addr) in [
-                        ("from", &self.from_addr),
-                        ("to", &self.to_addr),
-                    ] {
+                    for (label, addr) in [("from", &self.from_addr), ("to", &self.to_addr)] {
                         if let Address::Ip(ip) = addr {
                             if ip.is_ipv4() {
                                 return Err(Error::Validation(format!(
@@ -534,10 +534,7 @@ impl RuleSpec {
                 }
                 Protocol::Igmp => {
                     // All addresses must be IPv4
-                    for (label, addr) in [
-                        ("from", &self.from_addr),
-                        ("to", &self.to_addr),
-                    ] {
+                    for (label, addr) in [("from", &self.from_addr), ("to", &self.to_addr)] {
                         if let Address::Ip(ip) = addr {
                             if ip.is_ipv6() {
                                 return Err(Error::Validation(format!(
@@ -593,10 +590,7 @@ impl RuleSpec {
         if self.action == Action::Limit {
             if let ProtocolFilter::Specific(proto) = &self.protocol {
                 if *proto != Protocol::Tcp {
-                    tracing::warn!(
-                        "limit action with non-TCP protocol {} is unusual",
-                        proto
-                    );
+                    tracing::warn!("limit action with non-TCP protocol {} is unusual", proto);
                 }
             }
         }
@@ -1135,13 +1129,11 @@ impl Default for EnableOptions {
 }
 
 /// Options for disabling UFW.
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct DisableOptions {
     /// Require explicit confirmation.
     pub require_explicit_confirmation: bool,
 }
-
 
 /// Options for resetting UFW.
 #[derive(Debug, Clone)]
@@ -1273,7 +1265,12 @@ fn check_comment_for_secrets(comment: &str) -> Result<()> {
 
     // Check for key=value patterns where value is non-whitespace
     for pattern in &[
-        "password=", "passwd=", "secret=", "token=", "key=", "api_key=",
+        "password=",
+        "passwd=",
+        "secret=",
+        "token=",
+        "key=",
+        "api_key=",
     ] {
         if let Some(pos) = lower.find(pattern) {
             let after = &comment[pos + pattern.len()..];

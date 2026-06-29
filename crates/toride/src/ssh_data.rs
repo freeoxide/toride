@@ -14,13 +14,13 @@ use ratatui::style::Color;
 use tokio::sync::oneshot;
 
 use crate::ssh_convert;
-use crate::ui::screens::ssh::{
-    AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
-    DiagnosticEntry, ForwardSessionEntry, KnownHostEntry, SshAccessInfo,
-    SshKeyEntry, SystemUserInfo,
-};
 #[cfg(test)]
 use crate::ui::screens::ssh::ForwardEntry;
+use crate::ui::screens::ssh::{
+    AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
+    DiagnosticEntry, ForwardSessionEntry, KnownHostEntry, SshAccessInfo, SshKeyEntry,
+    SystemUserInfo,
+};
 use crate::ui::theme::Palette;
 
 /// Aggregated SSH data for all tabs.
@@ -65,6 +65,10 @@ pub struct SshDataCollector {
 }
 
 /// How long to keep cached diagnostics before re-running the full suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks larger-unit constructors"
+)]
 const DIAGNOSTICS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl SshDataCollector {
@@ -92,12 +96,14 @@ impl SshDataCollector {
         }
         let (tx, rx) = oneshot::channel();
         let use_cache = self.cached_diagnostics.is_some()
-            && self.diagnostics_fresh_at.map_or(false, |t| t.elapsed() < DIAGNOSTICS_TTL);
+            && self
+                .diagnostics_fresh_at
+                .is_some_and(|t| t.elapsed() < DIAGNOSTICS_TTL);
         let cached_diag = self.cached_diagnostics.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
-            let (bundle, used_cache) = collect_real_data(use_cache, cached_diag).await;
-            let _ = tx.send((bundle, used_cache));
+            let (bundle, cache_was_used) = collect_real_data(use_cache, cached_diag).await;
+            let _ = tx.send((bundle, cache_was_used));
         });
     }
 
@@ -113,14 +119,14 @@ impl SshDataCollector {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
+                if let Some((ref bundle, cache_was_used)) = result {
                     self.cached_diagnostics = Some(bundle.diagnostics.clone());
                     // Only advance the freshness clock when the doctor was
                     // actually re-run. On a cache-hit poll the diagnostics are
                     // the SAME data we already cached, so resetting the TTL
                     // here would let the cache live forever as long as the 2s
                     // refresh tick keeps firing inside the TTL window.
-                    if !used_cache {
+                    if !cache_was_used {
                         self.diagnostics_fresh_at = Some(std::time::Instant::now());
                     }
                 }
@@ -151,115 +157,153 @@ impl Default for SshDataCollector {
 pub enum SshOp {
     /// Add a host block to `~/.ssh/config`.
     ConfigAddHost {
+        /// Host alias to define.
         name: String,
+        /// Optional `HostName` value (real address).
         host_name: Option<String>,
+        /// Optional `User` value (login user).
         user: Option<String>,
+        /// Optional `Port` value.
         port: Option<u16>,
     },
     /// Remove a host block from `~/.ssh/config`.
     ConfigRemoveHost {
+        /// Host alias to remove.
         name: String,
     },
     /// Edit (replace) a host block in `~/.ssh/config`.
     ConfigEditHost {
+        /// Existing host alias to replace.
         old_name: String,
+        /// New host alias.
         new_name: String,
+        /// Optional `HostName` value (real address).
         host_name: Option<String>,
+        /// Optional `User` value (login user).
         user: Option<String>,
+        /// Optional `Port` value.
         port: Option<u16>,
     },
     /// Generate a new SSH key pair.
     KeyCreate {
+        /// File name (without directory) for the new key.
         name: String,
+        /// Key type as displayed by the UI (e.g. `"RSA 4096"`).
         key_type: String,
+        /// Comment embedded in the new key.
         comment: String,
+        /// Optional passphrase protecting the private key.
         passphrase: Option<String>,
     },
     /// Delete an SSH key pair.
     KeyDelete {
+        /// File name (without directory) of the key to delete.
         name: String,
     },
     /// Rename an SSH key pair.
     KeyRename {
+        /// Existing key file name.
         old_name: String,
+        /// New key file name.
         new_name: String,
     },
-    /// Add a host to known_hosts via ssh-keyscan.
+    /// Add a host to `known_hosts` via ssh-keyscan.
     KnownHostAdd {
+        /// Host (and optional `:port`) to scan and trust.
         host: String,
     },
-    /// Remove a host from known_hosts.
+    /// Remove a host from `known_hosts`.
     KnownHostRemove {
+        /// Host (and optional `:port`) to remove.
         host: String,
     },
     /// Add a key to the SSH agent.
     AgentAddKey {
+        /// Path to the private key file to load.
         path: String,
     },
     /// Remove a key from the SSH agent.
     AgentRemoveKey {
+        /// Path to the private key file to unload.
         path: String,
     },
-    /// Add a public key to authorized_keys.
+    /// Add a public key to `authorized_keys`.
     AuthorizedKeyAdd {
+        /// OpenSSH-format public key blob.
         public_key: String,
+        /// Optional trailing comment for the entry.
         comment: Option<String>,
+        /// Optional comma-separated options string.
         options: Option<String>,
     },
-    /// Remove a public key from authorized_keys by fingerprint.
+    /// Remove a public key from `authorized_keys` by fingerprint.
     AuthorizedKeyRemove {
+        /// SHA-256 fingerprint of the key(s) to remove.
         fingerprint: String,
     },
     /// Fix permissions on an SSH key pair.
     KeyChmodFix {
+        /// File name (without directory) of the key to fix.
         name: String,
     },
     /// Scan a host for its SSH host keys.
     KnownHostScan {
+        /// Host (and optional `:port`) to scan.
         host: String,
     },
-    /// Hash all plaintext hostnames in known_hosts.
+    /// Hash all plaintext hostnames in `known_hosts`.
     KnownHostHashAll,
     /// Remove all keys from the SSH agent.
     AgentRemoveAll,
     /// Cancel a specific port forward on a control session.
     ForwardCancel {
+        /// Control master socket path.
         control_path: String,
+        /// Local port of the forward to cancel.
         local_port: u16,
     },
     /// Exit (terminate) a control master session.
     ForwardExitSession {
+        /// Control master socket path.
         control_path: String,
     },
     /// Revoke a key by adding it to the KRL.
     CertificateRevoke {
+        /// File name of the key/cert to revoke.
         name: String,
     },
     /// Run all local SSH diagnostic checks.
     DoctorRunChecks,
     /// Install a public key to a remote host.
     KeyInstallToRemote {
+        /// Local key file name (without directory) to install.
         key_name: String,
+        /// Remote `user@host[:port]` target.
         dest: String,
     },
     /// Test whether a passphrase unlocks an SSH key.
     KeyTestPassphrase {
+        /// File name (without directory) of the key to test.
         name: String,
+        /// Passphrase to verify against the key.
         passphrase: String,
     },
     /// Grant a user SSH login access by adding them to `AllowUsers` in
     /// `/etc/ssh/sshd_config` (and removing them from `DenyUsers` if present).
     SshdAllowUser {
+        /// Username to grant access.
         username: String,
     },
     /// Revoke a user's SSH login access by adding them to `DenyUsers` in
     /// `/etc/ssh/sshd_config`.
     SshdDenyUser {
+        /// Username to deny access.
         username: String,
     },
     /// Reset a user to the default access policy by removing them from both
     /// `AllowUsers` and `DenyUsers`.
     SshdResetUserAccess {
+        /// Username to reset to default policy.
         username: String,
     },
 }
@@ -280,8 +324,8 @@ pub enum SshOp {
 ///   ([`toride_ssh::Error::SudoFailed`]) means `sudo -n` could not run; and a
 ///   staging/backup/install [`ConfigWriteFailed`] aborts before the live config
 ///   is replaced. In all of these the UI applied a change disk never saw.
-/// It is `false` for other / transient errors where disk state is uncertain
-/// (the regular cooldown will reconcile it).
+///   It is `false` for other / transient errors where disk state is uncertain
+///   (the regular cooldown will reconcile it).
 ///
 /// [`SshdNotFound`]: toride_ssh::Error::SshdNotFound
 #[derive(Debug, Clone)]
@@ -342,7 +386,7 @@ impl SshOpError {
 /// Because the live config is untouched in every one of these cases, the
 /// optimistic UI update is a lie and must be overwritten with disk truth right
 /// away rather than waiting for the 5s cooldown.
-fn map_sshd_error(verb: &str, who: &str, e: toride_ssh::Error) -> SshOpError {
+fn map_sshd_error(verb: &str, who: &str, e: &toride_ssh::Error) -> SshOpError {
     let message = format!("failed to {verb} '{who}': {e}");
     tracing::error!("sshd: {message}");
     let revert = matches!(
@@ -383,6 +427,7 @@ fn map_sshd_error(verb: &str, who: &str, e: toride_ssh::Error) -> SshOpError {
 ///
 /// Best-effort but correct for the common cases: literal "root", current
 /// effective user, and a `/etc/passwd` (Linux) / `dscl` (macOS) UID lookup.
+#[allow(dead_code)]
 fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
     // Always refuse the literal root account.
     if username == "root" {
@@ -391,12 +436,12 @@ fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
         )));
     }
     // Refuse if this is the account running toride.
-    if let Some(current) = current_username() {
-        if current == username {
-            return Some(SshOpError::reverting(format!(
-                "refusing to {verb} '{username}': would lock out root / your own account"
-            )));
-        }
+    if let Some(current) = current_username()
+        && current == username
+    {
+        return Some(SshOpError::reverting(format!(
+            "refusing to {verb} '{username}': would lock out root / your own account"
+        )));
     }
     // UID-based fallback: current_username() resolves the euid via a reverse
     // lookup (`dscl -search` on macOS, /etc/passwd scan on Linux) which can
@@ -426,7 +471,7 @@ fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
 /// (forward lookup). Each of those is a blocking call that would stall the
 /// async worker thread (F19). The operator's own identity (`current_username`
 /// + `geteuid`) never changes during the process, but resolving the TARGET
-/// user's UID is inherently per-op.
+///   user's UID is inherently per-op.
 ///
 /// This wrapper performs the cheap literal-root check inline, then runs all
 /// blocking lookups (`current_username` + `uid_for_username`) on the blocking
@@ -459,12 +504,12 @@ async fn would_lock_out_async(verb: &str, username: &str) -> Option<SshOpError> 
                 "refusing to {verb} '{username}': would lock out root / your own account"
             )));
         }
-        if let Some(current) = current_username() {
-            if current == username {
-                return Some(SshOpError::reverting(format!(
-                    "refusing to {verb} '{username}': would lock out root / your own account"
-                )));
-            }
+        if let Some(current) = current_username()
+            && current == username
+        {
+            return Some(SshOpError::reverting(format!(
+                "refusing to {verb} '{username}': would lock out root / your own account"
+            )));
         }
         let euid = unsafe { libc::geteuid() };
         let resolved_uid = uid_for_username(&username);
@@ -541,17 +586,17 @@ fn current_username() -> Option<String> {
     uid_to_username(euid)
 }
 
-/// F11: self-lockout guard for per-key authorized_keys removal.
+/// F11: self-lockout guard for per-key `authorized_keys` removal.
 ///
-/// The authorized_keys file the `AuthorizedKeysService` writes is the
+/// The `authorized_keys` file the `AuthorizedKeysService` writes is the
 /// OPERATOR's own (`SshPaths::authorized_keys_path()` → `~/.ssh/authorized_keys`),
 /// so deleting the operator's last authorized key removes their only SSH pubkey
-/// and locks them out. This mirrors the sshd_config `would_lock_out` invariant
+/// and locks them out. This mirrors the `sshd_config` `would_lock_out` invariant
 /// for the per-key removal path, which previously had NO guard (the deny/reset
-/// guards only cover sshd_config access control).
+/// guards only cover `sshd_config` access control).
 ///
 /// Refuses `Some(err)` (reverting) when removing every key whose fingerprint
-/// matches `fingerprint` would drop the operator's authorized_keys count to
+/// matches `fingerprint` would drop the operator's `authorized_keys` count to
 /// zero. Reads the current entry list once via `svc.list()` and counts both the
 /// total entries and the matching ones; if `matches >= total` (the removal
 /// would empty the file), it is refused. A lookup error is treated as refuse-
@@ -668,14 +713,14 @@ fn uid_to_username(uid: u32) -> Option<String> {
 /// ldap, sss, compat, …). Returns `None` if the user is unknown or the call
 /// fails. Empty usernames short-circuit (`getpwnam_r("")` is unspecified).
 fn nss_uid_for_username(username: &str) -> Option<u32> {
-    if username.is_empty() {
-        return None;
-    }
     // SAFETY: getpwnam_r is thread-safe and reads `name` as a NUL-terminated
     // C string. We pass a freshly-allocated CString; the resulting `passwd`
     // pointer is only dereferenced synchronously before return.
     use std::ffi::CString;
     use std::ptr;
+    if username.is_empty() {
+        return None;
+    }
     let c_name = CString::new(username).ok()?;
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result: *mut libc::passwd = ptr::null_mut();
@@ -688,10 +733,10 @@ fn nss_uid_for_username(username: &str) -> Option<u32> {
         let rc = unsafe {
             libc::getpwnam_r(
                 c_name.as_ptr(),
-                &mut pwd,
-                buf.as_mut_ptr() as *mut libc::c_char,
+                &raw mut pwd,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
                 buf.len(),
-                &mut result,
+                &raw mut result,
             )
         };
         if rc == libc::ERANGE {
@@ -725,10 +770,10 @@ fn nss_username_for_uid(uid: u32) -> Option<String> {
         let rc = unsafe {
             libc::getpwuid_r(
                 uid,
-                &mut pwd,
-                buf.as_mut_ptr() as *mut libc::c_char,
+                &raw mut pwd,
+                buf.as_mut_ptr().cast::<libc::c_char>(),
                 buf.len(),
-                &mut result,
+                &raw mut result,
             )
         };
         if rc == libc::ERANGE {
@@ -823,7 +868,7 @@ fn getent_username_for_uid(uid: u32) -> Option<String> {
     let s = String::from_utf8_lossy(&out.stdout);
     s.lines()
         .next()
-        .and_then(|line| line.split(':').next().map(|name| name.to_owned()))
+        .and_then(|line| line.split(':').next().map(std::borrow::ToOwned::to_owned))
 }
 
 /// `/etc/passwd` forward scan. Local files only — the last resort.
@@ -856,6 +901,17 @@ fn passwd_username_for_uid(uid: u32) -> Option<String> {
 /// `Err(SshOpError)` on failure. On error, `revert_optimistic` signals
 /// whether the optimistic UI update is known-stale and should be reverted
 /// immediately. Both outcomes are also logged via tracing.
+///
+/// # Errors
+///
+/// Returns `Err(SshOpError)` when the backend reports a write/validation
+/// failure or when `SshManager::new()` cannot initialize. Each arm maps its
+/// backend error to a [`SshOpError`] whose `revert_optimistic` flag tells the
+/// caller whether to refresh the optimistic UI view immediately.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one match arm per SshOp variant; naturally large"
+)]
 pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
     let mgr = match toride_ssh::SshManager::new() {
         Ok(m) => m,
@@ -867,7 +923,12 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
     };
 
     match op {
-        SshOp::ConfigAddHost { name, host_name, user, port } => {
+        SshOp::ConfigAddHost {
+            name,
+            host_name,
+            user,
+            port,
+        } => {
             let svc = mgr.config();
             let mut directives = Vec::new();
             if let Some(hn) = &host_name {
@@ -879,9 +940,10 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             if let Some(p) = port {
                 directives.push(("Port".to_string(), p.to_string()));
             }
-            match svc.edit(|ast| {
-                toride_ssh::config::ConfigService::add_host(ast, &name, directives)
-            }).await {
+            match svc
+                .edit(|ast| toride_ssh::config::ConfigService::add_host(ast, &name, directives))
+                .await
+            {
                 Ok(()) => {
                     tracing::info!("config: added host '{name}'");
                     Ok(format!("added host '{name}'"))
@@ -895,9 +957,10 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
         }
         SshOp::ConfigRemoveHost { name } => {
             let svc = mgr.config();
-            match svc.edit(|ast| {
-                toride_ssh::config::ConfigService::remove_host(ast, &name)
-            }).await {
+            match svc
+                .edit(|ast| toride_ssh::config::ConfigService::remove_host(ast, &name))
+                .await
+            {
                 Ok(()) => {
                     tracing::info!("config: removed host '{name}'");
                     Ok(format!("removed host '{name}'"))
@@ -909,23 +972,32 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 }
             }
         }
-        SshOp::ConfigEditHost { old_name, new_name, host_name, user, port } => {
+        SshOp::ConfigEditHost {
+            old_name,
+            new_name,
+            host_name,
+            user,
+            port,
+        } => {
             let svc = mgr.config();
-            match svc.edit(|ast| {
-                // Remove old block, add new one
-                let _ = toride_ssh::config::ConfigService::remove_host(ast, &old_name);
-                let mut directives = Vec::new();
-                if let Some(hn) = &host_name {
-                    directives.push(("HostName".to_string(), hn.clone()));
-                }
-                if let Some(u) = &user {
-                    directives.push(("User".to_string(), u.clone()));
-                }
-                if let Some(p) = port {
-                    directives.push(("Port".to_string(), p.to_string()));
-                }
-                toride_ssh::config::ConfigService::add_host(ast, &new_name, directives)
-            }).await {
+            match svc
+                .edit(|ast| {
+                    // Remove old block, add new one
+                    let _ = toride_ssh::config::ConfigService::remove_host(ast, &old_name);
+                    let mut directives = Vec::new();
+                    if let Some(hn) = &host_name {
+                        directives.push(("HostName".to_string(), hn.clone()));
+                    }
+                    if let Some(u) = &user {
+                        directives.push(("User".to_string(), u.clone()));
+                    }
+                    if let Some(p) = port {
+                        directives.push(("Port".to_string(), p.to_string()));
+                    }
+                    toride_ssh::config::ConfigService::add_host(ast, &new_name, directives)
+                })
+                .await
+            {
                 Ok(()) => {
                     tracing::info!("config: edited host '{old_name}' → '{new_name}'");
                     Ok(format!("edited host '{old_name}' → '{new_name}'"))
@@ -937,7 +1009,12 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 }
             }
         }
-        SshOp::KeyCreate { name, key_type, comment, passphrase } => {
+        SshOp::KeyCreate {
+            name,
+            key_type,
+            comment,
+            passphrase,
+        } => {
             let svc = mgr.keys();
             let mut params = match key_type.as_str() {
                 "RSA 4096" => toride_ssh::KeyCreateParams::rsa_4096(name.clone()),
@@ -951,10 +1028,10 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             if !comment.is_empty() {
                 params.comment = Some(comment.clone());
             }
-            if let Some(ref pw) = passphrase {
-                if !pw.is_empty() {
-                    params.passphrase = Some(pw.clone());
-                }
+            if let Some(ref pw) = passphrase
+                && !pw.is_empty()
+            {
+                params.passphrase = Some(pw.clone());
             }
             match svc.create(params).await {
                 Ok(_) => {
@@ -1062,13 +1139,16 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 }
             }
         }
-        SshOp::AuthorizedKeyAdd { public_key, comment, options } => {
+        SshOp::AuthorizedKeyAdd {
+            public_key,
+            comment,
+            options,
+        } => {
             let svc = mgr.authorized_keys();
-            match svc.add(
-                &public_key,
-                comment.as_deref(),
-                options.as_deref(),
-            ).await {
+            match svc
+                .add(&public_key, comment.as_deref(), options.as_deref())
+                .await
+            {
                 Ok(()) => {
                     tracing::info!("authorized_keys: added key");
                     Ok("added authorized key".to_string())
@@ -1164,7 +1244,10 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 }
             }
         }
-        SshOp::ForwardCancel { control_path, local_port } => {
+        SshOp::ForwardCancel {
+            control_path,
+            local_port,
+        } => {
             let svc = mgr.forward();
             let path = std::path::Path::new(&control_path);
             match svc.cancel(path, local_port).await {
@@ -1196,9 +1279,20 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
         }
         SshOp::CertificateRevoke { name } => {
             let svc = mgr.certificate();
-            let krl_str = toride_ssh::SshPaths::new()
-                .map(|p| p.ssh_dir().join("revoked_keys").to_string_lossy().into_owned())
-                .unwrap_or_else(|_| format!("{}/.ssh/revoked_keys", std::env::var("HOME").unwrap_or_default()));
+            let krl_str = toride_ssh::SshPaths::new().map_or_else(
+                |_| {
+                    format!(
+                        "{}/.ssh/revoked_keys",
+                        std::env::var("HOME").unwrap_or_default()
+                    )
+                },
+                |p| {
+                    p.ssh_dir()
+                        .join("revoked_keys")
+                        .to_string_lossy()
+                        .into_owned()
+                },
+            );
             let krl_path = std::path::Path::new(&krl_str);
             match svc.revoke_key(krl_path, &name).await {
                 Ok(()) => {
@@ -1216,7 +1310,10 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             let svc = mgr.doctor();
             match svc.run_local_checks().await {
                 Ok(diagnostics) => {
-                    tracing::info!("doctor: ran local checks ({} finding(s))", diagnostics.len());
+                    tracing::info!(
+                        "doctor: ran local checks ({} finding(s))",
+                        diagnostics.len()
+                    );
                     Ok(serde_json::to_string(&diagnostics).unwrap_or_default())
                 }
                 Err(e) => {
@@ -1264,7 +1361,8 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 std::process::Command::new("ssh-keygen")
                     .args(["-y", "-f", &key_path_str, "-P", &passphrase])
                     .output()
-            }).await;
+            })
+            .await;
             match output {
                 Ok(Ok(o)) if o.status.success() => {
                     tracing::info!("keys: passphrase correct for '{name}'");
@@ -1295,13 +1393,14 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 toride_ssh::config::sshd::add_user_to_allow(ast, &username)?;
                 toride_ssh::config::sshd::remove_user_from_deny(ast, &username)?;
                 Ok(())
-            }).await;
+            })
+            .await;
             match result {
                 Ok(()) => {
                     tracing::info!("sshd: granted login access to '{username}'");
                     Ok(format!("granted login access to '{username}'"))
                 }
-                Err(e) => Err(map_sshd_error("allow", &username, e)),
+                Err(e) => Err(map_sshd_error("allow", &username, &e)),
             }
         }
         SshOp::SshdDenyUser { username } => {
@@ -1326,13 +1425,14 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 // user is absent.
                 toride_ssh::config::sshd::remove_user_from_allow(ast, &username)?;
                 Ok(())
-            }).await;
+            })
+            .await;
             match result {
                 Ok(()) => {
                     tracing::info!("sshd: revoked login access for '{username}'");
                     Ok(format!("revoked login access for '{username}'"))
                 }
-                Err(e) => Err(map_sshd_error("deny", &username, e)),
+                Err(e) => Err(map_sshd_error("deny", &username, &e)),
             }
         }
         SshOp::SshdResetUserAccess { username } => {
@@ -1350,13 +1450,14 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 toride_ssh::config::sshd::remove_user_from_allow(ast, &username)?;
                 toride_ssh::config::sshd::remove_user_from_deny(ast, &username)?;
                 Ok(())
-            }).await;
+            })
+            .await;
             match result {
                 Ok(()) => {
                     tracing::info!("sshd: reset access for '{username}'");
                     Ok(format!("reset access for '{username}'"))
                 }
-                Err(e) => Err(map_sshd_error("reset", &username, e)),
+                Err(e) => Err(map_sshd_error("reset", &username, &e)),
             }
         }
     }
@@ -1387,17 +1488,22 @@ async fn collect_real_data(
     };
 
     // All subsystems in parallel — diagnostics may be cached
-    let (keys_r, known_hosts_r, auth_keys_r, config_r, diag_r, agent_r, forward_r, cert_r) =
-        tokio::join!(
-            collect_keys(&mgr),
-            collect_known_hosts(&mgr),
-            collect_authorized_keys(&mgr),
-            collect_config_hosts(&mgr),
-            async { if use_cache { None } else { Some(collect_diagnostics(&mgr).await) } },
-            collect_agent(&mgr),
-            collect_forwarding(&mgr),
-            collect_certificates(&mgr),
-        );
+    let (keys_r, known_hosts_r, auth_keys_r, config_r, diag_r, agent_r, forward_r, cert_r) = tokio::join!(
+        collect_keys(&mgr),
+        collect_known_hosts(&mgr),
+        collect_authorized_keys(&mgr),
+        collect_config_hosts(&mgr),
+        async {
+            if use_cache {
+                None
+            } else {
+                Some(collect_diagnostics(&mgr).await)
+            }
+        },
+        collect_agent(&mgr),
+        collect_forwarding(&mgr),
+        collect_certificates(&mgr),
+    );
 
     let keys = keys_r.unwrap_or_default();
     let known_hosts = known_hosts_r.unwrap_or_default();
@@ -1406,10 +1512,10 @@ async fn collect_real_data(
     let diagnostics = if use_cache {
         cached_diag.unwrap_or_default()
     } else {
-        diag_r.and_then(|r| r.ok()).unwrap_or_default()
+        diag_r.and_then(std::result::Result::ok).unwrap_or_default()
     };
 
-    let (agent_status, agent_keys) = agent_r.unwrap_or_else(|_| {
+    let (agent_status, agent_keys) = agent_r.unwrap_or_else(|()| {
         (
             AgentStatus {
                 reachable: false,
@@ -1430,7 +1536,9 @@ async fn collect_real_data(
         let diagnostics = diagnostics.clone();
         tokio::task::spawn_blocking(move || {
             build_security_data(&known_hosts, &authorized_keys, &diagnostics)
-        }).await.unwrap_or_else(|e| {
+        })
+        .await
+        .unwrap_or_else(|e| {
             tracing::warn!("security data collection panicked: {e}");
             SshSecurityData {
                 sshd_config: HashMap::new(),
@@ -1473,7 +1581,7 @@ async fn collect_real_data(
     )
 }
 
-/// Empty bundle used when SshManager fails to initialize.
+/// Empty bundle used when `SshManager` fails to initialize.
 fn empty_bundle() -> SshDataBundle {
     SshDataBundle {
         keys: Vec::new(),
@@ -1516,12 +1624,10 @@ fn empty_bundle() -> SshDataBundle {
 
 // ── Individual Collectors ────────────────────────────────────────────────────
 
-async fn collect_known_hosts(
-    mgr: &toride_ssh::SshManager,
-) -> Result<Vec<KnownHostEntry>, ()> {
+async fn collect_known_hosts(mgr: &toride_ssh::SshManager) -> Result<Vec<KnownHostEntry>, ()> {
     let svc = mgr.known_hosts();
     match svc.list().await {
-        Ok(entries) => Ok(ssh_convert::convert_known_hosts(entries)),
+        Ok(entries) => Ok(ssh_convert::convert_known_hosts(&entries)),
         Err(e) => {
             tracing::warn!("known_hosts: {e}");
             Err(())
@@ -1542,9 +1648,7 @@ async fn collect_authorized_keys(
     }
 }
 
-async fn collect_keys(
-    mgr: &toride_ssh::SshManager,
-) -> Result<Vec<SshKeyEntry>, ()> {
+async fn collect_keys(mgr: &toride_ssh::SshManager) -> Result<Vec<SshKeyEntry>, ()> {
     let svc = mgr.keys();
     match svc.list().await {
         Ok(keys) => Ok(ssh_convert::convert_keys(keys)),
@@ -1555,9 +1659,7 @@ async fn collect_keys(
     }
 }
 
-async fn collect_config_hosts(
-    mgr: &toride_ssh::SshManager,
-) -> Result<Vec<ConfigHostEntry>, ()> {
+async fn collect_config_hosts(mgr: &toride_ssh::SshManager) -> Result<Vec<ConfigHostEntry>, ()> {
     let svc = mgr.config();
     match svc.load().await {
         Ok(ast) => Ok(ssh_convert::convert_config_ast(&ast)),
@@ -1568,9 +1670,7 @@ async fn collect_config_hosts(
     }
 }
 
-async fn collect_diagnostics(
-    mgr: &toride_ssh::SshManager,
-) -> Result<Vec<DiagnosticEntry>, ()> {
+async fn collect_diagnostics(mgr: &toride_ssh::SshManager) -> Result<Vec<DiagnosticEntry>, ()> {
     let svc = mgr.doctor();
     match svc.run_local_checks().await {
         Ok(diagnostics) => Ok(ssh_convert::convert_diagnostics(diagnostics)),
@@ -1622,9 +1722,7 @@ async fn collect_agent(
     }
 }
 
-async fn collect_forwarding(
-    mgr: &toride_ssh::SshManager,
-) -> Result<Vec<ForwardSessionEntry>, ()> {
+async fn collect_forwarding(mgr: &toride_ssh::SshManager) -> Result<Vec<ForwardSessionEntry>, ()> {
     let svc = mgr.forward();
     match svc.list().await {
         Ok(sessions) => Ok(ssh_convert::convert_forwarding(sessions)),
@@ -1635,9 +1733,7 @@ async fn collect_forwarding(
     }
 }
 
-async fn collect_certificates(
-    mgr: &toride_ssh::SshManager,
-) -> Result<Vec<CertificateEntry>, ()> {
+async fn collect_certificates(mgr: &toride_ssh::SshManager) -> Result<Vec<CertificateEntry>, ()> {
     let ssh_dir = match toride_ssh::SshPaths::new() {
         Ok(p) => p.ssh_dir().to_path_buf(),
         Err(_) => return Ok(Vec::new()),
@@ -1645,7 +1741,7 @@ async fn collect_certificates(
 
     let cert_files: Vec<std::path::PathBuf> = match std::fs::read_dir(&ssh_dir) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .map(|e| e.path())
             .filter(|p| {
                 p.file_name()
@@ -1689,8 +1785,8 @@ fn build_security_data(
     diagnostics: &[DiagnosticEntry],
 ) -> SshSecurityData {
     // Read sshd_config once — shared by both parse_sshd_config and parse_sshd_access_info.
-    let sshd_contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config"))
-        .unwrap_or_default();
+    let sshd_contents =
+        std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
 
     let sshd_config = parse_sshd_config_from(&sshd_contents);
 
@@ -1698,11 +1794,7 @@ fn build_security_data(
 
     let authorized_key_labels: Vec<String> = authorized_keys
         .iter()
-        .map(|k| {
-            k.comment
-                .clone()
-                .unwrap_or_else(|| "(no comment)".into())
-        })
+        .map(|k| k.comment.clone().unwrap_or_else(|| "(no comment)".into()))
         .collect();
 
     let security_diagnostics: Vec<DiagnosticEntry> = diagnostics
@@ -1726,13 +1818,18 @@ fn build_security_data(
 
 // ── Security Overview Types ──────────────────────────────────────────────────
 
-/// Security grade computed from sshd_config and diagnostic results.
+/// Security grade computed from `sshd_config` and diagnostic results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecurityGrade {
+    /// Excellent: minimal insecure settings.
     A,
+    /// Good.
     B,
+    /// Fair.
     C,
+    /// Poor.
     D,
+    /// Failing: critically insecure.
     F,
 }
 
@@ -1755,8 +1852,7 @@ impl SecurityGrade {
         match self {
             SecurityGrade::A => p.ok,
             SecurityGrade::B => p.accent3,
-            SecurityGrade::C => p.warn,
-            SecurityGrade::D => p.warn,
+            SecurityGrade::C | SecurityGrade::D => p.warn,
             SecurityGrade::F => p.err,
         }
     }
@@ -1778,30 +1874,30 @@ pub struct SecurityCheck {
 /// Aggregated security data for the overview dashboard.
 #[derive(Clone, Debug)]
 pub struct SshSecurityData {
-    /// Parsed sshd_config key-value pairs.
+    /// Parsed `sshd_config` key-value pairs.
     pub sshd_config: HashMap<String, String>,
     /// Number of authorized keys.
     pub authorized_key_count: usize,
     /// Authorized key comments for listing.
     pub authorized_key_labels: Vec<String>,
-    /// Number of entries in known_hosts.
+    /// Number of entries in `known_hosts`.
     pub known_hosts_count: usize,
-    /// How many known_hosts entries have hashed hostnames.
+    /// How many `known_hosts` entries have hashed hostnames.
     pub known_hosts_hashed_count: usize,
     /// Security-relevant diagnostics (warnings/errors only).
     pub security_diagnostics: Vec<DiagnosticEntry>,
-    /// Access control information parsed from sshd_config.
+    /// Access control information parsed from `sshd_config`.
     pub access_info: SshAccessInfo,
     /// System users with valid login shells and SSH key info.
     pub system_users: Vec<SystemUserInfo>,
     /// Whether the app is running as root (drives edit capability for
-    /// sshd_config and other users' authorized_keys).
+    /// `sshd_config` and other users' `authorized_keys`).
     pub is_root: bool,
 }
 
-/// Parse an sshd_config boolean value case-insensitively.
+/// Parse an `sshd_config` boolean value case-insensitively.
 ///
-/// sshd_config values are matched case-insensitively by OpenSSH, so
+/// `sshd_config` values are matched case-insensitively by OpenSSH, so
 /// `PermitRootLogin Yes`, `YES`, and `yes` are all equivalent. The parser
 /// ([`parse_sshd_config_from`]) preserves the original case of `d.value`, so
 /// any exact-case comparison (`== "yes"`) silently mis-grades a capitalized
@@ -1817,7 +1913,7 @@ fn sshd_bool(v: &str) -> Option<bool> {
     }
 }
 
-/// Test whether a stored sshd_config value is the boolean `want`.
+/// Test whether a stored `sshd_config` value is the boolean `want`.
 ///
 /// This replaces the old exact-case comparisons in [`SshSecurityData::grade`]
 /// and [`SshSecurityData::checks`]. Callers must supply the **default**
@@ -1865,11 +1961,13 @@ impl SshSecurityData {
             score -= 15;
         }
         // Minor deductions for warnings
-        let warn_count = self
-            .security_diagnostics
-            .iter()
-            .filter(|d| d.severity == "warning" || d.severity == "error")
-            .count() as u32;
+        let warn_count = u32::try_from(
+            self.security_diagnostics
+                .iter()
+                .filter(|d| d.severity == "warning" || d.severity == "error")
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
         score -= warn_count.min(5) * 5;
 
         match score {
@@ -1978,12 +2076,11 @@ impl SshSecurityData {
 /// Returns an empty map if the file doesn't exist or isn't readable.
 #[allow(dead_code)]
 fn parse_sshd_config() -> HashMap<String, String> {
-    let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config"))
-        .unwrap_or_default();
+    let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
     parse_sshd_config_from(&contents)
 }
 
-/// Parse sshd_config content (already read from disk) into key-value pairs.
+/// Parse `sshd_config` content (already read from disk) into key-value pairs.
 ///
 /// This builds the map from the lossless AST
 /// ([`toride_ssh::config::ast::parse`]), iterating ONLY top-level
@@ -2015,9 +2112,8 @@ fn parse_sshd_config_from(contents: &str) -> HashMap<String, String> {
 /// path can be exercised against a tempfile tree in tests without touching
 /// `/etc/ssh`.
 fn parse_sshd_config_from_dir(contents: &str, base_dir: &Path) -> HashMap<String, String> {
-    use toride_ssh::config::ast::{parse, ConfigNode};
+    use toride_ssh::config::ast::{ConfigNode, parse};
 
-    let mut config: HashMap<String, String> = HashMap::new();
     // Recursively walk a parsed file's top-level directives, expanding
     // Includes inline and applying first-occurrence-wins. `seen` guards
     // against include cycles (a file including itself, directly or
@@ -2077,6 +2173,7 @@ fn parse_sshd_config_from_dir(contents: &str, base_dir: &Path) -> HashMap<String
     }
 
     let ast = parse(contents);
+    let mut config: HashMap<String, String> = HashMap::new();
     let mut seen = std::collections::HashSet::new();
     walk(&ast.nodes, base_dir, &mut config, &mut seen);
     config
@@ -2087,7 +2184,7 @@ fn parse_sshd_config_from_dir(contents: &str, base_dir: &Path) -> HashMap<String
 /// OpenSSH: if the path does not start with `/` or `~/`, it is taken relative
 /// to the directory of the main config file. Here `base_dir` is that directory
 /// (conventionally `/etc/ssh`). `~`-expansion is intentionally not performed
-/// — sshd_config drop-ins under `/etc/ssh/sshd_config.d/` are always absolute
+/// — `sshd_config` drop-ins under `/etc/ssh/sshd_config.d/` are always absolute
 /// or relative to the config dir, and tilde expansion would require the
 /// operator's home which a system service does not have.
 fn resolve_include_path(pattern: &str, base_dir: &Path) -> std::path::PathBuf {
@@ -2185,8 +2282,10 @@ fn name_glob_match(name: &str, pattern: &str) -> bool {
     glob_match_inner(name.as_bytes(), pattern.as_bytes())
 }
 
+#[allow(clippy::similar_names, reason = "glob-matcher backtracking indices")]
 fn glob_match_inner(text: &[u8], pattern: &[u8]) -> bool {
     let (mut ti, mut pi) = (0usize, 0usize);
+    #[allow(clippy::similar_names, reason = "glob-matcher backtracking indices")]
     let (mut star_ti, mut star_pi) = (usize::MAX, usize::MAX);
     while ti < text.len() {
         if pi < pattern.len() && (pattern[pi] == b'?' || pattern[pi] == text[ti]) {
@@ -2210,10 +2309,10 @@ fn glob_match_inner(text: &[u8], pattern: &[u8]) -> bool {
     pi == pattern.len()
 }
 
-/// Parse access control information from /etc/ssh/sshd_config.
+/// Parse access control information from `/etc/ssh/sshd_config`.
 ///
-/// Extracts AllowUsers, DenyUsers, AllowGroups, DenyGroups,
-/// AuthenticationMethods, and auth booleans from **global** scope only —
+/// Extracts `AllowUsers`, `DenyUsers`, `AllowGroups`, `DenyGroups`,
+/// `AuthenticationMethods`, and auth booleans from **global** scope only —
 /// directives nested inside a `Match` block are read through the lossless AST
 /// and excluded from the global values, so the security dashboard never
 /// reflects conditional Match-scoped overrides.
@@ -2224,12 +2323,11 @@ fn glob_match_inner(text: &[u8], pattern: &[u8]) -> bool {
 /// database on macOS (Directory Service is). Results on macOS may be incomplete.
 #[allow(dead_code)]
 fn parse_sshd_access_info() -> SshAccessInfo {
-    let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config"))
-        .unwrap_or_default();
+    let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
     parse_sshd_access_info_from(&contents)
 }
 
-/// Parse access control information from pre-read sshd_config content.
+/// Parse access control information from pre-read `sshd_config` content.
 ///
 /// This uses the lossless AST ([`toride_ssh::config::sshd`] getters) so that:
 /// - `AllowUsers`/`DenyUsers`/`AllowGroups`/`DenyGroups` are read from
@@ -2245,7 +2343,7 @@ fn parse_sshd_access_info() -> SshAccessInfo {
 /// `Match`/`Host` block — so Match-scoped overrides never reach the global
 /// values the security dashboard reports.
 fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
-    use toride_ssh::config::ast::{parse, ConfigNode};
+    use toride_ssh::config::ast::{ConfigNode, parse};
     use toride_ssh::config::sshd::{
         get_allow_groups, get_allow_users, get_deny_groups, get_deny_users,
     };
@@ -2409,9 +2507,8 @@ fn parse_system_users_macos() -> Vec<SystemUserInfo> {
 
 /// Linux: read /etc/passwd for real users with SSH configured.
 fn parse_system_users_linux() -> Vec<SystemUserInfo> {
-    let contents = match std::fs::read_to_string("/etc/passwd") {
-        Ok(c) => c,
-        Err(_) => return vec![],
+    let Ok(contents) = std::fs::read_to_string("/etc/passwd") else {
+        return vec![];
     };
 
     let invalid_shells = [
@@ -2446,7 +2543,7 @@ fn parse_system_users_linux() -> Vec<SystemUserInfo> {
         }
 
         // Skip users with invalid / non-interactive shells.
-        if invalid_shells.iter().any(|s| shell == *s) || shell.is_empty() {
+        if invalid_shells.contains(&shell) || shell.is_empty() {
             continue;
         }
 
@@ -2479,16 +2576,16 @@ fn parse_system_users_linux() -> Vec<SystemUserInfo> {
     users
 }
 
-/// Count SSH key files and authorized_keys entries in a .ssh directory.
+/// Count SSH key files and `authorized_keys` entries in a .ssh directory.
 ///
 /// Returns `(ssh_key_count, authorized_key_count)`.
-/// SSH keys are private key files (id_ed25519, id_rsa, etc.) — files
+/// SSH keys are private key files (`id_ed25519`, `id_rsa`, etc.) — files
 /// starting with "id_" that don't end in .pub, .old, or .bak.
 fn count_ssh_keys(ssh_dir: &std::path::Path) -> (usize, usize) {
     // Count private key files (id_* without .pub/.old/.bak suffix).
     let ssh_key_count = match std::fs::read_dir(ssh_dir) {
         Ok(entries) => entries
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| {
                 let name = e.file_name();
                 let name = name.to_string_lossy();
@@ -2516,7 +2613,7 @@ fn count_ssh_keys(ssh_dir: &std::path::Path) -> (usize, usize) {
     (ssh_key_count, authorized_key_count)
 }
 
-/// Read up to `cap` authorized_keys entries from a .ssh directory as previews
+/// Read up to `cap` `authorized_keys` entries from a .ssh directory as previews
 /// for the user detail modal.
 ///
 /// Each entry captures key type, trailing comment, 1-based line number, and a
@@ -2570,10 +2667,10 @@ fn collect_authorized_keys_preview(
         // Best-effort fingerprint from the openssh string "<type> <base64>".
         let fingerprint = if base64_idx < tokens.len() {
             let openssh = format!("{key_type} {}", tokens[base64_idx]);
-            ssh_key::PublicKey::from_openssh(&openssh)
-                .ok()
-                .map(|k| k.fingerprint(ssh_key::HashAlg::Sha256).to_string())
-                .unwrap_or_else(|| "(unknown)".to_string())
+            ssh_key::PublicKey::from_openssh(&openssh).ok().map_or_else(
+                || "(unknown)".to_string(),
+                |k| k.fingerprint(ssh_key::HashAlg::Sha256).to_string(),
+            )
         } else {
             "(unknown)".to_string()
         };
@@ -2639,7 +2736,13 @@ mod mock {
                 permissions: "0600".into(),
                 has_public: true,
                 has_cert: false,
-                used_by_hosts: vec!["prod-server".into(), "staging".into(), "dev".into(), "backup".into(), "monitor".into()],
+                used_by_hosts: vec![
+                    "prod-server".into(),
+                    "staging".into(),
+                    "dev".into(),
+                    "backup".into(),
+                    "monitor".into(),
+                ],
             },
         ]
     }
@@ -2649,7 +2752,11 @@ mod mock {
             KnownHostEntry {
                 hosts: vec!["github.com".into()],
                 key_type: "ssh-ed25519".into(),
-                key_types: vec!["ssh-ed25519".into(), "ecdsa-sha2-nistp256".into(), "ssh-rsa".into()],
+                key_types: vec![
+                    "ssh-ed25519".into(),
+                    "ecdsa-sha2-nistp256".into(),
+                    "ssh-rsa".into(),
+                ],
                 fingerprint: "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".into(),
                 fingerprints: vec![
                     "SHA256:nThbg6kXUpJWGl7E1IGOCspRomTxdCARLviKw6E5SY8".into(),
@@ -2886,9 +2993,7 @@ mod mock {
                 severity: "error".into(),
                 module: "agent".into(),
                 message: "No SSH agent is running (SSH_AUTH_SOCK not set)".into(),
-                hint: Some(
-                    "Start ssh-agent or add eval $(ssh-agent) to your shell profile".into(),
-                ),
+                hint: Some("Start ssh-agent or add eval $(ssh-agent) to your shell profile".into()),
             },
             DiagnosticEntry {
                 id: "config_host_star_placement".into(),
@@ -2922,9 +3027,7 @@ mod mock {
                 public_key: "AAAAB3NzaC1yc2EAAAADAQABAAACAQCr7L3hFS2jW9eJ5kE8mN".into(),
                 comment: Some("deploy@ci-runner".into()),
                 fingerprint: "SHA256:mQ9wE3yU4oI6aS8dFxKj8mN2pL5vR7t".into(),
-                options: Some(
-                    "command=\"/usr/bin/restricted-shell\",no-port-forwarding".into(),
-                ),
+                options: Some("command=\"/usr/bin/restricted-shell\",no-port-forwarding".into()),
                 line: 4,
             },
             AuthorizedKeyEntry {
@@ -3116,9 +3219,14 @@ mod tests {
         let bundle = result.unwrap();
         // Real data — just verify it doesn't crash and returns a bundle
         // Verify the bundle is well-formed: security data is present.
-        assert!(bundle.security.access_info.pubkey_auth, "pubkey_auth should default to true");
-        assert!(!bundle.security.access_info.permit_root_login.is_empty(),
-            "permit_root_login should have a default value");
+        assert!(
+            bundle.security.access_info.pubkey_auth,
+            "pubkey_auth should default to true"
+        );
+        assert!(
+            !bundle.security.access_info.permit_root_login.is_empty(),
+            "permit_root_login should have a default value"
+        );
     }
 
     #[tokio::test]
@@ -3195,7 +3303,9 @@ mod tests {
         // Start with a clean slate (no warnings) to test B in isolation.
         let mut security = mock::collect_mock_security();
         security.security_diagnostics = vec![]; // Clear warnings
-        security.sshd_config.insert("passwordauthentication".into(), "yes".into());
+        security
+            .sshd_config
+            .insert("passwordauthentication".into(), "yes".into());
         // 100 - 25 (password) = 75 => B
         assert_eq!(security.grade(), SecurityGrade::B);
     }
@@ -3205,8 +3315,12 @@ mod tests {
         // Start with a clean slate (no warnings) to test C in isolation.
         let mut security = mock::collect_mock_security();
         security.security_diagnostics = vec![]; // Clear warnings
-        security.sshd_config.insert("passwordauthentication".into(), "yes".into());
-        security.sshd_config.insert("permitrootlogin".into(), "yes".into());
+        security
+            .sshd_config
+            .insert("passwordauthentication".into(), "yes".into());
+        security
+            .sshd_config
+            .insert("permitrootlogin".into(), "yes".into());
         // 100 - 25 (password) - 20 (root) = 55 => C
         assert_eq!(security.grade(), SecurityGrade::C);
     }
@@ -3244,11 +3358,15 @@ mod tests {
         // must match the lowercase case exactly.
         let mut lower = mock::collect_mock_security();
         lower.security_diagnostics = vec![];
-        lower.sshd_config.insert("permitrootlogin".into(), "yes".into());
+        lower
+            .sshd_config
+            .insert("permitrootlogin".into(), "yes".into());
 
         let mut upper = mock::collect_mock_security();
         upper.security_diagnostics = vec![];
-        upper.sshd_config.insert("permitrootlogin".into(), "Yes".into());
+        upper
+            .sshd_config
+            .insert("permitrootlogin".into(), "Yes".into());
 
         assert_eq!(
             lower.grade(),
@@ -3270,10 +3388,13 @@ mod tests {
         let mk = |pw: &str, root: &str, empty: &str, pubkey: &str| {
             let mut s = mock::collect_mock_security();
             s.security_diagnostics = vec![];
-            s.sshd_config.insert("passwordauthentication".into(), pw.into());
+            s.sshd_config
+                .insert("passwordauthentication".into(), pw.into());
             s.sshd_config.insert("permitrootlogin".into(), root.into());
-            s.sshd_config.insert("permitemptypasswords".into(), empty.into());
-            s.sshd_config.insert("pubkeyauthentication".into(), pubkey.into());
+            s.sshd_config
+                .insert("permitemptypasswords".into(), empty.into());
+            s.sshd_config
+                .insert("pubkeyauthentication".into(), pubkey.into());
             s
         };
         let lower = mk("yes", "yes", "yes", "no");
@@ -3289,7 +3410,9 @@ mod tests {
         // exactly like lowercase, resolving the disagreement with the access
         // card (which already used eq_ignore_ascii_case).
         let mut security = mock::collect_mock_security();
-        security.sshd_config.insert("permitrootlogin".into(), "Yes".into());
+        security
+            .sshd_config
+            .insert("permitrootlogin".into(), "Yes".into());
 
         let root_check = security
             .checks()
@@ -3308,7 +3431,9 @@ mod tests {
         // PubkeyAuthentication No must mark the public-key check as not
         // passing, case-insensitively.
         let mut security = mock::collect_mock_security();
-        security.sshd_config.insert("pubkeyauthentication".into(), "NO".into());
+        security
+            .sshd_config
+            .insert("pubkeyauthentication".into(), "NO".into());
 
         let pubkey_check = security
             .checks()
@@ -3322,11 +3447,13 @@ mod tests {
     }
 
     #[test]
-    fn checks_password_authentication_No_capitalized_is_passing() {
+    fn checks_password_authentication_no_capitalized_is_passing() {
         // A capitalized disabling value must still register as passing (secure)
         // for the password-auth check, matching the lowercase behavior.
         let mut security = mock::collect_mock_security();
-        security.sshd_config.insert("passwordauthentication".into(), "No".into());
+        security
+            .sshd_config
+            .insert("passwordauthentication".into(), "No".into());
 
         let pw_check = security
             .checks()
@@ -3395,11 +3522,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let dropdir = dir.path().join("sshd_config.d");
         std::fs::create_dir_all(&dropdir).expect("mkdir dropin");
-        std::fs::write(
-            dropdir.join("50-hardening.conf"),
-            "PermitRootLogin no\n",
-        )
-        .expect("write dropin");
+        std::fs::write(dropdir.join("50-hardening.conf"), "PermitRootLogin no\n")
+            .expect("write dropin");
 
         let main = "Include sshd_config.d/*.conf\n";
         let config = parse_sshd_config_from_dir(main, dir.path());
@@ -3419,11 +3543,8 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let dropdir = dir.path().join("sshd_config.d");
         std::fs::create_dir_all(&dropdir).expect("mkdir dropin");
-        std::fs::write(
-            dropdir.join("99-override.conf"),
-            "PermitRootLogin yes\n",
-        )
-        .expect("write dropin");
+        std::fs::write(dropdir.join("99-override.conf"), "PermitRootLogin yes\n")
+            .expect("write dropin");
 
         let main = "PermitRootLogin no\nInclude sshd_config.d/*.conf\n";
         let config = parse_sshd_config_from_dir(main, dir.path());
@@ -3515,7 +3636,10 @@ mod tests {
     fn parse_sshd_config_from_keys_are_lowercased() {
         let contents = "PasswordAuthentication no\nPermitRootLogin yes\n";
         let config = parse_sshd_config_from(contents);
-        assert_eq!(config.get("passwordauthentication"), Some(&"no".to_string()));
+        assert_eq!(
+            config.get("passwordauthentication"),
+            Some(&"no".to_string())
+        );
         assert_eq!(config.get("permitrootlogin"), Some(&"yes".to_string()));
     }
 
@@ -3590,7 +3714,10 @@ mod tests {
             "    PasswordAuthentication yes\n",
         );
         let info = parse_sshd_access_info_from(contents);
-        assert!(!info.password_auth, "global PasswordAuthentication=no must win over Match-scoped yes");
+        assert!(
+            !info.password_auth,
+            "global PasswordAuthentication=no must win over Match-scoped yes"
+        );
     }
 
     #[test]
@@ -3619,11 +3746,7 @@ mod tests {
     fn parse_access_info_concatenates_multiple_global_allow_users() {
         // OpenSSH treats multiple global AllowUsers lines as additive. The read
         // path must concatenate them, not take the last one.
-        let contents = concat!(
-            "AllowUsers alice\n",
-            "Port 22\n",
-            "AllowUsers bob carol\n",
-        );
+        let contents = concat!("AllowUsers alice\n", "Port 22\n", "AllowUsers bob carol\n",);
         let info = parse_sshd_access_info_from(contents);
         assert_eq!(
             info.allowed_users,
@@ -3687,13 +3810,19 @@ mod tests {
     // mutation is process-global. The `serial_test` pattern is achieved by
     // a mutex — we don't need the crate, just a static Mutex<usize>.
 
-    use std::sync::Mutex;
-    static HOME_LOCK: Mutex<usize> = Mutex::new(0);
+    use tokio::sync::Mutex;
+    static HOME_LOCK: Mutex<usize> = Mutex::const_new(0);
 
-    /// Acquire the HOME lock, recovering from a poisoned mutex (caused by a
-    /// previous test panic) so that one failing test doesn't cascade.
-    fn acquire_home_lock() -> std::sync::MutexGuard<'static, usize> {
-        HOME_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    /// Acquire the HOME lock, held across `.await` points to serialize the
+    /// write-path integration tests (they mutate the process-global `$HOME`).
+    ///
+    /// Uses an async-aware `tokio::sync::Mutex` so the guard is `Send` and safe
+    /// to hold across `.await` (a `std::sync::MutexGuard` held across an await
+    /// risks a deadlock and is flagged by `clippy::await_holding_lock`).
+    async fn acquire_home_lock() -> tokio::sync::MutexGuard<'static, usize> {
+        // `tokio::sync::Mutex` cannot be poisoned, so there is no recovery
+        // branch needed (unlike the previous std Mutex).
+        HOME_LOCK.lock().await
     }
 
     /// Temp HOME override for safe write-path tests.
@@ -3709,8 +3838,13 @@ mod tests {
             std::fs::create_dir_all(&ssh_dir).expect("mkdir .ssh");
             let original = std::env::var_os("HOME").map(std::path::PathBuf::from);
             // SAFETY: test-only; HOME_LOCK ensures serial execution.
-            unsafe { std::env::set_var("HOME", dir.path()); }
-            Self { original, _dir: dir }
+            unsafe {
+                std::env::set_var("HOME", dir.path());
+            }
+            Self {
+                original,
+                _dir: dir,
+            }
         }
     }
 
@@ -3729,7 +3863,7 @@ mod tests {
 
     #[tokio::test]
     async fn execute_op_config_add_host_writes_to_disk() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let op = SshOp::ConfigAddHost {
             name: "test-toride-host".into(),
@@ -3743,16 +3877,21 @@ mod tests {
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let ast = mgr.config().load().await.expect("load");
         let content = ast.to_string_lossless();
-        assert!(content.contains("test-toride-host"), "host not in config: {content}");
+        assert!(
+            content.contains("test-toride-host"),
+            "host not in config: {content}"
+        );
         // Clean up: remove the host
-        let op2 = SshOp::ConfigRemoveHost { name: "test-toride-host".into() };
+        let op2 = SshOp::ConfigRemoveHost {
+            name: "test-toride-host".into(),
+        };
         let result2 = execute_op(op2).await;
         assert!(result2.is_ok(), "config remove failed: {:?}", result2.err());
     }
 
     #[tokio::test]
     async fn execute_op_config_add_duplicate_fails() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let op = SshOp::ConfigAddHost {
             name: "dupe-host".into(),
@@ -3768,21 +3907,26 @@ mod tests {
             port: None,
         };
         let result = execute_op(op2).await;
-        assert!(result.is_err(), "duplicate add should fail: {:?}", result);
+        assert!(result.is_err(), "duplicate add should fail: {result:?}");
     }
 
     #[tokio::test]
     async fn execute_op_config_remove_nonexistent_fails() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
-        let op = SshOp::ConfigRemoveHost { name: "no-such-host".into() };
+        let op = SshOp::ConfigRemoveHost {
+            name: "no-such-host".into(),
+        };
         let result = execute_op(op).await;
-        assert!(result.is_err(), "removing nonexistent host should fail: {:?}", result);
+        assert!(
+            result.is_err(),
+            "removing nonexistent host should fail: {result:?}"
+        );
     }
 
     #[tokio::test]
     async fn execute_op_config_edit_host_replaces() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let op = SshOp::ConfigAddHost {
             name: "edit-me".into(),
@@ -3803,13 +3947,19 @@ mod tests {
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let ast = mgr.config().load().await.expect("load");
         let content = ast.to_string_lossless();
-        assert!(content.contains("new.example.com"), "new hostname in config: {content}");
-        assert!(!content.contains("old.example.com"), "old hostname gone: {content}");
+        assert!(
+            content.contains("new.example.com"),
+            "new hostname in config: {content}"
+        );
+        assert!(
+            !content.contains("old.example.com"),
+            "old hostname gone: {content}"
+        );
     }
 
     #[tokio::test]
     async fn execute_op_key_create_and_delete() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let op = SshOp::KeyCreate {
             name: "toride-test-key".into(),
@@ -3822,9 +3972,15 @@ mod tests {
         // Verify file exists
         let home = std::env::var("HOME").expect("HOME");
         let key_path = std::path::Path::new(&home).join(".ssh/toride-test-key");
-        assert!(key_path.exists(), "private key file should exist at {}", key_path.display());
+        assert!(
+            key_path.exists(),
+            "private key file should exist at {}",
+            key_path.display()
+        );
         // Clean up
-        let op2 = SshOp::KeyDelete { name: "toride-test-key".into() };
+        let op2 = SshOp::KeyDelete {
+            name: "toride-test-key".into(),
+        };
         let result2 = execute_op(op2).await;
         assert!(result2.is_ok(), "key delete failed: {:?}", result2.err());
         assert!(!key_path.exists(), "key file should be deleted");
@@ -3838,7 +3994,7 @@ mod tests {
     /// SSH Key full lifecycle: Create → Verify → List → Rename → Delete.
     #[tokio::test]
     async fn key_full_crud_lifecycle() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("SshManager init");
         let home = std::env::var("HOME").expect("HOME");
@@ -3854,16 +4010,26 @@ mod tests {
         // Step 2: VERIFY files exist
         let private = std::path::Path::new(&home).join(".ssh/id_crud_test_key");
         let public = std::path::Path::new(&home).join(".ssh/id_crud_test_key.pub");
-        assert!(private.exists(), "Step 2 VERIFY: private key missing at {private:?}");
-        assert!(public.exists(), "Step 2 VERIFY: public key missing at {public:?}");
+        assert!(
+            private.exists(),
+            "Step 2 VERIFY: private key missing at {private:?}"
+        );
+        assert!(
+            public.exists(),
+            "Step 2 VERIFY: public key missing at {public:?}"
+        );
         eprintln!("✓ Step 2: VERIFY files exist");
 
         // Step 3: LIST includes the key
         let keys = mgr.keys().list().await.expect("Step 3 LIST: scan failed");
-        let found = keys.iter().any(|k| {
-            k.path.file_name().map_or(false, |n| n == "id_crud_test_key")
-        });
-        assert!(found, "Step 3 LIST: key not found in inventory ({} keys scanned)", keys.len());
+        let found = keys
+            .iter()
+            .any(|k| k.path.file_name().is_some_and(|n| n == "id_crud_test_key"));
+        assert!(
+            found,
+            "Step 3 LIST: key not found in inventory ({} keys scanned)",
+            keys.len()
+        );
         eprintln!("✓ Step 3: LIST returns the key");
 
         // Step 4: RENAME
@@ -3917,7 +4083,7 @@ mod tests {
     /// Config host full lifecycle: Add → Verify → Edit → Verify → Remove → Verify.
     #[tokio::test]
     async fn config_host_full_crud_lifecycle() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("SshManager init");
         let svc = mgr.config();
@@ -3982,11 +4148,9 @@ mod tests {
         eprintln!("✓ Step 4: VERIFY new values present, old gone");
 
         // Step 5: REMOVE
-        svc.edit(|ast| {
-            toride_ssh::config::ConfigService::remove_host(ast, "test-server")
-        })
-        .await
-        .expect("Step 5 REMOVE: config remove failed");
+        svc.edit(|ast| toride_ssh::config::ConfigService::remove_host(ast, "test-server"))
+            .await
+            .expect("Step 5 REMOVE: config remove failed");
         eprintln!("✓ Step 5: REMOVE host 'test-server'");
 
         // Step 6: VERIFY removal
@@ -4003,14 +4167,12 @@ mod tests {
     /// Authorized keys full lifecycle: Add → List → Remove.
     #[tokio::test]
     async fn authorized_keys_full_crud_lifecycle() {
-        let _lock = acquire_home_lock();
+        // Real Ed25519 public key for testing (generated locally, not a real credential).
+        const TEST_PUB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI crud-test@toride";
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("SshManager init");
         let svc = mgr.authorized_keys();
-
-        // Real Ed25519 public key for testing (generated locally, not a real credential).
-        const TEST_PUB_KEY: &str =
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI crud-test@toride";
 
         // Step 1: ADD
         svc.add(TEST_PUB_KEY, Some("crud-test"), None)
@@ -4069,7 +4231,7 @@ mod tests {
     /// Gracefully skips if `ssh-keyscan` fails (e.g. no local SSH server).
     #[tokio::test]
     async fn known_hosts_crud_lifecycle() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("SshManager init");
         let svc = mgr.known_hosts();
@@ -4087,12 +4249,9 @@ mod tests {
         eprintln!("✓ Step 1: ADD localhost to known_hosts");
 
         // Step 2: VERIFY
-        let kh_file = std::path::Path::new(&std::env::var("HOME").expect("HOME"))
-            .join(".ssh/known_hosts");
-        assert!(
-            kh_file.exists(),
-            "Step 2 VERIFY: known_hosts file missing"
-        );
+        let kh_file =
+            std::path::Path::new(&std::env::var("HOME").expect("HOME")).join(".ssh/known_hosts");
+        assert!(kh_file.exists(), "Step 2 VERIFY: known_hosts file missing");
         let content = std::fs::read_to_string(&kh_file).expect("read known_hosts");
         assert!(
             !content.trim().is_empty(),
@@ -4107,8 +4266,7 @@ mod tests {
         eprintln!("✓ Step 3: REMOVE localhost from known_hosts");
 
         // Step 4: VERIFY removal (file may still exist but without localhost entries)
-        let content_after =
-            std::fs::read_to_string(&kh_file).unwrap_or_default();
+        let content_after = std::fs::read_to_string(&kh_file).unwrap_or_default();
         // After removal the file may contain hashed entries or be empty.
         // The key test is that remove() succeeded.
         eprintln!(
@@ -4118,11 +4276,11 @@ mod tests {
         eprintln!("✅ known_hosts_crud_lifecycle PASSED");
     }
 
-    /// Execute-op pipeline round-trip: tests the same SshOp → execute_op path
+    /// Execute-op pipeline round-trip: tests the same `SshOp` → `execute_op` path
     /// the TUI uses for Keys and Config CRUD.
     #[tokio::test]
     async fn execute_op_pipeline_round_trip() {
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let home = std::env::var("HOME").expect("HOME");
 
@@ -4165,15 +4323,9 @@ mod tests {
         eprintln!("✓ Step 3: execute_op(KeyRename) — {}", result.unwrap());
 
         // Step 4: VERIFY rename
-        assert!(
-            !key_path.exists(),
-            "Step 4 VERIFY: old key still exists"
-        );
+        assert!(!key_path.exists(), "Step 4 VERIFY: old key still exists");
         let renamed_path = std::path::Path::new(&home).join(".ssh/pipeline-renamed");
-        assert!(
-            renamed_path.exists(),
-            "Step 4 VERIFY: renamed key missing"
-        );
+        assert!(renamed_path.exists(), "Step 4 VERIFY: renamed key missing");
         eprintln!("✓ Step 4: VERIFY old gone, renamed exists");
 
         // Step 5: DELETE via execute_op
@@ -4232,7 +4384,10 @@ mod tests {
             "Step 9 CONFIG REMOVE via execute_op failed: {:?}",
             result.err()
         );
-        eprintln!("✓ Step 9: execute_op(ConfigRemoveHost) — {}", result.unwrap());
+        eprintln!(
+            "✓ Step 9: execute_op(ConfigRemoveHost) — {}",
+            result.unwrap()
+        );
 
         // Step 10: VERIFY removal
         let ast = mgr.config().load().await.expect("load config");
@@ -4276,8 +4431,7 @@ mod tests {
         if current == "root" {
             return; // already covered by the literal-root test
         }
-        let err = would_lock_out("deny", &current)
-            .expect("must refuse to deny the current user");
+        let err = would_lock_out("deny", &current).expect("must refuse to deny the current user");
         assert!(err.revert_optimistic);
     }
 
@@ -4301,21 +4455,21 @@ mod tests {
         if euid == 0 {
             return;
         }
-        if let Some(name) = current_username() {
-            if name != "root" {
-                // Forward lookup of the resolved name must yield euid, and the
-                // guard must refuse it (whether via the name branch or the UID
-                // fallback).
-                assert_eq!(
-                    uid_for_username(&name),
-                    Some(euid),
-                    "forward/reverse lookups disagree on current user {name}"
-                );
-                assert!(
-                    would_lock_out("reset", &name).is_some(),
-                    "must refuse to reset the current user {name}"
-                );
-            }
+        if let Some(name) = current_username()
+            && name != "root"
+        {
+            // Forward lookup of the resolved name must yield euid, and the
+            // guard must refuse it (whether via the name branch or the UID
+            // fallback).
+            assert_eq!(
+                uid_for_username(&name),
+                Some(euid),
+                "forward/reverse lookups disagree on current user {name}"
+            );
+            assert!(
+                would_lock_out("reset", &name).is_some(),
+                "must refuse to reset the current user {name}"
+            );
         }
     }
 
@@ -4345,7 +4499,7 @@ mod tests {
         let err = map_sshd_error(
             "deny",
             "alice",
-            toride_ssh::Error::SshdConfigInvalid("line 1: bad option".into()),
+            &toride_ssh::Error::SshdConfigInvalid("line 1: bad option".into()),
         );
         assert!(err.revert_optimistic, "validation failure must revert");
         assert!(err.message.contains("alice"));
@@ -4356,7 +4510,7 @@ mod tests {
         let err = map_sshd_error(
             "deny",
             "alice",
-            toride_ssh::Error::SshdNotFound("sshd: command not found".into()),
+            &toride_ssh::Error::SshdNotFound("sshd: command not found".into()),
         );
         assert!(err.revert_optimistic, "binary-missing must revert");
     }
@@ -4366,7 +4520,7 @@ mod tests {
         let err = map_sshd_error(
             "deny",
             "alice",
-            toride_ssh::Error::SudoFailed("a password is required".into()),
+            &toride_ssh::Error::SudoFailed("a password is required".into()),
         );
         assert!(err.revert_optimistic, "sudo failure must revert");
     }
@@ -4378,7 +4532,7 @@ mod tests {
         let err = map_sshd_error(
             "deny",
             "alice",
-            toride_ssh::Error::ConfigWriteFailed("failed to install sshd_config: EBUSY".into()),
+            &toride_ssh::Error::ConfigWriteFailed("failed to install sshd_config: EBUSY".into()),
         );
         assert!(
             err.revert_optimistic,
@@ -4407,7 +4561,7 @@ mod tests {
         let err = map_sshd_error(
             "deny",
             "alice",
-            toride_ssh::Error::ConfigWriteFailed("failed to chmod sshd_config: EPERM".into()),
+            &toride_ssh::Error::ConfigWriteFailed("failed to chmod sshd_config: EPERM".into()),
         );
         assert!(
             err.revert_optimistic,
@@ -4459,10 +4613,10 @@ mod tests {
             "global value must win; indented Match body must not leak"
         );
         assert!(
-            !config
+            config
                 .get("permitrootlogin")
-                .map(|v| v.as_str())
-                .is_some_and(|v| v == "yes"),
+                .map(std::string::String::as_str)
+                .is_none_or(|v| v != "yes"),
             "Match-scoped PermitRootLogin must not appear in the global map: {config:?}"
         );
         // Only the single global directive should be present.
@@ -4483,7 +4637,7 @@ mod tests {
         let err = map_sshd_error(
             "deny",
             "alice",
-            toride_ssh::Error::Io(std::io::Error::new(
+            &toride_ssh::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
                 "permission denied reading sshd_config",
             )),
@@ -4521,8 +4675,8 @@ mod tests {
     fn would_lock_out_with_uid_refuses_uid_zero() {
         // Defense-in-depth: a username that resolves to UID 0 must be refused
         // regardless of the operator's euid.
-        let err = would_lock_out_with_uid("reset", "toor", 1000, Some(0))
-            .expect("uid 0 must be refused");
+        let err =
+            would_lock_out_with_uid("reset", "toor", 1000, Some(0)).expect("uid 0 must be refused");
         assert!(err.revert_optimistic);
         assert!(err.message.contains("toor"));
     }
@@ -4575,8 +4729,8 @@ mod tests {
     // operator's own ~/.ssh/authorized_keys; they run under HOME_LOCK for the
     // same serial-execution reason as the other write-path tests.
 
-    /// Write `lines` to ~/.ssh/authorized_keys in the current HOME, returning
-    /// nothing. Used to seed a known authorized_keys state before each guard
+    /// Write `lines` to `~/.ssh/authorized_keys` in the current HOME, returning
+    /// nothing. Used to seed a known `authorized_keys` state before each guard
     /// assertion.
     fn seed_authorized_keys(lines: &[&str]) {
         let home = std::env::var("HOME").expect("HOME set");
@@ -4587,14 +4741,13 @@ mod tests {
 
     #[tokio::test]
     async fn would_lock_out_authorized_key_refuses_removing_last_key() {
-        let _lock = acquire_home_lock();
+        // A real Ed25519 public key (generated locally, not a real credential).
+        const TEST_PUB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI last-key@toride";
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let svc = mgr.authorized_keys();
 
-        // A real Ed25519 public key (generated locally, not a real credential).
-        const TEST_PUB_KEY: &str =
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI last-key@toride";
         seed_authorized_keys(&[TEST_PUB_KEY]);
 
         // Compute the fingerprint of the sole key, then ask the guard whether
@@ -4602,10 +4755,7 @@ mod tests {
         // self-lockout case F11 targets.
         let entries = svc.list().await.expect("list");
         assert_eq!(entries.len(), 1, "seeded one key");
-        let fp = entries[0]
-            .fingerprint()
-            .expect("fingerprint")
-            .clone();
+        let fp = entries[0].fingerprint().expect("fingerprint").clone();
 
         let guard = would_lock_out_authorized_key(&svc, &fp)
             .await
@@ -4623,18 +4773,16 @@ mod tests {
 
     #[tokio::test]
     async fn would_lock_out_authorized_key_allows_when_a_key_remains() {
-        let _lock = acquire_home_lock();
+        // Two distinct real keys; removing one leaves the other, so the guard
+        // must allow (return None). Reverting the fix would refuse any removal
+        // of the only matching key, which would also wrongly block this.
+        const KEY_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI keep-a@toride";
+        const KEY_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP9fG4eJ8kL3mN6oQ2rS5tU7vWxYzAbCdEfGhIjKlMnO remove-b@toride";
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let svc = mgr.authorized_keys();
 
-        // Two distinct real keys; removing one leaves the other, so the guard
-        // must allow (return None). Reverting the fix would refuse any removal
-        // of the only matching key, which would also wrongly block this.
-        const KEY_A: &str =
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI keep-a@toride";
-        const KEY_B: &str =
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP9fG4eJ8kL3mN6oQ2rS5tU7vWxYzAbCdEfGhIjKlMnO remove-b@toride";
         seed_authorized_keys(&[KEY_A, KEY_B]);
 
         let entries = svc.list().await.expect("list");
@@ -4655,7 +4803,7 @@ mod tests {
         // An empty authorized_keys has nothing to remove — the guard must allow
         // (the backend `remove` will no-op). This pins that the guard only
         // protects against emptying a NON-EMPTY file down to zero.
-        let _lock = acquire_home_lock();
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let svc = mgr.authorized_keys();
@@ -4673,21 +4821,17 @@ mod tests {
         // Multiple copies of the SAME key (same fingerprint): removing by that
         // fingerprint would drop the count to zero even though there were
         // several entries. The guard must refuse.
-        let _lock = acquire_home_lock();
+        const DUP_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI dup@toride";
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let svc = mgr.authorized_keys();
 
-        const DUP_KEY: &str =
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI dup@toride";
         seed_authorized_keys(&[DUP_KEY, DUP_KEY, DUP_KEY]);
 
         let entries = svc.list().await.expect("list");
         assert_eq!(entries.len(), 3, "seeded three copies");
-        let fp = entries[0]
-            .fingerprint()
-            .expect("fingerprint")
-            .clone();
+        let fp = entries[0].fingerprint().expect("fingerprint").clone();
 
         let guard = would_lock_out_authorized_key(&svc, &fp)
             .await
@@ -4707,21 +4851,17 @@ mod tests {
         // file byte-for-byte intact. Deleting the production invocation
         // (ssh_data.rs `if let Some(err) = would_lock_out_authorized_key(...)`)
         // would make this remove the sole key and return Ok — failing the test.
-        let _lock = acquire_home_lock();
+        const TEST_PUB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI last-key@toride";
+        let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let svc = mgr.authorized_keys();
 
-        const TEST_PUB_KEY: &str =
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI last-key@toride";
         seed_authorized_keys(&[TEST_PUB_KEY]);
 
         let entries = svc.list().await.expect("list");
         assert_eq!(entries.len(), 1, "seeded one key");
-        let fp = entries[0]
-            .fingerprint()
-            .expect("fingerprint")
-            .clone();
+        let fp = entries[0].fingerprint().expect("fingerprint").clone();
 
         // Snapshot the file so we can prove the guard fires BEFORE any deletion.
         let home = std::env::var("HOME").expect("HOME");
@@ -4759,17 +4899,13 @@ mod tests {
         // assertion fails. This proves the NSS path is wired and returns Some.
         let uid = nss_uid_for_username("root")
             .expect("NSS must resolve the 'root' account on any Unix system");
-        assert_eq!(
-            uid, 0,
-            "root's UID via getpwnam_r must be 0; got {uid}"
-        );
+        assert_eq!(uid, 0, "root's UID via getpwnam_r must be 0; got {uid}");
     }
 
     #[test]
     fn nss_username_for_uid_resolves_uid_zero_to_root() {
         // The reverse NSS path (getpwuid_r) must map UID 0 back to "root".
-        let name = nss_username_for_uid(0)
-            .expect("NSS must resolve UID 0 on any Unix system");
+        let name = nss_username_for_uid(0).expect("NSS must resolve UID 0 on any Unix system");
         assert_eq!(
             name, "root",
             "UID 0 must resolve to 'root' via getpwuid_r; got {name:?}"
@@ -4791,8 +4927,7 @@ mod tests {
     fn uid_for_username_resolves_root_via_full_chain() {
         // End-to-end: the public uid_for_username (NSS + dscl + id + passwd)
         // must resolve root to UID 0 on every platform.
-        let uid = uid_for_username("root")
-            .expect("uid_for_username must resolve 'root'");
+        let uid = uid_for_username("root").expect("uid_for_username must resolve 'root'");
         assert_eq!(uid, 0);
     }
 
@@ -4814,7 +4949,7 @@ mod tests {
     // is not duplicated here because execute_op hardcodes /etc/ssh/sshd_config.
     // See open_questions for the flush_ssh_ops test (lives in app/mod.rs).
 
-    /// Snapshot /etc/ssh/sshd_config if it is readable, else None. Used to prove
+    /// Snapshot `/etc/ssh/sshd_config` if it is readable, else None. Used to prove
     /// the lockout guard leaves the live config byte-for-byte unchanged.
     fn snapshot_sshd_config() -> Option<Vec<u8>> {
         std::fs::read("/etc/ssh/sshd_config").ok()
@@ -4829,11 +4964,14 @@ mod tests {
         // Ok (or a privilege error from attempting the real edit), failing the
         // Err + revert assertions.
         let before = snapshot_sshd_config();
-        let result = execute_op(SshOp::SshdDenyUser { username: "root".into() }).await;
+        let result = execute_op(SshOp::SshdDenyUser {
+            username: "root".into(),
+        })
+        .await;
         let after = snapshot_sshd_config();
 
         let err = result.expect_err(
-            "execute_op(SshdDenyUser{root}) must be refused by the backend lockout guard"
+            "execute_op(SshdDenyUser{root}) must be refused by the backend lockout guard",
         );
         assert!(
             err.revert_optimistic,
@@ -4854,11 +4992,14 @@ mod tests {
     async fn execute_op_sshd_reset_root_refused_with_revert_and_disk_unchanged() {
         // Same as above for the Reset arm — both routed through would_lock_out.
         let before = snapshot_sshd_config();
-        let result = execute_op(SshOp::SshdResetUserAccess { username: "root".into() }).await;
+        let result = execute_op(SshOp::SshdResetUserAccess {
+            username: "root".into(),
+        })
+        .await;
         let after = snapshot_sshd_config();
 
         let err = result.expect_err(
-            "execute_op(SshdResetUserAccess{root}) must be refused by the backend lockout guard"
+            "execute_op(SshdResetUserAccess{root}) must be refused by the backend lockout guard",
         );
         assert!(
             err.revert_optimistic,
@@ -4902,8 +5043,8 @@ mod tests {
     async fn would_lock_out_async_refuses_unresolvable_user() {
         // The forward-lookup refuse-by-default branch must fire through the
         // spawn_blocking path too: a guaranteed-unresolvable user is refused.
-        let result = would_lock_out_async("deny", "toride-definitely-no-such-user-async-zyxw")
-            .await;
+        let result =
+            would_lock_out_async("deny", "toride-definitely-no-such-user-async-zyxw").await;
         let err = result.expect("async must refuse an unresolvable user");
         assert!(err.revert_optimistic);
         assert!(

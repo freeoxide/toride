@@ -30,7 +30,10 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "service methods are call-and-forget")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "service methods are call-and-forget"
+)]
 #![expect(clippy::missing_errors_doc, reason = "library is internal")]
 
 pub mod error;

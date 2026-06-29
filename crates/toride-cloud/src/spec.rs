@@ -54,7 +54,10 @@ impl PortRange {
     /// Create a port range for a single port.
     #[must_use]
     pub const fn single(port: u16) -> Self {
-        Self { start: port, end: port }
+        Self {
+            start: port,
+            end: port,
+        }
     }
 
     /// Create a port range spanning `start` to `end` (inclusive).
@@ -135,7 +138,7 @@ impl fmt::Display for RuleAction {
 /// A security group containing a set of firewall rules.
 ///
 /// Maps to provider-specific concepts: AWS Security Group, GCP Firewall,
-/// DigitalOcean Firewall, Hetzner Firewall.
+/// `DigitalOcean` Firewall, Hetzner Firewall.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityGroup {
     /// Unique identifier for this security group.

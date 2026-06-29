@@ -5,6 +5,8 @@ use crate::ui::theme::Palette;
 
 // ── Line builders ────────────────────────────────────────────────────────────
 
+/// Build an indented `label: value` [`Line`] with the label and value styled
+/// independently.
 pub fn kv_line(label: &str, value: &str, label_style: Style, value_style: Style) -> Line<'static> {
     Line::from(vec![
         ratatui::text::Span::raw("    "),
@@ -14,6 +16,8 @@ pub fn kv_line(label: &str, value: &str, label_style: Style, value_style: Style)
     ])
 }
 
+/// Like [`kv_line`], but the value takes a plain [`Color`] instead of a full
+/// [`Style`].
 pub fn color_kv_line(
     label: &str,
     value: &str,
@@ -28,6 +32,8 @@ pub fn color_kv_line(
     ])
 }
 
+/// Build a yes/no key-value line, colouring the value with the palette's
+/// `ok` (yes) or `text_dim` (no) slot.
 pub fn yn_kv_line(label: &str, value: bool, label_style: Style, p: Palette) -> Line<'static> {
     let (text, color) = if value {
         ("yes", p.ok)
@@ -37,6 +43,8 @@ pub fn yn_kv_line(label: &str, value: bool, label_style: Style, p: Palette) -> L
     color_kv_line(label, text, label_style, color)
 }
 
+/// Map a percentage to a semantic status colour: `err` at ≥90%, `warn` at
+/// ≥70%, otherwise `ok`.
 pub fn percent_color(pct: f64, p: Palette) -> Color {
     if pct >= 90.0 {
         p.err
@@ -59,6 +67,8 @@ const PB: u64 = TB * 1024;
     clippy::cast_precision_loss,
     reason = "u64→f64 for byte formatting display"
 )]
+/// Format a byte count into a human-readable binary-prefixed string
+/// (e.g. `1.5 KiB`, `2.0 GiB`).
 pub fn format_bytes(bytes: u64) -> String {
     if bytes >= PB {
         format!("{:.1} PiB", bytes as f64 / PB as f64)
@@ -75,6 +85,8 @@ pub fn format_bytes(bytes: u64) -> String {
     }
 }
 
+/// Format a duration in seconds into a compact `d h m s` string, omitting
+/// leading zero components except always showing seconds.
 pub fn format_duration(secs: u64) -> String {
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
@@ -165,6 +177,11 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test value is a known positive integer GiB count"
+    )]
     fn format_bytes_large_value() {
         // 2.5 GiB
         let val = (2.5 * 1024.0 * 1024.0 * 1024.0) as u64;

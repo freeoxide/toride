@@ -12,6 +12,14 @@ use crate::error::{Error, Result};
 use crate::paths::UpdatePaths;
 use crate::report::UpdateStatus;
 
+/// Upper bound on how many bytes of the unattended-upgrades log we read into
+/// memory in [`AptBackend::status`].
+///
+/// The status only needs the most recent run, which is always at the tail of
+/// the log. 1 MiB is far more than a single run ever occupies while keeping a
+/// hostile or pathologically large log from exhausting memory.
+const MAX_LOG_READ_BYTES: u64 = 1024 * 1024;
+
 // ---------------------------------------------------------------------------
 // AptBackend
 // ---------------------------------------------------------------------------
@@ -82,6 +90,10 @@ impl<'a> AptBackend<'a> {
     /// security counts via [`crate::parse::parse_unattended_upgrades_status`].
     /// A missing log file yields an empty (never-run) status.
     ///
+    /// Only the trailing [`MAX_LOG_READ_BYTES`] are read so a hostile or
+    /// pathologically large log cannot exhaust memory; the most recent run
+    /// (which is all the status cares about) is always at the end of the file.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Io`] if the log file exists but cannot be read, or
@@ -92,7 +104,7 @@ impl<'a> AptBackend<'a> {
         if !log_path.exists() {
             return Ok(UpdateStatus::empty());
         }
-        let content = std::fs::read_to_string(log_path)?;
+        let content = read_log_tail(log_path)?;
         let mut status = crate::parse::parse_unattended_upgrades_status(&content)?;
         // The log file existing at all implies auto-updates were configured.
         if content.lines().any(|l| !l.trim().is_empty()) {
@@ -129,6 +141,43 @@ fn apply_updates_spec() -> toride_runner::CommandSpec {
     toride_runner::CommandSpec::new("unattended-upgrades").arg("-v")
 }
 
+/// Read the unattended-upgrades log, bounded to at most [`MAX_LOG_READ_BYTES`].
+///
+/// Files smaller than the cap are returned in full. Larger files return only
+/// their tail; if that tail does not begin on a UTF-8 boundary it is advanced
+/// to the next newline so the result is always valid UTF-8 starting at a line
+/// boundary. This keeps a hostile / pathologically large log from being slurped
+/// into memory while preserving the most recent run (always at the end).
+fn read_log_tail(path: &std::path::Path) -> Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut file = std::fs::File::open(path)?;
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+
+    if len <= MAX_LOG_READ_BYTES {
+        let mut content = String::new();
+        file.read_to_string(&mut content)?;
+        return Ok(content);
+    }
+
+    // Seek to the start of the tail window.
+    let cap_i64 = i64::try_from(MAX_LOG_READ_BYTES).unwrap_or(i64::MAX);
+    file.seek(SeekFrom::End(-cap_i64))?;
+    let cap_usize = usize::try_from(MAX_LOG_READ_BYTES).unwrap_or(usize::MAX);
+    let mut bytes = Vec::with_capacity(cap_usize);
+    file.read_to_end(&mut bytes)?;
+
+    // Advance to the first newline so we never split a UTF-8 sequence or a log
+    // line: the dropped prefix is by definition "older history" we don't need.
+    let start = bytes
+        .iter()
+        .position(|&b| b == b'\n')
+        .map(|i| (i + 1).min(bytes.len()))
+        .unwrap_or(0);
+    String::from_utf8(bytes[start..].to_vec())
+        .map_err(|e| Error::ConfigParse(format!("log is not valid UTF-8: {e}")))
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -158,8 +207,8 @@ mod tests {
 
     #[test]
     fn apply_updates_propagates_failure() {
-        let runner = FakeRunner::new()
-            .push_response(CommandOutput::from_stderr("dpkg lock held", 100));
+        let runner =
+            FakeRunner::new().push_response(CommandOutput::from_stderr("dpkg lock held", 100));
         let err = AptBackend::new(&runner).apply_updates().unwrap_err();
         assert!(err.to_string().contains("unattended-upgrades failed"));
     }
@@ -201,6 +250,47 @@ mod tests {
         let status = backend.status().unwrap();
         assert_eq!(status.pending_security, 0);
         assert!(status.last_run.is_none());
+    }
+
+    /// A log larger than [`MAX_LOG_READ_BYTES`] must not be slurped fully into
+    /// memory; only the tail (containing the most recent run) is read.
+    #[test]
+    fn status_bounds_log_read_to_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("unattended-upgrades.log");
+
+        // 2 MiB of padding lines followed by a single recent run line.
+        let padding_line = "2025-01-01 00:00:00,000 INFO old padding line\n";
+        let padding_count = (2 * 1024 * 1024) / padding_line.len();
+        let mut content = String::with_capacity(padding_count * padding_line.len());
+        for _ in 0..padding_count {
+            content.push_str(padding_line);
+        }
+        content.push_str(
+            "2025-03-13 20:43:25,923 INFO Starting unattended upgrades script\n\
+             2025-03-13 20:43:29,082 INFO Packages that will be upgraded: openssl\n\
+             2025-03-13 20:43:39,532 INFO All upgrades installed\n",
+        );
+        std::fs::write(&log, content).unwrap();
+
+        let runner = FakeRunner::new();
+        let mut backend = AptBackend::new(&runner);
+        backend.paths.log_file = log;
+        let status = backend.status().unwrap();
+        // The recent run is in the tail and must still be parsed.
+        assert!(status.auto_updates_enabled);
+        assert_eq!(status.last_run.as_deref(), Some("2025-03-13 20:43:25,923"));
+        assert_eq!(status.pending_security, 1);
+    }
+
+    /// `read_log_tail` returns the whole file when it is under the cap.
+    #[test]
+    fn read_log_tail_returns_full_small_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("small.log");
+        std::fs::write(&log, "hello\nworld\n").unwrap();
+        let content = read_log_tail(&log).unwrap();
+        assert_eq!(content, "hello\nworld\n");
     }
 
     /// Guard against accidental drift in the constructed command.

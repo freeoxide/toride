@@ -1,8 +1,5 @@
 use super::*;
 
-
-
-
 /// Set up a temporary SSH directory with the given layout and run `run_all`.
 async fn run_checks_with_dir(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
@@ -151,7 +148,11 @@ async fn private_key_correct_permissions() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "private_key_permissions");
     // Should have at least one Ok entry for our key.
-    assert!(matches.iter().any(|d| d.severity == Severity::Ok && d.message.contains("id_ed25519")));
+    assert!(
+        matches
+            .iter()
+            .any(|d| d.severity == Severity::Ok && d.message.contains("id_ed25519"))
+    );
 }
 
 #[cfg(unix)]
@@ -168,7 +169,11 @@ async fn private_key_wrong_permissions() {
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "private_key_permissions");
-    assert!(matches.iter().any(|d| d.severity == Severity::Error && d.message.contains("id_ed25519")));
+    assert!(
+        matches
+            .iter()
+            .any(|d| d.severity == Severity::Error && d.message.contains("id_ed25519"))
+    );
 }
 
 #[cfg(unix)]
@@ -347,7 +352,11 @@ async fn public_key_pair_present() {
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "public_key_pairs");
-    assert!(matches.iter().any(|d| d.severity == Severity::Ok && d.message.contains("id_ed25519")));
+    assert!(
+        matches
+            .iter()
+            .any(|d| d.severity == Severity::Ok && d.message.contains("id_ed25519"))
+    );
 }
 
 #[tokio::test]
@@ -358,7 +367,11 @@ async fn public_key_pair_missing_pub() {
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "public_key_pairs");
-    assert!(matches.iter().any(|d| d.severity == Severity::Warning && d.message.contains("no matching public key")));
+    assert!(
+        matches.iter().any(
+            |d| d.severity == Severity::Warning && d.message.contains("no matching public key")
+        )
+    );
 }
 
 #[tokio::test]
@@ -436,7 +449,11 @@ Host web
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "duplicate_host");
-    assert!(matches.iter().any(|d| d.severity == Severity::Warning && d.message.contains("'web'")));
+    assert!(
+        matches
+            .iter()
+            .any(|d| d.severity == Severity::Warning && d.message.contains("'web'"))
+    );
 }
 
 #[tokio::test]
@@ -668,9 +685,18 @@ Host busy-host
         "should warn about {} IdentityFile entries without IdentitiesOnly",
         7
     );
-    let warning = matches.iter().find(|d| d.severity == Severity::Warning).unwrap();
-    assert!(warning.message.contains("7"), "warning should mention key count");
-    assert!(warning.message.contains("IdentitiesOnly"), "warning should mention IdentitiesOnly");
+    let warning = matches
+        .iter()
+        .find(|d| d.severity == Severity::Warning)
+        .unwrap();
+    assert!(
+        warning.message.contains('7'),
+        "warning should mention key count"
+    );
+    assert!(
+        warning.message.contains("IdentitiesOnly"),
+        "warning should mention IdentitiesOnly"
+    );
 }
 
 #[tokio::test]
@@ -1052,10 +1078,7 @@ async fn max_auth_tries_info_when_ssh_add_fails() {
     let orig_sock = std::env::var("SSH_AUTH_SOCK").ok();
     // Point to a non-existent socket — ssh-add -l will fail.
     unsafe {
-        std::env::set_var(
-            "SSH_AUTH_SOCK",
-            "/tmp/toride_test_nonexistent_agent_socket",
-        );
+        std::env::set_var("SSH_AUTH_SOCK", "/tmp/toride_test_nonexistent_agent_socket");
     }
 
     let diags = run_max_auth_tries_check().await;
@@ -1129,11 +1152,10 @@ async fn max_auth_tries_classifies_key_count() {
             let hint = diags[0].hint.as_ref().unwrap();
             assert!(
                 hint.contains("ssh-add -D") || hint.contains("IdentitiesOnly"),
-                "hint should suggest reducing keys, got: {}",
-                hint,
+                "hint should suggest reducing keys, got: {hint}",
             );
         }
-        other => panic!("unexpected severity: {other:?}"),
+        other @ Severity::Error => panic!("unexpected severity: {other:?}"),
     }
 }
 
@@ -1164,8 +1186,7 @@ async fn max_auth_tries_warns_when_above_threshold() {
             .expect("Warning should have a remediation hint");
         assert!(
             hint.contains("ssh-add -D"),
-            "hint should suggest clearing keys with ssh-add -D, got: {}",
-            hint,
+            "hint should suggest clearing keys with ssh-add -D, got: {hint}",
         );
     }
 }
@@ -1205,8 +1226,7 @@ fn ssh_add_key(key_path: &std::path::Path) -> bool {
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+        .is_ok_and(|s| s.success())
 }
 
 /// Remove a key from the SSH agent using its public key file path.
@@ -1231,14 +1251,11 @@ fn agent_has_keys() -> bool {
     std::process::Command::new("ssh-add")
         .arg("-l")
         .output()
-        .map(|o| o.status.success() && !o.stdout.is_empty())
-        .unwrap_or(false)
+        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
 }
 
 /// Run the `AgentIdentityCheck` directly against the given SSH directory.
-async fn run_agent_identity_check(
-    ssh_dir: &std::path::Path,
-) -> Vec<toride_ssh_core::Diagnostic> {
+async fn run_agent_identity_check(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
     let check = AgentIdentityCheck { paths: &paths };
     check.run().await.unwrap()
@@ -1346,8 +1363,9 @@ async fn agent_identity_info_when_pub_file_missing() {
 
     let matches = find(&diags, "agent_identity");
     assert!(
-        matches.iter().any(|d| d.severity == Severity::Info
-            && d.message.contains("Cannot read public key")),
+        matches
+            .iter()
+            .any(|d| d.severity == Severity::Info && d.message.contains("Cannot read public key")),
         "expected Info 'Cannot read public key' diagnostic, got: {:?}",
         matches
             .iter()
@@ -1378,8 +1396,10 @@ async fn agent_identity_warns_when_key_not_in_agent() {
 
     let matches = find(&diags, "agent_identity");
     assert!(
-        matches.iter().any(|d| d.severity == Severity::Warning
-            && d.message.contains("Agent does not hold key")),
+        matches
+            .iter()
+            .any(|d| d.severity == Severity::Warning
+                && d.message.contains("Agent does not hold key")),
         "expected Warning 'Agent does not hold key' diagnostic, got: {:?}",
         matches
             .iter()
@@ -1421,9 +1441,7 @@ fn generate_rsa_key_pair(dir: &std::path::Path, name: &str, bits: u32) -> std::p
 }
 
 /// Run the `RsaWeakKeyCheck` directly against the given SSH directory.
-async fn run_rsa_weak_key_check(
-    ssh_dir: &std::path::Path,
-) -> Vec<toride_ssh_core::Diagnostic> {
+async fn run_rsa_weak_key_check(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
     let check = RsaWeakKeyCheck { paths: &paths };
     check.run().await.unwrap()
@@ -1454,10 +1472,7 @@ async fn rsa_weak_key_ok_for_4096_bits() {
         "message should say 'adequate', got: {}",
         diags[0].message,
     );
-    assert!(
-        diags[0].hint.is_none(),
-        "Ok diagnostic should have no hint"
-    );
+    assert!(diags[0].hint.is_none(), "Ok diagnostic should have no hint");
 }
 
 #[tokio::test]
@@ -1492,8 +1507,7 @@ async fn rsa_weak_key_warns_for_2048_bits() {
     let hint = diags[0].hint.as_ref().unwrap();
     assert!(
         hint.contains("ssh-keygen"),
-        "hint should suggest ssh-keygen, got: {}",
-        hint,
+        "hint should suggest ssh-keygen, got: {hint}",
     );
 }
 
@@ -1548,10 +1562,7 @@ async fn rsa_weak_key_skips_ed25519_key() {
         "should report no RSA keys found, got: {}",
         diags[0].message,
     );
-    assert!(
-        diags[0].hint.is_none(),
-        "Ok diagnostic should have no hint"
-    );
+    assert!(diags[0].hint.is_none(), "Ok diagnostic should have no hint");
 }
 
 // ---------------------------------------------------------------------------
@@ -1660,13 +1671,17 @@ Host mac-host
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].severity, Severity::Ok);
         assert!(
-            matches[0].message.contains("2"),
+            matches[0].message.contains('2'),
             "should mention 2 contexts, got: {}",
             matches[0].message,
         );
     } else {
         // On non-macOS, one Warning per UseKeychain context.
-        assert_eq!(matches.len(), 2, "expected 2 warnings for 2 UseKeychain contexts");
+        assert_eq!(
+            matches.len(),
+            2,
+            "expected 2 warnings for 2 UseKeychain contexts"
+        );
         assert!(matches.iter().all(|d| d.severity == Severity::Warning));
     }
 }
@@ -1722,8 +1737,7 @@ Host kerb-host
     assert!(
         matches.iter().any(|d| d.severity == Severity::Info
             && d.message.contains("GSSAPIAuthentication yes")),
-        "expected Info diagnostic listing GSSAPIAuthentication yes, got: {:?}",
-        matches,
+        "expected Info diagnostic listing GSSAPIAuthentication yes, got: {matches:?}",
     );
 }
 
@@ -1745,12 +1759,21 @@ Host kerb-host
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "gssapi_config");
-    let info = matches.iter().find(|d| d.severity == Severity::Info).unwrap();
+    let info = matches
+        .iter()
+        .find(|d| d.severity == Severity::Info)
+        .unwrap();
     assert!(info.message.contains("GSSAPIAuthentication yes"));
     assert!(info.message.contains("GSSAPIDelegateCredentials yes"));
     assert!(info.message.contains("GSSAPIServerIdentity example.com"));
-    assert!(info.message.contains("GSSAPIClientIdentity alice@EXAMPLE.COM"));
-    assert!(info.message.contains("Host kerb-host"), "should mention the Host block context");
+    assert!(
+        info.message
+            .contains("GSSAPIClientIdentity alice@EXAMPLE.COM")
+    );
+    assert!(
+        info.message.contains("Host kerb-host"),
+        "should mention the Host block context"
+    );
 }
 
 #[tokio::test]
@@ -1764,8 +1787,14 @@ async fn gssapi_config_top_level_directive() {
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "gssapi_config");
-    let info = matches.iter().find(|d| d.severity == Severity::Info).unwrap();
-    assert!(info.message.contains("top-level"), "should report top-level context");
+    let info = matches
+        .iter()
+        .find(|d| d.severity == Severity::Info)
+        .unwrap();
+    assert!(
+        info.message.contains("top-level"),
+        "should report top-level context"
+    );
 }
 
 #[tokio::test]
@@ -1787,8 +1816,7 @@ Host kerb-only
     assert!(
         matches.iter().any(|d| d.severity == Severity::Warning
             && d.message.contains("publickey authentication is excluded")),
-        "should warn when GSSAPI is the only authentication method, got: {:?}",
-        matches,
+        "should warn when GSSAPI is the only authentication method, got: {matches:?}",
     );
 }
 
@@ -1810,8 +1838,7 @@ Host kerb-plus-pubkey
     let matches = find(&diags, "gssapi_config");
     assert!(
         !matches.iter().any(|d| d.severity == Severity::Warning),
-        "should not warn when publickey is included in PreferredAuthentications, got: {:?}",
-        matches,
+        "should not warn when publickey is included in PreferredAuthentications, got: {matches:?}",
     );
 }
 
@@ -1833,8 +1860,7 @@ Host kerb-off
     let matches = find(&diags, "gssapi_config");
     assert!(
         !matches.iter().any(|d| d.severity == Severity::Warning),
-        "should not warn when GSSAPIAuthentication is no, got: {:?}",
-        matches,
+        "should not warn when GSSAPIAuthentication is no, got: {matches:?}",
     );
 }
 
@@ -1929,9 +1955,7 @@ async fn nfs_home_registered_in_run_all() {
 // ---------------------------------------------------------------------------
 
 /// Run `SELinuxContextCheck` directly against the given SSH directory.
-async fn run_selinux_context_check(
-    ssh_dir: &std::path::Path,
-) -> Vec<toride_ssh_core::Diagnostic> {
+async fn run_selinux_context_check(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
     let check = SELinuxContextCheck { paths: &paths };
     check.run().await.unwrap()
@@ -1949,8 +1973,7 @@ async fn selinux_context_skipped_on_non_linux() {
     // On non-Linux, the check returns no diagnostics (skipped entirely).
     assert!(
         diags.is_empty(),
-        "SELinux check should produce no diagnostics on non-Linux, got: {:?}",
-        diags,
+        "SELinux check should produce no diagnostics on non-Linux, got: {diags:?}",
     );
 }
 
@@ -1993,8 +2016,7 @@ async fn selinux_context_returns_valid_severity_on_linux() {
         Severity::Info => {
             // restorecon not available or SELinux not enabled.
             assert!(
-                diags[0].message.contains("restorecon")
-                    || diags[0].message.contains("SELinux"),
+                diags[0].message.contains("restorecon") || diags[0].message.contains("SELinux"),
                 "Info message should mention restorecon or SELinux, got: {}",
                 diags[0].message,
             );
@@ -2020,11 +2042,10 @@ async fn selinux_context_returns_valid_severity_on_linux() {
             let hint = diags[0].hint.as_ref().unwrap();
             assert!(
                 hint.contains("restorecon -Rv"),
-                "hint should suggest restorecon -Rv, got: {}",
-                hint,
+                "hint should suggest restorecon -Rv, got: {hint}",
             );
         }
-        other => panic!("unexpected severity: {other:?}"),
+        other @ Severity::Error => panic!("unexpected severity: {other:?}"),
     }
 }
 
@@ -2040,8 +2061,7 @@ async fn verify_host_key_dns_info_when_no_config() {
     assert!(!matches.is_empty());
     assert!(
         matches.iter().all(|d| d.severity == Severity::Info),
-        "expected Info when config is absent, got: {:?}",
-        matches
+        "expected Info when config is absent, got: {matches:?}"
     );
     // When no config file exists, the check reports that it cannot check.
     assert!(
@@ -2054,7 +2074,11 @@ async fn verify_host_key_dns_info_when_no_config() {
 #[tokio::test]
 async fn verify_host_key_dns_unknown_when_config_present_but_no_directive() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(dir.path().join("config"), "Host example.com\n    User alice\n").unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host example.com\n    User alice\n",
+    )
+    .unwrap();
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "verify_host_key_dns");
     assert!(!matches.is_empty());
@@ -2075,8 +2099,7 @@ async fn verify_host_key_dns_enabled() {
     // At least one diagnostic should say VerifyHostKeyDNS is enabled.
     assert!(
         matches.iter().any(|d| d.message.contains("set to 'yes'")),
-        "expected 'set to yes' in diagnostics, got: {:?}",
-        matches
+        "expected 'set to yes' in diagnostics, got: {matches:?}"
     );
 }
 
@@ -2125,7 +2148,6 @@ async fn verify_host_key_dns_enabled_reports_dns_check() {
     // Should include an SSHFP hint.
     assert!(
         matches.iter().any(|d| d.message.contains("SSHFP")),
-        "expected an SSHFP-related diagnostic, got: {:?}",
-        matches
+        "expected an SSHFP-related diagnostic, got: {matches:?}"
     );
 }

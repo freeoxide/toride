@@ -56,11 +56,15 @@ impl<'a> DnfBackend<'a> {
         let spec = check_updates_spec();
         // dnf check-update exits 100 when updates are available; treat that as
         // success (the data is on stdout) and only fail on runner errors.
-        let output = self.runner.run(&spec).map_err(|e| {
-            Error::CommandFailed(format!("dnf check-update failed: {e}"))
-        })?;
+        let output = self
+            .runner
+            .run(&spec)
+            .map_err(|e| Error::CommandFailed(format!("dnf check-update failed: {e}")))?;
         match output.exit_code {
-            Some(0 | 100) | None => crate::parse::parse_dnf_check(&output.stdout),
+            Some(0 | 100) => crate::parse::parse_dnf_check(&output.stdout),
+            None => Err(Error::CommandFailed(
+                "dnf check-update produced no exit code (terminated by signal?)".to_string(),
+            )),
             Some(code) => Err(Error::CommandFailed(format!(
                 "dnf check-update failed (exit {code})"
             ))),
@@ -147,8 +151,13 @@ fn apply_updates_spec() -> toride_runner::CommandSpec {
 /// Build the `journalctl` [`toride_runner::CommandSpec`] for the most recent
 /// dnf-automatic run.
 fn journal_spec() -> toride_runner::CommandSpec {
-    toride_runner::CommandSpec::new("journalctl")
-        .args(["-u", "dnf-automatic", "--no-pager", "-n", "50"])
+    toride_runner::CommandSpec::new("journalctl").args([
+        "-u",
+        "dnf-automatic",
+        "--no-pager",
+        "-n",
+        "50",
+    ])
 }
 
 // ---------------------------------------------------------------------------
@@ -194,8 +203,7 @@ mod tests {
 
     #[test]
     fn apply_updates_propagates_failure() {
-        let runner = FakeRunner::new()
-            .push_response(CommandOutput::from_stderr("repo locked", 1));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stderr("repo locked", 1));
         let err = DnfBackend::new(&runner).apply_updates().unwrap_err();
         assert!(err.to_string().contains("dnf-automatic failed"));
     }
@@ -219,10 +227,13 @@ Updates completed at Mon Jun  2 06:42:11 2025\n";
         assert!(status.auto_updates_enabled);
         assert_eq!(status.last_run.as_deref(), Some("Mon Jun  2 06:42:11 2025"));
         assert_eq!(status.pending_security, 2);
-        runner.assert_called_with(
-            &CommandSpec::new("journalctl")
-                .args(["-u", "dnf-automatic", "--no-pager", "-n", "50"]),
-        );
+        runner.assert_called_with(&CommandSpec::new("journalctl").args([
+            "-u",
+            "dnf-automatic",
+            "--no-pager",
+            "-n",
+            "50",
+        ]));
     }
 
     #[test]
@@ -237,7 +248,10 @@ Updates completed at Mon Jun  2 06:42:11 2025\n";
     fn command_specs_are_stable() {
         let check = DnfBackend::check_updates_spec_ref();
         assert_eq!(check.program, "dnf");
-        assert_eq!(check.args, vec!["check-update".to_owned(), "--security".to_owned()]);
+        assert_eq!(
+            check.args,
+            vec!["check-update".to_owned(), "--security".to_owned()]
+        );
 
         let apply = DnfBackend::apply_updates_spec_ref();
         assert_eq!(apply.program, "dnf-automatic");

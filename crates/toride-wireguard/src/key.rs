@@ -218,7 +218,7 @@ pub fn generate_private_key_with<R: Runner>(runner: &R) -> Result<PrivateKey> {
         .arg("genkey")
         .redact(true)
         .timeout(Duration::from_secs(WG_KEYGEN_TIMEOUT_SECS));
-    let output = runner.run_checked(&spec).map_err(keygen_error)?;
+    let output = runner.run_checked(&spec).map_err(|e| keygen_error(&e))?;
     let private_b64 = output.stdout_trimmed().to_owned();
     PrivateKey::from_base64(&private_b64)
 }
@@ -248,7 +248,7 @@ fn derive_public_key_with<R: Runner>(runner: &R, private_b64: &str) -> Result<Pu
         .stdin(private_b64)
         .redact(true)
         .timeout(Duration::from_secs(WG_KEYGEN_TIMEOUT_SECS));
-    let output = runner.run_checked(&spec).map_err(keygen_error)?;
+    let output = runner.run_checked(&spec).map_err(|e| keygen_error(&e))?;
     let public_b64 = output.stdout_trimmed().to_owned();
     PublicKey::from_base64(&public_b64)
 }
@@ -260,7 +260,7 @@ fn default_runner() -> toride_runner::DuctRunner {
 
 /// Translate a runner error into [`Error::KeyGeneration`] (or
 /// [`Error::BinaryNotFound`] when the `wg` binary is absent).
-fn keygen_error(err: toride_runner::Error) -> Error {
+fn keygen_error(err: &toride_runner::Error) -> Error {
     // A missing `wg` binary surfaces as a spawn/NotFound error from the runner.
     let msg = err.to_string();
     if msg.contains("not found") || msg.contains("No such file") || msg.contains("ENOENT") {
@@ -304,9 +304,7 @@ mod tests {
         let key = generate_private_key_with(&runner).unwrap();
         assert_eq!(key.as_base64(), TEST_PRIVATE);
 
-        runner.assert_called_with(
-            &CommandSpec::new("wg").arg("genkey").redact(true),
-        );
+        runner.assert_called_with(&CommandSpec::new("wg").arg("genkey").redact(true));
     }
 
     /// `generate_keypair` chains `wg genkey` -> `wg pubkey` and redacts both.
@@ -324,8 +322,10 @@ mod tests {
 
         let calls = runner.calls();
         // Both calls must target `wg` and be redacted.
-        assert!(calls.iter().all(|c| c.program == "wg" && c.redact),
-            "all keygen commands must be redacted: {calls:?}");
+        assert!(
+            calls.iter().all(|c| c.program == "wg" && c.redact),
+            "all keygen commands must be redacted: {calls:?}"
+        );
         // The pubkey call must carry the private key on stdin.
         let pubkey_call = calls
             .iter()
@@ -344,7 +344,10 @@ mod tests {
         assert_eq!(pub_key.as_base64(), TEST_PUBLIC);
 
         runner.assert_called_with(
-            &CommandSpec::new("wg").arg("pubkey").stdin(TEST_PRIVATE).redact(true),
+            &CommandSpec::new("wg")
+                .arg("pubkey")
+                .stdin(TEST_PRIVATE)
+                .redact(true),
         );
     }
 
@@ -374,8 +377,9 @@ mod tests {
     /// `wg pubkey` output is trimmed before validation (trailing newline).
     #[test]
     fn public_key_output_is_trimmed() {
-        let runner = toride_runner::fake::FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout(format!("{TEST_PUBLIC}\n")));
+        let runner = toride_runner::fake::FakeRunner::new().push_response(
+            toride_runner::CommandOutput::from_stdout(format!("{TEST_PUBLIC}\n")),
+        );
         let priv_key = PrivateKey::from_base64(TEST_PRIVATE).unwrap();
         let pub_key = priv_key.public_key_with(&runner).unwrap();
         assert_eq!(pub_key.as_base64(), TEST_PUBLIC);

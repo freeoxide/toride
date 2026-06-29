@@ -97,7 +97,12 @@ where
         if output.success {
             Ok(())
         } else {
-            Err(command_failed("wg-quick up", &self.interface, &spec, &output))
+            Err(command_failed(
+                "wg-quick up",
+                &self.interface,
+                &spec,
+                &output,
+            ))
         }
     }
 
@@ -113,7 +118,12 @@ where
         if output.success {
             Ok(())
         } else {
-            Err(command_failed("wg-quick down", &self.interface, &spec, &output))
+            Err(command_failed(
+                "wg-quick down",
+                &self.interface,
+                &spec,
+                &output,
+            ))
         }
     }
 
@@ -149,7 +159,7 @@ where
         tracing::debug!("checking if interface {} is active", self.interface);
         let mgr = self.service_manager();
         mgr.is_active(&self.service_name())
-            .map_err(service_error_to_crate)
+            .map_err(|e| service_error_to_crate(&e))
     }
 
     /// Enable the service to start on boot via systemd.
@@ -161,7 +171,7 @@ where
         tracing::info!("enabling WireGuard service {}", self.service_name());
         let mgr = self.service_manager();
         mgr.enable(&self.service_name())
-            .map_err(service_error_to_crate)
+            .map_err(|e| service_error_to_crate(&e))
     }
 
     /// Disable the service from starting on boot.
@@ -173,7 +183,7 @@ where
         tracing::info!("disabling WireGuard service {}", self.service_name());
         let mgr = self.service_manager();
         mgr.disable(&self.service_name())
-            .map_err(service_error_to_crate)
+            .map_err(|e| service_error_to_crate(&e))
     }
 
     /// Return a reference to the underlying runner.
@@ -207,7 +217,10 @@ impl<R: Runner + Send + Sync> Clone for RunnerRef<R> {
 }
 
 impl<R: Runner + Send + Sync> Runner for RunnerRef<R> {
-    fn run(&self, spec: &CommandSpec) -> std::result::Result<toride_runner::CommandOutput, toride_runner::Error> {
+    fn run(
+        &self,
+        spec: &CommandSpec,
+    ) -> std::result::Result<toride_runner::CommandOutput, toride_runner::Error> {
         self.0.run(spec)
     }
 }
@@ -245,7 +258,7 @@ fn command_failed(
 }
 
 /// Map a `toride_service::Error` into the crate error type.
-fn service_error_to_crate(err: toride_service::Error) -> Error {
+fn service_error_to_crate(err: &toride_service::Error) -> Error {
     Error::CommandFailed(err.to_string())
 }
 
@@ -297,8 +310,10 @@ mod tests {
 
     #[test]
     fn up_propagates_failure() {
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stderr("no such interface", 1));
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(
+            "no such interface",
+            1,
+        ));
         let svc = WireguardService::with_runner("wg0", runner);
         let err = svc.up().unwrap_err();
         assert!(matches!(err, Error::CommandFailed(_)), "got {err:?}");
@@ -317,8 +332,8 @@ mod tests {
         // bounded real-world stderr round-trips into the error message.
         let stderr = "wg-quick: '/etc/wireguard/wg0.conf' does not exist\n\
                       RTNETLINK answers: No such device\n";
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stderr(stderr, 1));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(stderr, 1));
         let svc = WireguardService::with_runner("wg0", runner);
         let err = svc.up().unwrap_err();
         match err {
@@ -337,14 +352,17 @@ mod tests {
         // failure burst cannot blow up the error variant. This is the
         // consistency guarantee net.rs already relied on.
         let big = "x".repeat(toride_runner::display::STDERR_CAP_BYTES + 5_000);
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stderr(&big, 1));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(&big, 1));
         let svc = WireguardService::with_runner("wg0", runner);
         let err = svc.up().unwrap_err();
         match err {
             Error::CommandFailed(msg) => {
                 // Marker appended by scrub_stderr when it truncates.
-                assert!(msg.contains(toride_runner::display::STDERR_TRUNCATION_MARKER), "got: {msg}");
+                assert!(
+                    msg.contains(toride_runner::display::STDERR_TRUNCATION_MARKER),
+                    "got: {msg}"
+                );
                 assert!(msg.len() < big.len(), "must be capped");
             }
             other => panic!("expected CommandFailed, got {other:?}"),
@@ -368,14 +386,13 @@ mod tests {
     fn is_active_queries_systemctl_via_service_manager() {
         // `systemctl is-active` returns exit 0 with "active" on stdout when active.
         // The same injected runner backs both wg-quick and the ServiceManager.
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout("active"));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout("active"));
         let svc = WireguardService::with_runner("wg0", runner);
         let active = svc.is_active().unwrap();
         assert!(active);
-        svc.runner().assert_called_with(
-            &CommandSpec::new("systemctl").args(["is-active", "wg-quick@wg0"]),
-        );
+        svc.runner()
+            .assert_called_with(&CommandSpec::new("systemctl").args(["is-active", "wg-quick@wg0"]));
     }
 
     #[test]

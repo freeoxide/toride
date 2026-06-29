@@ -209,7 +209,11 @@ pub fn convert_recipes(installed: &[bool]) -> Vec<RecipeEntry> {
                 },
                 category: def.category.into(),
                 description: def.description.into(),
-                status: if is_ready { "ready".into() } else { "available".into() },
+                status: if is_ready {
+                    "ready".into()
+                } else {
+                    "available".into()
+                },
                 target_tool: if def.target_binary.is_empty() {
                     "(none)".into()
                 } else {
@@ -243,7 +247,10 @@ pub fn convert_findings(installed: &[bool]) -> Vec<FindingEntry> {
             severity: "info".into(),
             title: format!("{} target tool not installed", def.name),
             detail: String::new(),
-            fix: Some(format!("install {} to enable this recipe", def.target_binary)),
+            fix: Some(format!(
+                "install {} to enable this recipe",
+                def.target_binary
+            )),
         })
         .collect()
 }
@@ -458,7 +465,9 @@ mod tests {
         // Every fix hint must reference the recipe's target binary.
         for (def, f) in catalogue().iter().zip(findings.iter()) {
             assert!(
-                f.fix.as_deref().is_some_and(|s| s.contains(def.target_binary)),
+                f.fix
+                    .as_deref()
+                    .is_some_and(|s| s.contains(def.target_binary)),
                 "fix '{:?}' must mention target '{}'",
                 f.fix,
                 def.target_binary

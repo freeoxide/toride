@@ -25,8 +25,8 @@ pub fn validate_audit_rule(rule: &str) -> crate::Result<()> {
 
     // Check for a recognized flag prefix.
     let valid_prefixes = [
-        "-a ", "-A ", "-d ", "-D ", "-S ", "-F ", "-m ", "-s ", "-l ", "-e ",
-        "-k ", "-w ", "-p ", "-W ",
+        "-a ", "-A ", "-d ", "-D ", "-S ", "-F ", "-m ", "-s ", "-l ", "-e ", "-k ", "-w ", "-p ",
+        "-W ",
     ];
 
     let has_valid_prefix = valid_prefixes

@@ -190,7 +190,10 @@ Local connections:
 
 #[test]
 fn extract_host_from_name_no_at_sign() {
-    assert_eq!(extract_host_from_name("some-random-name"), "some-random-name");
+    assert_eq!(
+        extract_host_from_name("some-random-name"),
+        "some-random-name"
+    );
 }
 
 #[test]
@@ -312,7 +315,10 @@ fn extract_host_from_name_very_long() {
 
 #[test]
 fn extract_host_from_name_with_underscores() {
-    assert_eq!(extract_host_from_name("cm-user_name@host_name:22"), "host_name");
+    assert_eq!(
+        extract_host_from_name("cm-user_name@host_name:22"),
+        "host_name"
+    );
 }
 
 #[test]
@@ -323,7 +329,10 @@ fn extract_host_from_name_with_hyphens() {
 #[test]
 fn extract_pid_from_name_at_boundary() {
     assert_eq!(extract_pid_from_name("ssh-hash-1"), Some(1));
-    assert_eq!(extract_pid_from_name("ssh-hash-4294967295"), Some(4294967295)); // u32::MAX
+    assert_eq!(
+        extract_pid_from_name("ssh-hash-4294967295"),
+        Some(4294967295)
+    ); // u32::MAX
 }
 
 #[test]
@@ -390,7 +399,10 @@ fn parse_forward_line_with_port_65535() {
 
 #[test]
 fn extract_host_from_name_with_numbers() {
-    assert_eq!(extract_host_from_name("cm-user@192.168.1.1:22"), "192.168.1.1");
+    assert_eq!(
+        extract_host_from_name("cm-user@192.168.1.1:22"),
+        "192.168.1.1"
+    );
 }
 
 #[test]
@@ -401,10 +413,7 @@ fn extract_host_from_name_bare_ipv6_loopback() {
 
 #[test]
 fn extract_host_from_name_bare_ipv6_full() {
-    assert_eq!(
-        extract_host_from_name("cm-user@fe80::1:22"),
-        "fe80::1"
-    );
+    assert_eq!(extract_host_from_name("cm-user@fe80::1:22"), "fe80::1");
 }
 
 #[test]
@@ -437,7 +446,11 @@ fn cancel_spec_with_empty_remote_addr() {
         "[{}]:{}:{}:{}",
         fwd.local_addr,
         fwd.local_port,
-        if fwd.remote_addr.is_empty() { "localhost" } else { &fwd.remote_addr },
+        if fwd.remote_addr.is_empty() {
+            "localhost"
+        } else {
+            &fwd.remote_addr
+        },
         fwd.remote_port
     );
     assert_eq!(spec, "[127.0.0.1]:8080:localhost:80");
@@ -571,10 +584,7 @@ fn extract_pid_from_name_overflow() {
 
 #[test]
 fn extract_host_from_name_bracketed_ipv6() {
-    assert_eq!(
-        extract_host_from_name("cm-user@[::1]:22"),
-        "::1"
-    );
+    assert_eq!(extract_host_from_name("cm-user@[::1]:22"), "::1");
 }
 
 #[test]
@@ -587,10 +597,7 @@ fn extract_host_from_name_bracketed_ipv6_full_addr() {
 
 #[test]
 fn extract_host_from_name_bracketed_ipv6_no_port() {
-    assert_eq!(
-        extract_host_from_name("cm-user@[::1]"),
-        "::1"
-    );
+    assert_eq!(extract_host_from_name("cm-user@[::1]"), "::1");
 }
 
 #[test]
@@ -603,10 +610,7 @@ fn extract_host_from_name_bracketed_ipv6_long() {
 
 #[test]
 fn extract_host_from_name_bare_ipv6_high_port() {
-    assert_eq!(
-        extract_host_from_name("mux-user@::1:65535"),
-        "::1"
-    );
+    assert_eq!(extract_host_from_name("mux-user@::1:65535"), "::1");
 }
 
 // ---------------------------------------------------------------------------
@@ -722,16 +726,16 @@ async fn cancel_forward_invalid_control_path() {
 
 /// Fake SSH script that exits successfully for `-O exit`.
 #[cfg(unix)]
-const FAKE_SSH_EXIT_SCRIPT: &str = r#"#!/bin/sh
+const FAKE_SSH_EXIT_SCRIPT: &str = r"#!/bin/sh
 exit 0
-"#;
+";
 
 /// Fake SSH script that exits with failure for `-O exit`, simulating a
 /// stale/dead control socket where the master process is already gone.
 #[cfg(unix)]
-const FAKE_SSH_EXIT_FAIL_SCRIPT: &str = r#"#!/bin/sh
+const FAKE_SSH_EXIT_FAIL_SCRIPT: &str = r"#!/bin/sh
 exit 1
-"#;
+";
 
 /// Successful session exit: `ssh -O exit` succeeds and the socket file is
 /// cleaned up.
@@ -788,10 +792,7 @@ async fn exit_session_stale_socket_cleanup() {
     assert!(result.is_err(), "expected error from failed ssh -O exit");
     match &result {
         Err(Error::CommandFailed(msg)) => {
-            assert!(
-                msg.contains("ssh -O exit"),
-                "unexpected message: {msg}"
-            );
+            assert!(msg.contains("ssh -O exit"), "unexpected message: {msg}");
         }
         other => panic!("expected Error::CommandFailed, got: {other:?}"),
     }
@@ -832,15 +833,15 @@ async fn exit_session_invalid_control_path() {
 
 /// Fake SSH script that always succeeds for `-O check` (socket is alive).
 #[cfg(unix)]
-const FAKE_SSH_CHECK_ALIVE_SCRIPT: &str = r#"#!/bin/sh
+const FAKE_SSH_CHECK_ALIVE_SCRIPT: &str = r"#!/bin/sh
 exit 0
-"#;
+";
 
 /// Fake SSH script that always fails for `-O check` (socket is dead/stale).
 #[cfg(unix)]
-const FAKE_SSH_CHECK_DEAD_SCRIPT: &str = r#"#!/bin/sh
+const FAKE_SSH_CHECK_DEAD_SCRIPT: &str = r"#!/bin/sh
 exit 1
-"#;
+";
 
 /// Fake SSH script that succeeds for `-O check` only when the control path
 /// (passed via `-S`) contains the substring "alive".
@@ -859,7 +860,7 @@ case "$path" in
 esac
 "#;
 
-/// Session discovery: all sockets in the ssh_dir are alive and returned.
+/// Session discovery: all sockets in the `ssh_dir` are alive and returned.
 ///
 /// Creates three Unix sockets matching `cm-*`, `control-*`, and `mux-*`
 /// patterns, then verifies all are discovered with correct host extraction.
@@ -922,7 +923,7 @@ async fn list_sessions_discovers_valid_sockets() {
 /// No alive sessions: sockets exist but all fail the `-O check`.
 ///
 /// Uses a fake SSH that always returns failure, ensuring every candidate
-/// (from both ssh_dir and /tmp) is filtered out.
+/// (from both `ssh_dir` and /tmp) is filtered out.
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
@@ -953,7 +954,7 @@ async fn list_sessions_none_alive() {
     );
 }
 
-/// Empty ssh_dir with no matching socket files.
+/// Empty `ssh_dir` with no matching socket files.
 #[cfg(unix)]
 #[tokio::test]
 #[serial]
@@ -1038,12 +1039,7 @@ async fn list_sessions_mixed_alive_and_dead() {
 
     // Dead sockets must not appear.
     for session in &our_sessions {
-        let name = session
-            .control_path
-            .file_name()
-            .unwrap()
-            .to_str()
-            .unwrap();
+        let name = session.control_path.file_name().unwrap().to_str().unwrap();
         assert!(
             !name.contains("dead"),
             "dead socket should not appear: {name}"
@@ -1121,7 +1117,7 @@ async fn list_sessions_accepts_candidate_files() {
     assert_eq!(our_session.unwrap().host, "myhost");
 }
 
-/// Non-existent ssh_dir: function handles missing directory gracefully.
+/// Non-existent `ssh_dir`: function handles missing directory gracefully.
 #[cfg(unix)]
 #[tokio::test]
 #[serial]

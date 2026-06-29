@@ -1,4 +1,4 @@
-//! SSH_ASKPASS handler for passphrase prompts.
+//! `SSH_ASKPASS` handler for passphrase prompts.
 //!
 //! When SSH tools (like `ssh-add`) need a passphrase, they check the
 //! `SSH_ASKPASS` environment variable for a program to run. This module
@@ -31,12 +31,23 @@
 //!   needed to minimize the window during which the script exists on disk.
 //! - The passphrase is embedded in the script content; anyone who can read the
 //!   file can recover it.
+//! - The owned copy of the passphrase used to build the script is overwritten
+//!   with zeros (via `zeroize`) once the script has been written and flushed,
+//!   so it is not left resident in memory beyond the construction call.
+//! - On Windows the script is created with `OpenOptions::create_new(true)`
+//!   (`CREATE_NEW`) so a name collision fails loudly rather than silently
+//!   overwriting another handler's file; per-file ACL hardening relies on the
+//!   per-user `%TEMP%` directory ACL.
+//! - The passphrase never appears in process `argv`, parent stdout/stderr, or
+//!   `CommandFailed` error strings — only the script's filesystem path is
+//!   included in errors.
 
 use std::path::PathBuf;
 
 use toride_ssh_core::{Error, Result};
+use zeroize::Zeroize;
 
-/// A temporary SSH_ASKPASS script that outputs a stored passphrase.
+/// A temporary `SSH_ASKPASS` script that outputs a stored passphrase.
 ///
 /// Create one of these before running `ssh-add` (or any SSH tool that may
 /// prompt for a passphrase) and use [`apply_to_command`](Self::apply_to_command)
@@ -76,6 +87,7 @@ impl AskpassHandler {
     }
 
     /// Return the path to the temporary askpass script.
+    #[must_use]
     pub fn script_path(&self) -> &std::path::Path {
         &self.script_path
     }
@@ -92,10 +104,7 @@ impl AskpassHandler {
     /// `SSH_ASKPASS_REQUIRE=force` overrides the check for whether a terminal
     /// is available, ensuring the askpass program is always used.
     #[allow(clippy::needless_pass_by_value)]
-    pub fn apply_to_command(
-        &self,
-        cmd: duct::Expression,
-    ) -> duct::Expression {
+    pub fn apply_to_command(&self, cmd: duct::Expression) -> duct::Expression {
         cmd.env("SSH_ASKPASS", &self.script_path)
             .env("SSH_ASKPASS_REQUIRE", "force")
             .env("DISPLAY", ":0")
@@ -121,8 +130,18 @@ impl AskpassHandler {
     /// `dir` lets tests pass a dedicated [`tempfile::TempDir`] to avoid
     /// cross-test interference in the shared system temp directory.
     fn create_script_in(passphrase: &str, dir: &std::path::Path) -> Result<PathBuf> {
+        use std::io::Write;
         #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
+
+        // Copy the passphrase into an owned, zeroizable buffer. The script
+        // content is derived from this copy; once the file has been written
+        // and flushed we overwrite the buffer so the cleartext passphrase does
+        // not linger in memory (or in this stack frame's leftover `String`
+        // allocation) any longer than necessary. The caller still owns the
+        // original `&str` and is responsible for its lifetime.
+        let mut passphrase_buf = passphrase.to_string();
+
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -133,13 +152,16 @@ impl AskpassHandler {
             .replace("ThreadId(", "")
             .replace(')', "");
         let filename = format!("toride-askpass-{pid}-{tid}-{ts}");
-        let script_path = dir.join(&filename);
+        // `mut` is only reassigned on Windows (to publish the `.bat` path);
+        // on Unix it stays as declared.
+        #[cfg_attr(unix, allow(unused_mut))]
+        let mut script_path = dir.join(&filename);
 
         // On Unix, write a shell script. On Windows, write a batch file.
         #[cfg(unix)]
         {
             // Escape single quotes in the passphrase for safe shell embedding.
-            let escaped = passphrase.replace('\'', "'\\''");
+            let escaped = passphrase_buf.replace('\'', "'\\''");
             let script_content = format!("#!/bin/sh\necho '{escaped}'\n");
 
             // Write atomically via a hidden sibling + `rename(2)`.
@@ -184,7 +206,6 @@ impl AskpassHandler {
                         tmp_path.display()
                     ))
                 })?;
-            use std::io::Write;
             file.write_all(script_content.as_bytes()).map_err(|e| {
                 Error::CommandFailed(format!(
                     "failed to write askpass script {}: {e}",
@@ -226,7 +247,7 @@ impl AskpassHandler {
             // - `"` → `""` — embeds a literal double-quote inside the
             //   `set "VAR=value"` assignment (Windows 10+ / Server 2016+).
             let bat_path = script_path.with_extension("bat");
-            let escaped = passphrase
+            let escaped = passphrase_buf
                 .replace('%', "%%")
                 .replace('!', "^^!")
                 .replace('"', "\"\"");
@@ -236,18 +257,81 @@ impl AskpassHandler {
                  set \"PASSPHRASE={escaped}\"\r\n\
                  echo !PASSPHRASE!\r\n"
             );
-            std::fs::write(&bat_path, &script_content).map_err(|e| {
+
+            // Write via a hidden sibling + `MoveFileEx` (atomic rename), the
+            // Windows analogue of the Unix branch. The previous implementation
+            // used `std::fs::write`, which (a) silently overwrites any file
+            // already at the destination — a name collision would clobber
+            // another handler's script — and (b) opens the destination path
+            // for writing and hands it out to readers while the write may
+            // still be buffered, mirroring the `ETXTBSY`/sharing-violation
+            // window the Unix branch already avoids.
+            //
+            // We use `OpenOptions::create_new(true)` (`CREATE_NEW`) so a name
+            // collision fails loudly instead of silently overwriting, then
+            // `fsync` and atomically rename the sibling into place. After the
+            // rename, the destination has never been opened for writing by the
+            // process, so no concurrent reader can observe a half-written file
+            // or hit a sharing violation.
+            //
+            // ACL hardening: unlike the Unix `0o700` mode, we do not pin an
+            // explicit DACL here. `%TEMP%` / `%USERPROFILE%` are created with
+            // an ACL that grants access only to the current user (and
+            // administrators) by default, which is the same effective
+            // protection. Tightening the per-file ACL would require a Windows
+            // ACL crate; we rely on the per-user temp-directory ACL instead.
+            // The `create_new` guard above is the load-bearing safety
+            // improvement over `std::fs::write`.
+            let tmp_path = {
+                let mut name = filename.clone();
+                name.push_str(".tmp");
+                dir.join(&name)
+            };
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&tmp_path)
+                .map_err(|e| {
+                    Error::CommandFailed(format!(
+                        "failed to create askpass script {}: {e}",
+                        tmp_path.display()
+                    ))
+                })?;
+            file.write_all(script_content.as_bytes()).map_err(|e| {
                 Error::CommandFailed(format!(
                     "failed to write askpass script {}: {e}",
+                    tmp_path.display()
+                ))
+            })?;
+            // Flush data + metadata so the renamed file is fully on disk.
+            let _ = file.sync_all();
+            drop(file);
+
+            // Atomically publish the script at its final path. A same-volume
+            // `rename` is atomic on Windows (MoveFileEx with
+            // MOVEFILE_REPLACE_EXISTING is not used, so a pre-existing
+            // destination surfaces as an error rather than a silent
+            // overwrite).
+            std::fs::rename(&tmp_path, &bat_path).map_err(|e| {
+                // Best-effort cleanup of the temp file if rename failed.
+                let _ = std::fs::remove_file(&tmp_path);
+                Error::CommandFailed(format!(
+                    "failed to publish askpass script {}: {e}",
                     bat_path.display()
                 ))
             })?;
-            // Return the actual written path so Drop cleanup removes the
-            // correct file (the .bat, not the extensionless original).
-            return Ok(bat_path);
+            // The actual written file is the .bat, not the extensionless
+            // original; publish it so Drop cleanup removes the correct file.
+            script_path = bat_path;
         }
 
-        #[allow(unreachable_code)]
+        // The script has been written and flushed on both platforms; the
+        // cleartext passphrase is no longer needed in this frame. Overwrite our
+        // owned copy so it is not left resident in memory (or in the freed
+        // allocation) any longer than necessary. The caller still owns the
+        // original `&str` and is responsible for its lifetime.
+        passphrase_buf.zeroize();
+
         Ok(script_path)
     }
 }
@@ -273,9 +357,7 @@ mod tests {
     /// The `TempDir` is returned alongside the handler so the caller keeps it
     /// alive (and thus the directory on disk) for the duration of the test; it
     /// is removed automatically when it goes out of scope.
-    fn handler_in_tempdir(
-        passphrase: &str,
-    ) -> (tempfile::TempDir, AskpassHandler) {
+    fn handler_in_tempdir(passphrase: &str) -> (tempfile::TempDir, AskpassHandler) {
         let dir = tempfile::TempDir::new().expect("failed to create temp dir");
         let handler = AskpassHandler::new_in_dir(passphrase, dir.path())
             .expect("failed to create askpass handler");
@@ -308,10 +390,7 @@ mod tests {
             assert!(path.exists());
         }
         // After drop, the file should be gone.
-        assert!(
-            !path.exists(),
-            "askpass script should be removed on drop"
-        );
+        assert!(!path.exists(), "askpass script should be removed on drop");
     }
 
     #[test]
@@ -432,7 +511,9 @@ mod tests {
         let dir = tempfile::TempDir::new().expect("failed to create temp dir");
         let handler = AskpassHandler::new_in_dir("idempotent-test", dir.path());
         // Skip test if script creation fails (e.g., temp dir issues).
-        let Ok(handler) = handler else { return; };
+        let Ok(handler) = handler else {
+            return;
+        };
         handler.cleanup();
         // Second cleanup should not panic.
         handler.cleanup();

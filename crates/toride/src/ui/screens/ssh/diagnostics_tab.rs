@@ -15,11 +15,11 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::ssh_data::SshOp;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
-    ConfirmModal, ConfirmResult, FormModal, FormResult, Modal, TextInput, Dropdown,
+    ConfirmModal, ConfirmResult, Dropdown, FormModal, FormResult, Modal, TextInput,
     render_titled_panel,
 };
 
@@ -62,7 +62,7 @@ pub struct DiagnosticsTab {
     form: FormModal,
     /// Confirm modal for fix all operation.
     confirm: ConfirmModal,
-    /// Pending write operations to be drained by the parent SshContent.
+    /// Pending write operations to be drained by the parent `SshContent`.
     pending_ops: Vec<SshOp>,
 }
 
@@ -135,14 +135,14 @@ impl DiagnosticsTab {
 
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                if let Some(mr) = self.detail_modal_rect {
-                    let col = mouse.column;
-                    let row = mouse.row;
-                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
-                        self.detail_open = None;
-                        self.detail_modal_rect = None;
-                    }
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && let Some(mr) = self.detail_modal_rect
+            {
+                let col = mouse.column;
+                let row = mouse.row;
+                if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
+                    self.detail_open = None;
+                    self.detail_modal_rect = None;
                 }
             }
             return None;
@@ -169,11 +169,9 @@ impl DiagnosticsTab {
                     self.clamp_scroll();
                 }
             }
-            MouseEventKind::ScrollUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.clamp_scroll();
-                }
+            MouseEventKind::ScrollUp if self.selected > 0 => {
+                self.selected -= 1;
+                self.clamp_scroll();
             }
             _ => {}
         }
@@ -208,18 +206,16 @@ impl SshTab for DiagnosticsTab {
         } else if let Some(action) = self.action_modal {
             // Action modal is open: delegate to it.
             match action {
-                ActionModal::Run => {
-                    match self.form.handle_key(code) {
-                        FormResult::Submitted => {
-                            self.pending_ops.push(SshOp::DoctorRunChecks);
-                            self.action_modal = None;
-                        }
-                        FormResult::Cancelled => {
-                            self.action_modal = None;
-                        }
-                        FormResult::Pending => {}
+                ActionModal::Run => match self.form.handle_key(code) {
+                    FormResult::Submitted => {
+                        self.pending_ops.push(SshOp::DoctorRunChecks);
+                        self.action_modal = None;
                     }
-                }
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                    }
+                    FormResult::Pending => {}
+                },
                 ActionModal::FixAll => {
                     match self.confirm.handle_key(code) {
                         Some(ConfirmResult::Confirmed) => {
@@ -261,16 +257,18 @@ impl SshTab for DiagnosticsTab {
                 KeyCode::Char('r') => {
                     self.form = FormModal::new(40)
                         .text_field(TextInput::new("Filter", 30).placeholder("check id or module"))
-                        .select_field(Dropdown::new("Scope", vec!["All", "Local", "Config", "Agent", "Known Hosts"], 16));
+                        .select_field(Dropdown::new(
+                            "Scope",
+                            vec!["All", "Local", "Config", "Agent", "Known Hosts"],
+                            16,
+                        ));
                     self.action_modal = Some(ActionModal::Run);
                     None
                 }
                 KeyCode::Char('f') => {
                     let fixable_count = self.entries.iter().filter(|e| e.hint.is_some()).count();
-                    self.confirm = ConfirmModal::new(format!(
-                        "Fix {} auto-fixable issue(s)?",
-                        fixable_count
-                    ));
+                    self.confirm =
+                        ConfirmModal::new(format!("Fix {fixable_count} auto-fixable issue(s)?"));
                     self.action_modal = Some(ActionModal::FixAll);
                     None
                 }
@@ -282,23 +280,27 @@ impl SshTab for DiagnosticsTab {
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
         if self.entries.is_empty() {
-            self.render_empty(frame, area, p);
+            Self::render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_open {
-            if let Some(entry) = self.entries.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &entry);
-            }
+        if let Some(idx) = self.detail_open
+            && let Some(entry) = self.entries.get(idx).cloned()
+        {
+            self.render_detail_modal(frame, p, &entry);
         }
 
         // Render action modal on top
         match self.action_modal {
             Some(ActionModal::Run) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Run Diagnostics", 52, 16,
+                    frame,
+                    p,
+                    "Run Diagnostics",
+                    52,
+                    16,
                     "Tab to cycle fields, Enter to run, Esc to cancel",
                 );
             }
@@ -331,17 +333,24 @@ impl SshTab for DiagnosticsTab {
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 impl DiagnosticsTab {
-    fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_empty(frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " DIAGNOSTICS ", p.text, false);
         let msg = Line::from(vec![
             Span::styled("No diagnostic findings", Style::new().fg(p.text_dim)),
-            Span::styled("  r", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  r",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" run checks", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_list(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(
             frame,
@@ -442,63 +451,69 @@ impl DiagnosticsTab {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
         let viewport = Viewport::from_area(area);
-        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
+        self.buttons
+            .render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, entry: &DiagnosticEntry) {
         let modal = Modal::new("Diagnostic Detail").dimensions(56, 10);
         self.detail_modal_rect = Some(modal.rect(frame.area()));
         modal.render(frame, p, |frame, content_area| {
-                let (icon, icon_color) = match entry.severity.as_str() {
-                    "ok" => ("✓", p.ok),
-                    "info" => ("ℹ", p.info),
-                    "warning" => ("⚠", p.warn),
-                    "error" => ("✗", p.err),
-                    _ => ("·", p.text_dim),
-                };
+            let (icon, icon_color) = match entry.severity.as_str() {
+                "ok" => ("✓", p.ok),
+                "info" => ("ℹ", p.info),
+                "warning" => ("⚠", p.warn),
+                "error" => ("✗", p.err),
+                _ => ("·", p.text_dim),
+            };
 
-                let mut lines = vec![
-                    Line::from(vec![
-                        Span::styled("Check:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.id, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Status:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            format!("{icon} {}", entry.severity),
-                            Style::new().fg(icon_color),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Module:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.module, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Message: ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.message, Style::new().fg(p.text)),
-                    ]),
-                ];
+            let mut lines = vec![
+                Line::from(vec![
+                    Span::styled("Check:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.id, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Status:  ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        format!("{icon} {}", entry.severity),
+                        Style::new().fg(icon_color),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Module:  ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.module, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Message: ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.message, Style::new().fg(p.text)),
+                ]),
+            ];
 
-                if let Some(hint) = &entry.hint {
-                    lines.push(Line::from(vec![
-                        Span::styled("Hint:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(hint, Style::new().fg(p.accent)),
-                    ]));
+            if let Some(hint) = &entry.hint {
+                lines.push(Line::from(vec![
+                    Span::styled("Hint:    ", Style::new().fg(p.text_dim)),
+                    Span::styled(hint, Style::new().fg(p.accent)),
+                ]));
+            }
+
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Press Esc to close",
+                Style::new().fg(p.text_muted),
+            )));
+
+            for (i, line) in lines.into_iter().enumerate() {
+                let y = content_area.y + i as u16;
+                if y < content_area.bottom() {
+                    let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+                    frame.render_widget(Paragraph::new(line), row_area);
                 }
-
-                lines.push(Line::raw(""));
-                lines.push(Line::from(
-                    Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
-                ));
-
-                for (i, line) in lines.into_iter().enumerate() {
-                    let y = content_area.y + i as u16;
-                    if y < content_area.bottom() {
-                        let row_area = Rect::new(content_area.x, y, content_area.width, 1);
-                        frame.render_widget(Paragraph::new(line), row_area);
-                    }
-                }
-            });
+            }
+        });
     }
 }
 
@@ -612,7 +627,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("No diagnostic findings"), "empty state: {output}");
+        assert!(
+            output.contains("No diagnostic findings"),
+            "empty state: {output}"
+        );
     }
 
     #[test]
@@ -639,7 +657,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("Diagnostic Detail"), "modal title: {output}");
+        assert!(
+            output.contains("Diagnostic Detail"),
+            "modal title: {output}"
+        );
         assert!(output.contains("Duplicate"), "message in modal: {output}");
     }
 

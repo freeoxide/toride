@@ -66,9 +66,7 @@ pub fn convert_findings(
 /// Convert a backend [`toride_audit::integrity::IntegrityStatus`] into a
 /// presentation entry. Malformed/unknown fields degrade to placeholders rather
 /// than propagating errors.
-pub fn convert_integrity(
-    status: toride_audit::integrity::IntegrityStatus,
-) -> IntegrityStateEntry {
+pub fn convert_integrity(status: toride_audit::integrity::IntegrityStatus) -> IntegrityStateEntry {
     IntegrityStateEntry {
         database_initialized: status.database_initialized,
         file_count: status.file_count,

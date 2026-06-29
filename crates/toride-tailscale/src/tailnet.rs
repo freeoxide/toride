@@ -8,8 +8,8 @@
 //! with its hostname, Tailscale IPs, online state, and whether it is an exit
 //! node.
 
-use crate::report::PeerInfo;
 use crate::Result;
+use crate::report::PeerInfo;
 
 // ---------------------------------------------------------------------------
 // TailnetTopology
@@ -62,7 +62,7 @@ impl TailnetTopology {
     /// be parsed.
     pub async fn from_api(api: &crate::api::TailscaleApi) -> Result<Self> {
         let status = api.get_status().await?;
-        Self::from_status_json(status)
+        Self::from_status_json(&status)
     }
 
     /// Build a topology from a parsed `tailscale status --json` document.
@@ -75,7 +75,7 @@ impl TailnetTopology {
     ///
     /// Never returns an error: missing fields degrade gracefully to
     /// `"unknown"` names and empty peer lists.
-    pub fn from_status_json(status: serde_json::Value) -> Result<Self> {
+    pub fn from_status_json(status: &serde_json::Value) -> Result<Self> {
         let tailnet_name = status
             .get("CurrentTailnet")
             .and_then(|t| t.get("Name"))
@@ -90,7 +90,7 @@ impl TailnetTopology {
             .unwrap_or("unknown")
             .to_owned();
 
-        let peers = parse_peers(&status);
+        let peers = parse_peers(status);
 
         Ok(Self {
             tailnet_name,
@@ -163,10 +163,13 @@ pub(crate) fn parse_peers(status: &serde_json::Value) -> Vec<PeerInfo> {
             })
             .unwrap_or_default();
 
-        let online = peer.get("Online").and_then(|o| o.as_bool()).unwrap_or(false);
+        let online = peer
+            .get("Online")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
         let exit_node = peer
             .get("ExitNodeOption")
-            .and_then(|e| e.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
         out.push(PeerInfo {
@@ -216,7 +219,7 @@ mod tests {
 
     #[test]
     fn parses_all_peers_from_status_json() {
-        let topo = TailnetTopology::from_status_json(sample_status()).unwrap();
+        let topo = TailnetTopology::from_status_json(&sample_status()).unwrap();
         assert_eq!(topo.tailnet_name(), "example.ts.net");
         assert_eq!(topo.self_name(), "my-host");
         assert_eq!(topo.peers().len(), 3);
@@ -224,7 +227,7 @@ mod tests {
 
     #[test]
     fn online_peers_filters_correctly() {
-        let topo = TailnetTopology::from_status_json(sample_status()).unwrap();
+        let topo = TailnetTopology::from_status_json(&sample_status()).unwrap();
         let online = topo.online_peers();
         assert_eq!(online.len(), 1);
         assert_eq!(online[0].name, "exit-box");
@@ -232,7 +235,7 @@ mod tests {
 
     #[test]
     fn exit_nodes_filters_correctly() {
-        let topo = TailnetTopology::from_status_json(sample_status()).unwrap();
+        let topo = TailnetTopology::from_status_json(&sample_status()).unwrap();
         let exits = topo.exit_nodes();
         assert_eq!(exits.len(), 1);
         assert_eq!(exits[0].name, "exit-box");
@@ -241,7 +244,7 @@ mod tests {
 
     #[test]
     fn peer_missing_fields_degrades_gracefully() {
-        let topo = TailnetTopology::from_status_json(sample_status()).unwrap();
+        let topo = TailnetTopology::from_status_json(&sample_status()).unwrap();
         let bare = topo
             .peers()
             .iter()
@@ -255,7 +258,7 @@ mod tests {
     #[test]
     fn empty_peer_map_yields_empty_topology() {
         let status = serde_json::json!({ "Self": { "HostName": "solo" } });
-        let topo = TailnetTopology::from_status_json(status).unwrap();
+        let topo = TailnetTopology::from_status_json(&status).unwrap();
         assert!(topo.peers().is_empty());
         assert_eq!(topo.self_name(), "solo");
     }
@@ -263,7 +266,7 @@ mod tests {
     #[test]
     fn missing_tailnet_defaults_to_unknown() {
         let status = serde_json::json!({ "Self": { "HostName": "h" }, "Peer": {} });
-        let topo = TailnetTopology::from_status_json(status).unwrap();
+        let topo = TailnetTopology::from_status_json(&status).unwrap();
         assert_eq!(topo.tailnet_name(), "unknown");
     }
 

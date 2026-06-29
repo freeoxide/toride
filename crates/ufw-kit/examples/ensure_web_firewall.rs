@@ -3,7 +3,7 @@
 
 use ufw_kit::{
     Ufw,
-    spec::{RuleSpec, Action, Direction, Policy, Protocol},
+    spec::{Action, Direction, Policy, Protocol, RuleSpec},
 };
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

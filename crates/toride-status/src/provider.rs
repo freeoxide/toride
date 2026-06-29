@@ -281,23 +281,25 @@ pub trait StatusProvider:
     + VirtualizationProvider
     + DiskIoProvider
     + StaticInfoProvider
-{}
+{
+}
 
 // Blanket impl for any type that implements all sub-providers.
 impl<T> StatusProvider for T where
     T: CpuProvider
-    + MemoryProvider
-    + DiskProvider
-    + NetworkProvider
-    + OsProvider
-    + ProcessProvider
-    + GpuProvider
-    + BatteryProvider
-    + SensorProvider
-    + VirtualizationProvider
-    + DiskIoProvider
-    + StaticInfoProvider
-{}
+        + MemoryProvider
+        + DiskProvider
+        + NetworkProvider
+        + OsProvider
+        + ProcessProvider
+        + GpuProvider
+        + BatteryProvider
+        + SensorProvider
+        + VirtualizationProvider
+        + DiskIoProvider
+        + StaticInfoProvider
+{
+}
 
 #[cfg(test)]
 mod tests {

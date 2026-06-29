@@ -86,12 +86,11 @@ pub fn render_renewal_summary(certs: &[CertInfo]) -> String {
             }
             RenewalAction::RenewalDue { days_remaining } => {
                 lines.push(format!(
-                    "RENEW: {} (expires in {} days)",
-                    domain, days_remaining
+                    "RENEW: {domain} (expires in {days_remaining} days)"
                 ));
             }
             RenewalAction::NoActionNeeded { days_remaining } => {
-                lines.push(format!("OK: {} ({} days remaining)", domain, days_remaining));
+                lines.push(format!("OK: {domain} ({days_remaining} days remaining)"));
             }
         }
     }
@@ -111,21 +110,32 @@ mod tests {
     fn renewal_action_expired() {
         let action = RenewalAction::from_days_remaining(-10);
         assert!(action.needs_renewal());
-        assert!(matches!(action, RenewalAction::Expired { days_remaining: -10 }));
+        assert!(matches!(
+            action,
+            RenewalAction::Expired {
+                days_remaining: -10
+            }
+        ));
     }
 
     #[test]
     fn renewal_action_due() {
         let action = RenewalAction::from_days_remaining(15);
         assert!(action.needs_renewal());
-        assert!(matches!(action, RenewalAction::RenewalDue { days_remaining: 15 }));
+        assert!(matches!(
+            action,
+            RenewalAction::RenewalDue { days_remaining: 15 }
+        ));
     }
 
     #[test]
     fn renewal_action_ok() {
         let action = RenewalAction::from_days_remaining(60);
         assert!(!action.needs_renewal());
-        assert!(matches!(action, RenewalAction::NoActionNeeded { days_remaining: 60 }));
+        assert!(matches!(
+            action,
+            RenewalAction::NoActionNeeded { days_remaining: 60 }
+        ));
     }
 
     #[test]

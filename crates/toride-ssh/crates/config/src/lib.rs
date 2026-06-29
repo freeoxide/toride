@@ -30,6 +30,7 @@ pub struct ConfigService<'a> {
 }
 
 impl<'a> ConfigService<'a> {
+    #[must_use]
     pub fn new(paths: &'a SshPaths) -> Self {
         Self { paths }
     }
@@ -69,10 +70,7 @@ impl<'a> ConfigService<'a> {
         if path.exists() {
             let backup_path = path.with_extension("config.bak");
             if let Err(e) = std::fs::copy(path, &backup_path) {
-                tracing::warn!(
-                    "failed to back up config to {}: {e}",
-                    backup_path.display()
-                );
+                tracing::warn!("failed to back up config to {}: {e}", backup_path.display());
             }
         }
 
@@ -134,11 +132,13 @@ impl<'a> ConfigService<'a> {
     /// Get a directive value for a host from the AST.
     ///
     /// Uses first-match-wins semantics.
+    #[must_use]
     pub fn get_host_directive(ast: &ast::ConfigAst, host: &str, key: &str) -> Option<String> {
         directives::get_directive(ast, host, key)
     }
 
     /// Get all directives for a host.
+    #[must_use]
     pub fn get_all_host_directives(ast: &ast::ConfigAst, host: &str) -> Vec<(String, String)> {
         directives::get_all_directives(ast, host)
     }
@@ -196,6 +196,7 @@ impl<'a> ConfigService<'a> {
     }
 
     /// List all managed block names.
+    #[must_use]
     pub fn list_managed_blocks(ast: &ast::ConfigAst) -> Vec<String> {
         managed::list_managed_blocks(ast)
     }
@@ -231,6 +232,7 @@ impl<'a> ConfigService<'a> {
     }
 
     /// Get the path to the config file.
+    #[must_use]
     pub fn config_path(&self) -> &Path {
         self.paths.config_path()
     }
@@ -278,8 +280,7 @@ impl<'a> ConfigService<'a> {
         let mut last_specific_index: Option<usize> = None;
 
         for (i, node) in ast.nodes.iter().enumerate() {
-            let ast::ConfigNode::HostBlock(b) = node
-            else {
+            let ast::ConfigNode::HostBlock(b) = node else {
                 continue;
             };
 
@@ -328,9 +329,7 @@ fn check_proxy_conflict(
         diagnostics.push(Diagnostic {
             id: "config_proxy_conflict",
             severity: Severity::Warning,
-            message: format!(
-                "Host block '{header}' has both ProxyCommand and ProxyJump set",
-            ),
+            message: format!("Host block '{header}' has both ProxyCommand and ProxyJump set"),
             hint: Some(
                 "ProxyJump takes precedence over ProxyCommand; \
                  remove one to avoid confusion"
@@ -359,9 +358,7 @@ fn check_duplicate_aliases(
                 message: format!(
                     "Host alias '{pat}' appears in both '{first_header}' and '{header}'",
                 ),
-                hint: Some(format!(
-                    "Merge or remove the duplicate entry for '{pat}'",
-                )),
+                hint: Some(format!("Merge or remove the duplicate entry for '{pat}'")),
                 module: "config",
             });
         } else {
@@ -370,7 +367,7 @@ fn check_duplicate_aliases(
     }
 }
 
-/// Check IdentityFile directives for .pub references and missing files.
+/// Check `IdentityFile` directives for .pub references and missing files.
 fn check_identity_files(
     header: &str,
     nodes: &[ast::ConfigNode],
@@ -435,10 +432,9 @@ fn check_host_star_placement(
         diagnostics.push(Diagnostic {
             id: "config_host_star_placement",
             severity: Severity::Warning,
-            message:
-                "'Host *' appears before specific Host blocks; \
+            message: "'Host *' appears before specific Host blocks; \
                  later blocks cannot override its defaults"
-                    .into(),
+                .into(),
             hint: Some(
                 "Move 'Host *' to the end of the config file so \
                  specific blocks take precedence"
@@ -454,6 +450,7 @@ fn check_host_star_placement(
 /// Handles `~` expansion and relative paths (resolved against the SSH
 /// directory, matching OpenSSH behaviour).  Delegates to
 /// [`toride_ssh_core::paths::expand_path`].
+#[must_use]
 pub fn expand_identity_path(raw: &str, ssh_dir: &Path) -> PathBuf {
     toride_ssh_core::paths::expand_path(raw, ssh_dir)
 }
@@ -465,6 +462,7 @@ pub fn host_matches(host: &str, patterns: &[impl AsRef<str>]) -> bool {
 }
 
 /// Check if a path is inside the `~/.ssh` directory.
+#[must_use]
 pub fn is_in_ssh_dir(path: &Path, ssh_dir: &Path) -> bool {
     path.starts_with(ssh_dir)
 }

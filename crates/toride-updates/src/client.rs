@@ -227,11 +227,10 @@ impl UpdatesClient {
             PackageManager::Dnf => "dnf-automatic.timer",
             PackageManager::Unknown => return Ok(()),
         };
-        let spec = toride_runner::CommandSpec::new("systemctl")
-            .args(["enable", "--now", unit]);
-        self.runner
-            .run_checked(&spec)
-            .map_err(|e| Error::CommandFailed(format!("systemctl enable --now {unit} failed: {e}")))?;
+        let spec = toride_runner::CommandSpec::new("systemctl").args(["enable", "--now", unit]);
+        self.runner.run_checked(&spec).map_err(|e| {
+            Error::CommandFailed(format!("systemctl enable --now {unit} failed: {e}"))
+        })?;
         Ok(())
     }
 
@@ -318,7 +317,10 @@ impl UpdatesClient {
         let spec = toride_runner::CommandSpec::new("dnf").args(["check-update", "--security"]);
         let output = self.runner.run(&spec)?;
         match output.exit_code {
-            Some(0 | 100) | None => crate::parse::parse_dnf_check(&output.stdout),
+            Some(0 | 100) => crate::parse::parse_dnf_check(&output.stdout),
+            None => Err(Error::CommandFailed(
+                "dnf check-update produced no exit code (terminated by signal?)".to_string(),
+            )),
             Some(code) => Err(Error::CommandFailed(format!(
                 "dnf check-update failed (exit {code})"
             ))),
@@ -336,8 +338,13 @@ impl UpdatesClient {
 
     #[cfg(not(feature = "dnf"))]
     fn status_dnf_inline(&self) -> Result<UpdateStatus> {
-        let spec = toride_runner::CommandSpec::new("journalctl")
-            .args(["-u", "dnf-automatic", "--no-pager", "-n", "50"]);
+        let spec = toride_runner::CommandSpec::new("journalctl").args([
+            "-u",
+            "dnf-automatic",
+            "--no-pager",
+            "-n",
+            "50",
+        ]);
         match self.runner.run(&spec) {
             Ok(output) if output.success => {
                 crate::parse::parse_dnf_automatic_journal(&output.stdout)
@@ -361,8 +368,8 @@ impl UpdatesClient {
             PackageManager::Dnf => "dnf-automatic.timer",
             PackageManager::Unknown => return Ok(false),
         };
-        let spec = toride_runner::CommandSpec::new("systemctl")
-            .args(["is-active", "--quiet", service]);
+        let spec =
+            toride_runner::CommandSpec::new("systemctl").args(["is-active", "--quiet", service]);
         // A non-zero exit (service inactive) is not a runner error here.
         let output = self.runner.run(&spec)?;
         Ok(output.success)
@@ -385,11 +392,11 @@ impl Default for UpdatesClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "config")]
+    use crate::spec::{RebootPolicy, Schedule};
     use std::sync::Arc;
     use toride_runner::fake::FakeRunner;
     use toride_runner::{CommandOutput, CommandSpec, Runner};
-    #[cfg(feature = "config")]
-    use crate::spec::{RebootPolicy, Schedule};
 
     /// A shared handle to a [`FakeRunner`] that can be inspected *after* the
     /// owning `Box<dyn Runner>` has been handed to a client.
@@ -403,7 +410,9 @@ mod tests {
 
     impl SharedRunner {
         fn new(runner: FakeRunner) -> Self {
-            Self { inner: Arc::new(runner) }
+            Self {
+                inner: Arc::new(runner),
+            }
         }
 
         /// Produce an owning `Box<dyn Runner>` view over the shared runner.
@@ -421,7 +430,10 @@ mod tests {
     struct ArcRunner(Arc<FakeRunner>);
 
     impl Runner for ArcRunner {
-        fn run(&self, spec: &CommandSpec) -> std::result::Result<CommandOutput, toride_runner::Error> {
+        fn run(
+            &self,
+            spec: &CommandSpec,
+        ) -> std::result::Result<CommandOutput, toride_runner::Error> {
             self.0.run(spec)
         }
     }
@@ -436,9 +448,8 @@ mod tests {
 
     #[test]
     fn apply_updates_dispatches_to_backend() {
-        let runner = SharedRunner::new(
-            FakeRunner::new().push_response(CommandOutput::from_stdout("done")),
-        );
+        let runner =
+            SharedRunner::new(FakeRunner::new().push_response(CommandOutput::from_stdout("done")));
         let client = UpdatesClient::with_runner(runner.boxed());
         let result = client.apply_updates();
         if apt_host() {
@@ -466,11 +477,15 @@ mod tests {
         let client = UpdatesClient::with_runner_and_paths(runner.boxed(), paths);
         let status = client.status().unwrap();
         if apt_host() {
-            assert!(status.service_active, "service_active should reflect systemctl");
-            runner.assert_called_with(
-                &CommandSpec::new("systemctl")
-                    .args(["is-active", "--quiet", "unattended-upgrades"]),
+            assert!(
+                status.service_active,
+                "service_active should reflect systemctl"
             );
+            runner.assert_called_with(&CommandSpec::new("systemctl").args([
+                "is-active",
+                "--quiet",
+                "unattended-upgrades",
+            ]));
         }
     }
 
@@ -487,9 +502,8 @@ mod tests {
 
         // configure() now enables the timer after writing configs, so the
         // runner needs a successful response for `systemctl enable --now`.
-        let runner = SharedRunner::new(
-            FakeRunner::new().push_response(CommandOutput::from_stdout("")),
-        );
+        let runner =
+            SharedRunner::new(FakeRunner::new().push_response(CommandOutput::from_stdout("")));
         let client = UpdatesClient::with_runner_and_paths(runner.boxed(), paths.clone());
         let spec = UpdateSpec {
             auto_update: true,
@@ -522,16 +536,16 @@ mod tests {
         paths.auto_upgrades_enabled = apt_dir.join("20auto-upgrades");
         paths.apt_conf_d = apt_dir.clone();
 
-        let runner = SharedRunner::new(
-            FakeRunner::new().push_response(CommandOutput::from_stdout("")),
-        );
+        let runner =
+            SharedRunner::new(FakeRunner::new().push_response(CommandOutput::from_stdout("")));
         let client = UpdatesClient::with_runner_and_paths(runner.boxed(), paths.clone());
         if apt_host() {
             client.configure(&UpdateSpec::default()).unwrap();
-            runner.assert_called_with(
-                &CommandSpec::new("systemctl")
-                    .args(["enable", "--now", "apt-daily-upgrade.timer"]),
-            );
+            runner.assert_called_with(&CommandSpec::new("systemctl").args([
+                "enable",
+                "--now",
+                "apt-daily-upgrade.timer",
+            ]));
         }
     }
 
@@ -544,16 +558,16 @@ mod tests {
         paths.dnf_automatic_conf = dir.path().join("automatic.conf");
         paths.dnf_conf_d = dir.path().to_path_buf();
 
-        let runner = SharedRunner::new(
-            FakeRunner::new().push_response(CommandOutput::from_stdout("")),
-        );
+        let runner =
+            SharedRunner::new(FakeRunner::new().push_response(CommandOutput::from_stdout("")));
         let client = UpdatesClient::with_runner_and_paths(runner.boxed(), paths.clone());
         if dnf_host() {
             client.configure(&UpdateSpec::default()).unwrap();
-            runner.assert_called_with(
-                &CommandSpec::new("systemctl")
-                    .args(["enable", "--now", "dnf-automatic.timer"]),
-            );
+            runner.assert_called_with(&CommandSpec::new("systemctl").args([
+                "enable",
+                "--now",
+                "dnf-automatic.timer",
+            ]));
         }
     }
 

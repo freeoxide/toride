@@ -5,7 +5,7 @@
 
 use toride_runner::CommandSpec;
 
-use crate::{AuditPaths, Error, Result};
+use crate::{AuditPaths, Result};
 
 // ---------------------------------------------------------------------------
 // LogManager
@@ -17,6 +17,9 @@ use crate::{AuditPaths, Error, Result};
 /// provides a unified interface for log operations.
 pub struct LogManager<'a> {
     runner: &'a dyn toride_runner::Runner,
+    /// System paths; kept for API symmetry with the other managers though
+    /// not read by this manager yet.
+    #[allow(dead_code)]
     paths: &'a AuditPaths,
 }
 

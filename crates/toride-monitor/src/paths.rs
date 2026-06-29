@@ -57,8 +57,7 @@ impl MonitorPaths {
                 .map_err(|_| crate::Error::BinaryNotFound("iptables-save".into()))?,
             conntrack: which::which("conntrack")
                 .map_err(|_| crate::Error::BinaryNotFound("conntrack".into()))?,
-            ss: which::which("ss")
-                .map_err(|_| crate::Error::BinaryNotFound("ss".into()))?,
+            ss: which::which("ss").map_err(|_| crate::Error::BinaryNotFound("ss".into()))?,
             journalctl: which::which("journalctl")
                 .map_err(|_| crate::Error::BinaryNotFound("journalctl".into()))?,
             systemd_cat: which::which("systemd-cat")

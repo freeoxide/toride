@@ -278,7 +278,9 @@ impl ActionExec {
             return Err(crate::Error::CommandFailed(format!(
                 "Command '{}' failed (exit {}): {}",
                 cmd_str,
-                output.exit_code.map_or("unknown".to_string(), |c| c.to_string()),
+                output
+                    .exit_code
+                    .map_or("unknown".to_string(), |c| c.to_string()),
                 output.stderr.trim()
             )));
         }

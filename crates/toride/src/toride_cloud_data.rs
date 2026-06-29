@@ -36,15 +36,13 @@
 use tokio::sync::oneshot;
 
 use crate::toride_cloud_convert;
-use crate::ui::screens::toride_cloud::{
-    CloudFindingEntry, ProviderInfo, SecurityGroupEntry,
-};
+use crate::ui::screens::toride_cloud::{CloudFindingEntry, ProviderInfo, SecurityGroupEntry};
 
 /// Aggregated cloud-provider data for the read-only section.
 #[derive(Clone, Debug)]
 pub struct CloudDataBundle {
     /// Whether the cloud backend was reachable at all. `false` is reserved for
-    /// the panic case (a `spawn_blocking` JoinError) — a missing provider or
+    /// the panic case (a `spawn_blocking` `JoinError`) — a missing provider or
     /// CLI surfaces as doctor findings and keeps `available == true` so the
     /// operator SEES the findings rather than a blank panel.
     pub available: bool,
@@ -61,7 +59,7 @@ pub struct CloudDataBundle {
     /// Doctor findings (cached for 60s between collections).
     pub findings: Vec<CloudFindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` because a collection task panicked (JoinError).
+    /// `available == false` because a collection task panicked (`JoinError`).
     /// `None` otherwise — notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
@@ -89,6 +87,10 @@ pub struct CloudCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl CloudCollector {
@@ -182,7 +184,7 @@ impl Default for CloudCollector {
 /// `ServiceManager` probes — runs inside a single `spawn_blocking` block that
 /// owns the constructed client, so no synchronous work ever stalls the tokio
 /// worker. Doctor findings may be reused from the cache. On ANY panic
-/// (JoinError) returns [`empty_bundle_with_reason`] with `available = false`.
+/// (`JoinError`) returns [`empty_bundle_with_reason`] with `available = false`.
 ///
 /// `use_cache` / `cached_findings` mirror the fail2ban findings cache: when the
 /// cache is fresh the doctor suite is skipped entirely.
@@ -198,10 +200,7 @@ async fn collect_real_cloud(
     // Build the CloudClient on the blocking pool. detect() reads env vars and
     // DMI files; on macOS it resolves to Unknown but returns Ok (not an error),
     // so construction succeeds even with no cloud VM.
-    let client = match tokio::task::spawn_blocking(|| {
-        toride_cloud::client::CloudClient::detect()
-    })
-    .await
+    let client = match tokio::task::spawn_blocking(toride_cloud::client::CloudClient::detect).await
     {
         Ok(Ok(client)) => client,
         Ok(Err(e)) => {
@@ -216,9 +215,7 @@ async fn collect_real_cloud(
         Err(e) => {
             tracing::warn!("cloud detect task panicked: {e}");
             return (
-                empty_bundle_with_reason(format!(
-                    "cloud provider detection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("cloud provider detection panicked: {e}")),
                 false,
             );
         }
@@ -305,13 +302,11 @@ async fn collect_real_cloud(
 ///
 /// `available = false` signals the UI to render the degraded panel. No reason
 /// is attached because none is known at this point; collection-time panics use
-/// [`empty_bundle_with_reason`] to surface the JoinError.
+/// [`empty_bundle_with_reason`] to surface the `JoinError`.
 fn empty_bundle() -> CloudDataBundle {
     CloudDataBundle {
         available: false,
-        provider: toride_cloud_convert::convert_provider(
-            toride_cloud::CloudProvider::Unknown,
-        ),
+        provider: toride_cloud_convert::convert_provider(toride_cloud::CloudProvider::Unknown),
         agent_running: false,
         agent_enabled: false,
         agent_service_name: String::new(),
@@ -322,7 +317,7 @@ fn empty_bundle() -> CloudDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> CloudDataBundle {
     let mut b = empty_bundle();
@@ -391,7 +386,7 @@ mod tests {
         // it stays true (provider Unknown + a provider.unknown Warning finding).
         let mut collector = CloudCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -414,7 +409,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = CloudCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).

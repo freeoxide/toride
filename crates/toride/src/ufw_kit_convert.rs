@@ -91,7 +91,7 @@ fn direction_str(d: Option<ufw_kit::spec::Direction>) -> String {
 /// Convert backend parsed rules to UI rows.
 ///
 /// Every rule maps 1:1. The `raw` text is the canonical UFW output and is the
-/// most reliable field for display; action/direction/ipv6/is_route are parsed
+/// most reliable field for display; `action/direction/ipv6/is_route` are parsed
 /// best-effort by the backend and surfaced as lowercase labels.
 pub fn convert_rules(rules: Vec<ufw_kit::spec::ParsedRule>) -> Vec<RuleEntry> {
     rules
@@ -147,7 +147,7 @@ pub fn logging_to_string(l: ufw_kit::spec::LoggingLevel) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ufw_kit::spec::{Action, Direction, Finding, LoggingLevel, Policy, ParsedRule, Severity};
+    use ufw_kit::spec::{Action, Direction, Finding, LoggingLevel, ParsedRule, Policy, Severity};
 
     // ── convert_findings ──────────────────────────────────────────────────────
 

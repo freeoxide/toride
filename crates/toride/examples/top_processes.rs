@@ -14,7 +14,7 @@ fn main() {
 
     // Top 10 by CPU
     println!("Top 10 by CPU:");
-    println!("  {:<7} {:>6} {:>10}  {}", "PID", "CPU%", "RSS", "Name");
+    println!("  {:<7} {:>6} {:>10}  Name", "PID", "CPU%", "RSS");
     println!("  {:->7} {:->6} {:->10}  {:->20}", "", "", "", "");
     for p in procs.top_by_cpu(10) {
         println!(
@@ -29,7 +29,7 @@ fn main() {
 
     // Top 10 by memory
     println!("Top 10 by Memory:");
-    println!("  {:<7} {:>10} {:>6}  {}", "PID", "RSS", "CPU%", "Name");
+    println!("  {:<7} {:>10} {:>6}  Name", "PID", "RSS", "CPU%");
     println!("  {:->7} {:->10} {:->6}  {:->20}", "", "", "", "");
     for p in procs.top_by_memory(10) {
         println!(
@@ -61,10 +61,11 @@ fn main() {
     // Build children map
     let mut children: std::collections::HashMap<u32, Vec<_>> = std::collections::HashMap::new();
     for p in all {
-        if let Some(ppid) = p.parent_pid {
-            if pid_set.contains(&ppid) && p.pid != ppid {
-                children.entry(ppid).or_default().push(p);
-            }
+        if let Some(ppid) = p.parent_pid
+            && pid_set.contains(&ppid)
+            && p.pid != ppid
+        {
+            children.entry(ppid).or_default().push(p);
         }
     }
 
@@ -78,7 +79,7 @@ fn main() {
 
     let max_roots = 20;
     for root in sorted_roots.iter().take(max_roots) {
-        let child_count = children.get(&root.pid).map_or(0, |c| c.len());
+        let child_count = children.get(&root.pid).map_or(0, Vec::len);
         println!(
             "  {} (PID {}, {:.1}% CPU, {}, {} children)",
             root.name,

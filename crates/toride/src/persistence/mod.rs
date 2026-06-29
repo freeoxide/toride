@@ -101,12 +101,9 @@ fn config_path() -> Option<PathBuf> {
 /// launching normally on a fresh install or with a corrupt config.
 #[must_use]
 pub fn load_theme() -> Theme {
-    let path = match config_path() {
-        Some(p) => p,
-        None => {
-            tracing::debug!("persistence: dirs::config_dir() returned None");
-            return Theme::default();
-        }
+    let Some(path) = config_path() else {
+        tracing::debug!("persistence: dirs::config_dir() returned None");
+        return Theme::default();
     };
     load_theme_from(&path)
 }
@@ -121,12 +118,9 @@ pub fn load_theme() -> Theme {
 /// config dir must never crash the running TUI; the choice simply won't persist
 /// and the app reverts to the default on next launch.
 pub fn save_theme(theme: Theme) {
-    let path = match config_path() {
-        Some(p) => p,
-        None => {
-            tracing::debug!("persistence: no config dir; skipping theme save");
-            return;
-        }
+    let Some(path) = config_path() else {
+        tracing::debug!("persistence: no config dir; skipping theme save");
+        return;
     };
     save_theme_to(&path, theme);
 }
@@ -161,27 +155,28 @@ fn load_theme_from(path: &Path) -> Theme {
         }
     };
 
-    match cfg.theme.as_deref().and_then(Theme::from_label) {
-        Some(theme) => theme,
-        None => {
-            // Present but empty/unrecognized — fall back to the default rather
-            // than coercing a corrupt label into a wrong theme.
-            if let Some(label) = cfg.theme.as_deref() {
-                tracing::warn!(
-                    "persistence: unrecognized theme {label:?} in {}; using default",
-                    path.display()
-                );
-            }
-            Theme::default()
+    if let Some(theme) = cfg.theme.as_deref().and_then(Theme::from_label) {
+        theme
+    } else {
+        // Present but empty/unrecognized — fall back to the default rather
+        // than coercing a corrupt label into a wrong theme.
+        if let Some(label) = cfg.theme.as_deref() {
+            tracing::warn!(
+                "persistence: unrecognized theme {label:?} in {}; using default",
+                path.display()
+            );
         }
+        Theme::default()
     }
 }
 
 /// Persist the theme to an explicit path (the testable core of [`save_theme`]).
 ///
 /// Writes `theme = "<label>"`, preserving any other keys already in the file,
-/// via a temp-file-then-rename so a crash mid-write cannot leave a truncated
-/// config.
+/// via an atomic temp-file-then-rename (delegated to
+/// [`toride_fs::atomic_write_with_perms`]) with explicit `0600` permissions so
+/// the user's toride config is owner-only and a crash mid-write cannot leave a
+/// truncated config.
 fn save_theme_to(path: &Path, theme: Theme) {
     // Load + merge so unrelated keys survive the write. A missing/unreadable
     // file starts from an empty config (the theme becomes the sole key).
@@ -205,36 +200,7 @@ fn save_theme_to(path: &Path, theme: Theme) {
         }
     };
 
-    // Create the config dir (and parents) if it doesn't yet exist.
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            tracing::warn!(
-                "persistence: could not create config dir {}: {e}",
-                parent.display()
-            );
-            return;
-        }
-    }
-
-    // Write atomically: write to a sibling temp file then rename, so a crash
-    // mid-write cannot leave a truncated config.toml (the rename is atomic on
-    // the same filesystem).
-    let tmp = path.with_extension("toml.tmp");
-    if let Err(e) = std::fs::write(&tmp, &serialized) {
-        tracing::warn!(
-            "persistence: could not write temp config {}: {e}",
-            tmp.display()
-        );
-        let _ = std::fs::remove_file(&tmp);
-        return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, path) {
-        tracing::warn!(
-            "persistence: could not rename temp config to {}: {e}",
-            path.display()
-        );
-        let _ = std::fs::remove_file(&tmp);
-    }
+    write_config_atomic(path, &serialized);
 }
 
 // ── Animations preference ────────────────────────────────────────────────────
@@ -251,12 +217,9 @@ fn save_theme_to(path: &Path, theme: Theme) {
 /// launching normally on a fresh install or with a corrupt config.
 #[must_use]
 pub fn load_animations() -> AnimPref {
-    let path = match config_path() {
-        Some(p) => p,
-        None => {
-            tracing::debug!("persistence: dirs::config_dir() returned None");
-            return AnimPref::Auto;
-        }
+    let Some(path) = config_path() else {
+        tracing::debug!("persistence: dirs::config_dir() returned None");
+        return AnimPref::Auto;
     };
     load_animations_from(&path)
 }
@@ -267,12 +230,9 @@ pub fn load_animations() -> AnimPref {
 /// file (round-tripped through a TOML table). Failures are swallowed — a
 /// read-only HOME must never crash the running TUI.
 pub fn save_animations(pref: AnimPref) {
-    let path = match config_path() {
-        Some(p) => p,
-        None => {
-            tracing::debug!("persistence: no config dir; skipping animations save");
-            return;
-        }
+    let Some(path) = config_path() else {
+        tracing::debug!("persistence: no config dir; skipping animations save");
+        return;
     };
     save_animations_to(&path, pref);
 }
@@ -305,21 +265,23 @@ fn load_animations_from(path: &Path) -> AnimPref {
         }
     };
 
-    match cfg.animations.as_deref().and_then(AnimPref::from_label) {
-        Some(pref) => pref,
-        None => {
-            if let Some(label) = cfg.animations.as_deref() {
-                tracing::warn!(
-                    "persistence: unrecognized animations {label:?} in {}; using auto",
-                    path.display()
-                );
-            }
-            AnimPref::Auto
+    if let Some(pref) = cfg.animations.as_deref().and_then(AnimPref::from_label) {
+        pref
+    } else {
+        if let Some(label) = cfg.animations.as_deref() {
+            tracing::warn!(
+                "persistence: unrecognized animations {label:?} in {}; using auto",
+                path.display()
+            );
         }
+        AnimPref::Auto
     }
 }
 
 /// Persist the animation preference to an explicit path (testable core).
+///
+/// Like [`save_theme_to`], the write is delegated to
+/// [`toride_fs::atomic_write_with_perms`] with explicit `0600` permissions.
 fn save_animations_to(path: &Path, pref: AnimPref) {
     let mut table: toml::Table = std::fs::read_to_string(path)
         .ok()
@@ -339,31 +301,39 @@ fn save_animations_to(path: &Path, pref: AnimPref) {
         }
     };
 
-    if let Some(parent) = path.parent() {
-        if let Err(e) = std::fs::create_dir_all(parent) {
-            tracing::warn!(
-                "persistence: could not create config dir {}: {e}",
-                parent.display()
-            );
-            return;
-        }
-    }
+    write_config_atomic(path, &serialized);
+}
 
-    let tmp = path.with_extension("toml.tmp");
-    if let Err(e) = std::fs::write(&tmp, &serialized) {
+/// Shared tail of [`save_theme_to`] / [`save_animations_to`]: create the config
+/// dir if missing, then persist `serialized` atomically with explicit `0600`
+/// permissions (owner-only) via [`toride_fs::atomic_write_with_perms`].
+///
+/// The atomic write fsyncs on both sides of the rename and sets the mode up
+/// front (independent of umask), so a crash mid-write cannot leave a truncated
+/// config and the file is never briefly world-readable. Errors are logged and
+/// swallowed — a read-only HOME must never crash the running TUI.
+fn write_config_atomic(path: &Path, serialized: &str) {
+    // 0600: the user's toride config may carry preferences but should still be
+    // owner-only (no group/other read), matching the sensitivity of a per-user
+    // config file.
+    const CONFIG_MODE: u32 = 0o600;
+
+    // Create the config dir (and parents) if it doesn't yet exist.
+    if let Some(parent) = path.parent()
+        && let Err(e) = std::fs::create_dir_all(parent)
+    {
         tracing::warn!(
-            "persistence: could not write temp config {}: {e}",
-            tmp.display()
+            "persistence: could not create config dir {}: {e}",
+            parent.display()
         );
-        let _ = std::fs::remove_file(&tmp);
         return;
     }
-    if let Err(e) = std::fs::rename(&tmp, path) {
+
+    if let Err(e) = toride_fs::atomic_write_with_perms(path, serialized, CONFIG_MODE) {
         tracing::warn!(
-            "persistence: could not rename temp config to {}: {e}",
+            "persistence: could not write config {}: {e}",
             path.display()
         );
-        let _ = std::fs::remove_file(&tmp);
     }
 }
 
@@ -372,6 +342,16 @@ mod tests {
     use super::*;
     use std::fs;
     use std::path::Path;
+
+    #[cfg(unix)]
+    /// Read the low 9 permission bits (rwxrwxrwx) of `path` as an octal mask.
+    fn file_mode(path: &Path) -> u32 {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path)
+            .expect("config file should exist for mode check")
+            .mode()
+            & 0o777
+    }
 
     /// Resolve a `toride/config.toml` path directly under `dir` (mirrors the
     /// real layout without touching the user's actual config dir).
@@ -407,6 +387,44 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn save_theme_writes_with_owner_only_0600_mode() {
+        // The user's config file must be owner-only (0600) — atomic_write_with_perms
+        // sets the mode up front independent of umask, so this holds regardless of
+        // the test environment's umask.
+        let dir = tempfile::tempdir().unwrap();
+        let path = config_under(dir.path());
+        save_theme_to(&path, Theme::Gruvbox);
+        assert!(path.exists());
+        assert_eq!(
+            file_mode(&path),
+            0o600,
+            "config.toml must be owner-only after a theme save"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_animations_preserves_0600_mode_on_overwrite() {
+        use std::os::unix::fs::PermissionsExt;
+        // Overwriting an existing config must reset it to 0600 even if the
+        // previous file was looser (atomic_write_with_perms re-sets the mode
+        // after the rename as a safety net).
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_config(dir.path(), "theme = \"Nord\"\n");
+        // Loosen the existing file to confirm the save tightens it back.
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(file_mode(&path), 0o644);
+
+        save_animations_to(&path, AnimPref::Off);
+        assert_eq!(
+            file_mode(&path),
+            0o600,
+            "config.toml must be tightened to owner-only after an animations save"
+        );
+    }
+
     #[test]
     fn save_preserves_existing_unrelated_keys() {
         // A config that already has other keys must NOT lose them when the
@@ -416,10 +434,7 @@ mod tests {
         save_theme_to(&path, Theme::Nord);
 
         let after = fs::read_to_string(&path).unwrap();
-        assert!(
-            after.contains("theme = \"Nord\""),
-            "theme written: {after}"
-        );
+        assert!(after.contains("theme = \"Nord\""), "theme written: {after}");
         assert!(
             after.contains("log_level = \"debug\""),
             "string key preserved: {after}"
@@ -547,9 +562,18 @@ mod tests {
         let path = write_config(dir.path(), "theme = \"Nord\"\nlog_level = \"debug\"\n");
         save_animations_to(&path, AnimPref::Off);
         let after = fs::read_to_string(&path).unwrap();
-        assert!(after.contains("animations = \"off\""), "animations written: {after}");
-        assert!(after.contains("theme = \"Nord\""), "theme preserved: {after}");
-        assert!(after.contains("log_level = \"debug\""), "unrelated key preserved: {after}");
+        assert!(
+            after.contains("animations = \"off\""),
+            "animations written: {after}"
+        );
+        assert!(
+            after.contains("theme = \"Nord\""),
+            "theme preserved: {after}"
+        );
+        assert!(
+            after.contains("log_level = \"debug\""),
+            "unrelated key preserved: {after}"
+        );
         assert_eq!(load_animations_from(&path), AnimPref::Off);
         assert_eq!(load_theme_from(&path), Theme::Nord);
     }

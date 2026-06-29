@@ -64,6 +64,77 @@ pub fn validate_server_name(name: &str) -> Result<()> {
     Ok(())
 }
 
+/// Validate a domain used as a filename segment under `sites-available` /
+/// `sites-enabled`.
+///
+/// This is a path-safety gate (defense against traversal and arbitrary-file
+/// delete), distinct from [`validate_server_name`]: it rejects anything that
+/// could escape the sites directory when joined onto a base path. A domain
+/// segment must:
+///
+/// - be non-empty,
+/// - not be absolute (start with `/`) or a Windows drive/root,
+/// - contain no path separators (`/` or `\`),
+/// - contain no parent-traversal component (`..` as a whole label, i.e. a
+///   literal `..` segment, which `join` would otherwise resolve upward),
+/// - contain no NUL byte,
+/// - be composed solely of the DNS-label allowlist: ASCII alphanumeric, `-`,
+///   `.`, and a leading `*.` wildcard.
+///
+/// The allowlist intentionally mirrors [`validate_server_name`] so legitimate
+/// site domains (`example.com`, `sub.example.com`, `*.example.com`) pass while
+/// path-shaped inputs (`../foo`, `/etc/passwd`, `a/b`, `..`) are refused before
+/// they ever reach `Path::join`.
+///
+/// # Errors
+///
+/// Returns [`Error::Validation`] if the domain is not a safe single path
+/// segment.
+pub fn validate_site_domain(domain: &str) -> Result<()> {
+    if domain.is_empty() {
+        return Err(Error::Validation("site domain must not be empty".into()));
+    }
+
+    // Reject anything that looks path-shaped before joining.
+    if domain.starts_with('/')
+        || domain.starts_with('\\')
+        || domain.contains('\0')
+        || domain.contains('/')
+        || domain.contains('\\')
+    {
+        return Err(Error::Validation(format!(
+            "site domain must be a single path segment, not an absolute or nested path: {domain}"
+        )));
+    }
+
+    // Reject a literal parent/current-traversal label. A bare `..` is resolved
+    // by `Path::join` and would let the caller escape the sites directory; note
+    // that `"..".split('.')` yields empty strings (not `".."`), so we must check
+    // the whole-domain case explicitly in addition to the per-label scan. We
+    // split on '.' and refuse a `..` component so inputs like `foo/../bar`
+    // (already caught above for containing `/`) and `....`-style dodges are
+    // also refused.
+    if domain == "." || domain == ".." || domain.split('.').any(|label| label == "..") {
+        return Err(Error::Validation(format!(
+            "site domain must not be '.' or contain a '..' traversal component: {domain}"
+        )));
+    }
+
+    // Allowlist the character set: DNS-label chars plus the leading `*.`
+    // wildcard. Strip the wildcard prefix before the per-character check so
+    // `*.example.com` is accepted (matching `validate_server_name`).
+    let check = domain.strip_prefix("*.").unwrap_or(domain);
+    for ch in check.chars() {
+        if !ch.is_ascii_alphanumeric() && ch != '-' && ch != '.' {
+            return Err(Error::Validation(format!(
+                "site domain contains disallowed character '{ch}': {domain}"
+            )));
+        }
+    }
+
+    Ok(())
+}
+
 /// Validate that a port number is in the valid range for TCP/UDP.
 ///
 /// Valid ports are 1-65535. Port 0 is not valid for listening.
@@ -83,7 +154,9 @@ pub fn validate_port(port: u16) -> Result<()> {
 /// - Not contain path traversal sequences
 pub fn validate_cert_path(path: &str) -> Result<()> {
     if path.is_empty() {
-        return Err(Error::Validation("certificate path must not be empty".into()));
+        return Err(Error::Validation(
+            "certificate path must not be empty".into(),
+        ));
     }
 
     if path.contains("..") {
@@ -99,8 +172,7 @@ pub fn validate_cert_path(path: &str) -> Result<()> {
 
     if !has_valid_ext {
         return Err(Error::Validation(format!(
-            "certificate path must end with a recognized extension ({:?}): {path}",
-            valid_extensions
+            "certificate path must end with a recognized extension ({valid_extensions:?}): {path}",
         )));
     }
 
@@ -112,7 +184,9 @@ pub fn validate_cert_path(path: &str) -> Result<()> {
 /// Upstream addresses should be in the format `host:port` or a Unix socket path.
 pub fn validate_upstream(upstream: &str) -> Result<()> {
     if upstream.is_empty() {
-        return Err(Error::Validation("upstream address must not be empty".into()));
+        return Err(Error::Validation(
+            "upstream address must not be empty".into(),
+        ));
     }
 
     // Unix socket paths start with "unix:"
@@ -160,6 +234,31 @@ mod tests {
         assert!(validate_server_name("example.com.").is_err());
         assert!(validate_server_name("-example.com").is_err());
         assert!(validate_server_name("example..com").is_err());
+    }
+
+    #[test]
+    fn valid_site_domains() {
+        assert!(validate_site_domain("example.com").is_ok());
+        assert!(validate_site_domain("sub.example.com").is_ok());
+        assert!(validate_site_domain("*.example.com").is_ok());
+        assert!(validate_site_domain("my-site.example.org").is_ok());
+    }
+
+    #[test]
+    fn site_domain_rejects_traversal_and_paths() {
+        // Path-shaped inputs must be refused before they reach Path::join.
+        assert!(validate_site_domain("").is_err());
+        assert!(validate_site_domain("..").is_err());
+        assert!(validate_site_domain("../etc/passwd").is_err());
+        assert!(validate_site_domain("foo/../../../bar").is_err());
+        assert!(validate_site_domain("/etc/passwd").is_err());
+        assert!(validate_site_domain("a/b").is_err());
+        assert!(validate_site_domain("a\\b").is_err());
+        assert!(validate_site_domain("\\\\server\\share").is_err());
+        assert!(validate_site_domain("foo\0bar").is_err());
+        // Disallowed characters outside the DNS-label allowlist.
+        assert!(validate_site_domain("ex ample.com").is_err());
+        assert!(validate_site_domain("example.com;").is_err());
     }
 
     #[test]

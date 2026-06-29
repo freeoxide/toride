@@ -10,10 +10,10 @@ pub use session::ControlSession;
 
 use std::path::Path;
 
-use toride_ssh_core::SshPaths;
 use toride_ssh_core::Error;
 use toride_ssh_core::Result;
 use toride_ssh_core::SshKey;
+use toride_ssh_core::SshPaths;
 
 /// SSH agent operations.
 ///
@@ -115,11 +115,7 @@ impl<'a> AgentService<'a> {
     ///
     /// Returns [`Error::AgentOperationFailed`] if `hosts` is empty or if
     /// the command fails.
-    pub async fn destination_constrained_add(
-        &self,
-        key_path: &Path,
-        hosts: &[&str],
-    ) -> Result<()> {
+    pub async fn destination_constrained_add(&self, key_path: &Path, hosts: &[&str]) -> Result<()> {
         client::destination_constrained_add(key_path, hosts, self.runner).await
     }
 
@@ -131,10 +127,7 @@ impl<'a> AgentService<'a> {
     ///
     /// Returns [`Error::CommandFailed`] if the command fails.
     pub async fn remove_all(&self) -> Result<()> {
-        let result = self
-            .runner
-            .run("ssh-add", vec!["-D".to_owned()])
-            .await?;
+        let result = self.runner.run("ssh-add", vec!["-D".to_owned()]).await?;
 
         tracing::debug!("ssh-add -D output: {result}");
         Ok(())
@@ -161,11 +154,7 @@ impl<'a> AgentService<'a> {
         self.runner
             .run(
                 "ssh-add",
-                vec![
-                    "-t".to_owned(),
-                    lifetime_seconds.to_string(),
-                    path_str,
-                ],
+                vec!["-t".to_owned(), lifetime_seconds.to_string(), path_str],
             )
             .await?;
         Ok(())
@@ -203,11 +192,7 @@ impl<'a> AgentService<'a> {
     ///
     /// Returns [`Error::CommandFailed`] if the key cannot be added, or
     /// [`Error::Io`] if the temporary askpass script cannot be created.
-    pub async fn add_key_with_passphrase(
-        &self,
-        key_path: &Path,
-        passphrase: &str,
-    ) -> Result<()> {
+    pub async fn add_key_with_passphrase(&self, key_path: &Path, passphrase: &str) -> Result<()> {
         let askpass = AskpassHandler::new(passphrase)?;
         let path_str = key_path
             .to_str()
@@ -251,10 +236,7 @@ impl<'a> AgentService<'a> {
             .to_owned();
 
         self.runner
-            .run(
-                "ssh-add",
-                vec!["--apple-use-keychain".to_owned(), path_str],
-            )
+            .run("ssh-add", vec!["--apple-use-keychain".to_owned(), path_str])
             .await?;
         Ok(())
     }
@@ -276,7 +258,7 @@ impl<'a> AgentService<'a> {
         Ok(())
     }
 
-    /// List active ControlMaster sessions.
+    /// List active `ControlMaster` sessions.
     ///
     /// Scans for control socket files in the SSH directory and `/tmp`,
     /// verifying each is still alive.

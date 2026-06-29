@@ -1,4 +1,4 @@
-//! CommandSpec snapshot tests for toride-mise.
+//! `CommandSpec` snapshot tests for toride-mise.
 //!
 //! Builds a [`CommandSpec`] for each major mise operation and snapshots the
 //! resulting args/program via `insta::assert_debug_snapshot!`. This catches
@@ -18,18 +18,23 @@ use toride_runner::CommandSpec;
 /// Build a minimal `CommandSpec` for `mise`.
 fn mise_spec(args: &[&str]) -> CommandSpec {
     let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
-    CommandSpec::new("mise")
-        .args(args)
-        .redact(false)
+    CommandSpec::new("mise").args(args).redact(false)
+}
+
+/// Build a redacted `CommandSpec` for `mise`.
+///
+/// Used for commands like `mise env` that can echo tool-managed secrets in
+/// their arguments or captured output. Mirrors the central `redact(true)`
+/// applied by [`toride_mise`]'s `build_command`.
+fn mise_spec_redacted(args: &[&str]) -> CommandSpec {
+    let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
+    CommandSpec::new("mise").args(args).redact(true)
 }
 
 /// Build a `CommandSpec` with a custom cwd.
 fn mise_spec_with_cwd(args: &[&str], cwd: &Path) -> CommandSpec {
     let args: Vec<String> = args.iter().map(|s| (*s).to_owned()).collect();
-    CommandSpec::new("mise")
-        .args(args)
-        .cwd(cwd)
-        .redact(false)
+    CommandSpec::new("mise").args(args).cwd(cwd).redact(false)
 }
 
 /// Build a `CommandSpec` with env vars and a timeout.
@@ -90,25 +95,25 @@ fn command_spec_latest() {
 
 #[test]
 fn command_spec_env() {
-    let spec = mise_spec(&["env", "--json"]);
+    let spec = mise_spec_redacted(&["env", "--json"]);
     insta::assert_debug_snapshot!("command_spec_env", spec);
 }
 
 #[test]
 fn command_spec_env_with_tool() {
-    let spec = mise_spec(&["env", "--json", "node@22"]);
+    let spec = mise_spec_redacted(&["env", "--json", "node@22"]);
     insta::assert_debug_snapshot!("command_spec_env_with_tool", spec);
 }
 
 #[test]
 fn command_spec_env_dotenv() {
-    let spec = mise_spec(&["env", "--dotenv"]);
+    let spec = mise_spec_redacted(&["env", "--dotenv"]);
     insta::assert_debug_snapshot!("command_spec_env_dotenv", spec);
 }
 
 #[test]
 fn command_spec_env_shell() {
-    let spec = mise_spec(&["env", "--shell", "bash"]);
+    let spec = mise_spec_redacted(&["env", "--shell", "bash"]);
     insta::assert_debug_snapshot!("command_spec_env_shell", spec);
 }
 
@@ -180,10 +185,7 @@ fn command_spec_version() {
 
 #[test]
 fn command_spec_with_cwd() {
-    let spec = mise_spec_with_cwd(
-        &["env", "--json"],
-        Path::new("/project/dir"),
-    );
+    let spec = mise_spec_with_cwd(&["env", "--json"], Path::new("/project/dir"));
     insta::assert_debug_snapshot!("command_spec_with_cwd", spec);
 }
 
@@ -200,9 +202,7 @@ fn command_spec_with_env_and_timeout() {
 #[test]
 fn command_spec_redacted() {
     let args: Vec<String> = vec!["ls".into(), "--output=json".into()];
-    let spec = CommandSpec::new("mise")
-        .args(args)
-        .redact(true);
+    let spec = CommandSpec::new("mise").args(args).redact(true);
     insta::assert_debug_snapshot!("command_spec_redacted", spec);
 }
 

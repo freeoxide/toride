@@ -124,7 +124,9 @@ impl AnomalyReport {
     /// Returns `true` if any anomaly has critical severity.
     #[must_use]
     pub fn has_critical(&self) -> bool {
-        self.findings.iter().any(|f| f.severity == AnomalySeverity::Critical)
+        self.findings
+            .iter()
+            .any(|f| f.severity == AnomalySeverity::Critical)
     }
 }
 

@@ -60,12 +60,12 @@ pub fn redact_args(args: &[String], flags: &[&str]) -> Vec<String> {
         // Check for `--flag=value` form.
         let mut handled = false;
         for flag in flags {
-            if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
-                if !value.is_empty() {
-                    result.push(format!("{flag}=***"));
-                    handled = true;
-                    break;
-                }
+            if let Some(value) = arg.strip_prefix(&format!("{flag}="))
+                && !value.is_empty()
+            {
+                result.push(format!("{flag}=***"));
+                handled = true;
+                break;
             }
         }
         if handled {
@@ -116,7 +116,7 @@ mod tests {
         assert_eq!(result, args);
     }
 
-    /// Regression: provider/PII secret flags MUST be in REDACT_FLAGS.
+    /// Regression: provider/PII secret flags MUST be in `REDACT_FLAGS`.
     /// `--access-token`, `--email`, and `--password-command` were previously
     /// missing, so e.g. `doctl --access-token <token>.redact(true)` silently
     /// leaked the token into logs/errors despite the redact flag.
@@ -132,12 +132,18 @@ mod tests {
             "list".into(),
         ];
         let result = redact_args(&args, REDACT_FLAGS);
-        assert_eq!(result[2], "***", "doctl --access-token value must be redacted");
+        assert_eq!(
+            result[2], "***",
+            "doctl --access-token value must be redacted"
+        );
         assert_eq!(result[4], "firewall", "non-secret args preserved");
 
         // certbot --email <email> (PII)
-        let email_args: Vec<String> =
-            vec!["certbot".into(), "--email".into(), "webmaster@example.com".into()];
+        let email_args: Vec<String> = vec![
+            "certbot".into(),
+            "--email".into(),
+            "webmaster@example.com".into(),
+        ];
         let email_result = redact_args(&email_args, REDACT_FLAGS);
         assert_eq!(
             email_result[2], "***",
@@ -145,8 +151,11 @@ mod tests {
         );
 
         // restic/borg --password-command <cmd>
-        let pw_cmd_args: Vec<String> =
-            vec!["restic".into(), "--password-command".into(), "cat /etc/restic/key".into()];
+        let pw_cmd_args: Vec<String> = vec![
+            "restic".into(),
+            "--password-command".into(),
+            "cat /etc/restic/key".into(),
+        ];
         let pw_cmd_result = redact_args(&pw_cmd_args, REDACT_FLAGS);
         assert_eq!(
             pw_cmd_result[2], "***",

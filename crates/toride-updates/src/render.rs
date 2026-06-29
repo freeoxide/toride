@@ -10,6 +10,8 @@
 
 use crate::spec::{RebootPolicy, Schedule, UpdateSpec};
 
+use std::fmt::Write as _;
+
 // ---------------------------------------------------------------------------
 // render_auto_upgrades_conf
 // ---------------------------------------------------------------------------
@@ -28,12 +30,14 @@ pub fn render_auto_upgrades_conf(spec: &UpdateSpec) -> String {
     // Allowed origins.
     out.push_str("\tAllowed-Origins {\n");
     for origin in &spec.origins {
-        out.push_str(&format!("\t\t\"{origin}\";\n"));
+        let _ = writeln!(out, "\t\t\"{origin}\";");
     }
     if spec.origins.is_empty() && spec.security_only {
         // Default security-only origins.
         out.push_str("\t\t\"origin=Debian,codename=${distro_codename},label=Debian-Security\";\n");
-        out.push_str("\t\t\"origin=Debian,codename=${distro_codename}-security,label=Debian-Security\";\n");
+        out.push_str(
+            "\t\t\"origin=Debian,codename=${distro_codename}-security,label=Debian-Security\";\n",
+        );
     }
     out.push_str("\t};\n");
 
@@ -80,10 +84,11 @@ pub fn render_dnf_automatic_conf(spec: &UpdateSpec) -> String {
 
     // [commands] section.
     out.push_str("[commands]\n");
-    out.push_str(&format!(
-        "apply_updates = {}\n",
+    let _ = writeln!(
+        out,
+        "apply_updates = {}",
         if spec.auto_update { "yes" } else { "no" }
-    ));
+    );
     match spec.reboot {
         RebootPolicy::Never => {
             out.push_str("reboot = never\n");
@@ -121,14 +126,15 @@ pub fn render_dnf_automatic_conf(spec: &UpdateSpec) -> String {
     // [base] section.
     out.push_str("[base]\n");
     out.push_str("debuglevel = 1\n");
-    out.push_str(&format!(
-        "upgrade_type = {}\n",
+    let _ = writeln!(
+        out,
+        "upgrade_type = {}",
         if spec.security_only {
             "security"
         } else {
             "default"
         }
-    ));
+    );
 
     out
 }
@@ -149,10 +155,9 @@ pub fn render_dnf_automatic_conf(spec: &UpdateSpec) -> String {
 pub fn render_apt_conf(spec: &UpdateSpec) -> String {
     let enabled = if spec.auto_update { "1" } else { "0" };
     let schedule_val = match &spec.schedule {
-        Schedule::Daily => "1",
+        Schedule::Daily | Schedule::Custom(_) => "1", // Custom handled via systemd timer.
         Schedule::Weekly => "7",
         Schedule::Monthly => "30",
-        Schedule::Custom(_) => "1", // Custom handled via systemd timer.
     };
 
     format!(
@@ -178,9 +183,7 @@ mod tests {
             security_only: true,
             schedule: Schedule::Daily,
             reboot: RebootPolicy::WhenNeeded,
-            origins: vec![
-                "origin=Debian,codename=${distro_codename},label=Debian-Security".into(),
-            ],
+            origins: vec!["origin=Debian,codename=${distro_codename},label=Debian-Security".into()],
         }
     }
 

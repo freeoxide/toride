@@ -119,7 +119,10 @@ impl Cli {
                     return Ok(());
                 }
                 client.setup_logging(&spec.logging_rules)?;
-                println!("installed {} OUTPUT logging rule(s)", spec.logging_rules.len());
+                println!(
+                    "installed {} OUTPUT logging rule(s)",
+                    spec.logging_rules.len()
+                );
                 Ok(())
             }
             Self::Teardown { dry_run } => {
@@ -153,7 +156,10 @@ impl Cli {
                 } else {
                     println!("doctor: {} finding(s)", report.len());
                     for finding in &report.findings {
-                        println!("  [{:>8}] {}: {}", finding.severity, finding.id, finding.title);
+                        println!(
+                            "  [{:>8}] {}: {}",
+                            finding.severity, finding.id, finding.title
+                        );
                     }
                 }
                 Ok(())
@@ -227,10 +233,7 @@ fn parse_doctor_scope(scope: &str) -> crate::Result<DoctorScope> {
 ///
 /// Only `text` (human-readable) and `json` are supported. `json` requires the
 /// `serde` feature.
-fn print_report(
-    report: &crate::report::MonitorReport,
-    format: &str,
-) -> crate::Result<()> {
+fn print_report(report: &crate::report::MonitorReport, format: &str) -> crate::Result<()> {
     match format {
         "text" | "" => {
             println!(
@@ -248,9 +251,8 @@ fn print_report(
         "json" => {
             #[cfg(feature = "serde")]
             {
-                let json = serde_json::to_string_pretty(report).map_err(|e| {
-                    crate::Error::Other(format!("failed to serialize report: {e}"))
-                })?;
+                let json = serde_json::to_string_pretty(report)
+                    .map_err(|e| crate::Error::Other(format!("failed to serialize report: {e}")))?;
                 println!("{json}");
                 Ok(())
             }
@@ -269,10 +271,7 @@ fn print_report(
 }
 
 /// Render an [`crate::report::AnomalyReport`] in the requested format.
-fn print_anomalies(
-    report: &crate::report::AnomalyReport,
-    format: &str,
-) -> crate::Result<()> {
+fn print_anomalies(report: &crate::report::AnomalyReport, format: &str) -> crate::Result<()> {
     match format {
         "text" | "" => {
             if report.is_clean() {
@@ -280,7 +279,10 @@ fn print_anomalies(
             } else {
                 println!("detect: {} finding(s)", report.findings.len());
                 for finding in &report.findings {
-                    println!("  [{:>8}] {}: {}", finding.severity, finding.id, finding.title);
+                    println!(
+                        "  [{:>8}] {}: {}",
+                        finding.severity, finding.id, finding.title
+                    );
                 }
             }
             Ok(())
@@ -288,9 +290,8 @@ fn print_anomalies(
         "json" => {
             #[cfg(feature = "serde")]
             {
-                let json = serde_json::to_string_pretty(report).map_err(|e| {
-                    crate::Error::Other(format!("failed to serialize report: {e}"))
-                })?;
+                let json = serde_json::to_string_pretty(report)
+                    .map_err(|e| crate::Error::Other(format!("failed to serialize report: {e}")))?;
                 println!("{json}");
                 Ok(())
             }
@@ -359,10 +360,7 @@ mod tests {
         // FakeRunner::clone shares its internal Arc<Mutex<..>> state, so the
         // clone handed to the client records the same calls we inspect here.
         let runner_clone = runner.clone();
-        let client = MonitorClient::with_runner(
-            Box::new(runner_clone),
-            test_paths(),
-        );
+        let client = MonitorClient::with_runner(Box::new(runner_clone), test_paths());
 
         let cli = Cli::parse_from(["toride-monitor", "teardown"]);
 
@@ -396,14 +394,17 @@ mod tests {
     fn dispatch_setup_parses_and_invokes_real_backend() {
         let runner = FakeRunner::new().strict();
         let runner_clone = runner.clone();
-        let client = MonitorClient::with_runner(
-            Box::new(runner_clone),
-            test_paths(),
-        );
+        let client = MonitorClient::with_runner(Box::new(runner_clone), test_paths());
 
         let cli = Cli::parse_from(["toride-monitor", "setup"]);
 
-        assert!(matches!(cli, Cli::Setup { config: None, dry_run: false }));
+        assert!(matches!(
+            cli,
+            Cli::Setup {
+                config: None,
+                dry_run: false
+            }
+        ));
 
         // Default spec has no logging rules => setup_logging is a no-op that
         // issues no commands. Strict runner confirms nothing was called.
@@ -429,10 +430,7 @@ mod tests {
             // iptables-save: empty OUTPUT chain (no LOG rules => a finding).
             .push_response(CommandOutput::from_stdout("*filter\nCOMMIT\n"));
         let runner_clone = runner.clone();
-        let client = MonitorClient::with_runner(
-            Box::new(runner_clone),
-            test_paths(),
-        );
+        let client = MonitorClient::with_runner(Box::new(runner_clone), test_paths());
 
         let cli = Cli::parse_from(["toride-monitor", "doctor"]);
 
@@ -469,10 +467,7 @@ mod tests {
     fn dispatch_setup_dry_run_does_not_execute() {
         let runner = FakeRunner::new().strict();
         let runner_clone = runner.clone();
-        let client = MonitorClient::with_runner(
-            Box::new(runner_clone),
-            test_paths(),
-        );
+        let client = MonitorClient::with_runner(Box::new(runner_clone), test_paths());
 
         let cli = Cli::parse_from(["toride-monitor", "setup", "--dry-run"]);
         assert!(matches!(cli, Cli::Setup { dry_run: true, .. }));
@@ -487,10 +482,7 @@ mod tests {
     fn dispatch_teardown_dry_run_does_not_execute() {
         let runner = FakeRunner::new().strict();
         let runner_clone = runner.clone();
-        let client = MonitorClient::with_runner(
-            Box::new(runner_clone),
-            test_paths(),
-        );
+        let client = MonitorClient::with_runner(Box::new(runner_clone), test_paths());
 
         let cli = Cli::parse_from(["toride-monitor", "teardown", "--dry-run"]);
         assert!(matches!(cli, Cli::Teardown { dry_run: true }));

@@ -11,9 +11,9 @@
 //! cargo run -p toride-fail2ban --example doctor_report
 //! ```
 
+use toride_fail2ban::Fail2Ban;
 use toride_fail2ban::doctor::DoctorScope;
 use toride_fail2ban::report::{DoctorReport, Finding, Severity};
-use toride_fail2ban::Fail2Ban;
 
 // ---------------------------------------------------------------------------
 // Severity indicator for terminal output
@@ -80,15 +80,13 @@ fn print_grouped_report(report: &DoctorReport) {
 fn print_summary(report: &DoctorReport) {
     let by_severity = report.summary_by_severity();
 
-    let ok = by_severity.get(&Severity::Ok).map_or(0, |v| v.len());
-    let info = by_severity.get(&Severity::Info).map_or(0, |v| v.len());
-    let warn = by_severity.get(&Severity::Warning).map_or(0, |v| v.len());
-    let err = by_severity.get(&Severity::Error).map_or(0, |v| v.len());
-    let crit = by_severity.get(&Severity::Critical).map_or(0, |v| v.len());
+    let ok = by_severity.get(&Severity::Ok).map_or(0, Vec::len);
+    let info = by_severity.get(&Severity::Info).map_or(0, Vec::len);
+    let warn = by_severity.get(&Severity::Warning).map_or(0, Vec::len);
+    let err = by_severity.get(&Severity::Error).map_or(0, Vec::len);
+    let crit = by_severity.get(&Severity::Critical).map_or(0, Vec::len);
 
-    println!(
-        "Summary: {crit} critical, {err} errors, {warn} warnings, {info} info, {ok} ok"
-    );
+    println!("Summary: {crit} critical, {err} errors, {warn} warnings, {info} info, {ok} ok");
     println!("Total: {} finding(s)", report.len());
 }
 
@@ -106,9 +104,7 @@ fn main() {
         Ok(instance) => instance,
         Err(e) => {
             eprintln!("Failed to initialise Fail2Ban instance: {e}");
-            eprintln!(
-                "Make sure /etc/fail2ban exists and Fail2Ban is installed."
-            );
+            eprintln!("Make sure /etc/fail2ban exists and Fail2Ban is installed.");
             std::process::exit(2);
         }
     };
@@ -158,9 +154,7 @@ fn main() {
     // 6. Exit with an error code if critical issues were detected.
     if report.has_critical() {
         eprintln!();
-        eprintln!(
-            "Critical issues detected. Please resolve them before proceeding."
-        );
+        eprintln!("Critical issues detected. Please resolve them before proceeding.");
         std::process::exit(1);
     }
 

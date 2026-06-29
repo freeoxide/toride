@@ -10,7 +10,10 @@ fn default_paths_should_point_to_etc_ufw() {
     let paths = UfwPaths::default();
     assert_eq!(paths.default_ufw, PathBuf::from("/etc/default/ufw"));
     assert_eq!(paths.ufw_conf, PathBuf::from("/etc/ufw/ufw.conf"));
-    assert_eq!(paths.app_profiles_dir, PathBuf::from("/etc/ufw/applications.d"));
+    assert_eq!(
+        paths.app_profiles_dir,
+        PathBuf::from("/etc/ufw/applications.d")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -20,7 +23,10 @@ fn default_paths_should_point_to_etc_ufw() {
 #[test]
 fn with_root_should_prefix_all_paths() {
     let paths = UfwPaths::with_root(Path::new("/tmp/test"));
-    assert_eq!(paths.default_ufw, PathBuf::from("/tmp/test/etc/default/ufw"));
+    assert_eq!(
+        paths.default_ufw,
+        PathBuf::from("/tmp/test/etc/default/ufw")
+    );
     assert_eq!(paths.ufw_conf, PathBuf::from("/tmp/test/etc/ufw/ufw.conf"));
     assert_eq!(
         paths.app_profiles_dir,

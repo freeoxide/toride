@@ -155,7 +155,7 @@ impl SshContent {
         self.pending_ops = ops;
     }
 
-    /// Drain ops from the active tab and forward them to our pending_ops.
+    /// Drain ops from the active tab and forward them to our `pending_ops`.
     fn collect_ops(&mut self) {
         let ops = self.active_tab_mut().drain_ops();
         self.pending_ops.extend(ops);
@@ -168,10 +168,10 @@ impl SshContent {
 
     /// Clear the error notification if it's been shown for more than 5 seconds.
     fn clear_expired_error(&mut self) {
-        if let Some((_, ts)) = &self.last_error {
-            if ts.elapsed().as_secs() >= 5 {
-                self.last_error = None;
-            }
+        if let Some((_, ts)) = &self.last_error
+            && ts.elapsed().as_secs() >= 5
+        {
+            self.last_error = None;
         }
     }
 
@@ -191,9 +191,17 @@ impl SshContent {
     }
 
     /// Render the loading spinner bar.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "spinner arithmetic bounded"
+    )]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "elapsed spinner product is non-negative"
+    )]
     fn render_loading_bar(&self, frame: &mut Frame, area: Rect, p: Palette) {
-        use rattles::presets::braille::WaveRows;
         use rattles::Rattle;
+        use rattles::presets::braille::WaveRows;
 
         let frames = WaveRows::FRAMES;
         let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
@@ -314,26 +322,22 @@ impl SshContent {
                 self.tab = self.tab.next();
                 None
             }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+            KeyCode::Down
+            | KeyCode::Char('j')
+            | KeyCode::Tab
+            | KeyCode::Enter
+            | KeyCode::BackTab => {
                 self.focus = Focus::List;
                 None
             }
-            KeyCode::Enter => {
-                self.focus = Focus::List;
-                None
-            }
-            KeyCode::BackTab => {
-                self.focus = Focus::List;
-                None
-            }
-            KeyCode::Esc => return Some(Action::Back),
+            KeyCode::Esc => Some(Action::Back),
             _ => None,
         }
     }
 
     fn handle_list_key(&mut self, code: KeyCode) -> Option<Action> {
         match code {
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Up | KeyCode::Char('k' | 'j') | KeyCode::Down => {
                 // Delegate up/down to the active tab's handle_key
                 self.active_tab_mut().handle_key(code)
             }
@@ -341,7 +345,7 @@ impl SshContent {
                 self.focus = Focus::TabBar;
                 None
             }
-            KeyCode::Esc => return Some(Action::Back),
+            KeyCode::Esc => Some(Action::Back),
             // Delegate remaining keys to the active tab.
             _ => self.active_tab_mut().handle_key(code),
         }
@@ -379,10 +383,7 @@ impl SshContent {
                     self.active_tab_mut().handle_mouse(mouse);
                 }
             }
-            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
-                self.active_tab_mut().handle_mouse(mouse);
-            }
-            MouseEventKind::Up(_) => {
+            MouseEventKind::ScrollDown | MouseEventKind::ScrollUp | MouseEventKind::Up(_) => {
                 self.active_tab_mut().handle_mouse(mouse);
             }
             _ => {}
@@ -432,8 +433,8 @@ impl SshContent {
     pub fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.clear_expired_error();
 
-        let loading_h = if self.ssh_loading { 1u16 } else { 0u16 };
-        let error_h = if self.last_error.is_some() { 1u16 } else { 0u16 };
+        let loading_h = u16::from(self.ssh_loading);
+        let error_h = u16::from(self.last_error.is_some());
 
         // Split into tab bar + optional loading bar + optional error bar + content area
         let mut constraints = vec![
@@ -453,7 +454,7 @@ impl SshContent {
 
         let tab_bar_area = rects[i];
         i += 1;
-        let _gap_area = rects[i];
+        let _ = rects[i];
         i += 1;
 
         if loading_h > 0 {
@@ -482,6 +483,10 @@ impl SshContent {
         self.active_tab_mut().view(frame, content_area, p);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_tab_bar(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.tab_hitboxes.clear();
         let tabs = SshSection::all();
@@ -510,9 +515,7 @@ impl SshContent {
             } else if is_hovered {
                 Style::new().fg(p.accent)
             } else if is_active {
-                Style::new()
-                    .fg(p.accent)
-                    .add_modifier(Modifier::BOLD)
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD)
             } else {
                 Style::new().fg(p.text_dim)
             };
@@ -564,7 +567,7 @@ trait SshTab {
 /// Lightweight presentation model for an SSH key row in the Keys tab.
 #[derive(Clone, Debug)]
 pub struct SshKeyEntry {
-    /// File name (e.g. "id_ed25519").
+    /// File name (e.g. "`id_ed25519`").
     pub name: String,
     /// Key type label (e.g. "Ed25519", "RSA 4096").
     pub key_type: String,
@@ -578,7 +581,7 @@ pub struct SshKeyEntry {
     pub has_public: bool,
     /// Whether a certificate is associated.
     pub has_cert: bool,
-    /// Host aliases in ~/.ssh/config that reference this key via IdentityFile.
+    /// Host aliases in ~/.ssh/config that reference this key via `IdentityFile`.
     pub used_by_hosts: Vec<String>,
 }
 
@@ -592,7 +595,7 @@ impl SshKeyEntry {
     }
 }
 
-/// Presentation model for a known_hosts entry in the Hosts tab.
+/// Presentation model for a `known_hosts` entry in the Hosts tab.
 ///
 /// Multiple key lines for the same host are **grouped** into a single entry
 /// with `key_types` listing all algorithms and `fingerprints` the matching FP.
@@ -614,7 +617,7 @@ pub struct KnownHostEntry {
     pub marker: Option<String>,
     /// Actual comment text from the entry.
     pub comment: Option<String>,
-    /// 1-based line number in the known_hosts file (first occurrence).
+    /// 1-based line number in the `known_hosts` file (first occurrence).
     pub line: usize,
     /// Source file: "user" or "global".
     pub source: String,
@@ -635,15 +638,15 @@ pub struct ConfigHostEntry {
     pub name: String,
     /// All Host patterns in the block.
     pub patterns: Vec<String>,
-    /// HostName directive value, if set.
+    /// `HostName` directive value, if set.
     pub host_name: Option<String>,
     /// User directive value, if set.
     pub user: Option<String>,
     /// Port directive value, if set.
     pub port: Option<u16>,
-    /// IdentityFile directive value, if set.
+    /// `IdentityFile` directive value, if set.
     pub identity_file: Option<String>,
-    /// ProxyJump directive value, if set.
+    /// `ProxyJump` directive value, if set.
     pub proxy_jump: Option<String>,
     /// Total number of directives in the block.
     pub directive_count: usize,
@@ -682,7 +685,7 @@ pub struct AgentStatus {
 pub struct ForwardSessionEntry {
     /// Connected host alias or name.
     pub host: String,
-    /// ControlMaster socket path.
+    /// `ControlMaster` socket path.
     pub control_path: String,
     /// Process ID of the SSH session.
     pub pid: Option<u32>,
@@ -712,7 +715,7 @@ pub struct ForwardEntry {
 /// Presentation model for a diagnostic check result.
 #[derive(Clone, Debug)]
 pub struct DiagnosticEntry {
-    /// Check identifier (e.g. "ssh_dir_permissions").
+    /// Check identifier (e.g. "`ssh_dir_permissions`").
     pub id: String,
     /// Severity level: "ok", "info", "warning", "error".
     pub severity: String,
@@ -737,7 +740,7 @@ pub struct AuthorizedKeyEntry {
     pub fingerprint: String,
     /// Parsed options string (e.g. 'command="...",no-port-forwarding').
     pub options: Option<String>,
-    /// Line number in the authorized_keys file.
+    /// Line number in the `authorized_keys` file.
     pub line: usize,
 }
 
@@ -766,23 +769,23 @@ pub struct CertificateEntry {
     pub principals: Vec<String>,
 }
 
-/// SSH server access control information parsed from sshd_config.
+/// SSH server access control information parsed from `sshd_config`.
 #[derive(Debug, Clone, Default)]
 pub struct SshAccessInfo {
-    /// Whether sshd_config was found and readable on this machine.
+    /// Whether `sshd_config` was found and readable on this machine.
     /// When false, all other fields are defaults — the UI should hide
     /// sections that depend on server config rather than showing
     /// misleading empty states.
     pub available: bool,
-    /// Users allowed via AllowUsers (empty = all allowed).
+    /// Users allowed via `AllowUsers` (empty = all allowed).
     pub allowed_users: Vec<String>,
-    /// Users denied via DenyUsers.
+    /// Users denied via `DenyUsers`.
     pub denied_users: Vec<String>,
-    /// Groups allowed via AllowGroups (empty = all allowed).
+    /// Groups allowed via `AllowGroups` (empty = all allowed).
     pub allowed_groups: Vec<String>,
-    /// Groups denied via DenyGroups.
+    /// Groups denied via `DenyGroups`.
     pub denied_groups: Vec<String>,
-    /// Authentication methods from AuthenticationMethods directive.
+    /// Authentication methods from `AuthenticationMethods` directive.
     pub auth_methods: Vec<String>,
     /// Whether password authentication is enabled.
     pub password_auth: bool,
@@ -801,16 +804,16 @@ pub struct SystemUserInfo {
     pub shell: String,
     /// Home directory path.
     pub home_dir: String,
-    /// Number of SSH key pairs (private keys like id_ed25519, id_rsa) in ~/.ssh/.
+    /// Number of SSH key pairs (private keys like `id_ed25519`, `id_rsa`) in ~/.ssh/.
     pub ssh_key_count: usize,
-    /// Number of entries in authorized_keys (keys that can log in as this user).
+    /// Number of entries in `authorized_keys` (keys that can log in as this user).
     pub authorized_key_count: usize,
-    /// Up to a handful of authorized_keys entries for the user detail modal.
+    /// Up to a handful of `authorized_keys` entries for the user detail modal.
     /// Empty when unreadable (e.g. another user's file without root).
     pub authorized_keys_preview: Vec<AuthorizedKeyPreview>,
 }
 
-/// A compact view of one authorized_keys entry, for the user detail modal.
+/// A compact view of one `authorized_keys` entry, for the user detail modal.
 #[derive(Debug, Clone)]
 pub struct AuthorizedKeyPreview {
     /// Key type (e.g. `ssh-ed25519`).
@@ -819,8 +822,33 @@ pub struct AuthorizedKeyPreview {
     pub comment: Option<String>,
     /// SHA-256 fingerprint of the public key.
     pub fingerprint: String,
-    /// 1-based line number in the authorized_keys file.
+    /// 1-based line number in the `authorized_keys` file.
     pub line: usize,
+}
+
+/// Convert a footer-button action char back to the corresponding [`KeyCode`].
+///
+/// Footer buttons use `char` as their action type.  This maps the char to the
+/// `KeyCode` that the tab's `handle_key` already knows how to process.
+pub(crate) fn char_to_keycode(c: char) -> KeyCode {
+    match c {
+        '\r' => KeyCode::Enter,
+        '\x1b' => KeyCode::Esc,
+        c => KeyCode::Char(c),
+    }
+}
+
+/// Truncate an error message to fit within `max_width` characters.
+/// Uses character-based truncation to avoid panicking on multi-byte UTF-8.
+fn truncate_error(msg: &str, max_width: usize) -> String {
+    if msg.chars().count() <= max_width {
+        msg.to_string()
+    } else if max_width > 2 {
+        let truncated: String = msg.chars().take(max_width.saturating_sub(2)).collect();
+        format!("{truncated}..")
+    } else {
+        String::new()
+    }
 }
 
 #[cfg(test)]
@@ -847,9 +875,7 @@ mod tests {
 
         let mut content = SshContent::new();
         let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("Security"), "tab bar visible: {output}");
     }
@@ -861,22 +887,18 @@ mod tests {
 
         let mut content = SshContent::new();
         content.tab = SshSection::Keys;
-        content.set_keys(vec![
-            SshKeyEntry {
-                name: "id_ed25519".into(),
-                key_type: "Ed25519".into(),
-                fingerprint: "SHA256:abc123".into(),
-                encrypted: true,
-                permissions: "0600".into(),
-                has_public: true,
-                has_cert: false,
-                used_by_hosts: vec!["github.com".into(), "gh.com".into()],
-            },
-        ]);
+        content.set_keys(vec![SshKeyEntry {
+            name: "id_ed25519".into(),
+            key_type: "Ed25519".into(),
+            fingerprint: "SHA256:abc123".into(),
+            encrypted: true,
+            permissions: "0600".into(),
+            has_public: true,
+            has_cert: false,
+            used_by_hosts: vec!["github.com".into(), "gh.com".into()],
+        }]);
         let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("id_ed25519"), "key name visible: {output}");
     }
@@ -919,9 +941,7 @@ mod tests {
             let mut content = SshContent::new();
             content.tab = *section;
             let mut terminal = Terminal::new(TestBackend::new(120, 36)).unwrap();
-            terminal
-                .draw(|f| content.view(f, f.area(), CHARM))
-                .unwrap();
+            terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         }
     }
 
@@ -950,8 +970,7 @@ mod tests {
             .drain_pending_ops()
             .into_iter()
             .map(|op| match op {
-                SshOp::SshdAllowUser { username } => username,
-                SshOp::SshdDenyUser { username } => username,
+                SshOp::SshdAllowUser { username } | SshOp::SshdDenyUser { username } => username,
                 other => format!("unexpected:{other:?}"),
             })
             .collect::<Vec<_>>();
@@ -960,30 +979,5 @@ mod tests {
             vec!["held-first".to_string(), "queued-later".to_string()],
             "held ops must drain ahead of newly-queued ops"
         );
-    }
-}
-
-/// Convert a footer-button action char back to the corresponding [`KeyCode`].
-///
-/// Footer buttons use `char` as their action type.  This maps the char to the
-/// `KeyCode` that the tab's `handle_key` already knows how to process.
-pub(crate) fn char_to_keycode(c: char) -> KeyCode {
-    match c {
-        '\r' => KeyCode::Enter,
-        '\x1b' => KeyCode::Esc,
-        c => KeyCode::Char(c),
-    }
-}
-
-/// Truncate an error message to fit within `max_width` characters.
-/// Uses character-based truncation to avoid panicking on multi-byte UTF-8.
-fn truncate_error(msg: &str, max_width: usize) -> String {
-    if msg.chars().count() <= max_width {
-        msg.to_string()
-    } else if max_width > 2 {
-        let truncated: String = msg.chars().take(max_width.saturating_sub(2)).collect();
-        format!("{truncated}..")
-    } else {
-        String::new()
     }
 }

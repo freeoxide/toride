@@ -35,10 +35,14 @@ pub struct CloudPaths {
 impl CloudPaths {
     /// Create a `CloudPaths` from the default XDG location.
     ///
+    /// Named `discover` rather than `default` because this lookup is fallible
+    /// (the XDG config dir may be unresolvable), so it cannot implement the
+    /// infallible [`std::default::Default`] trait.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if the home directory cannot be determined.
-    pub fn default() -> Result<Self> {
+    /// Returns [`Error::Other`] if the home directory cannot be determined.
+    pub fn discover() -> Result<Self> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| Error::Other("cannot determine config directory".to_string()))?
             .join("toride")

@@ -21,9 +21,7 @@ const BACKUP_DIR: &str = "/var/backups/toride-users";
 /// Returns [`Error::Io`] if the directory cannot be created or the file
 /// cannot be copied.
 pub fn backup_file(source: &Path, backup_dir: Option<&Path>) -> Result<PathBuf> {
-    let dir = backup_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(BACKUP_DIR));
+    let dir = backup_dir.map_or_else(|| PathBuf::from(BACKUP_DIR), PathBuf::from);
 
     std::fs::create_dir_all(&dir)?;
 
@@ -33,10 +31,7 @@ pub fn backup_file(source: &Path, backup_dir: Option<&Path>) -> Result<PathBuf> 
 
     let timestamp = chrono_less_timestamp();
 
-    let backup_name = format!(
-        "{}.{timestamp}.bak",
-        filename.to_string_lossy()
-    );
+    let backup_name = format!("{}.{timestamp}.bak", filename.to_string_lossy());
     let backup_path = dir.join(&backup_name);
 
     std::fs::copy(source, &backup_path)?;
@@ -59,11 +54,7 @@ pub fn backup_file(source: &Path, backup_dir: Option<&Path>) -> Result<PathBuf> 
 /// Returns [`Error::Io`] if the copy fails.
 pub fn restore_file(backup: &Path, target: &Path) -> Result<()> {
     std::fs::copy(backup, target)?;
-    tracing::info!(
-        "restored {} from {}",
-        target.display(),
-        backup.display()
-    );
+    tracing::info!("restored {} from {}", target.display(), backup.display());
     Ok(())
 }
 
@@ -75,21 +66,15 @@ pub fn restore_file(backup: &Path, target: &Path) -> Result<()> {
 ///
 /// Returns [`Error::Io`] if the directory cannot be read.
 pub fn list_backups(backup_dir: Option<&Path>) -> Result<Vec<PathBuf>> {
-    let dir = backup_dir
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(BACKUP_DIR));
+    let dir = backup_dir.map_or_else(|| PathBuf::from(BACKUP_DIR), PathBuf::from);
 
     if !dir.is_dir() {
         return Ok(Vec::new());
     }
 
     let mut entries: Vec<PathBuf> = std::fs::read_dir(&dir)?
-        .filter_map(|e| e.ok())
-        .filter(|e| {
-            e.path()
-                .extension()
-                .is_some_and(|ext| ext == "bak")
-        })
+        .filter_map(std::result::Result::ok)
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "bak"))
         .map(|e| e.path())
         .collect();
 

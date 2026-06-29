@@ -15,7 +15,7 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::ssh_data::SshOp;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
@@ -65,7 +65,7 @@ pub struct AgentTab {
     form: FormModal,
     /// Confirm modal for remove key operation.
     confirm: ConfirmModal,
-    /// Pending write operations to be forwarded to SshContent.
+    /// Pending write operations to be forwarded to `SshContent`.
     pending_ops: Vec<SshOp>,
 }
 
@@ -170,14 +170,14 @@ impl AgentTab {
 
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                if let Some(mr) = self.detail_modal_rect {
-                    let col = mouse.column;
-                    let row = mouse.row;
-                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
-                        self.detail_open = None;
-                        self.detail_modal_rect = None;
-                    }
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && let Some(mr) = self.detail_modal_rect
+            {
+                let col = mouse.column;
+                let row = mouse.row;
+                if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
+                    self.detail_open = None;
+                    self.detail_modal_rect = None;
                 }
             }
             return None;
@@ -204,11 +204,9 @@ impl AgentTab {
                     self.clamp_scroll();
                 }
             }
-            MouseEventKind::ScrollUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.clamp_scroll();
-                }
+            MouseEventKind::ScrollUp if self.selected > 0 => {
+                self.selected -= 1;
+                self.clamp_scroll();
             }
             _ => {}
         }
@@ -230,6 +228,10 @@ impl Default for AgentTab {
 }
 
 impl SshTab for AgentTab {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keyboard dispatch table kept whole for clarity"
+    )]
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If detail modal is open, handle modal keys
         if self.detail_open.is_some() {
@@ -246,23 +248,24 @@ impl SshTab for AgentTab {
                 ActionModal::Add => {
                     match self.form.handle_key(code) {
                         FormResult::Submitted => {
-                            let path = self.form.text_value(0)
-                                .map(|s| s.to_string())
+                            let path = self
+                                .form
+                                .text_value(0)
+                                .map(std::string::ToString::to_string)
                                 .unwrap_or_default();
                             let display_name = if path.is_empty() {
                                 "unknown".to_string()
                             } else {
                                 // Extract filename from path
-                                std::path::Path::new(&path)
-                                    .file_name()
-                                    .map(|f| f.to_string_lossy().to_string())
-                                    .unwrap_or_else(|| path.clone())
+                                std::path::Path::new(&path).file_name().map_or_else(
+                                    || path.clone(),
+                                    |f| f.to_string_lossy().to_string(),
+                                )
                             };
                             // Persist to disk
                             if !path.is_empty() {
-                                self.pending_ops.push(SshOp::AgentAddKey {
-                                    path: path.clone(),
-                                });
+                                self.pending_ops
+                                    .push(SshOp::AgentAddKey { path: path.clone() });
                             }
                             // Optimistic in-memory update
                             self.keys.push(AgentKeyEntry {
@@ -344,15 +347,19 @@ impl SshTab for AgentTab {
                 }
                 // CRUD shortcuts
                 KeyCode::Char('a') => {
-                    self.form = FormModal::new(40)
-                        .text_field(TextInput::new("Key Path", 40).placeholder("~/.ssh/id_ed25519").required());
+                    self.form = FormModal::new(40).text_field(
+                        TextInput::new("Key Path", 40)
+                            .placeholder("~/.ssh/id_ed25519")
+                            .required(),
+                    );
                     self.action_modal = Some(ActionModal::Add);
                     None
                 }
                 KeyCode::Char('d') => {
                     if !self.keys.is_empty() {
                         let name = self.keys[self.selected].name.clone();
-                        self.confirm = ConfirmModal::new(format!("Remove key \"{}\" from agent?", name));
+                        self.confirm =
+                            ConfirmModal::new(format!("Remove key \"{name}\" from agent?"));
                         self.action_modal = Some(ActionModal::Remove);
                     }
                     None
@@ -373,26 +380,28 @@ impl SshTab for AgentTab {
         self.row_hitboxes.clear();
 
         // Render status header + key list or empty state
-        if !self.status.reachable {
-            self.render_empty(frame, area, p);
-        } else if self.keys.is_empty() {
+        if !self.status.reachable || self.keys.is_empty() {
             self.render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_open {
-            if let Some(key) = self.keys.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &key);
-            }
+        if let Some(idx) = self.detail_open
+            && let Some(key) = self.keys.get(idx).cloned()
+        {
+            self.render_detail_modal(frame, p, &key);
         }
 
         // Render action modal on top
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Key to Agent", 52, 13,
+                    frame,
+                    p,
+                    "Add Key to Agent",
+                    52,
+                    13,
                     "Enter key path, Esc to cancel",
                 );
             }
@@ -431,77 +440,75 @@ impl AgentTab {
     fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " SSH AGENT ", p.text, false);
 
-        let msg = if !self.status.reachable {
-            Line::from(vec![
-                Span::styled("SSH agent not running", Style::new().fg(p.text_dim)),
-            ])
-        } else {
+        let msg = if self.status.reachable {
             Line::from(vec![
                 Span::styled("Agent running, no keys loaded", Style::new().fg(p.text_dim)),
-                Span::styled("  a", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "  a",
+                    Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" add", Style::new().fg(p.text_muted)),
             ])
+        } else {
+            Line::from(vec![Span::styled(
+                "SSH agent not running",
+                Style::new().fg(p.text_dim),
+            )])
         };
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "render routine kept whole for clarity"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_list(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
-        let inner = render_titled_panel(
-            frame,
-            area,
-            p,
-            " SSH AGENT ",
-            p.text,
-            false,
-        );
+        let inner = render_titled_panel(frame, area, p, " SSH AGENT ", p.text, false);
 
         if inner.height == 0 {
             return;
         }
 
         // ── Status header (3 lines) ─────────────────────────────────────────
-        let socket_display = self
-            .status
-            .socket_path
-            .as_deref()
-            .unwrap_or("unknown");
+        let socket_display = self.status.socket_path.as_deref().unwrap_or("unknown");
 
         // Line 1: agent running status
         let status_line = if self.status.reachable {
             Line::from(vec![
+                Span::styled("● ", Style::new().fg(p.ok)),
                 Span::styled(
-                    "● ",
-                    Style::new().fg(p.ok),
-                ),
-                Span::styled(
-                    format!("Agent running at {}", socket_display),
+                    format!("Agent running at {socket_display}"),
                     Style::new().fg(p.text),
                 ),
             ])
         } else {
-            Line::from(vec![
-                Span::styled(
-                    "○ Agent not running",
-                    Style::new().fg(p.err),
-                ),
-            ])
+            Line::from(vec![Span::styled(
+                "○ Agent not running",
+                Style::new().fg(p.err),
+            )])
         };
         let line1_area = Rect::new(inner.x, inner.y, inner.width, 1);
         frame.render_widget(Paragraph::new(status_line), line1_area);
 
         // Line 2: key count — show both agent-reported count and displayed count
-        let count_display = if self.keys.len() != self.status.key_count {
-            format!("{} keys loaded ({} reported)", self.keys.len(), self.status.key_count)
-        } else {
+        let count_display = if self.keys.len() == self.status.key_count {
             format!("{} keys loaded", self.keys.len())
+        } else {
+            format!(
+                "{} keys loaded ({} reported)",
+                self.keys.len(),
+                self.status.key_count
+            )
         };
-        let count_line = Line::from(vec![
-            Span::styled(
-                count_display,
-                Style::new().fg(p.text_dim),
-            ),
-        ]);
+        let count_line = Line::from(vec![Span::styled(
+            count_display,
+            Style::new().fg(p.text_dim),
+        )]);
         let line2_area = Rect::new(inner.x, inner.y + 1, inner.width, 1);
         frame.render_widget(Paragraph::new(count_line), line2_area);
 
@@ -561,7 +568,11 @@ impl AgentTab {
             // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
-                Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
+                Style::new().fg(if is_selected || is_hovered {
+                    p.accent
+                } else {
+                    p.text_dim
+                }),
             ));
 
             // Key name (truncated to fit)
@@ -570,9 +581,7 @@ impl AgentTab {
             let name_chars = name.chars().count();
             spans.push(Span::styled(
                 name,
-                Style::new()
-                    .fg(p.text)
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ));
 
             // Padding
@@ -612,54 +621,68 @@ impl AgentTab {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
         let viewport = Viewport::from_area(area);
-        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
+        self.buttons
+            .render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, key: &AgentKeyEntry) {
         let modal = Modal::new("Agent Key Detail").dimensions(54, 10);
         self.detail_modal_rect = Some(modal.rect(frame.area()));
         modal.render(frame, p, |frame, content_area| {
-                let lines = vec![
-                    Line::from(vec![
-                        Span::styled("Name:        ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.name, Style::new().fg(p.text).bold()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Type:        ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.key_type, Style::new().fg(p.info)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("FP:          ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.fingerprint, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Locked:      ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.is_locked { "yes" } else { "no" },
-                            Style::new().fg(if key.is_locked { p.warn } else { p.ok }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Constraints: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.has_constraints { "various" } else { "none" },
-                            Style::new().fg(if key.has_constraints { p.text } else { p.text_muted }),
-                        ),
-                    ]),
-                    Line::raw(""),
-                    Line::from(
-                        Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("Name:        ", Style::new().fg(p.text_dim)),
+                    Span::styled(&key.name, Style::new().fg(p.text).bold()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Type:        ", Style::new().fg(p.text_dim)),
+                    Span::styled(&key.key_type, Style::new().fg(p.info)),
+                ]),
+                Line::from(vec![
+                    Span::styled("FP:          ", Style::new().fg(p.text_dim)),
+                    Span::styled(&key.fingerprint, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Locked:      ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        if key.is_locked { "yes" } else { "no" },
+                        Style::new().fg(if key.is_locked { p.warn } else { p.ok }),
                     ),
-                ];
+                ]),
+                Line::from(vec![
+                    Span::styled("Constraints: ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        if key.has_constraints {
+                            "various"
+                        } else {
+                            "none"
+                        },
+                        Style::new().fg(if key.has_constraints {
+                            p.text
+                        } else {
+                            p.text_muted
+                        }),
+                    ),
+                ]),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "Press Esc to close",
+                    Style::new().fg(p.text_muted),
+                )),
+            ];
 
-                for (i, line) in lines.into_iter().enumerate() {
-                    let y = content_area.y + i as u16;
-                    if y < content_area.bottom() {
-                        let row_area = Rect::new(content_area.x, y, content_area.width, 1);
-                        frame.render_widget(Paragraph::new(line), row_area);
-                    }
+            for (i, line) in lines.into_iter().enumerate() {
+                let y = content_area.y + i as u16;
+                if y < content_area.bottom() {
+                    let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+                    frame.render_widget(Paragraph::new(line), row_area);
                 }
-            });
+            }
+        });
     }
 }
 
@@ -776,7 +799,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("SSH agent not running"), "empty state: {output}");
+        assert!(
+            output.contains("SSH agent not running"),
+            "empty state: {output}"
+        );
     }
 
     #[test]
@@ -839,7 +865,10 @@ mod tests {
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("Agent running"), "status header: {output}");
-        assert!(output.contains("/tmp/ssh-agent.sock"), "socket path: {output}");
+        assert!(
+            output.contains("/tmp/ssh-agent.sock"),
+            "socket path: {output}"
+        );
         assert!(output.contains("keys loaded"), "key count: {output}");
     }
 

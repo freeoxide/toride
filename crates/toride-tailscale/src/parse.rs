@@ -32,10 +32,10 @@ pub fn parse_tailscale_status(output: &str) -> Result<String> {
     }
 
     // Attempt to parse as JSON and extract BackendState.
-    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        if let Some(state) = val.get("BackendState").and_then(|v| v.as_str()) {
-            return Ok(state.to_owned());
-        }
+    if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed)
+        && let Some(state) = val.get("BackendState").and_then(|v| v.as_str())
+    {
+        return Ok(state.to_owned());
     }
 
     // Fallback: return trimmed output as-is for non-JSON responses.
@@ -64,7 +64,9 @@ pub fn parse_tailscale_ip(output: &str) -> Result<String> {
     let ip = trimmed.lines().next().unwrap_or(trimmed);
 
     // Basic validation: must contain only digits, dots, colons, or hex chars.
-    let valid = ip.chars().all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':');
+    let valid = ip
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == ':');
     if !valid {
         return Err(crate::Error::Other(format!(
             "invalid Tailscale IP address: {ip}"

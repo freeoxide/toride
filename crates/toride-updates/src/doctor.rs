@@ -266,22 +266,30 @@ impl<'a> Doctor<'a> {
         // absent but the log shows an old run.
         let schedule = infer_schedule_from_apt_conf(&self.paths.auto_upgrades_enabled)
             .unwrap_or(Schedule::Daily);
+        // stable std lacks from_hours/from_days constructors
+        #[expect(
+            clippy::duration_suboptimal_units,
+            reason = "stable std lacks from_hours/from_days constructors"
+        )]
         let max_age = match schedule {
-            Schedule::Daily => Duration::from_secs(36 * 60 * 60), // 1.5 days
-            Schedule::Weekly => Duration::from_secs(8 * 24 * 60 * 60), // ~8 days
-            Schedule::Monthly => Duration::from_secs(33 * 24 * 60 * 60), // ~33 days
+            Schedule::Daily => Duration::from_secs(36 * 3600), // 1.5 days
+            Schedule::Weekly => Duration::from_secs(8 * 24 * 3600), // ~8 days
+            Schedule::Monthly => Duration::from_secs(33 * 24 * 3600), // ~33 days
             // Custom schedules: do not second-guess them.
             Schedule::Custom(_) => return,
         };
 
-        if let Some(elapsed) = elapsed_since(&last_run) {
-            if elapsed > max_age {
-                findings.push(report::finding_stale_last_run(&last_run));
-            }
+        if let Some(elapsed) = elapsed_since(&last_run)
+            && elapsed > max_age
+        {
+            findings.push(report::finding_stale_last_run(&last_run));
         }
     }
 
     /// Check: permission.config-dir-world-writable
+    ///
+    /// On non-Unix targets the mode-bit inspection is a no-op (the `mode()`
+    /// helper only exists under `PermissionsExt` on Unix).
     fn check_config_dir_permissions(&self, findings: &mut Vec<toride_diagnostic_types::Finding>) {
         info!("Checking config directory permissions");
 
@@ -291,15 +299,25 @@ impl<'a> Doctor<'a> {
             PackageManager::Unknown => return,
         };
 
+        // `PermissionsExt::mode()` is only available on Unix; gate the whole
+        // world-writable bit check so this compiles on non-Unix targets.
+        #[cfg(unix)]
         if let Ok(metadata) = std::fs::metadata(dir) {
             // On Unix, check if the "other" write bit is set.
-            #[expect(clippy::unnecessary_cast, reason = "mode_bits only on Unix")]
+            #[allow(clippy::unnecessary_cast, reason = "mode_bits only on Unix")]
             let mode = metadata.permissions().mode() as u32;
             if mode & 0o002 != 0 {
                 findings.push(report::finding_config_dir_world_writable(
                     &dir.display().to_string(),
                 ));
             }
+        }
+
+        // Non-Unix targets have no POSIX mode bits to inspect.
+        #[cfg(not(unix))]
+        {
+            let _ = dir;
+            let _ = findings;
         }
     }
 
@@ -325,10 +343,7 @@ impl<'a> Doctor<'a> {
             PackageManager::Apt => vec!["apt-daily-upgrade.timer"],
             // Probe the install variant first; it is the one that actually
             // applies updates rather than just downloading them.
-            PackageManager::Dnf => vec![
-                "dnf-automatic-install.timer",
-                "dnf-automatic.timer",
-            ],
+            PackageManager::Dnf => vec!["dnf-automatic-install.timer", "dnf-automatic.timer"],
             PackageManager::Unknown => Vec::new(),
         }
     }
@@ -504,7 +519,12 @@ fn parse_log_timestamp(timestamp: &str) -> Option<Duration> {
     let sec: u64 = t.next()?.parse().ok()?;
 
     let days_since_epoch = civil_to_days(year, month, day)?;
-    let secs = days_since_epoch as u64 * 86_400 + hour * 3_600 + min * 60 + sec;
+    // A log timestamp must fall on or after the Unix epoch; a negative
+    // day count would be a pre-1970 date, which is not a valid log entry.
+    if days_since_epoch < 0 {
+        return None;
+    }
+    let secs = days_since_epoch.cast_unsigned() * 86_400 + hour * 3_600 + min * 60 + sec;
     Some(Duration::from_secs(secs))
 }
 
@@ -523,8 +543,8 @@ fn civil_to_days(year: i64, month: u32, day: u32) -> Option<i64> {
     let y = if month <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
-    let m = month as i64;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + day as i64 - 1;
+    let m = i64::from(month);
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + i64::from(day) - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     let days = era * 146_097 + doe - 719_468;
     Some(days)
@@ -558,15 +578,24 @@ mod tests {
         // The helper expects a pre-trimmed line (as apt_auto_upgrades_enabled
         // provides); leading whitespace is the caller's responsibility.
         let line = r#"APT::Periodic::Update-Package-Lists "1";"#;
-        assert_eq!(apt_conf_value(line, "APT::Periodic::Update-Package-Lists"), Some("1"));
+        assert_eq!(
+            apt_conf_value(line, "APT::Periodic::Update-Package-Lists"),
+            Some("1")
+        );
         assert_eq!(apt_conf_value(line, "Unattended-Upgrade"), None);
-        assert_eq!(apt_conf_value(r#"Unattended-Upgrade "0";"#, "Unattended-Upgrade"), Some("0"));
+        assert_eq!(
+            apt_conf_value(r#"Unattended-Upgrade "0";"#, "Unattended-Upgrade"),
+            Some("0")
+        );
     }
 
     #[test]
     fn apt_conf_value_ignores_comments_and_malformed() {
         assert_eq!(apt_conf_value("// comment", "Unattended-Upgrade"), None);
-        assert_eq!(apt_conf_value(r#"Unattended-Upgrade 1;"#, "Unattended-Upgrade"), None);
+        assert_eq!(
+            apt_conf_value(r"Unattended-Upgrade 1;", "Unattended-Upgrade"),
+            None
+        );
     }
 
     #[test]
@@ -672,7 +701,10 @@ mod tests {
         let runner = runner_with(&[CommandOutput::from_stdout("active")]);
         let mut doc = Doctor::new(&runner);
         doc.pkg_mgr = PackageManager::Apt;
-        assert_eq!(doc.timer_state("apt-daily-upgrade.timer"), report::TimerState::Active);
+        assert_eq!(
+            doc.timer_state("apt-daily-upgrade.timer"),
+            report::TimerState::Active
+        );
     }
 
     #[test]
@@ -684,7 +716,10 @@ mod tests {
         ]);
         let mut doc = Doctor::new(&runner);
         doc.pkg_mgr = PackageManager::Apt;
-        assert_eq!(doc.timer_state("apt-daily-upgrade.timer"), report::TimerState::Disabled);
+        assert_eq!(
+            doc.timer_state("apt-daily-upgrade.timer"),
+            report::TimerState::Disabled
+        );
     }
 
     #[test]
@@ -696,7 +731,10 @@ mod tests {
         ]);
         let mut doc = Doctor::new(&runner);
         doc.pkg_mgr = PackageManager::Apt;
-        assert_eq!(doc.timer_state("apt-daily-upgrade.timer"), report::TimerState::Absent);
+        assert_eq!(
+            doc.timer_state("apt-daily-upgrade.timer"),
+            report::TimerState::Absent
+        );
     }
 
     /// `check_last_run_fresh` fires the `schedule.stale-last-run` finding when
@@ -709,7 +747,7 @@ mod tests {
     /// check always fires regardless of the host wall clock.
     ///
     /// Source for the log format: Ubuntu Server docs, "Automatic updates".
-    /// https://ubuntu.com/server/docs/how-to/software/automatic-updates/
+    /// <https://ubuntu.com/server/docs/how-to/software/automatic-updates/>
     #[test]
     fn check_last_run_fresh_fires_on_stale_real_log() {
         let dir = tempfile::tempdir().unwrap();
@@ -776,7 +814,7 @@ mod tests {
     /// (UTC) for building a near-now log timestamp in tests. Uses the inverse
     /// of `civil_to_days`.
     fn epoch_to_ymdhms(secs: u64) -> (i64, u32, u32, u64, u64, u64) {
-        let days = (secs / 86_400) as i64;
+        let days = (secs / 86_400).cast_signed();
         let rem = secs % 86_400;
         let h = rem / 3_600;
         let mi = (rem % 3_600) / 60;
@@ -786,12 +824,20 @@ mod tests {
     }
 
     /// Inverse of `civil_to_days`: days since 1970-01-01 -> Gregorian date.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "algorithm provably bounds day to [1,31] and month to [1,12]"
+    )]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "same provenance: values are non-negative"
+    )]
     fn days_to_civil(days: i64) -> (i64, u32, u32) {
         let days = days + 719_468;
         let era = if days >= 0 { days } else { days - 146_096 } / 146_097;
         let doe = days - era * 146_097; // [0, 146096]
         let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-        let y = yoe as i64 + era * 400;
+        let y = yoe + era * 400;
         let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
         let mp = (5 * doy + 2) / 153; // [0, 11]
         let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
@@ -811,7 +857,9 @@ mod tests {
         let findings = doc.run().unwrap();
         if which::which("systemctl").is_err() {
             assert!(
-                findings.iter().any(|f| f.id == "auto-update.manager-not-detected"),
+                findings
+                    .iter()
+                    .any(|f| f.id == "auto-update.manager-not-detected"),
                 "expected manager-not-detected finding, got: {findings:?}"
             );
         }

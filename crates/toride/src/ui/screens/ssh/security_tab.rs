@@ -24,16 +24,16 @@ use ratatui::{
     widgets::Paragraph,
 };
 
+use super::DiagnosticEntry;
 use crate::action::Action;
 use crate::ssh_data::{SshOp, SshSecurityData};
-use super::DiagnosticEntry;
 use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
     ConfirmModal, ConfirmResult, InteractiveModal, ModalEvent, render_titled_panel,
 };
 
-use super::{SshAccessInfo, SystemUserInfo, SshTab};
+use super::{SshAccessInfo, SshTab, SystemUserInfo};
 
 // ── UserAction ────────────────────────────────────────────────────────────────
 
@@ -111,8 +111,10 @@ impl SecurityTab {
     pub fn set_data(&mut self, data: SshSecurityData) {
         let structurally_changed = match &self.data {
             None => true,
-            Some(old) => old.checks().len() != data.checks().len()
-                || old.system_users.len() != data.system_users.len(),
+            Some(old) => {
+                old.checks().len() != data.checks().len()
+                    || old.system_users.len() != data.system_users.len()
+            }
         };
         // Clamp the selection into the new user list.
         if data.system_users.is_empty() {
@@ -150,9 +152,7 @@ impl Default for SecurityTab {
 impl SecurityTab {
     /// Number of selectable SSH USERS rows currently available.
     fn selectable_count(&self) -> usize {
-        self.data
-            .as_ref()
-            .map_or(0, Self::displayed_user_count)
+        self.data.as_ref().map_or(0, Self::displayed_user_count)
     }
 
     /// Resolve a screen coordinate to a displayed SSH USERS row index.
@@ -176,6 +176,15 @@ impl SecurityTab {
     }
 
     /// Move the SSH USERS selection by `delta`, clamping to the list.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "selection index is bounded by list length < i32::MAX"
+    )]
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "selection index is bounded by list length < i32::MAX"
+    )]
+    #[expect(clippy::cast_sign_loss, reason = "clamped value is non-negative")]
     fn move_selection(&mut self, delta: i32, visible: usize) {
         let count = self.selectable_count();
         if count == 0 {
@@ -241,8 +250,7 @@ impl SecurityTab {
                     access.allowed_users.push(username.clone());
                 }
                 access.denied_users.retain(|u| u != &username);
-                self.pending_ops
-                    .push(SshOp::SshdAllowUser { username });
+                self.pending_ops.push(SshOp::SshdAllowUser { username });
             }
             UserAction::DenyLogin => {
                 if !access.denied_users.iter().any(|u| u == &username) {
@@ -252,8 +260,7 @@ impl SecurityTab {
                 // denied is also removed from the allow list, so the in-memory
                 // state matches the persisted config (no contradictory both-lists).
                 access.allowed_users.retain(|u| u != &username);
-                self.pending_ops
-                    .push(SshOp::SshdDenyUser { username });
+                self.pending_ops.push(SshOp::SshdDenyUser { username });
             }
             UserAction::ResetAccess => {
                 access.allowed_users.retain(|u| u != &username);
@@ -407,11 +414,7 @@ impl SshTab for SecurityTab {
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(idx) = self.row_at(mouse.column, mouse.row) {
                     self.selected_user = idx;
-                    if let Some(user) = self
-                        .data
-                        .as_ref()
-                        .and_then(|d| d.system_users.get(idx))
-                    {
+                    if let Some(user) = self.data.as_ref().and_then(|d| d.system_users.get(idx)) {
                         self.detail_user = Some(user.username.clone());
                         self.detail_modal.open();
                     }
@@ -433,6 +436,10 @@ impl SshTab for SecurityTab {
         None
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " SECURITY OVERVIEW ", p.text, false);
 
@@ -452,7 +459,7 @@ impl SshTab for SecurityTab {
 
         // Build lines + the absolute line indices of SSH USERS rows.
         let data_ref = self.data.as_ref().unwrap();
-        let (lines, user_indices) = self.build_lines(data_ref, p, inner.width);
+        let (lines, user_indices) = Self::build_lines(data_ref, p, inner.width);
         self.content_height = lines.len();
         self.user_row_line_indices = user_indices;
 
@@ -482,11 +489,7 @@ impl SshTab for SecurityTab {
             let row_area = Rect::new(inner.x, y, inner.width, 1);
 
             // SSH USERS row: track hitbox + apply selection/hover highlight.
-            if let Some(u) = self
-                .user_row_line_indices
-                .iter()
-                .position(|&r| r == row)
-            {
+            if let Some(u) = self.user_row_line_indices.iter().position(|&r| r == row) {
                 new_hitboxes.push(row_area);
                 let is_selected = u == selected;
                 let is_hovered = hovered == Some(u);
@@ -509,14 +512,18 @@ impl SshTab for SecurityTab {
         // its current index; if the user disappeared (handled in set_data, but
         // guard again here for the no-refresh edge case) the modal is skipped.
         if let Some(idx) = self.detail_index()
-            && let Some(user) = self.data.as_ref().and_then(|d| d.system_users.get(idx)).cloned()
+            && let Some(user) = self
+                .data
+                .as_ref()
+                .and_then(|d| d.system_users.get(idx))
+                .cloned()
         {
             let access = self
                 .data
                 .as_ref()
                 .map(|d| d.access_info.clone())
                 .unwrap_or_default();
-            let is_root = self.data.as_ref().map_or(false, |d| d.is_root);
+            let is_root = self.data.as_ref().is_some_and(|d| d.is_root);
             self.render_detail_modal(frame, p, &user, &access, is_root);
         }
 
@@ -549,8 +556,11 @@ impl SecurityTab {
     /// Returns the lines plus the absolute line indices (within the returned
     /// vec) of each displayed SSH USERS row, in display order. Used by `view`
     /// to apply selection highlights and record mouse hitboxes.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "dashboard line builder kept whole for clarity"
+    )]
     fn build_lines(
-        &self,
         data: &SshSecurityData,
         p: Palette,
         inner_width: u16,
@@ -595,8 +605,14 @@ impl SecurityTab {
 
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::new()),
-                Span::styled(format!("{:width$}", label_display, width = label_col), Style::new().fg(p.text)),
-                Span::styled(format!("{:width$}", detail_display, width = detail_col), Style::new().fg(p.text_dim)),
+                Span::styled(
+                    format!("{label_display:label_col$}"),
+                    Style::new().fg(p.text),
+                ),
+                Span::styled(
+                    format!("{detail_display:detail_col$}"),
+                    Style::new().fg(p.text_dim),
+                ),
                 icon,
             ]));
         }
@@ -609,7 +625,6 @@ impl SecurityTab {
         // Without it, we'd show misleading defaults (e.g. on macOS there
         // is no /etc/ssh/sshd_config and /etc/passwd is mostly daemons).
         if data.access_info.available {
-
             // Spacer
             lines.push(Line::raw(""));
 
@@ -621,24 +636,28 @@ impl SecurityTab {
 
             // Password auth
             if data.access_info.password_auth {
-                lines.push(Line::from(vec![
-                    Span::styled("  ✓ Password", Style::new().fg(p.ok)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "  ✓ Password",
+                    Style::new().fg(p.ok),
+                )]));
             } else {
-                lines.push(Line::from(vec![
-                    Span::styled("  ✗ Password", Style::new().fg(p.err)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "  ✗ Password",
+                    Style::new().fg(p.err),
+                )]));
             }
 
             // Key auth
             if data.access_info.pubkey_auth {
-                lines.push(Line::from(vec![
-                    Span::styled("  ✓ Public Key", Style::new().fg(p.ok)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "  ✓ Public Key",
+                    Style::new().fg(p.ok),
+                )]));
             } else {
-                lines.push(Line::from(vec![
-                    Span::styled("  ✗ Public Key", Style::new().fg(p.err)),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "  ✗ Public Key",
+                    Style::new().fg(p.err),
+                )]));
             }
 
             // Root login
@@ -680,161 +699,137 @@ impl SecurityTab {
                 && access.denied_groups.is_empty();
 
             if all_empty {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "  All users allowed (no restrictions)",
-                        Style::new().fg(p.text_dim),
-                    ),
-                ]));
+                lines.push(Line::from(vec![Span::styled(
+                    "  All users allowed (no restrictions)",
+                    Style::new().fg(p.text_dim),
+                )]));
             } else {
-            // Allowed users
-            if access.allowed_users.is_empty() {
-                lines.push(Line::from(vec![
-                    Span::styled("  Users: ", Style::new().fg(p.text)),
-                    Span::styled("All users", Style::new().fg(p.text_dim)),
-                ]));
-            } else {
-                let mut spans = vec![Span::styled("  Users: ", Style::new().fg(p.text))];
-                for (i, user) in access.allowed_users.iter().enumerate() {
-                    if i > 0 {
-                        spans.push(Span::styled(" ", Style::new()));
+                // Allowed users
+                if access.allowed_users.is_empty() {
+                    lines.push(Line::from(vec![
+                        Span::styled("  Users: ", Style::new().fg(p.text)),
+                        Span::styled("All users", Style::new().fg(p.text_dim)),
+                    ]));
+                } else {
+                    let mut spans = vec![Span::styled("  Users: ", Style::new().fg(p.text))];
+                    for (i, user) in access.allowed_users.iter().enumerate() {
+                        if i > 0 {
+                            spans.push(Span::styled(" ", Style::new()));
+                        }
+                        spans.push(Span::styled(format!(" {user} "), Style::new().fg(p.info)));
                     }
-                    spans.push(Span::styled(
-                        format!(" {} ", user),
-                        Style::new().fg(p.info),
-                    ));
+                    lines.push(Line::from(spans));
                 }
-                lines.push(Line::from(spans));
+
+                // Denied users
+                if !access.denied_users.is_empty() {
+                    let mut spans = vec![Span::styled("  Denied: ", Style::new().fg(p.text))];
+                    for (i, user) in access.denied_users.iter().enumerate() {
+                        if i > 0 {
+                            spans.push(Span::styled(" ", Style::new()));
+                        }
+                        spans.push(Span::styled(format!(" {user} "), Style::new().fg(p.err)));
+                    }
+                    lines.push(Line::from(spans));
+                }
+
+                // Allowed groups
+                if !access.allowed_groups.is_empty() {
+                    let mut spans = vec![Span::styled("  Groups: ", Style::new().fg(p.text))];
+                    for (i, group) in access.allowed_groups.iter().enumerate() {
+                        if i > 0 {
+                            spans.push(Span::styled(" ", Style::new()));
+                        }
+                        spans.push(Span::styled(format!(" @{group} "), Style::new().fg(p.info)));
+                    }
+                    lines.push(Line::from(spans));
+                }
+
+                // Denied groups
+                if !access.denied_groups.is_empty() {
+                    let mut spans =
+                        vec![Span::styled("  Denied groups: ", Style::new().fg(p.text))];
+                    for (i, group) in access.denied_groups.iter().enumerate() {
+                        if i > 0 {
+                            spans.push(Span::styled(" ", Style::new()));
+                        }
+                        spans.push(Span::styled(format!(" @{group} "), Style::new().fg(p.err)));
+                    }
+                    lines.push(Line::from(spans));
+                }
             }
 
-            // Denied users
-            if !access.denied_users.is_empty() {
-                let mut spans =
-                    vec![Span::styled("  Denied: ", Style::new().fg(p.text))];
-                for (i, user) in access.denied_users.iter().enumerate() {
-                    if i > 0 {
-                        spans.push(Span::styled(" ", Style::new()));
-                    }
-                    spans.push(Span::styled(
-                        format!(" {} ", user),
-                        Style::new().fg(p.err),
-                    ));
-                }
-                lines.push(Line::from(spans));
-            }
+            // Spacer
+            lines.push(Line::raw(""));
 
-            // Allowed groups
-            if !access.allowed_groups.is_empty() {
-                let mut spans =
-                    vec![Span::styled("  Groups: ", Style::new().fg(p.text))];
-                for (i, group) in access.allowed_groups.iter().enumerate() {
-                    if i > 0 {
-                        spans.push(Span::styled(" ", Style::new()));
-                    }
-                    spans.push(Span::styled(
-                        format!(" @{} ", group),
-                        Style::new().fg(p.info),
-                    ));
-                }
-                lines.push(Line::from(spans));
-            }
+            // ── SSH USERS section ─────────────────────────────────────────
+            lines.push(Line::from(Span::styled(
+                "SSH USERS",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            )));
 
-            // Denied groups
-            if !access.denied_groups.is_empty() {
-                let mut spans =
-                    vec![Span::styled("  Denied groups: ", Style::new().fg(p.text))];
-                for (i, group) in access.denied_groups.iter().enumerate() {
-                    if i > 0 {
-                        spans.push(Span::styled(" ", Style::new()));
-                    }
-                    spans.push(Span::styled(
-                        format!(" @{} ", group),
-                        Style::new().fg(p.err),
-                    ));
-                }
-                lines.push(Line::from(spans));
-            }
-        }
-
-        // Spacer
-        lines.push(Line::raw(""));
-
-        // ── SSH USERS section ─────────────────────────────────────────
-        lines.push(Line::from(Span::styled(
-            "SSH USERS",
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
-
-        if data.system_users.is_empty() {
-            lines.push(Line::from(vec![
-                Span::styled(
+            if data.system_users.is_empty() {
+                lines.push(Line::from(vec![Span::styled(
                     "  No SSH users with keys configured",
                     Style::new().fg(p.text_dim),
-                ),
-            ]));
-        } else {
-            let display_users: Vec<_> = data
-                .system_users
-                .iter()
-                .take(10)
-                .collect();
-            let overflow = data.system_users.len().saturating_sub(10);
+                )]));
+            } else {
+                let display_users: Vec<_> = data.system_users.iter().take(10).collect();
+                let overflow = data.system_users.len().saturating_sub(10);
 
-            for user in &display_users {
-                let key_status = if user.ssh_key_count > 0 || user.authorized_key_count > 0 {
-                    let mut parts = Vec::new();
-                    if user.ssh_key_count > 0 {
-                        parts.push(format!(
-                            "{} key{}",
-                            user.ssh_key_count,
-                            if user.ssh_key_count > 1 { "s" } else { "" }
-                        ));
-                    }
-                    if user.authorized_key_count > 0 {
-                        parts.push(format!(
-                            "{} auth{}",
-                            user.authorized_key_count,
-                            if user.authorized_key_count > 1 { "s" } else { "" }
-                        ));
-                    }
-                    Span::styled(parts.join(", "), Style::new().fg(p.accent))
-                } else {
-                    Span::styled("No keys", Style::new().fg(p.text_dim))
-                };
-                // Dynamically size columns based on available width
-                let name_w = 16.min(w.saturating_sub(6) / 3);
-                let shell_w = 24.min(w.saturating_sub(name_w + 6) / 2);
-                let name_display = truncate_str(&user.username, name_w);
-                let shell_display = truncate_str(&user.shell, shell_w);
-                // Record this row's absolute line index before pushing it.
-                user_indices.push(lines.len());
-                lines.push(Line::from(vec![
-                    Span::styled("  ", Style::new()),
-                    Span::styled(
-                        format!("{:width$}", name_display, width = name_w),
-                        Style::new().fg(p.text),
-                    ),
-                    Span::styled(
-                        format!("{:width$}", shell_display, width = shell_w),
+                for user in &display_users {
+                    let key_status = if user.ssh_key_count > 0 || user.authorized_key_count > 0 {
+                        let mut parts = Vec::new();
+                        if user.ssh_key_count > 0 {
+                            parts.push(format!(
+                                "{} key{}",
+                                user.ssh_key_count,
+                                if user.ssh_key_count > 1 { "s" } else { "" }
+                            ));
+                        }
+                        if user.authorized_key_count > 0 {
+                            parts.push(format!(
+                                "{} auth{}",
+                                user.authorized_key_count,
+                                if user.authorized_key_count > 1 {
+                                    "s"
+                                } else {
+                                    ""
+                                }
+                            ));
+                        }
+                        Span::styled(parts.join(", "), Style::new().fg(p.accent))
+                    } else {
+                        Span::styled("No keys", Style::new().fg(p.text_dim))
+                    };
+                    // Dynamically size columns based on available width
+                    let name_w = 16.min(w.saturating_sub(6) / 3);
+                    let shell_w = 24.min(w.saturating_sub(name_w + 6) / 2);
+                    let name_display = truncate_str(&user.username, name_w);
+                    let shell_display = truncate_str(&user.shell, shell_w);
+                    // Record this row's absolute line index before pushing it.
+                    user_indices.push(lines.len());
+                    lines.push(Line::from(vec![
+                        Span::styled("  ", Style::new()),
+                        Span::styled(format!("{name_display:name_w$}"), Style::new().fg(p.text)),
+                        Span::styled(
+                            format!("{shell_display:shell_w$}"),
+                            Style::new().fg(p.text_dim),
+                        ),
+                        key_status,
+                    ]));
+                }
+
+                if overflow > 0 {
+                    lines.push(Line::from(vec![Span::styled(
+                        format!("  +{overflow} more"),
                         Style::new().fg(p.text_dim),
-                    ),
-                    key_status,
-                ]));
+                    )]));
+                }
             }
 
-            if overflow > 0 {
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  +{} more", overflow),
-                        Style::new().fg(p.text_dim),
-                    ),
-                ]));
-            }
-        }
-
-        // Spacer
-        lines.push(Line::raw(""));
-
+            // Spacer
+            lines.push(Line::raw(""));
         } // end available block
 
         // Spacer
@@ -854,12 +849,10 @@ impl SecurityTab {
             data.authorized_key_labels.join(" · ")
         };
 
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("  {key_count} keys can access this machine"),
-                Style::new().fg(p.text),
-            ),
-        ]));
+        lines.push(Line::from(vec![Span::styled(
+            format!("  {key_count} keys can access this machine"),
+            Style::new().fg(p.text),
+        )]));
         if !data.authorized_key_labels.is_empty() {
             lines.push(Line::from(vec![
                 Span::styled("  ", Style::new()),
@@ -951,7 +944,7 @@ impl SecurityTab {
 // ── Detail modal ──────────────────────────────────────────────────────────────
 
 impl SecurityTab {
-    /// Compute the login status of `username` against the current sshd_config
+    /// Compute the login status of `username` against the current `sshd_config`
     /// access rules, returning (icon, label, color).
     ///
     /// Order matters: an explicit `DenyUsers` entry always wins; otherwise a
@@ -974,6 +967,10 @@ impl SecurityTab {
 
     /// Render the user detail modal: shell, home, computed login status, the
     /// user's authorized keys (read-only in Phase 1), and action key hints.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_detail_modal(
         &mut self,
         frame: &mut Frame,
@@ -989,7 +986,10 @@ impl SecurityTab {
             let mut lines: Vec<Line> = vec![
                 Line::from(vec![
                     Span::styled("User:   ", Style::new().fg(p.text_dim)),
-                    Span::styled(&user.username, Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+                    Span::styled(
+                        &user.username,
+                        Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                    ),
                 ]),
                 Line::from(vec![
                     Span::styled("Shell:  ", Style::new().fg(p.text_dim)),
@@ -1001,7 +1001,10 @@ impl SecurityTab {
                 ]),
                 Line::from(vec![
                     Span::styled("Login:  ", Style::new().fg(p.text_dim)),
-                    Span::styled(format!("{status_icon} {status_label}"), Style::new().fg(status_color)),
+                    Span::styled(
+                        format!("{status_icon} {status_label}"),
+                        Style::new().fg(status_color),
+                    ),
                 ]),
                 Line::raw(""),
             ];
@@ -1025,17 +1028,17 @@ impl SecurityTab {
                         .comment
                         .clone()
                         .unwrap_or_else(|| truncate_str(&key.fingerprint, 20));
-                    let comment_disp = truncate_str(&comment, (content_area.width as usize).saturating_sub(16));
+                    let comment_disp =
+                        truncate_str(&comment, (content_area.width as usize).saturating_sub(16));
                     lines.push(Line::from(vec![
-                        Span::styled(
-                            format!("  {}. ", i + 1),
-                            Style::new().fg(p.text_muted),
-                        ),
+                        Span::styled(format!("  {}. ", i + 1), Style::new().fg(p.text_muted)),
                         Span::styled(format!("{:14}", key.key_type), Style::new().fg(p.info)),
                         Span::styled(comment_disp, Style::new().fg(p.text_dim)),
                     ]));
                 }
-                let hidden = user.authorized_key_count.saturating_sub(user.authorized_keys_preview.len());
+                let hidden = user
+                    .authorized_key_count
+                    .saturating_sub(user.authorized_keys_preview.len());
                 if hidden > 0 {
                     lines.push(Line::from(Span::styled(
                         format!("  +{hidden} more"),
@@ -1059,10 +1062,7 @@ impl SecurityTab {
                 Span::styled("close", p.label_style()),
             ]));
             if !priv_hint.is_empty() {
-                lines.push(Line::from(Span::styled(
-                    priv_hint,
-                    Style::new().fg(p.warn),
-                )));
+                lines.push(Line::from(Span::styled(priv_hint, Style::new().fg(p.warn))));
             }
 
             for (i, line) in lines.into_iter().enumerate() {
@@ -1248,8 +1248,7 @@ mod tests {
             tab.handle_key(KeyCode::Down);
         }
         assert_eq!(
-            tab.selected_user,
-            2,
+            tab.selected_user, 2,
             "selection clamps to last user, never panics"
         );
 
@@ -1335,7 +1334,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(100, 40)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("A"), "grade A for secure config: {output}");
+        assert!(output.contains('A'), "grade A for secure config: {output}");
     }
 
     #[test]
@@ -1400,18 +1399,9 @@ mod tests {
             output.contains("SSH USERS"),
             "should show ssh users header: {output}"
         );
-        assert!(
-            output.contains("alice"),
-            "should show user alice: {output}"
-        );
-        assert!(
-            output.contains("bob"),
-            "should show user bob: {output}"
-        );
-        assert!(
-            output.contains("root"),
-            "should show user root: {output}"
-        );
+        assert!(output.contains("alice"), "should show user alice: {output}");
+        assert!(output.contains("bob"), "should show user bob: {output}");
+        assert!(output.contains("root"), "should show user root: {output}");
         assert!(
             output.contains("2 keys"),
             "should show key count for alice: {output}"
@@ -1567,10 +1557,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(
-            output.contains("no"),
-            "should show root login no: {output}"
-        );
+        assert!(output.contains("no"), "should show root login no: {output}");
     }
 
     #[test]
@@ -1699,7 +1686,12 @@ mod tests {
 
     /// Helper: set sample data, render once, and open the detail modal on the
     /// given user index.
-    fn open_modal(user_idx: usize) -> (SecurityTab, ratatui::Terminal<ratatui::backend::TestBackend>) {
+    fn open_modal(
+        user_idx: usize,
+    ) -> (
+        SecurityTab,
+        ratatui::Terminal<ratatui::backend::TestBackend>,
+    ) {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
         let mut tab = SecurityTab::new();
@@ -1748,12 +1740,13 @@ mod tests {
 
     #[test]
     fn allow_action_removes_from_deny_optimistically() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
         let mut data = sample_data();
         data.access_info.denied_users = vec!["alice".into()];
         let mut tab = SecurityTab::new();
         tab.set_data(data);
-        use crate::ui::theme::CHARM;
-        use ratatui::{Terminal, backend::TestBackend};
         let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         tab.selected_user = 0;
@@ -1769,6 +1762,9 @@ mod tests {
 
     #[test]
     fn deny_action_requires_confirm_then_applies() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
         // bob must START in the allow list so the L5 both-lists mirror
         // (`allowed_users.retain(|u| u != &username)`) has real work to do.
         // With allowed_users empty the retain is a no-op and deleting the
@@ -1777,8 +1773,6 @@ mod tests {
         data.access_info.allowed_users = vec!["bob".into()];
         let mut tab = SecurityTab::new();
         tab.set_data(data);
-        use crate::ui::theme::CHARM;
-        use ratatui::{Terminal, backend::TestBackend};
         let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         tab.selected_user = 1; // bob
@@ -1791,7 +1785,10 @@ mod tests {
 
         // Confirm with 'y'.
         tab.handle_key(KeyCode::Char('y'));
-        assert!(tab.pending_confirm.is_none(), "confirm consumed the pending action");
+        assert!(
+            tab.pending_confirm.is_none(),
+            "confirm consumed the pending action"
+        );
 
         let ops = tab.drain_ops();
         assert_eq!(ops.len(), 1);
@@ -1813,13 +1810,14 @@ mod tests {
 
     #[test]
     fn reset_action_requires_confirm_then_applies() {
+        use crate::ui::theme::CHARM;
+        use ratatui::{Terminal, backend::TestBackend};
+
         let mut data = sample_data();
         data.access_info.allowed_users = vec!["alice".into(), "bob".into()];
         data.access_info.denied_users = vec!["bob".into()]; // bob in both
         let mut tab = SecurityTab::new();
         tab.set_data(data);
-        use crate::ui::theme::CHARM;
-        use ratatui::{Terminal, backend::TestBackend};
         let mut terminal = Terminal::new(TestBackend::new(120, 50)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         tab.selected_user = 1; // bob
@@ -1834,7 +1832,10 @@ mod tests {
         assert!(tab.pending_confirm.is_none());
         assert!(tab.drain_ops().is_empty());
         let access = &tab.data.as_ref().unwrap().access_info;
-        assert!(access.allowed_users.iter().any(|u| u == "bob"), "cancel leaves state intact");
+        assert!(
+            access.allowed_users.iter().any(|u| u == "bob"),
+            "cancel leaves state intact"
+        );
 
         // Re-trigger and confirm this time.
         tab.handle_key(KeyCode::Char('r'));
@@ -1865,14 +1866,18 @@ mod tests {
         use crate::ui::theme::CHARM;
 
         // Denied wins.
-        let mut a = SshAccessInfo::default();
-        a.denied_users = vec!["x".into()];
+        let a = SshAccessInfo {
+            denied_users: vec!["x".into()],
+            ..Default::default()
+        };
         let (icon, _, _) = SecurityTab::login_status("x", &a, CHARM);
         assert_eq!(icon, "✗");
 
         // Allowlist (non-empty) and user absent → not allowed.
-        let mut a = SshAccessInfo::default();
-        a.allowed_users = vec!["alice".into()];
+        let a = SshAccessInfo {
+            allowed_users: vec!["alice".into()],
+            ..Default::default()
+        };
         let (icon, label, _) = SecurityTab::login_status("bob", &a, CHARM);
         assert_eq!(icon, "✗");
         assert!(label.contains("allowlist"));
@@ -1882,8 +1887,10 @@ mod tests {
         assert_eq!(icon, "✓");
 
         // Group rules present (user not denied) → ambiguous.
-        let mut a = SshAccessInfo::default();
-        a.allowed_groups = vec!["ssh".into()];
+        let a = SshAccessInfo {
+            allowed_groups: vec!["ssh".into()],
+            ..Default::default()
+        };
         let (icon, _, _) = SecurityTab::login_status("alice", &a, CHARM);
         assert_eq!(icon, "~");
 
@@ -1896,14 +1903,16 @@ mod tests {
     #[test]
     fn detail_modal_renders_user_and_actions() {
         use crate::ui::theme::CHARM;
-        use ratatui::{Terminal, backend::TestBackend};
 
         let (mut tab, mut terminal) = open_modal(0); // alice
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("User:"), "modal shows user label: {output}");
         assert!(output.contains("alice"), "modal shows username: {output}");
-        assert!(output.contains("Login:"), "modal shows login status: {output}");
+        assert!(
+            output.contains("Login:"),
+            "modal shows login status: {output}"
+        );
         assert!(output.contains("allow"), "modal shows allow hint: {output}");
         assert!(output.contains("deny"), "modal shows deny hint: {output}");
         assert!(output.contains("reset"), "modal shows reset hint: {output}");
@@ -1924,7 +1933,10 @@ mod tests {
         tab.handle_key(KeyCode::Enter);
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("sudo"), "non-root should show sudo hint: {output}");
+        assert!(
+            output.contains("sudo"),
+            "non-root should show sudo hint: {output}"
+        );
     }
 
     #[test]
@@ -1942,7 +1954,10 @@ mod tests {
         tab.handle_key(KeyCode::Enter);
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(!output.contains("via sudo"), "root should hide sudo hint: {output}");
+        assert!(
+            !output.contains("via sudo"),
+            "root should hide sudo hint: {output}"
+        );
     }
 
     #[test]
@@ -2053,7 +2068,10 @@ mod tests {
             authorized_keys_preview: Vec::new(),
         };
         tab.set_data(data);
-        assert!(!tab.has_modal(), "modal closes when the tracked user is gone");
+        assert!(
+            !tab.has_modal(),
+            "modal closes when the tracked user is gone"
+        );
         assert!(tab.detail_user.is_none());
     }
 }

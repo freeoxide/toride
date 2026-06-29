@@ -6,6 +6,7 @@
 
 use std::sync::Arc;
 
+use crate::CloudProvider;
 use crate::aws::AwsClient;
 use crate::digitalocean::DigitalOceanClient;
 use crate::error::{Error, Result};
@@ -13,7 +14,6 @@ use crate::gcp::GcpClient;
 use crate::hetzner::HetznerClient;
 use crate::report::CloudReport;
 use crate::spec::{FirewallRule, Protocol, RuleAction, SecurityGroup};
-use crate::CloudProvider;
 use toride_runner::Runner;
 
 // ---------------------------------------------------------------------------
@@ -136,18 +136,16 @@ impl CloudClient {
                 let client = self.hetzner_client();
                 client.list_firewalls()
             }
-            CloudProvider::Unknown => {
-                Err(Error::ProviderNotFound(
-                    "cannot list security groups for unknown provider".to_string(),
-                ))
-            }
+            CloudProvider::Unknown => Err(Error::ProviderNotFound(
+                "cannot list security groups for unknown provider".to_string(),
+            )),
         }
     }
 
     /// Fetch a single security group by its provider-specific identifier.
     ///
     /// `id` is the native identifier for the provider (an AWS `sg-...` group
-    /// id, a GCP firewall name, a DigitalOcean firewall id, or a Hetzner
+    /// id, a GCP firewall name, a `DigitalOcean` firewall id, or a Hetzner
     /// firewall name/id).
     ///
     /// # Errors
@@ -158,9 +156,7 @@ impl CloudClient {
         match self.provider {
             CloudProvider::Aws => self.aws_client().get_security_group(id),
             CloudProvider::Gcp => self.gcp_client().get_firewall_rule(id),
-            CloudProvider::DigitalOcean => {
-                DigitalOceanClient::new().get_firewall(id)
-            }
+            CloudProvider::DigitalOcean => DigitalOceanClient::new().get_firewall(id),
             CloudProvider::Hetzner => self.hetzner_client().get_firewall(id),
             CloudProvider::Unknown => Err(Error::ProviderNotFound(
                 "cannot get security group for unknown provider".to_string(),
@@ -191,8 +187,7 @@ impl CloudClient {
                 // VPC are not first-class at create time. Pass an empty network
                 // (the default VPC) and no rules, then return the caller's view.
                 let _ = (description, vpc_id);
-                self.gcp_client()
-                    .create_firewall_rule(name, "", &[])
+                self.gcp_client().create_firewall_rule(name, "", &[])
             }
             CloudProvider::DigitalOcean => {
                 // DigitalOcean requires at least one inbound or outbound rule.
@@ -243,13 +238,15 @@ impl CloudClient {
     pub fn authorize_ingress(&self, group_id: &str, rule: &FirewallRule) -> Result<()> {
         match self.provider {
             CloudProvider::Aws => self.aws_client().authorize_ingress(group_id, rule),
-            CloudProvider::Gcp => {
-                self.gcp_client().update_firewall_rule(group_id, std::slice::from_ref(rule))
-            }
+            CloudProvider::Gcp => self
+                .gcp_client()
+                .update_firewall_rule(group_id, std::slice::from_ref(rule)),
             CloudProvider::DigitalOcean => {
                 DigitalOceanClient::new().add_rules(group_id, std::slice::from_ref(rule))
             }
-            CloudProvider::Hetzner => self.hetzner_client().add_rules(group_id, std::slice::from_ref(rule)),
+            CloudProvider::Hetzner => self
+                .hetzner_client()
+                .add_rules(group_id, std::slice::from_ref(rule)),
             CloudProvider::Unknown => Err(Error::ProviderNotFound(
                 "cannot authorize ingress for unknown provider".to_string(),
             )),
@@ -267,13 +264,13 @@ impl CloudClient {
             CloudProvider::Aws => self.aws_client().revoke_ingress(group_id, rule),
             // GCP has no per-rule revoke: the firewall rule is the unit, so
             // updating with an empty set removes it.
-            CloudProvider::Gcp => {
-                self.gcp_client().update_firewall_rule(group_id, &[])
-            }
+            CloudProvider::Gcp => self.gcp_client().update_firewall_rule(group_id, &[]),
             CloudProvider::DigitalOcean => {
                 DigitalOceanClient::new().remove_rules(group_id, std::slice::from_ref(rule))
             }
-            CloudProvider::Hetzner => self.hetzner_client().remove_rules(group_id, std::slice::from_ref(rule)),
+            CloudProvider::Hetzner => self
+                .hetzner_client()
+                .remove_rules(group_id, std::slice::from_ref(rule)),
             CloudProvider::Unknown => Err(Error::ProviderNotFound(
                 "cannot revoke ingress for unknown provider".to_string(),
             )),
@@ -365,9 +362,7 @@ mod tests {
     #[test]
     fn for_provider_unknown_create_returns_provider_not_found() {
         let client = CloudClient::for_provider(CloudProvider::Unknown);
-        let err = client
-            .create_security_group("n", "d", None)
-            .unwrap_err();
+        let err = client.create_security_group("n", "d", None).unwrap_err();
         assert!(matches!(err, Error::ProviderNotFound(_)), "{err:?}");
     }
 
@@ -420,10 +415,7 @@ mod tests {
         assert!(report.security_groups.is_empty());
         assert!(report.has_errors());
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.id == "client.list-failed"),
+            report.findings.iter().any(|f| f.id == "client.list-failed"),
             "expected client.list-failed finding: {:?}",
             report.findings
         );
@@ -444,7 +436,8 @@ mod tests {
         // edition-2024) env here; instead assert the documented contract:
         // it either equals the live env var, or the fallback literal.
         let got = default_project();
-        let expected = std::env::var("GOOGLE_CLOUD_PROJECT").unwrap_or_else(|_| "default".to_string());
+        let expected =
+            std::env::var("GOOGLE_CLOUD_PROJECT").unwrap_or_else(|_| "default".to_string());
         assert_eq!(got, expected);
         // The fallback must be a known constant so callers can reason about it.
         assert!(

@@ -6,7 +6,7 @@
 
 use toride_runner::CommandSpec;
 
-use crate::{report::AuditReport, AuditPaths, Result};
+use crate::{AuditPaths, Result, report::AuditReport};
 
 // ---------------------------------------------------------------------------
 // DoctorScope
@@ -57,15 +57,15 @@ impl<'a> Doctor<'a> {
 
         match scope {
             DoctorScope::All => {
-                self.check_auditd_binaries(&mut report);
+                Self::check_auditd_binaries(&mut report);
                 self.check_auditd_service(&mut report);
                 self.check_audit_rules(&mut report);
                 self.check_aide(&mut report);
-                self.check_rsyslog(&mut report);
+                Self::check_rsyslog(&mut report);
                 self.check_logrotate(&mut report);
             }
             DoctorScope::Auditd => {
-                self.check_auditd_binaries(&mut report);
+                Self::check_auditd_binaries(&mut report);
                 self.check_auditd_service(&mut report);
                 self.check_audit_rules(&mut report);
             }
@@ -73,13 +73,13 @@ impl<'a> Doctor<'a> {
                 self.check_aide(&mut report);
             }
             DoctorScope::Logs => {
-                self.check_rsyslog(&mut report);
+                Self::check_rsyslog(&mut report);
                 self.check_logrotate(&mut report);
             }
             DoctorScope::Config => {
                 self.check_audit_rules(&mut report);
                 self.check_aide(&mut report);
-                self.check_rsyslog(&mut report);
+                Self::check_rsyslog(&mut report);
             }
         }
 
@@ -90,7 +90,7 @@ impl<'a> Doctor<'a> {
     // Individual checks
     // -----------------------------------------------------------------------
 
-    fn check_auditd_binaries(&self, report: &mut AuditReport) {
+    fn check_auditd_binaries(report: &mut AuditReport) {
         for binary in &["auditctl", "auditd", "aureport", "ausearch"] {
             if which::which(binary).is_err() {
                 report.push(
@@ -99,8 +99,10 @@ impl<'a> Doctor<'a> {
                         crate::report::AuditSeverity::Critical,
                         format!("{binary} not found"),
                     )
-                    .detail(format!("The {binary} binary could not be located on $PATH."))
-                    .fix(format!("Install auditd: apt install auditd")),
+                    .detail(format!(
+                        "The {binary} binary could not be located on $PATH."
+                    ))
+                    .fix("Install auditd: apt install auditd".to_owned()),
                 );
             }
         }
@@ -174,7 +176,7 @@ impl<'a> Doctor<'a> {
         }
     }
 
-    fn check_rsyslog(&self, report: &mut AuditReport) {
+    fn check_rsyslog(report: &mut AuditReport) {
         if which::which("rsyslogd").is_err() {
             report.push(
                 crate::report::AuditFinding::new(

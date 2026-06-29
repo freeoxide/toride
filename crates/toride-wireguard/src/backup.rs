@@ -85,22 +85,19 @@ impl BackupManager {
         }
 
         let mut entries: Vec<_> = fs::read_dir(&backup_dir)
-            .map_err(|e| Error::Io(e))?
-            .filter_map(|e| e.ok())
+            .map_err(Error::Io)?
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "conf"))
             .collect();
 
-        entries.sort_by_key(|e| e.file_name());
+        entries.sort_by_key(std::fs::DirEntry::file_name);
         let latest = entries.pop().ok_or_else(|| {
             Error::ConfigParse(format!("no backup files found for interface {interface}"))
         })?;
 
         let dest = self.paths.interface_conf(interface);
-        fs::copy(latest.path(), &dest).map_err(|e| {
-            Error::ConfigWrite(format!(
-                "failed to restore backup: {e}"
-            ))
-        })?;
+        fs::copy(latest.path(), &dest)
+            .map_err(|e| Error::ConfigWrite(format!("failed to restore backup: {e}")))?;
 
         tracing::info!(
             "restored {} from {}",
@@ -123,7 +120,7 @@ impl BackupManager {
 
         let mut entries: Vec<_> = fs::read_dir(&backup_dir)
             .map_err(Error::Io)?
-            .filter_map(|e| e.ok())
+            .filter_map(std::result::Result::ok)
             .filter(|e| e.path().extension().is_some_and(|ext| ext == "conf"))
             .map(|e| e.path())
             .collect();

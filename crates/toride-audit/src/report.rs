@@ -104,11 +104,7 @@ impl AuditFinding {
     /// The `detail` and `fix` fields default to empty / `None` and can be
     /// filled in via the `.detail()` and `.fix()` chain methods.
     #[must_use]
-    pub fn new(
-        id: impl Into<String>,
-        severity: AuditSeverity,
-        title: impl Into<String>,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, severity: AuditSeverity, title: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             severity,
@@ -217,25 +213,41 @@ mod tests {
         report.push(AuditFinding::new("test.ok", AuditSeverity::Ok, "Ok"));
         assert!(!report.has_errors());
 
-        report.push(AuditFinding::new("test.warn", AuditSeverity::Warning, "Hmm"));
+        report.push(AuditFinding::new(
+            "test.warn",
+            AuditSeverity::Warning,
+            "Hmm",
+        ));
         assert!(!report.has_errors());
 
-        report.push(AuditFinding::new("test.err", AuditSeverity::Error, "Broken"));
+        report.push(AuditFinding::new(
+            "test.err",
+            AuditSeverity::Error,
+            "Broken",
+        ));
         assert!(report.has_errors());
     }
 
     #[test]
     fn audit_report_has_errors_detects_critical_severity() {
         let mut report = AuditReport::empty();
-        report.push(AuditFinding::new("test.crit", AuditSeverity::Critical, "Fatal"));
+        report.push(AuditFinding::new(
+            "test.crit",
+            AuditSeverity::Critical,
+            "Fatal",
+        ));
         assert!(report.has_errors());
     }
 
     #[test]
     fn audit_finding_builder_pattern() {
-        let finding = AuditFinding::new("binary.auditctl.missing", AuditSeverity::Error, "Missing auditctl")
-            .detail("The auditctl binary was not found on PATH")
-            .fix("Install the auditd package: apt install auditd");
+        let finding = AuditFinding::new(
+            "binary.auditctl.missing",
+            AuditSeverity::Error,
+            "Missing auditctl",
+        )
+        .detail("The auditctl binary was not found on PATH")
+        .fix("Install the auditd package: apt install auditd");
         assert_eq!(finding.id, "binary.auditctl.missing");
         assert_eq!(finding.severity, AuditSeverity::Error);
         assert_eq!(finding.title, "Missing auditctl");

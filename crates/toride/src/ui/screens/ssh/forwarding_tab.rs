@@ -16,12 +16,10 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::ssh_data::SshOp;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
-use crate::ui::widgets::{
-    ConfirmModal, ConfirmResult, Modal, render_titled_panel,
-};
+use crate::ui::widgets::{ConfirmModal, ConfirmResult, Modal, render_titled_panel};
 
 use super::{ForwardSessionEntry, SshTab, char_to_keycode};
 
@@ -60,7 +58,7 @@ pub struct ForwardingTab {
     action_modal: Option<ActionModal>,
     /// Confirm modal for cancel/exit operations.
     confirm: ConfirmModal,
-    /// Pending SSH write operations to be drained by the parent SshContent.
+    /// Pending SSH write operations to be drained by the parent `SshContent`.
     pending_ops: Vec<SshOp>,
 }
 
@@ -124,10 +122,7 @@ impl ForwardingTab {
 
     /// Compute the total number of rendered rows across all sessions.
     fn total_rows(&self) -> usize {
-        self.sessions
-            .iter()
-            .map(|s| 1 + s.forwards.len())
-            .sum()
+        self.sessions.iter().map(|s| 1 + s.forwards.len()).sum()
     }
 
     /// Compute the starting row offset for a given session index.
@@ -143,8 +138,7 @@ impl ForwardingTab {
     fn session_row_count(&self, session_idx: usize) -> usize {
         self.sessions
             .get(session_idx)
-            .map(|s| 1 + s.forwards.len())
-            .unwrap_or(0)
+            .map_or(0, |s| 1 + s.forwards.len())
     }
 
     /// Find which session index a total-row index belongs to.
@@ -169,14 +163,14 @@ impl ForwardingTab {
 
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                if let Some(mr) = self.detail_modal_rect {
-                    let col = mouse.column;
-                    let row = mouse.row;
-                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
-                        self.detail_open = None;
-                        self.detail_modal_rect = None;
-                    }
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && let Some(mr) = self.detail_modal_rect
+            {
+                let col = mouse.column;
+                let row = mouse.row;
+                if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
+                    self.detail_open = None;
+                    self.detail_modal_rect = None;
                 }
             }
             return None;
@@ -192,11 +186,11 @@ impl ForwardingTab {
                 self.hovered_row = self.row_at(mouse.column, mouse.row);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(total_row) = self.row_at(mouse.column, mouse.row) {
-                    if let Some(session_idx) = self.session_at_row(total_row) {
-                        self.selected = session_idx;
-                        self.detail_open = Some(session_idx);
-                    }
+                if let Some(total_row) = self.row_at(mouse.column, mouse.row)
+                    && let Some(session_idx) = self.session_at_row(total_row)
+                {
+                    self.selected = session_idx;
+                    self.detail_open = Some(session_idx);
                 }
             }
             MouseEventKind::ScrollDown => {
@@ -205,11 +199,9 @@ impl ForwardingTab {
                     self.clamp_scroll();
                 }
             }
-            MouseEventKind::ScrollUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.clamp_scroll();
-                }
+            MouseEventKind::ScrollUp if self.selected > 0 => {
+                self.selected -= 1;
+                self.clamp_scroll();
             }
             _ => {}
         }
@@ -305,9 +297,8 @@ impl SshTab for ForwardingTab {
                 KeyCode::Char('x') => {
                     if !self.sessions.is_empty() {
                         let host = self.sessions[self.selected].host.clone();
-                        self.confirm = ConfirmModal::new(
-                            format!("Cancel all forwards on \"{}\"?", host),
-                        );
+                        self.confirm =
+                            ConfirmModal::new(format!("Cancel all forwards on \"{host}\"?"));
                         self.action_modal = Some(ActionModal::Cancel);
                     }
                     None
@@ -315,9 +306,7 @@ impl SshTab for ForwardingTab {
                 KeyCode::Char('X') => {
                     if !self.sessions.is_empty() {
                         let host = self.sessions[self.selected].host.clone();
-                        self.confirm = ConfirmModal::new(
-                            format!("Exit SSH session \"{}\"?", host),
-                        );
+                        self.confirm = ConfirmModal::new(format!("Exit SSH session \"{host}\"?"));
                         self.action_modal = Some(ActionModal::Exit);
                     }
                     None
@@ -330,16 +319,16 @@ impl SshTab for ForwardingTab {
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
         if self.sessions.is_empty() {
-            self.render_empty(frame, area, p);
+            Self::render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_open {
-            if let Some(session) = self.sessions.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &session);
-            }
+        if let Some(idx) = self.detail_open
+            && let Some(session) = self.sessions.get(idx).cloned()
+        {
+            self.render_detail_modal(frame, p, &session);
         }
 
         // Render action modal on top
@@ -376,17 +365,28 @@ impl SshTab for ForwardingTab {
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 impl ForwardingTab {
-    fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_empty(frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " PORT FORWARDING ", p.text, false);
         let msg = Line::from(vec![
             Span::styled("No active SSH sessions", Style::new().fg(p.text_dim)),
-            Span::styled("  ?", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  ?",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" learn more", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "render routine kept whole for clarity"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_list(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let title = if self.sessions.is_empty() {
             " PORT FORWARDING ".to_owned()
@@ -429,9 +429,7 @@ impl ForwardingTab {
         }
 
         let mut rendered_row = 0usize;
-        for (total_row_idx, (session_idx, is_header, forward_idx)) in
-            flat_rows.iter().enumerate()
-        {
+        for (total_row_idx, (session_idx, is_header, forward_idx)) in flat_rows.iter().enumerate() {
             if total_row_idx < self.scroll {
                 continue;
             }
@@ -441,10 +439,8 @@ impl ForwardingTab {
 
             let session = &self.sessions[*session_idx];
             let is_selected = *session_idx == self.selected;
-            let is_hovered_session = self
-                .hovered_row
-                .and_then(|r| self.session_at_row(r))
-                .map_or(false, |s| s == *session_idx);
+            let is_hovered_session =
+                self.hovered_row.and_then(|r| self.session_at_row(r)) == Some(*session_idx);
             let y = inner.y + rendered_row as u16;
             let row_area = Rect::new(inner.x, y, inner.width, 1);
 
@@ -477,15 +473,13 @@ impl ForwardingTab {
                 ));
                 spans.push(Span::styled(
                     host,
-                    Style::new()
-                        .fg(p.text)
-                        .add_modifier(Modifier::BOLD),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
                 ));
 
                 // PID
                 if let Some(pid) = session.pid {
                     spans.push(Span::styled(
-                        format!(" (pid {}", pid),
+                        format!(" (pid {pid}"),
                         Style::new().fg(p.text_dim),
                     ));
                     // Uptime
@@ -524,7 +518,7 @@ impl ForwardingTab {
                     _ => ("?", p.text_dim),
                 };
                 spans.push(Span::styled(
-                    format!(" {} ", badge),
+                    format!(" {badge} "),
                     Style::new().fg(badge_color).add_modifier(Modifier::BOLD),
                 ));
 
@@ -543,13 +537,9 @@ impl ForwardingTab {
 
                 // Remote target
                 if forward.forward_type == "dynamic" {
-                    spans.push(Span::styled(
-                        "SOCKS proxy",
-                        Style::new().fg(p.text_muted),
-                    ));
+                    spans.push(Span::styled("SOCKS proxy", Style::new().fg(p.text_muted)));
                 } else {
-                    let remote =
-                        format!("{}:{}", forward.remote_addr, forward.remote_port);
+                    let remote = format!("{}:{}", forward.remote_addr, forward.remote_port);
                     let remote_w = 20.min(inner.width.saturating_sub(42) as usize);
                     spans.push(Span::styled(
                         truncate_str(&remote, remote_w),
@@ -571,9 +561,14 @@ impl ForwardingTab {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
         let viewport = Viewport::from_area(area);
-        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
+        self.buttons
+            .render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_detail_modal(
         &mut self,
         frame: &mut Frame,
@@ -610,8 +605,7 @@ impl ForwardingTab {
                 Span::styled(
                     session_clone
                         .pid
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|| "—".to_owned()),
+                        .map_or_else(|| "—".to_owned(), |p| p.to_string()),
                     Style::new().fg(p.text),
                 ),
             ]));
@@ -641,15 +635,24 @@ impl ForwardingTab {
 
                 if forward.forward_type == "dynamic" {
                     lines.push(Line::from(vec![
-                        Span::styled(format!(" {} ", badge), Style::new().fg(badge_color).add_modifier(Modifier::BOLD)),
                         Span::styled(
-                            format!("{}:{} → SOCKS proxy", forward.local_addr, forward.local_port),
+                            format!(" {badge} "),
+                            Style::new().fg(badge_color).add_modifier(Modifier::BOLD),
+                        ),
+                        Span::styled(
+                            format!(
+                                "{}:{} → SOCKS proxy",
+                                forward.local_addr, forward.local_port
+                            ),
                             Style::new().fg(p.text),
                         ),
                     ]));
                 } else {
                     lines.push(Line::from(vec![
-                        Span::styled(format!(" {} ", badge), Style::new().fg(badge_color).add_modifier(Modifier::BOLD)),
+                        Span::styled(
+                            format!(" {badge} "),
+                            Style::new().fg(badge_color).add_modifier(Modifier::BOLD),
+                        ),
                         Span::styled(
                             format!(
                                 "{}:{} → {}:{}",
@@ -665,9 +668,10 @@ impl ForwardingTab {
             }
 
             lines.push(Line::raw(""));
-            lines.push(Line::from(
-                Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
-            ));
+            lines.push(Line::from(Span::styled(
+                "Press Esc to close",
+                Style::new().fg(p.text_muted),
+            )));
 
             for (i, line) in lines.into_iter().enumerate() {
                 let y = content_area.y + i as u16;
@@ -715,15 +719,13 @@ mod tests {
                 control_path: "/tmp/ssh-bastion".into(),
                 pid: Some(67890),
                 established_ago: "45m".into(),
-                forwards: vec![
-                    ForwardEntry {
-                        forward_type: "dynamic".into(),
-                        local_addr: "127.0.0.1".into(),
-                        local_port: 1080,
-                        remote_addr: "SOCKS".into(),
-                        remote_port: 0,
-                    },
-                ],
+                forwards: vec![ForwardEntry {
+                    forward_type: "dynamic".into(),
+                    local_addr: "127.0.0.1".into(),
+                    local_port: 1080,
+                    remote_addr: "SOCKS".into(),
+                    remote_port: 0,
+                }],
                 forward_count: 1,
             },
         ]

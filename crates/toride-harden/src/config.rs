@@ -44,7 +44,7 @@ pub fn write_dropin(paths: &HardenPaths, name: &str, params: &[SysctlParam]) -> 
     }
 
     let content = render_sysctl_d_dropin(name, params);
-    toride_fs::atomic_write(&path, &content)
+    toride_fs::atomic_write_with_perms(&path, &content, 0o644)
         .map_err(|e| Error::ConfigWrite(format!("cannot write {}: {e}", path.display())))?;
 
     tracing::info!("config: wrote drop-in {}", path.display());

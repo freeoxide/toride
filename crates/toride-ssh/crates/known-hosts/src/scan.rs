@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use toride_ssh_core::{runner::CliRunner, Error, Result};
+use toride_ssh_core::{Error, Result, runner::CliRunner};
 
 /// A host key discovered by `ssh-keyscan`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -41,9 +41,7 @@ impl ScannedHostKey {
 /// the plaintext hostname. Callers that need hashed entries should use
 /// [`add_host_hashed`] or [`add_to_known_hosts`].
 pub async fn scan_host(host: &str, runner: &dyn CliRunner) -> Result<Vec<ScannedHostKey>> {
-    let raw = runner
-        .run("ssh-keyscan", vec![host.to_owned()])
-        .await?;
+    let raw = runner.run("ssh-keyscan", vec![host.to_owned()]).await?;
     Ok(parse_keyscan_output(host, &raw))
 }
 
@@ -77,7 +75,11 @@ fn parse_keyscan_output(original_host: &str, raw: &str) -> Vec<ScannedHostKey> {
 ///
 /// Format: `hostname key-type base64-key [comment...]`
 pub(crate) fn parse_keyscan_line(original_host: &str, line: &str) -> Result<ScannedHostKey> {
-    let err = || Error::CommandParseFailed(format!("expected at least 3 fields in keyscan output: {line}"));
+    let err = || {
+        Error::CommandParseFailed(format!(
+            "expected at least 3 fields in keyscan output: {line}"
+        ))
+    };
     let mut parts = line.split_whitespace();
     let raw_host = parts.next().ok_or_else(&err)?;
     let key_type = parts.next().ok_or_else(&err)?;
@@ -91,15 +93,12 @@ pub(crate) fn parse_keyscan_line(original_host: &str, line: &str) -> Result<Scan
     })
 }
 
-/// Append a batch of scanned host keys to a known_hosts file.
+/// Append a batch of scanned host keys to a `known_hosts` file.
 ///
 /// Creates the file (and parent directories) if it does not already exist.
 /// All keys are written in a single I/O operation to avoid interleaved
 /// partial writes.
-pub async fn add_to_known_hosts(
-    known_hosts_path: &Path,
-    keys: &[ScannedHostKey],
-) -> Result<()> {
+pub async fn add_to_known_hosts(known_hosts_path: &Path, keys: &[ScannedHostKey]) -> Result<()> {
     use std::fmt::Write;
     let mut buf = String::new();
     for key in keys {

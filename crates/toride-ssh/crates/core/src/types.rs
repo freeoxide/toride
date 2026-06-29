@@ -138,6 +138,10 @@ pub struct Diagnostic {
 
 /// Parameters for creating a new SSH key.
 #[derive(Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "key-creation has several independent boolean toggles (agent/config/FIDO flags); flattening into a state machine would bloat the serialized public API"
+)]
 pub struct KeyCreateParams {
     /// Algorithm to use.
     pub key_type: KeyType,
@@ -233,7 +237,10 @@ impl std::fmt::Debug for KeyCreateParams {
             .field("key_type", &self.key_type)
             .field("name", &self.name)
             .field("comment", &self.comment)
-            .field("passphrase", &self.passphrase.as_ref().map(|_| "[REDACTED]"))
+            .field(
+                "passphrase",
+                &self.passphrase.as_ref().map(|_| "[REDACTED]"),
+            )
             .field("kdf_rounds", &self.kdf_rounds)
             .field("add_to_agent", &self.add_to_agent)
             .field("add_to_config", &self.add_to_config)
@@ -246,6 +253,10 @@ impl std::fmt::Debug for KeyCreateParams {
 
 /// Parameters for deleting an SSH key.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "key-deletion has several independent boolean toggles (pub/cert/agent/config/backup); flattening into a state machine would bloat the serialized public API"
+)]
 pub struct KeyDeleteParams {
     /// File name identifying the key.
     pub name: String,

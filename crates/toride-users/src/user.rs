@@ -13,6 +13,7 @@ use std::path::Path;
 ///
 /// # Errors
 ///
+/// - [`Error::Validation`] if the username is invalid (e.g. starts with `-`).
 /// - [`Error::BinaryNotFound`] if `useradd` is not on `$PATH`.
 /// - [`Error::UserExists`] if the username is already taken.
 /// - [`Error::CommandFailed`] if `useradd` returns a non-zero exit code.
@@ -23,6 +24,10 @@ pub fn create_user(
     groups: &[String],
     home_dir: Option<&str>,
 ) -> Result<()> {
+    // Validate before building argv: a leading `-` would be parsed by
+    // `useradd` as an option flag, and the allowlist rejects shell
+    // metacharacters / traversal names.
+    crate::validate::validate_username(username)?;
     let useradd = which::which("useradd").map_err(|_| Error::BinaryNotFound("useradd".into()))?;
 
     let mut args: Vec<String> = Vec::new();
@@ -66,6 +71,7 @@ pub fn create_user(
 ///
 /// # Errors
 ///
+/// - [`Error::Validation`] if the username is invalid (e.g. starts with `-`).
 /// - [`Error::BinaryNotFound`] if `usermod` is not on `$PATH`.
 /// - [`Error::UserNotFound`] if the user does not exist.
 /// - [`Error::CommandFailed`] if `usermod` returns a non-zero exit code.
@@ -76,6 +82,9 @@ pub fn modify_user(
     groups: Option<&[String]>,
     append_groups: Option<&[String]>,
 ) -> Result<()> {
+    // Validate before building argv: a leading `-` would be parsed by
+    // `usermod` as an option flag.
+    crate::validate::validate_username(username)?;
     let usermod = which::which("usermod").map_err(|_| Error::BinaryNotFound("usermod".into()))?;
 
     let mut args: Vec<String> = Vec::new();
@@ -116,11 +125,15 @@ pub fn modify_user(
 ///
 /// # Errors
 ///
+/// - [`Error::Validation`] if the username is invalid (e.g. starts with `-`).
 /// - [`Error::BinaryNotFound`] if `userdel` is not on `$PATH`.
 /// - [`Error::UserNotFound`] if the user does not exist.
 /// - [`Error::CommandFailed`] if `userdel` returns a non-zero exit code.
 #[cfg(feature = "client")]
 pub fn delete_user(username: &str, remove_home: bool) -> Result<()> {
+    // Validate before building argv: a leading `-` would be parsed by
+    // `userdel` as an option flag.
+    crate::validate::validate_username(username)?;
     let userdel = which::which("userdel").map_err(|_| Error::BinaryNotFound("userdel".into()))?;
 
     let mut args: Vec<String> = Vec::new();

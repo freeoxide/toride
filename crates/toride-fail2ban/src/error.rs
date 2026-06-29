@@ -41,7 +41,6 @@ pub enum Error {
     // =======================================================================
     // I/O subsystem
     // =======================================================================
-
     /// An I/O error propagated from `std::io` or `fs-err`.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -49,7 +48,6 @@ pub enum Error {
     // =======================================================================
     // Serialization subsystem
     // =======================================================================
-
     /// A JSON serialization or deserialization error.
     #[error("JSON error: {0}")]
     Json(#[from] serde_json::Error),
@@ -57,7 +55,6 @@ pub enum Error {
     // =======================================================================
     // Configuration subsystem
     // =======================================================================
-
     /// Configuration file missing at expected path.
     #[error("Config file not found: {0}")]
     ConfigNotFound(String),
@@ -73,7 +70,6 @@ pub enum Error {
     // =======================================================================
     // Ban subsystem
     // =======================================================================
-
     /// Invalid IP address or CIDR notation.
     #[error("Invalid IP or CIDR: {0}")]
     InvalidIp(String),
@@ -89,7 +85,6 @@ pub enum Error {
     // =======================================================================
     // Log parsing subsystem
     // =======================================================================
-
     /// Invalid regular expression pattern.
     #[error("Invalid regex pattern: {0}")]
     InvalidRegex(String),
@@ -106,7 +101,6 @@ pub enum Error {
     // =======================================================================
     // Command / action subsystem
     // =======================================================================
-
     /// Command execution failed (string-based variant).
     #[error("Command execution failed: {0}")]
     CommandFailed(String),
@@ -139,7 +133,6 @@ pub enum Error {
     // =======================================================================
     // Jail subsystem
     // =======================================================================
-
     /// Jail with the given name already exists.
     #[error("Jail already exists: {0}")]
     JailAlreadyExists(String),
@@ -151,7 +144,6 @@ pub enum Error {
     // =======================================================================
     // Lookup subsystem
     // =======================================================================
-
     /// Required binary not found on `$PATH`, or a requested resource was not
     /// found.
     #[error("not found: {0}")]
@@ -160,7 +152,6 @@ pub enum Error {
     // =======================================================================
     // Validation subsystem
     // =======================================================================
-
     /// A spec or input value failed validation rules.
     #[error("validation error: {0}")]
     Validation(String),
@@ -168,7 +159,6 @@ pub enum Error {
     // =======================================================================
     // Doctor subsystem
     // =======================================================================
-
     /// A doctor check produced an error (distinct from a *finding*).
     #[error("doctor error: {0}")]
     Doctor(String),
@@ -176,7 +166,6 @@ pub enum Error {
     // =======================================================================
     // Permission subsystem
     // =======================================================================
-
     /// A permission check failed (file mode, ownership, or OS capability).
     #[error("permission denied: {0}")]
     PermissionDenied(String),
@@ -184,7 +173,6 @@ pub enum Error {
     // =======================================================================
     // Locking subsystem
     // =======================================================================
-
     /// Advisory file lock could not be acquired for config write coordination.
     #[error("lock error: {0}")]
     LockFailed(String),
@@ -192,7 +180,6 @@ pub enum Error {
     // =======================================================================
     // Parsing subsystem
     // =======================================================================
-
     /// A string could not be parsed into the expected type.
     #[error("parse error: {0}")]
     Parse(String),

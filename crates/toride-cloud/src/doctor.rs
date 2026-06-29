@@ -19,10 +19,10 @@
 //! | `Network`         | VPC/network configuration and connectivity        |
 //! | `All`             | All of the above                                  |
 
+use crate::CloudProvider;
 use crate::client::CloudClient;
 use crate::error::Result;
 use crate::report::{CloudReport, Finding, Severity};
-use crate::CloudProvider;
 
 // ---------------------------------------------------------------------------
 // DoctorScope
@@ -161,13 +161,11 @@ impl Doctor {
 
         match which::which(tool) {
             Ok(_) => {
-                report.push(
-                    Finding::new(
-                        format!("binaries.{tool}.found"),
-                        Severity::Ok,
-                        format!("{tool} CLI is installed"),
-                    ),
-                );
+                report.push(Finding::new(
+                    format!("binaries.{tool}.found"),
+                    Severity::Ok,
+                    format!("{tool} CLI is installed"),
+                ));
             }
             Err(_) => {
                 report.push(
@@ -231,10 +229,7 @@ impl Doctor {
         ));
 
         for group in &groups {
-            let label = group
-                .id
-                .clone()
-                .unwrap_or_else(|| group.name.clone());
+            let label = group.id.clone().unwrap_or_else(|| group.name.clone());
 
             for rule in group.ingress_rules() {
                 if !is_open_cidr(&rule.cidr) {
@@ -246,17 +241,14 @@ impl Doctor {
                         Finding::new(
                             "security-group.open-sensitive-ingress",
                             Severity::Critical,
-                            format!("{}: sensitive port open to the world", label),
+                            format!("{label}: sensitive port open to the world"),
                         )
                         .detail(format!(
                             "{} ingress on {} allows {} — anyone on the internet can reach it.",
-                            group.name,
-                            port_desc,
-                            rule.cidr,
+                            group.name, port_desc, rule.cidr,
                         ))
                         .fix(format!(
-                            "Restrict {} to a known CIDR or remove the rule.",
-                            port_desc
+                            "Restrict {port_desc} to a known CIDR or remove the rule.",
                         )),
                     );
                 } else {
@@ -264,17 +256,14 @@ impl Doctor {
                         Finding::new(
                             "security-group.open-ingress",
                             Severity::Warning,
-                            format!("{}: ingress open to the world", label),
+                            format!("{label}: ingress open to the world"),
                         )
                         .detail(format!(
                             "{} ingress on {} allows {}.",
-                            group.name,
-                            port_desc,
-                            rule.cidr,
+                            group.name, port_desc, rule.cidr,
                         ))
                         .fix(format!(
-                            "Narrow {} to the CIDRs that genuinely need access.",
-                            port_desc
+                            "Narrow {port_desc} to the CIDRs that genuinely need access.",
                         )),
                     );
                 }
@@ -285,7 +274,7 @@ impl Doctor {
                     Finding::new(
                         "security-group.no-egress",
                         Severity::Warning,
-                        format!("{}: no egress rules recorded", label),
+                        format!("{label}: no egress rules recorded"),
                     )
                     .detail(format!(
                         "{} has no outbound rules visible to the doctor; verify the provider's \
@@ -389,11 +378,14 @@ impl Doctor {
         if !tool.is_empty() {
             match which::which(tool) {
                 Ok(path) => {
-                    report.push(Finding::new(
-                        format!("network.{tool}.on-path"),
-                        Severity::Ok,
-                        format!("{tool} is on $PATH"),
-                    ).detail(format!("resolved to {}", path.display())));
+                    report.push(
+                        Finding::new(
+                            format!("network.{tool}.on-path"),
+                            Severity::Ok,
+                            format!("{tool} is on $PATH"),
+                        )
+                        .detail(format!("resolved to {}", path.display())),
+                    );
                 }
                 Err(_) => {
                     report.push(
@@ -442,7 +434,7 @@ impl Doctor {
 /// Ports that are dangerous to expose to the entire internet.
 ///
 /// Curated from common cloud-hardening guidance: remote shells (SSH, RDP),
-/// databases (MySQL, PostgreSQL, MongoDB, Redis), and admin web UIs.
+/// databases (`MySQL`, `PostgreSQL`, `MongoDB`, `Redis`), and admin web UIs.
 const SENSITIVE_PORTS: &[u16] = &[
     22,    // SSH
     23,    // Telnet
@@ -493,7 +485,14 @@ enum ProbeOutcome {
 /// pulling in an HTTP client dependency: we only care whether *something* is
 /// listening, not the response body. The host:port are parsed from the URL's
 /// authority; the path is irrelevant for a reachability probe.
+///
+/// Resolution goes through `ToSocketAddrs` so hostname authorities (e.g.
+/// `metadata.google.internal`) are DNS-resolved; parsing the authority as a
+/// `SocketAddr` directly would only accept IP literals and silently fail to
+/// probe any hostname-based metadata endpoint.
 fn probe_metadata(url: &str) -> ProbeOutcome {
+    use std::net::ToSocketAddrs;
+
     let authority = url
         .strip_prefix("http://")
         .or_else(|| url.strip_prefix("https://"))
@@ -503,28 +502,40 @@ fn probe_metadata(url: &str) -> ProbeOutcome {
         return ProbeOutcome::Unreachable("no host in metadata URL".to_string());
     }
 
-    let parsed = host_port
-        .split(':')
-        .next()
-        .unwrap_or(host_port);
-    let port = host_port
-        .split_once(':')
-        .and_then(|(_, p)| p.parse::<u16>().ok())
-        .unwrap_or(80);
-
-    let addr = format!("{parsed}:{port}");
-    let timeout = std::time::Duration::from_secs(2);
-    match std::net::TcpStream::connect_timeout(
-        &addr.parse().unwrap_or_else(|_| {
-            // Fall back to a syntactically-invalid socket addr; connect will
-            // then fail below, which is the right outcome for a bad URL.
-            std::net::SocketAddr::from(([0u8, 0, 0, 0], 0))
-        }),
-        timeout,
-    ) {
-        Ok(_) => ProbeOutcome::Reachable,
-        Err(e) => ProbeOutcome::Unreachable(format!("connection failed: {e}")),
+    // Split an optional `:port` suffix off the authority. Only the final
+    // colon-separated token is treated as a port; hostnames themselves never
+    // contain a bare `:` outside of IPv6 literals (which are not valid metadata
+    // hosts here).
+    let (host, port) = match host_port.rsplit_once(':') {
+        Some((h, p)) => match p.parse::<u16>() {
+            Ok(n) => (h, n),
+            Err(_) => (host_port, 80),
+        },
+        None => (host_port, 80),
+    };
+    if host.is_empty() {
+        return ProbeOutcome::Unreachable("no host in metadata URL".to_string());
     }
+
+    let timeout = std::time::Duration::from_secs(2);
+    // Resolve every address for the (host, port) pair and try each in turn
+    // until one connects or the list is exhausted. This is the standard
+    // `ToSocketAddrs` fan-out pattern and works for both DNS names and IPs.
+    let addrs = match (host, port).to_socket_addrs() {
+        Ok(addrs) => addrs.collect::<Vec<_>>(),
+        Err(e) => {
+            return ProbeOutcome::Unreachable(format!("name resolution failed: {e}"));
+        }
+    };
+    if addrs.is_empty() {
+        return ProbeOutcome::Unreachable("no addresses resolved for metadata host".to_string());
+    }
+    for addr in addrs {
+        if std::net::TcpStream::connect_timeout(&addr, timeout).is_ok() {
+            return ProbeOutcome::Reachable;
+        }
+    }
+    ProbeOutcome::Unreachable("connection failed to all resolved addresses".to_string())
 }
 
 // ---------------------------------------------------------------------------
@@ -573,7 +584,10 @@ mod tests {
         for &p in &[22, 3389, 3306, 5432, 6379, 27017] {
             let (desc, sensitive) = describe_port(&rule("0.0.0.0/0", Protocol::Tcp, Some(p)));
             assert!(sensitive, "port {p} should be sensitive");
-            assert!(desc.contains(&p.to_string()), "desc should mention port: {desc}");
+            assert!(
+                desc.contains(&p.to_string()),
+                "desc should mention port: {desc}"
+            );
         }
     }
 
@@ -618,10 +632,7 @@ mod tests {
         // At least the metadata probe and the CLI check produced findings.
         assert!(!report.findings.is_empty());
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.id.starts_with("network.")),
+            report.findings.iter().any(|f| f.id.starts_with("network.")),
             "expected network.* findings: {:?}",
             report.findings
         );

@@ -61,7 +61,13 @@ impl std::fmt::Display for CloudReport {
             self.findings.len()
         )?;
         for finding in &self.findings {
-            writeln!(f, "  [{severity}] {id}: {title}", severity = finding.severity, id = finding.id, title = finding.title)?;
+            writeln!(
+                f,
+                "  [{severity}] {id}: {title}",
+                severity = finding.severity,
+                id = finding.id,
+                title = finding.title
+            )?;
             if !finding.detail.is_empty() {
                 writeln!(f, "    {detail}", detail = finding.detail)?;
             }
@@ -205,7 +211,11 @@ mod tests {
     #[test]
     fn cloud_report_has_errors_true_with_critical_severity() {
         let mut report = CloudReport::new(CloudProvider::Aws);
-        report.push(Finding::new("crit.001", Severity::Critical, "Everything is on fire"));
+        report.push(Finding::new(
+            "crit.001",
+            Severity::Critical,
+            "Everything is on fire",
+        ));
         assert!(report.has_errors());
     }
 
@@ -234,7 +244,10 @@ mod tests {
             .detail("The CIDR block is too permissive")
             .fix("Restrict the CIDR to your VPC range");
         assert_eq!(f.detail, "The CIDR block is too permissive");
-        assert_eq!(f.fix, Some("Restrict the CIDR to your VPC range".to_string()));
+        assert_eq!(
+            f.fix,
+            Some("Restrict the CIDR to your VPC range".to_string())
+        );
     }
 
     // -- Severity ordering ---------------------------------------------------

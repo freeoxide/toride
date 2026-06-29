@@ -6,8 +6,8 @@
 
 use camino::Utf8PathBuf;
 
-use crate::error::MiseResult;
 use crate::client::Mise;
+use crate::error::MiseResult;
 
 // ---------------------------------------------------------------------------
 // NodeHelper
@@ -127,9 +127,7 @@ impl<'a> NodeHelper<'a> {
     /// Returns [`MiseError::CommandFailed`](crate::MiseError::CommandFailed) if
     /// either command exits non-zero.
     pub async fn pin_lts_with_npm_latest(&self) -> MiseResult<()> {
-        self.mise
-            .run_checked(["use", "--pin", "node@lts"])
-            .await?;
+        self.mise.run_checked(["use", "--pin", "node@lts"]).await?;
         self.mise
             .run_checked(["use", "--pin", "npm@latest"])
             .await?;

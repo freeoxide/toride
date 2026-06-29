@@ -3,7 +3,7 @@
 //! These functions enforce security constraints on user configuration values
 //! to prevent injection attacks and ensure system compatibility.
 
-use crate::{spec::UserSpec, Error, Result};
+use crate::{Error, Result, spec::UserSpec};
 
 // ---------------------------------------------------------------------------
 // Username validation
@@ -15,8 +15,8 @@ use crate::{spec::UserSpec, Error, Result};
 /// (but not starting with a hyphen). We additionally reject dots and any
 /// character outside the ASCII printable range.
 const FORBIDDEN_USERNAME_CHARS: &[char] = &[
-    ' ', '\t', '\n', '\r', ':', '/', '\\', '&', '|', ';', '$', '`', '"', '\'',
-    '<', '>', '(', ')', '{', '}', '!', '#', '%', '?', '*', '~', ',',
+    ' ', '\t', '\n', '\r', ':', '/', '\\', '&', '|', ';', '$', '`', '"', '\'', '<', '>', '(', ')',
+    '{', '}', '!', '#', '%', '?', '*', '~', ',',
 ];
 
 /// Maximum username length (Linux limit is 32 characters).
@@ -44,8 +44,11 @@ pub fn validate_username(name: &str) -> Result<()> {
             "username exceeds {MAX_USERNAME_LEN} characters: {name:?}"
         )));
     }
-    let first = name.chars().next().expect("non-empty");
-    if !first.is_ascii_lowercase() && first != '_' {
+    // Empty case is rejected above, so the first char always exists here.
+    if let Some(first) = name.chars().next()
+        && !first.is_ascii_lowercase()
+        && first != '_'
+    {
         return Err(Error::Validation(format!(
             "username must start with a lowercase letter or underscore: {name:?}"
         )));
@@ -57,9 +60,7 @@ pub fn validate_username(name: &str) -> Result<()> {
     }
     // Reject reserved names
     if matches!(name, "root" | "nobody" | "daemon" | "bin" | "sys" | "adm") {
-        return Err(Error::Validation(format!(
-            "username is reserved: {name:?}"
-        )));
+        return Err(Error::Validation(format!("username is reserved: {name:?}")));
     }
     Ok(())
 }

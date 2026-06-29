@@ -52,6 +52,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+#[cfg(target_os = "macos")]
 use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 /// Daemon liveness and health snapshot.
@@ -205,8 +206,7 @@ fn is_process_alive(_pid: u32) -> bool {
 /// On Linux, reads `/proc/<pid>/stat` for process start time.
 #[cfg(target_os = "macos")]
 fn uptime_for_pid(pid: u32) -> Option<u64> {
-    let spec = CommandSpec::new("ps")
-        .args(["-o", "etime=", "-p", &pid.to_string()]);
+    let spec = CommandSpec::new("ps").args(["-o", "etime=", "-p", &pid.to_string()]);
     let runner = DuctRunner;
     let output = runner.run(&spec).ok()?;
     let elapsed = output.stdout;
@@ -222,7 +222,9 @@ fn uptime_for_pid(pid: u32) -> Option<u64> {
     let after_comm = stat.rfind(')')?;
     let rest = stat.get(after_comm + 2..)?;
     let start_ticks: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
-    let ticks_per_sec = sysconf::sysconf(sysconf::SysconfVariable::ScClkTck).unwrap_or(100) as u64;
+    let ticks_per_sec =
+        u64::try_from(sysconf::sysconf(sysconf::SysconfVariable::ScClkTck).unwrap_or(100))
+            .unwrap_or(100);
     let boot_time = read_boot_time()?;
     let start_secs = boot_time + start_ticks / ticks_per_sec;
     let now = std::time::SystemTime::now()
@@ -242,6 +244,7 @@ fn uptime_for_pid(_pid: u32) -> Option<u64> {
 }
 
 /// Parse `ps` elapsed time format (``[[dd-]hh:]mm:ss``) into seconds.
+#[cfg(any(target_os = "macos", test))]
 fn parse_elapsed_time(s: &str) -> Option<u64> {
     let (days, time_str) = match s.split_once('-') {
         Some((day_str, rest)) => (day_str.parse::<u64>().ok()?, rest),
@@ -255,18 +258,17 @@ fn parse_elapsed_time(s: &str) -> Option<u64> {
             m.parse::<u64>().ok()?,
             s.parse::<u64>().ok()?,
         ),
-        (Some(m), Some(s), None, None) => (
-            0,
-            m.parse::<u64>().ok()?,
-            s.parse::<u64>().ok()?,
-        ),
+        (Some(m), Some(s), None, None) => (0, m.parse::<u64>().ok()?, s.parse::<u64>().ok()?),
         _ => return None,
     };
 
     let day_secs = days.checked_mul(86400)?;
     let hour_secs = hours.checked_mul(3600)?;
     let min_secs = minutes.checked_mul(60)?;
-    day_secs.checked_add(hour_secs)?.checked_add(min_secs)?.checked_add(seconds)
+    day_secs
+        .checked_add(hour_secs)?
+        .checked_add(min_secs)?
+        .checked_add(seconds)
 }
 
 /// Read the restart count from an append-only file.
@@ -580,10 +582,7 @@ mod tests {
     fn read_pid_file_rejects_pid_above_i32_max() {
         // PIDs > i32::MAX would wrap to negative when cast, causing kill(-1, 0).
         let dir = setup_test_dir(Some("4294967295"), None);
-        assert_eq!(
-            read_pid_file(&dir.path().join("toride.pid")),
-            None
-        );
+        assert_eq!(read_pid_file(&dir.path().join("toride.pid")), None);
     }
 
     #[test]
@@ -620,10 +619,7 @@ mod tests {
     #[test]
     fn parse_elapsed_time_handles_overflow() {
         // u64::MAX days * 86400 overflows checked_mul, so parse returns None.
-        assert_eq!(
-            parse_elapsed_time("18446744073709551615-00:00:00"),
-            None
-        );
+        assert_eq!(parse_elapsed_time("18446744073709551615-00:00:00"), None);
     }
 
     #[test]

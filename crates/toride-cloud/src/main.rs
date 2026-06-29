@@ -16,7 +16,10 @@ fn main() {
     let cli = Cli::parse();
 
     if let Err(e) = cli.run() {
-        eprintln!("{e:?}");
+        // Display, not Debug: the crate's `Error` types deliberately scrub
+        // raw stderr / tokens out of their Display rendering, so `{e}` keeps
+        // secrets and noisy provider output out of the user-facing message.
+        eprintln!("{e}");
         std::process::exit(1);
     }
 }

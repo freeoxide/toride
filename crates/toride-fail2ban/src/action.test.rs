@@ -65,7 +65,14 @@ fn action_vars_new_with_zero_values() {
 
 #[test]
 fn action_vars_new_with_max_values() {
-    let vars = ActionVars::new("255.255.255.255", 128, "jail", u64::MAX, u32::MAX, "/very/long/path");
+    let vars = ActionVars::new(
+        "255.255.255.255",
+        128,
+        "jail",
+        u64::MAX,
+        u32::MAX,
+        "/very/long/path",
+    );
 
     assert_eq!(vars.prefix, 128);
     assert_eq!(vars.ban_time, u64::MAX);
@@ -123,7 +130,8 @@ fn expand_command_replaces_prefix() {
 #[test]
 fn expand_command_replaces_jail() {
     let vars = default_vars();
-    let result = ActionExec::expand_command("fail2ban-client set <jail> banip <ip>", &vars).unwrap();
+    let result =
+        ActionExec::expand_command("fail2ban-client set <jail> banip <ip>", &vars).unwrap();
     assert_eq!(result, "fail2ban-client set sshd banip 192.168.1.100");
 }
 
@@ -151,7 +159,8 @@ fn expand_command_replaces_log_path() {
 #[test]
 fn expand_command_replaces_multiple_vars() {
     let vars = ActionVars::new("10.0.0.1", 24, "nginx", 600, 3, "/var/log/nginx.log");
-    let template = "action jail=<jail> ip=<ip>/<prefix> ban=<ban-time> fails=<fail-count> log=<log-path>";
+    let template =
+        "action jail=<jail> ip=<ip>/<prefix> ban=<ban-time> fails=<fail-count> log=<log-path>";
     let result = ActionExec::expand_command(template, &vars).unwrap();
     assert_eq!(
         result,
@@ -339,7 +348,10 @@ fn exec_failure_with_false_command() {
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::CommandFailed(msg) => {
-            assert!(msg.contains("false"), "message should reference the failed command: {msg}");
+            assert!(
+                msg.contains("false"),
+                "message should reference the failed command: {msg}"
+            );
         }
         other => panic!("expected CommandFailed, got: {other:?}"),
     }
@@ -348,11 +360,7 @@ fn exec_failure_with_false_command() {
 #[test]
 fn exec_success_with_multiple_commands() {
     let runner = make_runner();
-    let cmds = make_platform_commands(
-        &["true", "true", "true"],
-        &["true"],
-        &["true"],
-    );
+    let cmds = make_platform_commands(&["true", "true", "true"], &["true"], &["true"]);
     let exec = make_exec("multi-cmd", cmds);
     let vars = default_vars();
 
@@ -472,7 +480,10 @@ fn validate_failure_returns_command_failed() {
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::CommandFailed(msg) => {
-            assert!(msg.contains("false"), "message should reference the failed command: {msg}");
+            assert!(
+                msg.contains("false"),
+                "message should reference the failed command: {msg}"
+            );
             assert!(
                 msg.contains("exit"),
                 "message should mention exit status: {msg}"
@@ -613,8 +624,7 @@ fn action_exec_fields_are_accessible_and_mutable() {
 
     // Modify fields after construction.
     exec.validation_commands.push("true".to_string());
-    exec.env
-        .insert("KEY".to_string(), "VALUE".to_string());
+    exec.env.insert("KEY".to_string(), "VALUE".to_string());
 
     assert_eq!(exec.validation_commands.len(), 1);
     assert_eq!(exec.env.get("KEY").unwrap(), "VALUE");

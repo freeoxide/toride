@@ -26,7 +26,12 @@ fn with_binary_creates_tester_without_locating_on_path() {
     let fake = FakeRunner::new();
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
     // Just verifying construction succeeds -- no real binary needed.
-    assert!(tester.binary_path().to_string_lossy().contains("fail2ban-regex"));
+    assert!(
+        tester
+            .binary_path()
+            .to_string_lossy()
+            .contains("fail2ban-regex")
+    );
 }
 
 #[test]
@@ -48,8 +53,10 @@ fn test_line_matching_regex_parses_lines_summary() {
     let mut fake = FakeRunner::new();
     fake.with_response(
         FAKE_BINARY,
-        &["Mar  1 12:00:00 host sshd[1234]: Failed password for root from 10.0.0.1",
-           r"sshd\[\d+\]: Failed password for .* from <HOST>"],
+        &[
+            "Mar  1 12:00:00 host sshd[1234]: Failed password for root from 10.0.0.1",
+            r"sshd\[\d+\]: Failed password for .* from <HOST>",
+        ],
         CommandOutput {
             stdout: "Lines: 1 lines, 1 matched, 0 missed\n".to_string(),
             stderr: String::new(),
@@ -59,10 +66,12 @@ fn test_line_matching_regex_parses_lines_summary() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_line(
-        r"sshd\[\d+\]: Failed password for .* from <HOST>",
-        "Mar  1 12:00:00 host sshd[1234]: Failed password for root from 10.0.0.1",
-    ).unwrap();
+    let result = tester
+        .test_line(
+            r"sshd\[\d+\]: Failed password for .* from <HOST>",
+            "Mar  1 12:00:00 host sshd[1234]: Failed password for root from 10.0.0.1",
+        )
+        .unwrap();
 
     assert_eq!(result.lines_matched, 1);
     assert_eq!(result.lines_processed, 1);
@@ -138,7 +147,9 @@ fn test_line_no_match_when_sorry_no_match() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_line(r"will never match this", "some random log line").unwrap();
+    let result = tester
+        .test_line(r"will never match this", "some random log line")
+        .unwrap();
 
     assert_eq!(result.lines_matched, 0);
     assert_eq!(result.lines_processed, 1); // "Sorry, no match" -> (0, 1)
@@ -232,10 +243,9 @@ fn test_filter_file_parses_lines_summary() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_filter_file(
-        Path::new(filter_path),
-        Path::new(log_path),
-    ).unwrap();
+    let result = tester
+        .test_filter_file(Path::new(filter_path), Path::new(log_path))
+        .unwrap();
 
     assert_eq!(result.lines_matched, 42);
     assert_eq!(result.lines_processed, 100);
@@ -261,10 +271,9 @@ fn test_filter_file_no_matches() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_filter_file(
-        Path::new(filter_path),
-        Path::new(log_path),
-    ).unwrap();
+    let result = tester
+        .test_filter_file(Path::new(filter_path), Path::new(log_path))
+        .unwrap();
 
     assert_eq!(result.lines_matched, 0);
     assert_eq!(result.lines_processed, 20);
@@ -290,7 +299,9 @@ fn test_ignoreregex_matched_line_would_be_ignored() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_ignoreregex(r"^trusted", "trusted host allowed").unwrap();
+    let result = tester
+        .test_ignoreregex(r"^trusted", "trusted host allowed")
+        .unwrap();
 
     assert_eq!(result.lines_matched, 1);
     assert_eq!(result.lines_processed, 1);
@@ -313,7 +324,9 @@ fn test_ignoreregex_no_match_line_not_ignored() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_ignoreregex(r"^trusted", "untrusted attacker").unwrap();
+    let result = tester
+        .test_ignoreregex(r"^trusted", "untrusted attacker")
+        .unwrap();
 
     assert_eq!(result.lines_matched, 0);
     assert_eq!(result.lines_processed, 1);
@@ -334,7 +347,9 @@ fn test_ignoreregex_sorry_no_match() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_ignoreregex(r"^whitelisted", "normal log entry").unwrap();
+    let result = tester
+        .test_ignoreregex(r"^whitelisted", "normal log entry")
+        .unwrap();
 
     assert_eq!(result.lines_matched, 0);
     assert_eq!(result.lines_processed, 1); // "Sorry, no match" -> (0, 1)
@@ -488,12 +503,17 @@ fn test_ignoreregex_records_flag_in_args() {
     let fake = FakeRunner::new();
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let _ = tester.test_ignoreregex(r"^whitelist", "trusted line").unwrap();
+    let _ = tester
+        .test_ignoreregex(r"^whitelist", "trusted line")
+        .unwrap();
 
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
     // test_ignoreregex passes ["--ignoreregex", regex, log_line]
-    assert_eq!(calls[0].1, vec!["--ignoreregex", "^whitelist", "trusted line"]);
+    assert_eq!(
+        calls[0].1,
+        vec!["--ignoreregex", "^whitelist", "trusted line"]
+    );
 }
 
 #[test]
@@ -501,14 +521,19 @@ fn test_filter_file_records_paths_as_args() {
     let fake = FakeRunner::new();
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let _ = tester.test_filter_file(
-        Path::new("/etc/fail2ban/filter.d/sshd.conf"),
-        Path::new("/var/log/auth.log"),
-    ).unwrap();
+    let _ = tester
+        .test_filter_file(
+            Path::new("/etc/fail2ban/filter.d/sshd.conf"),
+            Path::new("/var/log/auth.log"),
+        )
+        .unwrap();
 
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].1, vec!["/var/log/auth.log", "/etc/fail2ban/filter.d/sshd.conf"]);
+    assert_eq!(
+        calls[0].1,
+        vec!["/var/log/auth.log", "/etc/fail2ban/filter.d/sshd.conf"]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -575,7 +600,12 @@ fn test_datepattern_matching_regex_parses_lines_summary() {
     let mut fake = FakeRunner::new();
     fake.with_response(
         FAKE_BINARY,
-        &["-f", "{^LN-BEG}", "Jan  1 00:00:00 host sshd[1]: Failed password", r"sshd\[\d+\]: Failed password"],
+        &[
+            "-f",
+            "{^LN-BEG}",
+            "Jan  1 00:00:00 host sshd[1]: Failed password",
+            r"sshd\[\d+\]: Failed password",
+        ],
         CommandOutput {
             stdout: "Lines: 1 lines, 1 matched, 0 missed\n".to_string(),
             stderr: String::new(),
@@ -585,11 +615,13 @@ fn test_datepattern_matching_regex_parses_lines_summary() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_datepattern(
-        "{^LN-BEG}",
-        "Jan  1 00:00:00 host sshd[1]: Failed password",
-        r"sshd\[\d+\]: Failed password",
-    ).unwrap();
+    let result = tester
+        .test_datepattern(
+            "{^LN-BEG}",
+            "Jan  1 00:00:00 host sshd[1]: Failed password",
+            r"sshd\[\d+\]: Failed password",
+        )
+        .unwrap();
 
     assert_eq!(result.lines_matched, 1);
     assert_eq!(result.lines_processed, 1);
@@ -612,11 +644,9 @@ fn test_datepattern_no_match() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_datepattern(
-        "{^LN-BEG}",
-        "some log line",
-        r"will not match",
-    ).unwrap();
+    let result = tester
+        .test_datepattern("{^LN-BEG}", "some log line", r"will not match")
+        .unwrap();
 
     assert_eq!(result.lines_matched, 0);
     assert_eq!(result.lines_processed, 1);
@@ -628,11 +658,9 @@ fn test_datepattern_records_flag_in_args() {
     let fake = FakeRunner::new();
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let _ = tester.test_datepattern(
-        "{^LN-BEG}",
-        "log line",
-        r"pattern",
-    ).unwrap();
+    let _ = tester
+        .test_datepattern("{^LN-BEG}", "log line", r"pattern")
+        .unwrap();
 
     let calls = fake.calls();
     assert_eq!(calls.len(), 1);
@@ -705,7 +733,9 @@ fn test_maxlines_matching_regex_parses_lines_summary() {
     );
     let tester = RegexTester::with_binary(&fake, PathBuf::from(FAKE_BINARY));
 
-    let result = tester.test_maxlines(5, "multi-line log entry", r"<HOST> banned").unwrap();
+    let result = tester
+        .test_maxlines(5, "multi-line log entry", r"<HOST> banned")
+        .unwrap();
 
     assert_eq!(result.lines_matched, 1);
     assert_eq!(result.lines_processed, 1);

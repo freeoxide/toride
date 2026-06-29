@@ -221,7 +221,8 @@ impl Mise {
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
     pub async fn list_installed(&self) -> MiseResult<Vec<ToolStatus>> {
-        self.run_json_vec_safe(["ls", "--installed", "--json"]).await
+        self.run_json_vec_safe(["ls", "--installed", "--json"])
+            .await
     }
 
     /// List currently active (resolved) tool versions.

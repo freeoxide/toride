@@ -164,7 +164,12 @@ impl<'a> ServiceManager<'a> {
         if output.success {
             Ok(())
         } else {
-            Err(command_failed("systemctl", "start", &self.service_name, &output))
+            Err(command_failed(
+                "systemctl",
+                "start",
+                &self.service_name,
+                &output,
+            ))
         }
     }
 
@@ -178,7 +183,12 @@ impl<'a> ServiceManager<'a> {
         if output.success {
             Ok(())
         } else {
-            Err(command_failed("systemctl", "stop", &self.service_name, &output))
+            Err(command_failed(
+                "systemctl",
+                "stop",
+                &self.service_name,
+                &output,
+            ))
         }
     }
 
@@ -192,7 +202,12 @@ impl<'a> ServiceManager<'a> {
         if output.success {
             Ok(())
         } else {
-            Err(command_failed("systemctl", "restart", &self.service_name, &output))
+            Err(command_failed(
+                "systemctl",
+                "restart",
+                &self.service_name,
+                &output,
+            ))
         }
     }
 

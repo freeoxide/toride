@@ -22,8 +22,10 @@ fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    with_lock(&lock_path, || f().map_err(|e| toride_fs::Error::Io(std::io::Error::other(e.to_string()))))
-        .map_err(|e| Error::Io(e.to_string()))
+    with_lock(&lock_path, || {
+        f().map_err(|e| toride_fs::Error::Io(std::io::Error::other(e.to_string())))
+    })
+    .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Parse `/etc/default/ufw` content.
@@ -169,17 +171,16 @@ pub fn write_config_file(path: &Path, content: &str, backup_dir: Option<&Path>) 
             })?;
         }
 
-        let mut temp_file = NamedTempFile::new_in(parent).map_err(|e| {
-            Error::ConfigWriteFailed(format!("failed to create temp file: {e}"))
-        })?;
+        let mut temp_file = NamedTempFile::new_in(parent)
+            .map_err(|e| Error::ConfigWriteFailed(format!("failed to create temp file: {e}")))?;
 
-        temp_file.write_all(content.as_bytes()).map_err(|e| {
-            Error::ConfigWriteFailed(format!("failed to write temp file: {e}"))
-        })?;
+        temp_file
+            .write_all(content.as_bytes())
+            .map_err(|e| Error::ConfigWriteFailed(format!("failed to write temp file: {e}")))?;
 
-        temp_file.flush().map_err(|e| {
-            Error::ConfigWriteFailed(format!("failed to flush temp file: {e}"))
-        })?;
+        temp_file
+            .flush()
+            .map_err(|e| Error::ConfigWriteFailed(format!("failed to flush temp file: {e}")))?;
 
         // Step 3: Atomically persist to final path
         temp_file.persist(path).map_err(|e| {

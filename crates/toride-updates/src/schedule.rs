@@ -210,6 +210,14 @@ impl<'a> ScheduleManager<'a> {
     fn create_systemd_timer(&self, calendar_expr: &str) -> Result<()> {
         info!("Creating systemd timer with OnCalendar={calendar_expr}");
 
+        // Defense-in-depth: the CLI already rejects these characters via a clap
+        // value_parser, but this method is also reachable through the library
+        // API (and the DNF path, where the expression is built internally).
+        // Re-sanitize here so a hostile calendar expression can never inject
+        // extra systemd unit directives (newlines / "[" section headers / NUL /
+        // control bytes) into the raw `OnCalendar=` interpolation below.
+        sanitize_calendar_expr(calendar_expr)?;
+
         let timer_unit = format!(
             "[Unit]\n\
              Description=Automatic security updates (toride-managed)\n\n\
@@ -247,8 +255,7 @@ impl<'a> ScheduleManager<'a> {
     /// Disable (best-effort) the toride-managed custom timer.
     fn disable_managed_timer(&self) {
         let unit = self.timer_unit_name();
-        let spec = toride_runner::CommandSpec::new("systemctl")
-            .args(["disable", "--now", unit]);
+        let spec = toride_runner::CommandSpec::new("systemctl").args(["disable", "--now", unit]);
         // Best-effort: ignore failures (the timer may not be installed).
         let _ = self.runner.run(&spec);
     }
@@ -266,6 +273,32 @@ impl<'a> ScheduleManager<'a> {
 // ---------------------------------------------------------------------------
 // Parsers / helpers
 // ---------------------------------------------------------------------------
+
+/// Sanitize a systemd `OnCalendar=` expression before it is interpolated into a
+/// timer unit file.
+///
+/// Rejects newlines (`\n`, `\r`), NUL bytes, any other C0 control bytes, and
+/// `[` (the systemd unit section-header marker). Without this, a calendar
+/// expression containing an embedded `[Install]`/`[WantedBy]` section could
+/// inject arbitrary directives into the generated unit. The CLI layer rejects
+/// the same characters via a clap `value_parser`; this is the defense-in-depth
+/// gate for library / DNF-path callers.
+///
+/// # Errors
+///
+/// Returns [`Error::ScheduleConfig`] when the expression contains a forbidden
+/// character.
+fn sanitize_calendar_expr(expr: &str) -> Result<&str> {
+    if expr
+        .chars()
+        .any(|c| c == '\n' || c == '\r' || c == '\0' || c == '[' || c.is_control())
+    {
+        return Err(Error::ScheduleConfig(
+            "calendar expression must not contain newlines, control bytes, NUL, or '['".into(),
+        ));
+    }
+    Ok(expr)
+}
 
 /// Convert a [`Schedule`] to a systemd calendar expression.
 fn schedule_to_calendar(schedule: &Schedule) -> String {
@@ -373,8 +406,14 @@ mod tests {
 
     #[test]
     fn parse_apt_periodic_ignores_comments_and_disabled() {
-        assert_eq!(parse_apt_periodic_interval("// APT::Periodic::Update-Package-Lists \"1\";\n"), None);
-        assert_eq!(parse_apt_periodic_interval("APT::Periodic::Update-Package-Lists \"0\";\n"), Some(Schedule::Custom("0".into())));
+        assert_eq!(
+            parse_apt_periodic_interval("// APT::Periodic::Update-Package-Lists \"1\";\n"),
+            None
+        );
+        assert_eq!(
+            parse_apt_periodic_interval("APT::Periodic::Update-Package-Lists \"0\";\n"),
+            Some(Schedule::Custom("0".into()))
+        );
         assert_eq!(parse_apt_periodic_interval("Unrelated \"1\";\n"), None);
     }
 
@@ -500,8 +539,8 @@ mod tests {
     #[test]
     fn daemon_reload_failure_propagates() {
         let dir = tempfile::tempdir().unwrap();
-        let runner = FakeRunner::new()
-            .push_response(CommandOutput::from_stderr("Access denied", 1));
+        let runner =
+            FakeRunner::new().push_response(CommandOutput::from_stderr("Access denied", 1));
         let err = mgr_at(&runner, dir.path(), PackageManager::Dnf)
             .set_schedule(&Schedule::Daily)
             .unwrap_err();
@@ -513,9 +552,50 @@ mod tests {
         assert_eq!(schedule_to_calendar(&Schedule::Daily), "daily");
         assert_eq!(schedule_to_calendar(&Schedule::Weekly), "weekly");
         assert_eq!(schedule_to_calendar(&Schedule::Monthly), "monthly");
-        assert_eq!(
-            schedule_to_calendar(&Schedule::Custom("foo".into())),
-            "foo"
+        assert_eq!(schedule_to_calendar(&Schedule::Custom("foo".into())), "foo");
+    }
+
+    /// `sanitize_calendar_expr` rejects characters that could inject systemd
+    /// unit directives (newlines, `[`, NUL, control bytes).
+    #[test]
+    fn sanitize_calendar_expr_rejects_injection_attempts() {
+        assert!(sanitize_calendar_expr("Mon *-*-* 04:00:00").is_ok());
+        for bad in [
+            "Mon\n[Install]\nWantedBy=evil.target",
+            "Mon\r[Install]",
+            "Mon\0X",
+            "Mon\x1b[Install",
+            "[Install]",
+            "Mon\x07",
+        ] {
+            assert!(
+                sanitize_calendar_expr(bad).is_err(),
+                "expected rejection for {bad:?}",
+            );
+        }
+    }
+
+    /// A custom schedule carrying a newline must not write a timer unit.
+    #[test]
+    fn create_systemd_timer_rejects_injected_calendar() {
+        let dir = tempfile::tempdir().unwrap();
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let mgr = mgr_at(&runner, dir.path(), PackageManager::Apt);
+        let err = mgr
+            .set_schedule(&Schedule::Custom(
+                "daily\n[Install]\nWantedBy=evil.target".into(),
+            ))
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("calendar expression"),
+            "expected sanitize error, got {err}"
         );
+        // The timer drop-in must never have been written.
+        let drop_in = dir
+            .path()
+            .join("systemd")
+            .join("toride-updates.timer.d")
+            .join("toride.conf");
+        assert!(!drop_in.exists(), "no unit should be written on rejection");
     }
 }

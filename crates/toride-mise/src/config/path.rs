@@ -52,14 +52,13 @@ impl Mise {
             .map(|mut p| {
                 p.push("mise");
                 p.push("config.toml");
-                Utf8PathBuf::from_path_buf(p).unwrap_or_else(|_| {
-                    Utf8PathBuf::from("~/.config/mise/config.toml")
-                })
+                Utf8PathBuf::from_path_buf(p)
+                    .unwrap_or_else(|_| Utf8PathBuf::from("~/.config/mise/config.toml"))
             })
-            .ok_or_else(|| crate::error::MiseError::Io(
-                std::io::Error::other(
+            .ok_or_else(|| {
+                crate::error::MiseError::Io(std::io::Error::other(
                     "cannot determine config directory: XDG_CONFIG_HOME and HOME are unset",
-                )
-            ))
+                ))
+            })
     }
 }

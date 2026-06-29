@@ -13,9 +13,9 @@ use std::sync::Arc;
 
 use serde::Deserialize;
 
+use crate::CloudProvider;
 use crate::error::{Error, Result};
 use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
-use crate::CloudProvider;
 use toride_runner::{CommandOutput, CommandSpec, DuctRunner, Runner};
 
 // ---------------------------------------------------------------------------
@@ -78,7 +78,7 @@ impl GcpClient {
     /// `sub` is the trailing verb group, e.g. `["list"]` or
     /// `["create", "my-rule"]`. The `--project` flag is appended LAST (by
     /// [`GcpClient::with_project`]) so verb-specific flags stay grouped.
-    fn gcloud(&self, sub: &[&str]) -> CommandSpec {
+    fn gcloud(sub: &[&str]) -> CommandSpec {
         let mut spec = CommandSpec::new("gcloud")
             .arg("compute")
             .arg("firewall-rules");
@@ -113,7 +113,7 @@ impl GcpClient {
     /// or returns a non-zero exit code, or [`Error::ConfigParse`] if the JSON
     /// output cannot be parsed.
     pub fn list_firewall_rules(&self) -> Result<Vec<SecurityGroup>> {
-        let spec = self.with_project(self.gcloud(&["list"]).arg("--format=json"));
+        let spec = self.with_project(Self::gcloud(&["list"]).arg("--format=json"));
         let output = self.run_checked(&spec)?;
         parse_firewall_rules(&output.stdout)
     }
@@ -126,28 +126,20 @@ impl GcpClient {
     ///
     /// Returns [`Error::ProviderNotFound`] if the rule does not exist.
     pub fn get_firewall_rule(&self, name: &str) -> Result<SecurityGroup> {
-        let spec = self.with_project(self.gcloud(&["describe", name]).arg("--format=json"));
-        let output = self
-            .runner
-            .run(&spec)
-            .map_err(|e| map_runner_error(&e, "gcloud"))?;
-        if !output.success {
-            // Only a genuinely missing resource maps to ProviderNotFound.
-            // gcloud prints "Not Found" / "was not found" for those; auth,
-            // network, and other transient failures propagate as real errors
-            // instead of being masked as not-found.
-            let stderr = output.stderr.to_lowercase();
-            if stderr.contains("not found") {
-                return Err(Error::ProviderNotFound(format!(
-                    "firewall rule {name} not found"
-                )));
+        let spec = self.with_project(Self::gcloud(&["describe", name]).arg("--format=json"));
+        // Route through `run_checked` (the only provider path here) so stderr is
+        // scrubbed + capped by the runner before it can reach an error variant.
+        // We then inspect the already-scrubbed message to distinguish a
+        // genuinely missing resource from a transient/auth failure, and never
+        // re-embed raw stderr into the mapped error.
+        let output = self.runner.run_checked(&spec).map_err(|e| match &e {
+            toride_runner::Error::CommandFailed { stderr, .. }
+                if stderr.to_lowercase().contains("not found") =>
+            {
+                Error::ProviderNotFound(format!("firewall rule {name} not found"))
             }
-            return Err(Error::Other(format!(
-                "gcloud describe for {name} failed (exit {:?}): {}",
-                output.exit_code,
-                output.stderr.trim(),
-            )));
-        }
+            _ => map_runner_error(&e, &spec.program),
+        })?;
         let mut group = parse_one_firewall_rule(&output.stdout)?;
         group.name = name.to_string();
         Ok(group)
@@ -170,7 +162,7 @@ impl GcpClient {
         network: &str,
         rules: &[FirewallRule],
     ) -> Result<SecurityGroup> {
-        let spec = build_mutation_spec(self, "create", Some(name), Some(network), rules);
+        let spec = build_mutation_spec(self, "create", Some(name), Some(network), rules)?;
         self.run_checked(&spec)?;
 
         // Reconstruct the group from the inputs; `create` does not reliably
@@ -191,7 +183,7 @@ impl GcpClient {
     ///
     /// Returns [`Error::CommandFailed`] if deletion fails.
     pub fn delete_firewall_rule(&self, name: &str) -> Result<()> {
-        let spec = self.with_project(self.gcloud(&["delete", name]).arg("--quiet"));
+        let spec = self.with_project(Self::gcloud(&["delete", name]).arg("--quiet"));
         self.run_checked(&spec)?;
         Ok(())
     }
@@ -205,7 +197,7 @@ impl GcpClient {
     ///
     /// Returns [`Error::CommandFailed`] if the update fails.
     pub fn update_firewall_rule(&self, name: &str, rules: &[FirewallRule]) -> Result<()> {
-        let spec = build_mutation_spec(self, "update", Some(name), None, rules);
+        let spec = build_mutation_spec(self, "update", Some(name), None, rules)?;
         self.run_checked(&spec)?;
         Ok(())
     }
@@ -220,12 +212,12 @@ fn build_mutation_spec(
     name: Option<&str>,
     network: Option<&str>,
     rules: &[FirewallRule],
-) -> CommandSpec {
+) -> Result<CommandSpec> {
     let mut sub: Vec<&str> = vec![verb];
     if let Some(n) = name {
         sub.push(n);
     }
-    let mut spec = client.gcloud(&sub);
+    let mut spec = GcpClient::gcloud(&sub);
 
     // GCP requires either `--allow` or (`--action` + `--rules`). A single
     // firewall rule can carry multiple protocol/port tuples comma-joined into
@@ -241,6 +233,18 @@ fn build_mutation_spec(
         .filter(|r| r.action == RuleAction::Deny)
         .map(render_protocol_port)
         .collect();
+
+    // A single GCP firewall rule has exactly one action, so mixing Allow and
+    // Deny in one mutation cannot be represented in a single `create`/`update`
+    // call. Reject it explicitly rather than silently dropping the Deny rules
+    // (the previous behaviour lost data without warning).
+    if !allow_tokens.is_empty() && !deny_tokens.is_empty() {
+        return Err(Error::Other(format!(
+            "GCP firewall rule {name_desc} mixes Allow and Deny actions; \
+             create/update accepts only one action per rule",
+            name_desc = name.unwrap_or("")
+        )));
+    }
 
     if !allow_tokens.is_empty() {
         spec = spec.arg("--allow").arg(allow_tokens.join(","));
@@ -262,7 +266,11 @@ fn build_mutation_spec(
     // GCP create/update take a single direction per rule; derive it from the
     // first rule (the domain model groups rules meant to share an entry).
     if let Some(first) = rules.first() {
-        let direction = if first.is_ingress { "INGRESS" } else { "EGRESS" };
+        let direction = if first.is_ingress {
+            "INGRESS"
+        } else {
+            "EGRESS"
+        };
         spec = spec.arg("--direction").arg(direction);
 
         let cidrs: Vec<&str> = rules.iter().map(|r| r.cidr.as_str()).collect();
@@ -277,7 +285,7 @@ fn build_mutation_spec(
         }
     }
 
-    client.with_project(spec)
+    Ok(client.with_project(spec))
 }
 
 // ---------------------------------------------------------------------------
@@ -385,9 +393,11 @@ fn parse_firewall_rules(json: &str) -> Result<Vec<SecurityGroup>> {
         return Ok(Vec::new());
     }
     let raw: Vec<RawFirewall> = serde_json::from_str(trimmed).map_err(|e| {
-        Error::ConfigParse(format!("failed to parse gcloud firewall-rules list output: {e}"))
+        Error::ConfigParse(format!(
+            "failed to parse gcloud firewall-rules list output: {e}"
+        ))
     })?;
-    raw.into_iter().map(raw_to_group).collect()
+    Ok(raw.into_iter().map(raw_to_group).collect::<Vec<_>>())
 }
 
 /// Parse the single JSON object emitted by `gcloud ... describe --format=json`.
@@ -399,16 +409,18 @@ fn parse_one_firewall_rule(json: &str) -> Result<SecurityGroup> {
         ));
     }
     let raw: RawFirewall = serde_json::from_str(trimmed).map_err(|e| {
-        Error::ConfigParse(format!("failed to parse gcloud firewall-rules describe output: {e}"))
+        Error::ConfigParse(format!(
+            "failed to parse gcloud firewall-rules describe output: {e}"
+        ))
     })?;
-    raw_to_group(raw)
+    Ok(raw_to_group(raw))
 }
 
 /// Convert a raw gcloud firewall rule into a [`SecurityGroup`].
 ///
 /// Each `allowed`/`denied` entry fans out into one [`FirewallRule`] per
 /// port (range), since the domain model carries a single port range per rule.
-fn raw_to_group(raw: RawFirewall) -> Result<SecurityGroup> {
+fn raw_to_group(raw: RawFirewall) -> SecurityGroup {
     let RawFirewall {
         id,
         name,
@@ -424,8 +436,7 @@ fn raw_to_group(raw: RawFirewall) -> Result<SecurityGroup> {
 
     let is_ingress = direction
         .as_deref()
-        .map(|d| d.eq_ignore_ascii_case("INGRESS") || d.eq_ignore_ascii_case("IN"))
-        .unwrap_or(true);
+        .is_none_or(|d| d.eq_ignore_ascii_case("INGRESS") || d.eq_ignore_ascii_case("IN"));
 
     // Pick the CIDR list: ingress uses sourceRanges, egress uses
     // destinationRanges. Default to 0.0.0.0/0 only when neither was present
@@ -437,15 +448,31 @@ fn raw_to_group(raw: RawFirewall) -> Result<SecurityGroup> {
     };
 
     let description_default = description.unwrap_or_default();
-    let id_ref = &id;
+    let id_ref = id.as_ref();
     let desc_ref = &description_default;
 
     let mut rules: Vec<FirewallRule> = Vec::new();
     for entry in &allowed {
-        push_rules(&mut rules, entry, id_ref, desc_ref, is_ingress, &cidrs, RuleAction::Allow);
+        push_rules(
+            &mut rules,
+            entry,
+            id_ref,
+            desc_ref,
+            is_ingress,
+            &cidrs,
+            RuleAction::Allow,
+        );
     }
     for entry in &denied {
-        push_rules(&mut rules, entry, id_ref, desc_ref, is_ingress, &cidrs, RuleAction::Deny);
+        push_rules(
+            &mut rules,
+            entry,
+            id_ref,
+            desc_ref,
+            is_ingress,
+            &cidrs,
+            RuleAction::Deny,
+        );
     }
 
     let mut tags = Vec::new();
@@ -455,14 +482,14 @@ fn raw_to_group(raw: RawFirewall) -> Result<SecurityGroup> {
         tags.push(("network".to_string(), network.clone()));
     }
 
-    Ok(SecurityGroup {
+    SecurityGroup {
         id,
         name,
         description: description_default,
         provider: CloudProvider::Gcp,
         rules,
         tags,
-    })
+    }
 }
 
 /// Fan one `allowed`/`denied` entry out into one or more [`FirewallRule`]s.
@@ -470,7 +497,7 @@ fn raw_to_group(raw: RawFirewall) -> Result<SecurityGroup> {
 fn push_rules(
     rules: &mut Vec<FirewallRule>,
     entry: &RawAllow,
-    id: &Option<String>,
+    id: Option<&String>,
     description: &str,
     is_ingress: bool,
     cidrs: &[String],
@@ -484,7 +511,7 @@ fn push_rules(
         // No ports (e.g. icmp, or "all ports" implied). One rule covering all
         // ports -- or no port range for non-port protocols.
         rules.push(FirewallRule {
-            id: id.clone(),
+            id: id.cloned(),
             description: description.to_string(),
             is_ingress,
             protocol,
@@ -498,7 +525,7 @@ fn push_rules(
     for port_token in ports {
         let port_range = parse_port_token(port_token);
         rules.push(FirewallRule {
-            id: id.clone(),
+            id: id.cloned(),
             description: description.to_string(),
             is_ingress,
             protocol,
@@ -554,8 +581,8 @@ mod tests {
     /// --format=json`, sourced from the official gcloud reference and its
     /// documented output shape.
     ///
-    /// Source: https://docs.cloud.google.com/sdk/gcloud/reference/compute/firewall-rules/list
-    /// (field names: allowed[].IPProtocol, allowed[].ports, sourceRanges,
+    /// Source: <https://docs.cloud.google.com/sdk/gcloud/reference/compute/firewall-rules/list>
+    /// (field names: `allowed[].IPProtocol`, `allowed[].ports`, sourceRanges,
     ///  direction, priority, id, name, network, description)
     const LIST_JSON: &str = r#"[
       {
@@ -617,7 +644,7 @@ mod tests {
         "sourceRanges": ["0.0.0.0/0"]
       }"#;
 
-    /// Build a client backed by a FakeRunner shared with the test so recorded
+    /// Build a client backed by a `FakeRunner` shared with the test so recorded
     /// calls can be inspected via the returned `Arc<FakeRunner>`.
     fn client_with(runner: FakeRunner) -> (GcpClient, Arc<FakeRunner>) {
         let shared = Arc::new(runner);
@@ -628,20 +655,17 @@ mod tests {
     #[test]
     fn parses_real_list_json_into_security_groups() {
         // Source: https://docs.cloud.google.com/sdk/gcloud/reference/compute/firewall-rules/list
-        let runner = FakeRunner::new()
-            .strict()
-            .respond(
-                CommandSpec::new("gcloud")
-                    .args([
-                        "compute",
-                        "firewall-rules",
-                        "list",
-                        "--format=json",
-                        "--project",
-                        "my-project",
-                    ]),
-                CommandOutput::from_stdout(LIST_JSON),
-            );
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("gcloud").args([
+                "compute",
+                "firewall-rules",
+                "list",
+                "--format=json",
+                "--project",
+                "my-project",
+            ]),
+            CommandOutput::from_stdout(LIST_JSON),
+        );
         let (client, _) = client_with(runner);
 
         let groups = client.list_firewall_rules().expect("parse ok");
@@ -691,7 +715,9 @@ mod tests {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(DESCRIBE_JSON));
         let (client, _) = client_with(runner);
 
-        let group = client.get_firewall_rule("allow-https").expect("describe ok");
+        let group = client
+            .get_firewall_rule("allow-https")
+            .expect("describe ok");
         assert_eq!(group.name, "allow-https");
         assert_eq!(group.id.as_deref(), Some("42"));
         assert_eq!(group.rules.len(), 1);
@@ -839,6 +865,42 @@ mod tests {
     }
 
     #[test]
+    fn create_with_mixed_allow_and_deny_errors() {
+        // GCP can only represent one action per firewall rule, so mixing
+        // Allow and Deny in a single create/update must surface an error
+        // instead of silently dropping the Deny rules.
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let (client, _) = client_with(runner);
+
+        let allow = FirewallRule {
+            id: None,
+            description: String::new(),
+            is_ingress: true,
+            protocol: Protocol::Tcp,
+            port_range: Some(PortRange::single(22)),
+            cidr: "0.0.0.0/0".to_string(),
+            action: RuleAction::Allow,
+        };
+        let deny = FirewallRule {
+            id: None,
+            description: String::new(),
+            is_ingress: true,
+            protocol: Protocol::Tcp,
+            port_range: Some(PortRange::single(23)),
+            cidr: "0.0.0.0/0".to_string(),
+            action: RuleAction::Deny,
+        };
+
+        let err = client
+            .create_firewall_rule("mixed", "default", &[allow, deny])
+            .expect_err("mixed actions must error");
+        assert!(
+            matches!(err, Error::Other(_)),
+            "expected Other, got {err:?}"
+        );
+    }
+
+    #[test]
     fn delete_builds_exact_command() {
         // Source: `gcloud compute firewall-rules delete NAME` (gcloud
         // reference, delete verb). --quiet skips the interactive prompt.
@@ -956,15 +1018,17 @@ mod tests {
 
     #[test]
     fn render_protocol_port_covers_ranges() {
-        let mk = |proto, pr: Option<PortRange>| render_protocol_port(&FirewallRule {
-            id: None,
-            description: String::new(),
-            is_ingress: true,
-            protocol: proto,
-            port_range: pr,
-            cidr: String::new(),
-            action: RuleAction::Allow,
-        });
+        let mk = |proto, pr: Option<PortRange>| {
+            render_protocol_port(&FirewallRule {
+                id: None,
+                description: String::new(),
+                is_ingress: true,
+                protocol: proto,
+                port_range: pr,
+                cidr: String::new(),
+                action: RuleAction::Allow,
+            })
+        };
         assert_eq!(mk(Protocol::Tcp, Some(PortRange::single(443))), "tcp:443");
         assert_eq!(
             mk(Protocol::Tcp, Some(PortRange::range(8000, 8999))),

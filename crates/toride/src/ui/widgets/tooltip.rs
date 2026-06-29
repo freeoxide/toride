@@ -27,8 +27,8 @@ use ratatui::{
     widgets::{Clear, Paragraph},
 };
 
-use crate::ui::theme::Palette;
 use super::panel::render_panel;
+use crate::ui::theme::Palette;
 
 /// Padding (left + right) and border columns added to content width.
 const H_PAD: u16 = 4;
@@ -40,7 +40,10 @@ const V_PAD: u16 = 2;
 /// Build a tooltip title line: the name in bold accent.
 #[must_use]
 pub fn title_line(name: &str, p: Palette) -> Line<'static> {
-    Line::from(Span::styled(name.to_string(), Style::new().fg(p.accent).bold()))
+    Line::from(Span::styled(
+        name.to_string(),
+        Style::new().fg(p.accent).bold(),
+    ))
 }
 
 /// Build a tooltip title line with a dimmed detail suffix (e.g. CPU brand, disk name).
@@ -53,10 +56,7 @@ pub fn title_line_with_detail(name: &str, detail: &str, p: Palette) -> Line<'sta
     }
     Line::from(vec![
         Span::styled(name.to_string(), Style::new().fg(p.accent).bold()),
-        Span::styled(
-            format!("  \u{b7}  {detail}"),
-            Style::new().fg(p.text_dim),
-        ),
+        Span::styled(format!("  \u{b7}  {detail}"), Style::new().fg(p.text_dim)),
     ])
 }
 
@@ -135,7 +135,9 @@ impl<'a> Tooltip<'a> {
     pub fn render(self, frame: &mut Frame, p: Palette) -> Option<Rect> {
         let max_w = self.lines.iter().map(Line::width).max().unwrap_or(10);
         let w = u16::try_from(max_w).unwrap_or(20).saturating_add(H_PAD);
-        let h = u16::try_from(self.lines.len()).unwrap_or(1).saturating_add(V_PAD);
+        let h = u16::try_from(self.lines.len())
+            .unwrap_or(1)
+            .saturating_add(V_PAD);
 
         let frame_area = frame.area();
         let x = (self.anchor.x + self.anchor.width / 2)
@@ -215,7 +217,11 @@ mod tests {
         let span = &line.spans[0];
         assert_eq!(span.content, "Network");
         assert_eq!(span.style.fg, Some(p.accent));
-        assert!(span.style.add_modifier.contains(ratatui::style::Modifier::BOLD));
+        assert!(
+            span.style
+                .add_modifier
+                .contains(ratatui::style::Modifier::BOLD)
+        );
     }
 
     #[test]

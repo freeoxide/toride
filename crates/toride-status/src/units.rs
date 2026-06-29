@@ -52,23 +52,38 @@ impl Hertz {
 
     #[must_use]
     pub fn as_mhz(self) -> f64 {
-        self.0 as f64 / 1_000_000.0
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "frequency in Hz fits f64 mantissa for all realistic values"
+        )]
+        let hz = self.0 as f64;
+        hz / 1_000_000.0
     }
 
     #[must_use]
     pub fn as_ghz(self) -> f64 {
-        self.0 as f64 / 1_000_000_000.0
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "frequency in Hz fits f64 mantissa for all realistic values"
+        )]
+        let hz = self.0 as f64;
+        hz / 1_000_000_000.0
     }
 }
 
 impl fmt::Display for Hertz {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "frequency in Hz fits f64 mantissa for all realistic values"
+        )]
+        let hz = self.0 as f64;
         if self.0 >= 1_000_000_000 {
-            write!(f, "{:.2} GHz", self.0 as f64 / 1_000_000_000.0)
+            write!(f, "{:.2} GHz", hz / 1_000_000_000.0)
         } else if self.0 >= 1_000_000 {
-            write!(f, "{:.1} MHz", self.0 as f64 / 1_000_000.0)
+            write!(f, "{:.1} MHz", hz / 1_000_000.0)
         } else if self.0 >= 1_000 {
-            write!(f, "{:.1} kHz", self.0 as f64 / 1_000.0)
+            write!(f, "{:.1} kHz", hz / 1_000.0)
         } else {
             write!(f, "{} Hz", self.0)
         }
@@ -194,25 +209,41 @@ const GB: u64 = 1024 * MB;
 const TB: u64 = 1024 * GB;
 const PB: u64 = 1024 * TB;
 
+const KB_F: f64 = 1024.0;
+const MB_F: f64 = 1024.0 * 1024.0;
+const GB_F: f64 = 1024.0 * 1024.0 * 1024.0;
+const TB_F: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0;
+const PB_F: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0;
+
 /// Format bytes as human-readable string.
 #[must_use]
 pub fn format_bytes(bytes: u64) -> String {
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "byte counts fit f64 mantissa for display purposes"
+    )]
+    let bytes_f = bytes as f64;
     if bytes >= PB {
-        format!("{:.2} PiB", bytes as f64 / PB as f64)
+        format!("{:.2} PiB", bytes_f / PB_F)
     } else if bytes >= TB {
-        format!("{:.2} TiB", bytes as f64 / TB as f64)
+        format!("{:.2} TiB", bytes_f / TB_F)
     } else if bytes >= GB {
-        format!("{:.2} GiB", bytes as f64 / GB as f64)
+        format!("{:.2} GiB", bytes_f / GB_F)
     } else if bytes >= MB {
-        format!("{:.1} MiB", bytes as f64 / MB as f64)
+        format!("{:.1} MiB", bytes_f / MB_F)
     } else if bytes >= KB {
-        format!("{:.1} KiB", bytes as f64 / KB as f64)
+        format!("{:.1} KiB", bytes_f / KB_F)
     } else {
         format!("{bytes} B")
     }
 }
 
 /// Write bytes as human-readable to a formatter.
+///
+/// # Errors
+///
+/// Returns the underlying [`fmt::Error`] if the formatter fails to accept the
+/// written string (e.g. when the destination is full).
 pub fn write_bytes(f: &mut fmt::Formatter<'_>, bytes: u64) -> fmt::Result {
     write!(f, "{}", format_bytes(bytes))
 }
@@ -237,6 +268,11 @@ pub fn format_duration(secs: u64) -> String {
 }
 
 /// Write duration to a formatter.
+///
+/// # Errors
+///
+/// Returns the underlying [`fmt::Error`] if the formatter fails to accept the
+/// written string.
 pub fn write_duration(f: &mut fmt::Formatter<'_>, secs: u64) -> fmt::Result {
     write!(f, "{}", format_duration(secs))
 }
@@ -251,9 +287,9 @@ mod tests {
         assert_eq!(format!("{}", Bytes(1023)), "1023 B");
         assert_eq!(format!("{}", Bytes(1024)), "1.0 KiB");
         assert_eq!(format!("{}", Bytes(1536)), "1.5 KiB");
-        assert_eq!(format!("{}", Bytes(1048576)), "1.0 MiB");
-        assert_eq!(format!("{}", Bytes(1073741824)), "1.00 GiB");
-        assert_eq!(format!("{}", Bytes(1099511627776)), "1.00 TiB");
+        assert_eq!(format!("{}", Bytes(1_048_576)), "1.0 MiB");
+        assert_eq!(format!("{}", Bytes(1_073_741_824)), "1.00 GiB");
+        assert_eq!(format!("{}", Bytes(1_099_511_627_776)), "1.00 TiB");
     }
 
     #[test]
@@ -264,23 +300,23 @@ mod tests {
 
     #[test]
     fn bytes_human_readable() {
-        assert_eq!(Bytes(1073741824).human_readable(), "1.00 GiB");
+        assert_eq!(Bytes(1_073_741_824).human_readable(), "1.00 GiB");
     }
 
     #[test]
     fn hertz_display() {
         assert_eq!(format!("{}", Hertz(0)), "0 Hz");
         assert_eq!(format!("{}", Hertz(1000)), "1.0 kHz");
-        assert_eq!(format!("{}", Hertz(3200000000)), "3.20 GHz");
-        assert_eq!(format!("{}", Hertz(2400000000)), "2.40 GHz");
+        assert_eq!(format!("{}", Hertz(3_200_000_000)), "3.20 GHz");
+        assert_eq!(format!("{}", Hertz(2_400_000_000)), "2.40 GHz");
     }
 
     #[test]
     fn hertz_conversions() {
-        let h = Hertz(3200000000);
+        let h = Hertz(3_200_000_000);
         assert!((h.as_ghz() - 3.2).abs() < 0.01);
         assert!((h.as_mhz() - 3200.0).abs() < 0.01);
-        assert_eq!(h.as_hz(), 3200000000);
+        assert_eq!(h.as_hz(), 3_200_000_000);
     }
 
     #[test]

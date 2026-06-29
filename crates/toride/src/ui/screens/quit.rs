@@ -11,7 +11,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::Viewport;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{InteractiveModal, ModalEvent};
@@ -28,7 +28,14 @@ pub struct QuitModal {
     modal: InteractiveModal<Action>,
 }
 
+impl Default for QuitModal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuitModal {
+    /// Construct a new quit confirmation modal with yes/no buttons.
     #[must_use]
     pub fn new() -> Self {
         let buttons = ButtonRow::new(
@@ -72,27 +79,28 @@ impl QuitModal {
 
     /// Render the quit modal overlay.
     pub fn render(&mut self, frame: &mut ratatui::Frame, p: Palette) {
-        self.modal.render_with_extracted_buttons(frame, p, |frame, area, buttons| {
-            let [_, msg_area, _, keys_area, _] = Layout::vertical([
-                Constraint::Fill(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Fill(1),
-            ])
-            .areas(area);
+        self.modal
+            .render_with_extracted_buttons(frame, p, |frame, area, buttons| {
+                let [_, msg_area, _, keys_area, _] = Layout::vertical([
+                    Constraint::Fill(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Length(1),
+                    Constraint::Fill(1),
+                ])
+                .areas(area);
 
-            frame.render_widget(
-                Paragraph::new("Are you sure you want to quit?").centered(),
-                msg_area,
-            );
+                frame.render_widget(
+                    Paragraph::new("Are you sure you want to quit?").centered(),
+                    msg_area,
+                );
 
-            if let Some(btns) = buttons {
-                let viewport = Viewport::from_area(frame.area());
-                let buf = frame.buffer_mut();
-                btns.render(buf, keys_area, p, viewport);
-            }
-        });
+                if let Some(btns) = buttons {
+                    let viewport = Viewport::from_area(frame.area());
+                    let buf = frame.buffer_mut();
+                    btns.render(buf, keys_area, p, viewport);
+                }
+            });
     }
 }
 
@@ -117,7 +125,10 @@ mod tests {
     #[test]
     fn handle_key_dismiss_on_n() {
         let mut modal = QuitModal::new();
-        assert_eq!(modal.handle_key(KeyCode::Char('n')), Some(Action::DismissQuit));
+        assert_eq!(
+            modal.handle_key(KeyCode::Char('n')),
+            Some(Action::DismissQuit)
+        );
     }
 
     #[test]

@@ -100,14 +100,9 @@ pub fn inspect_docker<R: CommandRunner + ?Sized>(runner: &R) -> DockerInspection
 }
 
 /// Detect Docker's firewall backend by reading daemon.json.
-fn detect_docker_firewall_backend<R: CommandRunner + ?Sized>(
-    runner: &R,
-) -> DockerFirewallBackend {
+fn detect_docker_firewall_backend<R: CommandRunner + ?Sized>(runner: &R) -> DockerFirewallBackend {
     // Check daemon.json for firewall-backend setting
-    let daemon_json_paths = [
-        "/etc/docker/daemon.json",
-        "/etc/docker/daemon.jsonc",
-    ];
+    let daemon_json_paths = ["/etc/docker/daemon.json", "/etc/docker/daemon.jsonc"];
 
     for path in &daemon_json_paths {
         if let Ok(content) = std::fs::read_to_string(path) {
@@ -277,7 +272,8 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
         severity: Severity::Info,
         title: "Docker is installed on this system".into(),
         detail: "Docker is detected. Docker may bypass UFW rules when publishing ports. \
-                 Review Docker firewall configuration carefully.".into(),
+                 Review Docker firewall configuration carefully."
+            .into(),
         fix: None,
     });
 
@@ -290,10 +286,12 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
                 title: "Docker uses iptables backend".into(),
                 detail: "Docker is managing iptables rules directly. Published container ports \
                          may bypass UFW rules because Docker inserts its own iptables chains \
-                         (DOCKER-USER, DOCKER, etc.) before UFW's rules.".into(),
+                         (DOCKER-USER, DOCKER, etc.) before UFW's rules."
+                    .into(),
                 fix: Some(
                     "Consider using Docker's --iptables=false with manual UFW rules, \
-                     or use the DOCKER-USER chain for custom firewall rules.".into(),
+                     or use the DOCKER-USER chain for custom firewall rules."
+                        .into(),
                 ),
             });
         }
@@ -303,7 +301,8 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
                 severity: Severity::Info,
                 title: "Docker uses nftables backend".into(),
                 detail: "Docker is configured to use the nftables backend. This is the newer \
-                         approach and may interact differently with UFW.".into(),
+                         approach and may interact differently with UFW."
+                    .into(),
                 fix: None,
             });
         }
@@ -313,9 +312,11 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
                 severity: Severity::Warning,
                 title: "Docker firewall management is disabled".into(),
                 detail: "Docker's iptables management is disabled. Bridge networking may not \
-                         function correctly unless replacement rules are in place.".into(),
+                         function correctly unless replacement rules are in place."
+                    .into(),
                 fix: Some(
-                    "Ensure UFW or manual iptables rules cover Docker's bridge networking needs.".into(),
+                    "Ensure UFW or manual iptables rules cover Docker's bridge networking needs."
+                        .into(),
                 ),
             });
         }
@@ -325,7 +326,8 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
                 severity: Severity::Info,
                 title: "Could not determine Docker firewall backend".into(),
                 detail: "The Docker firewall backend could not be determined. \
-                         Docker is likely using the default iptables backend.".into(),
+                         Docker is likely using the default iptables backend."
+                    .into(),
                 fix: None,
             });
         }
@@ -341,7 +343,12 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
     if !public_ports.is_empty() {
         let port_list: String = public_ports
             .iter()
-            .map(|p| format!("{}:{}->{} ({} on {})", p.host_ip, p.host_port, p.container_port, p.protocol, p.host_ip))
+            .map(|p| {
+                format!(
+                    "{}:{}->{} ({} on {})",
+                    p.host_ip, p.host_port, p.container_port, p.protocol, p.host_ip
+                )
+            })
             .collect::<Vec<_>>()
             .join(", ");
 
@@ -355,7 +362,8 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
             ),
             fix: Some(
                 "Bind containers to 127.0.0.1 when behind a reverse proxy: \
-                 docker run -p 127.0.0.1:3000:3000 ...".into(),
+                 docker run -p 127.0.0.1:3000:3000 ..."
+                    .into(),
             ),
         });
     }
@@ -367,10 +375,12 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
             severity: Severity::Info,
             title: "Traefik reverse proxy detected".into(),
             detail: "Traefik appears to be installed. Ensure only ports 80/443 are \
-                     exposed publicly and app containers bind to internal Docker networks.".into(),
+                     exposed publicly and app containers bind to internal Docker networks."
+                .into(),
             fix: Some(
                 "Use Traefik's Docker provider with internal networks. \
-                 Bind app containers to 127.0.0.1 or internal Docker networks only.".into(),
+                 Bind app containers to 127.0.0.1 or internal Docker networks only."
+                    .into(),
             ),
         });
     }
@@ -382,11 +392,13 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
             severity: Severity::Warning,
             title: "Dokploy installation detected".into(),
             detail: "Dokploy manages Docker deployments with Traefik. Published ports from \
-                     Dokploy-managed containers may bypass UFW rules.".into(),
+                     Dokploy-managed containers may bypass UFW rules."
+                .into(),
             fix: Some(
                 "Bind apps to internal Docker networks. Expose only Traefik on 80/443. \
                  Bind admin dashboards to localhost or Tailscale. \
-                 Use provider firewall where possible.".into(),
+                 Use provider firewall where possible."
+                    .into(),
             ),
         });
     }
@@ -399,10 +411,12 @@ pub fn check_docker<R: CommandRunner + ?Sized>(runner: &R) -> Vec<Finding> {
             title: "Docker iptables management is enabled".into(),
             detail: "Docker is managing iptables rules. UFW rules may not protect published \
                      Docker ports as expected. Docker adds its own DOCKER chain that takes \
-                     priority over UFW's rules in the FORWARD chain.".into(),
+                     priority over UFW's rules in the FORWARD chain."
+                .into(),
             fix: Some(
                 "Use the DOCKER-USER chain for custom rules, or set --iptables=false in \
-                 /etc/docker/daemon.json and manage Docker networking rules manually.".into(),
+                 /etc/docker/daemon.json and manage Docker networking rules manually."
+                    .into(),
             ),
         });
     }
@@ -439,10 +453,12 @@ pub fn check_reverse_proxy(runner: &dyn CommandRunner) -> Vec<Finding> {
         title: format!("Reverse proxy(es) detected: {proxy_list}"),
         detail: "Reverse proxy software is installed. Ensure only ports 80/443 are \
                  exposed publicly and application ports are bound to localhost or \
-                 internal networks.".into(),
+                 internal networks."
+            .into(),
         fix: Some(
             "Only expose 80/443 publicly via UFW. Bind application ports to 127.0.0.1 \
-             or Docker internal networks behind the reverse proxy.".into(),
+             or Docker internal networks behind the reverse proxy."
+                .into(),
         ),
     });
 
@@ -487,7 +503,8 @@ pub fn check_routing(_runner: &dyn CommandRunner) -> Vec<Finding> {
             severity: Severity::Info,
             title: "IPv4 forwarding is enabled".into(),
             detail: "IPv4 packet forwarding is enabled. Ensure UFW route rules are \
-                     configured correctly and DEFAULT_FORWARD_POLICY is appropriate.".into(),
+                     configured correctly and DEFAULT_FORWARD_POLICY is appropriate."
+                .into(),
             fix: None,
         });
     }
@@ -498,7 +515,8 @@ pub fn check_routing(_runner: &dyn CommandRunner) -> Vec<Finding> {
             severity: Severity::Info,
             title: "IPv6 forwarding is enabled".into(),
             detail: "IPv6 packet forwarding is enabled. Ensure UFW route rules are \
-                     configured correctly for IPv6.".into(),
+                     configured correctly for IPv6."
+                .into(),
             fix: None,
         });
     }
@@ -514,12 +532,15 @@ pub fn check_routing(_runner: &dyn CommandRunner) -> Vec<Finding> {
                         findings.push(Finding {
                             id: "routing:forward-policy:accept",
                             severity: Severity::Warning,
-                            title: "DEFAULT_FORWARD_POLICY is ACCEPT with forwarding enabled".into(),
+                            title: "DEFAULT_FORWARD_POLICY is ACCEPT with forwarding enabled"
+                                .into(),
                             detail: "IPv4 forwarding is enabled and the default forward policy \
-                                     is ACCEPT. This may allow unintended forwarded traffic.".into(),
+                                     is ACCEPT. This may allow unintended forwarded traffic."
+                                .into(),
                             fix: Some(
                                 "Set DEFAULT_FORWARD_POLICY=\"DROP\" in /etc/default/ufw and \
-                                 use explicit route rules for allowed forwarding.".into(),
+                                 use explicit route rules for allowed forwarding."
+                                    .into(),
                             ),
                         });
                     }
@@ -530,9 +551,11 @@ pub fn check_routing(_runner: &dyn CommandRunner) -> Vec<Finding> {
                         severity: Severity::Info,
                         title: "DEFAULT_FORWARD_POLICY not set with forwarding enabled".into(),
                         detail: "IPv4 forwarding is enabled but DEFAULT_FORWARD_POLICY is not \
-                                 explicitly set in /etc/default/ufw.".into(),
+                                 explicitly set in /etc/default/ufw."
+                            .into(),
                         fix: Some(
-                            "Consider setting DEFAULT_FORWARD_POLICY=\"DROP\" in /etc/default/ufw.".into(),
+                            "Consider setting DEFAULT_FORWARD_POLICY=\"DROP\" in /etc/default/ufw."
+                                .into(),
                         ),
                     });
                 }

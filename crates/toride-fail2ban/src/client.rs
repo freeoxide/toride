@@ -21,7 +21,7 @@
 
 use std::path::PathBuf;
 
-use crate::command::{find_binary, CommandOutput, Runner};
+use crate::command::{CommandOutput, Runner, find_binary};
 use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -87,13 +87,7 @@ impl<'a> Fail2BanClient<'a> {
     pub fn version(&self) -> Result<String> {
         let out = self.run_cmd(&["--version"])?;
         // Best-effort: return the first non-empty line, trimmed.
-        let line = out
-            .stdout
-            .lines()
-            .next()
-            .unwrap_or("")
-            .trim()
-            .to_string();
+        let line = out.stdout.lines().next().unwrap_or("").trim().to_string();
         Ok(line)
     }
 
@@ -289,13 +283,12 @@ impl<'a> Fail2BanClient<'a> {
     /// Centralises binary resolution, logging, and error handling so every
     /// public method stays minimal.
     fn run_cmd(&self, args: &[&str]) -> Result<CommandOutput> {
-        let program = self
-            .binary
-            .to_str()
-            .ok_or_else(|| Error::CommandFailed(format!(
+        let program = self.binary.to_str().ok_or_else(|| {
+            Error::CommandFailed(format!(
                 "binary path is not valid UTF-8: {}",
                 self.binary.display()
-            )))?;
+            ))
+        })?;
 
         tracing::debug!(
             binary = %self.binary.display(),

@@ -13,7 +13,10 @@ fn render_rule_args_should_produce_allow_22_tcp() {
         .build_unchecked();
 
     let args = render_rule_args(&spec);
-    assert_eq!(args, vec!["allow", "proto", "tcp", "to", "any", "port", "22"]);
+    assert_eq!(
+        args,
+        vec!["allow", "proto", "tcp", "to", "any", "port", "22"]
+    );
 }
 
 #[test]
@@ -60,8 +63,20 @@ fn render_rule_args_should_produce_full_syntax() {
     assert_eq!(
         args,
         vec![
-            "allow", "in", "on", "eth0", "proto", "tcp", "from", "10.0.0.0/8", "to",
-            "any", "port", "443", "comment", "managed:web"
+            "allow",
+            "in",
+            "on",
+            "eth0",
+            "proto",
+            "tcp",
+            "from",
+            "10.0.0.0/8",
+            "to",
+            "any",
+            "port",
+            "443",
+            "comment",
+            "managed:web"
         ]
     );
 }
@@ -191,8 +206,20 @@ fn render_route_rule_args_should_include_proto_and_port() {
     assert_eq!(
         args,
         vec![
-            "route", "allow", "in", "on", "eth0", "out", "on", "eth1", "proto", "tcp",
-            "to", "12.34.45.67", "port", "80"
+            "route",
+            "allow",
+            "in",
+            "on",
+            "eth0",
+            "out",
+            "on",
+            "eth1",
+            "proto",
+            "tcp",
+            "to",
+            "12.34.45.67",
+            "port",
+            "80"
         ]
     );
 }
@@ -339,8 +366,18 @@ fn render_rule_args_limit_with_direction_and_interface() {
     assert_eq!(
         args,
         vec![
-            "limit", "in", "on", "eth0", "proto", "tcp", "to", "any", "port", "22",
-            "comment", "ufw-kit:ssh"
+            "limit",
+            "in",
+            "on",
+            "eth0",
+            "proto",
+            "tcp",
+            "to",
+            "any",
+            "port",
+            "22",
+            "comment",
+            "ufw-kit:ssh"
         ]
     );
 }

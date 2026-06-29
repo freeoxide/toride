@@ -25,7 +25,7 @@ impl App {
         if self.help_modal.is_visible() {
             match key.code {
                 KeyCode::Char('q') => return Some(Action::Quit),
-                KeyCode::Char('b') | KeyCode::Char('?') | KeyCode::Esc => {
+                KeyCode::Char('b' | '?') | KeyCode::Esc => {
                     self.help_modal.close();
                     return Some(Action::CloseHelp);
                 }
@@ -50,7 +50,7 @@ impl App {
             // terminals that collapse Ctrl+Shift+A onto Ctrl+A won't deliver
             // SHIFT, so this stays inert there — fall back to TORIDE_ANIM / config.
             if key.modifiers.contains(KeyModifiers::SHIFT)
-                && matches!(key.code, KeyCode::Char('a') | KeyCode::Char('A'))
+                && matches!(key.code, KeyCode::Char('a' | 'A'))
             {
                 return Some(Action::ToggleAnimations);
             }
@@ -68,10 +68,11 @@ impl App {
         // On all other screens, `q` shows the confirmation modal — UNLESS a
         // screen modal (form/confirm) is open, in which case let the screen
         // handle the key so the user can type 'q' into form fields.
-        if key.code == KeyCode::Char('q') && self.nav.current() != Screen::Welcome {
-            if !self.current_screen().has_modal() {
-                return Some(Action::ConfirmQuit);
-            }
+        if key.code == KeyCode::Char('q')
+            && self.nav.current() != Screen::Welcome
+            && !self.current_screen().has_modal()
+        {
+            return Some(Action::ConfirmQuit);
         }
 
         self.current_screen().handle_key(key.code)

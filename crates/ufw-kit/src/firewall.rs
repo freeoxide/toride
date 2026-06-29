@@ -102,25 +102,31 @@ pub fn inspect_ip6tables_save(runner: &dyn CommandRunner) -> Result<FirewallInsp
 pub fn inspect_all(runner: &dyn CommandRunner) -> Vec<FirewallInspection> {
     let mut results = Vec::new();
     if has_nft(runner) {
-        results.push(inspect_nftable_ruleset(runner).unwrap_or_else(|_| FirewallInspection {
-            tool: "nft".into(),
-            raw_output: "inspection failed".into(),
-            success: false,
-        }));
+        results.push(
+            inspect_nftable_ruleset(runner).unwrap_or_else(|_| FirewallInspection {
+                tool: "nft".into(),
+                raw_output: "inspection failed".into(),
+                success: false,
+            }),
+        );
     }
     if has_iptables(runner) {
-        results.push(inspect_iptables_save(runner).unwrap_or_else(|_| FirewallInspection {
-            tool: "iptables-save".into(),
-            raw_output: "inspection failed".into(),
-            success: false,
-        }));
+        results.push(
+            inspect_iptables_save(runner).unwrap_or_else(|_| FirewallInspection {
+                tool: "iptables-save".into(),
+                raw_output: "inspection failed".into(),
+                success: false,
+            }),
+        );
     }
     if has_ip6tables(runner) {
-        results.push(inspect_ip6tables_save(runner).unwrap_or_else(|_| FirewallInspection {
-            tool: "ip6tables-save".into(),
-            raw_output: "inspection failed".into(),
-            success: false,
-        }));
+        results.push(
+            inspect_ip6tables_save(runner).unwrap_or_else(|_| FirewallInspection {
+                tool: "ip6tables-save".into(),
+                raw_output: "inspection failed".into(),
+                success: false,
+            }),
+        );
     }
     results
 }

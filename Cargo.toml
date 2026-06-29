@@ -1,5 +1,6 @@
 [workspace]
 members = ["crates/*", "crates/toride-ssh/crates/*"]
+default-members = ["crates/toride"]
 resolver = "3"
 
 [workspace.dependencies]

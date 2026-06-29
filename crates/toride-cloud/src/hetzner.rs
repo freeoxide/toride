@@ -17,9 +17,9 @@
 //!
 //! Source: <https://docs.hetzner.cloud/reference/cloud#firewalls>
 
+use crate::CloudProvider;
 use crate::error::{Error, Result};
 use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
-use crate::CloudProvider;
 use std::sync::Arc;
 use toride_runner::{CommandOutput, CommandSpec, DuctRunner, Runner};
 
@@ -186,10 +186,7 @@ impl HetznerClient {
     ///
     /// Returns [`Error::CommandFailed`] if deletion fails.
     pub fn delete_firewall(&self, name_or_id: &str) -> Result<()> {
-        let cmd = self
-            .firewall_cmd("delete")
-            .arg("--yes")
-            .arg(name_or_id);
+        let cmd = self.firewall_cmd("delete").arg("--yes").arg(name_or_id);
         self.run(&cmd)?;
         Ok(())
     }
@@ -389,10 +386,19 @@ fn protocol_number(s: &str) -> u8 {
 }
 
 /// Parse a Hetzner port string (`"22"` or `"8000-8080"`) into a [`PortRange`].
+///
+/// A reversed pair (`"8080-8000"`) is normalized by swapping so the returned
+/// range always satisfies `start <= end`, matching the inclusive-range
+/// contract of [`PortRange`].
 fn parse_port_range(s: &str) -> Option<PortRange> {
     let (start_s, end_s) = s.split_once('-').unwrap_or((s, s));
     let start = start_s.parse::<u16>().ok()?;
     let end = end_s.parse::<u16>().ok()?;
+    let (start, end) = if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    };
     Some(PortRange { start, end })
 }
 
@@ -402,7 +408,7 @@ fn parse_port_range(s: &str) -> Option<PortRange> {
 /// destination_ips, port?, description?}`. Egress rules emit CIDRs under
 /// `destination_ips`; ingress under `source_ips`.
 fn rules_payload(rules: &[FirewallRule]) -> String {
-    use serde_json::{json, Value};
+    use serde_json::{Value, json};
     let arr: Vec<Value> = rules
         .iter()
         .map(|r| {
@@ -456,7 +462,7 @@ mod tests {
 
     /// Real `hcloud firewall list -o=json` output shape (single firewall with
     /// one ingress SSH rule), sourced from the Hetzner Cloud CLI test fixtures
-    /// and the API reference at https://docs.hetzner.cloud/reference/cloud#firewalls
+    /// and the API reference at <https://docs.hetzner.cloud/reference/cloud#firewalls>
     const LIST_JSON: &str = r#"[
       {
         "id": 123,
@@ -488,7 +494,7 @@ mod tests {
 
     /// Real `hcloud firewall create --rules-file -` response shape, sourced
     /// from the hcloud CLI test fixture `firewall/testdata/create_response.json`
-    /// (https://github.com/hetznercloud/cli). The CLI wraps the Firewall object
+    /// (<https://github.com/hetznercloud/cli>). The CLI wraps the Firewall object
     /// in `{"firewall": {...}}`.
     const CREATE_JSON: &str = r#"{
       "firewall": {
@@ -512,7 +518,7 @@ mod tests {
       }
     }"#;
 
-    /// Build a client over a FakeRunner that returns `stdout` for any call.
+    /// Build a client over a `FakeRunner` that returns `stdout` for any call.
     /// Returns a shared `Arc<FakeRunner>` pointing at the same runner the
     /// client uses, so the test can inspect recorded calls afterwards.
     fn client_returning(stdout: &str) -> (HetznerClient, Arc<FakeRunner>) {
@@ -693,8 +699,8 @@ mod tests {
     }
 
     /// Build a `FakeRunner` pre-configured so that the internal `describe`
-    /// call (issued by `add_rules`/`remove_rules`) returns a single Firewall
-    /// object — the first firewall of LIST_JSON — while other calls fall
+    /// call (issued by `add_rules`/`remove_rules`) returns a single `Firewall`
+    /// object — the first firewall of `LIST_JSON` — while other calls fall
     /// through to a successful empty response. The returned runner is ready to
     /// share with the client via `with_arc_runner`.
     fn runner_with_describe_single() -> Arc<FakeRunner> {
@@ -799,9 +805,7 @@ mod tests {
     fn apply_to_server_builds_apply_to_resource_command() {
         // Source: hcloud CLI `firewall apply-to-resource --type server --server <server> <firewall>`
         let (client, runner) = client_returning("");
-        client
-            .apply_to_server("fw", "web-1")
-            .expect("apply ok");
+        client.apply_to_server("fw", "web-1").expect("apply ok");
         runner.assert_called_with(
             &CommandSpec::new("hcloud")
                 .arg("firewall")
@@ -818,9 +822,7 @@ mod tests {
     #[test]
     fn remove_from_server_builds_remove_from_resource_command() {
         let (client, runner) = client_returning("");
-        client
-            .remove_from_server("fw", "web-1")
-            .expect("remove ok");
+        client.remove_from_server("fw", "web-1").expect("remove ok");
         runner.assert_called_with(
             &CommandSpec::new("hcloud")
                 .arg("firewall")
@@ -857,25 +859,42 @@ mod tests {
     }
 
     #[test]
+    fn parse_port_range_normalizes_reversed_bounds() {
+        // A reversed pair must be swapped so start <= end, matching the
+        // inclusive-range contract of PortRange.
+        assert_eq!(
+            parse_port_range("8080-8000"),
+            Some(PortRange {
+                start: 8000,
+                end: 8080
+            })
+        );
+        // Already-ordered ranges and single ports are unchanged.
+        assert_eq!(
+            parse_port_range("8000-8080"),
+            Some(PortRange::range(8000, 8080))
+        );
+        assert_eq!(parse_port_range("22"), Some(PortRange::single(22)));
+    }
+
+    #[test]
     fn command_failure_propagates() {
         // A failed `delete` must surface as a cloud Error::CommandFailed
         // (the runner's CommandFailed maps 1:1 onto the cloud variant).
-        let runner = FakeRunner::new()
-            .strict()
-            .respond_err(
-                CommandSpec::new("hcloud")
-                    .arg("firewall")
-                    .arg("delete")
-                    .arg("-o=json")
-                    .arg("--yes")
-                    .arg("nope"),
-                toride_runner::Error::CommandFailed {
-                    program: "hcloud".into(),
-                    args: String::new(),
-                    exit_code: Some(1),
-                    stderr: "firewall not found".into(),
-                },
-            );
+        let runner = FakeRunner::new().strict().respond_err(
+            CommandSpec::new("hcloud")
+                .arg("firewall")
+                .arg("delete")
+                .arg("-o=json")
+                .arg("--yes")
+                .arg("nope"),
+            toride_runner::Error::CommandFailed {
+                program: "hcloud".into(),
+                args: String::new(),
+                exit_code: Some(1),
+                stderr: "firewall not found".into(),
+            },
+        );
         let client = HetznerClient::new().with_runner(runner);
         let err = client.delete_firewall("nope").unwrap_err();
         match err {

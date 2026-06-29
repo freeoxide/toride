@@ -5,6 +5,8 @@
 
 use crate::spec::{PeerSpec, WireguardSpec};
 
+use std::fmt::Write as _;
+
 // ---------------------------------------------------------------------------
 // render_interface_conf
 // ---------------------------------------------------------------------------
@@ -34,18 +36,18 @@ pub fn render_interface_conf(spec: &WireguardSpec) -> String {
 
     // [Interface] section.
     out.push_str("[Interface]\n");
-    out.push_str(&format!("Address = {}\n", spec.address));
+    let _ = writeln!(out, "Address = {}", spec.address);
 
     if spec.listen_port != 0 {
-        out.push_str(&format!("ListenPort = {}\n", spec.listen_port));
+        let _ = writeln!(out, "ListenPort = {}", spec.listen_port);
     }
 
     if let Some(ref key) = spec.private_key {
-        out.push_str(&format!("PrivateKey = {key}\n"));
+        let _ = writeln!(out, "PrivateKey = {key}");
     }
 
     if let Some(ref dns) = spec.dns {
-        out.push_str(&format!("DNS = {dns}\n"));
+        let _ = writeln!(out, "DNS = {dns}");
     }
 
     // [Peer] sections.
@@ -69,18 +71,18 @@ pub fn render_peer_entry(peer: &PeerSpec) -> String {
     let mut out = String::new();
 
     out.push_str("[Peer]\n");
-    out.push_str(&format!("PublicKey = {}\n", peer.public_key));
+    let _ = writeln!(out, "PublicKey = {}", peer.public_key);
 
     if !peer.allowed_ips.is_empty() {
-        out.push_str(&format!("AllowedIPs = {}\n", peer.allowed_ips.join(", ")));
+        let _ = writeln!(out, "AllowedIPs = {}", peer.allowed_ips.join(", "));
     }
 
     if let Some(ref endpoint) = peer.endpoint {
-        out.push_str(&format!("Endpoint = {endpoint}\n"));
+        let _ = writeln!(out, "Endpoint = {endpoint}");
     }
 
     if let Some(keepalive) = peer.persistent_keepalive {
-        out.push_str(&format!("PersistentKeepalive = {keepalive}\n"));
+        let _ = writeln!(out, "PersistentKeepalive = {keepalive}");
     }
 
     out

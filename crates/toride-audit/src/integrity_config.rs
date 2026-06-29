@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 
-use crate::{Error, Result};
+use crate::Result;
 
 // ---------------------------------------------------------------------------
 // AideConfig
@@ -99,8 +99,8 @@ impl AideConfig {
             }
 
             // Handle path selections.
-            if trimmed.starts_with('!') {
-                config.negations.push(trimmed[1..].trim().to_owned());
+            if let Some(stripped) = trimmed.strip_prefix('!') {
+                config.negations.push(stripped.trim().to_owned());
             } else if trimmed.starts_with('/') {
                 if let Some((path, groups)) = trimmed.split_once(' ') {
                     config.selections.push(AideSelection {
@@ -158,8 +158,5 @@ impl AideConfig {
 
 /// Strip a prefix like `file:` from a configuration value.
 fn strip_prefix(value: &str) -> String {
-    value
-        .strip_prefix("file:")
-        .unwrap_or(value)
-        .to_owned()
+    value.strip_prefix("file:").unwrap_or(value).to_owned()
 }

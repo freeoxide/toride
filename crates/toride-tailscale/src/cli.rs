@@ -14,10 +14,10 @@ use std::sync::Arc;
 
 use clap::Parser;
 
+use crate::Result;
+use crate::TailscaleClient;
 use crate::doctor::{Doctor, DoctorReport, DoctorScope};
 use crate::service::TailscaleService;
-use crate::TailscaleClient;
-use crate::Result;
 
 // ---------------------------------------------------------------------------
 // TailscaleArgs
@@ -110,7 +110,11 @@ impl TailscaleArgs {
         writer: &mut W,
     ) -> Result<()> {
         let cmd = &self.command;
-        tracing::debug!(?cmd, dry_run = self.dry_run, "dispatching tailscale command");
+        tracing::debug!(
+            ?cmd,
+            dry_run = self.dry_run,
+            "dispatching tailscale command"
+        );
         match cmd {
             TailscaleCommand::Status => {
                 let report = client.status_report().await?;
@@ -195,8 +199,12 @@ impl TailscaleArgs {
                     writeln!(writer, "nameservers: {}", config.nameservers.join(", ")).ok();
                 }
                 if !config.search_domains.is_empty() {
-                    writeln!(writer, "search domains: {}", config.search_domains.join(", "))
-                        .ok();
+                    writeln!(
+                        writer,
+                        "search domains: {}",
+                        config.search_domains.join(", ")
+                    )
+                    .ok();
                 }
                 if !config.split_dns.is_empty() {
                     let splits: Vec<String> = config
@@ -208,7 +216,7 @@ impl TailscaleArgs {
                 }
             }
             TailscaleCommand::Acl { action } => {
-                self.dispatch_acl(action, writer)?;
+                self.dispatch_acl(action, writer).await?;
             }
             TailscaleCommand::Service { action } => {
                 let service = match &runner {
@@ -230,7 +238,13 @@ impl TailscaleArgs {
     /// policy management does not flow through the local HTTP API (it is a
     /// coordination-server concern), so this path uses the `AclManager`
     /// directly rather than `TailscaleClient`.
-    fn dispatch_acl<W: std::io::Write>(
+    ///
+    /// The `apply` branch reads the policy file on a
+    /// [`tokio::task::spawn_blocking`] thread rather than on the async runtime
+    /// worker: [`std::fs::read_to_string`] is a blocking syscall, and this
+    /// dispatcher runs on a single-threaded current-thread runtime where
+    /// blocking the worker would stall every other task.
+    async fn dispatch_acl<W: std::io::Write>(
         &self,
         action: &AclAction,
         writer: &mut W,
@@ -257,7 +271,18 @@ impl TailscaleArgs {
                 .ok();
             }
             AclAction::Apply { path } => {
-                let policy = std::fs::read_to_string(path)?;
+                // `std::fs::read_to_string` is a blocking syscall; move it off
+                // the single-threaded async runtime worker so it cannot stall
+                // other tasks. The path is owned by the caller's `AclAction`,
+                // so clone it into a `'static` for the blocking task.
+                let path_owned = path.clone();
+                let path_display = path.clone();
+                let policy =
+                    tokio::task::spawn_blocking(move || std::fs::read_to_string(&path_owned))
+                        .await
+                        .map_err(|e| {
+                            crate::Error::Other(format!("ACL apply blocking task failed: {e}"))
+                        })??;
                 // Confirm the document is at least structurally valid JSON /
                 // HuJSON-ish before handing it to the (dry-run-aware) apply
                 // path. `apply` honours `--dry-run`: it logs and returns Ok in
@@ -267,11 +292,11 @@ impl TailscaleArgs {
                 validate_policy_is_json(&policy)?;
                 manager.apply(&policy)?;
                 if self.dry_run {
-                    writeln!(writer, "dry-run: validated ACL policy from {path}").ok();
+                    writeln!(writer, "dry-run: validated ACL policy from {path_display}").ok();
                 } else {
                     writeln!(
                         writer,
-                        "validated ACL policy from {path} (apply requires \
+                        "validated ACL policy from {path_display} (apply requires \
                          coordination-server credentials)"
                     )
                     .ok();
@@ -369,10 +394,7 @@ fn parse_doctor_scope(check: Option<&str>) -> Result<DoctorScope> {
 }
 
 /// Render a [`DoctorReport`] as one line per finding, plus a trailing summary.
-fn write_doctor_report<W: std::io::Write>(
-    writer: &mut W,
-    report: &DoctorReport,
-) -> Result<()> {
+fn write_doctor_report<W: std::io::Write>(writer: &mut W, report: &DoctorReport) -> Result<()> {
     if report.findings.is_empty() {
         writeln!(writer, "no findings").ok();
         return Ok(());
@@ -617,7 +639,10 @@ mod tests {
             .dispatch(&client, Some(dyn_runner), &mut out)
             .await
             .expect_err("bad scope should error");
-        assert!(err.to_string().contains("unknown doctor check 'bogus'"), "{err}");
+        assert!(
+            err.to_string().contains("unknown doctor check 'bogus'"),
+            "{err}"
+        );
     }
 
     /// `parse_doctor_scope` accepts canonical names and rejects junk.
@@ -627,7 +652,10 @@ mod tests {
     /// pattern).
     #[test]
     fn parse_doctor_scope_canonical_names() {
-        assert!(matches!(parse_doctor_scope(None).unwrap(), DoctorScope::All));
+        assert!(matches!(
+            parse_doctor_scope(None).unwrap(),
+            DoctorScope::All
+        ));
         assert!(matches!(
             parse_doctor_scope(Some("all")).unwrap(),
             DoctorScope::All
@@ -694,5 +722,41 @@ mod tests {
     fn validate_policy_is_json_rejects_garbage() {
         assert!(validate_policy_is_json("not json").is_err());
         assert!(validate_policy_is_json(r#"{"acls":[]}"#).is_ok());
+    }
+
+    /// `acl apply <file>` reads the policy off the async runtime worker
+    /// (via `spawn_blocking`) and reports a dry-run validation success. This
+    /// pins the invariant that the blocking `read_to_string` never runs on the
+    /// single-threaded tokio worker.
+    #[tokio::test]
+    async fn dispatch_acl_apply_reads_file_off_runtime_worker() {
+        use std::io::Write as _;
+
+        // Write a minimal valid-JSON policy to a temp file.
+        let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+        tmp.as_file_mut()
+            .write_all(br#"{"acls":[]}"#)
+            .expect("write policy");
+        let path = tmp.path().to_owned();
+
+        let cli = TailscaleArgs::try_parse_from([
+            "tailscale",
+            "--dry-run",
+            "acl",
+            "apply",
+            path.to_str().expect("utf8 path"),
+        ])
+        .expect("parse acl apply");
+        let client = TailscaleClient::new();
+        let mut out = Vec::<u8>::new();
+        cli.dispatch(&client, None, &mut out)
+            .await
+            .expect("dispatch should succeed");
+
+        let text = String::from_utf8(out).expect("utf8");
+        assert!(
+            text.contains("dry-run: validated ACL policy"),
+            "output: {text}"
+        );
     }
 }

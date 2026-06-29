@@ -105,9 +105,9 @@ impl CertExpiry {
         let not_after = not_after.into();
         match parse_openssl_enddate_epoch(&not_after) {
             Some(expiry_epoch) => {
-                let now_epoch = now.duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+                let now_epoch = now.duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs());
                 let secs_remaining = expiry_epoch.saturating_sub(now_epoch);
-                let days_remaining = (secs_remaining / 86_400) as i64;
+                let days_remaining = i64::try_from(secs_remaining / 86_400).unwrap_or(i64::MAX);
                 Self {
                     not_after,
                     days_remaining,
@@ -146,11 +146,7 @@ impl CertExpiry {
 /// guard — in practice it never errors, matching the "read-only section must
 /// never crash" contract of the TUI integration. The `Result` shape is kept for
 /// forward-compatibility and consistency with the rest of the module.
-pub fn read_cert_expiry(
-    path: &Path,
-    runner: &dyn Runner,
-    now: SystemTime,
-) -> Result<CertExpiry> {
+pub fn read_cert_expiry(path: &Path, runner: &dyn Runner, now: SystemTime) -> Result<CertExpiry> {
     // Resolve openssl up front so a missing binary degrades cleanly rather than
     // surfacing as a generic runner error. `which` is a workspace dep.
     if which::which("openssl").is_err() {
@@ -191,16 +187,15 @@ pub fn read_cert_expiry(
     // Extract the `notAfter=...` value from stdout. openssl prints exactly one
     // line; tolerate leading/trailing whitespace and a missing `GMT` suffix.
     let not_after = extract_not_after(&output.stdout);
-    match not_after {
-        Some(na) => Ok(CertExpiry::from_not_after(na, now)),
-        None => {
-            tracing::debug!(
-                "certs_parse: no notAfter= line in openssl output for {}: {:?}",
-                path.display(),
-                output.stdout
-            );
-            Ok(CertExpiry::unknown())
-        }
+    if let Some(na) = not_after {
+        Ok(CertExpiry::from_not_after(na, now))
+    } else {
+        tracing::debug!(
+            "certs_parse: no notAfter= line in openssl output for {}: {:?}",
+            path.display(),
+            output.stdout
+        );
+        Ok(CertExpiry::unknown())
     }
 }
 
@@ -271,7 +266,6 @@ pub fn parse_openssl_enddate_epoch(s: &str) -> Option<u64> {
 
 /// Map a 3-letter English month abbreviation to its 1-based month number.
 fn month_to_num(s: &str) -> Option<u32> {
-    let s = s;
     Some(match s {
         "Jan" => 1,
         "Feb" => 2,
@@ -311,15 +305,15 @@ fn parse_hms(s: &str) -> Option<(u32, u32, u32)> {
 /// term carries the year contribution (the `/4` and `/100` terms add the leap
 /// days). Valid for any year in the cert-relevant range and well beyond.
 fn civil_to_epoch_seconds(year: i64, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> u64 {
-    let m = month as i64;
+    let m = i64::from(month);
     let y = if m <= 2 { year - 1 } else { year };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + (day as i64 - 1); // [0, 365]
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + (i64::from(day) - 1); // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
     let days = era * 146_097 + doe - 719_468; // days since 1970-01-01
-    let secs = days * 86_400 + (hour as i64) * 3_600 + (min as i64) * 60 + sec as i64;
-    if secs < 0 { 0 } else { secs as u64 }
+    let secs = days * 86_400 + i64::from(hour) * 3_600 + i64::from(min) * 60 + i64::from(sec);
+    u64::try_from(secs).unwrap_or(0)
 }
 
 /// Compute whole days from `now` (epoch seconds) until `expiry` (epoch seconds).
@@ -329,7 +323,8 @@ fn civil_to_epoch_seconds(year: i64, month: u32, day: u32, hour: u32, min: u32, 
 /// parsers that need a `days_remaining` value without pulling in a date crate.
 /// Both inputs are treated as UTC (epoch seconds are inherently UTC).
 pub fn days_until(now_secs: u64, expiry_secs: u64) -> i64 {
-    let delta = expiry_secs as i64 - now_secs as i64;
+    let delta = i64::try_from(expiry_secs).unwrap_or(i64::MAX)
+        - i64::try_from(now_secs).unwrap_or(i64::MAX);
     // Floor toward negative infinity so a cert that expired 5h ago reports -1,
     // not 0 — matching how operators read "days remaining".
     delta.div_euclid(86_400)
@@ -351,10 +346,9 @@ pub fn list_live_certs(live_dir: &Path) -> Result<Vec<ParsedCert>> {
     let mut certs = Vec::new();
 
     let entries = std::fs::read_dir(live_dir).map_err(|e| {
-        Error::Io(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("cannot read certbot live directory: {e}"),
-        ))
+        Error::Io(std::io::Error::other(format!(
+            "cannot read certbot live directory: {e}"
+        )))
     })?;
 
     for entry in entries.flatten() {
@@ -439,11 +433,7 @@ mod tests {
         let dir = assert_fs::TempDir::new().unwrap();
         let live_dir = dir.path().join("live");
         std::fs::create_dir_all(live_dir.join("example.com")).unwrap();
-        std::fs::write(
-            live_dir.join("example.com/fullchain.pem"),
-            "fake cert",
-        )
-        .unwrap();
+        std::fs::write(live_dir.join("example.com/fullchain.pem"), "fake cert").unwrap();
         std::fs::create_dir_all(live_dir.join("other.com")).unwrap();
         // No cert file for other.com
 
@@ -527,8 +517,14 @@ mod tests {
         assert_eq!(parse_openssl_enddate_epoch(""), None);
         assert_eq!(parse_openssl_enddate_epoch("not a date"), None);
         assert_eq!(parse_openssl_enddate_epoch("Sep 18 2026"), None);
-        assert_eq!(parse_openssl_enddate_epoch("Xxx 18 00:48:15 2026 GMT"), None);
-        assert_eq!(parse_openssl_enddate_epoch("Sep 99 00:48:15 2026 GMT"), None);
+        assert_eq!(
+            parse_openssl_enddate_epoch("Xxx 18 00:48:15 2026 GMT"),
+            None
+        );
+        assert_eq!(
+            parse_openssl_enddate_epoch("Sep 99 00:48:15 2026 GMT"),
+            None
+        );
         // Non-GMT zone is rejected (openssl never emits one, don't guess offsets).
         assert_eq!(
             parse_openssl_enddate_epoch("Sep 18 00:48:15 2026 PST"),
@@ -589,9 +585,9 @@ mod tests {
         assert_eq!(e.not_after, "garbage");
     }
 
-    /// `read_cert_expiry` must degrade to unknown (is_valid=false) when openssl
+    /// `read_cert_expiry` must degrade to unknown (`is_valid=false`) when openssl
     /// is missing OR the runner reports a failure, rather than returning a
-    /// misleading is_valid=true. This test is host-independent: the runner is
+    /// misleading `is_valid=true`. This test is host-independent: the runner is
     /// strict (unmatched calls error out), so on a host WITHOUT openssl the
     /// `which::which` guard yields unknown directly, and on a host WITH openssl
     /// the strict runner returns an Err that the function also degrades.
@@ -605,23 +601,22 @@ mod tests {
         assert!(
             !e.is_valid,
             "degraded expiry must never claim is_valid=true (got days={}, not_after={:?})",
-            e.days_remaining,
-            e.not_after
+            e.days_remaining, e.not_after
         );
         assert_eq!(e.days_remaining, 0);
         assert!(e.not_after.is_empty());
     }
 
     /// When openssl reports a real future expiry, `read_cert_expiry` surfaces it
-    /// as a valid cert with positive days_remaining. Uses exact-match canned
+    /// as a valid cert with positive `days_remaining`. Uses exact-match canned
     /// output so the test is deterministic and host-independent: the fake runner
     /// is consulted only when openssl is present (otherwise the which-guard
     /// short-circuits and this test still passes because the assertion is only
     /// checked in the openssl-present branch).
     #[test]
     fn read_cert_expiry_parses_real_future_expiry() {
-        use toride_runner::fake::FakeRunner;
         use toride_runner::CommandOutput;
+        use toride_runner::fake::FakeRunner;
         let spec = CommandSpec::new("openssl")
             .args(["x509", "-enddate", "-noout", "-in"])
             .arg("/tmp/cert.pem");
@@ -643,11 +638,11 @@ mod tests {
     }
 
     /// A non-zero openssl exit (e.g. file unreadable) degrades to unknown, not
-    /// is_valid=true. Host-independent via exact-match canned stderr output.
+    /// `is_valid=true`. Host-independent via exact-match canned stderr output.
     #[test]
     fn read_cert_expiry_nonzero_exit_degrades() {
-        use toride_runner::fake::FakeRunner;
         use toride_runner::CommandOutput;
+        use toride_runner::fake::FakeRunner;
         let spec = CommandSpec::new("openssl")
             .args(["x509", "-enddate", "-noout", "-in"])
             .arg("/tmp/missing.pem");
@@ -681,9 +676,7 @@ mod tests {
         let key = dir.path().join("k.pem");
         let cert = dir.path().join("c.pem");
         let gen_out = std::process::Command::new("openssl")
-            .args([
-                "req", "-x509", "-newkey", "rsa:2048", "-keyout",
-            ])
+            .args(["req", "-x509", "-newkey", "rsa:2048", "-keyout"])
             .arg(key.to_str().unwrap())
             .args(["-out"])
             .arg(cert.to_str().unwrap())
@@ -691,7 +684,10 @@ mod tests {
             .output()
             .expect("openssl req");
         if !gen_out.status.success() {
-            eprintln!("skipping: openssl req failed: {}", String::from_utf8_lossy(&gen_out.stderr));
+            eprintln!(
+                "skipping: openssl req failed: {}",
+                String::from_utf8_lossy(&gen_out.stderr)
+            );
             return;
         }
         let now = SystemTime::now();
@@ -699,8 +695,7 @@ mod tests {
         assert!(
             e.is_valid,
             "90-day cert must be valid (days={}, not_after={})",
-            e.days_remaining,
-            e.not_after
+            e.days_remaining, e.not_after
         );
         // ~90 days minus the small generation latency.
         assert!(e.days_remaining >= 88 && e.days_remaining <= 90);

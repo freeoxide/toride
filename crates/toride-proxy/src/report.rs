@@ -114,7 +114,10 @@ impl ProxyReport {
 
     /// Returns certificates that will expire within the given number of days.
     pub fn certs_expiring_within(&self, days: i64) -> Vec<&CertInfo> {
-        self.certificates.iter().filter(|c| c.expires_within(days)).collect()
+        self.certificates
+            .iter()
+            .filter(|c| c.expires_within(days))
+            .collect()
     }
 
     /// Render the report as a human-readable summary.
@@ -129,11 +132,7 @@ impl ProxyReport {
         } else {
             lines.push(format!("Certificates: {}", self.certificates.len()));
             for cert in &self.certificates {
-                let status = if cert.is_valid {
-                    "valid"
-                } else {
-                    "EXPIRED"
-                };
+                let status = if cert.is_valid { "valid" } else { "EXPIRED" };
                 lines.push(format!(
                     "  {} - {} ({} days remaining, {})",
                     cert.domain, cert.issuer, cert.days_remaining, status
@@ -151,7 +150,13 @@ mod tests {
 
     #[test]
     fn cert_info_expires_within() {
-        let cert = CertInfo::new("example.com", "Let's Encrypt", "2024-01-01", "2024-04-01", 30);
+        let cert = CertInfo::new(
+            "example.com",
+            "Let's Encrypt",
+            "2024-01-01",
+            "2024-04-01",
+            30,
+        );
         assert!(cert.expires_within(60));
         assert!(cert.expires_within(30));
         assert!(!cert.expires_within(10));

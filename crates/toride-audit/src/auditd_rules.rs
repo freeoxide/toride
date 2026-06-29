@@ -138,7 +138,7 @@ pub fn merge_rules(files: &[AuditRuleFile]) -> Vec<String> {
                     let trimmed = line.trim();
                     !trimmed.is_empty() && !trimmed.starts_with('#')
                 })
-                .map(|r| r.to_string())
+                .map(std::string::ToString::to_string)
                 .collect::<Vec<_>>()
         })
         .collect();
@@ -172,7 +172,8 @@ mod tests {
     fn audit_rule_file_rules_all_rules() {
         let file = AuditRuleFile {
             name: "all_rules".to_owned(),
-            content: "-w /etc/passwd -p wa -k identity\n-w /etc/shadow -p wa -k identity".to_owned(),
+            content: "-w /etc/passwd -p wa -k identity\n-w /etc/shadow -p wa -k identity"
+                .to_owned(),
         };
         let rules = file.rules();
         assert_eq!(rules.len(), 2);
@@ -193,19 +194,30 @@ mod tests {
         let files = vec![
             AuditRuleFile {
                 name: "first".to_owned(),
-                content: "-w /etc/shadow -p wa -k identity\n-w /etc/passwd -p wa -k identity".to_owned(),
+                content: "-w /etc/shadow -p wa -k identity\n-w /etc/passwd -p wa -k identity"
+                    .to_owned(),
             },
             AuditRuleFile {
                 name: "second".to_owned(),
-                content: "-w /etc/passwd -p wa -k identity\n-a always,exit -S open -k test".to_owned(),
+                content: "-w /etc/passwd -p wa -k identity\n-a always,exit -S open -k test"
+                    .to_owned(),
             },
         ];
         let merged = merge_rules(&files);
         // Should be sorted and deduplicated.
         assert_eq!(merged.len(), 3);
-        assert!(merged.windows(2).all(|w| w[0] <= w[1]), "merged rules must be sorted");
+        assert!(
+            merged.windows(2).all(|w| w[0] <= w[1]),
+            "merged rules must be sorted"
+        );
         // /etc/passwd appears only once.
-        assert_eq!(merged.iter().filter(|r| **r == "-w /etc/passwd -p wa -k identity").count(), 1);
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|r| **r == "-w /etc/passwd -p wa -k identity")
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -217,12 +229,10 @@ mod tests {
 
     #[test]
     fn merge_rules_skips_comments_and_empty_lines() {
-        let files = vec![
-            AuditRuleFile {
-                name: "mixed".to_owned(),
-                content: "# comment\n\n-w /etc/passwd -p wa -k identity\n".to_owned(),
-            },
-        ];
+        let files = vec![AuditRuleFile {
+            name: "mixed".to_owned(),
+            content: "# comment\n\n-w /etc/passwd -p wa -k identity\n".to_owned(),
+        }];
         let merged = merge_rules(&files);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0], "-w /etc/passwd -p wa -k identity");

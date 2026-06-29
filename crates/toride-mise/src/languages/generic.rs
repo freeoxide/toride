@@ -114,10 +114,7 @@ impl<'a> GenericHelper<'a> {
     /// Returns [`MiseError::CommandFailed`](crate::MiseError::CommandFailed) if
     /// the command exits non-zero.
     pub async fn list_versions(&self) -> MiseResult<Vec<String>> {
-        let output = self
-            .mise
-            .run_checked(["ls-remote", &self.tool])
-            .await?;
+        let output = self.mise.run_checked(["ls-remote", &self.tool]).await?;
         let versions = output
             .stdout_trimmed()
             .lines()

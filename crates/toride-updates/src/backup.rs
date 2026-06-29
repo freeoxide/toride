@@ -34,11 +34,7 @@ pub fn backup_config(path: &Path) -> Result<()> {
     let content = fs::read_to_string(path)?;
     fs::write(&backup_path, &content)?;
 
-    info!(
-        "Backed up {} -> {}",
-        path.display(),
-        backup_path.display()
-    );
+    info!("Backed up {} -> {}", path.display(), backup_path.display());
 
     Ok(())
 }

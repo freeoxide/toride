@@ -4,7 +4,7 @@
 //! Delegates to the [`toride_service`] crate for systemd interactions when
 //! available.
 
-use crate::{Error, Result};
+use crate::Result;
 
 // ---------------------------------------------------------------------------
 // BackupServiceManager

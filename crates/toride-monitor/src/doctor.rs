@@ -3,9 +3,9 @@
 //! Provides [`Doctor`] which runs a series of health checks against a
 //! monitoring installation and produces a [`DoctorReport`] with findings.
 
+use crate::Result;
 use crate::paths::MonitorPaths;
 use crate::report::{AnomalyFinding, AnomalySeverity};
-use crate::Result;
 
 /// The systemd unit name under which the toride-monitor daemon runs.
 const MONITOR_UNIT: &str = "toride-monitor.service";
@@ -59,7 +59,7 @@ impl<'a> Doctor<'a> {
                 self.check_binaries(&mut findings);
                 self.check_logging(&mut findings);
                 self.check_service(&mut findings);
-                self.check_config(&mut findings);
+                Self::check_config(&mut findings);
             }
             DoctorScope::Binaries => {
                 self.check_binaries(&mut findings);
@@ -71,7 +71,7 @@ impl<'a> Doctor<'a> {
                 self.check_service(&mut findings);
             }
             DoctorScope::Config => {
-                self.check_config(&mut findings);
+                Self::check_config(&mut findings);
             }
         }
 
@@ -90,13 +90,16 @@ impl<'a> Doctor<'a> {
 
         for (name, path) in binaries {
             if !path.exists() {
-                findings.push(AnomalyFinding::new(
-                    format!("doctor.binary.{name}.missing"),
-                    AnomalySeverity::Critical,
-                    format!("Required binary not found: {name}"),
-                    format!("Expected at: {}", path.display()),
-                    "Binary must exist and be executable",
-                ).fix(format!("Install the package providing {name}.")));
+                findings.push(
+                    AnomalyFinding::new(
+                        format!("doctor.binary.{name}.missing"),
+                        AnomalySeverity::Critical,
+                        format!("Required binary not found: {name}"),
+                        format!("Expected at: {}", path.display()),
+                        "Binary must exist and be executable",
+                    )
+                    .fix(format!("Install the package providing {name}.")),
+                );
             }
         }
     }
@@ -108,31 +111,40 @@ impl<'a> Doctor<'a> {
         match chain.list_rules() {
             Ok(rules) => {
                 if rules.is_empty() {
-                    findings.push(AnomalyFinding::new(
-                        "doctor.logging.no-rules",
-                        AnomalySeverity::Warning,
-                        "No OUTPUT chain LOG rules configured",
-                        "0 LOG rules in OUTPUT chain",
-                        "At least one LOG rule expected",
-                    ).fix("Run monitor setup to install logging rules."));
+                    findings.push(
+                        AnomalyFinding::new(
+                            "doctor.logging.no-rules",
+                            AnomalySeverity::Warning,
+                            "No OUTPUT chain LOG rules configured",
+                            "0 LOG rules in OUTPUT chain",
+                            "At least one LOG rule expected",
+                        )
+                        .fix("Run monitor setup to install logging rules."),
+                    );
                 } else if rules.len() > 50 {
-                    findings.push(AnomalyFinding::new(
-                        "doctor.logging.excessive-rules",
-                        AnomalySeverity::Warning,
-                        "Excessive number of OUTPUT chain LOG rules",
-                        format!("{} LOG rules in OUTPUT chain", rules.len()),
-                        "Fewer than 50 rules recommended",
-                    ).fix("Review and remove unnecessary logging rules."));
+                    findings.push(
+                        AnomalyFinding::new(
+                            "doctor.logging.excessive-rules",
+                            AnomalySeverity::Warning,
+                            "Excessive number of OUTPUT chain LOG rules",
+                            format!("{} LOG rules in OUTPUT chain", rules.len()),
+                            "Fewer than 50 rules recommended",
+                        )
+                        .fix("Review and remove unnecessary logging rules."),
+                    );
                 }
             }
             Err(e) => {
-                findings.push(AnomalyFinding::new(
-                    "doctor.logging.check-failed",
-                    AnomalySeverity::Error,
-                    "Failed to list iptables OUTPUT chain rules",
-                    format!("{e}"),
-                    "Should be able to list rules",
-                ).fix("Verify iptables permissions and kernel modules."));
+                findings.push(
+                    AnomalyFinding::new(
+                        "doctor.logging.check-failed",
+                        AnomalySeverity::Error,
+                        "Failed to list iptables OUTPUT chain rules",
+                        format!("{e}"),
+                        "Should be able to list rules",
+                    )
+                    .fix("Verify iptables permissions and kernel modules."),
+                );
             }
         }
     }
@@ -143,8 +155,7 @@ impl<'a> Doctor<'a> {
     /// result. A unit that is inactive or not installed surfaces as a finding
     /// rather than an error.
     fn check_service(&self, findings: &mut Vec<AnomalyFinding>) {
-        let spec =
-            toride_runner::CommandSpec::new("systemctl").args(["is-active", MONITOR_UNIT]);
+        let spec = toride_runner::CommandSpec::new("systemctl").args(["is-active", MONITOR_UNIT]);
         match self.runner.run(&spec) {
             Ok(output) => {
                 let state = output.stdout.trim();
@@ -159,39 +170,48 @@ impl<'a> Doctor<'a> {
                         "active",
                     ));
                 } else {
-                    findings.push(AnomalyFinding::new(
-                        "doctor.service.inactive",
-                        AnomalySeverity::Warning,
-                        "Monitoring service is not active",
-                        state.to_owned(),
-                        "active",
-                    ).fix(format!("Run `systemctl start {MONITOR_UNIT}`.")));
+                    findings.push(
+                        AnomalyFinding::new(
+                            "doctor.service.inactive",
+                            AnomalySeverity::Warning,
+                            "Monitoring service is not active",
+                            state.to_owned(),
+                            "active",
+                        )
+                        .fix(format!("Run `systemctl start {MONITOR_UNIT}`.")),
+                    );
                 }
             }
             Err(e) => {
-                findings.push(AnomalyFinding::new(
-                    "doctor.service.check-failed",
-                    AnomalySeverity::Error,
-                    "Failed to query monitoring service status",
-                    format!("{e}"),
-                    "systemctl should be reachable",
-                ).fix("Verify systemd is running and systemctl is on $PATH."));
+                findings.push(
+                    AnomalyFinding::new(
+                        "doctor.service.check-failed",
+                        AnomalySeverity::Error,
+                        "Failed to query monitoring service status",
+                        format!("{e}"),
+                        "systemctl should be reachable",
+                    )
+                    .fix("Verify systemd is running and systemctl is on $PATH."),
+                );
             }
         }
     }
 
     /// Check configuration validity.
-    fn check_config(&self, findings: &mut Vec<AnomalyFinding>) {
+    fn check_config(findings: &mut Vec<AnomalyFinding>) {
         // Validate default thresholds.
         let threshold = crate::spec::AnomalyThreshold::default();
         if let Err(e) = crate::validate::validate_threshold(&threshold) {
-            findings.push(AnomalyFinding::new(
-                "doctor.config.invalid-threshold",
-                AnomalySeverity::Error,
-                "Default threshold configuration is invalid",
-                format!("{e}"),
-                "Valid thresholds required",
-            ).fix("Review default threshold values."));
+            findings.push(
+                AnomalyFinding::new(
+                    "doctor.config.invalid-threshold",
+                    AnomalySeverity::Error,
+                    "Default threshold configuration is invalid",
+                    format!("{e}"),
+                    "Valid thresholds required",
+                )
+                .fix("Review default threshold values."),
+            );
         }
     }
 }
@@ -221,7 +241,9 @@ impl DoctorReport {
     /// Returns `true` if any finding has critical severity.
     #[must_use]
     pub fn has_critical(&self) -> bool {
-        self.findings.iter().any(|f| f.severity == AnomalySeverity::Critical)
+        self.findings
+            .iter()
+            .any(|f| f.severity == AnomalySeverity::Critical)
     }
 
     /// Returns the number of findings.
@@ -264,8 +286,7 @@ mod tests {
         // The previously-not-implemented stub is replaced by a real
         // systemctl is-active probe.
         let runner = FakeRunner::new().respond(
-            CommandSpec::new("systemctl")
-                .args(["is-active", "toride-monitor.service"]),
+            CommandSpec::new("systemctl").args(["is-active", "toride-monitor.service"]),
             CommandOutput::new("active\n".into(), String::new(), Some(0)),
         );
         let paths = test_paths();
@@ -281,8 +302,7 @@ mod tests {
     #[test]
     fn check_service_flags_inactive_unit() {
         let runner = FakeRunner::new().respond(
-            CommandSpec::new("systemctl")
-                .args(["is-active", "toride-monitor.service"]),
+            CommandSpec::new("systemctl").args(["is-active", "toride-monitor.service"]),
             CommandOutput::new("inactive\n".into(), String::new(), Some(3)),
         );
         let paths = test_paths();
@@ -295,4 +315,3 @@ mod tests {
         assert_eq!(findings[0].id, "doctor.service.inactive");
     }
 }
-

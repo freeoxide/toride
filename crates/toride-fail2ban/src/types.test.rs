@@ -297,9 +297,7 @@ fn platform_commands_for_current_platform_returns_linux_on_linux() {
     let result = cmds.for_current_platform();
     // On macOS CI, this returns macos; on linux CI, linux.
     // We verify that the returned slice is one of the three platform slices.
-    let is_valid = result == &cmds.linux
-        || result == &cmds.macos
-        || result == &cmds.freebsd;
+    let is_valid = result == &cmds.linux || result == &cmds.macos || result == &cmds.freebsd;
     assert!(is_valid);
 }
 
@@ -362,7 +360,11 @@ fn platform_commands_for_current_platform_returns_fallback_on_empty_linux() {
 #[test]
 fn platform_commands_multiple_commands_per_platform() {
     let cmds = PlatformCommands::new(
-        vec!["cmd_a".to_string(), "cmd_b".to_string(), "cmd_c".to_string()],
+        vec![
+            "cmd_a".to_string(),
+            "cmd_b".to_string(),
+            "cmd_c".to_string(),
+        ],
         vec!["cmd_d".to_string()],
         vec!["cmd_e".to_string(), "cmd_f".to_string()],
     );
@@ -712,8 +714,7 @@ fn fail2ban_status_multiple_jails() {
 fn fail2ban_status_serialization_roundtrip() {
     let status = sample_fail2ban_status();
     let json = serde_json::to_string(&status).expect("serialization failed");
-    let deserialized: Fail2BanStatus =
-        serde_json::from_str(&json).expect("deserialization failed");
+    let deserialized: Fail2BanStatus = serde_json::from_str(&json).expect("deserialization failed");
     assert_eq!(deserialized.running, status.running);
     assert_eq!(deserialized.jails.len(), status.jails.len());
     assert_eq!(deserialized.config_path, status.config_path);
@@ -729,7 +730,10 @@ fn fail2ban_status_deserialize_from_json_string() {
     let status: Fail2BanStatus = serde_json::from_str(json).expect("deserialization failed");
     assert!(!status.running);
     assert!(status.jails.is_empty());
-    assert_eq!(status.config_path, PathBuf::from("/etc/fail2ban/jail.local"));
+    assert_eq!(
+        status.config_path,
+        PathBuf::from("/etc/fail2ban/jail.local")
+    );
 }
 
 // --- Display tests --------------------------------------------------------

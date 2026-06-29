@@ -398,10 +398,7 @@ fn render_actions_section(out: &mut String, actions: &[ActionSpec], _namespace: 
     }
 
     // Build the display form for each action.
-    let rendered: Vec<String> = actions
-        .iter()
-        .map(|a| format_action_reference(a))
-        .collect();
+    let rendered: Vec<String> = actions.iter().map(|a| format_action_reference(a)).collect();
 
     let _ = writeln!(out, "action = {}", rendered[0]);
     for action_str in &rendered[1..] {

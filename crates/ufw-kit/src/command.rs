@@ -159,12 +159,7 @@ impl FakeRunner {
     /// Register a response for a given program + args combination.
     ///
     /// The key is formatted as `"program arg1 arg2 ..."`.
-    pub fn respond(
-        mut self,
-        program: &str,
-        args: &[&str],
-        result: Result<CommandResult>,
-    ) -> Self {
+    pub fn respond(mut self, program: &str, args: &[&str], result: Result<CommandResult>) -> Self {
         let key = format_key(program, args);
         self.responses.insert(key, FakeResponse { result });
         self
@@ -238,7 +233,10 @@ impl CommandRunner for FakeRunner {
             args: spec.args.clone(),
         });
 
-        let key = format_key(&spec.program, &spec.args.iter().map(String::as_str).collect::<Vec<_>>());
+        let key = format_key(
+            &spec.program,
+            &spec.args.iter().map(String::as_str).collect::<Vec<_>>(),
+        );
 
         // Try to find an exact response
         if let Some(response) = self.responses.get(&key) {
@@ -259,7 +257,23 @@ impl CommandRunner for FakeRunner {
 
     fn binary_exists(&self, name: &str) -> bool {
         // By default, pretend ufw and common tools exist
-        matches!(name, "ufw" | "iptables" | "ip6tables" | "iptables-save" | "ip6tables-save" | "systemctl" | "journalctl" | "nft" | "docker" | "nginx" | "caddy" | "ss" | "traefik" | "traefik-client")
+        matches!(
+            name,
+            "ufw"
+                | "iptables"
+                | "ip6tables"
+                | "iptables-save"
+                | "ip6tables-save"
+                | "systemctl"
+                | "journalctl"
+                | "nft"
+                | "docker"
+                | "nginx"
+                | "caddy"
+                | "ss"
+                | "traefik"
+                | "traefik-client"
+        )
     }
 }
 

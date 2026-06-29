@@ -41,9 +41,7 @@ impl Ufw {
             Ok(which::which("ufw")
                 .map_or_else(|_| "ufw".into(), |p| p.to_string_lossy().into_owned()))
         } else {
-            Err(Error::UfwNotFound(
-                "ufw binary not found on system".into(),
-            ))
+            Err(Error::UfwNotFound("ufw binary not found on system".into()))
         }
     }
 
@@ -193,9 +191,7 @@ impl Ufw {
     pub fn set_default_policy(&self, direction: Direction, policy: Policy) -> Result<()> {
         // SSH lockout safety check: if we are about to set incoming to deny/reject,
         // make sure there is an SSH allow rule.
-        if direction == Direction::In
-            && matches!(policy, Policy::Deny | Policy::Reject)
-        {
+        if direction == Direction::In && matches!(policy, Policy::Deny | Policy::Reject) {
             let check = self.check_ssh_lockout_structured(&[22]);
             if !check.has_incoming_ssh_allow {
                 return Err(Error::SshLockoutRisk(
@@ -275,11 +271,7 @@ impl Ufw {
         let mut matching: Vec<u32> = status
             .rules
             .iter()
-            .filter(|r| {
-                r.comment
-                    .as_deref()
-                    .is_some_and(|c| c.contains(comment))
-            })
+            .filter(|r| r.comment.as_deref().is_some_and(|c| c.contains(comment)))
             .filter_map(|r| r.number)
             .collect();
 
@@ -461,10 +453,7 @@ impl Ufw {
         // Rules with the same comment exist but differ — replace them.
         // Delete old rules from bottom to top (highest number first) to avoid
         // number shifting during deletion.
-        let mut numbers: Vec<u32> = existing
-            .iter()
-            .filter_map(|r| r.number)
-            .collect();
+        let mut numbers: Vec<u32> = existing.iter().filter_map(|r| r.number).collect();
         numbers.sort_by(|a, b| b.cmp(a)); // descending order
 
         let delete_opts = crate::spec::DeleteOptions {
@@ -484,10 +473,7 @@ impl Ufw {
         let report = self.apply_rule(spec)?;
         Ok(crate::spec::ApplyReport {
             success: true,
-            action: format!(
-                "replaced rule (comment: {comment}): {}",
-                report.action
-            ),
+            action: format!("replaced rule (comment: {comment}): {}", report.action),
             dry_run_output: report.dry_run_output,
             verification: report.verification,
             warnings: report.warnings,
@@ -629,8 +615,7 @@ fn rule_targets_ssh(rule: &crate::spec::ParsedRule, ssh_ports: &[u16]) -> bool {
     for &port in ssh_ports {
         // Exact port patterns: "22/tcp", "22/udp", "22 " (with space after),
         // or "22" at end of a token boundary. We check common variants.
-        if raw_lower.contains(&format!("{port}/tcp"))
-            || raw_lower.contains(&format!("{port}/udp"))
+        if raw_lower.contains(&format!("{port}/tcp")) || raw_lower.contains(&format!("{port}/udp"))
         {
             return true;
         }
@@ -666,7 +651,9 @@ fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool 
     // Action must match. In numbered output the action may appear mid-line
     // (e.g. "443/tcp ALLOW IN ...") so when parsed.action is None we fall
     // back to a substring check on the raw text.
-    let action_matches = if let Some(a) = parsed.action { a == spec.action } else {
+    let action_matches = if let Some(a) = parsed.action {
+        a == spec.action
+    } else {
         let lower = parsed.raw.to_lowercase();
         lower.contains(&spec.action.to_string())
     };

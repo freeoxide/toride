@@ -70,7 +70,12 @@ pub struct ScheduleArgs {
     pub set: Option<ScheduleArg>,
 
     /// Set a custom systemd calendar expression.
-    #[arg(long)]
+    ///
+    /// The expression is validated with [`calendar_expr_value_parser`], which
+    /// rejects newlines, carriage returns, NUL bytes, any other control bytes,
+    /// and `[` (the systemd unit section-header marker) so a malicious value
+    /// cannot inject extra directives into the generated timer unit.
+    #[arg(long, value_parser = calendar_expr_value_parser)]
     pub custom: Option<String>,
 
     /// Remove the current schedule.
@@ -103,6 +108,27 @@ pub enum RebootPolicyArg {
 // ---------------------------------------------------------------------------
 // Conversion helpers
 // ---------------------------------------------------------------------------
+
+/// `clap` value parser for a custom systemd `OnCalendar=` expression.
+///
+/// Rejects values containing newlines (`\n`, `\r`), NUL bytes, any other C0
+/// control bytes, or `[` (the systemd unit section-header marker). This keeps a
+/// hostile expression from injecting extra `[Unit]` / `[Install]` directives
+/// when it is interpolated into the generated timer unit file. The same
+/// sanitization runs again inside [`crate::schedule::ScheduleManager`] as
+/// defense-in-depth.
+fn calendar_expr_value_parser(input: &str) -> Result<String, clap::Error> {
+    if input
+        .chars()
+        .any(|c| c == '\n' || c == '\r' || c == '\0' || c == '[' || c.is_control())
+    {
+        return Err(clap::Error::raw(
+            clap::error::ErrorKind::InvalidValue,
+            "custom calendar expression must not contain newlines, control bytes, NUL, or '['",
+        ));
+    }
+    Ok(input.to_owned())
+}
 
 impl From<ScheduleArg> for crate::spec::Schedule {
     fn from(val: ScheduleArg) -> Self {
@@ -170,7 +196,7 @@ impl UpdatesCli {
         match &self.command {
             UpdatesCommand::Status => {
                 let status = client.status()?;
-                println!("{status:?}");
+                println!("{status}");
                 Ok(())
             }
             UpdatesCommand::Check => {
@@ -195,7 +221,10 @@ impl UpdatesCli {
                     println!("no issues found");
                 } else {
                     for finding in &findings {
-                        println!("{finding:?}");
+                        // Render with the Display severity label + the finding's
+                        // human-readable message (the Debug dump exposes internal
+                        // field layout, which is not user-facing).
+                        println!("{} {}: {}", finding.severity, finding.id, finding.message);
                     }
                 }
                 Ok(())
@@ -308,7 +337,10 @@ mod tests {
     struct ArcRunner(Arc<FakeRunner>);
 
     impl Runner for ArcRunner {
-        fn run(&self, spec: &CommandSpec) -> std::result::Result<CommandOutput, toride_runner::Error> {
+        fn run(
+            &self,
+            spec: &CommandSpec,
+        ) -> std::result::Result<CommandOutput, toride_runner::Error> {
             self.0.run(spec)
         }
     }
@@ -319,7 +351,10 @@ mod tests {
     struct ArcRunnerRef(Arc<FakeRunner>);
 
     impl Runner for ArcRunnerRef {
-        fn run(&self, spec: &CommandSpec) -> std::result::Result<CommandOutput, toride_runner::Error> {
+        fn run(
+            &self,
+            spec: &CommandSpec,
+        ) -> std::result::Result<CommandOutput, toride_runner::Error> {
             self.0.run(spec)
         }
     }
@@ -374,10 +409,11 @@ mod tests {
         // FakeRunner recorded zero *matching* responses, so only assert when we
         // know probes ran.
         if which::which("systemctl").is_ok() && which::which("apt-get").is_ok() {
-            runner.assert_called_with(
-                &CommandSpec::new("systemctl")
-                    .args(["is-active", "--quiet", "apt-daily-upgrade.timer"]),
-            );
+            runner.assert_called_with(&CommandSpec::new("systemctl").args([
+                "is-active",
+                "--quiet",
+                "apt-daily-upgrade.timer",
+            ]));
         }
     }
 
@@ -411,9 +447,7 @@ mod tests {
             .expect("check dispatch should reach the backend and succeed");
 
         if which::which("apt-get").is_ok() {
-            runner.assert_called_with(
-                &CommandSpec::new("/usr/lib/update-notifier/apt-check"),
-            );
+            runner.assert_called_with(&CommandSpec::new("/usr/lib/update-notifier/apt-check"));
         }
     }
 
@@ -452,9 +486,53 @@ mod tests {
         assert!(!s.auto_update);
         assert!(!s.security_only);
         assert_eq!(s.reboot, RebootPolicy::Always);
-        assert_eq!(
-            s.origins,
-            vec!["origin=Ubuntu,codename=${distro_codename}"]
-        );
+        assert_eq!(s.origins, vec!["origin=Ubuntu,codename=${distro_codename}"]);
+    }
+
+    // -----------------------------------------------------------------------
+    // --custom value parser: rejects calendar-expression injection attempts
+    // -----------------------------------------------------------------------
+
+    /// `--custom` with a newline / `[` / control / NUL byte must fail at parse
+    /// time, before the expression ever reaches the schedule manager.
+    #[test]
+    fn custom_flag_rejects_injection_attempts() {
+        for bad in [
+            "Mon\n[Install]\nWantedBy=evil.target",
+            "Mon\r[Install]",
+            "Mon\0X",
+            "Mon\x1b[Install",
+            "[Install]",
+            "Mon\x07",
+        ] {
+            let arg = format!("--custom={bad}");
+            let parsed = UpdatesCli::try_parse_from(["toride-updates", "schedule", &arg]);
+            assert!(
+                parsed.is_err(),
+                "expected parse failure for injected --custom value {bad:?}",
+            );
+        }
+    }
+
+    /// A benign `--custom` expression parses through to `Schedule::Custom`.
+    #[test]
+    fn custom_flag_accepts_benign_expression() {
+        let cli =
+            UpdatesCli::parse_from(["toride-updates", "schedule", "--custom=Mon *-*-* 04:00:00"]);
+        let UpdatesCommand::Schedule(args) = cli.command else {
+            panic!("expected Schedule subcommand");
+        };
+        assert_eq!(args.custom.as_deref(), Some("Mon *-*-* 04:00:00"));
+    }
+
+    /// The underlying value_parser helper rejects the same characters.
+    #[test]
+    fn calendar_expr_value_parser_gates() {
+        assert!(calendar_expr_value_parser("daily").is_ok());
+        assert!(calendar_expr_value_parser("Mon *-*-* 04:00:00").is_ok());
+        assert!(calendar_expr_value_parser("Mon\n[Install]").is_err());
+        assert!(calendar_expr_value_parser("[Install]").is_err());
+        assert!(calendar_expr_value_parser("Mon\0").is_err());
+        assert!(calendar_expr_value_parser("Mon\x1b").is_err());
     }
 }

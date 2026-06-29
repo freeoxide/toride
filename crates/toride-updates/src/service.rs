@@ -170,27 +170,33 @@ mod tests {
     fn enable_builds_systemctl_enable_now_unattended_upgrades() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
         mgr_with(PackageManager::Apt, &runner).enable().unwrap();
-        runner.assert_called_with(
-            &CommandSpec::new("systemctl").args(["enable", "--now", "unattended-upgrades"]),
-        );
+        runner.assert_called_with(&CommandSpec::new("systemctl").args([
+            "enable",
+            "--now",
+            "unattended-upgrades",
+        ]));
     }
 
     #[test]
     fn enable_dnf_targets_timer_unit() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
         mgr_with(PackageManager::Dnf, &runner).enable().unwrap();
-        runner.assert_called_with(
-            &CommandSpec::new("systemctl").args(["enable", "--now", "dnf-automatic.timer"]),
-        );
+        runner.assert_called_with(&CommandSpec::new("systemctl").args([
+            "enable",
+            "--now",
+            "dnf-automatic.timer",
+        ]));
     }
 
     #[test]
     fn disable_builds_systemctl_disable_now() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
         mgr_with(PackageManager::Apt, &runner).disable().unwrap();
-        runner.assert_called_with(
-            &CommandSpec::new("systemctl").args(["disable", "--now", "unattended-upgrades"]),
-        );
+        runner.assert_called_with(&CommandSpec::new("systemctl").args([
+            "disable",
+            "--now",
+            "unattended-upgrades",
+        ]));
     }
 
     #[test]
@@ -207,9 +213,11 @@ mod tests {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("active"));
         let active = mgr_with(PackageManager::Apt, &runner).is_active().unwrap();
         assert!(active);
-        runner.assert_called_with(
-            &CommandSpec::new("systemctl").args(["is-active", "--quiet", "unattended-upgrades"]),
-        );
+        runner.assert_called_with(&CommandSpec::new("systemctl").args([
+            "is-active",
+            "--quiet",
+            "unattended-upgrades",
+        ]));
     }
 
     #[test]
@@ -222,8 +230,10 @@ mod tests {
 
     #[test]
     fn enable_errors_on_nonzero_exit() {
-        let runner = FakeRunner::new()
-            .push_response(CommandOutput::from_stderr("Failed to enable unit: Access denied", 1));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stderr(
+            "Failed to enable unit: Access denied",
+            1,
+        ));
         let err = mgr_with(PackageManager::Apt, &runner).enable().unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("systemctl"), "{msg}");
@@ -233,7 +243,10 @@ mod tests {
     #[test]
     fn timer_name_only_for_dnf() {
         let runner = FakeRunner::new();
-        assert_eq!(mgr_with(PackageManager::Dnf, &runner).timer_name(), Some("dnf-automatic.timer"));
+        assert_eq!(
+            mgr_with(PackageManager::Dnf, &runner).timer_name(),
+            Some("dnf-automatic.timer")
+        );
         assert_eq!(mgr_with(PackageManager::Apt, &runner).timer_name(), None);
     }
 }

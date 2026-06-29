@@ -163,9 +163,8 @@ impl FakeRunner {
         let found = calls.iter().any(|c| specs_match(c, expected));
         assert!(
             found,
-            "expected call to {:?} but no matching call found.\n\
-             Actual calls: {:?}",
-            expected, calls
+            "expected call to {expected:?} but no matching call found.\n\
+             Actual calls: {calls:?}"
         );
     }
 
@@ -198,9 +197,9 @@ impl FakeRunner {
         let mut responses = self.responses.lock().expect("responses lock");
         if responses.is_empty() {
             if self.strict {
-                return Err(Error::Other(format!(
-                    "FakeRunner (strict): no response configured for call"
-                )));
+                return Err(Error::Other(
+                    "FakeRunner (strict): no response configured for call".to_owned(),
+                ));
             }
             return Ok(CommandOutput::from_stdout(String::new()));
         }
@@ -284,8 +283,8 @@ fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
 mod tests {
     use super::*;
 
-    /// Helper to call the sync Runner::run without ambiguity when both
-    /// Runner and AsyncRunner are in scope.
+    /// Helper to call the sync [`Runner::run`] without ambiguity when both
+    /// [`Runner`] and [`AsyncRunner`] are in scope.
     fn run_sync(runner: &FakeRunner, spec: &CommandSpec) -> Result<CommandOutput> {
         Runner::run(runner, spec)
     }

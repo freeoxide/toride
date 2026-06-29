@@ -83,9 +83,7 @@ impl Mise {
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     pub async fn task_edit_path(&self, name: &str) -> MiseResult<Utf8PathBuf> {
-        let output = self
-            .run_checked(["tasks", "edit", name, "--path"])
-            .await?;
+        let output = self.run_checked(["tasks", "edit", name, "--path"]).await?;
         Ok(Utf8PathBuf::from(output.stdout_trimmed().to_owned()))
     }
 
@@ -100,11 +98,7 @@ impl Mise {
         let mut args: Vec<&str> = vec!["tasks", "deps"];
         args.extend_from_slice(tasks);
         let output = self.run_checked(args).await?;
-        let deps = output
-            .stdout_trimmed()
-            .lines()
-            .map(str::to_owned)
-            .collect();
+        let deps = output.stdout_trimmed().lines().map(str::to_owned).collect();
         Ok(deps)
     }
 
@@ -151,9 +145,7 @@ impl Mise {
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
     pub async fn tasks_validate(&self) -> MiseResult<String> {
-        let output = self
-            .run_checked(["tasks", "validate", "--json"])
-            .await?;
+        let output = self.run_checked(["tasks", "validate", "--json"]).await?;
         Ok(output.stdout_trimmed().to_owned())
     }
 

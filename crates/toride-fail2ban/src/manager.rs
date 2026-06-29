@@ -62,7 +62,12 @@ impl Fail2BanManager {
             } else {
                 Some(&self.config.actions)
             };
-            let mut jail = Jail::new(resolved, self.store.clone(), actions, Box::new(crate::command::DuctRunner::new()))?;
+            let mut jail = Jail::new(
+                resolved,
+                self.store.clone(),
+                actions,
+                Box::new(crate::command::DuctRunner::new()),
+            )?;
             // Resume scanning from the last persisted journal position.
             jail.restore_journal()?;
             self.jails.insert(name.to_string(), jail);
@@ -85,7 +90,12 @@ impl Fail2BanManager {
         } else {
             Some(&self.config.actions)
         };
-        let jail = Jail::new(resolved, self.store.clone(), actions, Box::new(crate::command::DuctRunner::new()))?;
+        let jail = Jail::new(
+            resolved,
+            self.store.clone(),
+            actions,
+            Box::new(crate::command::DuctRunner::new()),
+        )?;
         self.jails.insert(name.to_string(), jail);
         Ok(())
     }
@@ -96,9 +106,9 @@ impl Fail2BanManager {
     ///
     /// Returns `JailNotFound` if the jail does not exist.
     pub fn remove_jail(&mut self, name: &str) -> crate::Result<()> {
-        self.jails.remove(name).ok_or_else(|| {
-            crate::Error::JailNotFound(name.to_string())
-        })?;
+        self.jails
+            .remove(name)
+            .ok_or_else(|| crate::Error::JailNotFound(name.to_string()))?;
         Ok(())
     }
 
@@ -108,7 +118,10 @@ impl Fail2BanManager {
     ///
     /// Returns `LogFileError` if any log file cannot be read, or `CommandFailed`
     /// if a ban action fails during scan.
-    pub fn scan_all(&mut self, mode: ExecutionMode) -> crate::Result<BTreeMap<String, crate::types::ScanResult>> {
+    pub fn scan_all(
+        &mut self,
+        mode: ExecutionMode,
+    ) -> crate::Result<BTreeMap<String, crate::types::ScanResult>> {
         let mut results = BTreeMap::new();
 
         for (name, jail) in &mut self.jails {
@@ -125,10 +138,15 @@ impl Fail2BanManager {
     ///
     /// Returns `JailNotFound` if the jail does not exist, `LogFileError` if the
     /// log file cannot be read, or `CommandFailed` if a ban action fails.
-    pub fn scan_jail(&mut self, name: &str, mode: ExecutionMode) -> crate::Result<crate::types::ScanResult> {
-        let jail = self.jails.get_mut(name).ok_or_else(|| {
-            crate::Error::JailNotFound(name.to_string())
-        })?;
+    pub fn scan_jail(
+        &mut self,
+        name: &str,
+        mode: ExecutionMode,
+    ) -> crate::Result<crate::types::ScanResult> {
+        let jail = self
+            .jails
+            .get_mut(name)
+            .ok_or_else(|| crate::Error::JailNotFound(name.to_string()))?;
         jail.scan(mode)
     }
 
@@ -139,10 +157,16 @@ impl Fail2BanManager {
     /// Returns `JailNotFound` if the jail does not exist, `AlreadyBanned` if the
     /// IP is already banned, `InvalidConfig` if the IP is in the ignore list,
     /// or `CommandFailed` if the firewall command fails.
-    pub fn ban_ip(&mut self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
-        let jail = self.jails.get_mut(jail_name).ok_or_else(|| {
-            crate::Error::JailNotFound(jail_name.to_string())
-        })?;
+    pub fn ban_ip(
+        &mut self,
+        jail_name: &str,
+        ip: IpAddr,
+        mode: ExecutionMode,
+    ) -> crate::Result<()> {
+        let jail = self
+            .jails
+            .get_mut(jail_name)
+            .ok_or_else(|| crate::Error::JailNotFound(jail_name.to_string()))?;
         jail.ban_ip(ip, mode)?;
         Ok(())
     }
@@ -153,10 +177,16 @@ impl Fail2BanManager {
     ///
     /// Returns `JailNotFound` if the jail does not exist, `NotBanned` if the IP
     /// is not currently banned, or `CommandFailed` if the firewall command fails.
-    pub fn unban_ip(&mut self, jail_name: &str, ip: IpAddr, mode: ExecutionMode) -> crate::Result<()> {
-        let jail = self.jails.get_mut(jail_name).ok_or_else(|| {
-            crate::Error::JailNotFound(jail_name.to_string())
-        })?;
+    pub fn unban_ip(
+        &mut self,
+        jail_name: &str,
+        ip: IpAddr,
+        mode: ExecutionMode,
+    ) -> crate::Result<()> {
+        let jail = self
+            .jails
+            .get_mut(jail_name)
+            .ok_or_else(|| crate::Error::JailNotFound(jail_name.to_string()))?;
         jail.unban_ip(ip, mode)?;
         Ok(())
     }
@@ -182,9 +212,10 @@ impl Fail2BanManager {
     /// Returns `JailNotFound` if the jail does not exist, or `Io` if the ban
     /// store cannot be read.
     pub fn jail_status(&self, name: &str) -> crate::Result<JailStatus> {
-        let jail = self.jails.get(name).ok_or_else(|| {
-            crate::Error::JailNotFound(name.to_string())
-        })?;
+        let jail = self
+            .jails
+            .get(name)
+            .ok_or_else(|| crate::Error::JailNotFound(name.to_string()))?;
         let bans = jail.list_bans()?;
         let total_bans = self.store.history_count_for_jail(name);
         Ok(JailStatus {

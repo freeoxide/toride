@@ -16,34 +16,34 @@ use ratatui::DefaultTerminal;
 use tokio::select;
 use tokio::sync::mpsc;
 
+use crate::about_data::AboutCollector;
 use crate::action::Action;
+use crate::fail2ban_data::Fail2banCollector;
+use crate::logs_data::LogsCollector;
 use crate::navigation::{Navigator, Screen};
 use crate::persistence;
 use crate::persistence::AnimPref;
+use crate::settings_data::SettingsCollector;
 use crate::ssh_data::{SshDataCollector, SshOpError, execute_op};
-use crate::fail2ban_data::Fail2banCollector;
-use crate::ufw_kit_data::FirewallCollector;
-use crate::toride_harden_data::HardenCollector;
-use crate::toride_monitor_data::MonitorCollector;
-use crate::toride_proxy_data::ProxyCollector;
+use crate::status_collector::StatusCollector;
+use crate::templates_data::TemplatesCollector;
+use crate::tools_data::ToolsCollector;
 use crate::toride_audit_data::AuditCollector;
 use crate::toride_backup_data::BackupCollector;
 use crate::toride_cloud_data::CloudCollector;
+use crate::toride_harden_data::HardenCollector;
+use crate::toride_mise_data::MiseCollector;
+use crate::toride_monitor_data::MonitorCollector;
+use crate::toride_proxy_data::ProxyCollector;
+use crate::toride_tailscale_data::TailscaleCollector;
 use crate::toride_updates_data::UpdatesCollector;
 use crate::toride_users_data::UsersCollector;
 use crate::toride_wireguard_data::WireguardCollector;
-use crate::toride_tailscale_data::TailscaleCollector;
-use crate::toride_mise_data::MiseCollector;
-use crate::about_data::AboutCollector;
-use crate::logs_data::LogsCollector;
-use crate::settings_data::SettingsCollector;
-use crate::templates_data::TemplatesCollector;
-use crate::tools_data::ToolsCollector;
-use crate::status_collector::StatusCollector;
+use crate::ufw_kit_data::FirewallCollector;
 use crate::ui::screens::AppScreen;
+use crate::ui::screens::dashboard::DashboardScreen;
 use crate::ui::screens::help::HelpScreen;
 use crate::ui::screens::quit::QuitModal;
-use crate::ui::screens::dashboard::DashboardScreen;
 use crate::ui::screens::welcome::WelcomeScreen;
 use crate::ui::theme::Theme;
 use crate::ui::transition::{TransitionCache, TransitionState};
@@ -54,6 +54,7 @@ use crate::virt_detect;
 ///
 /// Owns all screen instances, the navigation state, and drives the main
 /// event loop via tokio's `select!`.
+#[allow(clippy::struct_excessive_bools)]
 pub struct App {
     nav: Navigator,
     welcome: WelcomeScreen,
@@ -86,7 +87,7 @@ pub struct App {
     ufw_kit_collector: FirewallCollector,
     /// Kernel-hardening read-only data collector (no write path, no cooldown).
     toride_harden_collector: HardenCollector,
-    /// WireGuard read-only data collector (no write path, no cooldown).
+    /// `WireGuard` read-only data collector (no write path, no cooldown).
     toride_wireguard_collector: WireguardCollector,
     /// Updates read-only data collector (no write path, no cooldown).
     toride_updates_collector: UpdatesCollector,
@@ -119,19 +120,19 @@ pub struct App {
     /// `available == false` rather than hanging the collector task.
     toride_mise_collector: MiseCollector,
     /// About-toride read-only data collector (system + app identity). No write
-    /// path, no cooldown, no findings cache — reuses TorideStatus::collect via
-    /// spawn_blocking exactly like StatusCollector.
+    /// path, no cooldown, no findings cache — reuses `TorideStatus::collect` via
+    /// `spawn_blocking` exactly like `StatusCollector`.
     about_collector: AboutCollector,
     /// System log sources read-only data collector (no write path, no cooldown,
     /// no findings cache — simple oneshot that probes journald/syslog/presence).
     logs_collector: LogsCollector,
     /// Settings (app config + theme + runtime env) read-only data collector
     /// (no write path, no cooldown, no findings cache — the simple variant like
-    /// StatusCollector, since the section has no doctor/findings concept).
+    /// `StatusCollector`, since the section has no doctor/findings concept).
     settings_collector: SettingsCollector,
     /// Hardening-recipes catalogue read-only data collector (no write path,
     /// no cooldown). Sweeps the constant recipe catalogue via `which::which`
-    /// in a single spawn_blocking; findings (missing-target recipes) are
+    /// in a single `spawn_blocking`; findings (missing-target recipes) are
     /// cached for 60s for consistency with the other read-only sections.
     templates_collector: TemplatesCollector,
     /// Installed-tools catalogue (PATH scan of a curated CLI tool list)
@@ -164,6 +165,11 @@ pub struct App {
     /// Time of the last SSH write op — suppresses data refresh to avoid
     /// overwriting optimistic in-memory updates before the async write lands.
     ssh_write_cooldown: Option<Instant>,
+    /// A deferred best-effort config write (theme or animation preference)
+    /// recorded by [`App::update`] and drained off the event loop by the
+    /// `run` loop via `spawn_blocking`. `None` ⇒ nothing pending. See
+    /// [`PersistOp`] for the coalescing rationale.
+    pending_persist: Option<PersistOp>,
 }
 
 impl Default for App {
@@ -178,7 +184,7 @@ impl Default for App {
 /// Critically (F5), this decision is INDEPENDENT of the current screen:
 /// a reverting error arriving off-Dashboard still means disk truth diverges
 /// from optimistic state, so the revert intent must be recorded (Defer) or
-/// acted on (FireNow) regardless of where the user is. Only the UI toast is
+/// acted on (`FireNow`) regardless of where the user is. Only the UI toast is
 /// screen-gated. Before F5, the entire arm — including this scheduling —
 /// was gated on `Screen::Dashboard`, so a reverting error off-Dashboard was
 /// silently dropped.
@@ -191,6 +197,34 @@ enum RevertScheduling {
     /// Reverting; ops still in-flight → set `ssh_revert_pending` and let the
     /// DONE arm fire the refresh once the batch drains.
     Defer,
+}
+
+/// A best-effort config-persistence write deferred off the select! event loop.
+///
+/// [`App::update`] only records the intent here; the [`App::run`](App) loop
+/// drains it via `tokio::task::spawn_blocking` so a blocking `std::fs` config
+/// write never stalls key/terminal/animation event handling. Both payloads are
+/// `Copy`, so recording the latest op simply overwrites any pending one (a
+/// rapid theme/animation cycle coalesces into a single write of the final
+/// value, which is exactly the desired persistence semantics).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PersistOp {
+    /// Persist the selected theme (overwrites the chosen row, preserves others).
+    Theme(Theme),
+    /// Persist the animation preference (overwrites the chosen row, preserves others).
+    Animations(AnimPref),
+}
+
+impl PersistOp {
+    /// Run the blocking config write on the current thread. Called from a
+    /// `spawn_blocking` task so it never blocks the event loop. Errors are
+    /// swallowed inside the persistence layer (best-effort).
+    fn run(self) {
+        match self {
+            PersistOp::Theme(theme) => persistence::save_theme(theme),
+            PersistOp::Animations(pref) => persistence::save_animations(pref),
+        }
+    }
 }
 
 impl App {
@@ -252,6 +286,7 @@ impl App {
             templates_collector: TemplatesCollector::new(),
             tools_collector: ToolsCollector::new(),
             ssh_write_cooldown: None,
+            pending_persist: None,
         }
     }
 
@@ -263,16 +298,17 @@ impl App {
     /// rather than coercing — the operator can always fix the value.
     fn resolve_motion() -> (AnimPref, bool) {
         let pref = match std::env::var("TORIDE_ANIM") {
-            Ok(raw) => match AnimPref::from_label(&raw) {
-                Some(p) => p,
-                None => {
+            Ok(raw) => {
+                if let Some(p) = AnimPref::from_label(&raw) {
+                    p
+                } else {
                     tracing::warn!(
                         "TORIDE_ANIM={raw:?} unrecognized (expected auto/on/off); \
                          using config + auto-detect"
                     );
                     persistence::load_animations()
                 }
-            },
+            }
             Err(_) => persistence::load_animations(),
         };
         let reduced = Self::reduced_for(pref);
@@ -363,7 +399,13 @@ impl App {
                 // effort: a write failure (read-only HOME, no config dir) is
                 // logged inside save_theme and swallowed — the choice simply
                 // reverts to the default on next launch instead of crashing.
-                persistence::save_theme(next);
+                //
+                // The write is a blocking std::fs operation, so it is NOT done
+                // inline here (that would stall every terminal/key event in the
+                // select! loop while disk I/O completes, freezing the TUI on a
+                // hung NFS HOME). Instead the intent is recorded and the `run`
+                // loop drains it via `spawn_blocking` after handling the action.
+                self.pending_persist = Some(PersistOp::Theme(next));
             }
             Action::ToggleAnimations => {
                 // Cycle Auto → On → Off → Auto and persist, so a user who lands
@@ -376,7 +418,9 @@ impl App {
                 };
                 self.recompute_reduced_motion();
                 self.invalidate_all_caches();
-                persistence::save_animations(self.anim_pref);
+                // Defer the blocking config write off the event loop (see the
+                // CycleTheme arm above for the rationale).
+                self.pending_persist = Some(PersistOp::Animations(self.anim_pref));
             }
             // Scroll actions (and any future screen-local actions) are routed
             // to the current screen via `handle_action`.
@@ -555,6 +599,7 @@ impl App {
     /// # Errors
     ///
     /// Returns an error if the terminal draw fails or the event stream encounters an error.
+    #[allow(clippy::too_many_lines)]
     pub async fn run(mut self, mut terminal: DefaultTerminal) -> Result<()> {
         let mut events = EventStream::new();
         let refresh_interval = tokio::time::interval(std::time::Duration::from_secs(2));
@@ -586,6 +631,15 @@ impl App {
                     if let Some(action) = action {
                         self.update(action);
                         self.needs_redraw = true;
+                    }
+                    // Drain any deferred config write OFF the event loop. A
+                    // blocking std::fs config write (theme / animation pref)
+                    // must never stall key/terminal/animation handling, so it
+                    // is shipped to the blocking pool here rather than inside
+                    // `update`. Latest op wins (coalescing); best-effort —
+                    // errors are swallowed inside the persistence layer.
+                    if let Some(op) = self.pending_persist.take() {
+                        drop(tokio::task::spawn_blocking(move || op.run()));
                     }
                 }
 
@@ -993,6 +1047,13 @@ impl App {
             }
 
             if self.should_quit {
+                // Flush any deferred config write (theme / animation pref) so a
+                // change made immediately before quitting still lands on disk
+                // before the runtime tears down. Run it on the blocking pool
+                // and await it briefly — best-effort, never fatal.
+                if let Some(op) = self.pending_persist.take() {
+                    let _ = tokio::task::spawn_blocking(move || op.run()).await;
+                }
                 // Before tearing down the runtime, let any in-flight SSH write
                 // op run to completion. Each op is independently validated and
                 // backed-up before install, so finishing the current op leaves
@@ -1041,6 +1102,7 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 mod tests {
     use crate::action::Action;
     use crate::app::App;
+    use crate::app::PersistOp;
     use crate::navigation::Screen;
     use crate::persistence::AnimPref;
     use crate::ui::theme::Theme;
@@ -1092,7 +1154,10 @@ mod tests {
         app.reduced_motion = true;
         assert!(app.transition.is_none());
         app.update(Action::Continue);
-        assert!(app.transition.is_none(), "no animated transition under reduced motion");
+        assert!(
+            app.transition.is_none(),
+            "no animated transition under reduced motion"
+        );
         assert_eq!(app.nav.current(), Screen::Dashboard);
     }
 
@@ -1124,7 +1189,36 @@ mod tests {
 
         app.update(Action::ToggleAnimations);
         assert_eq!(app.anim_pref, AnimPref::Auto);
-        assert_eq!(app.reduced_motion, auto_reduced, "Auto re-evaluates to host result");
+        assert_eq!(
+            app.reduced_motion, auto_reduced,
+            "Auto re-evaluates to host result"
+        );
+
+        // Each toggle defers a config write (recorded, not done inline — see
+        // PersistOp). The latest op reflects the final cycled preference.
+        assert_eq!(
+            app.pending_persist,
+            Some(PersistOp::Animations(AnimPref::Auto)),
+            "ToggleAnimations must defer a persistence write of the new pref"
+        );
+    }
+
+    #[test]
+    fn update_cycle_theme_defers_persistence_off_loop() {
+        // CycleTheme must record the write for the run loop to drain off the
+        // event loop (a blocking std::fs write would otherwise stall the TUI),
+        // NOT perform the write inline inside update.
+        let mut app = App::new();
+        app.update(Action::CycleTheme);
+        assert!(
+            app.pending_persist.is_some(),
+            "CycleTheme must defer a persistence write"
+        );
+        assert_eq!(
+            app.pending_persist,
+            Some(PersistOp::Theme(app.active_theme)),
+            "deferred write must match the newly active theme"
+        );
     }
 
     #[test]
@@ -1333,7 +1427,10 @@ mod tests {
         // Dashboard-gated and this never happened.
         let mut app = App::new();
         // Force off-Dashboard + in-flight.
-        assert!(matches!(app.nav.current(), crate::navigation::Screen::Welcome));
+        assert!(matches!(
+            app.nav.current(),
+            crate::navigation::Screen::Welcome
+        ));
         app.ssh_ops_in_flight = 2;
         let scheduling = App::ssh_error_revert_scheduling(true, app.ssh_ops_in_flight);
         assert_eq!(scheduling, super::RevertScheduling::Defer);

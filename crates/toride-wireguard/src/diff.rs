@@ -63,27 +63,33 @@ impl ConfigDiff {
 
     /// Returns the number of inserted lines.
     pub fn insertions(&self) -> usize {
-        self.lines.iter().filter(|l| l.tag == DiffTag::Insert).count()
+        self.lines
+            .iter()
+            .filter(|l| l.tag == DiffTag::Insert)
+            .count()
     }
 
     /// Returns the number of deleted lines.
     pub fn deletions(&self) -> usize {
-        self.lines.iter().filter(|l| l.tag == DiffTag::Delete).count()
+        self.lines
+            .iter()
+            .filter(|l| l.tag == DiffTag::Delete)
+            .count()
     }
 
     /// Render the diff as a unified diff string with +/- prefixes.
     pub fn to_unified_string(&self) -> String {
-        self.lines
-            .iter()
-            .map(|line| {
-                let prefix = match line.tag {
-                    DiffTag::Context => ' ',
-                    DiffTag::Insert => '+',
-                    DiffTag::Delete => '-',
-                };
-                format!("{prefix}{}", line.content)
-            })
-            .collect()
+        let mut out = String::new();
+        for line in &self.lines {
+            let prefix = match line.tag {
+                DiffTag::Context => ' ',
+                DiffTag::Insert => '+',
+                DiffTag::Delete => '-',
+            };
+            out.push(prefix);
+            out.push_str(&line.content);
+        }
+        out
     }
 }
 
@@ -130,11 +136,15 @@ mod tests {
         // The diff should contain a deleted line with 'b' and an inserted line with 'c'.
         // `similar` preserves trailing newlines in content, so match without newline.
         assert!(
-            diff.lines.iter().any(|l| l.tag == DiffTag::Delete && l.content.trim() == "b"),
+            diff.lines
+                .iter()
+                .any(|l| l.tag == DiffTag::Delete && l.content.trim() == "b"),
             "expected a deleted line with 'b', got: {unified:?}"
         );
         assert!(
-            diff.lines.iter().any(|l| l.tag == DiffTag::Insert && l.content.trim() == "c"),
+            diff.lines
+                .iter()
+                .any(|l| l.tag == DiffTag::Insert && l.content.trim() == "c"),
             "expected an inserted line with 'c', got: {unified:?}"
         );
     }

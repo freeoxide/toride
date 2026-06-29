@@ -233,7 +233,13 @@ fn check_socket_connectable(path: &Path) -> bool {
 #[allow(clippy::unnecessary_wraps)] // run_with_timeout returns Option; signature must accommodate timeout/failure
 fn check_mux_master(control_path: &Path) -> bool {
     let spec = CommandSpec::new("ssh")
-        .args(["-O", "check", "-S", &control_path.to_string_lossy(), "dummy"])
+        .args([
+            "-O",
+            "check",
+            "-S",
+            &control_path.to_string_lossy(),
+            "dummy",
+        ])
         .timeout(SSH_TIMEOUT);
     let runner = DuctRunner;
     runner.run(&spec).is_ok_and(|o| o.success)
@@ -280,14 +286,14 @@ fn check_agent() -> bool {
 /// Returns 0 if the agent is not running or has no keys.
 #[allow(clippy::cast_possible_truncation)] // SSH key count will never exceed u32::MAX
 fn count_keys() -> u32 {
-    let spec = CommandSpec::new("ssh-add")
-        .arg("-l")
-        .timeout(SSH_TIMEOUT);
+    let spec = CommandSpec::new("ssh-add").arg("-l").timeout(SSH_TIMEOUT);
     let runner = DuctRunner;
     match runner.run(&spec) {
-        Ok(output) if output.success => {
-            output.stdout.lines().filter(|l| !l.trim().is_empty()).count() as u32
-        }
+        Ok(output) if output.success => output
+            .stdout
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .count() as u32,
         _ => 0,
     }
 }
@@ -298,7 +304,11 @@ impl fmt::Display for SshStatus {
         writeln!(
             f,
             "  Mux master: {}",
-            if self.mux_master_alive { "alive" } else { "dead" }
+            if self.mux_master_alive {
+                "alive"
+            } else {
+                "dead"
+            }
         )?;
         writeln!(
             f,
@@ -317,7 +327,11 @@ impl fmt::Display for SshStatus {
         writeln!(
             f,
             "  Agent: {}",
-            if self.agent_running { "running" } else { "stopped" }
+            if self.agent_running {
+                "running"
+            } else {
+                "stopped"
+            }
         )?;
         writeln!(f, "  Keys: {}", self.key_count)?;
         Ok(())
@@ -345,10 +359,8 @@ mod tests {
     #[test]
     fn collect_with_paths_returns_default_when_no_files() {
         let dir = TempDir::new().unwrap();
-        let status = SshStatus::collect_with_paths(
-            &dir.path().join("control"),
-            &dir.path().join("config"),
-        );
+        let status =
+            SshStatus::collect_with_paths(&dir.path().join("control"), &dir.path().join("config"));
         assert!(!status.mux_master_alive);
         assert!(!status.control_path_valid);
         assert!(!status.config_valid);

@@ -39,9 +39,7 @@ use std::collections::BTreeMap;
 use tokio::sync::oneshot;
 
 use crate::toride_harden_convert;
-use crate::ui::screens::toride_harden::{
-    FindingEntry, HardenProfileEntry, MountEntry, SysctlRow,
-};
+use crate::ui::screens::toride_harden::{FindingEntry, HardenProfileEntry, MountEntry, SysctlRow};
 
 /// Aggregated kernel-hardening data for the read-only section.
 #[derive(Clone, Debug)]
@@ -96,6 +94,10 @@ pub struct HardenCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl HardenCollector {
@@ -119,6 +121,7 @@ impl HardenCollector {
     /// If a collection is already in-flight, this is a no-op. The 60s findings
     /// cache is consulted: when fresh, the spawned task reuses the cached
     /// findings instead of re-running the doctor suite.
+    #[allow(clippy::similar_names)]
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
@@ -127,10 +130,14 @@ impl HardenCollector {
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
-                .map_or(false, |t| t.elapsed() < FINDINGS_TTL);
+                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
+            #[allow(
+                clippy::similar_names,
+                reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
+            )]
             let (bundle, used_cache) = collect_real_harden(use_cache, cached_findings).await;
             let _ = tx.send((bundle, used_cache));
         });
@@ -200,25 +207,27 @@ async fn collect_real_harden(
     // the `sysctl` binary; on macOS / sysctl-less hosts it returns
     // Err(BinaryNotFound). Build the client INSIDE spawn_blocking exactly like
     // collect_real_fail2ban builds its facade.
-    let client = match tokio::task::spawn_blocking(toride_harden::client::HardenClient::system).await {
-        Ok(Ok(client)) => client,
-        Ok(Err(e)) => {
-            // Construction failed (e.g. BinaryNotFound("sysctl") on macOS).
-            // Still populate the profile selector so the desired state is
-            // described; available = false renders the degraded panel.
-            tracing::debug!("harden construction failed: {e}");
-            return (empty_bundle_with_reason(format!("harden backend unavailable: {e}")), false);
-        }
-        Err(e) => {
-            tracing::warn!("harden construction task panicked: {e}");
-            return (
-                empty_bundle_with_reason(format!(
-                    "harden backend construction panicked: {e}"
-                )),
-                false,
-            );
-        }
-    };
+    let client =
+        match tokio::task::spawn_blocking(toride_harden::client::HardenClient::system).await {
+            Ok(Ok(client)) => client,
+            Ok(Err(e)) => {
+                // Construction failed (e.g. BinaryNotFound("sysctl") on macOS).
+                // Still populate the profile selector so the desired state is
+                // described; available = false renders the degraded panel.
+                tracing::debug!("harden construction failed: {e}");
+                return (
+                    empty_bundle_with_reason(format!("harden backend unavailable: {e}")),
+                    false,
+                );
+            }
+            Err(e) => {
+                tracing::warn!("harden construction task panicked: {e}");
+                return (
+                    empty_bundle_with_reason(format!("harden backend construction panicked: {e}")),
+                    false,
+                );
+            }
+        };
 
     // Profiles are computable WITHOUT the client (pure backend data), so build
     // them once outside the per-collection spawn. (They change only with the
@@ -234,7 +243,9 @@ async fn collect_real_harden(
         .iter()
         .filter_map(|entry| {
             toride_harden::HardeningProfile::from_name(&entry.name).map(|p| {
-                let spec = toride_harden::HardenSpec::builder().params(p.params()).build();
+                let spec = toride_harden::HardenSpec::builder()
+                    .params(p.params())
+                    .build();
                 (entry.name.clone(), spec)
             })
         })
@@ -319,9 +330,7 @@ async fn collect_real_harden(
         Err(e) => {
             tracing::warn!("harden collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "harden data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("harden data collection panicked: {e}")),
                 false,
             )
         }
@@ -334,7 +343,7 @@ async fn collect_real_harden(
 /// selector is populated via [`HardenProfile::all_names`] so the desired state
 /// is described even when the live state is unreadable. No reason is attached
 /// because none is known at this point; collection-time panics use
-/// [`empty_bundle_with_reason`] to surface the JoinError.
+/// [`empty_bundle_with_reason`] to surface the `JoinError`.
 fn empty_bundle() -> HardenDataBundle {
     HardenDataBundle {
         available: false,
@@ -348,7 +357,7 @@ fn empty_bundle() -> HardenDataBundle {
 
 /// Empty bundle carrying the reason collection failed. Used when construction
 /// failed (`HardenClient::system()` `Err(BinaryNotFound)`) or when a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> HardenDataBundle {
     let mut b = empty_bundle();
@@ -416,7 +425,7 @@ mod tests {
         // `available` flag reflects whether sysctl was found.
         let mut collector = HardenCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -457,7 +466,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = HardenCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).

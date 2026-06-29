@@ -25,7 +25,11 @@ pub struct TlsConfig {
 
 impl TlsConfig {
     /// Create a new TLS configuration for a domain.
-    pub fn new(domain: impl Into<String>, cert_path: impl Into<String>, key_path: impl Into<String>) -> Self {
+    pub fn new(
+        domain: impl Into<String>,
+        cert_path: impl Into<String>,
+        key_path: impl Into<String>,
+    ) -> Self {
         Self {
             domain: domain.into(),
             cert_path: cert_path.into(),
@@ -159,12 +163,18 @@ impl ProxySpec {
 
     /// Return server blocks that have TLS configured.
     pub fn tls_blocks(&self) -> Vec<&ServerBlock> {
-        self.server_blocks.iter().filter(|b| b.tls.is_some()).collect()
+        self.server_blocks
+            .iter()
+            .filter(|b| b.tls.is_some())
+            .collect()
     }
 
     /// Return server blocks without TLS.
     pub fn plaintext_blocks(&self) -> Vec<&ServerBlock> {
-        self.server_blocks.iter().filter(|b| b.tls.is_none()).collect()
+        self.server_blocks
+            .iter()
+            .filter(|b| b.tls.is_none())
+            .collect()
     }
 }
 
@@ -252,11 +262,14 @@ mod tests {
 
     #[test]
     fn proxy_spec_tls_blocks_filter() {
-        let spec = ProxySpec::builder()
-            .block(ServerBlock::new("example.com", 443, "127.0.0.1:3000")
-                .with_tls(TlsConfig::new("example.com", "/cert.pem", "/key.pem")))
-            .block(ServerBlock::new("http.example.com", 80, "127.0.0.1:3000"))
-            .build();
+        let spec =
+            ProxySpec::builder()
+                .block(
+                    ServerBlock::new("example.com", 443, "127.0.0.1:3000")
+                        .with_tls(TlsConfig::new("example.com", "/cert.pem", "/key.pem")),
+                )
+                .block(ServerBlock::new("http.example.com", 80, "127.0.0.1:3000"))
+                .build();
 
         assert_eq!(spec.tls_blocks().len(), 1);
         assert_eq!(spec.plaintext_blocks().len(), 1);

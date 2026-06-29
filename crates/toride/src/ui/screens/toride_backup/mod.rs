@@ -124,7 +124,8 @@ impl BackupContent {
     #[must_use]
     pub fn badge_status(&self) -> Option<&'static str> {
         if self.available {
-            self.timer_active.map(|active| if active { "active" } else { "inactive" })
+            self.timer_active
+                .map(|active| if active { "active" } else { "inactive" })
         } else {
             None
         }
@@ -246,6 +247,10 @@ impl BackupContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
     }
@@ -282,7 +287,7 @@ impl BackupContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -295,7 +300,7 @@ impl BackupContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (JoinError) — not when restic/borg are missing (missing
+    /// task PANICS (`JoinError`) — not when restic/borg are missing (missing
     /// binaries produce Critical doctor findings, keeping `available == true`
     /// so the operator sees the findings panel).
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
@@ -319,8 +324,12 @@ impl BackupContent {
             .clone()
             .unwrap_or_else(|| "backup data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -399,12 +408,11 @@ impl BackupContent {
             "Backup Binaries",
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )));
-        self.push_binary_line(lines, p, "restic", self.restic_available);
-        self.push_binary_line(lines, p, "borg   ", self.borg_available);
+        Self::push_binary_line(lines, p, "restic", self.restic_available);
+        Self::push_binary_line(lines, p, "borg   ", self.borg_available);
     }
 
     fn push_binary_line(
-        &self,
         lines: &mut Vec<Line<'static>>,
         p: Palette,
         label: &str,
@@ -435,7 +443,10 @@ impl BackupContent {
         };
         lines.push(Line::from(vec![
             Span::styled("  unit     ", Style::new().fg(p.text_muted)),
-            Span::styled(format!("{inst_icon} {inst_text}"), Style::new().fg(inst_color)),
+            Span::styled(
+                format!("{inst_icon} {inst_text}"),
+                Style::new().fg(inst_color),
+            ),
         ]));
 
         // Timer active?
@@ -482,11 +493,8 @@ impl BackupContent {
         // Group by severity: Critical > Error > Warning > Info > Ok.
         let order = ["critical", "error", "warning", "info", "ok"];
         for sev in order {
-            let group: Vec<&FindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
+            let group: Vec<&FindingEntry> =
+                self.findings.iter().filter(|f| f.severity == sev).collect();
             if group.is_empty() {
                 continue;
             }
@@ -514,14 +522,14 @@ impl BackupContent {
                         Style::new().fg(p.text_dim),
                     )));
                 }
-                if let Some(fix) = &f.fix {
-                    if !fix.is_empty() {
-                        let fix = truncate_str(fix, 70);
-                        lines.push(Line::from(vec![
-                            Span::styled("      → ", Style::new().fg(p.accent2)),
-                            Span::styled(fix, Style::new().fg(p.accent2)),
-                        ]));
-                    }
+                if let Some(fix) = &f.fix
+                    && !fix.is_empty()
+                {
+                    let fix = truncate_str(fix, 70);
+                    lines.push(Line::from(vec![
+                        Span::styled("      → ", Style::new().fg(p.accent2)),
+                        Span::styled(fix, Style::new().fg(p.accent2)),
+                    ]));
                 }
             }
         }
@@ -605,12 +613,10 @@ mod tests {
         ]
     }
 
-    /// Render a content area to a string (snapshot pattern from ssh keys_tab.rs).
+    /// Render a content area to a string (snapshot pattern from ssh `keys_tab.rs`).
     fn render_to_string(content: &mut BackupContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -648,10 +654,7 @@ mod tests {
         );
         let out = render_to_string(&mut c, 120, 30);
         assert!(out.contains("live"), "live badge: {out}");
-        assert!(
-            out.contains("toride/backup"),
-            "config path rendered: {out}"
-        );
+        assert!(out.contains("toride/backup"), "config path rendered: {out}");
     }
 
     #[test]
@@ -697,10 +700,7 @@ mod tests {
             out.contains("No backup binary available"),
             "finding title: {out}"
         );
-        assert!(
-            out.contains("Install restic or borg"),
-            "fix hint: {out}"
-        );
+        assert!(out.contains("Install restic or borg"), "fix hint: {out}");
     }
 
     #[test]

@@ -14,9 +14,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
+use toride_runner::Runner;
 use toride_runner::output::CommandOutput;
 use toride_runner::spec::CommandSpec;
-use toride_runner::Runner;
 
 use crate::Result;
 
@@ -31,10 +31,24 @@ const TAILSCALED_UNIT: &str = "tailscaled";
 const TAILSCALE_BIN: &str = "tailscale";
 
 /// Default timeout for `tailscale up` (it can take a while to negotiate).
-const UP_TIMEOUT: Duration = Duration::from_secs(120);
+const UP_TIMEOUT: Duration = Duration::from_mins(2);
 
 /// Default timeout for `tailscale status` / `tailscale down`.
 const STATUS_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Combined stdout+stderr byte cap enforced on every `tailscale` CLI call.
+///
+/// `tailscale` output is bounded in normal operation, but a misbehaving
+/// daemon or a tampered binary could emit an unbounded stream; capping at
+/// capture time (via [`CommandSpec::output_limit`]) prevents an OOM and
+/// bounds the size of captured output / error variants.
+const OUTPUT_LIMIT_BYTES: usize = 8 * 1024 * 1024;
+
+/// Maximum number of bytes of `tailscale status --json` stdout retained for
+/// JSON parsing. A healthy status document is well under a megabyte; this is
+/// a defensive ceiling so a huge response is rejected before it can drive
+/// unbounded allocations in the JSON parser.
+const STATUS_JSON_MAX_BYTES: usize = 8 * 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // SharedRunner -- lets an `Arc<dyn Runner>` back a `Box<dyn Runner>`
@@ -106,6 +120,7 @@ impl TailscaleService {
     }
 
     /// Enable dry-run mode (log commands but do not execute).
+    #[must_use]
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
@@ -220,7 +235,8 @@ impl TailscaleService {
         }
         let spec = CommandSpec::new(TAILSCALE_BIN)
             .arg("up")
-            .timeout(UP_TIMEOUT);
+            .timeout(UP_TIMEOUT)
+            .output_limit(OUTPUT_LIMIT_BYTES);
         self.run_checked(&spec)?;
         Ok(())
     }
@@ -237,7 +253,8 @@ impl TailscaleService {
         }
         let spec = CommandSpec::new(TAILSCALE_BIN)
             .arg("down")
-            .timeout(STATUS_TIMEOUT);
+            .timeout(STATUS_TIMEOUT)
+            .output_limit(OUTPUT_LIMIT_BYTES);
         self.run_checked(&spec)?;
         Ok(())
     }
@@ -255,13 +272,35 @@ impl TailscaleService {
     pub fn status_json(&self) -> Result<serde_json::Value> {
         let spec = CommandSpec::new(TAILSCALE_BIN)
             .args(["status", "--json"])
-            .timeout(STATUS_TIMEOUT);
+            .timeout(STATUS_TIMEOUT)
+            .output_limit(OUTPUT_LIMIT_BYTES);
         let output = self.run_checked(&spec)?;
-        serde_json::from_str(&output.stdout)
-            .map_err(|e| crate::Error::ApiError(format!("failed to parse `tailscale status` JSON: {e}")))
+        // Defensive bound on the stdout we hand to the JSON parser. The runner
+        // already caps combined output at `OUTPUT_LIMIT_BYTES`, but enforce the
+        // ceiling explicitly here too so a future change to the runner cap (or a
+        // runner that does not honour `output_limit`) cannot let a pathological
+        // response drive unbounded allocations in `serde_json`.
+        if output.stdout.len() > STATUS_JSON_MAX_BYTES {
+            return Err(crate::Error::ApiError(format!(
+                "`tailscale status` JSON output exceeded {} bytes (got {})",
+                STATUS_JSON_MAX_BYTES,
+                output.stdout.len()
+            )));
+        }
+        serde_json::from_str(&output.stdout).map_err(|e| {
+            crate::Error::ApiError(format!("failed to parse `tailscale status` JSON: {e}"))
+        })
     }
 
     /// Run a [`CommandSpec`] through the runner and propagate non-zero exits.
+    ///
+    /// The captured stderr is routed through
+    /// [`toride_runner::display::scrub_stderr`] before being stored in a
+    /// [`crate::Error::CommandFailed`]: it applies the canonical length cap
+    /// ([`toride_runner::display::STDERR_CAP_BYTES`]) and, when the spec
+    /// carries `redact(true)`, scrubs any secret values the failed command may
+    /// have echoed to stderr. Raw, potentially huge or secret-bearing stderr
+    /// therefore never reaches the error variant.
     fn run_checked(&self, spec: &CommandSpec) -> Result<CommandOutput> {
         let output = self
             .runner
@@ -269,13 +308,13 @@ impl TailscaleService {
             .map_err(|e| crate::Error::CommandFailed {
                 program: spec.program.clone(),
                 code: None,
-                stderr: e.to_string(),
+                stderr: toride_runner::display::scrub_stderr(spec, &e.to_string()),
             })?;
         if !output.success {
             return Err(crate::Error::CommandFailed {
                 program: spec.program.clone(),
                 code: output.exit_code,
-                stderr: output.stderr,
+                stderr: toride_runner::display::scrub_stderr(spec, &output.stderr),
             });
         }
         Ok(output)
@@ -324,11 +363,41 @@ mod tests {
             calls.iter().map(|c| (&c.program, c.args.clone())).collect();
 
         assert_eq!(progs.len(), 5);
-        assert_eq!(progs[0], (&"systemctl".to_owned(), vec!["start".to_owned(), "tailscaled".to_owned()]));
-        assert_eq!(progs[1], (&"systemctl".to_owned(), vec!["stop".to_owned(), "tailscaled".to_owned()]));
-        assert_eq!(progs[2], (&"systemctl".to_owned(), vec!["restart".to_owned(), "tailscaled".to_owned()]));
-        assert_eq!(progs[3], (&"systemctl".to_owned(), vec!["enable".to_owned(), "tailscaled".to_owned()]));
-        assert_eq!(progs[4], (&"systemctl".to_owned(), vec!["disable".to_owned(), "tailscaled".to_owned()]));
+        assert_eq!(
+            progs[0],
+            (
+                &"systemctl".to_owned(),
+                vec!["start".to_owned(), "tailscaled".to_owned()]
+            )
+        );
+        assert_eq!(
+            progs[1],
+            (
+                &"systemctl".to_owned(),
+                vec!["stop".to_owned(), "tailscaled".to_owned()]
+            )
+        );
+        assert_eq!(
+            progs[2],
+            (
+                &"systemctl".to_owned(),
+                vec!["restart".to_owned(), "tailscaled".to_owned()]
+            )
+        );
+        assert_eq!(
+            progs[3],
+            (
+                &"systemctl".to_owned(),
+                vec!["enable".to_owned(), "tailscaled".to_owned()]
+            )
+        );
+        assert_eq!(
+            progs[4],
+            (
+                &"systemctl".to_owned(),
+                vec!["disable".to_owned(), "tailscaled".to_owned()]
+            )
+        );
     }
 
     #[test]
@@ -367,7 +436,10 @@ mod tests {
         let svc = TailscaleService::with_runner(runner.clone()).with_dry_run(true);
         svc.start().unwrap();
         svc.stop().unwrap();
-        assert!(runner.calls().is_empty(), "dry-run must not execute commands");
+        assert!(
+            runner.calls().is_empty(),
+            "dry-run must not execute commands"
+        );
     }
 
     #[test]
@@ -420,6 +492,65 @@ mod tests {
         let svc = TailscaleService::with_runner(runner);
         let err = svc.status_json().unwrap_err();
         assert!(matches!(err, crate::Error::CommandFailed { .. }));
+    }
+
+    #[test]
+    fn run_checked_failure_stderr_is_scrubbed_and_capped() {
+        // `run_checked` routes failure stderr through
+        // `toride_runner::display::scrub_stderr`, which caps it at
+        // STDERR_CAP_BYTES. An unbounded burst therefore cannot blow up the
+        // CommandFailed variant, and a secret echoed to stderr (when the spec
+        // carries redact(true)) is scrubbed. Verify the cap path here.
+        let big = "x".repeat(toride_runner::display::STDERR_CAP_BYTES + 5_000);
+        let runner = Arc::new(FakeRunner::new().respond(
+            spec_for("tailscale", &["status", "--json"]),
+            CommandOutput::from_stderr(&big, 1),
+        ));
+        let svc = TailscaleService::with_runner(runner);
+        let err = svc.status_json().unwrap_err();
+        match err {
+            crate::Error::CommandFailed { stderr, .. } => {
+                assert!(
+                    stderr.contains(toride_runner::display::STDERR_TRUNCATION_MARKER),
+                    "stderr must be capped: {stderr}"
+                );
+                assert!(stderr.len() < big.len(), "stderr must be bounded");
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn run_checked_scrubs_secret_from_failure_stderr() {
+        // When the spec carries a sensitive flag value AND `redact(true)`, a
+        // value echoed to stderr by the failing command must be scrubbed before
+        // reaching CommandFailed. `--key` is a default redaction flag, so its
+        // value is collected and replaced with `***` in the captured stderr.
+        let secret = "tskey-auth-EXAMPLESECRETVALUE";
+        let redacted_spec = CommandSpec::new("tailscale")
+            .args(["up", "--key", secret])
+            .redact(true);
+        let runner = Arc::new(FakeRunner::new().respond(
+            redacted_spec.clone(),
+            CommandOutput::from_stderr(format!("auth failure: bad key {secret}"), 1),
+        ));
+        let svc = TailscaleService::with_runner(runner);
+        // `run_checked` is private to the module; the test module shares the
+        // parent's private items, so call it directly with the redacted spec.
+        let err = svc.run_checked(&redacted_spec).unwrap_err();
+        match err {
+            crate::Error::CommandFailed { stderr, .. } => {
+                assert!(
+                    !stderr.contains(secret),
+                    "secret leaked into CommandFailed stderr: {stderr}"
+                );
+                assert!(
+                    stderr.contains("***"),
+                    "expected redaction marker: {stderr}"
+                );
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
     }
 
     #[test]

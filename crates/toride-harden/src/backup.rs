@@ -5,6 +5,23 @@
 
 use crate::error::Result;
 use crate::paths::HardenPaths;
+use std::fmt::Write as _;
+
+/// Sentinel token embedded in every section delimiter so a real sysctl.conf
+/// comment of the shape `# === my section ===` cannot be mistaken for a
+/// section marker (and thus corrupt the round-trip). Writers always emit
+/// `# <SENTINEL> === <name> ===`; parsers only treat a line as a section
+/// marker when it both starts with the section prefix AND carries this token.
+const SECTION_SENTINEL: &str = "toride:backup:section";
+
+/// File mode for restored sysctl configuration files (`/etc/sysctl.conf`,
+/// `/etc/sysctl.d/*.conf`). These are world-readable system config and
+/// conventionally `0644` on a stock Linux install.
+const SYSCTL_CONF_MODE: u32 = 0o644;
+/// File mode for persisted backup snapshots. A backup captures the host's
+/// full sysctl posture, which can reveal hardening gaps; restrict to the
+/// owner to avoid leaking that to other local users.
+const BACKUP_FILE_MODE: u32 = 0o600;
 
 /// A snapshot of sysctl configuration files before mutation.
 #[derive(Debug, Clone)]
@@ -27,27 +44,29 @@ pub struct BackupSnapshot {
 /// Returns an error if the backup directory cannot be created.
 /// Individual file read failures are captured as `None` in the snapshot.
 pub fn create_backup(paths: &HardenPaths) -> Result<BackupSnapshot> {
-    let timestamp = chrono_independent_timestamp();
+    // High-resolution wall-clock time plus an on-disk uniqueness guard so
+    // repeated invocations never overwrite a prior backup.
+    let timestamp = unique_timestamp(paths);
 
     // Read main sysctl.conf
     let sysctl_conf = std::fs::read_to_string(&paths.sysctl_conf).ok();
 
     // Read all drop-in files
     let mut dropins = Vec::new();
-    if paths.sysctl_d.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&paths.sysctl_d) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().is_some_and(|ext| ext == "conf") {
-                    // Store the name without .conf suffix so dropin_path() works correctly
-                    let name = path
-                        .file_stem()
-                        .unwrap_or_default()
-                        .to_string_lossy()
-                        .to_string();
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        dropins.push((name, content));
-                    }
+    if paths.sysctl_d.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&paths.sysctl_d)
+    {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().is_some_and(|ext| ext == "conf") {
+                // Store the name without .conf suffix so dropin_path() works correctly
+                let name = path
+                    .file_stem()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
+                if let Ok(content) = std::fs::read_to_string(&path) {
+                    dropins.push((name, content));
                 }
             }
         }
@@ -78,14 +97,14 @@ pub fn create_backup(paths: &HardenPaths) -> Result<BackupSnapshot> {
 pub fn restore_backup(paths: &HardenPaths, snapshot: &BackupSnapshot) -> Result<()> {
     // Restore main sysctl.conf
     if let Some(content) = &snapshot.sysctl_conf {
-        toride_fs::atomic_write(&paths.sysctl_conf, content)?;
+        toride_fs::atomic_write_with_perms(&paths.sysctl_conf, content, SYSCTL_CONF_MODE)?;
         tracing::info!("backup: restored {}", paths.sysctl_conf.display());
     }
 
     // Restore drop-in files
     for (name, content) in &snapshot.dropins {
         if let Some(path) = paths.dropin_path(name) {
-            toride_fs::atomic_write(&path, content)?;
+            toride_fs::atomic_write_with_perms(&path, content, SYSCTL_CONF_MODE)?;
             tracing::info!("backup: restored {}", path.display());
         }
     }
@@ -109,21 +128,21 @@ pub fn save_backup_to_disk(paths: &HardenPaths, snapshot: &BackupSnapshot) -> Re
     let path = paths.backup_dir.join(&filename);
 
     let mut content = String::new();
-    content.push_str(&format!("# Backup created: {}\n\n", snapshot.timestamp));
+    let _ = write!(content, "# Backup created: {}\n\n", snapshot.timestamp);
 
     if let Some(conf) = &snapshot.sysctl_conf {
-        content.push_str("# === /etc/sysctl.conf ===\n");
+        let _ = writeln!(content, "# {SECTION_SENTINEL} === /etc/sysctl.conf ===");
         content.push_str(conf);
         content.push_str("\n\n");
     }
 
     for (name, file_content) in &snapshot.dropins {
-        content.push_str(&format!("# === {name} ===\n"));
+        let _ = writeln!(content, "# {SECTION_SENTINEL} === {name} ===");
         content.push_str(file_content);
         content.push_str("\n\n");
     }
 
-    toride_fs::atomic_write(&path, &content)?;
+    toride_fs::atomic_write_with_perms(&path, &content, BACKUP_FILE_MODE)?;
     tracing::info!("backup: saved to {}", path.display());
     Ok(())
 }
@@ -168,17 +187,27 @@ pub fn load_backup_from_disk(paths: &HardenPaths, timestamp: &str) -> Result<Bac
 /// ```text
 /// # Backup created: <timestamp>
 ///
-/// # === /etc/sysctl.conf ===
+/// # toride:backup:section === /etc/sysctl.conf ===
 /// <sysctl.conf contents>
 ///
-/// # === <dropin name> ===
+/// # toride:backup:section === <dropin name> ===
 /// <dropin contents>
 ///
 /// ```
+///
+/// Section delimiters carry the [`SECTION_SENTINEL`] token so a real
+/// sysctl.conf comment shaped like `# === my section ===` is not mistaken for
+/// a marker. For backward compatibility, the bare legacy form
+/// `# === <name> ===` (written by older versions) is still recognised as a
+/// marker ONLY when it appears at the very start of a line, since a genuine
+/// sysctl comment would have to exactly match that shape to collide.
 fn parse_backup(content: &str) -> Result<BackupSnapshot> {
     const HEADER_PREFIX: &str = "# Backup created: ";
-    const SECTION_PREFIX: &str = "# === ";
     const SECTION_SUFFIX: &str = " ===";
+    // Modern markers: `# toride:backup:section === <name> ===`
+    const SENTINEL_PREFIX: &str = "# toride:backup:section === ";
+    // Legacy markers (older on-disk backups): `# === <name> ===`
+    const LEGACY_PREFIX: &str = "# === ";
 
     // Header: first line must be the `# Backup created: <ts>` marker.
     let header_end = content
@@ -203,14 +232,23 @@ fn parse_backup(content: &str) -> Result<BackupSnapshot> {
 
     for line in body.split_inclusive('\n') {
         let trimmed = line.trim_end_matches('\n');
-        if trimmed.starts_with(SECTION_PREFIX) && trimmed.ends_with(SECTION_SUFFIX) {
+
+        // Prefer the sentinel-bearing marker; fall back to the legacy form so
+        // backups written by previous versions still round-trip.
+        let name = if let Some(rest) = trimmed.strip_prefix(SENTINEL_PREFIX) {
+            rest.strip_suffix(SECTION_SUFFIX)
+        } else if let Some(rest) = trimmed.strip_prefix(LEGACY_PREFIX) {
+            rest.strip_suffix(SECTION_SUFFIX)
+        } else {
+            None
+        };
+
+        if let Some(name) = name {
             // Flush the previous section.
-            if let Some(name) = current_section.take() {
-                push_section(&mut sysctl_conf, &mut dropins, &name, &current_lines);
+            if let Some(prev) = current_section.take() {
+                push_section(&mut sysctl_conf, &mut dropins, &prev, &current_lines);
                 current_lines.clear();
             }
-
-            let name = &trimmed[SECTION_PREFIX.len()..trimmed.len() - SECTION_SUFFIX.len()];
             current_section = Some(name.to_string());
         } else if current_section.is_some() {
             current_lines.push(trimmed);
@@ -262,20 +300,56 @@ fn push_section(
     }
 }
 
-/// Generate a timestamp string without depending on chrono.
+/// Generate a high-resolution timestamp string without depending on chrono.
+///
+/// The timestamp combines whole seconds with a zero-padded millisecond
+/// component, so backups created within the same wall-clock second no longer
+/// collide (the previous second-resolution format silently overwrote prior
+/// backups). Callers that need a guaranteed-unique on-disk name should pass
+/// the result through [`unique_timestamp`], which appends a monotonic counter
+/// suffix only when an actual collision is detected on disk.
 fn chrono_independent_timestamp() -> String {
-    // Use a simple counter-based timestamp for now.
-    // In production, this would use `SystemTime`.
     let duration = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    format!("{}", duration.as_secs())
+    format!("{}{:03}", duration.as_secs(), duration.subsec_millis())
+}
+
+/// Return a backup timestamp guaranteed not to collide with an existing
+/// backup file under `backup_dir`.
+///
+/// Starts from the high-resolution wall-clock timestamp produced by
+/// [`chrono_independent_timestamp`]; if `sysctl-backup-<ts>.txt` already
+/// exists, appends a `-<n>` counter suffix (starting at 2) until a free name
+/// is found. This is the safety net that makes repeated invocations within the
+/// same millisecond non-destructive.
+fn unique_timestamp(paths: &HardenPaths) -> String {
+    let base = chrono_independent_timestamp();
+
+    // Fast path: no existing backup with this name.
+    let candidate = paths.backup_dir.join(format!("sysctl-backup-{base}.txt"));
+    if !candidate.exists() {
+        return base;
+    }
+
+    // Collision: scan for a free counter suffix.
+    for n in 2..u64::MAX {
+        let suffixed = format!("{base}-{n}");
+        let probe = paths
+            .backup_dir
+            .join(format!("sysctl-backup-{suffixed}.txt"));
+        if !probe.exists() {
+            return suffixed;
+        }
+    }
+
+    // Practically unreachable (u64::MAX attempts); fall back to the base name.
+    base
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn backup_captures_files() {

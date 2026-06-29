@@ -119,7 +119,10 @@ pub fn convert_outdated_map(
                 return None;
             }
             let OutdatedToolEntry {
-                current, latest, backend, ..
+                current,
+                latest,
+                backend,
+                ..
             } = entry;
             Some(MiseOutdatedEntry {
                 name,
@@ -272,9 +275,7 @@ mod tests {
     // mirroring the bar set by fail2ban_convert's empty/malformed/degenerate
     // tests.
 
-    fn parse_outdated_json(
-        raw: &str,
-    ) -> toride_mise::serde_utils::json_outputs::OutdatedOutput {
+    fn parse_outdated_json(raw: &str) -> toride_mise::serde_utils::json_outputs::OutdatedOutput {
         // Mirror the deserialisation the backend's run_json performs, so a test
         // failure here signals the same break the collector would hit in prod.
         serde_json::from_str(raw).expect("outdated JSON must parse into OutdatedOutput")

@@ -16,6 +16,9 @@ use toride_runner::CommandSpec;
 /// subsystem and checking journald configuration.
 pub struct JournaldManager<'a> {
     runner: &'a dyn toride_runner::Runner,
+    /// System paths; kept for API symmetry with the other managers though
+    /// not read by this manager yet.
+    #[allow(dead_code)]
     paths: &'a AuditPaths,
 }
 

@@ -58,8 +58,14 @@ fn cidr_block_new_invalid_ipv4_prefix() {
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::InvalidIp(msg) => {
-            assert!(msg.contains("33"), "message should mention the bad prefix: {msg}");
-            assert!(msg.contains("32"), "message should mention the max prefix: {msg}");
+            assert!(
+                msg.contains("33"),
+                "message should mention the bad prefix: {msg}"
+            );
+            assert!(
+                msg.contains("32"),
+                "message should mention the max prefix: {msg}"
+            );
         }
         other => panic!("expected InvalidIp, got: {other:?}"),
     }
@@ -612,10 +618,7 @@ fn ban_duration_max_value() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         manager.ban(ip, 32, "sshd", 1, u64::MAX, None)
     }));
-    assert!(
-        result.is_ok(),
-        "ban with u64::MAX duration must not panic"
-    );
+    assert!(result.is_ok(), "ban with u64::MAX duration must not panic");
 }
 
 // ---------------------------------------------------------------------------
@@ -667,11 +670,7 @@ fn cidr_set_overlapping_blocks() {
 
 #[test]
 fn cidr_block_contains_ipv6_link_local() {
-    let block = CidrBlock::new(
-        IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)),
-        10,
-    )
-    .unwrap();
+    let block = CidrBlock::new(IpAddr::V6(Ipv6Addr::new(0xfe80, 0, 0, 0, 0, 0, 0, 0)), 10).unwrap();
 
     // fe80::1 is within fe80::/10
     assert!(
@@ -722,7 +721,10 @@ fn cidr_block_host_bits_set() {
     // Creating a /24 with a host address (.5) in the network position is allowed;
     // contains() applies the mask so containment works correctly.
     let block = CidrBlock::new("192.168.1.5".parse().unwrap(), 24);
-    assert!(block.is_ok(), "host bits in the network address should be allowed");
+    assert!(
+        block.is_ok(),
+        "host bits in the network address should be allowed"
+    );
     let block = block.unwrap();
 
     assert!(
@@ -811,7 +813,9 @@ fn ban_manager_ban_duration_one_second() {
     let entry = manager.ban(ip, 32, "sshd", 1, 1, None).unwrap();
     let after = Utc::now();
 
-    let expires = entry.expires_at.expect("expires_at must be set for duration=1");
+    let expires = entry
+        .expires_at
+        .expect("expires_at must be set for duration=1");
 
     // expires_at should be approximately before + 1 second, within [before+1s, after+1s].
     let lower_bound = before + Duration::seconds(1);
@@ -863,7 +867,11 @@ fn ban_manager_list_bans_after_purge() {
 
     // After purge: only 2 active bans remain.
     let all_after = manager.list_bans(None).unwrap();
-    assert_eq!(all_after.len(), 2, "2 active bans should remain after purge");
+    assert_eq!(
+        all_after.len(),
+        2,
+        "2 active bans should remain after purge"
+    );
 
     let remaining_ips: Vec<IpAddr> = all_after.iter().map(|b| b.ip).collect();
     assert!(remaining_ips.contains(&"10.0.0.1".parse::<IpAddr>().unwrap()));
@@ -879,7 +887,10 @@ fn cidr_block_normalizes_host_bits_ipv4() {
     // Two blocks with different host bits but same network should be equal.
     let a = CidrBlock::new("192.168.1.5".parse().unwrap(), 24).unwrap();
     let b = CidrBlock::new("192.168.1.0".parse().unwrap(), 24).unwrap();
-    assert_eq!(a, b, "blocks with same /24 network should be equal regardless of host bits");
+    assert_eq!(
+        a, b,
+        "blocks with same /24 network should be equal regardless of host bits"
+    );
     assert_eq!(a.addr().to_string(), "192.168.1.0");
 }
 
@@ -887,7 +898,10 @@ fn cidr_block_normalizes_host_bits_ipv4() {
 fn cidr_block_normalizes_host_bits_ipv6() {
     let a = CidrBlock::new("2001:db8::abcd".parse().unwrap(), 32).unwrap();
     let b = CidrBlock::new("2001:db8::".parse().unwrap(), 32).unwrap();
-    assert_eq!(a, b, "blocks with same /32 network should be equal regardless of host bits");
+    assert_eq!(
+        a, b,
+        "blocks with same /32 network should be equal regardless of host bits"
+    );
 }
 
 #[test]
@@ -902,10 +916,18 @@ fn cidr_block_prefix_32_no_normalization() {
 #[test]
 fn cidr_block_prefix_0_normalizes_to_unspecified() {
     let a = CidrBlock::new("192.168.1.5".parse().unwrap(), 0).unwrap();
-    assert_eq!(a.addr().to_string(), "0.0.0.0", "/0 should normalize to unspecified");
+    assert_eq!(
+        a.addr().to_string(),
+        "0.0.0.0",
+        "/0 should normalize to unspecified"
+    );
 
     let b = CidrBlock::new("2001:db8::abcd".parse().unwrap(), 0).unwrap();
-    assert_eq!(b.addr().to_string(), "::", "/0 IPv6 should normalize to unspecified");
+    assert_eq!(
+        b.addr().to_string(),
+        "::",
+        "/0 IPv6 should normalize to unspecified"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -941,7 +963,11 @@ fn ban_manager_is_banned_cidr_slash_8() {
 
     // Any 10.x.x.x should be banned.
     assert!(manager.is_banned("10.1.2.3".parse().unwrap()).unwrap());
-    assert!(manager.is_banned("10.255.255.255".parse().unwrap()).unwrap());
+    assert!(
+        manager
+            .is_banned("10.255.255.255".parse().unwrap())
+            .unwrap()
+    );
 
     // Other ranges should not.
     assert!(!manager.is_banned("11.0.0.1".parse().unwrap()).unwrap());
@@ -970,7 +996,11 @@ fn ban_manager_is_banned_ipv6_cidr() {
         .unwrap();
 
     assert!(manager.is_banned("2001:db8::1".parse().unwrap()).unwrap());
-    assert!(manager.is_banned("2001:db8::abcd".parse().unwrap()).unwrap());
+    assert!(
+        manager
+            .is_banned("2001:db8::abcd".parse().unwrap())
+            .unwrap()
+    );
     assert!(!manager.is_banned("2001:db9::1".parse().unwrap()).unwrap());
 }
 

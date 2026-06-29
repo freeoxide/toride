@@ -28,8 +28,8 @@ use camino::Utf8PathBuf;
 
 use crate::error::{Error, Result};
 use crate::installer::Installer;
-use crate::tool::{ArtifactKind, Checksum, ReleaseResolver, Tool};
 use crate::target::Target;
+use crate::tool::{ArtifactKind, Checksum, ReleaseResolver, Tool};
 
 /// The GitHub owner/repo slug for mise.
 pub const MISE_REPO: &str = "jdx/mise";
@@ -122,13 +122,14 @@ impl MiseResolver {
         let body: LatestRelease = resp
             .json()
             .await
-            .map_err(|source| Error::Download {
-                url,
-                source,
-            })?;
+            .map_err(|source| Error::Download { url, source })?;
 
         // Tags look like `v2026.6.14`; the version proper is without the `v`.
-        Ok(body.tag_name.strip_prefix('v').unwrap_or(&body.tag_name).to_owned())
+        Ok(body
+            .tag_name
+            .strip_prefix('v')
+            .unwrap_or(&body.tag_name)
+            .to_owned())
     }
 }
 

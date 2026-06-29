@@ -138,12 +138,14 @@ pub fn is_ipv4_ipv6_mismatch(a: &Address, b: &Address) -> bool {
 
 /// Parse an IP address string.
 pub fn parse_ip(s: &str) -> Result<IpAddr, String> {
-    s.parse::<IpAddr>().map_err(|e| format!("invalid IP address '{s}': {e}"))
+    s.parse::<IpAddr>()
+        .map_err(|e| format!("invalid IP address '{s}': {e}"))
 }
 
 /// Parse a CIDR string.
 pub fn parse_cidr(s: &str) -> Result<ipnet::IpNet, String> {
-    s.parse::<ipnet::IpNet>().map_err(|e| format!("invalid CIDR '{s}': {e}"))
+    s.parse::<ipnet::IpNet>()
+        .map_err(|e| format!("invalid CIDR '{s}': {e}"))
 }
 
 #[cfg(test)]

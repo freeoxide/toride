@@ -4,10 +4,20 @@
 //! via the kernel `LOG` target. Rules are created with rate limiting to
 //! avoid flooding the kernel log.
 
+use crate::Result;
 use crate::paths::MonitorPaths;
 use crate::spec::LoggingRule;
 use crate::validate::validate_logging_rule;
-use crate::Result;
+
+/// Distinctive marker that every toride-installed `LOG` rule must carry in its
+/// `--log-prefix`.
+///
+/// Teardown is **ownership-aware**: [`OutputChain::list_rules`] only returns
+/// rules whose `--log-prefix` contains this marker, and
+/// [`OutputChain::remove_all`] only deletes those. This guarantees we never
+/// touch a `LOG` rule installed by another tool or the administrator, even if
+/// it lives in the OUTPUT chain.
+pub const TORIDE_LOG_PREFIX_MARKER: &str = "toride-mon-";
 
 /// Manages iptables OUTPUT chain logging rules.
 ///
@@ -57,10 +67,13 @@ impl<'a> OutputChain<'a> {
         Ok(())
     }
 
-    /// List all OUTPUT chain rules matching our log prefix.
+    /// List all OUTPUT chain rules installed by toride.
     ///
-    /// Parses `iptables-save` output to find rules in the OUTPUT chain
-    /// that contain the `LOG` target.
+    /// Parses `iptables-save` output to find rules in the OUTPUT chain that
+    /// carry the `LOG` target *and* toride's distinctive
+    /// [`TORIDE_LOG_PREFIX_MARKER`] in their `--log-prefix`. Only rules toride
+    /// installed are returned, so teardown is ownership-aware and never touches
+    /// unrelated `LOG` rules.
     ///
     /// # Errors
     ///
@@ -70,7 +83,11 @@ impl<'a> OutputChain<'a> {
         let rules = output
             .stdout
             .lines()
-            .filter(|line| line.contains("-A OUTPUT") && line.contains("-j LOG"))
+            .filter(|line| {
+                line.contains("-A OUTPUT")
+                    && line.contains("-j LOG")
+                    && line.contains(TORIDE_LOG_PREFIX_MARKER)
+            })
             .map(String::from)
             .collect();
         Ok(rules)
@@ -92,14 +109,16 @@ impl<'a> OutputChain<'a> {
         let rules = self.list_rules()?;
         for rule_line in &rules {
             match self.delete_saved_rule(rule_line) {
-                Ok(()) => tracing::info!("removed OUTPUT LOG rule: {rule_line}"),
+                Ok(()) => tracing::info!(
+                    "removed toride OUTPUT LOG rule ({} total remaining)",
+                    rules.len().saturating_sub(1)
+                ),
                 Err(crate::Error::CommandFailed(msg)) => {
                     // iptables -D exits 1 with "Rule does not exist" when the
                     // rule is already gone. Treat that as success so teardown
                     // is idempotent.
-                    if msg.contains("does not exist") || msg.contains("No chain/target/match")
-                    {
-                        tracing::debug!("rule already absent: {rule_line}");
+                    if msg.contains("does not exist") || msg.contains("No chain/target/match") {
+                        tracing::debug!("rule already absent");
                     } else {
                         return Err(crate::Error::CommandFailed(msg));
                     }
@@ -116,16 +135,20 @@ impl<'a> OutputChain<'a> {
 
     /// Run an `iptables` subcommand with the given arguments.
     fn run_iptables(&self, args: &[String]) -> Result<toride_runner::CommandOutput> {
-        let spec = toride_runner::CommandSpec::new(
-            self.paths.iptables.to_string_lossy().into_owned(),
-        )
-        .args(args.iter().cloned());
+        let spec =
+            toride_runner::CommandSpec::new(self.paths.iptables.to_string_lossy().into_owned())
+                .args(args.iter().cloned());
         let output = self.runner.run(&spec)?;
         if !output.success {
+            // Do not echo the full argv or the raw combined output into the
+            // error string — they may contain sensitive values and are noisy
+            // in logs. Keep only the program name, the exit code, and the
+            // first line of stderr (which carries the actionable reason, e.g.
+            // "Rule does not exist", relied on by [`Self::remove_all`]).
             return Err(crate::Error::CommandFailed(format!(
-                "iptables {} failed: {}",
-                args.join(" "),
-                output.combined_output()
+                "iptables failed (exit {}): {}",
+                exit_label(output.exit_code),
+                first_stderr_line(&output.stderr)
             )));
         }
         Ok(output)
@@ -139,8 +162,9 @@ impl<'a> OutputChain<'a> {
         let output = self.runner.run(&spec)?;
         if !output.success {
             return Err(crate::Error::CommandFailed(format!(
-                "iptables-save failed: {}",
-                output.combined_output()
+                "iptables-save failed (exit {}): {}",
+                exit_label(output.exit_code),
+                first_stderr_line(&output.stderr)
             )));
         }
         Ok(output)
@@ -152,16 +176,18 @@ impl<'a> OutputChain<'a> {
     /// leading `-A` to `-D` yields the exact deletion spec accepted by
     /// `iptables` (it matches one rule at a time).
     fn delete_saved_rule(&self, rule_line: &str) -> Result<()> {
-        let tokens = shellish_split(rule_line)?;
+        let tokens = shellish_split(rule_line);
         if tokens.len() < 2 {
-            return Err(crate::Error::CommandFailed(format!(
-                "cannot parse iptables-save rule: {rule_line}"
-            )));
+            // Do not echo the raw rule line (it may carry network details);
+            // report the parse failure generically.
+            return Err(crate::Error::CommandFailed(
+                "cannot parse iptables-save rule line".into(),
+            ));
         }
         // tokens[0] is "-A"; replace with "-D".
         let mut delete_args = tokens.clone();
         if delete_args[0] == "-A" {
-            delete_args[0] = "-D".to_owned();
+            "-D".clone_into(&mut delete_args[0]);
         } else {
             // Not a rule we recognise (e.g. a policy line); skip silently.
             return Ok(());
@@ -227,38 +253,60 @@ fn extend_match_and_target(args: &mut Vec<String>, rule: &LoggingRule) {
     ]);
 }
 
+/// Render an exit code as a short label for use in error messages.
+fn exit_label(exit_code: Option<i32>) -> String {
+    match exit_code {
+        Some(c) => c.to_string(),
+        None => "signal".to_owned(),
+    }
+}
+
+/// Return the first non-empty line of `stderr`, or a generic placeholder.
+///
+/// Used to surface the actionable reason a command failed without dumping the
+/// full raw output (which may be noisy or carry sensitive data) into error
+/// strings and logs.
+fn first_stderr_line(stderr: &str) -> String {
+    match stderr.lines().find(|line| !line.trim().is_empty()) {
+        Some(line) => line.to_owned(),
+        None => "no diagnostic output".to_owned(),
+    }
+}
+
 /// Split an `iptables-save` rule line into argv tokens, honouring double and
 /// single quotes (iptables-save quotes values containing spaces, e.g.
-/// `--log-prefix "TORIDE_OUT "`).
+/// `--log-prefix "toride-mon-out "`).
+///
+/// An unterminated quote is treated leniently: the characters accumulated so
+/// far are kept as the final token's content rather than being silently
+/// dropped, so the parser feeding `iptables -D` never loses a rule because of
+/// a trailing, unbalanced quote.
 ///
 /// This is a tiny, dependency-free tokenizer sufficient for iptables-save
 /// output; it is intentionally not a general-purpose shell parser.
-fn shellish_split(line: &str) -> Result<Vec<String>> {
+fn shellish_split(line: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
-    let mut chars = line.chars().peekable();
+    let chars = line.chars();
     let mut in_token = false;
+    // When inside a quote, the matching terminator we are looking for.
+    let mut quote_end: Option<char> = None;
 
-    while let Some(c) = chars.next() {
-        match c {
-            '"' => {
-                in_token = true;
-                // Read until the closing double quote.
-                for inner in chars.by_ref() {
-                    if inner == '"' {
-                        break;
-                    }
-                    current.push(inner);
-                }
+    for c in chars {
+        if let Some(term) = quote_end {
+            if c == term {
+                // Closing quote: keep the token open in case unquoted content
+                // follows on the same token (e.g. `--log-prefix "x"y`).
+                quote_end = None;
+            } else {
+                current.push(c);
             }
-            '\'' => {
+            continue;
+        }
+        match c {
+            '"' | '\'' => {
                 in_token = true;
-                for inner in chars.by_ref() {
-                    if inner == '\'' {
-                        break;
-                    }
-                    current.push(inner);
-                }
+                quote_end = Some(c);
             }
             c if c.is_whitespace() => {
                 if in_token {
@@ -272,10 +320,13 @@ fn shellish_split(line: &str) -> Result<Vec<String>> {
             }
         }
     }
-    if in_token {
+    // Flush any trailing token. If the quote was never closed, the remainder
+    // accumulated in `current` is still emitted (lenient unterminated-quote
+    // handling) so a rule is never silently lost.
+    if in_token || !current.is_empty() {
         tokens.push(current);
     }
-    Ok(tokens)
+    tokens
 }
 
 // ---------------------------------------------------------------------------
@@ -306,7 +357,7 @@ mod tests {
             destination: "0.0.0.0/0".into(),
             dest_port: Some(443),
             protocol: "tcp".into(),
-            log_prefix: "TORIDE_OUT".into(),
+            log_prefix: "toride-mon-out".into(),
             log_level: "info".into(),
             limit_burst: 10,
             limit_rate: "10/minute".into(),
@@ -327,9 +378,26 @@ mod tests {
         assert_eq!(
             calls[0].args,
             vec![
-                "-A", "OUTPUT", "-p", "tcp", "-d", "0.0.0.0/0", "--dport", "443",
-                "-j", "LOG", "--log-prefix", "TORIDE_OUT", "--log-level", "info",
-                "-m", "limit", "--limit", "10/minute", "--limit-burst", "10",
+                "-A",
+                "OUTPUT",
+                "-p",
+                "tcp",
+                "-d",
+                "0.0.0.0/0",
+                "--dport",
+                "443",
+                "-j",
+                "LOG",
+                "--log-prefix",
+                "toride-mon-out",
+                "--log-level",
+                "info",
+                "-m",
+                "limit",
+                "--limit",
+                "10/minute",
+                "--limit-burst",
+                "10",
             ]
         );
     }
@@ -354,7 +422,7 @@ mod tests {
 *filter
 :INPUT ACCEPT [0:0]
 :OUTPUT ACCEPT [0:0]
--A OUTPUT -d 0.0.0.0/0 -p tcp --dport 443 -j LOG --log-prefix \"TORIDE_OUT \" --log-level info -m limit --limit 10/minute --limit-burst 10
+-A OUTPUT -d 0.0.0.0/0 -p tcp --dport 443 -j LOG --log-prefix \"toride-mon-out \" --log-level info -m limit --limit 10/minute --limit-burst 10
 -A INPUT -p tcp -j ACCEPT
 COMMIT
 ";
@@ -370,9 +438,9 @@ COMMIT
 
     #[test]
     fn remove_all_converts_saved_rules_to_delete_and_invokes_iptables() {
-        // iptables-save emits a single OUTPUT LOG rule; teardown must issue
-        // exactly one `iptables -D OUTPUT ...` call derived from it.
-        let saved_rule = "-A OUTPUT -d 0.0.0.0/0 -p tcp --dport 443 -j LOG --log-prefix \"TORIDE_OUT \" --log-level info -m limit --limit 10/minute --limit-burst 10";
+        // iptables-save emits a single toride OUTPUT LOG rule; teardown must
+        // issue exactly one `iptables -D OUTPUT ...` call derived from it.
+        let saved_rule = "-A OUTPUT -d 0.0.0.0/0 -p tcp --dport 443 -j LOG --log-prefix \"toride-mon-out \" --log-level info -m limit --limit 10/minute --limit-burst 10";
         let canned = format!("*filter\n:OUTPUT ACCEPT [0:0]\n{saved_rule}\nCOMMIT\n");
 
         let runner = FakeRunner::new()
@@ -398,14 +466,14 @@ COMMIT
         assert!(calls[1].args.contains(&"-j".to_owned()));
         assert!(calls[1].args.contains(&"LOG".to_owned()));
         // The quoted log-prefix value must be unquoted in the argv.
-        assert!(calls[1].args.contains(&"TORIDE_OUT ".to_owned()));
+        assert!(calls[1].args.contains(&"toride-mon-out ".to_owned()));
     }
 
     #[test]
     fn remove_all_is_idempotent_when_rule_already_absent() {
         // iptables -D returns exit 1 with "Rule does not exist"; teardown must
         // swallow that and succeed.
-        let saved_rule = "-A OUTPUT -d 0.0.0.0/0 -p tcp -j LOG --log-prefix \"X \"";
+        let saved_rule = "-A OUTPUT -d 0.0.0.0/0 -p tcp -j LOG --log-prefix \"toride-mon-x \"";
         let canned = format!("*filter\n{saved_rule}\nCOMMIT\n");
         let runner = FakeRunner::new()
             .push_response(CommandOutput::from_stdout(canned))
@@ -421,8 +489,8 @@ COMMIT
 
     #[test]
     fn remove_all_no_rules_issues_only_iptables_save() {
-        let runner = FakeRunner::new()
-            .push_response(CommandOutput::from_stdout("*filter\nCOMMIT\n"));
+        let runner =
+            FakeRunner::new().push_response(CommandOutput::from_stdout("*filter\nCOMMIT\n"));
         let paths = test_paths();
         let chain = OutputChain::new(&paths, &runner);
 
@@ -435,27 +503,95 @@ COMMIT
 
     #[test]
     fn shellish_split_unquotes_log_prefix() {
-        let line =
-            "-A OUTPUT -j LOG --log-prefix \"TORIDE_OUT \" --log-level info";
-        let toks = shellish_split(line).unwrap();
+        let line = "-A OUTPUT -j LOG --log-prefix \"toride-mon-out \" --log-level info";
+        let toks = shellish_split(line);
         assert_eq!(toks[0], "-A");
         // The quoted value keeps its trailing space but loses the quotes.
-        assert!(toks.iter().any(|t| t == "TORIDE_OUT "));
+        assert!(toks.iter().any(|t| t == "toride-mon-out "));
     }
 
     #[test]
     fn shellish_split_handles_single_quotes() {
         let line = "-A OUTPUT -j LOG --log-prefix 'abc'";
-        let toks = shellish_split(line).unwrap();
+        let toks = shellish_split(line);
         assert!(toks.iter().any(|t| t == "abc"));
     }
 
     #[test]
     fn add_rule_propagates_iptables_failure() {
-        let runner =
-            FakeRunner::new().push_response(CommandOutput::from_stderr("nope", 2));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stderr("nope", 2));
         let paths = test_paths();
         let chain = OutputChain::new(&paths, &runner);
         assert!(chain.add_rule(&sample_rule()).is_err());
+    }
+
+    #[test]
+    fn remove_all_leaves_non_toride_log_rules_intact() {
+        // Regression: teardown is ownership-aware. A LOG rule installed by
+        // another tool (no `toride-mon-` prefix in its --log-prefix) must
+        // survive `remove_all` — only the iptables-save enumeration call is
+        // issued, with NO deletion attempted against the foreign rule.
+        let foreign_rule = "-A OUTPUT -d 10.0.0.0/8 -p tcp -j LOG --log-prefix \"OTHER_TOOL \"";
+        let toride_rule = "-A OUTPUT -d 0.0.0.0/0 -p tcp -j LOG --log-prefix \"toride-mon-out \"";
+        let canned =
+            format!("*filter\n:OUTPUT ACCEPT [0:0]\n{foreign_rule}\n{toride_rule}\nCOMMIT\n");
+
+        let runner = FakeRunner::new()
+            // iptables-save call.
+            .push_response(CommandOutput::from_stdout(canned))
+            // iptables -D call for the single toride rule.
+            .push_response(CommandOutput::from_stdout(""));
+
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+
+        chain.remove_all().unwrap();
+
+        let calls = runner.calls();
+        // iptables-save + exactly one deletion (the toride rule only).
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].program, "/usr/sbin/iptables");
+        assert_eq!(calls[1].args[0], "-D");
+        // The deletion must target the toride rule, never the foreign one.
+        assert!(calls[1].args.contains(&"toride-mon-out ".to_owned()));
+        assert!(!calls[1].args.iter().any(|a| a == "OTHER_TOOL "));
+    }
+
+    #[test]
+    fn list_rules_excludes_non_toride_log_rules() {
+        let canned = "\
+*filter
+:OUTPUT ACCEPT [0:0]
+-A OUTPUT -j LOG --log-prefix \"NOT_OURS \"
+-A OUTPUT -j LOG --log-prefix \"toride-mon-x \"
+COMMIT
+";
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(canned));
+        let paths = test_paths();
+        let chain = OutputChain::new(&paths, &runner);
+
+        let rules = chain.list_rules().unwrap();
+        // Only the toride-prefixed rule is returned.
+        assert_eq!(rules.len(), 1);
+        assert!(rules[0].contains("toride-mon-"));
+    }
+
+    #[test]
+    fn shellish_split_keeps_remainder_of_unterminated_quote() {
+        // An unterminated trailing quote must not lose the token: the
+        // remainder accumulates into the final token so the iptables -D spec
+        // is never silently truncated.
+        let line = "-A OUTPUT -j LOG --log-prefix \"toride-mon-x";
+        let toks = shellish_split(line);
+        assert_eq!(toks[0], "-A");
+        // The unterminated quoted value is preserved as the final token.
+        assert!(toks.iter().any(|t| t == "toride-mon-x"));
+    }
+
+    #[test]
+    fn shellish_split_keeps_remainder_of_unterminated_single_quote() {
+        let line = "-A OUTPUT -j LOG --log-prefix 'toride-mon-y";
+        let toks = shellish_split(line);
+        assert!(toks.iter().any(|t| t == "toride-mon-y"));
     }
 }

@@ -10,6 +10,7 @@ use crate::{Finding, Severity};
 ///
 /// Returns `None` when the binary is present (no finding to report).
 /// Returns `Some(Finding)` with [`Severity::Critical`] when it is missing.
+#[must_use]
 pub fn check_binary_exists(name: &str) -> Option<Finding> {
     match which::which(name) {
         Ok(_) => None,
@@ -31,6 +32,7 @@ pub fn check_binary_exists(name: &str) -> Option<Finding> {
 /// it always returns `None` (no finding).
 ///
 /// Returns `Some(Finding)` with [`Severity::Warning`] when the mode differs.
+#[must_use]
 pub fn check_file_permissions(path: &Path, expected_mode: u32) -> Option<Finding> {
     #[cfg(unix)]
     {
@@ -53,7 +55,11 @@ pub fn check_file_permissions(path: &Path, expected_mode: u32) -> Option<Finding
                             ),
                         )
                         .domain("filesystem")
-                        .fix_hint(format!("chmod {:o} {}", expected_mode, path.display())),
+                        .fix_hint(format!(
+                            "chmod {:o} {}",
+                            expected_mode,
+                            path.display()
+                        )),
                     )
                 }
             }
@@ -78,6 +84,7 @@ pub fn check_file_permissions(path: &Path, expected_mode: u32) -> Option<Finding
 ///
 /// Returns `Some(Finding)` with [`Severity::Important`] when `path` exists and
 /// has the world-writable bit set (mode `...o+w`).
+#[must_use]
 pub fn check_not_world_writable(path: &Path) -> Option<Finding> {
     #[cfg(unix)]
     {

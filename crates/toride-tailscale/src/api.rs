@@ -170,10 +170,9 @@ impl TailscaleApi {
             )));
         }
 
-        response
-            .json()
-            .await
-            .map_err(|e| crate::Error::ApiError(format!("failed to parse dns-config response: {e}")))
+        response.json().await.map_err(|e| {
+            crate::Error::ApiError(format!("failed to parse dns-config response: {e}"))
+        })
     }
 }
 

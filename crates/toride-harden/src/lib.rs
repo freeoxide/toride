@@ -22,7 +22,7 @@
 //! - [`sysctl`] — read/write sysctl parameters
 //! - [`profile`] — CIS/STIG hardening profiles (Desktop, Server, Router)
 //! - [`shm`] — shared memory mount hardening
-//! - [`kernel`] — kernel security parameters (ASLR, kptr_restrict, etc.)
+//! - [`kernel`] — kernel security parameters (ASLR, `kptr_restrict`, etc.)
 //! - [`parse`] — parse sysctl output and config files
 //! - [`render`] — render sysctl config files
 //! - [`validate`] — validate sysctl keys, values, and specs

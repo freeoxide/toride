@@ -10,12 +10,16 @@
 
 use clap::{Parser, Subcommand};
 
-use crate::client::UsersClient;
 use crate::Result;
+use crate::client::UsersClient;
 
 /// Toride users management CLI.
 #[derive(Debug, Parser)]
-#[command(name = "toride-users", version, about = "OS-level user and access control management")]
+#[command(
+    name = "toride-users",
+    version,
+    about = "OS-level user and access control management"
+)]
 pub struct Cli {
     /// The subcommand to run.
     #[command(subcommand)]
@@ -62,7 +66,16 @@ impl Cli {
                     client.sudo().grant(username, false)?;
                 }
                 if *totp {
-                    let _ = client.totp().enroll(username)?;
+                    // `enroll` returns the `google-authenticator` output, which
+                    // contains the TOTP secret and one-time scratch codes.
+                    // Discarding it (the old `let _ = ...`) would lock the user
+                    // out: the `.google_authenticator` file is created but the
+                    // secret is never shown to anyone. Surface it to the caller
+                    // the same way the dedicated `totp-enroll` command does.
+                    let totp_out = client.totp().enroll(username)?;
+                    writeln!(writer, "TOTP enrolled for '{username}':").ok();
+                    writeln!(writer, "{totp_out}").ok();
+                    writeln!(writer, "Store the secret and scratch codes above securely.").ok();
                 }
                 writeln!(writer, "created user '{username}'").ok();
             }
@@ -75,11 +88,7 @@ impl Cli {
             }
             Commands::SudoGrant { username, nopasswd } => {
                 client.sudo().grant(username, *nopasswd)?;
-                writeln!(
-                    writer,
-                    "granted sudo to '{username}' (nopasswd={nopasswd})"
-                )
-                .ok();
+                writeln!(writer, "granted sudo to '{username}' (nopasswd={nopasswd})").ok();
             }
             Commands::SudoRevoke { username } => {
                 client.sudo().revoke(username)?;
@@ -294,7 +303,7 @@ mod tests {
     /// have real data to work against without touching the host's `/etc`.
     fn temp_client() -> (TempDir, UsersClient) {
         let dir = TempDir::new().expect("tempdir");
-        let paths = UserPaths::with_base(dir.path().to_path_buf());
+        let paths = UserPaths::with_base(&dir.path().to_path_buf());
         std::fs::write(
             &paths.passwd,
             "root:x:0:0:root:/root:/bin/bash\n\
@@ -306,7 +315,8 @@ mod tests {
             "root:$6$xx::0:99999:7:::\nalice:$6$yy::0:99999:7:::\n",
         )
         .expect("write shadow");
-        std::fs::write(&paths.group, "root:x:0:\nalice:x:1000:\nsudo:x:27:\n").expect("write group");
+        std::fs::write(&paths.group, "root:x:0:\nalice:x:1000:\nsudo:x:27:\n")
+            .expect("write group");
         let client = UsersClient::with_paths(paths);
         (dir, client)
     }
@@ -437,9 +447,12 @@ mod tests {
     #[test]
     fn dispatch_info_existing_user() {
         let (_dir, client) = temp_client();
-        let (text, res) = dispatch_collect(&client, Commands::Info {
-            username: "alice".to_owned(),
-        });
+        let (text, res) = dispatch_collect(
+            &client,
+            Commands::Info {
+                username: "alice".to_owned(),
+            },
+        );
         res.expect("info dispatch should succeed");
         assert!(text.contains("user: alice"), "output: {text}");
         assert!(text.contains("uid: 1000"), "output: {text}");
@@ -452,9 +465,12 @@ mod tests {
     #[test]
     fn dispatch_info_missing_user() {
         let (_dir, client) = temp_client();
-        let (text, res) = dispatch_collect(&client, Commands::Info {
-            username: "ghost".to_owned(),
-        });
+        let (text, res) = dispatch_collect(
+            &client,
+            Commands::Info {
+                username: "ghost".to_owned(),
+            },
+        );
         res.expect("missing-user info should not error");
         assert!(text.contains("not found"), "output: {text}");
     }
@@ -467,7 +483,7 @@ mod tests {
     #[test]
     fn dispatch_doctor_emits_findings() {
         let dir = TempDir::new().expect("tempdir");
-        let paths = UserPaths::with_base(dir.path().to_path_buf());
+        let paths = UserPaths::with_base(&dir.path().to_path_buf());
         std::fs::write(
             &paths.passwd,
             "root:x:0:0:root:/root:/bin/bash\n\
@@ -484,9 +500,12 @@ mod tests {
         std::fs::write(&paths.login_defs, "# no policy here\n").expect("write login.defs");
         let client = UsersClient::with_paths(paths);
 
-        let (text, res) = dispatch_collect(&client, Commands::Doctor {
-            scope: "password-policy".to_owned(),
-        });
+        let (text, res) = dispatch_collect(
+            &client,
+            Commands::Doctor {
+                scope: "password-policy".to_owned(),
+            },
+        );
         res.expect("doctor dispatch should succeed");
         assert!(
             text.contains("password-policy.no-max-days"),
@@ -503,17 +522,21 @@ mod tests {
     #[test]
     fn dispatch_doctor_no_findings() {
         let dir = TempDir::new().expect("tempdir");
-        let paths = UserPaths::with_base(dir.path().to_path_buf());
+        let paths = UserPaths::with_base(&dir.path().to_path_buf());
         // Populate login.defs so no password-policy findings fire.
-        std::fs::write(&paths.login_defs, "PASS_MAX_DAYS 90\nPASS_MIN_DAYS 1\n").expect("login.defs");
+        std::fs::write(&paths.login_defs, "PASS_MAX_DAYS 90\nPASS_MIN_DAYS 1\n")
+            .expect("login.defs");
         // passwd + shadow that trigger no empty-password / uid-0 findings.
         std::fs::write(&paths.passwd, "root:x:0:0:root:/root:/bin/bash\n").expect("passwd");
         std::fs::write(&paths.shadow, "root:$6$xx::0:99999:7:::\n").expect("shadow");
         // No sudoers / sudoers.d -> no NOPASSWD findings.
         let client = UsersClient::with_paths(paths);
-        let (text, res) = dispatch_collect(&client, Commands::Doctor {
-            scope: "all".to_owned(),
-        });
+        let (text, res) = dispatch_collect(
+            &client,
+            Commands::Doctor {
+                scope: "all".to_owned(),
+            },
+        );
         res.expect("doctor dispatch should succeed");
         // sshd_config absent -> no root-login finding; sudoers absent; pam.d/sshd
         // absent -> no sshd-no-totp finding. The only possible remaining is the
@@ -530,9 +553,12 @@ mod tests {
     #[test]
     fn dispatch_doctor_invalid_scope_errors() {
         let (_dir, client) = temp_client();
-        let (text, res) = dispatch_collect(&client, Commands::Doctor {
-            scope: "bogus".to_owned(),
-        });
+        let (text, res) = dispatch_collect(
+            &client,
+            Commands::Doctor {
+                scope: "bogus".to_owned(),
+            },
+        );
         let err = res.expect_err("invalid scope should error");
         assert!(
             matches!(err, crate::Error::Other(_)),
@@ -550,7 +576,10 @@ mod tests {
     fn parse_doctor_scope_canonical_names() {
         use crate::doctor::DoctorScope;
         assert_eq!(parse_doctor_scope("all").unwrap(), DoctorScope::All);
-        assert_eq!(parse_doctor_scope("accounts").unwrap(), DoctorScope::Accounts);
+        assert_eq!(
+            parse_doctor_scope("accounts").unwrap(),
+            DoctorScope::Accounts
+        );
         assert_eq!(parse_doctor_scope("sudo").unwrap(), DoctorScope::Sudo);
         assert_eq!(parse_doctor_scope("pam").unwrap(), DoctorScope::Pam);
         assert_eq!(
@@ -577,9 +606,12 @@ mod tests {
     #[test]
     fn dispatch_doctor_without_feature_errors_honestly() {
         let (_dir, client) = temp_client();
-        let (text, res) = dispatch_collect(&client, Commands::Doctor {
-            scope: "all".to_owned(),
-        });
+        let (text, res) = dispatch_collect(
+            &client,
+            Commands::Doctor {
+                scope: "all".to_owned(),
+            },
+        );
         let err = res.expect_err("doctor without feature should error");
         assert!(
             matches!(err, crate::Error::Other(_)),

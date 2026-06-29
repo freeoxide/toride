@@ -54,7 +54,9 @@ pub fn parse_nginx_status(output: &str) -> NginxStatus {
     let pid = output.lines().find_map(|line| {
         let trimmed = line.trim();
         let rest = trimmed.strip_prefix("Main PID: ")?;
-        rest.split_whitespace().next().and_then(|s| s.parse::<u32>().ok())
+        rest.split_whitespace()
+            .next()
+            .and_then(|s| s.parse::<u32>().ok())
     });
 
     NginxStatus {
@@ -174,14 +176,12 @@ pub fn parse_openssl_cert(output: &str) -> Option<CertInfo> {
         .split_whitespace()
         .next()
         .and_then(|_| parse_openssl_enddate_epoch(&not_after))
-        .map(|expiry_epoch| {
+        .map_or(0, |expiry_epoch| {
             let now_epoch = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+                .map_or(0, |d| d.as_secs());
             days_until(now_epoch, expiry_epoch)
-        })
-        .unwrap_or(0);
+        });
 
     Some(CertInfo::new(
         subject,
@@ -195,7 +195,7 @@ pub fn parse_openssl_cert(output: &str) -> Option<CertInfo> {
 /// Extract the CN (Common Name) or first DNS name from a distinguished name.
 fn parse_dn_value(dn: &str) -> String {
     // Strip the "Subject: " or "Issuer: " prefix
-    let rest = dn.split_once(':').map(|(_, v)| v.trim()).unwrap_or(dn);
+    let rest = dn.split_once(':').map_or(dn, |(_, v)| v.trim());
 
     // Try to find CN=
     for part in rest.split(',') {
@@ -217,10 +217,10 @@ fn extract_days(s: &str) -> Option<i64> {
     // Look for a pattern like "N days"
     let parts: Vec<&str> = s.split_whitespace().collect();
     for i in 0..parts.len().saturating_sub(1) {
-        if parts[i + 1].starts_with("day") {
-            if let Ok(n) = parts[i].parse::<i64>() {
-                return Some(n);
-            }
+        if parts[i + 1].starts_with("day")
+            && let Ok(n) = parts[i].parse::<i64>()
+        {
+            return Some(n);
         }
     }
     None
@@ -262,7 +262,8 @@ mod tests {
 
     #[test]
     fn parse_nginx_status_stopped() {
-        let output = "● nginx.service - A high performance web server\n   Active: inactive (dead)\n";
+        let output =
+            "● nginx.service - A high performance web server\n   Active: inactive (dead)\n";
         let status = parse_nginx_status(output);
         assert!(!status.running);
         assert_eq!(status.pid, None);

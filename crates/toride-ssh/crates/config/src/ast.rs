@@ -23,6 +23,7 @@ pub enum Separator {
 
 impl Separator {
     /// Render the separator as a string.
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Space => " ",
@@ -94,6 +95,7 @@ pub enum ConfigNode {
 
 impl ConfigAst {
     /// Render the AST back to a string suitable for writing to disk.
+    #[must_use]
     pub fn to_string_lossless(&self) -> String {
         let mut out = String::new();
         for node in &self.nodes {
@@ -159,6 +161,7 @@ impl ConfigNode {
     }
 
     /// If this is a `HostBlock`, return its patterns and inner nodes.
+    #[must_use]
     pub fn as_host_block(&self) -> Option<(&[String], &[Self])> {
         match self {
             Self::HostBlock(b) => Some((&b.patterns, &b.nodes)),
@@ -175,6 +178,7 @@ impl ConfigNode {
     }
 
     /// If this is a `Directive`, return its keyword and value.
+    #[must_use]
     pub fn as_directive(&self) -> Option<(&str, &str)> {
         match self {
             Self::Directive(d) => Some((&d.keyword, &d.value)),
@@ -195,6 +199,7 @@ impl ConfigNode {
 ///
 /// Handles `Host` and `Match` blocks with proper nesting, preserves
 /// whitespace, comments, blank lines, and both `=` and space separators.
+#[must_use]
 pub fn parse(input: &str) -> ConfigAst {
     let mut nodes = Vec::new();
     let mut lines = input.lines().peekable();
@@ -256,7 +261,9 @@ pub fn parse(input: &str) -> ConfigAst {
 
 /// Extract the leading whitespace from a line.
 fn line_indent(line: &str) -> &str {
-    let end = line.find(|c: char| !c.is_whitespace()).unwrap_or(line.len());
+    let end = line
+        .find(|c: char| !c.is_whitespace())
+        .unwrap_or(line.len());
     &line[..end]
 }
 
@@ -374,13 +381,10 @@ pub(crate) fn parse_directive_parts(line: &str) -> (&str, Separator, &str) {
 
 /// Parse space-separated host patterns from a `Host` value string.
 fn parse_patterns(value: &str) -> Vec<String> {
-    value
-        .split_whitespace()
-        .map(str::to_owned)
-        .collect()
+    value.split_whitespace().map(str::to_owned).collect()
 }
 
-/// Split a value string into (value, optional_trailing_comment).
+/// Split a value string into (value, `optional_trailing_comment`).
 ///
 /// Handles `# comment` at the end of a line. Quotes are respected so that
 /// `#` inside quotes is not treated as a comment.

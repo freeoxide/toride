@@ -12,7 +12,7 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::Viewport;
 use crate::ui::theme::Palette;
 
@@ -83,14 +83,14 @@ impl ConfirmModal {
     pub fn handle_key(&mut self, code: KeyCode) -> Option<ConfirmResult> {
         match code {
             // Direct shortcuts
-            KeyCode::Char('y') | KeyCode::Char('Y') => Some(ConfirmResult::Confirmed),
-            KeyCode::Char('n') | KeyCode::Char('N') | KeyCode::Esc => {
-                Some(ConfirmResult::Cancelled)
-            }
+            KeyCode::Char('y' | 'Y') => Some(ConfirmResult::Confirmed),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => Some(ConfirmResult::Cancelled),
             // Enter activates the focused button
-            KeyCode::Enter => {
-                Some(self.buttons.activate_focused().unwrap_or(ConfirmResult::Cancelled))
-            }
+            KeyCode::Enter => Some(
+                self.buttons
+                    .activate_focused()
+                    .unwrap_or(ConfirmResult::Cancelled),
+            ),
             // Focus cycling
             KeyCode::Tab | KeyCode::Right => {
                 self.buttons.cycle_focus_next();
@@ -154,25 +154,37 @@ mod tests {
     #[test]
     fn handle_key_y_confirms() {
         let mut modal = ConfirmModal::new("Delete?");
-        assert_eq!(modal.handle_key(KeyCode::Char('y')), Some(ConfirmResult::Confirmed));
+        assert_eq!(
+            modal.handle_key(KeyCode::Char('y')),
+            Some(ConfirmResult::Confirmed)
+        );
     }
 
     #[test]
-    fn handle_key_Y_confirms() {
+    fn handle_key_y_confirms_capital() {
         let mut modal = ConfirmModal::new("Delete?");
-        assert_eq!(modal.handle_key(KeyCode::Char('Y')), Some(ConfirmResult::Confirmed));
+        assert_eq!(
+            modal.handle_key(KeyCode::Char('Y')),
+            Some(ConfirmResult::Confirmed)
+        );
     }
 
     #[test]
     fn handle_key_n_cancels() {
         let mut modal = ConfirmModal::new("Delete?");
-        assert_eq!(modal.handle_key(KeyCode::Char('n')), Some(ConfirmResult::Cancelled));
+        assert_eq!(
+            modal.handle_key(KeyCode::Char('n')),
+            Some(ConfirmResult::Cancelled)
+        );
     }
 
     #[test]
     fn handle_key_esc_cancels() {
         let mut modal = ConfirmModal::new("Delete?");
-        assert_eq!(modal.handle_key(KeyCode::Esc), Some(ConfirmResult::Cancelled));
+        assert_eq!(
+            modal.handle_key(KeyCode::Esc),
+            Some(ConfirmResult::Cancelled)
+        );
     }
 
     #[test]
@@ -236,6 +248,9 @@ mod tests {
             .draw(|f| modal.render(f, CHARM, "Delete Key"))
             .unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("Delete id_ed25519?"), "message visible: {output}");
+        assert!(
+            output.contains("Delete id_ed25519?"),
+            "message visible: {output}"
+        );
     }
 }

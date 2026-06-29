@@ -159,13 +159,20 @@ fn start_error_includes_exit_code() {
     let svc = ServiceManager::new(&fake);
     let err = svc.start().unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("exit 3"), "error message should mention exit code: {msg}");
+    assert!(
+        msg.contains("exit 3"),
+        "error message should mention exit code: {msg}"
+    );
 }
 
 #[test]
 fn start_error_includes_stderr_when_present() {
     let mut fake = FakeRunner::new();
-    fake.with_response("systemctl", &["start", "fail2ban"], fail_output_with_stderr());
+    fake.with_response(
+        "systemctl",
+        &["start", "fail2ban"],
+        fail_output_with_stderr(),
+    );
     let svc = ServiceManager::new(&fake);
     let err = svc.start().unwrap_err();
     let msg = format!("{err}");
@@ -199,11 +206,18 @@ fn stop_fails_on_nonzero_exit() {
 #[test]
 fn stop_error_includes_subcommand_name() {
     let mut fake = FakeRunner::new();
-    fake.with_response("systemctl", &["stop", "fail2ban"], fail_output_with_stderr());
+    fake.with_response(
+        "systemctl",
+        &["stop", "fail2ban"],
+        fail_output_with_stderr(),
+    );
     let svc = ServiceManager::new(&fake);
     let err = svc.stop().unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("stop"), "error message should mention the subcommand: {msg}");
+    assert!(
+        msg.contains("stop"),
+        "error message should mention the subcommand: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -230,11 +244,18 @@ fn restart_fails_on_nonzero_exit() {
 #[test]
 fn restart_error_includes_service_name() {
     let mut fake = FakeRunner::new();
-    fake.with_response("systemctl", &["restart", "fail2ban"], fail_output_with_stderr());
+    fake.with_response(
+        "systemctl",
+        &["restart", "fail2ban"],
+        fail_output_with_stderr(),
+    );
     let svc = ServiceManager::new(&fake);
     let err = svc.restart().unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("fail2ban"), "error message should include service name: {msg}");
+    assert!(
+        msg.contains("fail2ban"),
+        "error message should include service name: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +273,11 @@ fn reload_or_restart_succeeds_on_zero_exit() {
 #[test]
 fn reload_or_restart_fails_on_nonzero_exit() {
     let mut fake = FakeRunner::new();
-    fake.with_response("systemctl", &["reload-or-restart", "fail2ban"], fail_output());
+    fake.with_response(
+        "systemctl",
+        &["reload-or-restart", "fail2ban"],
+        fail_output(),
+    );
     let svc = ServiceManager::new(&fake);
     let err = svc.reload_or_restart().unwrap_err();
     assert!(matches!(err, Error::CommandFailed(_)));
@@ -261,7 +286,11 @@ fn reload_or_restart_fails_on_nonzero_exit() {
 #[test]
 fn reload_or_restart_error_mentions_subcommand() {
     let mut fake = FakeRunner::new();
-    fake.with_response("systemctl", &["reload-or-restart", "fail2ban"], fail_output_with_stderr());
+    fake.with_response(
+        "systemctl",
+        &["reload-or-restart", "fail2ban"],
+        fail_output_with_stderr(),
+    );
     let svc = ServiceManager::new(&fake);
     let err = svc.reload_or_restart().unwrap_err();
     let msg = format!("{err}");
@@ -352,8 +381,14 @@ fn journal_tail_error_includes_context() {
     let svc = ServiceManager::new(&fake);
     let err = svc.journal_tail(20).unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("journalctl"), "error should mention journalctl: {msg}");
-    assert!(msg.contains("Cannot access journal"), "error should include stderr: {msg}");
+    assert!(
+        msg.contains("journalctl"),
+        "error should mention journalctl: {msg}"
+    );
+    assert!(
+        msg.contains("Cannot access journal"),
+        "error should include stderr: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -422,10 +457,22 @@ fn error_message_format_without_stderr() {
         !msg.contains("): "),
         "error message should not have dangling stderr separator when stderr is empty: {msg}",
     );
-    assert!(msg.contains("systemctl"), "error should mention program: {msg}");
-    assert!(msg.contains("start"), "error should mention subcommand: {msg}");
-    assert!(msg.contains("fail2ban"), "error should mention service: {msg}");
-    assert!(msg.contains("exit 1"), "error should mention exit code: {msg}");
+    assert!(
+        msg.contains("systemctl"),
+        "error should mention program: {msg}"
+    );
+    assert!(
+        msg.contains("start"),
+        "error should mention subcommand: {msg}"
+    );
+    assert!(
+        msg.contains("fail2ban"),
+        "error should mention service: {msg}"
+    );
+    assert!(
+        msg.contains("exit 1"),
+        "error should mention exit code: {msg}"
+    );
 }
 
 #[test]
@@ -441,7 +488,10 @@ fn error_message_format_with_stderr() {
     let svc = ServiceManager::new(&fake);
     let err = svc.start().unwrap_err();
     let msg = format!("{err}");
-    assert!(msg.contains("exit 5"), "error should mention exit code: {msg}");
+    assert!(
+        msg.contains("exit 5"),
+        "error should mention exit code: {msg}"
+    );
     // stderr is trimmed in the error message.
     assert!(
         msg.contains("Unit fail2ban.service not found."),
@@ -463,7 +513,10 @@ fn error_message_for_signal_termination() {
     let err = svc.start().unwrap_err();
     let msg = format!("{err}");
     // When exit_code is None the helper uses "signal".
-    assert!(msg.contains("signal"), "error should mention signal when exit_code is None: {msg}");
+    assert!(
+        msg.contains("signal"),
+        "error should mention signal when exit_code is None: {msg}"
+    );
 }
 
 #[test]
@@ -472,7 +525,11 @@ fn lifecycle_methods_return_command_failed_variant() {
     fake.with_response("systemctl", &["start", "fail2ban"], fail_output());
     fake.with_response("systemctl", &["stop", "fail2ban"], fail_output());
     fake.with_response("systemctl", &["restart", "fail2ban"], fail_output());
-    fake.with_response("systemctl", &["reload-or-restart", "fail2ban"], fail_output());
+    fake.with_response(
+        "systemctl",
+        &["reload-or-restart", "fail2ban"],
+        fail_output(),
+    );
     fake.with_response(
         "journalctl",
         &["-u", "fail2ban", "-n", "1", "--no-pager"],
@@ -511,9 +568,21 @@ fn query_methods_never_return_err_on_nonzero() {
     fake.with_response("systemctl", &["is-enabled", "fail2ban"], fail_output());
     let svc = ServiceManager::new(&fake);
 
-    assert!(svc.is_active().is_ok(), "is_active should not return Err on non-zero");
-    assert!(!svc.is_active().unwrap(), "is_active should return Ok(false)");
+    assert!(
+        svc.is_active().is_ok(),
+        "is_active should not return Err on non-zero"
+    );
+    assert!(
+        !svc.is_active().unwrap(),
+        "is_active should return Ok(false)"
+    );
 
-    assert!(svc.is_enabled().is_ok(), "is_enabled should not return Err on non-zero");
-    assert!(!svc.is_enabled().unwrap(), "is_enabled should return Ok(false)");
+    assert!(
+        svc.is_enabled().is_ok(),
+        "is_enabled should not return Err on non-zero"
+    );
+    assert!(
+        !svc.is_enabled().unwrap(),
+        "is_enabled should return Ok(false)"
+    );
 }

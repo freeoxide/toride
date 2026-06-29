@@ -3,6 +3,7 @@
 #[cfg(feature = "serde")]
 use crate::error::Result;
 use crate::{DoctorReport, Finding};
+use std::fmt::Write as _;
 
 /// Render a report as human-readable plain text.
 ///
@@ -11,33 +12,31 @@ use crate::{DoctorReport, Finding};
 #[must_use]
 pub fn render_text(report: &DoctorReport) -> String {
     let mut out = String::new();
-    out.push_str(&format!("=== Doctor Report: {} ===\n", report.domain));
-    out.push_str(&format!("Checked at: {}\n\n", report.checked_at));
+    let _ = writeln!(out, "=== Doctor Report: {} ===", report.domain);
+    let _ = writeln!(out, "Checked at: {}\n", report.checked_at);
 
     if report.findings.is_empty() {
         out.push_str("No findings.\n");
     } else {
         for f in &report.findings {
-            out.push_str(&format!(
-                "[{}] {} -- {}\n",
-                f.severity, f.id, f.message
-            ));
+            let _ = writeln!(out, "[{}] {} -- {}", f.severity, f.id, f.message);
             if let Some(ref detail) = f.detail {
-                out.push_str(&format!("    Detail: {detail}\n"));
+                let _ = writeln!(out, "    Detail: {detail}");
             }
             if let Some(ref hint) = f.fix_hint {
-                out.push_str(&format!("    Fix:    {hint}\n"));
+                let _ = writeln!(out, "    Fix:    {hint}");
             }
         }
     }
 
     let summary = report.summary();
-    out.push_str(&format!(
-        "\n--- Summary: {} finding(s), healthy={} ---\n",
+    let _ = writeln!(
+        out,
+        "\n--- Summary: {} finding(s), healthy={} ---",
         summary.total, summary.healthy
-    ));
+    );
     for (sev, count) in &summary.by_severity {
-        out.push_str(&format!("  {sev}: {count}\n"));
+        let _ = writeln!(out, "  {sev}: {count}");
     }
 
     out
@@ -52,16 +51,15 @@ pub fn render_text(report: &DoctorReport) -> String {
 /// Returns [`Error::Render`](crate::Error::Render) if `serde_json` fails.
 #[cfg(feature = "serde")]
 pub fn render_json(report: &DoctorReport) -> Result<String> {
-    serde_json::to_string_pretty(report)
-        .map_err(|e| crate::Error::Render(e.to_string()))
+    serde_json::to_string_pretty(report).map_err(|e| crate::Error::Render(e.to_string()))
 }
 
 /// Render a report as a Markdown document.
 #[must_use]
 pub fn render_markdown(report: &DoctorReport) -> String {
     let mut md = String::new();
-    md.push_str(&format!("## Doctor Report: {}\n\n", report.domain));
-    md.push_str(&format!("**Checked at:** {}\n\n", report.checked_at));
+    let _ = writeln!(md, "## Doctor Report: {}\n", report.domain);
+    let _ = writeln!(md, "**Checked at:** {}\n", report.checked_at);
 
     if report.findings.is_empty() {
         md.push_str("*No findings.*\n");
@@ -69,10 +67,7 @@ pub fn render_markdown(report: &DoctorReport) -> String {
         md.push_str("| Severity | ID | Message |\n");
         md.push_str("|----------|----|--------|\n");
         for f in &report.findings {
-            md.push_str(&format!(
-                "| {} | `{}` | {} |\n",
-                f.severity, f.id, f.message
-            ));
+            let _ = writeln!(md, "| {} | `{}` | {} |", f.severity, f.id, f.message);
         }
         md.push('\n');
 
@@ -86,22 +81,23 @@ pub fn render_markdown(report: &DoctorReport) -> String {
         if !with_detail.is_empty() {
             md.push_str("### Details\n\n");
             for f in &with_detail {
-                md.push_str(&format!("**{}**\n\n", f.id));
+                let _ = writeln!(md, "**{}**\n", f.id);
                 if let Some(ref detail) = f.detail {
-                    md.push_str(&format!("{detail}\n\n"));
+                    let _ = writeln!(md, "{detail}\n");
                 }
                 if let Some(ref hint) = f.fix_hint {
-                    md.push_str(&format!("> **Fix:** {hint}\n\n"));
+                    let _ = writeln!(md, "> **Fix:** {hint}\n");
                 }
             }
         }
     }
 
     let summary = report.summary();
-    md.push_str(&format!(
-        "---\n*Summary: {} finding(s) | healthy: {}*\n",
+    let _ = writeln!(
+        md,
+        "---\n*Summary: {} finding(s) | healthy: {}*",
         summary.total, summary.healthy
-    ));
+    );
 
     md
 }

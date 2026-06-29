@@ -88,6 +88,21 @@ impl HardenClient {
         self.apply_params(&params)
     }
 
+    /// Apply a complete hardening profile, honouring the caller's backup
+    /// preference.
+    ///
+    /// When `skip_backup` is `true`, no pre-mutation snapshot is taken (this
+    /// is the path the CLI `--no-backup` flag drives); otherwise the behaviour
+    /// matches [`apply_profile`](Self::apply_profile).
+    pub fn apply_profile_with_options(
+        &self,
+        profile: &HardeningProfile,
+        skip_backup: bool,
+    ) -> Result<HardenReport> {
+        let params = profile.params();
+        self.apply_params_with_options(&params, skip_backup)
+    }
+
     /// Apply a single sysctl parameter.
     ///
     /// Returns `true` if the value was changed, `false` if it was
@@ -98,9 +113,26 @@ impl HardenClient {
 
     /// Apply a list of parameters and return a report.
     pub fn apply_params(&self, params: &[SysctlParam]) -> Result<HardenReport> {
-        // Create backup before any changes
-        let snapshot = create_backup(&self.paths)?;
-        save_backup_to_disk(&self.paths, &snapshot)?;
+        self.apply_params_with_options(params, false)
+    }
+
+    /// Apply a list of parameters and return a report, honouring the caller's
+    /// backup preference.
+    ///
+    /// When `skip_backup` is `true`, the pre-mutation backup is skipped
+    /// (the CLI `--no-backup` flag drives this); otherwise a backup is
+    /// created and persisted exactly as in
+    /// [`apply_params`](Self::apply_params).
+    pub fn apply_params_with_options(
+        &self,
+        params: &[SysctlParam],
+        skip_backup: bool,
+    ) -> Result<HardenReport> {
+        // Create backup before any changes, unless the caller opted out.
+        if !skip_backup {
+            let snapshot = create_backup(&self.paths)?;
+            save_backup_to_disk(&self.paths, &snapshot)?;
+        }
 
         let mut applied = Vec::new();
         let mut skipped = Vec::new();

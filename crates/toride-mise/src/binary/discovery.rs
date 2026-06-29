@@ -45,9 +45,10 @@ impl MiseBinary {
         // 2. which lookup
         if let Ok(path) = which::which("mise") {
             let utf8 = Utf8PathBuf::from_path_buf(path).map_err(|pb| {
-                MiseError::Io(std::io::Error::other(
-                    format!("non-utf8 path from which: {}", pb.display()),
-                ))
+                MiseError::Io(std::io::Error::other(format!(
+                    "non-utf8 path from which: {}",
+                    pb.display()
+                )))
             })?;
             return Ok(Self {
                 path: utf8,
@@ -111,7 +112,8 @@ impl MiseBinary {
 
 /// Returns `~/.local/bin/mise` if the home directory can be determined.
 fn dirs_home_local_bin() -> Option<Utf8PathBuf> {
-    dirs::home_dir().map(|h| Utf8PathBuf::from_path_buf(h.join(".local/bin/mise")).unwrap_or_default())
+    dirs::home_dir()
+        .map(|h| Utf8PathBuf::from_path_buf(h.join(".local/bin/mise")).unwrap_or_default())
 }
 
 // ---------------------------------------------------------------------------

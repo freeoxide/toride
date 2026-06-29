@@ -42,7 +42,7 @@
 //!
 //! The catalogue is constant app data and the `which` sweep cannot fail at
 //! construction, so the section is `available == true` on every host after a
-//! successful collection. Only a `spawn_blocking` task panic (JoinError) flips
+//! successful collection. Only a `spawn_blocking` task panic (`JoinError`) flips
 //! `available` to `false`, surfacing the degraded panel — mirroring the
 //! harden / fail2ban / cloud collectors' panic path.
 
@@ -57,7 +57,7 @@ use crate::ui::screens::templates::{FindingEntry, RecipeEntry};
 #[derive(Clone, Debug)]
 pub struct TemplatesDataBundle {
     /// Whether the catalogue could be collected at all. `false` is reserved
-    /// for the panic case (a `spawn_blocking` JoinError) — the catalogue is
+    /// for the panic case (a `spawn_blocking` `JoinError`) — the catalogue is
     /// constant app data and the `which` sweep cannot fail at construction, so
     /// every successful collection yields `true`. `false` renders the degraded
     /// "unavailable" panel.
@@ -101,6 +101,10 @@ pub struct TemplatesCollector {
 }
 
 /// How long to keep cached findings before re-running the `which` sweep.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: Duration = Duration::from_secs(60);
 
 impl TemplatesCollector {
@@ -124,6 +128,7 @@ impl TemplatesCollector {
     /// If a collection is already in-flight, this is a no-op. The 60s findings
     /// cache is consulted: when fresh, the spawned task reuses the cached
     /// findings instead of re-running the `which` sweep.
+    #[allow(clippy::similar_names)]
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
@@ -132,10 +137,14 @@ impl TemplatesCollector {
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
-                .map_or(false, |t| t.elapsed() < FINDINGS_TTL);
+                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
+            #[allow(
+                clippy::similar_names,
+                reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
+            )]
             let (bundle, used_cache) = collect_real_templates(use_cache, cached_findings).await;
             let _ = tx.send((bundle, used_cache));
         });
@@ -188,7 +197,7 @@ impl Default for TemplatesCollector {
 /// All work runs on the blocking thread pool (the `which` PATH walk is
 /// synchronous). The whole catalogue is swept in a SINGLE
 /// [`tokio::task::spawn_blocking`] so the tokio worker is never stalled.
-/// Findings may be reused from the cache. On ANY panic (JoinError from the
+/// Findings may be reused from the cache. On ANY panic (`JoinError` from the
 /// outer `spawn_blocking`) returns [`empty_bundle_with_reason`] with
 /// `available = false`.
 ///
@@ -201,6 +210,10 @@ impl Default for TemplatesCollector {
 /// findings were actually taken from the cache on a successful collection. The
 /// caller advances the TTL clock ONLY when `used_cache == false`, so a
 /// cache-hit poll never resets the freshness timestamp with stale data.
+#[allow(
+    clippy::similar_names,
+    reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
+)]
 async fn collect_real_templates(
     use_cache: bool,
     cached_findings: Option<Vec<FindingEntry>>,
@@ -277,9 +290,7 @@ async fn collect_real_templates(
         Err(e) => {
             tracing::warn!("templates data collection panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "templates data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("templates data collection panicked: {e}")),
                 false,
             )
         }
@@ -287,10 +298,10 @@ async fn collect_real_templates(
 }
 
 /// Empty bundle used when the collection task panicked (`spawn_blocking`
-/// JoinError) — mirrors [`harden_data::empty_bundle`] and the sibling
+/// `JoinError`) — mirrors [`harden_data::empty_bundle`] and the sibling
 /// collectors. `available = false` signals the UI to render the degraded
 /// panel; no reason is attached because none is known at this point (the
-/// JoinError reason is added by [`empty_bundle_with_reason`]).
+/// `JoinError` reason is added by [`empty_bundle_with_reason`]).
 ///
 /// [`harden_data::empty_bundle`]: crate::toride_harden_data::HardenDataBundle
 fn empty_bundle() -> TemplatesDataBundle {
@@ -305,9 +316,9 @@ fn empty_bundle() -> TemplatesDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned
-/// collection task panicked (JoinError) — the reason string is rendered by the
+/// collection task panicked (`JoinError`) — the reason string is rendered by the
 /// UI's degraded panel so the operator sees what actually went wrong, mirroring
-/// the spawn_blocking JoinError path in harden / fail2ban / cloud / etc.
+/// the `spawn_blocking` `JoinError` path in harden / fail2ban / cloud / etc.
 fn empty_bundle_with_reason(reason: String) -> TemplatesDataBundle {
     let mut b = empty_bundle();
     b.unavailable_reason = Some(reason);
@@ -374,7 +385,7 @@ mod tests {
         // constant data and the `which` sweep cannot fail at construction).
         let mut collector = TemplatesCollector::new();
         collector.start();
-        tokio::time::sleep(Duration::from_millis(2000)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
         let b = bundle.unwrap();
@@ -412,7 +423,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = TemplatesCollector::new();
         collector.start();
-        tokio::time::sleep(Duration::from_millis(2000)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where every target tool is installed).

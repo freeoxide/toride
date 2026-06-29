@@ -3,6 +3,7 @@
 //! Provides functions for managing logrotate configuration for
 //! audit-related log files.
 
+use std::fmt::Write as _;
 use std::fs;
 
 use crate::{AuditPaths, Error, Result};
@@ -57,7 +58,7 @@ pub enum LogrotateFrequency {
 ///
 /// # Arguments
 ///
-/// * `paths` - Audit paths containing the logrotate_d directory.
+/// * `paths` - Audit paths containing the `logrotate_d` directory.
 /// * `name` - Configuration file name.
 /// * `config` - The logrotate configuration.
 ///
@@ -137,10 +138,10 @@ pub fn render_logrotate_config(config: &LogrotateConfig) -> String {
         LogrotateFrequency::Yearly => out.push_str("    yearly\n"),
     }
 
-    out.push_str(&format!("    rotate {}\n", config.rotate));
+    let _ = writeln!(out, "    rotate {}", config.rotate);
 
     if let Some(size) = &config.max_size {
-        out.push_str(&format!("    maxsize {size}\n"));
+        let _ = writeln!(out, "    maxsize {size}");
     }
 
     if config.compress {
@@ -149,7 +150,7 @@ pub fn render_logrotate_config(config: &LogrotateConfig) -> String {
     }
 
     for opt in &config.extra_options {
-        out.push_str(&format!("    {opt}\n"));
+        let _ = writeln!(out, "    {opt}");
     }
 
     out.push_str("}\n");

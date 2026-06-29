@@ -63,10 +63,10 @@ pub fn expand_path(path: &str) -> PathBuf {
 
     // Handle $HOME environment variable.
     let expanded_str = expanded.to_string_lossy();
-    if expanded_str.contains("$HOME") {
-        if let Some(home) = std::env::var_os("HOME") {
-            return PathBuf::from(expanded_str.replace("$HOME", &home.to_string_lossy()));
-        }
+    if expanded_str.contains("$HOME")
+        && let Some(home) = std::env::var_os("HOME")
+    {
+        return PathBuf::from(expanded_str.replace("$HOME", &home.to_string_lossy()));
     }
 
     expanded

@@ -341,9 +341,7 @@ impl Mise {
     ///
     /// Returns [`MiseError`] if the binary cannot be found.
     pub async fn which_version(&self, bin: &str) -> MiseResult<BinResolution> {
-        let output = self
-            .run_checked(["which", "--version", bin])
-            .await?;
+        let output = self.run_checked(["which", "--version", bin]).await?;
 
         let lines: Vec<&str> = output.stdout_trimmed().lines().collect();
         if lines.is_empty() {
@@ -374,9 +372,7 @@ impl Mise {
     ///
     /// Returns [`MiseError`] if the binary cannot be found.
     pub async fn which_plugin(&self, bin: &str) -> MiseResult<BinResolution> {
-        let output = self
-            .run_checked(["which", "--plugin", bin])
-            .await?;
+        let output = self.run_checked(["which", "--plugin", bin]).await?;
 
         let lines: Vec<&str> = output.stdout_trimmed().lines().collect();
         if lines.is_empty() {
@@ -449,10 +445,7 @@ mod tests {
         let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("hello")));
         let mise = build_mise(fake.clone());
 
-        let req = super::ExecRequest::new(
-            [ToolSpec::new("node@22")],
-            ["node", "--version"],
-        );
+        let req = super::ExecRequest::new([ToolSpec::new("node@22")], ["node", "--version"]);
         let output = mise.exec(&req).await.unwrap();
         assert_eq!(output.stdout_trimmed(), "hello");
 
@@ -516,7 +509,8 @@ mod tests {
             .arg("node@22")
             .arg("--")
             .arg("node")
-            .arg("--version");
+            .arg("--version")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -524,10 +518,7 @@ mod tests {
         );
         let mise = build_mise(fake.clone());
 
-        let req = super::ExecRequest::new(
-            [ToolSpec::new("node@22")],
-            ["node", "--version"],
-        );
+        let req = super::ExecRequest::new([ToolSpec::new("node@22")], ["node", "--version"]);
         let output = mise.exec(&req).await.unwrap();
         assert_eq!(output.stdout_trimmed(), "v22.1.0");
 
@@ -542,7 +533,8 @@ mod tests {
             .arg("--")
             .arg("python")
             .arg("-c")
-            .arg("print(1)");
+            .arg("print(1)")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -550,19 +542,20 @@ mod tests {
         );
         let mise = build_mise(fake.clone());
 
-        let req = super::ExecRequest::new(
-            [ToolSpec::new("python@3.12")],
-            ["python", "-c", "print(1)"],
-        );
+        let req =
+            super::ExecRequest::new([ToolSpec::new("python@3.12")], ["python", "-c", "print(1)"]);
         let _ = mise.exec(&req).await.unwrap();
 
-        fake.assert_called_with(&toride_runner::CommandSpec::new("/usr/bin/mise")
-            .arg("exec")
-            .arg("python@3.12")
-            .arg("--")
-            .arg("python")
-            .arg("-c")
-            .arg("print(1)"));
+        fake.assert_called_with(
+            &toride_runner::CommandSpec::new("/usr/bin/mise")
+                .arg("exec")
+                .arg("python@3.12")
+                .arg("--")
+                .arg("python")
+                .arg("-c")
+                .arg("print(1)")
+                .redact(true),
+        );
     }
 
     #[tokio::test]
@@ -576,7 +569,8 @@ mod tests {
             .arg("--raw")
             .arg("--")
             .arg("echo")
-            .arg("hello");
+            .arg("hello")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -584,13 +578,10 @@ mod tests {
         );
         let mise = build_mise(fake.clone());
 
-        let req = super::ExecRequest::new(
-            [ToolSpec::new("node@22")],
-            ["echo", "hello"],
-        )
-        .jobs(2)
-        .fresh_env()
-        .raw();
+        let req = super::ExecRequest::new([ToolSpec::new("node@22")], ["echo", "hello"])
+            .jobs(2)
+            .fresh_env()
+            .raw();
         let _ = mise.exec(&req).await.unwrap();
 
         let calls = fake.calls();
@@ -611,21 +602,24 @@ mod tests {
     async fn test_which_strict_mode() {
         let expected = toride_runner::CommandSpec::new("/usr/bin/mise")
             .arg("which")
-            .arg("node");
-        let fake = Arc::new(
-            FakeRunner::new()
-                .strict()
-                .respond(expected, CommandOutput::from_stdout(
-                    "/home/user/.local/share/mise/installs/node/22.1.0/bin/node",
-                )),
-        );
+            .arg("node")
+            .redact(true);
+        let fake = Arc::new(FakeRunner::new().strict().respond(
+            expected,
+            CommandOutput::from_stdout(
+                "/home/user/.local/share/mise/installs/node/22.1.0/bin/node",
+            ),
+        ));
         let mise = build_mise(fake.clone());
 
         let result = mise.which("node").await.unwrap();
         assert_eq!(result.bin, "node");
 
-        fake.assert_called_with(&toride_runner::CommandSpec::new("/usr/bin/mise")
-            .arg("which")
-            .arg("node"));
+        fake.assert_called_with(
+            &toride_runner::CommandSpec::new("/usr/bin/mise")
+                .arg("which")
+                .arg("node")
+                .redact(true),
+        );
     }
 }

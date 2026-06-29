@@ -173,9 +173,8 @@ impl Fail2BanConfig {
 
     /// Save configuration to a JSON file using atomic write.
     pub fn save(&self, path: &Path) -> crate::Result<()> {
-        let content = serde_json::to_string_pretty(self).map_err(|e| {
-            crate::Error::InvalidConfig(format!("Failed to serialize config: {e}"))
-        })?;
+        let content = serde_json::to_string_pretty(self)
+            .map_err(|e| crate::Error::InvalidConfig(format!("Failed to serialize config: {e}")))?;
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
@@ -198,12 +197,15 @@ impl Fail2BanConfig {
     /// Returns `InvalidConfig` on zero `find_time`, zero `max_retry`, zero `ban_time`,
     /// invalid regex pattern, missing log file, invalid action references,
     /// invalid log level, zero scan interval, or values exceeding upper bounds.
-    #[allow(clippy::too_many_lines, reason = "validation covers many distinct checks")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "validation covers many distinct checks"
+    )]
     pub fn validate(&self) -> crate::Result<()> {
         // Validate global settings.
         if self.global.scan_interval == 0 {
             return Err(crate::Error::InvalidConfig(
-                "global: scan_interval must be greater than 0".to_string()
+                "global: scan_interval must be greater than 0".to_string(),
             ));
         }
         let valid_levels = ["trace", "debug", "info", "warn", "error"];
@@ -218,33 +220,33 @@ impl Fail2BanConfig {
         // Validate global defaults.
         if self.defaults.find_time == 0 {
             return Err(crate::Error::InvalidConfig(
-                "defaults: find_time must be greater than 0".to_string()
+                "defaults: find_time must be greater than 0".to_string(),
             ));
         }
         if self.defaults.max_retry == 0 {
             return Err(crate::Error::InvalidConfig(
-                "defaults: max_retry must be greater than 0".to_string()
+                "defaults: max_retry must be greater than 0".to_string(),
             ));
         }
         if self.defaults.ban_time == 0 {
             return Err(crate::Error::InvalidConfig(
-                "defaults: ban_time must be greater than 0".to_string()
+                "defaults: ban_time must be greater than 0".to_string(),
             ));
         }
         // Upper bounds: find_time <= 1 day, ban_time <= 1 year, max_retry <= 10000.
         if self.defaults.find_time > 86_400 {
             return Err(crate::Error::InvalidConfig(
-                "defaults: find_time must not exceed 86400 (1 day)".to_string()
+                "defaults: find_time must not exceed 86400 (1 day)".to_string(),
             ));
         }
         if self.defaults.ban_time > 31_536_000 {
             return Err(crate::Error::InvalidConfig(
-                "defaults: ban_time must not exceed 31536000 (1 year)".to_string()
+                "defaults: ban_time must not exceed 31536000 (1 year)".to_string(),
             ));
         }
         if self.defaults.max_retry > 10_000 {
             return Err(crate::Error::InvalidConfig(
-                "defaults: max_retry must not exceed 10000".to_string()
+                "defaults: max_retry must not exceed 10000".to_string(),
             ));
         }
 
@@ -324,9 +326,10 @@ impl Fail2BanConfig {
     ///
     /// Returns `JailNotFound` if the jail name is not in the configuration.
     pub fn resolve_jail(&self, name: &str) -> crate::Result<ResolvedJail> {
-        let jail = self.jails.get(name).ok_or_else(|| {
-            crate::Error::JailNotFound(name.to_string())
-        })?;
+        let jail = self
+            .jails
+            .get(name)
+            .ok_or_else(|| crate::Error::JailNotFound(name.to_string()))?;
 
         Ok(ResolvedJail {
             name: name.to_string(),
@@ -336,8 +339,16 @@ impl Fail2BanConfig {
             find_time: jail.find_time.unwrap_or(self.defaults.find_time),
             ban_time: jail.ban_time.unwrap_or(self.defaults.ban_time),
             max_retry: jail.max_retry.unwrap_or(self.defaults.max_retry),
-            ban_action: jail.ban_action.as_deref().unwrap_or(&self.defaults.ban_action).to_string(),
-            unban_action: jail.unban_action.as_deref().unwrap_or(&self.defaults.unban_action).to_string(),
+            ban_action: jail
+                .ban_action
+                .as_deref()
+                .unwrap_or(&self.defaults.ban_action)
+                .to_string(),
+            unban_action: jail
+                .unban_action
+                .as_deref()
+                .unwrap_or(&self.defaults.unban_action)
+                .to_string(),
             ignore_ips: jail.ignore_ips.clone(),
         })
     }

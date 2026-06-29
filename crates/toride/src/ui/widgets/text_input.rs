@@ -27,7 +27,7 @@ pub enum InputAction {
     Cancel,
     /// Move focus to the next field (Tab).
     NextField,
-    /// Move focus to the previous field (Shift+Tab / BackTab).
+    /// Move focus to the previous field (Shift+Tab / `BackTab`).
     PrevField,
     /// Key was consumed but no high-level action (char typed, cursor moved, etc.).
     None,
@@ -184,8 +184,7 @@ impl TextInput {
         let prev = self.value[..self.cursor]
             .char_indices()
             .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0);
+            .map_or(0, |(i, _)| i);
         self.value.drain(prev..self.cursor);
         self.cursor = prev;
         self.clamp_scroll();
@@ -199,8 +198,7 @@ impl TextInput {
         let next = self.value[self.cursor..]
             .char_indices()
             .nth(1)
-            .map(|(i, _)| self.cursor + i)
-            .unwrap_or(self.value.len());
+            .map_or(self.value.len(), |(i, _)| self.cursor + i);
         self.value.drain(self.cursor..next);
         self.clamp_scroll();
     }
@@ -211,8 +209,7 @@ impl TextInput {
             self.cursor = self.value[..self.cursor]
                 .char_indices()
                 .next_back()
-                .map(|(i, _)| i)
-                .unwrap_or(0);
+                .map_or(0, |(i, _)| i);
             self.clamp_scroll();
         }
     }
@@ -223,8 +220,7 @@ impl TextInput {
             self.cursor = self.value[self.cursor..]
                 .char_indices()
                 .nth(1)
-                .map(|(i, _)| self.cursor + i)
-                .unwrap_or(self.value.len());
+                .map_or(self.value.len(), |(i, _)| self.cursor + i);
             self.clamp_scroll();
         }
     }
@@ -250,7 +246,23 @@ impl TextInput {
     ///
     /// `area` should be a 3-row-tall rect (top border + content + bottom border).
     /// Width must accommodate `label_width + input_width + borders`.
-    pub fn render(&self, frame: &mut Frame, area: Rect, p: Palette, focused: bool, error: Option<&str>) {
+    ///
+    /// # Panics
+    ///
+    /// Panics if `error` is `Some` but the provided `area` is too small to
+    /// render the field box.
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "label length and cursor column are bounded by terminal cols < u16::MAX"
+    )]
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        p: Palette,
+        focused: bool,
+        error: Option<&str>,
+    ) {
         let border_color = if error.is_some() {
             p.err
         } else if focused {
@@ -268,11 +280,10 @@ impl TextInput {
         frame.render_widget(block, area);
 
         // Build the display text.
-        let display = if self.value.is_empty() && self.placeholder.is_some() {
-            Span::styled(
-                self.placeholder.unwrap().to_string(),
-                Style::new().fg(p.text_muted),
-            )
+        let display = if self.value.is_empty()
+            && let Some(placeholder) = self.placeholder
+        {
+            Span::styled(placeholder.to_string(), Style::new().fg(p.text_muted))
         } else if self.secret {
             Span::styled(
                 "•".repeat(self.value.chars().count()),
@@ -291,7 +302,10 @@ impl TextInput {
         let cursor_col = if self.value.is_empty() && self.placeholder.is_some() {
             0
         } else {
-            self.value[..self.cursor].chars().count().saturating_sub(self.scroll)
+            self.value[..self.cursor]
+                .chars()
+                .count()
+                .saturating_sub(self.scroll)
         };
 
         let mut spans = vec![];
@@ -339,7 +353,7 @@ impl TextInput {
                     cell.set_char('▎');
                     cell.set_fg(p.text);
                     cell.set_bg(p.bg_inset);
-                };
+                }
             }
         }
     }
@@ -360,6 +374,10 @@ impl TextInput {
 
     /// The total width this input needs (label + box + borders).
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "static label length is bounded < u16::MAX"
+    )]
     pub fn total_width(&self) -> u16 {
         let mut label_w = self.label.len() as u16 + 1; // label + space
         if self.required {
@@ -547,7 +565,10 @@ mod tests {
         // Should have a border, the label, and the placeholder text.
         // The cursor bar (▎) replaces the first char of the placeholder.
         assert!(output.contains("Name"), "label visible: {output}");
-        assert!(output.contains("nter name"), "placeholder visible (after cursor): {output}");
+        assert!(
+            output.contains("nter name"),
+            "placeholder visible (after cursor): {output}"
+        );
     }
 
     #[test]
@@ -587,7 +608,15 @@ mod tests {
         let input = TextInput::new("Name", 20).placeholder("...");
         let mut terminal = Terminal::new(TestBackend::new(40, 5)).unwrap();
         terminal
-            .draw(|f| input.render(f, Rect::new(0, 1, 30, 3), CHARM, true, Some("This field is required")))
+            .draw(|f| {
+                input.render(
+                    f,
+                    Rect::new(0, 1, 30, 3),
+                    CHARM,
+                    true,
+                    Some("This field is required"),
+                );
+            })
             .unwrap();
         // The render should not panic; error text is shown below the field box.
         let output = terminal.backend().to_string();

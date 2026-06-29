@@ -227,6 +227,8 @@ fn write_sshd_config(
     validator: Option<Validator>,
     runner: Option<Runner>,
 ) -> Result<()> {
+    use std::io::Write as _;
+
     let validator = validator.unwrap_or(default_validator);
     let runner = runner.unwrap_or(run_cmd);
 
@@ -237,13 +239,13 @@ fn write_sshd_config(
     //    We do NOT auto-resolve: the operator must manage the real file
     //    directly. `symlink_metadata` is lstat (does not follow). This applies
     //    to both root and non-root paths since it runs before any staging.
-    if let Ok(meta) = std::fs::symlink_metadata(target) {
-        if meta.file_type().is_symlink() {
-            return Err(Error::ConfigWriteFailed(format!(
-                "refusing to install: {} is a symlink — manage the resolved file directly",
-                target.display()
-            )));
-        }
+    if let Ok(meta) = std::fs::symlink_metadata(target)
+        && meta.file_type().is_symlink()
+    {
+        return Err(Error::ConfigWriteFailed(format!(
+            "refusing to install: {} is a symlink — manage the resolved file directly",
+            target.display()
+        )));
     }
 
     // 0b. SELF-SWEEP defense-in-depth — best-effort remove any leftover STAGED
@@ -311,14 +313,13 @@ fn write_sshd_config(
     // Capture the temp path before any move so the error path can clean up.
     let tmp_path_for_err = tmp.path().to_path_buf();
 
-    use std::io::Write;
-    tmp.as_file()
-        .write_all(content.as_bytes())
-        .map_err(|e| Error::ConfigWriteFailed(format!("failed to write staged sshd_config: {e}")))?;
+    tmp.as_file().write_all(content.as_bytes()).map_err(|e| {
+        Error::ConfigWriteFailed(format!("failed to write staged sshd_config: {e}"))
+    })?;
     // fsync the temp so the validated bytes are what actually lands on disk.
-    tmp.as_file()
-        .sync_all()
-        .map_err(|e| Error::ConfigWriteFailed(format!("failed to fsync staged sshd_config: {e}")))?;
+    tmp.as_file().sync_all().map_err(|e| {
+        Error::ConfigWriteFailed(format!("failed to fsync staged sshd_config: {e}"))
+    })?;
 
     // Keep the temp path as a plain PathBuf for the validation/restore logic;
     // `keep()` detaches it from the drop-deleting guard so we control its
@@ -336,8 +337,14 @@ fn write_sshd_config(
     };
 
     // Run the write through to completion, guaranteeing temp cleanup.
-    let result =
-        write_sshd_config_finish(content, running_as_root, target, &tmp_path, validator, runner);
+    let result = write_sshd_config_finish(
+        content,
+        running_as_root,
+        target,
+        &tmp_path,
+        validator,
+        runner,
+    );
 
     // Best-effort cleanup of the staging temp on every path (success or
     // failure). The live config is never the temp.
@@ -404,29 +411,28 @@ fn write_sshd_config_finish(
     // Validate -> backup -> install. On any failure, clean up a lifted temp
     // (root-owned, in /etc/ssh) so we never leave a stray staging file. On
     // success the lifted temp was consumed by the install rename.
-    let result = validate_backup_install(running_as_root, target, &validate_path, validator, runner);
-    if result.is_err() {
-        if let Some(p) = &lifted {
-            // Best-effort cleanup: the real failure is already being surfaced,
-            // and a leftover temp is not a lockout (it is not the live config).
-            // The cleanup itself runs as `sudo -n rm`, so if the sudo
-            // credentials expired mid-flight (the very thing that caused the
-            // failure), the rm fails the same way. We do NOT propagate that
-            // cleanup error — the original error is what the caller needs — but
-            // we MUST surface the leaked path so the operator can remove it by
-            // hand. (The next write's self-sweep at the top of
-            // write_sshd_config will also eventually reclaim it.)
-            if let Err(cleanup_err) =
-                runner("rm", &["-f", &p.to_string_lossy()], running_as_root)
-            {
-                tracing::warn!(
-                    target: "toride_ssh_core::privilege",
-                    leaked_path = %p.display(),
-                    error = %cleanup_err,
-                    "failed to clean up lifted sshd_config temp after install failure; \
-                     remove it manually if it persists"
-                );
-            }
+    let result =
+        validate_backup_install(running_as_root, target, &validate_path, validator, runner);
+    if result.is_err()
+        && let Some(p) = &lifted
+    {
+        // Best-effort cleanup: the real failure is already being surfaced,
+        // and a leftover temp is not a lockout (it is not the live config).
+        // The cleanup itself runs as `sudo -n rm`, so if the sudo
+        // credentials expired mid-flight (the very thing that caused the
+        // failure), the rm fails the same way. We do NOT propagate that
+        // cleanup error — the original error is what the caller needs — but
+        // we MUST surface the leaked path so the operator can remove it by
+        // hand. (The next write's self-sweep at the top of
+        // write_sshd_config will also eventually reclaim it.)
+        if let Err(cleanup_err) = runner("rm", &["-f", &p.to_string_lossy()], running_as_root) {
+            tracing::warn!(
+                target: "toride_ssh_core::privilege",
+                leaked_path = %p.display(),
+                error = %cleanup_err,
+                "failed to clean up lifted sshd_config temp after install failure; \
+                 remove it manually if it persists"
+            );
         }
     }
     result
@@ -700,36 +706,36 @@ fn is_binary_missing(detail: &str) -> bool {
 /// install — the security constraint requires a backup before every install.
 fn backup_config(target: &Path, running_as_root: bool, runner: Runner) -> Result<()> {
     let src = target.to_string_lossy();
-    let dst = format!("{}.bak", src);
-    let dst1 = format!("{}.bak.1", src);
+    let prev_bak = format!("{src}.bak");
+    let oldest_bak = format!("{src}.bak.1");
 
     // Rotate the previous backup out of the way before we clobber it. We keep
     // at most two generations (.bak and .bak.1), so any stale .bak.1 is dropped
     // first. A failure here must abort — without a clean rotation we could lose
     // the pre-first-edit original when two bad edits land back to back.
-    let dst_exists = std::path::Path::new(&dst).exists();
-    if dst_exists {
+    let has_prev = std::path::Path::new(&prev_bak).exists();
+    if has_prev {
         // Drop a stale .bak.1 (best-effort: it's already a generation we no
         // longer keep once we rotate a new .bak.1 in). If the file doesn't
         // exist, run_cmd would still fail, so only touch it when present.
-        let dst1_exists = std::path::Path::new(&dst1).exists();
-        if dst1_exists {
-            runner("rm", &["-f", &dst1], running_as_root).map_err(|e| {
+        let has_oldest = std::path::Path::new(&oldest_bak).exists();
+        if has_oldest {
+            runner("rm", &["-f", &oldest_bak], running_as_root).map_err(|e| {
                 Error::ConfigWriteFailed(format!(
-                    "failed to drop stale {dst1} during backup rotation (aborting install): {e}"
+                    "failed to drop stale {oldest_bak} during backup rotation (aborting install): {e}"
                 ))
             })?;
         }
-        runner("mv", &[&dst, &dst1], running_as_root).map_err(|e| {
+        runner("mv", &[&prev_bak, &oldest_bak], running_as_root).map_err(|e| {
             Error::ConfigWriteFailed(format!(
-                "failed to rotate {dst} to {dst1} during backup (aborting install): {e}"
+                "failed to rotate {prev_bak} to {oldest_bak} during backup (aborting install): {e}"
             ))
         })?;
     }
 
-    runner("cp", &["-p", &src, &dst], running_as_root).map_err(|e| {
+    runner("cp", &["-p", &src, &prev_bak], running_as_root).map_err(|e| {
         Error::ConfigWriteFailed(format!(
-            "failed to back up sshd_config to {dst} (aborting install): {e}"
+            "failed to back up sshd_config to {prev_bak} (aborting install): {e}"
         ))
     })
 }
@@ -782,9 +788,8 @@ fn install_temp(
         {
             let _ = mode;
         }
-        std::fs::rename(tmp_path, target).map_err(|e| {
-            Error::ConfigWriteFailed(format!("failed to install sshd_config: {e}"))
-        })?;
+        std::fs::rename(tmp_path, target)
+            .map_err(|e| Error::ConfigWriteFailed(format!("failed to install sshd_config: {e}")))?;
         // F17: best-effort fsync of the target's PARENT directory so the
         // rename(2) (which updates the parent directory's entries) is durable
         // across power loss. The temp itself was fsynced before install, but
@@ -800,7 +805,7 @@ fn install_temp(
     // Non-root: single sudo invocation (chmod before mv), built by the pure
     // helper so invariant #3 (single invocation) is asserted by a unit test.
     let (program, args) = install_command(tmp_path, target, mode, running_as_root);
-    let args_refs: Vec<&str> = args.iter().map(|s| s.as_str()).collect();
+    let args_refs: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
     runner(program, &args_refs, running_as_root)
         .map_err(|e| Error::ConfigWriteFailed(format!("failed to install sshd_config: {e}")))?;
     // F17: same best-effort parent-dir fsync as the root branch. On the non-root
@@ -1034,10 +1039,7 @@ mod tests {
             "invalid sshd_config must be rejected (got {err:?})"
         );
         // And the live config must not have been created.
-        assert!(
-            !target.exists(),
-            "invalid config must not be installed"
-        );
+        assert!(!target.exists(), "invalid config must not be installed");
     }
 
     #[test]
@@ -1137,8 +1139,12 @@ mod tests {
         // A binary-missing or genuine config error must NOT be misclassified as
         // a privilege failure (they keep their own, distinct classifications).
         assert!(!is_privilege_denied("sudo: sshd: command not found"));
-        assert!(!is_privilege_denied("line 3: Bad configuration option: foo"));
-        assert!(!is_privilege_denied("Missing value in subsystem definition."));
+        assert!(!is_privilege_denied(
+            "line 3: Bad configuration option: foo"
+        ));
+        assert!(!is_privilege_denied(
+            "Missing value in subsystem definition."
+        ));
     }
 
     #[test]
@@ -1258,6 +1264,8 @@ mod tests {
 
     #[test]
     fn write_sshd_config_aborts_install_when_backup_fails() {
+        use std::os::unix::fs::PermissionsExt as _;
+
         // Make the backup impossible by making the target's directory lack a
         // real existing target that `cp -p` can read... Instead, simulate a
         // backup failure by pointing the target at a path whose PARENT can't
@@ -1271,21 +1279,14 @@ mod tests {
 
         // Remove write permission from the parent dir so `cp` cannot create
         // the .bak file. (We are the owner, so this is effective.)
-        use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o555)).unwrap();
 
         // Run as "root" so install takes the std::fs::rename branch (also
         // fails because the dir is read-only) and backup takes the cp branch.
         // The key assertion: the original content is preserved and NO install
         // happens, because backup is fatal and runs before install.
-        let err = write_sshd_config(
-            "# new\nPort 22\n",
-            true,
-            &target,
-            Some(validator_ok),
-            None,
-        )
-        .expect_err("backup failure must abort the install");
+        let err = write_sshd_config("# new\nPort 22\n", true, &target, Some(validator_ok), None)
+            .expect_err("backup failure must abort the install");
 
         // Restore perms so cleanup can happen.
         let _ = std::fs::set_permissions(&nested, std::fs::Permissions::from_mode(0o755));
@@ -1316,11 +1317,23 @@ mod tests {
         let target = dir.path().join("sshd_config");
 
         std::fs::write(&target, "# generation 0 (original)\nPort 2222\n").unwrap();
-        write_sshd_config("# generation 1\nPort 22\n", true, &target, Some(validator_ok), None)
-            .expect("first write must succeed");
+        write_sshd_config(
+            "# generation 1\nPort 22\n",
+            true,
+            &target,
+            Some(validator_ok),
+            None,
+        )
+        .expect("first write must succeed");
 
-        write_sshd_config("# generation 2\nPort 23\n", true, &target, Some(validator_ok), None)
-            .expect("second write must succeed");
+        write_sshd_config(
+            "# generation 2\nPort 23\n",
+            true,
+            &target,
+            Some(validator_ok),
+            None,
+        )
+        .expect("second write must succeed");
 
         write_sshd_config(
             "# generation 3 (current)\nPort 24\n",
@@ -1337,21 +1350,24 @@ mod tests {
 
         // Live config is the latest.
         let live = std::fs::read_to_string(&target).unwrap();
-        assert!(live.contains("generation 3"), "live must be the 3rd write: {live:?}");
+        assert!(
+            live.contains("generation 3"),
+            "live must be the 3rd write: {live:?}"
+        );
 
         // .bak holds the immediately prior content.
-        let bak_content = std::fs::read_to_string(&bak).unwrap();
+        let prev_content = std::fs::read_to_string(&bak).unwrap();
         assert!(
-            bak_content.contains("generation 2"),
-            ".bak must hold the 2nd write: {bak_content:?}"
+            prev_content.contains("generation 2"),
+            ".bak must hold the 2nd write: {prev_content:?}"
         );
 
         // .bak.1 holds the pre-current-edit ORIGINAL (the 1st write), which a
         // single-generation scheme would have clobbered on the 3rd write.
-        let bak1_content = std::fs::read_to_string(&bak1).unwrap();
+        let oldest_content = std::fs::read_to_string(&bak1).unwrap();
         assert!(
-            bak1_content.contains("generation 1"),
-            ".bak.1 must hold the 1st write (pre-current-edit original): {bak1_content:?}"
+            oldest_content.contains("generation 1"),
+            ".bak.1 must hold the 1st write (pre-current-edit original): {oldest_content:?}"
         );
 
         // At most two generations are retained — no .bak.2 leaks.
@@ -1410,14 +1426,8 @@ mod tests {
             return;
         }
 
-        let err = write_sshd_config(
-            "# new\nPort 22\n",
-            true,
-            &target,
-            Some(validator_ok),
-            None,
-        )
-        .expect_err("must refuse to install over a symlink");
+        let err = write_sshd_config("# new\nPort 22\n", true, &target, Some(validator_ok), None)
+            .expect_err("must refuse to install over a symlink");
 
         let msg = err.to_string();
         assert!(
@@ -1449,10 +1459,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&target)
-                .unwrap()
-                .permissions()
-                .mode();
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode();
             assert_eq!(
                 mode & 0o777,
                 0o644,
@@ -1602,8 +1609,14 @@ mod tests {
         });
         match outcome {
             ValidateOutcome::Invalid(msg) => {
-                assert!(!msg.starts_with(' '), "detail must be left-trimmed: {msg:?}");
-                assert!(!msg.ends_with('\n'), "detail must be right-trimmed: {msg:?}");
+                assert!(
+                    !msg.starts_with(' '),
+                    "detail must be left-trimmed: {msg:?}"
+                );
+                assert!(
+                    !msg.ends_with('\n'),
+                    "detail must be right-trimmed: {msg:?}"
+                );
             }
             other => panic!("expected Invalid, got {other:?}"),
         }
@@ -1627,32 +1640,32 @@ mod tests {
     // (the existing module-level `STAGED_PATH` is only touched by one test, so
     // it is safe; we follow the same one-static-per-test discipline here).
 
-    /// Per-scenario scratch carried through the stub runners via a single
-    /// thread-local cell. Tests reset their own cell before running; because
-    /// `Runner` is a bare `fn` pointer (can't capture), the stub reads/writes
-    /// this cell rather than closing over locals.
+    // Per-scenario scratch carried through the stub runners via a single
+    // thread-local cell. Tests reset their own cell before running; because
+    // `Runner` is a bare `fn` pointer (can't capture), the stub reads/writes
+    // this cell rather than closing over locals.
     thread_local! {
         /// argv of the install `sh -c` invocation, captured by the happy-path
         /// stub. `None` until the install step actually ran.
         static HAPPY_INSTALL_CALL: std::cell::RefCell<Option<Vec<String>>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
         /// Count of INSTALL `sh` invocations seen by the happy-path stub (must
         /// be 1 — the single install; the self-sweep is not counted).
-        static HAPPY_SH_COUNT: std::cell::Cell<u32> = std::cell::Cell::new(0);
+        static HAPPY_SH_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
         /// argv of the install `sh -c` invocation, captured by the failure
         /// stub. `Some` once the install step was reached.
         static FAIL_INSTALL_CALL: std::cell::RefCell<Option<Vec<String>>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
         /// Path the validator was handed (happy path). Thread-local (not the
         /// module-level `STAGED_PATH`) so this test does not contend with the
         /// unrelated `write_sshd_config_stages_temp_as_sibling_of_target` test
         /// when the harness runs tests concurrently.
         static HAPPY_VALIDATED_PATH: std::cell::RefCell<Option<std::path::PathBuf>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
         /// Path the validator was handed (failure path). See
         /// `HAPPY_VALIDATED_PATH` for why this is thread-local.
         static FAIL_VALIDATED_PATH: std::cell::RefCell<Option<std::path::PathBuf>> =
-            std::cell::RefCell::new(None);
+            const { std::cell::RefCell::new(None) };
     }
 
     /// Shared body of the two stub runners: perform the real op for `cp`/`mv`/
@@ -1665,7 +1678,9 @@ mod tests {
         fail_install: bool,
         on_install: impl Fn(&[String]),
     ) -> Result<()> {
-        let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        // `args` (borrowed `&[&str]`) vs `owned_args` (owned `Vec<String>`): the
+        // distinct names track the borrow/own split intentionally.
+        let owned_args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         match cmd {
             "cp" => {
                 // Both the LIFT (`cp <src> <dst>`) and the backup copy
@@ -1673,22 +1688,23 @@ mod tests {
                 // operands". Perform a real copy so the validator/install see
                 // bytes (faking an empty success would leave the validator
                 // reading an absent lifted file).
-                let pair: Vec<&str> = argv.iter()
+                let pair: Vec<&str> = owned_args
+                    .iter()
                     .filter(|a| !a.starts_with('-'))
-                    .map(|s| s.as_str())
+                    .map(std::string::String::as_str)
                     .collect();
                 if pair.len() == 2 {
-                    std::fs::copy(pair[0], pair[1]).map_err(|e| {
-                        Error::ConfigWriteFailed(format!("stub cp failed: {e}"))
-                    })?;
+                    std::fs::copy(pair[0], pair[1])
+                        .map_err(|e| Error::ConfigWriteFailed(format!("stub cp failed: {e}")))?;
                 }
                 Ok(())
             }
             "mv" => {
                 // backup rotation `mv <dst> <dst1>`.
-                let pair: Vec<&str> = argv.iter()
+                let pair: Vec<&str> = owned_args
+                    .iter()
                     .filter(|a| !a.starts_with('-'))
-                    .map(|s| s.as_str())
+                    .map(std::string::String::as_str)
                     .collect();
                 if pair.len() == 2 {
                     let _ = std::fs::rename(pair[0], pair[1]);
@@ -1697,9 +1713,10 @@ mod tests {
             }
             "rm" => {
                 // cleanup / rotation drop.
-                let pair: Vec<&str> = argv.iter()
+                let pair: Vec<&str> = owned_args
+                    .iter()
                     .filter(|a| !a.starts_with('-'))
-                    .map(|s| s.as_str())
+                    .map(std::string::String::as_str)
                     .collect();
                 for p in pair {
                     let _ = std::fs::remove_file(p);
@@ -1717,29 +1734,27 @@ mod tests {
                 // We distinguish them by the script content; only the install
                 // is recorded (via `on_install`) and can be failed. The
                 // self-sweep just runs its `rm -f` glob for real.
-                let script = argv.get(1).map(|s| s.as_str()).unwrap_or("");
-                let is_install = argv.first().is_some_and(|a| a == "-c")
+                let script = owned_args.get(1).map_or("", std::string::String::as_str);
+                let is_install = owned_args.first().is_some_and(|a| a == "-c")
                     && script.contains("chmod")
                     && script.contains("mv");
                 if is_install {
-                    on_install(&argv);
+                    on_install(&owned_args);
                     if fail_install {
-                        return Err(Error::SudoFailed(
-                            "stub: injected install failure".into(),
-                        ));
+                        return Err(Error::SudoFailed("stub: injected install failure".into()));
                     }
-                    // argv = ["-c", "<script>", src, dst]. Perform the
+                    // owned_args = ["-c", "<script>", src, dst]. Perform the
                     // chmod-then-mv for real against the tempdir we own.
-                    if argv.len() == 4 {
-                        let src = &argv[2];
-                        let dst = &argv[3];
+                    if owned_args.len() == 4 {
+                        let src = &owned_args[2];
+                        let dst = &owned_args[3];
                         #[cfg(unix)]
                         {
                             use std::os::unix::fs::PermissionsExt;
                             std::fs::set_permissions(src, std::fs::Permissions::from_mode(0o644))
                                 .map_err(|e| {
-                                    Error::ConfigWriteFailed(format!("stub chmod failed: {e}"))
-                                })?;
+                                Error::ConfigWriteFailed(format!("stub chmod failed: {e}"))
+                            })?;
                         }
                         std::fs::rename(src, dst).map_err(|e| {
                             Error::ConfigWriteFailed(format!("stub mv failed: {e}"))
@@ -1755,18 +1770,17 @@ mod tests {
                 // deleting a CONCURRENT test thread's staged temp (each
                 // non-root test stages in std::env::temp_dir()). Within-test
                 // sweep behavior (target dir) is still exercised.
-                if argv.len() == 3 && script.contains("rm -f") {
-                    if let Some(dir) = argv.get(2) {
-                        let is_system_temp = std::path::Path::new(dir)
-                            == std::env::temp_dir().as_path();
-                        if !is_system_temp {
-                            if let Ok(entries) = std::fs::read_dir(dir) {
-                                for entry in entries.flatten() {
-                                    let name = entry.file_name();
-                                    if name.to_string_lossy().starts_with(STAGED_TEMP_PREFIX) {
-                                        let _ = std::fs::remove_file(entry.path());
-                                    }
-                                }
+                if owned_args.len() == 3
+                    && script.contains("rm -f")
+                    && let Some(dir) = owned_args.get(2)
+                {
+                    let is_system_temp =
+                        std::path::Path::new(dir) == std::env::temp_dir().as_path();
+                    if !is_system_temp && let Ok(entries) = std::fs::read_dir(dir) {
+                        for entry in entries.flatten() {
+                            let name = entry.file_name();
+                            if name.to_string_lossy().starts_with(STAGED_TEMP_PREFIX) {
+                                let _ = std::fs::remove_file(entry.path());
                             }
                         }
                     }
@@ -1895,7 +1909,7 @@ mod tests {
         // separate sh invocations, this count would be 2. (The self-sweep
         // `sh -c 'rm -f …'` at the top of write_sshd_config is deliberately
         // NOT counted — only install-shaped sh calls are.)
-        let sh_count = HAPPY_SH_COUNT.with(|c| c.get());
+        let sh_count = HAPPY_SH_COUNT.with(std::cell::Cell::get);
         assert_eq!(
             sh_count, 1,
             "exactly ONE install sh -c invocation; found {sh_count}"
@@ -1906,10 +1920,7 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&target)
-                .unwrap()
-                .permissions()
-                .mode();
+            let mode = std::fs::metadata(&target).unwrap().permissions().mode();
             assert_eq!(
                 mode & 0o777,
                 0o644,
@@ -1918,11 +1929,17 @@ mod tests {
         }
         // New content is live, old content is gone.
         let live = std::fs::read_to_string(&target).unwrap();
-        assert!(live.contains("Port 22"), "new content must be installed: {live:?}");
+        assert!(
+            live.contains("Port 22"),
+            "new content must be installed: {live:?}"
+        );
         assert!(!live.contains("2222"), "old content must be gone: {live:?}");
         // Backup taken before install (root-owned .bak).
         let backup = std::fs::read_to_string(format!("{}.bak", target.display())).unwrap();
-        assert!(backup.contains("2222"), "backup must hold the pre-install content");
+        assert!(
+            backup.contains("2222"),
+            "backup must hold the pre-install content"
+        );
     }
 
     #[test]
@@ -1979,7 +1996,8 @@ mod tests {
         // install assertion below, this proves the failure originated at the
         // install step — not at the lift, which would have masked the install
         // path under test.
-        let validated = FAIL_VALIDATED_PATH.with(|c| c.borrow().clone())
+        let validated = FAIL_VALIDATED_PATH
+            .with(|c| c.borrow().clone())
             .expect("validator must have been called (lift succeeded before install)");
         assert_eq!(
             validated.parent(),
@@ -2114,8 +2132,12 @@ mod tests {
         std::fs::write(&target, "# old\nPort 2222\n").unwrap();
 
         // Plant a stale STAGED temp and a LIFTED temp in the target dir.
-        let stale_staged = dir.path().join(format!("{STAGED_TEMP_PREFIX}stale{TEMP_SUFFIX}"));
-        let lifted = dir.path().join(format!("{LIFTED_TEMP_PREFIX}live{TEMP_SUFFIX}"));
+        let stale_staged = dir
+            .path()
+            .join(format!("{STAGED_TEMP_PREFIX}stale{TEMP_SUFFIX}"));
+        let lifted = dir
+            .path()
+            .join(format!("{LIFTED_TEMP_PREFIX}live{TEMP_SUFFIX}"));
         std::fs::write(&stale_staged, "stale\n").unwrap();
         std::fs::write(&lifted, "lifted\n").unwrap();
 
@@ -2151,14 +2173,16 @@ mod tests {
     /// A runner that simulates `sudo -n cp` (the lift step) failing with a
     /// sudo-credential-expiry error, then fakes everything else to succeed.
     fn lift_failing_runner(cmd: &str, args: &[&str], _running_as_root: bool) -> Result<()> {
-        let argv: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        // `args` (borrowed `&[&str]`) vs `owned_args` (owned `Vec<String>`): the
+        // distinct names track the borrow/own split intentionally.
+        let owned_args: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
         if cmd == "cp" {
             // The LIFT step is the first `cp` with a non-flag source+dest where
             // the dest lives in the TARGET dir (parent != system temp). Distinguish
             // it from the backup `cp -p` (which has a `-p` flag). The lift `cp`
             // has no flags.
-            let has_flags = argv.iter().any(|a| a.starts_with('-'));
-            if !has_flags && argv.len() == 2 {
+            let has_flags = owned_args.iter().any(|a| a.starts_with('-'));
+            if !has_flags && owned_args.len() == 2 {
                 // This is the lift `cp <staged> <lifted>`. Fail it the way
                 // `sudo -n cp` fails when credentials have expired: run_cmd
                 // wraps that as Error::SudoFailed with the sudo stderr text.
@@ -2210,7 +2234,10 @@ mod tests {
              got {msg:?}"
         );
         // Live config untouched (the failure happened before validation/install).
-        assert_eq!(std::fs::read_to_string(&target).unwrap(), "# old\nPort 2222\n");
+        assert_eq!(
+            std::fs::read_to_string(&target).unwrap(),
+            "# old\nPort 2222\n"
+        );
     }
 
     #[test]
@@ -2292,7 +2319,9 @@ mod tests {
             &{
                 // Build a sibling temp the way write_sshd_config would, so the
                 // rename is same-directory.
-                let staged = dir.path().join(format!("{STAGED_TEMP_PREFIX}f17{TEMP_SUFFIX}"));
+                let staged = dir
+                    .path()
+                    .join(format!("{STAGED_TEMP_PREFIX}f17{TEMP_SUFFIX}"));
                 std::fs::write(&staged, "# new\nPort 22\n").unwrap();
                 staged
             },
@@ -2304,7 +2333,11 @@ mod tests {
         .expect("root-path install must succeed with the F17 fsync step wired in");
 
         // Install landed.
-        assert!(std::fs::read_to_string(&target).unwrap().contains("Port 22"));
+        assert!(
+            std::fs::read_to_string(&target)
+                .unwrap()
+                .contains("Port 22")
+        );
         // Parent dir is still usable (the fsync didn't corrupt anything).
         assert!(std::fs::read_dir(dir.path()).is_ok());
     }
@@ -2320,7 +2353,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("sshd_config");
         std::fs::write(&target, "# old\nPort 2222\n").unwrap();
-        let staged = dir.path().join(format!("{STAGED_TEMP_PREFIX}f17nr{TEMP_SUFFIX}"));
+        let staged = dir
+            .path()
+            .join(format!("{STAGED_TEMP_PREFIX}f17nr{TEMP_SUFFIX}"));
         std::fs::write(&staged, "# new\nPort 22\n").unwrap();
 
         install_temp(
@@ -2332,6 +2367,10 @@ mod tests {
         )
         .expect("non-root install must succeed; the F17 parent fsync must never fail it");
 
-        assert!(std::fs::read_to_string(&target).unwrap().contains("Port 22"));
+        assert!(
+            std::fs::read_to_string(&target)
+                .unwrap()
+                .contains("Port 22")
+        );
     }
 }

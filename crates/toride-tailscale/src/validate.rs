@@ -62,7 +62,9 @@ pub fn validate_acl_policy(rules: &[AclRule]) -> Result<Vec<ValidationFinding>> 
                 findings.push(ValidationFinding {
                     key: format!("{key}.dst"),
                     severity: ValidationSeverity::Error,
-                    message: format!("destination '{dst}' is missing ':' separator (expected host:port)"),
+                    message: format!(
+                        "destination '{dst}' is missing ':' separator (expected host:port)"
+                    ),
                 });
             }
         }
@@ -113,7 +115,9 @@ pub fn validate_dns_config(dns: &DnsConfig) -> Result<Vec<ValidationFinding>> {
             findings.push(ValidationFinding {
                 key: format!("dns.search_domains[{i}]"),
                 severity: ValidationSeverity::Warning,
-                message: format!("search domain '{domain}' does not look like a fully qualified domain"),
+                message: format!(
+                    "search domain '{domain}' does not look like a fully qualified domain"
+                ),
             });
         }
     }
@@ -128,32 +132,39 @@ pub fn validate_dns_config(dns: &DnsConfig) -> Result<Vec<ValidationFinding>> {
 /// - Contain only lowercase alphanumeric characters, hyphens, and dots
 /// - Start and end with an alphanumeric character
 pub fn validate_tailnet_name(name: &str) -> Result<()> {
-    if name.is_empty() {
-        return Err(Error::Other("tailnet name must not be empty".into()));
+    let mut chars = name.chars();
+
+    // The first character must exist (non-empty) and be alphanumeric.
+    match chars.next() {
+        Some(first) if first.is_ascii_alphanumeric() => {}
+        _ => {
+            return Err(Error::Other(
+                "tailnet name must start with an alphanumeric character".into(),
+            ));
+        }
     }
 
+    // The last character must be alphanumeric. A single-char name was already
+    // validated above (its only char is both first and last).
+    if !name
+        .chars()
+        .last()
+        .is_some_and(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(Error::Other(
+            "tailnet name must end with an alphanumeric character".into(),
+        ));
+    }
+
+    // Every character must be lowercase alphanumeric, hyphen, or dot. The
+    // start/end checks above already validated the boundary chars, but we still
+    // scan the full string so a stray uppercase or symbol anywhere is rejected.
     for ch in name.chars() {
-        if !ch.is_ascii_lowercase()
-            && !ch.is_ascii_digit()
-            && ch != '-'
-            && ch != '.'
-        {
+        if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && ch != '-' && ch != '.' {
             return Err(Error::Other(format!(
                 "tailnet name contains invalid character '{ch}'"
             )));
         }
-    }
-
-    if !name.chars().next().unwrap().is_ascii_alphanumeric() {
-        return Err(Error::Other(
-            "tailnet name must start with an alphanumeric character".into(),
-        ));
-    }
-
-    if !name.chars().last().unwrap().is_ascii_alphanumeric() {
-        return Err(Error::Other(
-            "tailnet name must end with an alphanumeric character".into(),
-        ));
     }
 
     Ok(())
@@ -205,7 +216,11 @@ mod tests {
             search_domains: vec![],
         };
         let findings = validate_dns_config(&dns).unwrap();
-        assert!(findings.iter().any(|f| f.message.contains("must not be empty")));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.message.contains("must not be empty"))
+        );
     }
 
     #[test]
@@ -216,9 +231,10 @@ mod tests {
             search_domains: vec!["myhost".into()],
         };
         let findings = validate_dns_config(&dns).unwrap();
-        assert!(findings.iter().any(|f| f
-            .message
-            .contains("does not look like a fully qualified domain")));
+        assert!(findings.iter().any(|f| {
+            f.message
+                .contains("does not look like a fully qualified domain")
+        }));
     }
 
     #[test]

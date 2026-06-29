@@ -6,8 +6,7 @@ use super::*;
 
 #[test]
 fn fake_runner_should_respond_to_registered_command() {
-    let runner = FakeRunner::new()
-        .respond_ok("ufw", &["--version"], "ufw 0.36.1");
+    let runner = FakeRunner::new().respond_ok("ufw", &["--version"], "ufw 0.36.1");
 
     let spec = CommandSpec::ufw(vec!["--version".into()]);
     let result = runner.run(&spec).unwrap();

@@ -427,7 +427,10 @@ impl VersionOutput {
         let rest = parts.next().unwrap_or("");
 
         // Try to extract target triple (e.g. "macos-arm64").
-        let target = rest.split_whitespace().next().map(std::borrow::ToOwned::to_owned);
+        let target = rest
+            .split_whitespace()
+            .next()
+            .map(std::borrow::ToOwned::to_owned);
 
         // Try to extract build date from parentheses.
         let build_date = if let Some(start) = rest.find('(') {
@@ -542,7 +545,7 @@ mod tests {
         }"#;
         let output: EnvOutput = serde_json::from_str(json).unwrap();
         assert_eq!(
-            output.get("NODE_VERSION").map(|s| s.as_str()),
+            output.get("NODE_VERSION").map(String::as_str),
             Some("20.0.0")
         );
         assert_eq!(output.get("MISSING"), None);
@@ -610,10 +613,7 @@ mod tests {
         assert_eq!(output.len(), 2);
         assert_eq!(output[0].short.as_deref(), Some("node"));
         assert!(output[0].description.is_none());
-        assert_eq!(
-            output[1].backends,
-            Some(vec!["core:python".to_owned()])
-        );
+        assert_eq!(output[1].backends, Some(vec!["core:python".to_owned()]));
     }
 
     #[test]
@@ -648,18 +648,9 @@ mod tests {
             dirs.cache.as_deref(),
             Some("/home/user/Library/Caches/mise")
         );
-        assert_eq!(
-            dirs.data.as_deref(),
-            Some("/home/user/.local/share/mise")
-        );
-        assert_eq!(
-            dirs.state.as_deref(),
-            Some("/home/user/.local/state/mise")
-        );
-        assert_eq!(
-            dirs.config.as_deref(),
-            Some("/home/user/.config/mise")
-        );
+        assert_eq!(dirs.data.as_deref(), Some("/home/user/.local/share/mise"));
+        assert_eq!(dirs.state.as_deref(), Some("/home/user/.local/state/mise"));
+        assert_eq!(dirs.config.as_deref(), Some("/home/user/.config/mise"));
         assert_eq!(
             dirs.shims.as_deref(),
             Some("/home/user/.local/share/mise/shims")
@@ -735,7 +726,10 @@ mod tests {
         assert_eq!(bi.profile.as_deref(), Some("release"));
         assert!(output.dirs.is_some());
         let dirs = output.dirs.as_ref().unwrap();
-        assert_eq!(dirs.cache.as_deref(), Some("/Users/test/Library/Caches/mise"));
+        assert_eq!(
+            dirs.cache.as_deref(),
+            Some("/Users/test/Library/Caches/mise")
+        );
         assert_eq!(dirs.data.as_deref(), Some("/Users/test/.local/share/mise"));
         assert_eq!(output.self_update_available, Some(true));
         assert_eq!(output.shims_on_path, Some(false));
@@ -767,7 +761,10 @@ mod tests {
             "build_time": "2026-05-31 21:11:31 +00:00"
         }"#;
         let v: MiseVersionJson = serde_json::from_str(json).unwrap();
-        assert_eq!(v.version.as_deref(), Some("2026.5.18 macos-arm64 (2026-05-31)"));
+        assert_eq!(
+            v.version.as_deref(),
+            Some("2026.5.18 macos-arm64 (2026-05-31)")
+        );
         assert_eq!(v.latest.as_deref(), Some("2026.5.18"));
         assert_eq!(v.os.as_deref(), Some("macos"));
         assert_eq!(v.arch.as_deref(), Some("arm64"));
@@ -784,6 +781,9 @@ mod tests {
         let output: EnvExtendedOutput = serde_json::from_str(json).unwrap();
         assert!(output.contains_key("PATH"));
         let entry = &output["PATH"];
-        assert_eq!(entry.value.as_deref(), Some("/Users/test/.local/bin:/usr/bin"));
+        assert_eq!(
+            entry.value.as_deref(),
+            Some("/Users/test/.local/bin:/usr/bin")
+        );
     }
 }

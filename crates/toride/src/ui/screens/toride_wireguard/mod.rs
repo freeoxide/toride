@@ -1,4 +1,4 @@
-//! WireGuard management content area (live READ-ONLY).
+//! `WireGuard` management content area (live READ-ONLY).
 //!
 //! Renders inside the dashboard's content region when
 //! [`Section::WireGuard`](crate::data::Section) is the active sidebar section.
@@ -29,7 +29,7 @@ use crate::ui::widgets::render_titled_panel;
 
 // ── Presentation types ──────────────────────────────────────────────────────
 
-/// A single WireGuard interface row.
+/// A single `WireGuard` interface row.
 #[derive(Clone, Debug)]
 pub struct InterfaceEntry {
     /// Interface name (e.g. "wg0").
@@ -53,7 +53,7 @@ pub struct InterfaceEntry {
     pub tx_bytes: Option<u64>,
 }
 
-/// A single WireGuard peer row.
+/// A single `WireGuard` peer row.
 #[derive(Clone, Debug)]
 pub struct PeerEntry {
     /// The peer's Base64-encoded public key.
@@ -100,14 +100,14 @@ pub struct FindingEntry {
 
 // ── WireguardContent ────────────────────────────────────────────────────────
 
-/// WireGuard management content rendered inside the dashboard content area.
+/// `WireGuard` management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
 /// spinner, no cooldown. Data arrives via [`WireguardContent::set_*`] setters
 /// driven by
 /// [`WireguardCollector`](crate::toride_wireguard_data::WireguardCollector).
 pub struct WireguardContent {
-    /// Whether the WireGuard backend was reachable at all (`wg` binary present,
+    /// Whether the `WireGuard` backend was reachable at all (`wg` binary present,
     /// client construction succeeded). `false` means the section renders a
     /// degraded "unavailable" panel instead of live data.
     available: bool,
@@ -169,7 +169,11 @@ impl WireguardContent {
     /// flashing a fabricated number.
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.interfaces.len()) } else { None }
+        if self.available {
+            Some(self.interfaces.len())
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -193,12 +197,7 @@ impl WireguardContent {
     }
 
     /// Replace binary / config-dir availability probes.
-    pub fn set_env(
-        &mut self,
-        wg: Option<bool>,
-        wg_quick: Option<bool>,
-        config_dir: Option<bool>,
-    ) {
+    pub fn set_env(&mut self, wg: Option<bool>, wg_quick: Option<bool>, config_dir: Option<bool>) {
         self.wg_binary_found = wg;
         self.wg_quick_binary_found = wg_quick;
         self.config_dir_exists = config_dir;
@@ -222,12 +221,13 @@ impl WireguardContent {
         self.unavailable_reason = if self.available { None } else { reason };
     }
 
-    // ── Input ────────────────────────────────────────────────────────────────
-
     /// Current vertical scroll offset (crate-visible for dispatch tests).
+    #[cfg(test)]
     pub(crate) fn scroll(&self) -> usize {
         self.scroll
     }
+
+    // ── Input ────────────────────────────────────────────────────────────────
 
     /// Handle a key press. Returns `Some(Action)` only for navigation keys
     /// (Esc → Back); scroll keys are consumed here.
@@ -280,13 +280,17 @@ impl WireguardContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
     }
 
     // ── Rendering ───────────────────────────────────────────────────────────
 
-    /// Render the full WireGuard content area.
+    /// Render the full `WireGuard` content area.
     pub fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         if !self.available {
             self.render_unavailable(frame, area, p);
@@ -321,7 +325,7 @@ impl WireguardContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -330,7 +334,7 @@ impl WireguardContent {
         }
     }
 
-    /// Render the degraded state when WireGuard is unavailable on this host.
+    /// Render the degraded state when `WireGuard` is unavailable on this host.
     ///
     /// `available == false` is set when construction failed (`BinaryNotFound`
     /// on macOS) or when a collection task panicked. The reason string is
@@ -350,8 +354,12 @@ impl WireguardContent {
             .clone()
             .unwrap_or_else(|| "WireGuard data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -390,13 +398,12 @@ impl WireguardContent {
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )));
 
-        self.push_env_line(lines, p, "wg       ", self.wg_binary_found);
-        self.push_env_line(lines, p, "wg-quick ", self.wg_quick_binary_found);
-        self.push_env_line(lines, p, "conf dir ", self.config_dir_exists);
+        Self::push_env_line(lines, p, "wg       ", self.wg_binary_found);
+        Self::push_env_line(lines, p, "wg-quick ", self.wg_quick_binary_found);
+        Self::push_env_line(lines, p, "conf dir ", self.config_dir_exists);
     }
 
     fn push_env_line(
-        &self,
         lines: &mut Vec<Line<'static>>,
         p: Palette,
         label: &str,
@@ -444,15 +451,9 @@ impl WireguardContent {
             let active_peers = iface
                 .active_peers
                 .map_or("?".to_string(), |n| n.to_string());
-            let peer_count = iface
-                .peer_count
-                .map_or("?".to_string(), |n| n.to_string());
-            let rx = iface
-                .rx_bytes
-                .map_or("?".to_string(), format_bytes);
-            let tx = iface
-                .tx_bytes
-                .map_or("?".to_string(), format_bytes);
+            let peer_count = iface.peer_count.map_or("?".to_string(), |n| n.to_string());
+            let rx = iface.rx_bytes.map_or("?".to_string(), format_bytes);
+            let tx = iface.tx_bytes.map_or("?".to_string(), format_bytes);
             lines.push(Line::from(vec![
                 Span::styled(format!("{state_icon} "), Style::new().fg(state_color)),
                 Span::styled(
@@ -502,10 +503,7 @@ impl WireguardContent {
             lines.push(Line::from(vec![
                 Span::styled("  · ", Style::new().fg(p.text_dim)),
                 Span::styled(format!("{key:<20}"), Style::new().fg(p.text)),
-                Span::styled(
-                    format!("  {endpoint:<24}"),
-                    Style::new().fg(p.text_muted),
-                ),
+                Span::styled(format!("  {endpoint:<24}"), Style::new().fg(p.text_muted)),
                 Span::styled(format!("  {allowed:<24}"), Style::new().fg(p.text_dim)),
                 Span::styled(keepalive, Style::new().fg(p.text_muted)),
             ]));
@@ -541,10 +539,7 @@ impl WireguardContent {
             let name = truncate_str(&svc.name, 22);
             lines.push(Line::from(vec![
                 Span::styled(format!("  {name:<22}"), Style::new().fg(p.text)),
-                Span::styled(
-                    format!("  {active_label}"),
-                    Style::new().fg(active_color),
-                ),
+                Span::styled(format!("  {active_label}"), Style::new().fg(active_color)),
                 Span::styled(
                     format!("  · {enabled_label}"),
                     Style::new().fg(enabled_color),
@@ -571,11 +566,8 @@ impl WireguardContent {
         // Group by severity: Error > Warning > Info.
         let order = ["error", "warning", "info"];
         for sev in order {
-            let group: Vec<&FindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
+            let group: Vec<&FindingEntry> =
+                self.findings.iter().filter(|f| f.severity == sev).collect();
             if group.is_empty() {
                 continue;
             }
@@ -705,9 +697,7 @@ mod tests {
     /// Render a content area to a string (snapshot pattern from fail2ban / ssh).
     fn render_to_string(content: &mut WireguardContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -733,7 +723,10 @@ mod tests {
     fn render_unavailable_when_not_available() {
         let mut c = WireguardContent::new();
         let out = render_to_string(&mut c, 100, 24);
-        assert!(out.contains("wireguard unavailable"), "degraded panel: {out}");
+        assert!(
+            out.contains("wireguard unavailable"),
+            "degraded panel: {out}"
+        );
     }
 
     #[test]
@@ -797,10 +790,7 @@ mod tests {
         let out = render_to_string(&mut c, 110, 40);
         assert!(out.contains("ERROR"), "severity group header: {out}");
         assert!(out.contains("WARNING"), "severity group header: {out}");
-        assert!(
-            out.contains("Install wireguard-tools"),
-            "fix hint: {out}"
-        );
+        assert!(out.contains("Install wireguard-tools"), "fix hint: {out}");
     }
 
     #[test]
@@ -854,9 +844,15 @@ mod tests {
         let mut c = WireguardContent::new();
         c.set_available(true);
         let out = render_to_string(&mut c, 100, 30);
-        assert!(out.contains("no active interfaces"), "empty interfaces: {out}");
+        assert!(
+            out.contains("no active interfaces"),
+            "empty interfaces: {out}"
+        );
         assert!(out.contains("no peers"), "empty peers: {out}");
-        assert!(out.contains("no wg-quick services"), "empty services: {out}");
+        assert!(
+            out.contains("no wg-quick services"),
+            "empty services: {out}"
+        );
         assert!(out.contains("no findings"), "empty findings: {out}");
     }
 

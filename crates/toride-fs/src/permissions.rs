@@ -1,7 +1,7 @@
 //! File permission helpers.
 //!
 //! Utilities for setting and checking Unix file permissions and ownership.
-//! Used for security-sensitive files like SSH configs, Fail2Ban configs,
+//! Used for security-sensitive files like SSH configs, `Fail2Ban` configs,
 //! and other files that must not be world-readable or world-writable.
 
 use std::fs;
@@ -89,7 +89,10 @@ mod tests {
             .expect("set_permissions should succeed");
 
         let result = check_not_world_writable(&path);
-        assert!(result.is_err(), "0o666 file should be flagged as world-writable");
+        assert!(
+            result.is_err(),
+            "0o666 file should be flagged as world-writable"
+        );
 
         let err_msg = result.unwrap_err().to_string();
         assert!(
@@ -158,6 +161,9 @@ mod tests {
         let path = dir.path().join("missing.txt");
 
         let result = set_permissions(&path, 0o644);
-        assert!(result.is_err(), "setting permissions on non-existent file should fail");
+        assert!(
+            result.is_err(),
+            "setting permissions on non-existent file should fail"
+        );
     }
 }

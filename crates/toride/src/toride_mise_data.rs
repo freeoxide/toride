@@ -70,7 +70,7 @@ pub struct MiseDataBundle {
     /// the construction-failure case ([`toride_mise::MiseError::BinaryNotFound`]
     /// — mise not installed), the all-probes-failed case (construction
     /// succeeded but every probe timed out or errored), and the panic case (a
-    /// `tokio::spawn` JoinError). An individual probe failure degrades that
+    /// `tokio::spawn` `JoinError`). An individual probe failure degrades that
     /// field but the doctor surfaces it as a finding, keeping `available ==
     /// true` so the operator SEES the finding rather than a blank panel.
     pub available: bool,
@@ -85,9 +85,9 @@ pub struct MiseDataBundle {
     /// Doctor findings (cached for 60s between collections).
     pub findings: Vec<MiseFindingEntry>,
     /// Human-readable reason the backend was unreachable, populated whenever
-    /// `available == false`: construction failed (BinaryNotFound), construction
+    /// `available == false`: construction failed (`BinaryNotFound`), construction
     /// succeeded but every probe timed out/errored, or the collection task
-    /// panicked (JoinError). `None` otherwise — notably also `None` for a
+    /// panicked (`JoinError`). `None` otherwise — notably also `None` for a
     /// freshly-constructed empty bundle before any collection has run, and for
     /// the `available == true` success path. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong.
@@ -115,6 +115,10 @@ pub struct MiseCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: Duration = Duration::from_secs(60);
 
 impl MiseCollector {
@@ -168,18 +172,15 @@ impl MiseCollector {
         // forever, leaving the bundle stale with no reason). `catch_unwind` was
         // a no-op under `panic = "abort"` (the release profile), so the old
         // guard only worked in dev; the JoinError path survives both.
-        let handle = tokio::spawn(async move {
-            collect_real_mise(use_cache, cached_findings).await
-        });
+        let handle =
+            tokio::spawn(async move { collect_real_mise(use_cache, cached_findings).await });
         tokio::spawn(async move {
             let (bundle, reused_cache) = match handle.await {
                 Ok(tuple) => tuple,
                 Err(e) => {
                     tracing::error!("mise collection task panicked: {e}");
                     (
-                        empty_bundle_with_reason(format!(
-                            "mise collection task panicked: {e}"
-                        )),
+                        empty_bundle_with_reason(format!("mise collection task panicked: {e}")),
                         false,
                     )
                 }
@@ -245,7 +246,7 @@ impl Default for MiseCollector {
 /// NOT wrapped in `spawn_blocking` (the mise backend uses an async
 /// `TokioRunner`). Doctor findings may be reused from the cache. The two
 /// error paths handled HERE (inside this future) are: construction failure
-/// (BinaryNotFound) → [`empty_bundle_with_reason`], and construction
+/// (`BinaryNotFound`) → [`empty_bundle_with_reason`], and construction
 /// succeeding with every probe failing/timing out → a bundle with
 /// `available = false` and an accurate "did not respond" reason. A panic in
 /// this future is NOT caught here — it is caught by the two-spawn `JoinError`
@@ -259,6 +260,10 @@ impl Default for MiseCollector {
 /// findings were actually taken from the cache on a successful collection. The
 /// caller advances the TTL clock ONLY when `used_cache == false`, so a cache-hit
 /// poll never resets the freshness timestamp with stale data.
+#[expect(
+    clippy::too_many_lines,
+    reason = "real-data collection is inherently linear"
+)]
 async fn collect_real_mise(
     use_cache: bool,
     cached_findings: Option<Vec<MiseFindingEntry>>,
@@ -306,11 +311,7 @@ async fn collect_real_mise(
     let version = match version_r {
         Ok(Ok(out)) => {
             let v = out.stdout_trimmed().trim().to_owned();
-            if v.is_empty() {
-                None
-            } else {
-                Some(v)
-            }
+            if v.is_empty() { None } else { Some(v) }
         }
         Ok(Err(e)) => {
             tracing::debug!("mise --version: {e}");
@@ -448,7 +449,7 @@ async fn collect_real_mise(
     // construction-OK-but-all-probes-failed path so render_unavailable shows
     // the real cause instead of the misleading no-binary message.
     let unavailable_reason = reason_when_construction_ok_but_unavailable(
-        &version,
+        version.as_ref(),
         &tools,
         &outdated,
         &config_files,
@@ -488,7 +489,7 @@ fn empty_bundle() -> MiseDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when construction
-/// failed (BinaryNotFound) or when the collection task was caught panicking via
+/// failed (`BinaryNotFound`) or when the collection task was caught panicking via
 /// the two-spawn `JoinError` guard in [`MiseCollector::start`] — the reason
 /// string is rendered by the UI's degraded panel so the operator sees what
 /// actually went wrong. The all-probes-failed-but-construction-OK case
@@ -509,17 +510,17 @@ fn empty_bundle_with_reason(reason: String) -> MiseDataBundle {
 /// The heuristic UNIONS over ALL five mise data sources — version, installed
 /// tools, outdated tools, config files, AND doctor findings — mirroring the
 /// tailscale reference (`toride_tailscale_data.rs`:306-311), which unions over
-/// status.connected || !peers || !ip_addresses || !findings || topology ||
+/// status.connected || !peers || !`ip_addresses` || !findings || topology ||
 /// netcheck. Omitting the `outdated` list here was an availability-heuristic
 /// completeness gap: if `mise outdated --json` succeeded (returned entries)
-/// while --version / list_installed / list_current / config_ls / doctor all
+/// while `--version` / `list_installed` / `list_current` / `config_ls` / `doctor` all
 /// failed or timed out, the predicate evaluated to false, attached the
 /// "did not respond" reason, set `available = false`, and the UI rendered the
 /// degraded panel — HIDING the outdated data that was successfully collected
 /// and sitting in the bundle. Including `!outdated.is_empty()` in the OR closes
 /// that gap so any successfully-collected data source keeps the section live.
 fn reason_when_construction_ok_but_unavailable(
-    version: &Option<String>,
+    version: Option<&String>,
     tools: &[MiseToolEntry],
     outdated: &[MiseOutdatedEntry],
     config_files: &[String],
@@ -533,9 +534,7 @@ fn reason_when_construction_ok_but_unavailable(
     if available {
         None
     } else {
-        Some(
-            "mise did not respond — all probes timed out or failed".to_string(),
-        )
+        Some("mise did not respond — all probes timed out or failed".to_string())
     }
 }
 
@@ -599,7 +598,7 @@ mod tests {
         // flag reflects whether mise was found.
         let mut collector = MiseCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -623,14 +622,17 @@ mod tests {
     fn empty_bundle_with_reason_carries_reason_and_is_unavailable() {
         let b = empty_bundle_with_reason("mise binary not found".into());
         assert!(!b.available);
-        assert_eq!(b.unavailable_reason.as_deref(), Some("mise binary not found"));
+        assert_eq!(
+            b.unavailable_reason.as_deref(),
+            Some("mise binary not found")
+        );
     }
 
     #[tokio::test]
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = MiseCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).
@@ -738,7 +740,10 @@ mod tests {
         }
 
         let node = tools.iter().find(|t| t.name == "node").expect("node row");
-        let python = tools.iter().find(|t| t.name == "python").expect("python row");
+        let python = tools
+            .iter()
+            .find(|t| t.name == "python")
+            .expect("python row");
         assert!(
             node.outdated,
             "node is in the outdated map → Installed row must flag outdated"
@@ -776,8 +781,7 @@ mod tests {
     /// `outdated_null_and_array_do_not_deserialize` for the actual null path.)
     #[test]
     fn outdated_empty_map_yields_empty() {
-        let entries =
-            toride_mise_convert::convert_outdated_map(OutdatedOutput::new());
+        let entries = toride_mise_convert::convert_outdated_map(OutdatedOutput::new());
         assert!(entries.is_empty());
     }
 
@@ -826,7 +830,7 @@ mod tests {
         );
     }
 
-    /// A ToolStatus with empty name/version (the placeholder path used by
+    /// A `ToolStatus` with empty name/version (the placeholder path used by
     /// `convert_tool` for malformed `ls` rows) renders as `(unknown)` with no
     /// version, never panics.
     #[test]
@@ -916,20 +920,15 @@ mod tests {
     fn construction_ok_but_all_probes_failed_is_not_binary_not_found() {
         // construction_ok path (mirrors collect_real_mise after build() Ok):
         // empty version, empty tools, empty outdated, empty config, empty findings.
-        let reason = reason_when_construction_ok_but_unavailable(
-            &None,
-            &[],
-            &[],
-            &[],
-            &[],
-        );
+        let reason = reason_when_construction_ok_but_unavailable(None, &[], &[], &[], &[]);
         let reason = reason.expect("construction-OK + all-empty probes must attach a reason");
         assert!(
             !reason.to_lowercase().contains("not found"),
             "construction-OK failure must NOT be reported as 'binary not found': {reason}"
         );
         assert!(
-            reason.to_lowercase().contains("did not respond") || reason.to_lowercase().contains("timed out"),
+            reason.to_lowercase().contains("did not respond")
+                || reason.to_lowercase().contains("timed out"),
             "reason must describe the probes-failed state: {reason}"
         );
     }
@@ -939,21 +938,17 @@ mod tests {
     /// availability flag stays true.
     #[test]
     fn construction_ok_with_any_probe_is_available_no_reason() {
-        let reason = reason_when_construction_ok_but_unavailable(
-            &Some("mise 2024.12.4".to_string()),
-            &[],
-            &[],
-            &[],
-            &[],
-        );
+        let version = "mise 2024.12.4".to_string();
+        let reason =
+            reason_when_construction_ok_but_unavailable(Some(&version), &[], &[], &[], &[]);
         assert!(reason.is_none(), "available path must carry no reason");
     }
 
     /// Regression guard for the availability-heuristic completeness gap (audit
     /// finding 2-DEGRADATION). The heuristic unions over ALL FIVE mise data
     /// sources — including the `outdated` list. If `mise outdated --json`
-    /// succeeded (returned entries) while --version / list_installed /
-    /// list_current / config_ls / doctor ALL failed or timed out, the OLD
+    /// succeeded (returned entries) while `--version` / `list_installed` /
+    /// `list_current` / `config_ls` / `doctor` ALL failed or timed out, the OLD
     /// predicate (which omitted `outdated`) evaluated to false, attached the
     /// "did not respond" reason, set `available = false`, and the UI hid the
     /// successfully-collected outdated data behind the degraded panel. A
@@ -971,13 +966,7 @@ mod tests {
             backend: None,
         }];
         // Every probe EXCEPT `mise outdated --json` failed/timed out.
-        let reason = reason_when_construction_ok_but_unavailable(
-            &None,
-            &[],
-            &outdated,
-            &[],
-            &[],
-        );
+        let reason = reason_when_construction_ok_but_unavailable(None, &[], &outdated, &[], &[]);
         assert!(
             reason.is_none(),
             "a populated outdated list must keep the section available even \

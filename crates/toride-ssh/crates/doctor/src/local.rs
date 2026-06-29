@@ -5,13 +5,11 @@ use std::collections::HashMap;
 #[cfg(unix)]
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-use toride_ssh_config::ast::{self, ConfigNode};
 use crate::check::{Check, CheckFuture};
+use toride_ssh_config::ast::{self, ConfigNode};
+use toride_ssh_core::Result;
 use toride_ssh_core::paths::SshPaths;
 use toride_ssh_core::{Diagnostic, Severity};
-use toride_ssh_core::Result;
-
-
 
 /// Status of the `VerifyHostKeyDNS` SSH config directive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -142,7 +140,7 @@ struct HostStarPlacementCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check for deprecated SSHv1 key files (`~/.ssh/identity`).
+/// Check for deprecated `SSHv1` key files (`~/.ssh/identity`).
 struct SshV1KeyCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -173,10 +171,7 @@ impl Check for SshDirExists<'_> {
     fn module(&self) -> &'static str {
         "local"
     }
-    fn run(
-        &self,
-    ) -> CheckFuture<'_>
-    {
+    fn run(&self) -> CheckFuture<'_> {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let meta = tokio::fs::metadata(&ssh_dir).await;
@@ -215,10 +210,7 @@ impl Check for SshDirPermissions<'_> {
     fn module(&self) -> &'static str {
         "local"
     }
-    fn run(
-        &self,
-    ) -> CheckFuture<'_>
-    {
+    fn run(&self) -> CheckFuture<'_> {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let meta = tokio::fs::metadata(&ssh_dir).await;
@@ -254,10 +246,7 @@ impl Check for SshDirPermissions<'_> {
                 Err(e) => Ok(vec![Diagnostic {
                     id: "ssh_dir_permissions",
                     severity: Severity::Warning,
-                    message: format!(
-                        "Cannot check permissions: {}: {e}",
-                        ssh_dir.display()
-                    ),
+                    message: format!("Cannot check permissions: {}: {e}", ssh_dir.display()),
                     hint: Some("Run `mkdir -p ~/.ssh && chmod 700 ~/.ssh`".into()),
                     module: "local",
                 }]),
@@ -273,10 +262,7 @@ impl Check for ConfigExists<'_> {
     fn module(&self) -> &'static str {
         "local"
     }
-    fn run(
-        &self,
-    ) -> CheckFuture<'_>
-    {
+    fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path();
         Box::pin(async move {
             match tokio::fs::metadata(&config_path).await {
@@ -308,10 +294,7 @@ impl Check for KnownHostsExists<'_> {
     fn module(&self) -> &'static str {
         "local"
     }
-    fn run(
-        &self,
-    ) -> CheckFuture<'_>
-    {
+    fn run(&self) -> CheckFuture<'_> {
         let kh_path = self.paths.known_hosts_path();
         Box::pin(async move {
             match tokio::fs::metadata(&kh_path).await {
@@ -344,10 +327,7 @@ impl Check for PrivateKeyPermissions<'_> {
     fn module(&self) -> &'static str {
         "local"
     }
-    fn run(
-        &self,
-    ) -> CheckFuture<'_>
-    {
+    fn run(&self) -> CheckFuture<'_> {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let mut diagnostics = Vec::new();
@@ -403,7 +383,9 @@ impl Check for PrivateKeyPermissions<'_> {
                     };
                     // `from_utf8_lossy` returns `Cow<str>` so no allocation
                     // occurs when the header is valid UTF-8 (always true for PEM).
-                    if n < MIN_PEM_HEADER_LENGTH || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY") {
+                    if n < MIN_PEM_HEADER_LENGTH
+                        || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY")
+                    {
                         continue;
                     }
                 }
@@ -413,11 +395,7 @@ impl Check for PrivateKeyPermissions<'_> {
                     diagnostics.push(Diagnostic {
                         id: "private_key_permissions",
                         severity: Severity::Ok,
-                        message: format!(
-                            "{} has correct permissions ({:o})",
-                            path.display(),
-                            mode
-                        ),
+                        message: format!("{} has correct permissions ({:o})", path.display(), mode),
                         hint: None,
                         module: "local",
                     });
@@ -458,10 +436,7 @@ impl Check for AgentAvailable {
     fn module(&self) -> &'static str {
         "local"
     }
-    fn run(
-        &self,
-    ) -> CheckFuture<'_>
-    {
+    fn run(&self) -> CheckFuture<'_> {
         Box::pin(async move {
             match std::env::var("SSH_AUTH_SOCK") {
                 Ok(sock) if !sock.is_empty() => {
@@ -480,9 +455,7 @@ impl Check for AgentAvailable {
                             message: format!(
                                 "$SSH_AUTH_SOCK is set to {sock} but the socket does not exist",
                             ),
-                            hint: Some(
-                                "Start the SSH agent: `eval $(ssh-agent -s)`".into(),
-                            ),
+                            hint: Some("Start the SSH agent: `eval $(ssh-agent -s)`".into()),
                             module: "local",
                         }]),
                     }
@@ -491,9 +464,7 @@ impl Check for AgentAvailable {
                     id: "agent_available",
                     severity: Severity::Warning,
                     message: "$SSH_AUTH_SOCK is not set — SSH agent may not be running".into(),
-                    hint: Some(
-                        "Start the SSH agent: `eval $(ssh-agent -s)`".into(),
-                    ),
+                    hint: Some("Start the SSH agent: `eval $(ssh-agent -s)`".into()),
                     module: "local",
                 }]),
             }
@@ -508,10 +479,7 @@ impl Check for KeygenAvailable<'_> {
     fn module(&self) -> &'static str {
         "local"
     }
-    fn run(
-        &self,
-    ) -> CheckFuture<'_>
-    {
+    fn run(&self) -> CheckFuture<'_> {
         Box::pin(async move {
             if self.runner.tool_exists("ssh-keygen") {
                 Ok(vec![Diagnostic {
@@ -543,10 +511,7 @@ impl Check for DefaultKeyExists<'_> {
     fn module(&self) -> &'static str {
         "local"
     }
-    fn run(
-        &self,
-    ) -> CheckFuture<'_>
-    {
+    fn run(&self) -> CheckFuture<'_> {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
             let mut found = Vec::new();
@@ -633,10 +598,7 @@ impl Check for OwnerCheck<'_> {
                 Err(e) => Ok(vec![Diagnostic {
                     id: "owner_check",
                     severity: Severity::Warning,
-                    message: format!(
-                        "Cannot check ownership: {}: {e}",
-                        ssh_dir.display()
-                    ),
+                    message: format!("Cannot check ownership: {}: {e}", ssh_dir.display()),
                     hint: Some("Run `mkdir -p ~/.ssh && chmod 700 ~/.ssh`".into()),
                     module: "local",
                 }]),
@@ -787,9 +749,7 @@ impl Check for SshDirPermissions<'_> {
                     "Permission check for {} skipped (not supported on this platform)",
                     ssh_dir.display()
                 ),
-                hint: Some(
-                    "On Windows, verify ACLs with: icacls \"%USERPROFILE%\\.ssh\"".into(),
-                ),
+                hint: Some("On Windows, verify ACLs with: icacls \"%USERPROFILE%\\.ssh\"".into()),
                 module: "local",
             }])
         })
@@ -896,7 +856,8 @@ impl Check for AuthorizedKeysPermissionsCheck<'_> {
                     ak_path.display()
                 ),
                 hint: Some(
-                    "On Windows, verify ACLs with: icacls \"%USERPROFILE%\\.ssh\\authorized_keys\"".into(),
+                    "On Windows, verify ACLs with: icacls \"%USERPROFILE%\\.ssh\\authorized_keys\""
+                        .into(),
                 ),
                 module: "local",
             }])
@@ -962,8 +923,7 @@ impl Check for PlatformCheck {
 
             #[cfg(windows)]
             {
-                if std::env::var("SSH_AUTH_SOCK").is_ok()
-                    || std::env::var("SSH_AGENT_PID").is_ok()
+                if std::env::var("SSH_AUTH_SOCK").is_ok() || std::env::var("SSH_AGENT_PID").is_ok()
                 {
                     diagnostics.push(Diagnostic {
                         id: "platform_agent_type",
@@ -990,10 +950,7 @@ impl Check for PlatformCheck {
             // Run `ssh -V` to get the SSH client version.
             // `ssh -V` prints to stderr.
             let version_output = tokio::task::spawn_blocking(|| {
-                duct::cmd("ssh", ["-V"])
-                    .stderr_to_stdout()
-                    .read()
-                    .ok()
+                duct::cmd("ssh", ["-V"]).stderr_to_stdout().read().ok()
             })
             .await
             .ok()
@@ -1163,7 +1120,9 @@ impl Check for CertificateFileExistsCheck<'_> {
             // Collect CertificateFile directives from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
-                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("CertificateFile") => {
+                    ConfigNode::Directive(d)
+                        if d.keyword.eq_ignore_ascii_case("CertificateFile") =>
+                    {
                         cert_files.push(d.value.clone());
                     }
                     ConfigNode::HostBlock(b) => {
@@ -1293,10 +1252,7 @@ impl Check for IdentityFileExistsCheck<'_> {
                     diagnostics.push(Diagnostic {
                         id: "identity_file_exists",
                         severity: Severity::Ok,
-                        message: format!(
-                            "IdentityFile {raw_path} exists ({})",
-                            expanded.display()
-                        ),
+                        message: format!("IdentityFile {raw_path} exists ({})", expanded.display()),
                         hint: None,
                         module: "local",
                     });
@@ -1355,8 +1311,7 @@ impl Check for DuplicateHostCheck<'_> {
             let mut duplicates: Vec<(String, String, String)> = Vec::new();
 
             for node in &ast.nodes {
-                if let ConfigNode::HostBlock(b) = node
-                {
+                if let ConfigNode::HostBlock(b) = node {
                     for pat in &b.patterns {
                         if pat == "*" {
                             // Skip wildcard for duplicate detection.
@@ -1452,10 +1407,9 @@ impl Check for HostStarPlacementCheck<'_> {
                 (Some(star), Some(last)) if star < last => Ok(vec![Diagnostic {
                     id: "host_star_placement",
                     severity: Severity::Warning,
-                    message:
-                        "'Host *' appears before specific Host blocks; \
+                    message: "'Host *' appears before specific Host blocks; \
                          later Host blocks cannot override its defaults"
-                            .into(),
+                        .into(),
                     hint: Some(
                         "Move 'Host *' to the end of the config file so specific \
                          blocks take precedence"
@@ -1466,7 +1420,9 @@ impl Check for HostStarPlacementCheck<'_> {
                 _ => Ok(vec![Diagnostic {
                     id: "host_star_placement",
                     severity: Severity::Ok,
-                    message: "'Host *' placement is correct (after specific Host blocks, or absent)".into(),
+                    message:
+                        "'Host *' placement is correct (after specific Host blocks, or absent)"
+                            .into(),
                     hint: None,
                     module: "local",
                 }]),
@@ -1655,7 +1611,9 @@ impl Check for IdentityFilePubCheck<'_> {
 
             let check_value = |raw: &str, diags: &mut Vec<Diagnostic>| {
                 let path = std::path::Path::new(raw);
-                let is_pub = path.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("pub"));
+                let is_pub = path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("pub"));
                 let is_cert = raw.to_lowercase().ends_with("-cert.pub");
                 if is_pub || is_cert {
                     diags.push(Diagnostic {
@@ -1733,7 +1691,8 @@ impl Check for IdentitiesOnlyCheck<'_> {
 
             for node in &ast.nodes {
                 if let ConfigNode::HostBlock(b) = node {
-                    let id_count = b.nodes
+                    let id_count = b
+                        .nodes
                         .iter()
                         .filter(|n| {
                             matches!(n, ConfigNode::Directive(d)
@@ -1810,7 +1769,9 @@ fn is_preferred_gssapi_only(ast: &ast::ConfigAst) -> bool {
                 if d.keyword.eq_ignore_ascii_case("PreferredAuthentications") =>
             {
                 let methods: Vec<&str> = d.value.split(',').map(str::trim).collect();
-                let has_gssapi = methods.iter().any(|m| m.eq_ignore_ascii_case("gssapi-with-mic"));
+                let has_gssapi = methods
+                    .iter()
+                    .any(|m| m.eq_ignore_ascii_case("gssapi-with-mic"));
                 let has_pubkey = methods.iter().any(|m| m.eq_ignore_ascii_case("publickey"));
                 if has_gssapi && !has_pubkey && methods.len() == 1 {
                     result = true;
@@ -1822,9 +1783,11 @@ fn is_preferred_gssapi_only(ast: &ast::ConfigAst) -> bool {
                         && d.keyword.eq_ignore_ascii_case("PreferredAuthentications")
                     {
                         let methods: Vec<&str> = d.value.split(',').map(str::trim).collect();
-                        let has_gssapi =
-                            methods.iter().any(|m| m.eq_ignore_ascii_case("gssapi-with-mic"));
-                        let has_pubkey = methods.iter().any(|m| m.eq_ignore_ascii_case("publickey"));
+                        let has_gssapi = methods
+                            .iter()
+                            .any(|m| m.eq_ignore_ascii_case("gssapi-with-mic"));
+                        let has_pubkey =
+                            methods.iter().any(|m| m.eq_ignore_ascii_case("publickey"));
                         if has_gssapi && !has_pubkey && methods.len() == 1 {
                             result = true;
                         }
@@ -1868,7 +1831,9 @@ impl Check for GssapiConfigCheck<'_> {
             for node in &ast.nodes {
                 match node {
                     ConfigNode::Directive(d)
-                        if GSSAPI_DIRECTIVES.iter().any(|kw| d.keyword.eq_ignore_ascii_case(kw)) =>
+                        if GSSAPI_DIRECTIVES
+                            .iter()
+                            .any(|kw| d.keyword.eq_ignore_ascii_case(kw)) =>
                     {
                         findings.push((d.keyword.clone(), d.value.clone(), "top-level".into()));
                     }
@@ -1973,40 +1938,34 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
             let status = detect_verify_host_key_dns(&content);
 
             match status {
-                DnsVerifyStatus::Unknown => {
-                    Ok(vec![Diagnostic {
-                        id: "verify_host_key_dns",
-                        severity: Severity::Info,
-                        message: "VerifyHostKeyDNS is not configured (default: no)".into(),
-                        hint: Some(
-                            "To enable DNS-based host key verification, add \
+                DnsVerifyStatus::Unknown => Ok(vec![Diagnostic {
+                    id: "verify_host_key_dns",
+                    severity: Severity::Info,
+                    message: "VerifyHostKeyDNS is not configured (default: no)".into(),
+                    hint: Some(
+                        "To enable DNS-based host key verification, add \
                              'VerifyHostKeyDNS yes' to your SSH config"
-                                .into(),
-                        ),
-                        module: "local",
-                    }])
-                }
-                DnsVerifyStatus::Disabled => {
-                    Ok(vec![Diagnostic {
-                        id: "verify_host_key_dns",
-                        severity: Severity::Ok,
-                        message: "VerifyHostKeyDNS is set to 'no'".into(),
-                        hint: None,
-                        module: "local",
-                    }])
-                }
-                DnsVerifyStatus::Ask => {
-                    Ok(vec![Diagnostic {
-                        id: "verify_host_key_dns",
-                        severity: Severity::Info,
-                        message: "VerifyHostKeyDNS is set to 'ask' — \
+                            .into(),
+                    ),
+                    module: "local",
+                }]),
+                DnsVerifyStatus::Disabled => Ok(vec![Diagnostic {
+                    id: "verify_host_key_dns",
+                    severity: Severity::Ok,
+                    message: "VerifyHostKeyDNS is set to 'no'".into(),
+                    hint: None,
+                    module: "local",
+                }]),
+                DnsVerifyStatus::Ask => Ok(vec![Diagnostic {
+                    id: "verify_host_key_dns",
+                    severity: Severity::Info,
+                    message: "VerifyHostKeyDNS is set to 'ask' — \
                                   host keys will be verified via SSHFP but you will \
                                   be prompted on mismatch"
-                            .into(),
-                        hint: None,
-                        module: "local",
-                    }])
-                }
+                        .into(),
+                    hint: None,
+                    module: "local",
+                }]),
                 DnsVerifyStatus::Enabled => {
                     let mut diagnostics = Vec::new();
 
@@ -2081,7 +2040,7 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
 // HomeDirPermissionsCheck — StrictModes full chain
 // ---------------------------------------------------------------------------
 
-/// Check that the home directory is not group/world writable (StrictModes).
+/// Check that the home directory is not group/world writable (`StrictModes`).
 #[cfg(unix)]
 struct HomeDirPermissionsCheck;
 
@@ -2135,20 +2094,14 @@ impl Check for HomeDirPermissionsCheck {
                         home.display(),
                         who,
                     ),
-                    hint: Some(format!(
-                        "chmod g-w,o-w {}",
-                        home.display(),
-                    )),
+                    hint: Some(format!("chmod g-w,o-w {}", home.display())),
                     module: "local",
                 }])
             } else {
                 Ok(vec![Diagnostic {
                     id: "home_dir_permissions",
                     severity: Severity::Ok,
-                    message: format!(
-                        "Home directory {} has correct permissions",
-                        home.display()
-                    ),
+                    message: format!("Home directory {} has correct permissions", home.display()),
                     hint: None,
                     module: "local",
                 }])
@@ -2190,10 +2143,7 @@ impl Check for MaxAuthTriesExhaustionCheck {
             }
 
             let output = tokio::task::spawn_blocking(|| {
-                duct::cmd("ssh-add", ["-l"])
-                    .stderr_null()
-                    .read()
-                    .ok()
+                duct::cmd("ssh-add", ["-l"]).stderr_null().read().ok()
             })
             .await
             .ok()
@@ -2217,7 +2167,8 @@ impl Check for MaxAuthTriesExhaustionCheck {
                 return Ok(vec![Diagnostic {
                     id: "max_auth_tries_exhaustion",
                     severity: Severity::Ok,
-                    message: "No keys loaded in agent — MaxAuthTries exhaustion not a concern".into(),
+                    message: "No keys loaded in agent — MaxAuthTries exhaustion not a concern"
+                        .into(),
                     hint: None,
                     module: "local",
                 }]);
@@ -2305,7 +2256,9 @@ impl Check for PreferredAuthenticationsCheck<'_> {
             // Collect PreferredAuthentications from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
-                    ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("PreferredAuthentications") => {
+                    ConfigNode::Directive(d)
+                        if d.keyword.eq_ignore_ascii_case("PreferredAuthentications") =>
+                    {
                         preferred.push(("top-level".into(), d.value.clone()));
                     }
                     ConfigNode::HostBlock(b) => {
@@ -2326,7 +2279,9 @@ impl Check for PreferredAuthenticationsCheck<'_> {
                 return Ok(vec![Diagnostic {
                     id: "preferred_authentications",
                     severity: Severity::Ok,
-                    message: "No PreferredAuthentications directive in config (uses client default)".into(),
+                    message:
+                        "No PreferredAuthentications directive in config (uses client default)"
+                            .into(),
                     hint: None,
                     module: "local",
                 }]);
@@ -2473,8 +2428,7 @@ impl Check for ProxyJumpHostCheck<'_> {
                             return false;
                         }
                         // Exact match or wildcard prefix pattern (e.g. *.example.com).
-                        p == &lower
-                            || (p.starts_with("*.") && lower.ends_with(&p[1..]))
+                        p == &lower || (p.starts_with("*.") && lower.ends_with(&p[1..]))
                     });
 
                     if has_config {
@@ -2546,17 +2500,15 @@ impl Check for AgentIdentityCheck<'_> {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
                     severity: Severity::Info,
-                    message: "SSH agent is not running — cannot verify agent holds expected keys".into(),
+                    message: "SSH agent is not running — cannot verify agent holds expected keys"
+                        .into(),
                     hint: None,
                     module: "local",
                 }]);
             }
 
             let agent_output = tokio::task::spawn_blocking(|| {
-                duct::cmd("ssh-add", ["-l"])
-                    .stderr_null()
-                    .read()
-                    .ok()
+                duct::cmd("ssh-add", ["-l"]).stderr_null().read().ok()
             })
             .await
             .ok()
@@ -2625,7 +2577,8 @@ impl Check for AgentIdentityCheck<'_> {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
                     severity: Severity::Ok,
-                    message: "No IdentityFile directives in config — agent will offer all keys".into(),
+                    message: "No IdentityFile directives in config — agent will offer all keys"
+                        .into(),
                     hint: None,
                     module: "local",
                 }]);
@@ -2670,11 +2623,7 @@ impl Check for AgentIdentityCheck<'_> {
                     continue;
                 };
 
-                let key_fp = fp_output
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("")
-                    .to_owned();
+                let key_fp = fp_output.split_whitespace().nth(1).unwrap_or("").to_owned();
 
                 if key_fp.is_empty() {
                     diagnostics.push(Diagnostic {
@@ -2694,9 +2643,7 @@ impl Check for AgentIdentityCheck<'_> {
                     diagnostics.push(Diagnostic {
                         id: "agent_identity",
                         severity: Severity::Ok,
-                        message: format!(
-                            "Agent holds key for {raw_path} ({key_fp})"
-                        ),
+                        message: format!("Agent holds key for {raw_path} ({key_fp})"),
                         hint: None,
                         module: "local",
                     });
@@ -2708,10 +2655,7 @@ impl Check for AgentIdentityCheck<'_> {
                             "Agent does not hold key for {raw_path} ({key_fp}). \
                              SSH will not be able to offer this key automatically"
                         ),
-                        hint: Some(format!(
-                            "Load the key: `ssh-add {}`",
-                            expanded.display()
-                        )),
+                        hint: Some(format!("Load the key: `ssh-add {}`", expanded.display())),
                         module: "local",
                     });
                 }
@@ -2795,7 +2739,9 @@ impl Check for RsaWeakKeyCheck<'_> {
                     let Ok(n) = file.read(&mut buf).await else {
                         continue;
                     };
-                    if n < MIN_PEM_HEADER_LENGTH || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY") {
+                    if n < MIN_PEM_HEADER_LENGTH
+                        || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY")
+                    {
                         continue;
                     }
                 }
@@ -2917,10 +2863,8 @@ impl Check for NfsHomeCheck {
                             if (fs_type == "nfs" || fs_type == "nfs4")
                                 && home_str.starts_with(mount_point)
                             {
-                                matches.push(format!(
-                                    "{} on {} ({})",
-                                    parts[0], mount_point, fs_type
-                                ));
+                                matches
+                                    .push(format!("{} on {} ({})", parts[0], mount_point, fs_type));
                             }
                         }
                     }
@@ -2992,10 +2936,10 @@ impl Check for NfsHomeCheck {
 // SELinuxContextCheck — check SELinux security contexts on ~/.ssh
 // ---------------------------------------------------------------------------
 
-/// Check SELinux security contexts for files under `~/.ssh`.
+/// Check `SELinux` security contexts for files under `~/.ssh`.
 ///
 /// Runs `restorecon -Rvn ~/.ssh` (dry-run, non-destructive) to detect files
-/// that would be relabeled. Incorrect SELinux contexts can prevent sshd from
+/// that would be relabeled. Incorrect `SELinux` contexts can prevent sshd from
 /// reading `~/.ssh/authorized_keys`, causing public-key authentication failures
 /// on SELinux-enforced systems.
 struct SELinuxContextCheck<'a> {
@@ -3043,19 +2987,13 @@ impl Check for SELinuxContextCheck<'_> {
                 }]);
             };
 
-            let relabel_lines: Vec<&str> = output
-                .lines()
-                .filter(|l| !l.is_empty())
-                .collect();
+            let relabel_lines: Vec<&str> = output.lines().filter(|l| !l.is_empty()).collect();
 
             if relabel_lines.is_empty() {
                 Ok(vec![Diagnostic {
                     id: "selinux_context",
                     severity: Severity::Ok,
-                    message: format!(
-                        "SELinux contexts for {} are correct",
-                        ssh_dir.display()
-                    ),
+                    message: format!("SELinux contexts for {} are correct", ssh_dir.display()),
                     hint: None,
                     module: "local",
                 }])
@@ -3098,9 +3036,7 @@ pub async fn run_all<'a>(
     paths: &'a SshPaths,
     runner: &'a dyn toride_ssh_core::CliRunner,
 ) -> Result<Vec<Diagnostic>> {
-    let mut checks: Vec<Box<dyn Check + 'a>> = vec![
-        Box::new(SshDirExists { paths }),
-    ];
+    let mut checks: Vec<Box<dyn Check + 'a>> = vec![Box::new(SshDirExists { paths })];
 
     checks.push(Box::new(SshDirPermissions { paths }));
 

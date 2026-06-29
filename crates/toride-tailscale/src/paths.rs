@@ -53,7 +53,10 @@ impl TailscalePaths {
         if !paths.state_dir.exists() {
             return Err(crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Tailscale state directory not found: {}", paths.state_dir.display()),
+                format!(
+                    "Tailscale state directory not found: {}",
+                    paths.state_dir.display()
+                ),
             )));
         }
         Ok(paths)

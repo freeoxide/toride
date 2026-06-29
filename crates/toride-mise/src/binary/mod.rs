@@ -5,5 +5,5 @@ mod install;
 mod version;
 
 pub use discovery::MiseBinary;
-pub use install::{install_mise, BootstrapMethod, BootstrapOptions};
+pub use install::{BootstrapMethod, BootstrapOptions, install_mise};
 pub use version::MiseVersion;

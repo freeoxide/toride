@@ -1,4 +1,4 @@
-//! Basic SysProbe usage: hostname, OS, CPU, memory, disk, processes, uptime.
+//! Basic `SysProbe` usage: hostname, OS, CPU, memory, disk, processes, uptime.
 //!
 //! Run with: `cargo run --example simple_snapshot`
 

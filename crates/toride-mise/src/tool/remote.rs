@@ -131,7 +131,10 @@ impl Mise {
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
-    pub async fn list_remote_with(&self, req: &ListRemoteRequest) -> MiseResult<Vec<RemoteVersion>> {
+    pub async fn list_remote_with(
+        &self,
+        req: &ListRemoteRequest,
+    ) -> MiseResult<Vec<RemoteVersion>> {
         let mut args: Vec<String> = Vec::new();
         args.push("ls-remote".into());
 
@@ -206,7 +209,6 @@ impl Mise {
         let req = ListRemoteRequest::new(tool).prefix(prefix);
         self.list_remote_with(&req).await
     }
-
 }
 
 // ---------------------------------------------------------------------------

@@ -516,12 +516,10 @@ COMMIT
         assert_eq!(input.rules.len(), 4);
 
         // Check SSH rule
-        let ssh_rule = input.rules.iter().find(|r| {
-            r.components
-                .dest_port
-                .as_deref()
-                .is_some_and(|p| p == "22")
-        });
+        let ssh_rule = input
+            .rules
+            .iter()
+            .find(|r| r.components.dest_port.as_deref().is_some_and(|p| p == "22"));
         assert!(ssh_rule.is_some());
         let ssh = ssh_rule.unwrap();
         assert_eq!(ssh.components.protocol.as_deref(), Some("tcp"));
@@ -532,11 +530,7 @@ COMMIT
     fn parse_iptables_save_should_parse_nat_masquerade() {
         let result = parse_iptables_save(SAMPLE_IPTABLES_SAVE).unwrap();
         let nat = result.tables.iter().find(|t| t.name == "nat").unwrap();
-        let postrouting = nat
-            .chains
-            .iter()
-            .find(|c| c.name == "POSTROUTING")
-            .unwrap();
+        let postrouting = nat.chains.iter().find(|c| c.name == "POSTROUTING").unwrap();
 
         assert_eq!(postrouting.rules.len(), 1);
         let masq = &postrouting.rules[0];

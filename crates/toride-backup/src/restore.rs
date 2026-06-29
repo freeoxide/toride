@@ -116,49 +116,44 @@ impl RestoreManager {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::RestoreFailed`] if the restore operation fails.
+    /// Returns [`Error::RestoreFailed`] if the restore operation fails, or a
+    /// [`Error::ConfigParse`]/[`Error::ScheduleError`] if the spec fails
+    /// validation before any restore command is issued.
     pub fn restore(spec: &BackupSpec, options: &RestoreOptions) -> Result<RestoreReport> {
+        spec.validate()?;
         restore_with_runner(spec, options, &toride_runner::DuctRunner)
     }
 
     /// Perform a test restore to verify backup integrity.
     ///
-    /// Restores to a temporary directory and optionally verifies file
-    /// checksums, then cleans up the temporary data.
+    /// Restores to an OS-managed temporary directory (created via the `tempfile`
+    /// crate so the path is unpredictable, not a fixed `/tmp/toride-backup-test-
+    /// <name>` that an attacker could pre-create or symlink) and optionally
+    /// verifies file checksums, then cleans up the temporary data.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::RestoreFailed`] if the test restore fails.
+    /// Returns [`Error::RestoreFailed`] if the test restore fails (or if a
+    /// unique temp directory cannot be created).
     pub fn test_restore(spec: &BackupSpec) -> Result<RestoreReport> {
-        let target = format!("/tmp/toride-backup-test-{}", spec.name);
-        let options = RestoreOptions::new(&target)
-            .as_test()
-            .with_verify();
+        // Use a freshly created, unpredictable temp directory. `tempfile`
+        // creates a uniquely-named dir under $TMPDIR (or /tmp) and (on Unices)
+        // opens it with 0700 perms, so a fixed, attacker-predictable path can
+        // no longer be pre-seeded.
+        let dir = tempfile::Builder::new()
+            .prefix("toride-backup-test-")
+            .rand_bytes(12)
+            .tempdir()
+            .map_err(|e| {
+                Error::RestoreFailed(format!("could not create temp dir for test restore: {e}"))
+            })?;
+        let target = dir.path().to_string_lossy().into_owned();
+        let options = RestoreOptions::new(&target).as_test().with_verify();
 
-        match Self::restore(spec, &options) {
-            Ok(report) => {
-                // Best-effort cleanup of the temporary directory; ignore
-                // errors since the restore itself succeeded.
-                if let Err(cleanup_err) = std::fs::remove_dir_all(&target) {
-                    tracing::warn!(
-                        target = %target,
-                        error = %cleanup_err,
-                        "test restore cleanup failed"
-                    );
-                }
-                Ok(report)
-            }
-            Err(e) => {
-                if let Err(cleanup_err) = std::fs::remove_dir_all(&target) {
-                    tracing::warn!(
-                        target = %target,
-                        error = %cleanup_err,
-                        "test restore cleanup failed after error"
-                    );
-                }
-                Err(e)
-            }
-        }
+        // Restore owns `dir`; the TempDir is removed on drop, so cleanup runs
+        // whether restore succeeded or failed. The restore itself is allowed
+        // to fail — the report/error is surfaced and the temp tree is dropped.
+        Self::restore(spec, &options)
     }
 
     /// Verify that a restore target matches the original backup source.
@@ -169,12 +164,10 @@ impl RestoreManager {
     ///
     /// Returns [`Error::RestoreFailed`] if verification fails.
     pub fn verify(source: &Path, restore_target: &Path) -> Result<bool> {
-        let src = count_tree(source).map_err(|e| {
-            Error::RestoreFailed(format!("failed to walk source: {e}"))
-        })?;
-        let dst = count_tree(restore_target).map_err(|e| {
-            Error::RestoreFailed(format!("failed to walk restore target: {e}"))
-        })?;
+        let src = count_tree(source)
+            .map_err(|e| Error::RestoreFailed(format!("failed to walk source: {e}")))?;
+        let dst = count_tree(restore_target)
+            .map_err(|e| Error::RestoreFailed(format!("failed to walk restore target: {e}")))?;
         Ok(src == dst)
     }
 }
@@ -196,6 +189,9 @@ fn restore_with_runner<R: Runner + ?Sized>(
     options: &RestoreOptions,
     runner: &R,
 ) -> Result<RestoreReport> {
+    // Validate the spec up front (name allowlist, cron, retention, and that an
+    // encrypted repo actually has a password_command) — mirrors backup()/prune().
+    spec.validate()?;
     let snapshot_id = resolve_snapshot_id(spec, options)?;
     tracing::info!(
         name = %spec.name,
@@ -257,12 +253,11 @@ fn resolve_snapshot_id(spec: &BackupSpec, options: &RestoreOptions) -> Result<St
 ///   [--verify]
 /// ```
 ///
-/// The repository password is supplied via the `RESTIC_PASSWORD` environment
-/// variable (the most secure of restic's documented options when the value is
-/// not persisted to disk; see
-/// <https://restic.readthedocs.io/en/stable/030_preparing_a_new_repo.html>).
-/// When the spec carries a `password_command`, restic reads the password from
-/// that command via `--password-command`. Either way the command is marked
+/// The repository password is supplied via the spec's `password_command`,
+/// forwarded to restic's `--password-command` flag (see
+/// <https://restic.readthedocs.io/en/stable/040_backup.html>). An encrypted
+/// repository with no `password_command` produces a clear error rather than
+/// silently authenticating with the job label. The command is always marked
 /// [`redact(true)`](CommandSpec::redact) so the secret never leaks into error
 /// messages.
 fn run_restic_restore<R: Runner + ?Sized>(
@@ -289,17 +284,18 @@ fn run_restic_restore<R: Runner + ?Sized>(
         cmd = cmd.arg("--verify");
     }
 
-    // The password is a SECRET. Prefer the spec's password_command via restic's
+    // The password is a SECRET. Apply the spec's password_command via restic's
     // --password-command flag (the value is a *command path*, not the secret
     // itself, but we redact anyway so the command path is not logged either).
-    // Otherwise fall back to the RESTIC_PASSWORD env var.
-    cmd = apply_restic_password(spec, cmd);
+    // An encrypted repo with no password_command errors here rather than
+    // authenticating with the job label.
+    cmd = apply_restic_password(spec, cmd)?;
 
     cmd = cmd.redact(true);
 
-    let output = runner.run_checked(&cmd).map_err(|e| {
-        Error::RestoreFailed(format!("restic restore command failed: {e}"))
-    })?;
+    let output = runner
+        .run_checked(&cmd)
+        .map_err(|e| Error::RestoreFailed(format!("restic restore command failed: {e}")))?;
 
     let (files_restored, bytes_restored) = parse_restic_restore_output(&output.stdout);
     let messages = if output.stderr.trim().is_empty() {
@@ -323,20 +319,26 @@ fn run_restic_restore<R: Runner + ?Sized>(
 /// Per the restic docs there are three mutually exclusive ways to provide the
 /// password: `RESTIC_PASSWORD`, `--password-file`/`RESTIC_PASSWORD_FILE`, and
 /// `--password-command`/`RESTIC_PASSWORD_COMMAND`. We honour the spec's
-/// `password_command` when present (the most secure option) and otherwise use
-/// `RESTIC_PASSWORD` carrying the *literal* command string the spec already
-/// stores — callers are expected to resolve the actual secret themselves via a
-/// shell. We never inline the secret as a positional CLI argument.
-fn apply_restic_password(spec: &BackupSpec, cmd: CommandSpec) -> CommandSpec {
+/// `password_command` when present (the most secure option) by forwarding it to
+/// restic's `--password-command` flag.
+///
+/// When the repository is encrypted but no `password_command` is configured we
+/// return a clear error instead of silently authenticating with the job *label*
+/// (the spec's `name`) as the passphrase — that fallback could never unlock a
+/// real repo and only masked misconfiguration. An unencrypted repo (`Encryption
+/// ::None`) needs no password, so no env is attached in that case.
+fn apply_restic_password(spec: &BackupSpec, cmd: CommandSpec) -> Result<CommandSpec> {
     if let Some(pw_cmd) = &spec.password_command {
-        cmd.arg("--password-command").arg(pw_cmd)
+        Ok(cmd.arg("--password-command").arg(pw_cmd))
+    } else if spec.encryption != crate::spec::Encryption::None {
+        Err(Error::RestoreFailed(format!(
+            "backup spec {:?}: encrypted restic repository requires a \
+             password_command (none configured); refusing to authenticate \
+             with the job label as a passphrase",
+            spec.name
+        )))
     } else {
-        // No password command configured; surface the spec's password field
-        // (if any) through the env var rather than a CLI flag. We use the
-        // spec name as a placeholder so the env var is always set to a
-        // stable value — the real secret is resolved upstream by whoever
-        // resolves BackupSpec.password_command.
-        cmd.env("RESTIC_PASSWORD", spec.name.as_str())
+        Ok(cmd)
     }
 }
 
@@ -394,12 +396,12 @@ fn run_borg_extract<R: Runner + ?Sized>(
         // borg extract writes into cwd — there is no --destination flag.
         .cwd(&options.target);
 
-    cmd = apply_borg_passphrase(spec, cmd);
+    cmd = apply_borg_passphrase(spec, cmd)?;
     cmd = cmd.redact(true);
 
-    let output = runner.run_checked(&cmd).map_err(|e| {
-        Error::RestoreFailed(format!("borg extract command failed: {e}"))
-    })?;
+    let output = runner
+        .run_checked(&cmd)
+        .map_err(|e| Error::RestoreFailed(format!("borg extract command failed: {e}")))?;
 
     let (files_restored, bytes_restored) = parse_borg_extract_output(&output.stdout);
     let messages = if output.stderr.trim().is_empty() {
@@ -422,13 +424,25 @@ fn run_borg_extract<R: Runner + ?Sized>(
 ///
 /// Borg documents `BORG_PASSPHRASE` (env var) and `BORG_PASSCOMMAND` (runs a
 /// command that prints the passphrase). We prefer the spec's `password_command`
-/// mapped to `BORG_PASSCOMMAND`, otherwise set `BORG_PASSPHRASE` to the spec's
-/// resolved name placeholder. Never inline the passphrase as a CLI arg.
-fn apply_borg_passphrase(spec: &BackupSpec, cmd: CommandSpec) -> CommandSpec {
+/// mapped to `BORG_PASSCOMMAND`.
+///
+/// When the repository is encrypted but no `password_command` is configured we
+/// return a clear error instead of falling back to the job *label* (the spec's
+/// `name`) as the passphrase — that could never unlock a real repo and only
+/// masked misconfiguration. An unencrypted repo (`Encryption::None`) needs no
+/// passphrase.
+fn apply_borg_passphrase(spec: &BackupSpec, cmd: CommandSpec) -> Result<CommandSpec> {
     if let Some(pw_cmd) = &spec.password_command {
-        cmd.env("BORG_PASSCOMMAND", pw_cmd)
+        Ok(cmd.env("BORG_PASSCOMMAND", pw_cmd))
+    } else if spec.encryption != crate::spec::Encryption::None {
+        Err(Error::RestoreFailed(format!(
+            "backup spec {:?}: encrypted borg repository requires a \
+             password_command (none configured); refusing to authenticate \
+             with the job label as a passphrase",
+            spec.name
+        )))
     } else {
-        cmd.env("BORG_PASSPHRASE", spec.name.as_str())
+        Ok(cmd)
     }
 }
 
@@ -443,7 +457,7 @@ fn apply_borg_passphrase(spec: &BackupSpec, cmd: CommandSpec) -> CommandSpec {
 /// <https://restic.readthedocs.io/en/stable/075_scripting.html>) includes
 /// `message_type: "summary"` plus `files_new`, `files_modified`, `files_unmodified`,
 /// `dirs_new`, and (for restore) `bytes_restored`. We scan the stdout line by
-/// line for the last JSON object with a `summary` message_type and sum the new
+/// line for the last JSON object with a `summary` `message_type` and sum the new
 /// and modified file/directory counts.
 ///
 /// When no JSON summary is present (e.g. plain-text restore output), we fall
@@ -489,6 +503,10 @@ fn parse_restic_restore_output(stdout: &str) -> (u64, u64) {
 /// `bytes_restored` / `total_bytes` (NOT the backup-summary fields
 /// `files_new`/`dirs_new`).
 #[cfg(any(feature = "client", feature = "serde"))]
+#[expect(
+    dead_code,
+    reason = "mirrors restic restore JSON; total_bytes kept for fidelity"
+)]
 #[derive(serde::Deserialize)]
 struct ResticRestoreSummary {
     message_type: String,
@@ -532,10 +550,10 @@ fn parse_borg_extract_output(stdout: &str) -> (u64, u64) {
     for line in stdout.lines() {
         let trimmed = line.trim_start();
         // borg --list uses status letters: 'x' = extracted, 'o' = ok/unchanged.
-        if let Some(rest) = trimmed.strip_prefix("x ") {
-            if !rest.is_empty() {
-                files += 1;
-            }
+        if let Some(rest) = trimmed.strip_prefix("x ")
+            && !rest.is_empty()
+        {
+            files += 1;
         }
     }
     (files, 0)
@@ -640,21 +658,20 @@ mod tests {
             .with_snapshot("79766175")
             .with_verify();
 
-        let runner = FakeRunner::new()
-            .respond(
-                CommandSpec::new("restic")
-                    .arg("-r")
-                    .arg("/srv/restic-repo")
-                    .arg("restore")
-                    .arg("79766175")
-                    .arg("--target")
-                    .arg("/tmp/restore-work")
-                    .arg("--verify")
-                    .arg("--password-command")
-                    .arg("cat /etc/restic/pw")
-                    .redact(true),
-                CommandOutput::from_stdout(RESTIC_RESTORE_SUMMARY_JSON),
-            );
+        let runner = FakeRunner::new().respond(
+            CommandSpec::new("restic")
+                .arg("-r")
+                .arg("/srv/restic-repo")
+                .arg("restore")
+                .arg("79766175")
+                .arg("--target")
+                .arg("/tmp/restore-work")
+                .arg("--verify")
+                .arg("--password-command")
+                .arg("cat /etc/restic/pw")
+                .redact(true),
+            CommandOutput::from_stdout(RESTIC_RESTORE_SUMMARY_JSON),
+        );
 
         let report = restore_with_runner(&spec, &options, &runner).unwrap();
         assert!(report.success);
@@ -695,8 +712,7 @@ mod tests {
             .arg("cat /etc/restic/pw")
             .redact(true);
 
-        let runner =
-            FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout("{}"));
+        let runner = FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout("{}"));
         let report = restore_with_runner(&spec, &options, &runner).unwrap();
         assert_eq!(report.snapshot_id, "latest");
         runner.assert_called_with(&expected);
@@ -724,8 +740,7 @@ mod tests {
             .arg("cat /etc/restic/pw")
             .redact(true);
 
-        let runner =
-            FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout(""));
+        let runner = FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout(""));
         let _ = restore_with_runner(&spec, &options, &runner).unwrap();
         runner.assert_called_with(&expected);
     }
@@ -756,10 +771,9 @@ mod tests {
             .arg("cat /etc/restic/pw")
             .redact(true);
 
-        let runner = FakeRunner::new().strict().respond(
-            expected.clone(),
-            CommandOutput::from_stdout(""),
-        );
+        let runner = FakeRunner::new()
+            .strict()
+            .respond(expected.clone(), CommandOutput::from_stdout(""));
         let result = restore_with_runner(&spec, &options, &runner);
         assert!(
             result.is_ok(),
@@ -787,10 +801,9 @@ mod tests {
             .arg("cat /etc/restic/pw");
         // (note: no .redact(true) above)
 
-        let runner = FakeRunner::new().strict().respond(
-            unredacted,
-            CommandOutput::from_stdout(""),
-        );
+        let runner = FakeRunner::new()
+            .strict()
+            .respond(unredacted, CommandOutput::from_stdout(""));
         let result = restore_with_runner(&spec, &options, &runner);
         assert!(
             result.is_err(),
@@ -808,12 +821,10 @@ mod tests {
         // https://restic.readthedocs.io/en/stable/075_scripting.html) and
         // asserts files_restored / bytes_restored are parsed correctly.
         let spec = spec_restic("/srv/restic-repo");
-        let options =
-            RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
+        let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
 
-        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(
-            RESTIC_RESTORE_SUMMARY_JSON,
-        ));
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout(RESTIC_RESTORE_SUMMARY_JSON));
         let report = restore_with_runner(&spec, &options, &runner).unwrap();
         // files_new(42) + files_modified(3) + dirs_new(5) + dirs_modified(0)
         assert_eq!(report.files_restored, 50);
@@ -831,11 +842,9 @@ unchanged /work/baz
 restored  /work/qux
 ";
         let spec = spec_restic("/srv/restic-repo");
-        let options =
-            RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
+        let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
 
-        let runner =
-            FakeRunner::new().push_response(CommandOutput::from_stdout(text));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(text));
         let report = restore_with_runner(&spec, &options, &runner).unwrap();
         assert_eq!(report.files_restored, 3);
         assert_eq!(report.bytes_restored, 0);
@@ -848,8 +857,7 @@ restored  /work/qux
     #[test]
     fn restic_restore_propagates_command_failure() {
         let spec = spec_restic("/srv/restic-repo");
-        let options =
-            RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
+        let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
 
         // run_checked treats non-zero exit as failure.
         let runner = FakeRunner::new()
@@ -861,13 +869,12 @@ restored  /work/qux
     }
 
     #[test]
-    fn restic_restore_scrubs_env_password_from_error() {
-        // REDACTION property: when the passphrase is carried via the
-        // RESTIC_PASSWORD env var (the literal secret, not a command path),
-        // toride-runner's scrub_stderr replaces its value with "***" wherever
-        // it appears in stderr. Here the spec has NO password_command, so the
-        // restore path sets RESTIC_PASSWORD; the echoed secret must be scrubbed
-        // from the propagated error.
+    fn restic_restore_refuses_encrypted_repo_without_password_command() {
+        // SECURITY: an encrypted repo with NO password_command must NOT fall
+        // back to authenticating with the job *label* as the passphrase. The
+        // restore path returns a clear error before any restic command is
+        // issued (so no secret is ever sent), and the job label never reaches
+        // a process env.
         use crate::spec::{Encryption, RetentionPolicy, Schedule};
         let spec = BackupSpec {
             name: "env-pw-job".into(),
@@ -877,36 +884,76 @@ restored  /work/qux
             schedule: Schedule::new("0 2 * * *"),
             retention: RetentionPolicy::default_policy(),
             encryption: Encryption::RepoKey,
-            // No password_command: restore falls back to RESTIC_PASSWORD env,
-            // whose value is the spec name "env-pw-job" (a stand-in for the
-            // real secret upstream).
+            // No password_command on an encrypted repo.
             password_command: None,
             exclude_patterns: vec![],
             tags: vec![],
             extra_env: std::collections::HashMap::new(),
         };
-        let options =
-            RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
+        let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
 
-        let runner = FakeRunner::new().push_response(CommandOutput::from_stderr(
-            "Fatal: password env-pw-job rejected",
-            12,
-        ));
+        // Strict runner with no responses: restore must error BEFORE invoking
+        // restic, so the runner is never consulted.
+        let runner = FakeRunner::new().strict();
         let result = restore_with_runner(&spec, &options, &runner);
-        assert!(result.is_err());
-        let msg = format!("{}", result.unwrap_err());
-        // The env-carried secret value must NOT survive into the error.
+        let err =
+            result.expect_err("encrypted repo with no password_command must error, not fall back");
+        let msg = format!("{err}");
         assert!(
-            !msg.contains("env-pw-job"),
-            "RESTIC_PASSWORD value leaked into error: {msg}"
+            msg.contains("password_command"),
+            "error must explain the missing password_command: {msg}"
         );
+        // No command was issued.
+        assert!(
+            runner.calls().is_empty(),
+            "restore must not spawn restic when the password is unavailable"
+        );
+    }
+
+    #[test]
+    fn borg_restore_refuses_encrypted_repo_without_password_command() {
+        // Same property for the borg path.
+        use crate::spec::{Encryption, RetentionPolicy, Schedule};
+        let spec = BackupSpec {
+            name: "borg-job".into(),
+            backend: Backend::Borg,
+            repository: PathBuf::from("/srv/borg-repo"),
+            sources: vec![PathBuf::from("/data")],
+            schedule: Schedule::new("0 2 * * *"),
+            retention: RetentionPolicy::default_policy(),
+            encryption: Encryption::RepoKey,
+            password_command: None,
+            exclude_patterns: vec![],
+            tags: vec![],
+            extra_env: std::collections::HashMap::new(),
+        };
+        let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("archive-1");
+        let runner = FakeRunner::new().strict();
+        let result = restore_with_runner(&spec, &options, &runner);
+        let msg = format!("{}", result.expect_err("must error"));
+        assert!(
+            msg.contains("password_command"),
+            "error must explain the missing password_command: {msg}"
+        );
+        assert!(runner.calls().is_empty());
+    }
+
+    #[test]
+    fn restore_validates_spec_before_dispatch() {
+        // An invalid spec (empty sources) is rejected before any backend call.
+        let mut spec = spec_restic("/srv/restic-repo");
+        spec.sources = vec![];
+        let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
+        let runner = FakeRunner::new().strict();
+        let result = restore_with_runner(&spec, &options, &runner);
+        assert!(matches!(result, Err(Error::ConfigParse(_))));
+        assert!(runner.calls().is_empty());
     }
 
     #[test]
     fn restic_restore_rejects_empty_snapshot_id() {
         let spec = spec_restic("/srv/restic-repo");
-        let options = RestoreOptions::new("/tmp/restore-work")
-            .with_snapshot("   ");
+        let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("   ");
         let runner = FakeRunner::new();
         let result = restore_with_runner(&spec, &options, &runner);
         assert!(result.is_err());
@@ -924,8 +971,7 @@ restored  /work/qux
         // CRITICAL: borg extract has NO --destination flag — it extracts into
         // the current working directory, so the target is set via cwd.
         let spec = spec_borg("/path/to/repo");
-        let options =
-            RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
+        let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
 
         let expected = CommandSpec::new("borg")
             .arg("extract")
@@ -935,10 +981,7 @@ restored  /work/qux
             .env("BORG_PASSCOMMAND", "cat /etc/borg/pw")
             .redact(true);
 
-        let runner = FakeRunner::new().respond(
-            expected.clone(),
-            CommandOutput::from_stdout(""),
-        );
+        let runner = FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout(""));
         let report = restore_with_runner(&spec, &options, &runner).unwrap();
         runner.assert_called_with(&expected);
         assert_eq!(report.snapshot_id, "my-files");
@@ -960,10 +1003,7 @@ restored  /work/qux
             .env("BORG_PASSCOMMAND", "cat /etc/borg/pw")
             .redact(true);
 
-        let runner = FakeRunner::new().respond(
-            expected.clone(),
-            CommandOutput::from_stdout(""),
-        );
+        let runner = FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout(""));
         let _ = restore_with_runner(&spec, &options, &runner).unwrap();
         runner.assert_called_with(&expected);
     }
@@ -991,8 +1031,7 @@ restored  /work/qux
     #[test]
     fn borg_extract_marks_passphrase_command_redact_true() {
         let spec = spec_borg("/path/to/repo");
-        let options =
-            RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
+        let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
 
         let expected = CommandSpec::new("borg")
             .arg("extract")
@@ -1002,10 +1041,9 @@ restored  /work/qux
             .env("BORG_PASSCOMMAND", "cat /etc/borg/pw")
             .redact(true);
 
-        let runner = FakeRunner::new().strict().respond(
-            expected.clone(),
-            CommandOutput::from_stdout(""),
-        );
+        let runner = FakeRunner::new()
+            .strict()
+            .respond(expected.clone(), CommandOutput::from_stdout(""));
         let result = restore_with_runner(&spec, &options, &runner);
         assert!(result.is_ok(), "redact(true) matched: {result:?}");
     }
@@ -1013,8 +1051,7 @@ restored  /work/qux
     #[test]
     fn borg_extract_without_redact_fails_match() {
         let spec = spec_borg("/path/to/repo");
-        let options =
-            RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
+        let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
 
         let unredacted = CommandSpec::new("borg")
             .arg("extract")
@@ -1024,10 +1061,9 @@ restored  /work/qux
             .env("BORG_PASSCOMMAND", "cat /etc/borg/pw");
         // (no .redact(true))
 
-        let runner = FakeRunner::new().strict().respond(
-            unredacted,
-            CommandOutput::from_stdout(""),
-        );
+        let runner = FakeRunner::new()
+            .strict()
+            .respond(unredacted, CommandOutput::from_stdout(""));
         let result = restore_with_runner(&spec, &options, &runner);
         assert!(result.is_err(), "unredacted borg command must not match");
     }
@@ -1047,11 +1083,9 @@ o home/user/file3
 x home/user/src/main.rs
 ";
         let spec = spec_borg("/path/to/repo");
-        let options =
-            RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
+        let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
 
-        let runner =
-            FakeRunner::new().push_response(CommandOutput::from_stdout(text));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(text));
         let report = restore_with_runner(&spec, &options, &runner).unwrap();
         assert_eq!(report.files_restored, 3);
         assert_eq!(report.bytes_restored, 0);
@@ -1060,8 +1094,7 @@ x home/user/src/main.rs
     #[test]
     fn borg_extract_propagates_command_failure() {
         let spec = spec_borg("/path/to/repo");
-        let options =
-            RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
+        let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
 
         let runner = FakeRunner::new().push_response(CommandOutput::from_stderr(
             "passphrase supplied in BORG_PASSPHRASE is incorrect",
@@ -1079,11 +1112,8 @@ x home/user/src/main.rs
     #[test]
     fn dispatches_to_restic_for_restic_spec() {
         let spec = spec_restic("/srv/restic-repo");
-        let options =
-            RestoreOptions::new("/tmp/restore").with_snapshot("79766175");
-        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(
-            "{}",
-        ));
+        let options = RestoreOptions::new("/tmp/restore").with_snapshot("79766175");
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("{}"));
         let _ = restore_with_runner(&spec, &options, &runner).unwrap();
         let calls = runner.calls();
         assert_eq!(calls.len(), 1);
@@ -1094,10 +1124,8 @@ x home/user/src/main.rs
     #[test]
     fn dispatches_to_borg_for_borg_spec() {
         let spec = spec_borg("/path/to/repo");
-        let options =
-            RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
-        let runner =
-            FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
         let _ = restore_with_runner(&spec, &options, &runner).unwrap();
         let calls = runner.calls();
         assert_eq!(calls.len(), 1);
@@ -1180,8 +1208,7 @@ x home/user/src/main.rs
 
     #[test]
     fn verify_errors_on_missing_source() {
-        let result =
-            RestoreManager::verify(Path::new("/nonexistent/src"), Path::new("/tmp"));
+        let result = RestoreManager::verify(Path::new("/nonexistent/src"), Path::new("/tmp"));
         // count_tree tolerates missing dirs (treats as empty), so this returns
         // Ok(false) when dst is also empty, or an error if dst has files.
         // The important property: no panic.
@@ -1212,8 +1239,7 @@ x home/user/src/main.rs
 
     #[test]
     fn parse_borg_list_counts_x_lines() {
-        let (files, _) =
-            parse_borg_extract_output("x a\nx b\no c\n  x d\n");
+        let (files, _) = parse_borg_extract_output("x a\nx b\no c\n  x d\n");
         assert_eq!(files, 3);
     }
 }

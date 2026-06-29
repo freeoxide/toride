@@ -296,15 +296,16 @@ impl Mise {
         let raw = output.stdout_trimmed();
         let trimmed = raw.trim();
 
-        let vars: BTreeMap<String, String> = if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
-            BTreeMap::new()
-        } else {
-            serde_json::from_str(trimmed).map_err(|e| crate::error::MiseError::JsonParse {
-                command: self.binary_name().to_owned(),
-                source: e,
-                stdout: trimmed.to_owned(),
-            })?
-        };
+        let vars: BTreeMap<String, String> =
+            if trimmed.is_empty() || trimmed == "null" || trimmed == "{}" {
+                BTreeMap::new()
+            } else {
+                serde_json::from_str(trimmed).map_err(|e| crate::error::MiseError::JsonParse {
+                    command: self.binary_name().to_owned(),
+                    source: e,
+                    stdout: trimmed.to_owned(),
+                })?
+            };
 
         Ok(MiseEnv {
             vars,

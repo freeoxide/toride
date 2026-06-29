@@ -180,7 +180,11 @@ impl Clone for StatusError {
         match self {
             Self::PermissionDenied(s) => Self::PermissionDenied(s.clone()),
             Self::CommandNotFound(s) => Self::CommandNotFound(s.clone()),
-            Self::CommandFailed { command, code, stderr } => Self::CommandFailed {
+            Self::CommandFailed {
+                command,
+                code,
+                stderr,
+            } => Self::CommandFailed {
                 command: command.clone(),
                 code: *code,
                 stderr: stderr.clone(),

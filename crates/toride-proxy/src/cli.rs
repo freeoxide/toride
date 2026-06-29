@@ -358,11 +358,10 @@ mod tests {
     /// success message when the (faked) nginx -t passes.
     #[test]
     fn cli_nginx_test_passes() {
-        let fake = toride_runner::FakeRunner::new()
-            .respond(
-                toride_runner::CommandSpec::new("nginx").arg("-t"),
-                toride_runner::CommandOutput::from_stdout("syntax is ok"),
-            );
+        let fake = toride_runner::FakeRunner::new().respond(
+            toride_runner::CommandSpec::new("nginx").arg("-t"),
+            toride_runner::CommandOutput::from_stdout("syntax is ok"),
+        );
         let mut client = ProxyClient::with_runner(Box::new(fake));
 
         let cli = ProxyCli {
@@ -409,4 +408,3 @@ mod tests {
         );
     }
 }
-

@@ -80,24 +80,23 @@ pub fn validate_sysctl_value(key: &str, value: &str) -> Result<()> {
     }
 
     // Key-specific validation
-    if let Some(expected) = expected_values(key) {
-        if !expected.contains(&value) {
-            return Err(Error::SysctlParse(format!(
-                "sysctl key {key} expects one of [{}] but got: {value}",
-                expected.join(", ")
-            )));
-        }
+    if let Some(expected) = expected_values(key)
+        && !expected.contains(&value)
+    {
+        return Err(Error::SysctlParse(format!(
+            "sysctl key {key} expects one of [{}] but got: {value}",
+            expected.join(", ")
+        )));
     }
 
     // Numeric range validation for known numeric keys
-    if let Some((min, max)) = numeric_range(key) {
-        if let Ok(num) = value.parse::<i64>() {
-            if num < min || num > max {
-                return Err(Error::SysctlParse(format!(
-                    "sysctl key {key} value {value} outside range [{min}, {max}]"
-                )));
-            }
-        }
+    if let Some((min, max)) = numeric_range(key)
+        && let Ok(num) = value.parse::<i64>()
+        && (num < min || num > max)
+    {
+        return Err(Error::SysctlParse(format!(
+            "sysctl key {key} value {value} outside range [{min}, {max}]"
+        )));
     }
 
     Ok(())
@@ -162,21 +161,20 @@ fn expected_values(key: &str) -> Option<Vec<&'static str>> {
         "kernel.kptr_restrict" | "kernel.dmesg_restrict" | "kernel.yama.ptrace_scope" => {
             Some(vec!["0", "1", "2", "3"])
         }
-        "net.ipv4.ip_forward" | "net.ipv6.conf.all.forwarding" => Some(vec!["0", "1"]),
-        "net.ipv4.conf.all.accept_redirects"
+        "net.ipv4.ip_forward"
+        | "net.ipv6.conf.all.forwarding"
+        | "net.ipv4.conf.all.accept_redirects"
         | "net.ipv4.conf.default.accept_redirects"
-        | "net.ipv6.conf.all.accept_redirects" => Some(vec!["0", "1"]),
-        "net.ipv4.conf.all.send_redirects" | "net.ipv4.conf.default.send_redirects" => {
-            Some(vec!["0", "1"])
-        }
-        "net.ipv4.conf.all.accept_source_route" | "net.ipv4.conf.default.accept_source_route" => {
-            Some(vec!["0", "1"])
-        }
+        | "net.ipv6.conf.all.accept_redirects"
+        | "net.ipv4.conf.all.send_redirects"
+        | "net.ipv4.conf.default.send_redirects"
+        | "net.ipv4.conf.all.accept_source_route"
+        | "net.ipv4.conf.default.accept_source_route" => Some(vec!["0", "1"]),
         "fs.protected_hardlinks"
         | "fs.protected_symlinks"
         | "fs.protected_fifos"
-        | "fs.protected_regular" => Some(vec!["0", "1", "2"]),
-        "kernel.randomize_va_space" => Some(vec!["0", "1", "2"]),
+        | "fs.protected_regular"
+        | "kernel.randomize_va_space" => Some(vec!["0", "1", "2"]),
         _ => None,
     }
 }
@@ -184,12 +182,11 @@ fn expected_values(key: &str) -> Option<Vec<&'static str>> {
 /// Return numeric range for known numeric sysctl keys.
 fn numeric_range(key: &str) -> Option<(i64, i64)> {
     match key {
-        "kernel.kptr_restrict" => Some((0, 1)),
-        "kernel.dmesg_restrict" => Some((0, 1)),
+        "kernel.kptr_restrict" | "kernel.dmesg_restrict" => Some((0, 1)),
         "kernel.randomize_va_space" => Some((0, 2)),
         "kernel.yama.ptrace_scope" => Some((0, 3)),
         "vm.swappiness" => Some((0, 100)),
-        "net.core.somaxconn" => Some((1, 4294967295)),
+        "net.core.somaxconn" => Some((1, 4_294_967_295)),
         _ => None,
     }
 }
@@ -250,7 +247,9 @@ mod tests {
             .build();
         let findings = validate_spec(&spec).unwrap();
         assert!(
-            findings.iter().all(|f| f.severity != ValidationSeverity::Error),
+            findings
+                .iter()
+                .all(|f| f.severity != ValidationSeverity::Error),
             "Server profile params should validate cleanly, got: {findings:?}"
         );
         // And it must have actually inspected parameters (not returned an
@@ -291,9 +290,11 @@ mod tests {
             .param(SysctlParam::new("kernel.kptr_restrict", "9", "bad"))
             .build();
         let findings = validate_spec(&spec).unwrap();
-        assert!(findings.iter().any(|f| f
-            .severity
-            .eq(&ValidationSeverity::Error)
-            && f.key == "kernel.kptr_restrict"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.severity.eq(&ValidationSeverity::Error)
+                    && f.key == "kernel.kptr_restrict")
+        );
     }
 }

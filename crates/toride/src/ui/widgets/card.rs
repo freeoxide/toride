@@ -74,9 +74,7 @@ mod tests {
 
     fn render(card: Card<'_>, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| card.render(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| card.render(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 

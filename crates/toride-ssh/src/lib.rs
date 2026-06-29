@@ -1,5 +1,5 @@
 #![warn(missing_docs)]
-#![expect(dead_code, reason = "scaffolding for modules under active development")]
+#![allow(dead_code, reason = "scaffolding for modules under active development")]
 #![expect(
     clippy::must_use_candidate,
     reason = "service methods are call-and-forget; callers rarely use return"

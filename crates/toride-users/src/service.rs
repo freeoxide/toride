@@ -22,8 +22,9 @@ use crate::{Error, Result};
 ///
 /// - [`Error::Other`] if `systemctl` cannot be executed.
 pub fn is_service_active(service: &str) -> Result<bool> {
-    let mgr = new_manager()?;
-    mgr.is_active(service).map_err(|e| Error::Other(e.to_string()))
+    let mgr = new_manager();
+    mgr.is_active(service)
+        .map_err(|e| Error::Other(e.to_string()))
 }
 
 /// Restart a systemd service.
@@ -34,8 +35,9 @@ pub fn is_service_active(service: &str) -> Result<bool> {
 ///
 /// - [`Error::Other`] if `systemctl` returns a non-zero exit code.
 pub fn restart_service(service: &str) -> Result<()> {
-    let mgr = new_manager()?;
-    mgr.restart(service).map_err(|e| Error::Other(e.to_string()))?;
+    let mgr = new_manager();
+    mgr.restart(service)
+        .map_err(|e| Error::Other(e.to_string()))?;
     tracing::info!("restarted service {service}");
     Ok(())
 }
@@ -106,7 +108,7 @@ impl ServiceManager {
     /// Returns an error if the underlying `toride_service::ServiceManager`
     /// cannot be constructed.
     pub fn new() -> Result<Self> {
-        let inner = new_manager()?;
+        let inner = new_manager();
         Ok(Self {
             inner,
             runner: toride_runner::DuctRunner,
@@ -168,7 +170,7 @@ impl Default for ServiceManager {
 // ---------------------------------------------------------------------------
 
 /// Build a `toride_service::ServiceManager` backed by a `DuctRunner`.
-fn new_manager() -> Result<toride_service::ServiceManager> {
+fn new_manager() -> toride_service::ServiceManager {
     let runner = Box::new(toride_runner::DuctRunner);
-    Ok(toride_service::ServiceManager::new(runner))
+    toride_service::ServiceManager::new(runner)
 }

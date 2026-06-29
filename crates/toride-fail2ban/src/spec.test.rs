@@ -75,8 +75,7 @@ fn jail_name_rejects_newline() {
 #[test]
 fn jail_name_rejects_shell_metacharacters() {
     let bad = [
-        ";echo", "a|b", "a&b", "$HOME", "`cmd`", "\\x", "'or'", "\"q\"",
-        "(a)", "<x>", "{a}",
+        ";echo", "a|b", "a&b", "$HOME", "`cmd`", "\\x", "'or'", "\"q\"", "(a)", "<x>", "{a}",
     ];
     for s in bad {
         assert!(JailName::new(s).is_err(), "should reject: {s:?}");
@@ -158,8 +157,10 @@ fn filter_name_rejects_dot_dot() {
 
 #[test]
 fn filter_name_rejects_shell_metacharacters() {
-    let bad = [";echo", "a|b", "$VAR", "`cmd`", "\\x", "'x'", "\"x\"",
-               "(a)", "<x>", "{x}", "a\nb", "a\rb", "a&b"];
+    let bad = [
+        ";echo", "a|b", "$VAR", "`cmd`", "\\x", "'x'", "\"x\"", "(a)", "<x>", "{x}", "a\nb",
+        "a\rb", "a&b",
+    ];
     for s in bad {
         assert!(FilterName::new(s).is_err(), "should reject: {s:?}");
     }
@@ -214,8 +215,10 @@ fn action_name_rejects_dot_dot() {
 
 #[test]
 fn action_name_rejects_shell_metacharacters() {
-    let bad = [";echo", "a|b", "$VAR", "`cmd`", "\\x", "'x'", "\"x\"",
-               "(a)", "<x>", "{x}", "a\nb", "a\rb", "a&b"];
+    let bad = [
+        ";echo", "a|b", "$VAR", "`cmd`", "\\x", "'x'", "\"x\"", "(a)", "<x>", "{x}", "a\nb",
+        "a\rb", "a&b",
+    ];
     for s in bad {
         assert!(ActionName::new(s).is_err(), "should reject: {s:?}");
     }
@@ -792,18 +795,14 @@ fn ignore_ip_list_serialize_deserialize_roundtrip() {
 
 #[test]
 fn ignore_ip_list_contains_ipv6() {
-    let list = IgnoreIpList::new(vec![
-        IpOrCidr::from_str("::1").unwrap(),
-    ]);
+    let list = IgnoreIpList::new(vec![IpOrCidr::from_str("::1").unwrap()]);
     assert!(list.contains("::1".parse::<IpAddr>().unwrap()));
     assert!(!list.contains("::2".parse::<IpAddr>().unwrap()));
 }
 
 #[test]
 fn ignore_ip_list_cidr_covers_broad_range() {
-    let list = IgnoreIpList::new(vec![
-        IpOrCidr::from_str("10.0.0.0/8").unwrap(),
-    ]);
+    let list = IgnoreIpList::new(vec![IpOrCidr::from_str("10.0.0.0/8").unwrap()]);
     assert!(list.contains("10.0.0.1".parse::<IpAddr>().unwrap()));
     assert!(list.contains("10.255.255.254".parse::<IpAddr>().unwrap()));
     assert!(!list.contains("11.0.0.0".parse::<IpAddr>().unwrap()));
@@ -836,17 +835,17 @@ fn jail_spec_builder_required_fields() {
 fn jail_spec_builder_defaults() {
     let jail = minimal_jail();
 
-    assert!(jail.enabled);                          // default = true
-    assert!(jail.actions.is_empty());               // default = vec![]
-    assert_eq!(jail.backend, Backend::Auto);        // default = Auto
-    assert!(jail.ports.is_empty());                 // default = vec![]
-    assert_eq!(jail.protocol, Protocol::Tcp);       // default = Tcp
-    assert_eq!(jail.maxretry, 5);                   // default = 5
-    assert!(jail.ignore_ips.is_empty());            // default = IgnoreIpList::default()
-    assert_eq!(jail.usedns, UseDns::No);            // default = No
-    assert!(jail.maxlines.is_none());               // default = None
-    assert!(!jail.allow_permanent_ban);             // default = false
-    assert!(jail.extra_options.is_empty());         // default = HashMap::new()
+    assert!(jail.enabled); // default = true
+    assert!(jail.actions.is_empty()); // default = vec![]
+    assert_eq!(jail.backend, Backend::Auto); // default = Auto
+    assert!(jail.ports.is_empty()); // default = vec![]
+    assert_eq!(jail.protocol, Protocol::Tcp); // default = Tcp
+    assert_eq!(jail.maxretry, 5); // default = 5
+    assert!(jail.ignore_ips.is_empty()); // default = IgnoreIpList::default()
+    assert_eq!(jail.usedns, UseDns::No); // default = No
+    assert!(jail.maxlines.is_none()); // default = None
+    assert!(!jail.allow_permanent_ban); // default = false
+    assert!(jail.extra_options.is_empty()); // default = HashMap::new()
 }
 
 #[test]
@@ -873,9 +872,7 @@ fn jail_spec_builder_optional_fields() {
         .ignore_ips(IgnoreIpList::new(vec![
             IpOrCidr::from_str("10.0.0.0/8").unwrap(),
         ]))
-        .extra_options(HashMap::from([
-            ("key".to_string(), "value".to_string()),
-        ]))
+        .extra_options(HashMap::from([("key".to_string(), "value".to_string())]))
         .build();
 
     assert!(!jail.enabled);
@@ -1025,7 +1022,9 @@ fn filter_spec_builder_all_fields() {
         ])
         .ignoreregex(vec!["ignored pattern".to_string()])
         .datepattern(Some("%%Y-%%m-%%d".to_string()))
-        .journalmatch(Some(JournalMatch::new("_SYSTEMD_UNIT=nginx.service").unwrap()))
+        .journalmatch(Some(
+            JournalMatch::new("_SYSTEMD_UNIT=nginx.service").unwrap(),
+        ))
         .mode(Some("aggressive".to_string()))
         .extra_options(HashMap::from([("k".to_string(), "v".to_string())]))
         .build();
@@ -1103,15 +1102,15 @@ fn action_spec_builder_defaults() {
         .name(ActionName::new("test").unwrap())
         .build();
 
-    assert_eq!(a.kind, ActionKind::Stock);          // default = Stock
-    assert!(a.stock_name.is_none());                // default = None
-    assert!(a.parameters.is_empty());               // default = HashMap::new()
-    assert!(a.actionstart.is_none());               // default = None
-    assert!(a.actionstop.is_none());                // default = None
-    assert!(a.actioncheck.is_none());               // default = None
-    assert!(a.actionban.is_none());                 // default = None
-    assert!(a.actionunban.is_none());               // default = None
-    assert!(a.timeout.is_none());                   // default = None
+    assert_eq!(a.kind, ActionKind::Stock); // default = Stock
+    assert!(a.stock_name.is_none()); // default = None
+    assert!(a.parameters.is_empty()); // default = HashMap::new()
+    assert!(a.actionstart.is_none()); // default = None
+    assert!(a.actionstop.is_none()); // default = None
+    assert!(a.actioncheck.is_none()); // default = None
+    assert!(a.actionban.is_none()); // default = None
+    assert!(a.actionunban.is_none()); // default = None
+    assert!(a.timeout.is_none()); // default = None
 }
 
 #[test]
@@ -1190,8 +1189,14 @@ fn all_name_types_reject_each_forbidden_char() {
     for &ch in forbidden.iter() {
         let s = format!("a{ch}b");
         assert!(JailName::new(&s).is_err(), "JailName should reject {ch:?}");
-        assert!(FilterName::new(&s).is_err(), "FilterName should reject {ch:?}");
-        assert!(ActionName::new(&s).is_err(), "ActionName should reject {ch:?}");
+        assert!(
+            FilterName::new(&s).is_err(),
+            "FilterName should reject {ch:?}"
+        );
+        assert!(
+            ActionName::new(&s).is_err(),
+            "ActionName should reject {ch:?}"
+        );
     }
 }
 
@@ -1536,9 +1541,12 @@ mod proptests {
 
     /// Characters that are forbidden in names.
     fn forbidden_char() -> impl Strategy<Value = char> {
-        prop::sample::select(&[
-            '/', '\n', '\r', ';', '|', '&', '$', '`', '\\', '\'', '"', '(', ')', '<', '>', '{', '}',
-        ][..])
+        prop::sample::select(
+            &[
+                '/', '\n', '\r', ';', '|', '&', '$', '`', '\\', '\'', '"', '(', ')', '<', '>', '{',
+                '}',
+            ][..],
+        )
     }
 
     /// Strategy for a string containing at least one forbidden character.
@@ -1568,8 +1576,7 @@ mod proptests {
 
     /// Strategy for valid IPv4 CIDR addresses.
     fn ipv4_cidr_strategy() -> impl Strategy<Value = String> {
-        (ipv4_addr_strategy(), 0u8..=32u8)
-            .prop_map(|(addr, prefix)| format!("{addr}/{prefix}"))
+        (ipv4_addr_strategy(), 0u8..=32u8).prop_map(|(addr, prefix)| format!("{addr}/{prefix}"))
     }
 
     /// Strategy for valid humantime duration strings.

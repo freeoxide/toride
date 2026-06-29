@@ -141,10 +141,11 @@ impl ProxyClient {
 
     /// Run the diagnostic engine and return a report.
     #[cfg(feature = "doctor")]
-    pub fn doctor(
-        &self,
-        scope: crate::doctor::DoctorScope,
-    ) -> Result<crate::report::ProxyReport> {
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "public API: external crates (e.g. toride::toride_proxy_data) call this by value; changing the signature is out of this crate's scope"
+    )]
+    pub fn doctor(&self, scope: crate::doctor::DoctorScope) -> Result<crate::report::ProxyReport> {
         let doc = crate::doctor::Doctor::new(self.runner.as_ref(), &self.paths);
         doc.run(&scope)
     }
@@ -206,11 +207,7 @@ impl ProxyClient {
     ///
     /// Returns an error only when dry-run is off and the write fails.
     #[cfg(feature = "nginx")]
-    pub fn write_site(
-        &self,
-        block: &crate::spec::ServerBlock,
-        enable: bool,
-    ) -> Result<()> {
+    pub fn write_site(&self, block: &crate::spec::ServerBlock, enable: bool) -> Result<()> {
         if self.dry_run {
             tracing::info!(
                 "dry-run: would write site config for {} (enable={enable})",
@@ -284,7 +281,11 @@ mod tests {
         client.write_site(&block, false).unwrap();
 
         // No site file written, no backup created.
-        assert!(!dir.path().join("etc/nginx/sites-available/example.com").exists());
+        assert!(
+            !dir.path()
+                .join("etc/nginx/sites-available/example.com")
+                .exists()
+        );
     }
 
     #[test]
@@ -307,11 +308,10 @@ mod tests {
         // in dry-run no command would run and the exact match would be left
         // unconsumed (harmless here). The assertion is simply that reload()
         // returns Ok AND we can observe the recorded call on the probe.
-        let probe = toride_runner::FakeRunner::new()
-            .respond(
-                CommandSpec::new("nginx").args(["-s", "reload"]),
-                CommandOutput::from_stdout("ok"),
-            );
+        let probe = toride_runner::FakeRunner::new().respond(
+            CommandSpec::new("nginx").args(["-s", "reload"]),
+            CommandOutput::from_stdout("ok"),
+        );
         let client = ProxyClient::with_runner_owned(ProxyPaths::default(), Box::new(probe));
         client.reload().unwrap();
     }

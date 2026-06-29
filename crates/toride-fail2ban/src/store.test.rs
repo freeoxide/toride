@@ -1,7 +1,7 @@
 use super::*;
-use tempfile::tempdir;
 use chrono::{Duration, Utc};
 use std::net::IpAddr;
+use tempfile::tempdir;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,7 +105,10 @@ fn save_load_roundtrip_populated() {
     assert_eq!(loaded.active_bans.len(), 2);
     assert_eq!(loaded.history.len(), 1);
     assert_eq!(loaded.journals.len(), 1);
-    assert_eq!(loaded.active_bans[0].ip, "10.0.0.1".parse::<IpAddr>().unwrap());
+    assert_eq!(
+        loaded.active_bans[0].ip,
+        "10.0.0.1".parse::<IpAddr>().unwrap()
+    );
     assert_eq!(loaded.journals[0].offset, 1024);
 }
 
@@ -194,7 +197,9 @@ fn remove_ban_success() {
     let (_dir, store) = tmp_store();
     store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
 
-    let removed = store.remove_ban("192.168.1.1".parse().unwrap(), "sshd").unwrap();
+    let removed = store
+        .remove_ban("192.168.1.1".parse().unwrap(), "sshd")
+        .unwrap();
     assert_eq!(removed.ip, "192.168.1.1".parse::<IpAddr>().unwrap());
     assert_eq!(removed.jail_name, "sshd");
 
@@ -242,7 +247,9 @@ fn remove_ban_same_ip_different_jail_only_removes_target() {
     store.add_ban(&make_ban("192.168.1.1", "sshd")).unwrap();
     store.add_ban(&make_ban("192.168.1.1", "nginx")).unwrap();
 
-    store.remove_ban("192.168.1.1".parse().unwrap(), "sshd").unwrap();
+    store
+        .remove_ban("192.168.1.1".parse().unwrap(), "sshd")
+        .unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 1);
@@ -311,14 +318,20 @@ fn clear_expired_moves_to_history() {
 
     // Already expired.
     let past = Utc::now() - Duration::hours(1);
-    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(past))).unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(past)))
+        .unwrap();
 
     // Not expired (future).
     let future = Utc::now() + Duration::hours(1);
-    store.add_ban(&make_ban_expiring("10.0.0.2", "sshd", Some(future))).unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.2", "sshd", Some(future)))
+        .unwrap();
 
     // No expiry at all -- should NOT be cleared.
-    store.add_ban(&make_ban_expiring("10.0.0.3", "sshd", None)).unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.3", "sshd", None))
+        .unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 1);
@@ -330,14 +343,20 @@ fn clear_expired_moves_to_history() {
 
     // History: the expired ban was moved there.
     let data = store.load().unwrap();
-    assert!(data.history.iter().any(|b| b.ip == "10.0.0.1".parse::<IpAddr>().unwrap()));
+    assert!(
+        data.history
+            .iter()
+            .any(|b| b.ip == "10.0.0.1".parse::<IpAddr>().unwrap())
+    );
 }
 
 #[test]
 fn clear_expired_no_expired_bans() {
     let (_dir, store) = tmp_store();
     let future = Utc::now() + Duration::hours(1);
-    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(future))).unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(future)))
+        .unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert!(cleared.is_empty());
@@ -350,8 +369,12 @@ fn clear_expired_no_expired_bans() {
 fn clear_expired_all_expired() {
     let (_dir, store) = tmp_store();
     let past = Utc::now() - Duration::minutes(30);
-    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(past))).unwrap();
-    store.add_ban(&make_ban_expiring("10.0.0.2", "nginx", Some(past))).unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(past)))
+        .unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.2", "nginx", Some(past)))
+        .unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 2);
@@ -381,7 +404,9 @@ fn update_journal_insert() {
 
     store.update_journal(entry).unwrap();
 
-    let loaded = store.get_journal("sshd", "/var/log/auth.log".as_ref()).unwrap();
+    let loaded = store
+        .get_journal("sshd", "/var/log/auth.log".as_ref())
+        .unwrap();
     assert!(loaded.is_some());
     let loaded = loaded.unwrap();
     assert_eq!(loaded.jail_name, "sshd");
@@ -399,7 +424,9 @@ fn update_journal_upsert_updates_existing() {
     let entry2 = make_journal("sshd", "/var/log/auth.log", 500, 25);
     store.update_journal(entry2).unwrap();
 
-    let loaded = store.get_journal("sshd", "/var/log/auth.log".as_ref()).unwrap();
+    let loaded = store
+        .get_journal("sshd", "/var/log/auth.log".as_ref())
+        .unwrap();
     let loaded = loaded.unwrap();
     assert_eq!(loaded.offset, 500);
     assert_eq!(loaded.line_number, 25);
@@ -454,7 +481,9 @@ fn get_journal_found() {
     let entry = make_journal("sshd", "/var/log/auth.log", 42, 7);
     store.update_journal(entry).unwrap();
 
-    let result = store.get_journal("sshd", "/var/log/auth.log".as_ref()).unwrap();
+    let result = store
+        .get_journal("sshd", "/var/log/auth.log".as_ref())
+        .unwrap();
     assert!(result.is_some());
     assert_eq!(result.unwrap().offset, 42);
 }
@@ -463,7 +492,9 @@ fn get_journal_found() {
 fn get_journal_not_found() {
     let (_dir, store) = tmp_store();
 
-    let result = store.get_journal("sshd", "/var/log/auth.log".as_ref()).unwrap();
+    let result = store
+        .get_journal("sshd", "/var/log/auth.log".as_ref())
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -474,7 +505,9 @@ fn get_journal_wrong_jail() {
         .update_journal(make_journal("sshd", "/var/log/auth.log", 100, 5))
         .unwrap();
 
-    let result = store.get_journal("nginx", "/var/log/auth.log".as_ref()).unwrap();
+    let result = store
+        .get_journal("nginx", "/var/log/auth.log".as_ref())
+        .unwrap();
     assert!(result.is_none());
 }
 
@@ -659,7 +692,10 @@ fn atomic_write_overwrite_is_seamless() {
 
     let loaded = store.load().unwrap();
     assert_eq!(loaded.active_bans.len(), 1);
-    assert_eq!(loaded.active_bans[0].ip, "192.168.0.1".parse::<IpAddr>().unwrap());
+    assert_eq!(
+        loaded.active_bans[0].ip,
+        "192.168.0.1".parse::<IpAddr>().unwrap()
+    );
     assert!(loaded.history.is_empty());
     assert!(loaded.journals.is_empty());
 }
@@ -698,10 +734,12 @@ fn empty_store_clear_expired_returns_empty() {
 #[test]
 fn empty_store_get_journal_returns_none() {
     let (_dir, store) = tmp_store();
-    assert!(store
-        .get_journal("sshd", "/var/log/auth.log".as_ref())
-        .unwrap()
-        .is_none());
+    assert!(
+        store
+            .get_journal("sshd", "/var/log/auth.log".as_ref())
+            .unwrap()
+            .is_none()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -717,7 +755,9 @@ fn multiple_jails_same_ip_independent_ban_lifecycle() {
     store.add_ban(&make_ban("192.168.1.1", "dovecot")).unwrap();
 
     // Remove from one jail.
-    store.remove_ban("192.168.1.1".parse().unwrap(), "nginx").unwrap();
+    store
+        .remove_ban("192.168.1.1".parse().unwrap(), "nginx")
+        .unwrap();
 
     let bans = store.get_bans(None).unwrap();
     assert_eq!(bans.len(), 2);
@@ -745,8 +785,12 @@ fn multiple_jails_same_ip_clear_expired_only_clears_expired() {
     let past = Utc::now() - Duration::hours(1);
     let future = Utc::now() + Duration::hours(1);
 
-    store.add_ban(&make_ban_expiring("192.168.1.1", "sshd", Some(past))).unwrap();
-    store.add_ban(&make_ban_expiring("192.168.1.1", "nginx", Some(future))).unwrap();
+    store
+        .add_ban(&make_ban_expiring("192.168.1.1", "sshd", Some(past)))
+        .unwrap();
+    store
+        .add_ban(&make_ban_expiring("192.168.1.1", "nginx", Some(future)))
+        .unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 1);
@@ -767,7 +811,9 @@ fn clear_expired_ban_expiring_exactly_now_is_cleared() {
 
     // Use a timestamp slightly in the past to avoid clock skew issues.
     let exactly_now = Utc::now() - Duration::milliseconds(1);
-    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(exactly_now))).unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(exactly_now)))
+        .unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert_eq!(cleared.len(), 1);
@@ -777,7 +823,9 @@ fn clear_expired_ban_expiring_exactly_now_is_cleared() {
 fn clear_expired_ban_without_expiry_never_cleared() {
     let (_dir, store) = tmp_store();
 
-    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", None)).unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.1", "sshd", None))
+        .unwrap();
 
     let cleared = store.clear_expired().unwrap();
     assert!(cleared.is_empty());
@@ -844,7 +892,9 @@ fn full_lifecycle_ban_remove_clear_trim() {
 
     // 2. Remove some bans -- they move to history.
     for i in 0..5 {
-        store.remove_ban(format!("10.0.0.{i}").parse().unwrap(), "sshd").unwrap();
+        store
+            .remove_ban(format!("10.0.0.{i}").parse().unwrap(), "sshd")
+            .unwrap();
     }
     assert_eq!(store.get_bans(None).unwrap().len(), 5);
 
@@ -880,14 +930,25 @@ fn full_lifecycle_with_journals() {
         .update_journal(make_journal("sshd", "/var/log/auth.log", 4096, 100))
         .unwrap();
     store
-        .update_journal(make_journal("nginx", "/var/log/nginx/access.log", 8192, 200))
+        .update_journal(make_journal(
+            "nginx",
+            "/var/log/nginx/access.log",
+            8192,
+            200,
+        ))
         .unwrap();
 
-    let sshd = store.get_journal("sshd", "/var/log/auth.log".as_ref()).unwrap().unwrap();
+    let sshd = store
+        .get_journal("sshd", "/var/log/auth.log".as_ref())
+        .unwrap()
+        .unwrap();
     assert_eq!(sshd.offset, 4096);
     assert_eq!(sshd.line_number, 100);
 
-    let nginx = store.get_journal("nginx", "/var/log/nginx/access.log".as_ref()).unwrap().unwrap();
+    let nginx = store
+        .get_journal("nginx", "/var/log/nginx/access.log".as_ref())
+        .unwrap()
+        .unwrap();
     assert_eq!(nginx.offset, 8192);
     assert_eq!(nginx.line_number, 200);
 }
@@ -926,7 +987,10 @@ fn remove_ban_with_malformed_ip() {
 
     for bad in malformed {
         let result: std::result::Result<IpAddr, _> = bad.parse();
-        assert!(result.is_err(), "expected parse error for '{bad}', got Ok({result:?})");
+        assert!(
+            result.is_err(),
+            "expected parse error for '{bad}', got Ok({result:?})"
+        );
     }
 }
 
@@ -1009,10 +1073,16 @@ fn clear_expired_boundary_exactly_now() {
 
     // An entry whose expires_at is set to Utc::now() should be cleared
     // because the check is exp <= now.
-    store.add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(Utc::now()))).unwrap();
+    store
+        .add_ban(&make_ban_expiring("10.0.0.1", "sshd", Some(Utc::now())))
+        .unwrap();
 
     let cleared = store.clear_expired().unwrap();
-    assert_eq!(cleared.len(), 1, "ban expiring exactly now should be cleared");
+    assert_eq!(
+        cleared.len(),
+        1,
+        "ban expiring exactly now should be cleared"
+    );
     assert_eq!(cleared[0].ip, "10.0.0.1".parse::<IpAddr>().unwrap());
 
     let active = store.get_bans(None).unwrap();
@@ -1060,7 +1130,8 @@ fn save_load_preserves_timestamps_precision() {
         "last_fail_at timestamp must survive save/load round-trip"
     );
     assert_eq!(
-        loaded.active_bans[0].expires_at.unwrap(), ts + Duration::seconds(3600),
+        loaded.active_bans[0].expires_at.unwrap(),
+        ts + Duration::seconds(3600),
         "expires_at timestamp must survive save/load round-trip"
     );
 }
@@ -1083,6 +1154,9 @@ fn journal_entry_with_empty_jail_name() {
     store.update_journal(entry).unwrap();
 
     let loaded = store.get_journal("", "/var/log/auth.log".as_ref()).unwrap();
-    assert!(loaded.is_some(), "journal with empty jail name should persist");
+    assert!(
+        loaded.is_some(),
+        "journal with empty jail name should persist"
+    );
     assert_eq!(loaded.unwrap().jail_name, "");
 }

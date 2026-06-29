@@ -1,7 +1,7 @@
 //! Kernel security parameter helpers.
 //!
 //! Provides constants and convenience functions for the most common
-//! kernel hardening parameters: ASLR, kptr_restrict, dmesg_restrict,
+//! kernel hardening parameters: ASLR, `kptr_restrict`, `dmesg_restrict`,
 //! protected links, etc.
 
 use crate::error::Result;
@@ -67,25 +67,25 @@ pub fn read_aslr(runner: &dyn Runner) -> Result<String> {
 
 /// Check if ASLR is enabled (value is `1` or `2`).
 pub fn is_aslr_enabled(runner: &dyn Runner) -> bool {
-    matches!(read_aslr(runner).as_deref(), Ok("1") | Ok("2"))
+    matches!(read_aslr(runner).as_deref(), Ok("1" | "2"))
 }
 
-/// Read kptr_restrict status.
+/// Read `kptr_restrict` status.
 pub fn read_kptr_restrict(runner: &dyn Runner) -> Result<String> {
     sysctl::read_sysctl(runner, keys::KPTR_RESTRICT)
 }
 
-/// Check if kptr_restrict is enabled.
+/// Check if `kptr_restrict` is enabled.
 pub fn is_kptr_restrict_enabled(runner: &dyn Runner) -> bool {
     matches!(read_kptr_restrict(runner).as_deref(), Ok("1"))
 }
 
-/// Read dmesg_restrict status.
+/// Read `dmesg_restrict` status.
 pub fn read_dmesg_restrict(runner: &dyn Runner) -> Result<String> {
     sysctl::read_sysctl(runner, keys::DMESG_RESTRICT)
 }
 
-/// Check if dmesg_restrict is enabled.
+/// Check if `dmesg_restrict` is enabled.
 pub fn is_dmesg_restrict_enabled(runner: &dyn Runner) -> bool {
     matches!(read_dmesg_restrict(runner).as_deref(), Ok("1"))
 }
@@ -100,7 +100,7 @@ pub fn is_ip_forward_enabled(runner: &dyn Runner) -> bool {
     matches!(read_ip_forward(runner).as_deref(), Ok("1"))
 }
 
-/// Read accept_redirects status.
+/// Read `accept_redirects` status.
 pub fn read_accept_redirects(runner: &dyn Runner) -> Result<String> {
     sysctl::read_sysctl(runner, keys::ACCEPT_REDIRECTS)
 }
@@ -117,10 +117,7 @@ pub fn read_protected_hardlinks(runner: &dyn Runner) -> Result<String> {
 
 /// Check if protected hardlinks is enabled.
 pub fn is_protected_hardlinks_enabled(runner: &dyn Runner) -> bool {
-    matches!(
-        read_protected_hardlinks(runner).as_deref(),
-        Ok("1") | Ok("2")
-    )
+    matches!(read_protected_hardlinks(runner).as_deref(), Ok("1" | "2"))
 }
 
 /// Read the status of protected symlinks.
@@ -130,10 +127,7 @@ pub fn read_protected_symlinks(runner: &dyn Runner) -> Result<String> {
 
 /// Check if protected symlinks is enabled.
 pub fn is_protected_symlinks_enabled(runner: &dyn Runner) -> bool {
-    matches!(
-        read_protected_symlinks(runner).as_deref(),
-        Ok("1") | Ok("2")
-    )
+    matches!(read_protected_symlinks(runner).as_deref(), Ok("1" | "2"))
 }
 
 #[cfg(test)]

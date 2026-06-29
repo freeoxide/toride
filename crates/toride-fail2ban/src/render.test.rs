@@ -23,7 +23,9 @@ fn minimal_jail() -> JailSpec {
         .filter(
             FilterSpec::builder()
                 .name(FilterName::new("myapp-auth").unwrap())
-                .failregex(vec![RegexLine::new("^Authentication failure <HOST>$").unwrap()])
+                .failregex(vec![
+                    RegexLine::new("^Authentication failure <HOST>$").unwrap(),
+                ])
                 .build(),
         )
         .bantime(DurationSpec::new("10m").unwrap())
@@ -484,7 +486,9 @@ fn jail_local_multiple_log_paths_uses_continuation() {
         .build();
 
     let out = render_jail_local(&jail, "ns");
-    assert!(out.contains("logpath = /var/log/a.log\n        /var/log/b.log\n        /var/log/c.log"));
+    assert!(
+        out.contains("logpath = /var/log/a.log\n        /var/log/b.log\n        /var/log/c.log")
+    );
 }
 
 // ===========================================================================
@@ -557,12 +561,14 @@ fn jail_local_action_with_sorted_parameters() {
         .bantime(DurationSpec::new("10m").unwrap())
         .findtime(DurationSpec::new("10m").unwrap())
         .log_paths(vec![LogPath::new(Path::new("/tmp/a.log")).unwrap()])
-        .actions(vec![ActionSpec::builder()
-            .name(ActionName::new("nft").unwrap())
-            .kind(ActionKind::Stock)
-            .stock_name(Some("nftables-multiport".into()))
-            .parameters(params)
-            .build()])
+        .actions(vec![
+            ActionSpec::builder()
+                .name(ActionName::new("nft").unwrap())
+                .kind(ActionKind::Stock)
+                .stock_name(Some("nftables-multiport".into()))
+                .parameters(params)
+                .build(),
+        ])
         .build();
 
     let out = render_jail_local(&jail, "ns");
@@ -586,11 +592,13 @@ fn jail_local_custom_action_uses_name_not_stock() {
         .bantime(DurationSpec::new("10m").unwrap())
         .findtime(DurationSpec::new("10m").unwrap())
         .log_paths(vec![LogPath::new(Path::new("/tmp/a.log")).unwrap()])
-        .actions(vec![ActionSpec::builder()
-            .name(ActionName::new("my-custom-action").unwrap())
-            .kind(ActionKind::Custom)
-            .parameters(params)
-            .build()])
+        .actions(vec![
+            ActionSpec::builder()
+                .name(ActionName::new("my-custom-action").unwrap())
+                .kind(ActionKind::Custom)
+                .parameters(params)
+                .build(),
+        ])
         .build();
 
     let out = render_jail_local(&jail, "ns");
@@ -627,8 +635,14 @@ fn jail_local_extra_options_sorted_alphabetically() {
     let alpha_pos = out.find("alpha_key").unwrap();
     let middle_pos = out.find("middle_key").unwrap();
     let zebra_pos = out.find("zebra_key").unwrap();
-    assert!(alpha_pos < middle_pos, "extra_options should be sorted alphabetically");
-    assert!(middle_pos < zebra_pos, "extra_options should be sorted alphabetically");
+    assert!(
+        alpha_pos < middle_pos,
+        "extra_options should be sorted alphabetically"
+    );
+    assert!(
+        middle_pos < zebra_pos,
+        "extra_options should be sorted alphabetically"
+    );
 }
 
 // ===========================================================================
@@ -679,9 +693,9 @@ fn jail_local_journal_matches_multiline() {
         .build();
 
     let out = render_jail_local(&jail, "ns");
-    assert!(
-        out.contains("journalmatch = _SYSTEMD_UNIT=sshd.service\n               _SYSTEMD_UNIT=extra.service")
-    );
+    assert!(out.contains(
+        "journalmatch = _SYSTEMD_UNIT=sshd.service\n               _SYSTEMD_UNIT=extra.service"
+    ));
 }
 
 // ===========================================================================
@@ -701,7 +715,11 @@ fn jail_local_ports_comma_separated() {
         .bantime(DurationSpec::new("10m").unwrap())
         .findtime(DurationSpec::new("10m").unwrap())
         .log_paths(vec![LogPath::new(Path::new("/tmp/a.log")).unwrap()])
-        .ports(vec![PortSpec::new(80), PortSpec::new(443), PortSpec::new(8080)])
+        .ports(vec![
+            PortSpec::new(80),
+            PortSpec::new(443),
+            PortSpec::new(8080),
+        ])
         .build();
 
     let out = render_jail_local(&jail, "ns");
@@ -723,10 +741,22 @@ fn jail_local_field_ordering_is_stable() {
     let bantime_pos = out.find("bantime =").unwrap();
     let action_pos = out.find("action =").unwrap();
 
-    assert!(enabled_pos < filter_pos, "enabled should come before filter");
-    assert!(filter_pos < logpath_pos, "filter should come before logpath");
-    assert!(logpath_pos < bantime_pos, "logpath should come before bantime");
-    assert!(bantime_pos < action_pos, "bantime should come before action");
+    assert!(
+        enabled_pos < filter_pos,
+        "enabled should come before filter"
+    );
+    assert!(
+        filter_pos < logpath_pos,
+        "filter should come before logpath"
+    );
+    assert!(
+        logpath_pos < bantime_pos,
+        "logpath should come before bantime"
+    );
+    assert!(
+        bantime_pos < action_pos,
+        "bantime should come before action"
+    );
 }
 
 // ===========================================================================
@@ -737,7 +767,9 @@ fn jail_local_field_ordering_is_stable() {
 fn snapshot_filter_local_minimal() {
     let filter = FilterSpec::builder()
         .name(FilterName::new("myapp-auth").unwrap())
-        .failregex(vec![RegexLine::new("^Authentication failure from <HOST>$").unwrap()])
+        .failregex(vec![
+            RegexLine::new("^Authentication failure from <HOST>$").unwrap(),
+        ])
         .build();
 
     let out = render_filter_local(&filter, "ns");
@@ -1161,10 +1193,7 @@ fn render_action_filename_standard() {
 
 #[test]
 fn render_jail_filename_namespaced() {
-    assert_eq!(
-        render_jail_filename("ssh", "toride"),
-        "toride-ssh.local"
-    );
+    assert_eq!(render_jail_filename("ssh", "toride"), "toride-ssh.local");
 }
 
 #[test]
@@ -1265,10 +1294,12 @@ mod proptests {
 
     /// Strategy for valid name strings (alphanumeric + hyphens + underscores).
     fn valid_name_strategy() -> impl Strategy<Value = String> {
-        let ch = prop::sample::select(&[
-            'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k',
-            '0', '1', '2', '3', '-', '_', '.', 'x', 'y', 'z',
-        ][..]);
+        let ch = prop::sample::select(
+            &[
+                'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', '0', '1', '2', '3', '-',
+                '_', '.', 'x', 'y', 'z',
+            ][..],
+        );
         prop::collection::vec(ch, 1..=20)
             .prop_filter("no consecutive dots", |chars| {
                 let s: String = chars.iter().collect();
@@ -1286,7 +1317,12 @@ mod proptests {
 
     /// Strategy for a minimal JailSpec with a random valid name.
     fn jail_spec_strategy() -> impl Strategy<Value = JailSpec> {
-        (valid_name_strategy(), valid_name_strategy(), humantime_strategy(), humantime_strategy())
+        (
+            valid_name_strategy(),
+            valid_name_strategy(),
+            humantime_strategy(),
+            humantime_strategy(),
+        )
             .prop_map(|(jail_name, filter_name, bantime, findtime)| {
                 JailSpec::builder()
                     .name(JailName::new(&jail_name).unwrap())

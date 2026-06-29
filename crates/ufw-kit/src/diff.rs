@@ -63,8 +63,14 @@ pub fn diff_firewall_configs(
         }
 
         let diff = unified_diff(before, after, name);
-        let lines_added = diff.lines().filter(|l| l.starts_with('+') && !l.starts_with("+++")).count();
-        let lines_removed = diff.lines().filter(|l| l.starts_with('-') && !l.starts_with("---")).count();
+        let lines_added = diff
+            .lines()
+            .filter(|l| l.starts_with('+') && !l.starts_with("+++"))
+            .count();
+        let lines_removed = diff
+            .lines()
+            .filter(|l| l.starts_with('-') && !l.starts_with("---"))
+            .count();
 
         // Generate findings for significant changes
         let name_lower = name.to_lowercase();
@@ -139,9 +145,7 @@ pub fn diff_status_findings(
 
     // Find added rules
     for after_rule in after_rules {
-        let exists_before = before_rules
-            .iter()
-            .any(|b| b.raw == after_rule.raw);
+        let exists_before = before_rules.iter().any(|b| b.raw == after_rule.raw);
         if !exists_before {
             findings.push(Finding {
                 id: "diff:rule:added",
@@ -155,9 +159,7 @@ pub fn diff_status_findings(
 
     // Find removed rules
     for before_rule in before_rules {
-        let exists_after = after_rules
-            .iter()
-            .any(|a| a.raw == before_rule.raw);
+        let exists_after = after_rules.iter().any(|a| a.raw == before_rule.raw);
         if !exists_after {
             findings.push(Finding {
                 id: "diff:rule:removed",
@@ -198,7 +200,11 @@ mod tests {
     #[test]
     fn diff_firewall_configs_should_detect_changes() {
         let files = vec![
-            ("before.rules", "*filter\n:INPUT ACCEPT\nCOMMIT\n", "*filter\n:INPUT DROP\nCOMMIT\n"),
+            (
+                "before.rules",
+                "*filter\n:INPUT ACCEPT\nCOMMIT\n",
+                "*filter\n:INPUT DROP\nCOMMIT\n",
+            ),
             ("ufw.conf", "ENABLED=yes\n", "ENABLED=yes\n"),
         ];
         let result = diff_firewall_configs(&files);

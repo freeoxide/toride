@@ -66,11 +66,11 @@
 use std::fs::File;
 use std::path::{Path, PathBuf};
 
-use fd_lock::RwLock;
 use crate::render;
 use crate::report::ApplyReport;
 use crate::spec::*;
 use crate::{Error, Result};
+use fd_lock::RwLock;
 
 // ---------------------------------------------------------------------------
 // Constants

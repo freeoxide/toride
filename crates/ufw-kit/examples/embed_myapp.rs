@@ -1,7 +1,10 @@
 //! Example: Embed ufw-kit in a custom application.
 //! Demonstrates checking UFW status and adding a basic rule.
 
-use ufw_kit::{Ufw, spec::{RuleSpec, Action, Direction, Protocol}};
+use ufw_kit::{
+    Ufw,
+    spec::{Action, Direction, Protocol, RuleSpec},
+};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ufw = Ufw::system();

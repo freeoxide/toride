@@ -93,7 +93,7 @@ pub struct MiseContent {
     findings: Vec<MiseFindingEntry>,
     /// Human-readable reason the backend was unreachable, surfaced in the
     /// degraded panel. Populated when the collector attached one: construction
-    /// failure (BinaryNotFound), construction-OK-but-all-probes-failed, or a
+    /// failure (`BinaryNotFound`), construction-OK-but-all-probes-failed, or a
     /// caught collection-task panic.
     unavailable_reason: Option<String>,
     /// Vertical scroll offset over the whole pane.
@@ -132,13 +132,11 @@ impl MiseContent {
     /// backend is unavailable so the badge stays honestly empty.
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.tools.len()) } else { None }
-    }
-
-    /// Current scroll offset (used by tests).
-    #[cfg(test)]
-    pub(crate) fn scroll(&self) -> usize {
-        self.scroll
+        if self.available {
+            Some(self.tools.len())
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -237,6 +235,10 @@ impl MiseContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with the other read-only content sections.
@@ -280,7 +282,7 @@ impl MiseContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -306,17 +308,23 @@ impl MiseContent {
         let inner = render_titled_panel(frame, area, p, " MISE ", p.text_dim, false);
         let msg = Line::from(vec![
             Span::styled("✦ ", Style::new().fg(p.warn)),
-            Span::styled("mise unavailable", Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "mise unavailable",
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
         ]);
         // Prefer the construction/panic reason from the bundle; otherwise the
         // accurate default for the common no-binary case.
-        let detail_text = self
-            .unavailable_reason
-            .clone()
-            .unwrap_or_else(|| "mise binary not found on $PATH / MISE_BIN / ~/.local/bin/mise".to_string());
+        let detail_text = self.unavailable_reason.clone().unwrap_or_else(|| {
+            "mise binary not found on $PATH / MISE_BIN / ~/.local/bin/mise".to_string()
+        });
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -325,7 +333,10 @@ impl MiseContent {
         );
         frame.render_widget(Paragraph::new(msg).centered(), centered_msg);
         // Wrap so a long reason wraps within the panel instead of clipping.
-        frame.render_widget(Paragraph::new(detail).centered().wrap(Wrap { trim: false }), centered_detail);
+        frame.render_widget(
+            Paragraph::new(detail).centered().wrap(Wrap { trim: false }),
+            centered_detail,
+        );
     }
 
     /// Build the complete content as a flat list of lines (status, tools,
@@ -359,7 +370,10 @@ impl MiseContent {
         ]));
         lines.push(Line::from(vec![
             Span::styled("  configs  ", Style::new().fg(p.text_muted)),
-            Span::styled(format!("{}", self.config_files.len()), Style::new().fg(p.text)),
+            Span::styled(
+                format!("{}", self.config_files.len()),
+                Style::new().fg(p.text),
+            ),
         ]));
     }
 
@@ -394,14 +408,14 @@ impl MiseContent {
                 p.text_dim
             };
             let name = truncate_str(&tool.name, 20);
-            let version = tool
-                .version
-                .clone()
-                .unwrap_or_else(|| "(none)".into());
+            let version = tool.version.clone().unwrap_or_else(|| "(none)".into());
             let version = truncate_str(&version, 16);
             let mut spans = vec![
                 Span::styled(format!("{state_icon} "), Style::new().fg(state_color)),
-                Span::styled(format!("{name:<20}"), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{name:<20}"),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!("  {version:<16}"), Style::new().fg(p.text_muted)),
             ];
             if tool.outdated {
@@ -409,7 +423,10 @@ impl MiseContent {
             }
             if let Some(ref src) = tool.source {
                 let src = truncate_str(src, 30);
-                spans.push(Span::styled(format!("  [{src}]"), Style::new().fg(p.text_dim)));
+                spans.push(Span::styled(
+                    format!("  [{src}]"),
+                    Style::new().fg(p.text_dim),
+                ));
             }
             lines.push(Line::from(spans));
         }
@@ -432,25 +449,22 @@ impl MiseContent {
 
         for o in &self.outdated {
             let name = truncate_str(&o.name, 20);
-            let current = o
-                .current
-                .clone()
-                .unwrap_or_else(|| "?".into());
-            let latest = o
-                .latest
-                .clone()
-                .unwrap_or_else(|| "?".into());
+            let current = o.current.clone().unwrap_or_else(|| "?".into());
+            let latest = o.latest.clone().unwrap_or_else(|| "?".into());
             let mut spans = vec![
                 Span::styled("  ↑ ", Style::new().fg(p.warn)),
-                Span::styled(format!("{name:<20}"), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
                 Span::styled(
-                    format!("  {current} → {latest}"),
-                    Style::new().fg(p.warn),
+                    format!("{name:<20}"),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
                 ),
+                Span::styled(format!("  {current} → {latest}"), Style::new().fg(p.warn)),
             ];
             if let Some(ref backend) = o.backend {
                 let backend = truncate_str(backend, 16);
-                spans.push(Span::styled(format!("  [{backend}]"), Style::new().fg(p.text_dim)));
+                spans.push(Span::styled(
+                    format!("  [{backend}]"),
+                    Style::new().fg(p.text_dim),
+                ));
             }
             lines.push(Line::from(spans));
         }
@@ -498,17 +512,17 @@ impl MiseContent {
         // Group by severity: Error > Warning > Info > Ok.
         let order = ["error", "warning", "info", "ok"];
         for sev in order {
-            let group: Vec<&MiseFindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
+            let group: Vec<&MiseFindingEntry> =
+                self.findings.iter().filter(|f| f.severity == sev).collect();
             if group.is_empty() {
                 continue;
             }
             let (icon, color) = severity_style(sev, p);
             lines.push(Line::from(vec![
-                Span::styled(format!("{icon} "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{icon} "),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     format!("{} ({})", sev.to_uppercase(), group.len()),
                     Style::new().fg(color).add_modifier(Modifier::BOLD),
@@ -633,9 +647,7 @@ mod tests {
     /// Render a content area to a string (snapshot pattern from fail2ban/ssh).
     fn render_to_string(content: &mut MiseContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -713,7 +725,10 @@ mod tests {
         c.set_findings(sample_findings());
         let out = render_to_string(&mut c, 110, 40);
         assert!(out.contains("WARNING"), "severity group header: {out}");
-        assert!(out.contains("referenced but not installed"), "finding msg: {out}");
+        assert!(
+            out.contains("referenced but not installed"),
+            "finding msg: {out}"
+        );
         assert!(out.contains("Run `mise install`"), "detail hint: {out}");
     }
 
@@ -777,7 +792,10 @@ mod tests {
         // unavailable" text is truncated, so assert on the panel border which
         // fits; the load-bearing claim is "did not panic".)
         let out_20x5 = render_to_string(&mut c, 20, 5);
-        assert!(out_20x5.contains("MISE"), "degraded panel border 20x5: {out_20x5}");
+        assert!(
+            out_20x5.contains("MISE"),
+            "degraded panel border 20x5: {out_20x5}"
+        );
         // 1x1 — the most degenerate possible terminal; must not panic.
         let _ = render_to_string(&mut c, 1, 1);
         // At a comfortable size the panel renders the unavailable text + the
@@ -799,7 +817,10 @@ mod tests {
         c.set_available(true);
         let out = render_to_string(&mut c, 100, 30);
         assert!(out.contains("no tools installed"), "empty tools: {out}");
-        assert!(out.contains("all tools up to date"), "empty outdated: {out}");
+        assert!(
+            out.contains("all tools up to date"),
+            "empty outdated: {out}"
+        );
         assert!(out.contains("no config files"), "empty config: {out}");
         assert!(out.contains("no findings"), "empty findings: {out}");
     }

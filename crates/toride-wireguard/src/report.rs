@@ -55,7 +55,9 @@ impl WireguardReport {
 
     /// Returns `true` if there are any warning-level findings.
     pub fn has_warnings(&self) -> bool {
-        self.findings.iter().any(|f| f.severity == Severity::Warning)
+        self.findings
+            .iter()
+            .any(|f| f.severity == Severity::Warning)
     }
 }
 
@@ -118,6 +120,7 @@ impl Finding {
     }
 
     /// Add a suggested fix to this finding.
+    #[must_use]
     pub fn with_fix(mut self, fix: String) -> Self {
         self.fix = Some(fix);
         self
@@ -165,11 +168,9 @@ mod tests {
             "a warning".to_owned(),
         ));
         assert!(!report.has_errors());
-        report.findings.push(Finding::new(
-            "test",
-            Severity::Error,
-            "an error".to_owned(),
-        ));
+        report
+            .findings
+            .push(Finding::new("test", Severity::Error, "an error".to_owned()));
         assert!(report.has_errors());
     }
 

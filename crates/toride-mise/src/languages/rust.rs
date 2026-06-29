@@ -135,11 +135,7 @@ impl<'a> RustHelper<'a> {
     ///
     /// Returns [`MiseError::CommandFailed`](crate::MiseError::CommandFailed) if
     /// the installation command exits non-zero.
-    pub async fn with_components(
-        &self,
-        version: &str,
-        components: &[&str],
-    ) -> MiseResult<()> {
+    pub async fn with_components(&self, version: &str, components: &[&str]) -> MiseResult<()> {
         let joined = components.join(",");
         let spec = format!("rust@{version}[extra_components={joined}]");
         self.mise.run_checked(["install", &spec]).await?;

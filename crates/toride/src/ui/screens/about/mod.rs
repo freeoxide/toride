@@ -273,7 +273,7 @@ impl AboutContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -285,7 +285,7 @@ impl AboutContent {
     /// Render the degraded state when the About bundle could not be collected.
     ///
     /// `available == false` is set ONLY when a collection task panicked
-    /// (JoinError) — the underlying `TorideStatus::collect` / env reads cannot
+    /// (`JoinError`) — the underlying `TorideStatus::collect` / env reads cannot
     /// realistically fail wholesale, so this branch is rare in practice.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " ABOUT ", p.text_dim, false);
@@ -307,8 +307,12 @@ impl AboutContent {
             .clone()
             .unwrap_or_else(|| "system / app identity could not be collected".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -406,7 +410,7 @@ impl crate::ui::screens::section_overview::SectionOverview for AboutContent {
 }
 
 /// Push a labeled key:value line. The label is right-aligned in a fixed-width
-/// column (text_muted) and the value follows (text). Empty values fall back to
+/// column (`text_muted`) and the value follows (text). Empty values fall back to
 /// the `"(none)"` placeholder so a blank row is never ambiguous.
 fn kv(lines: &mut Vec<Line<'static>>, p: Palette, label: &str, value: &str) {
     let value_str = if value.is_empty() {
@@ -537,9 +541,7 @@ mod tests {
     /// Render a content area to a string (snapshot pattern from harden/fail2ban).
     fn render_to_string(content: &mut AboutContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 

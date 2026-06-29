@@ -166,9 +166,13 @@ impl KeygenParserState {
             } else if !trimmed.starts_with('(') {
                 // Parse "name value" or just "name"
                 if let Some((k, v)) = trimmed.split_once(' ') {
-                    self.info.critical_options.push((k.to_owned(), v.to_owned()));
+                    self.info
+                        .critical_options
+                        .push((k.to_owned(), v.to_owned()));
                 } else {
-                    self.info.critical_options.push((trimmed.to_owned(), String::new()));
+                    self.info
+                        .critical_options
+                        .push((trimmed.to_owned(), String::new()));
                 }
                 return Ok(());
             }
@@ -187,7 +191,10 @@ impl KeygenParserState {
             }
         } else if let Some(rest) = trimmed.strip_prefix("Serial:") {
             self.info.serial = rest.trim().parse().map_err(|_| {
-                toride_ssh_core::Error::CertificateParseFailed(format!("invalid serial: {}", rest.trim()))
+                toride_ssh_core::Error::CertificateParseFailed(format!(
+                    "invalid serial: {}",
+                    rest.trim()
+                ))
             })?;
         } else if let Some(rest) = trimmed.strip_prefix("Key ID:") {
             rest.trim()
@@ -197,8 +204,9 @@ impl KeygenParserState {
             // Parse "from YYYY-MM-DDTHH:MM:SS to YYYY-MM-DDTHH:MM:SS"
             // Also handle: "forever" for unbounded validity.
             let rest = rest.trim();
-            if let Some((after_str, before_str)) =
-                rest.strip_prefix("from ").and_then(|s| s.split_once(" to "))
+            if let Some((after_str, before_str)) = rest
+                .strip_prefix("from ")
+                .and_then(|s| s.split_once(" to "))
             {
                 self.info.valid_after = datetime_str_to_unix(after_str.trim())?;
                 self.info.valid_before = if before_str.trim().eq_ignore_ascii_case("forever") {
@@ -322,7 +330,12 @@ mod tests {
         assert_eq!(info.valid_principals, vec!["user1", "user2"]);
         assert_eq!(info.extensions.len(), 5);
         assert!(info.ca_fingerprint.is_some());
-        assert!(info.ca_fingerprint.as_deref().unwrap().starts_with("SHA256:"));
+        assert!(
+            info.ca_fingerprint
+                .as_deref()
+                .unwrap()
+                .starts_with("SHA256:")
+        );
     }
 
     #[test]
@@ -409,7 +422,9 @@ mod tests {
     #[test]
     fn keygen_parser_state_critical_none() {
         let mut state = KeygenParserState::new();
-        state.process_line("        Critical Options: (none)").unwrap();
+        state
+            .process_line("        Critical Options: (none)")
+            .unwrap();
         assert!(!state.in_critical);
         assert!(state.info.critical_options.is_empty());
     }
@@ -436,7 +451,10 @@ mod tests {
         let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
         assert!(info.ca_fingerprint.is_some());
         let ca_fp = info.ca_fingerprint.as_ref().unwrap();
-        assert!(ca_fp.starts_with("SHA256:"), "CA fingerprint should start with SHA256: prefix");
+        assert!(
+            ca_fp.starts_with("SHA256:"),
+            "CA fingerprint should start with SHA256: prefix"
+        );
         assert!(ca_fp.contains("caFingerPrintBase64Here"));
     }
 
@@ -458,10 +476,17 @@ mod tests {
                 force-command /usr/sbin/sshd
         Extensions: (none)
 "#;
-        let info = parse_keygen_output(output, std::path::Path::new("/etc/ssh/ssh_host_ed25519_key-cert.pub")).unwrap();
+        let info = parse_keygen_output(
+            output,
+            std::path::Path::new("/etc/ssh/ssh_host_ed25519_key-cert.pub"),
+        )
+        .unwrap();
         assert!(info.is_host, "should be detected as a host certificate");
         assert_eq!(info.valid_before, u64::MAX, "forever should be u64::MAX");
-        assert_eq!(info.valid_principals, vec!["server.example.com", "10.0.0.1"]);
+        assert_eq!(
+            info.valid_principals,
+            vec!["server.example.com", "10.0.0.1"]
+        );
         assert_eq!(info.critical_options.len(), 1);
         assert_eq!(info.critical_options[0].0, "force-command");
         assert!(info.ca_fingerprint.is_some());
@@ -481,7 +506,10 @@ mod tests {
         Extensions: (none)
 "#;
         let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
-        assert!(info.ca_fingerprint.is_none(), "no Signing CA line means no CA fingerprint");
+        assert!(
+            info.ca_fingerprint.is_none(),
+            "no Signing CA line means no CA fingerprint"
+        );
     }
 
     #[test]
@@ -545,6 +573,9 @@ mod tests {
 "#;
         let info = parse_keygen_output(output, std::path::Path::new("/p")).unwrap();
         assert_eq!(info.valid_principals.len(), 4);
-        assert_eq!(info.valid_principals, vec!["alice", "bob", "charlie", "deploy"]);
+        assert_eq!(
+            info.valid_principals,
+            vec!["alice", "bob", "charlie", "deploy"]
+        );
     }
 }

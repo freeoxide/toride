@@ -5,6 +5,8 @@ use std::time::{Duration, Instant, SystemTime};
 // TransitionParams — animated gradient parameters derived deterministically
 // ---------------------------------------------------------------------------
 
+/// Animated-gradient parameters for a screen transition, derived
+/// deterministically from a seed (see [`params_from_seed`]).
 #[derive(Clone, Copy, Debug)]
 pub struct TransitionParams {
     /// Direction to shift gradient center (fraction of area).
@@ -53,11 +55,14 @@ pub fn params_from_seed(seed: u32) -> TransitionParams {
 // TransitionCache — caches seeds per navigation edge
 // ---------------------------------------------------------------------------
 
+/// Compact numeric identifier for a screen, used as the cache key for transition seeds.
 pub type ScreenKey = u8;
 
 /// Prime constant used to generate successive seeds.
 const SEED_PRIME: u32 = 2_654_435_761;
 
+/// Cache of deterministically-derived transition seeds, keyed by navigation
+/// edge `(from, to)` so forward and back share a gradient.
 pub struct TransitionCache {
     seeds: HashMap<(ScreenKey, ScreenKey), u32>,
     next_seed: u32,
@@ -111,11 +116,18 @@ impl TransitionCache {
 /// Default transition duration (400 ms).
 const DEFAULT_DURATION: Duration = Duration::from_millis(400);
 
+/// Live in-progress transition between two screens, carrying its timing,
+/// cached gradient parameters, and direction.
 pub struct TransitionState {
+    /// Source screen key the transition animates from.
     pub from: ScreenKey,
+    /// Destination screen key the transition animates to.
     pub to: ScreenKey,
+    /// Instant the transition started.
     pub start: Instant,
+    /// Total transition duration.
     pub duration: Duration,
+    /// Gradient parameters derived from the cached seed for this edge.
     pub params: TransitionParams,
     /// `true` when navigating backwards (e.g. Escape / Back).
     pub reverse: bool,
@@ -207,11 +219,10 @@ mod tests {
         // center_offset magnitude should be in 0.02..0.08
         for seed in [0, 1, 42, u32::MAX] {
             let p = params_from_seed(seed);
-            let mag = (p.center_offset.0.hypot(p.center_offset.1));
+            let mag = p.center_offset.0.hypot(p.center_offset.1);
             assert!(
-                mag >= 0.02 - 1e-10 && mag <= 0.08 + 1e-10,
-                "magnitude should be in [0.02, 0.08], got {}",
-                mag
+                (0.02 - 1e-10..=0.08 + 1e-10).contains(&mag),
+                "magnitude should be in [0.02, 0.08], got {mag}"
             );
         }
     }

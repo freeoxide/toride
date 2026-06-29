@@ -16,9 +16,9 @@
 //! file-local deserializers because they couple parsing with command execution;
 //! this module is the parsing-only analogue.
 
+use crate::CloudProvider;
 use crate::error::{Error, Result};
 use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
-use crate::CloudProvider;
 
 // ---------------------------------------------------------------------------
 // AWS parsing
@@ -65,7 +65,7 @@ pub fn parse_gcp_firewall_rules(json: &str) -> Result<Vec<SecurityGroup>> {
 // DigitalOcean parsing
 // ---------------------------------------------------------------------------
 
-/// Parse DigitalOcean `doctl compute firewall list --format json` output.
+/// Parse `DigitalOcean` `doctl compute firewall list --format json` output.
 ///
 /// `doctl` emits a top-level JSON array of firewalls, each carrying
 /// `inbound_rules` and `outbound_rules` arrays.
@@ -112,7 +112,7 @@ pub fn parse_hetzner_firewalls(json: &str) -> Result<Vec<SecurityGroup>> {
 /// - **AWS**: top-level object with a `"SecurityGroups"` key.
 /// - **GCP**: top-level array whose first element has an `allowed`/`denied` or
 ///   `sourceRanges` key.
-/// - **DigitalOcean**: top-level array whose first element has an
+/// - **`DigitalOcean`**: top-level array whose first element has an
 ///   `inbound_rules`/`outbound_rules` key.
 /// - **Hetzner**: top-level array whose first element has an `applied_to` key
 ///   or a `rules` array whose entries carry `source_ips`.
@@ -201,13 +201,13 @@ fn port_range_from_str(s: &str) -> Option<PortRange> {
     if trimmed.is_empty() || trimmed == "all" || trimmed == "*" {
         return None;
     }
-    if let Some((a, b)) = trimmed.split_once('-') {
-        if let (Ok(start), Ok(end)) = (a.parse::<u16>(), b.parse::<u16>()) {
-            return Some(PortRange {
-                start: start.min(end),
-                end: start.max(end),
-            });
-        }
+    if let Some((a, b)) = trimmed.split_once('-')
+        && let (Ok(start), Ok(end)) = (a.parse::<u16>(), b.parse::<u16>())
+    {
+        return Some(PortRange {
+            start: start.min(end),
+            end: start.max(end),
+        });
     }
     trimmed.parse::<u16>().ok().map(PortRange::single)
 }
@@ -302,7 +302,9 @@ fn aws_port_range(from: Option<i64>, to: Option<i64>, protocol: Protocol) -> Opt
         return None;
     }
     let start = from.and_then(|p| u16::try_from(p.max(0)).ok()).unwrap_or(0);
-    let end = to.and_then(|p| u16::try_from(p.max(0)).ok()).unwrap_or(start);
+    let end = to
+        .and_then(|p| u16::try_from(p.max(0)).ok())
+        .unwrap_or(start);
     Some(PortRange {
         start: start.min(end),
         end: start.max(end),
@@ -375,11 +377,7 @@ fn gcp_firewall_into_group(f: GcpFirewall) -> SecurityGroup {
     }
 }
 
-fn gcp_entry_into_rules(
-    entry: &GcpAllow,
-    cidrs: &[String],
-    allow: bool,
-) -> Vec<FirewallRule> {
+fn gcp_entry_into_rules(entry: &GcpAllow, cidrs: &[String], allow: bool) -> Vec<FirewallRule> {
     let protocol = protocol_from_str(&entry.ip_protocol);
     let action = if allow {
         RuleAction::Allow
@@ -452,11 +450,7 @@ fn do_firewall_into_group(f: DoFirewall) -> SecurityGroup {
         rules.extend(do_rule_into_rules(r, false));
     }
     SecurityGroup {
-        id: if f.id.is_empty() {
-            None
-        } else {
-            Some(f.id)
-        },
+        id: if f.id.is_empty() { None } else { Some(f.id) },
         name: f.name,
         description: String::new(),
         provider: CloudProvider::DigitalOcean,
@@ -574,17 +568,17 @@ fn hetzner_rule_into_rules(r: HetznerRule) -> Vec<FirewallRule> {
 /// Returns [`Error::ConfigParse`] if the string is not a valid port or range.
 pub fn parse_port_range(s: &str) -> Result<PortRange> {
     if let Some((start_str, end_str)) = s.split_once('-') {
-        let start = start_str.parse::<u16>().map_err(|_| {
-            Error::ConfigParse(format!("invalid port range start: {start_str}"))
-        })?;
-        let end = end_str.parse::<u16>().map_err(|_| {
-            Error::ConfigParse(format!("invalid port range end: {end_str}"))
-        })?;
+        let start = start_str
+            .parse::<u16>()
+            .map_err(|_| Error::ConfigParse(format!("invalid port range start: {start_str}")))?;
+        let end = end_str
+            .parse::<u16>()
+            .map_err(|_| Error::ConfigParse(format!("invalid port range end: {end_str}")))?;
         Ok(PortRange::range(start, end))
     } else {
-        let port = s.parse::<u16>().map_err(|_| {
-            Error::ConfigParse(format!("invalid port: {s}"))
-        })?;
+        let port = s
+            .parse::<u16>()
+            .map_err(|_| Error::ConfigParse(format!("invalid port: {s}")))?;
         Ok(PortRange::single(port))
     }
 }
@@ -732,7 +726,7 @@ mod tests {
         }
     ]"#;
 
-    /// DigitalOcean `doctl compute firewall list --format json` sample.
+    /// `DigitalOcean` `doctl compute firewall list --format json` sample.
     /// Source: <https://docs.digitalocean.com/reference/doctl/reference/compute/firewall/list/>
     const DO_SAMPLE: &str = r#"[
         {

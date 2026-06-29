@@ -279,7 +279,8 @@ mod tests {
     async fn test_uninstall_strict_mode() {
         let expected = toride_runner::CommandSpec::new("/usr/bin/mise")
             .arg("uninstall")
-            .arg("node@22.1.0");
+            .arg("node@22.1.0")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -300,7 +301,8 @@ mod tests {
     async fn test_uninstall_assert_called_with() {
         let expected = toride_runner::CommandSpec::new("/usr/bin/mise")
             .arg("uninstall")
-            .arg("node@22.1.0");
+            .arg("node@22.1.0")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -314,9 +316,12 @@ mod tests {
 
         mise.uninstall("node@22.1.0").await.unwrap();
 
-        fake.assert_called_with(&toride_runner::CommandSpec::new("/usr/bin/mise")
-            .arg("uninstall")
-            .arg("node@22.1.0"));
+        fake.assert_called_with(
+            &toride_runner::CommandSpec::new("/usr/bin/mise")
+                .arg("uninstall")
+                .arg("node@22.1.0")
+                .redact(true),
+        );
     }
 
     #[tokio::test]
@@ -325,7 +330,8 @@ mod tests {
             .arg("uninstall")
             .arg("--all")
             .arg("--dry-run")
-            .arg("node@22.1.0");
+            .arg("node@22.1.0")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -337,7 +343,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let req = super::UninstallRequest::new(["node@22.1.0"]).all().dry_run();
+        let req = super::UninstallRequest::new(["node@22.1.0"])
+            .all()
+            .dry_run();
         mise.uninstall_with(&req).await.unwrap();
 
         let calls = fake.calls();
@@ -354,7 +362,8 @@ mod tests {
         let expected = toride_runner::CommandSpec::new("/usr/bin/mise")
             .arg("unset")
             .arg("--global")
-            .arg("node");
+            .arg("node")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -369,9 +378,12 @@ mod tests {
         let req = super::UnuseRequest::new(["node"]).global();
         mise.unuse(&req).await.unwrap();
 
-        fake.assert_called_with(&toride_runner::CommandSpec::new("/usr/bin/mise")
-            .arg("unset")
-            .arg("--global")
-            .arg("node"));
+        fake.assert_called_with(
+            &toride_runner::CommandSpec::new("/usr/bin/mise")
+                .arg("unset")
+                .arg("--global")
+                .arg("node")
+                .redact(true),
+        );
     }
 }

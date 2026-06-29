@@ -87,7 +87,10 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_per_core_cpu(self) -> bool {
-        matches!(self, Self::TaskManager | Self::Diagnostics | Self::HardwareInventory)
+        matches!(
+            self,
+            Self::TaskManager | Self::Diagnostics | Self::HardwareInventory
+        )
     }
 
     /// Whether this preset includes swap data.
@@ -121,7 +124,10 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_sensors(self) -> bool {
-        matches!(self, Self::TaskManager | Self::Diagnostics | Self::HardwareInventory)
+        matches!(
+            self,
+            Self::TaskManager | Self::Diagnostics | Self::HardwareInventory
+        )
     }
 
     /// Whether this preset includes process data.
@@ -173,7 +179,10 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_all_disks(self) -> bool {
-        matches!(self, Self::Diagnostics | Self::TaskManager | Self::HardwareInventory)
+        matches!(
+            self,
+            Self::Diagnostics | Self::TaskManager | Self::HardwareInventory
+        )
     }
 
     /// Whether this preset includes GPU information.
@@ -190,7 +199,10 @@ impl Preset {
     /// ```
     #[must_use]
     pub const fn includes_gpu(self) -> bool {
-        matches!(self, Self::Diagnostics | Self::PrivacySafeBugReport | Self::HardwareInventory)
+        matches!(
+            self,
+            Self::Diagnostics | Self::PrivacySafeBugReport | Self::HardwareInventory
+        )
     }
 
     /// Whether this preset includes battery status.
@@ -714,10 +726,7 @@ mod tests {
             Preset::HardwareInventory,
         ];
         for preset in presets {
-            assert!(
-                !preset.name().is_empty(),
-                "{preset:?} has an empty name"
-            );
+            assert!(!preset.name().is_empty(), "{preset:?} has an empty name");
         }
     }
 

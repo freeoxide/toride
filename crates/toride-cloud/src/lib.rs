@@ -1,7 +1,7 @@
 //! Cloud provider security group and firewall management for toride.
 //!
 //! Provides cloud provider detection, security group management, and firewall
-//! rule lifecycle management across AWS, GCP, DigitalOcean, and Hetzner.
+//! rule lifecycle management across AWS, GCP, `DigitalOcean`, and Hetzner.
 //!
 //! # High-level API
 //!
@@ -22,7 +22,10 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
+)]
 #![expect(clippy::missing_errors_doc, reason = "library is internal")]
 
 // ---------------------------------------------------------------------------
@@ -65,5 +68,5 @@ pub mod cli;
 // Re-exports
 // ---------------------------------------------------------------------------
 
-pub use error::{Error, Result};
 pub use detect::CloudProvider;
+pub use error::{Error, Result};

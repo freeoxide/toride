@@ -20,23 +20,21 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
+)]
 #![expect(clippy::missing_errors_doc, reason = "library is internal")]
 #![expect(clippy::doc_markdown, reason = "Fail2Ban is a well-known name")]
 #![cfg_attr(
     test,
     expect(
-        unsafe_code,
-        clippy::needless_raw_string_hashes,
         clippy::uninlined_format_args,
-        clippy::clone_on_copy,
-        clippy::items_after_statements,
         clippy::redundant_closure_for_method_calls,
-        clippy::needless_pass_by_value,
-        clippy::useless_conversion,
-        clippy::stable_sort_primitive,
-        clippy::write_with_newline,
-        clippy::no_effect_underscore_binding,
+        clippy::duration_suboptimal_units,
+        clippy::unnecessary_literal_unwrap,
+        clippy::unnecessary_wraps,
+        clippy::io_other_error,
         clippy::op_ref,
         reason = "test code tolerates stricter lint patterns"
     )
@@ -58,9 +56,9 @@ pub mod types;
 #[cfg(feature = "client")]
 pub mod client;
 #[cfg(feature = "client")]
-pub mod service;
-#[cfg(feature = "client")]
 pub mod firewall;
+#[cfg(feature = "client")]
+pub mod service;
 
 #[cfg(feature = "doctor")]
 pub mod doctor;
@@ -132,6 +130,10 @@ impl SystemPaths {
     /// # Errors
     ///
     /// Returns [`Error::InvalidConfig`] if the config directory does not exist.
+    #[allow(
+        clippy::should_implement_trait,
+        reason = "returns Result, cannot implement Default trait"
+    )]
     pub fn default() -> Result<Self> {
         Self::with_config_dir(PathBuf::from("/etc/fail2ban"))
     }
@@ -201,6 +203,7 @@ impl SystemPaths {
 /// ```
 pub struct Fail2Ban {
     runner: Box<dyn command::Runner>,
+    #[expect(dead_code, reason = "kept for future path-aware operations")]
     paths: SystemPaths,
     dry_run: bool,
 }
@@ -266,6 +269,7 @@ impl Fail2Ban {
     /// Set dry-run mode.
     ///
     /// When enabled, commands are logged but not executed.
+    #[must_use]
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
@@ -316,10 +320,11 @@ impl Fail2Ban {
     /// Individual check failures appear as [`report::Finding`] values in the
     /// report.
     #[cfg(feature = "doctor")]
-    pub fn doctor(
-        &self,
-        scope: doctor::DoctorScope,
-    ) -> Result<report::DoctorReport> {
+    #[allow(
+        clippy::needless_pass_by_value,
+        reason = "matches by-value doctor() API across toride crates"
+    )]
+    pub fn doctor(&self, scope: doctor::DoctorScope) -> Result<report::DoctorReport> {
         let doc = doctor::Doctor::new(self.runner.as_ref());
         doc.run(&scope)
     }

@@ -56,7 +56,8 @@ fn parse_line_should_parse_bracketed_host_and_port() {
 
 #[test]
 fn parse_line_should_parse_ipv6_bracketed_host() {
-    let line = "[::1]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio";
+    let line =
+        "[::1]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIB9dG4kjRhQTtWTVzd2t27+t0DEHBPW7iOD23TUiYLio";
     let entry = parse_line(line, 7).unwrap();
     assert_eq!(entry.hosts, vec!["[::1]:22"]);
 }
@@ -110,7 +111,8 @@ fn parse_line_whitespace_only_errors() {
 
 #[test]
 fn parse_line_preserves_line_number() {
-    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let line =
+        "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 42).unwrap();
     assert_eq!(entry.line_number, 42);
 }
@@ -127,7 +129,8 @@ fn parse_line_multiple_hosts() {
 
 #[test]
 fn parse_line_negated_host_pattern() {
-    let line = "!badhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let line =
+        "!badhost ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
     assert_eq!(entry.hosts, vec!["!badhost"]);
 }
@@ -145,7 +148,8 @@ fn parse_line_glob_pattern() {
 
 #[test]
 fn parse_line_with_trailing_whitespace() {
-    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl   ";
+    let line =
+        "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl   ";
     let entry = parse_line(line.trim(), 1).unwrap();
     assert_eq!(entry.key_type, "ssh-ed25519");
 }
@@ -153,7 +157,8 @@ fn parse_line_with_trailing_whitespace() {
 #[test]
 fn parse_line_with_empty_comment() {
     // Comment field that's just whitespace after the key
-    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl ";
+    let line =
+        "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl ";
     let entry = parse_line(line.trim(), 1).unwrap();
     // Empty comment should be None
     assert!(entry.comment.is_none() || entry.comment.as_deref() == Some(""));
@@ -161,14 +166,16 @@ fn parse_line_with_empty_comment() {
 
 #[test]
 fn parse_line_ipv6_address() {
-    let line = "[::1]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let line =
+        "[::1]:22 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
     assert_eq!(entry.hosts, vec!["[::1]:22"]);
 }
 
 #[test]
 fn parse_line_ipv6_address_no_port() {
-    let line = "::1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let line =
+        "::1 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
     assert_eq!(entry.hosts, vec!["::1"]);
 }
@@ -184,7 +191,10 @@ fn parse_line_wildcard_host() {
 fn parse_line_with_comment_containing_spaces() {
     let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl this is a long comment with spaces";
     let entry = parse_line(line, 1).unwrap();
-    assert_eq!(entry.comment.as_deref(), Some("this is a long comment with spaces"));
+    assert_eq!(
+        entry.comment.as_deref(),
+        Some("this is a long comment with spaces")
+    );
 }
 
 #[test]
@@ -224,7 +234,8 @@ fn parse_line_with_very_long_base64() {
 #[test]
 fn parse_line_with_base64_padding() {
     // Base64 padding characters
-    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl==";
+    let line =
+        "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl==";
     let entry = parse_line(line, 1).unwrap();
     assert!(entry.public_key.ends_with("=="));
 }
@@ -245,7 +256,8 @@ fn parse_line_with_comment_containing_hash() {
 
 #[test]
 fn parse_line_with_host_containing_underscore() {
-    let line = "my_host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let line =
+        "my_host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
     assert_eq!(entry.hosts, vec!["my_host"]);
 }
@@ -267,7 +279,8 @@ fn parse_line_with_port_in_brackets() {
 #[test]
 fn parse_line_preserves_key_type_string() {
     // The key_type field should be the raw string, not a parsed enum
-    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let line =
+        "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
     assert_eq!(entry.key_type, "ssh-ed25519");
 }
@@ -308,7 +321,8 @@ fn parse_line_line_number_preserved() {
 #[test]
 fn parse_line_with_revoked_key_id() {
     // A key ID that happens to be "REVOKED" should not be skipped
-    let line = "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+    let line =
+        "host ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
     assert_eq!(entry.key_type, "ssh-ed25519");
 }
@@ -344,7 +358,10 @@ fn parse_line_rsa_8192_key() {
 #[test]
 fn parse_line_very_long_base64_preserves_all_chars() {
     // Ensure no characters are dropped or corrupted in a very long key.
-    let key_data = format!("AAAAC3NzaC1lZDI1NTE5AAAA{}", "AaBbCcDdEeFf0123456789".repeat(500));
+    let key_data = format!(
+        "AAAAC3NzaC1lZDI1NTE5AAAA{}",
+        "AaBbCcDdEeFf0123456789".repeat(500)
+    );
     let line = format!("host ssh-ed25519 {key_data}");
     let entry = parse_line(&line, 1).unwrap();
     assert_eq!(entry.public_key, key_data);

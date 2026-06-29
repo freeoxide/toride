@@ -93,9 +93,9 @@ impl UserSpec {
     /// Defaults:
     /// - shell: `/usr/bin/bash`
     /// - groups: empty
-    /// - sudo_access: `false`
-    /// - totp_enabled: `false`
-    /// - password_policy: [`PasswordPolicy::default`]
+    /// - `sudo_access`: `false`
+    /// - `totp_enabled`: `false`
+    /// - `password_policy`: [`PasswordPolicy::default`]
     #[must_use]
     pub fn new(username: impl Into<String>) -> Self {
         Self {

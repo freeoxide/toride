@@ -11,6 +11,43 @@ use std::str::FromStr;
 use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
+// Allowlist validators
+// ---------------------------------------------------------------------------
+
+/// Allowed characters for a job name: `[A-Za-z0-9._-]`.
+///
+/// Job names are interpolated into root-owned systemd unit filenames and
+/// `SHELL=/bin/sh` cron lines, so any character outside this safe set is
+/// rejected to prevent injection. Implemented without `regex` so it is
+/// available on the always-compiled path (no `config` feature required).
+const NAME_EXTRA: &[char] = &['.', '_', '-'];
+
+/// Returns `true` when `name` matches the safe job-name allowlist
+/// `^[A-Za-z0-9._-]+$` (non-empty, ASCII alphanumeric or `.` `_` `-`).
+pub fn is_valid_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || NAME_EXTRA.contains(&c))
+}
+
+/// Allowed characters for a single cron time-field token: `[0-9*/,-]`.
+const CRON_FIELD_EXTRA: &[char] = &['*', '/', ',', '-'];
+
+/// Returns `true` when `field` matches the safe cron-field allowlist
+/// `^[0-9*/,-]+$` (non-empty, digits or `*` `/` `,` `-`).
+///
+/// This is a *lexical* guard only — it rejects characters that could break out
+/// of the cron line (`;`, whitespace, shell metacharacters, etc.). Range/step
+/// validity is still checked by [`Schedule::validate`] / `cron_to_oncalendar`.
+pub fn is_valid_cron_field(field: &str) -> bool {
+    !field.is_empty()
+        && field
+            .chars()
+            .all(|c| c.is_ascii_digit() || CRON_FIELD_EXTRA.contains(&c))
+}
+
+// ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
 
@@ -169,6 +206,17 @@ impl Schedule {
                 self.cron,
             )));
         }
+        // Lexical allowlist on each field: reject any token carrying shell or
+        // structure-breaking characters before it is interpolated into a root
+        // cron line.
+        for field in &parts {
+            if !is_valid_cron_field(field) {
+                return Err(Error::ScheduleError(format!(
+                    "cron field {:?} contains characters outside [0-9*/,-] in {:?}",
+                    field, self.cron,
+                )));
+            }
+        }
         Ok(())
     }
 }
@@ -284,6 +332,16 @@ impl BackupSpec {
             ));
         }
 
+        // The job name is interpolated into root cron lines and systemd unit
+        // filenames, so it must match the safe allowlist `^[A-Za-z0-9._-]+$`.
+        if !is_valid_name(&self.name) {
+            return Err(Error::ConfigParse(format!(
+                "backup spec name {:?} must match ^[A-Za-z0-9._-]+$ \
+                 (no spaces, shell, or path separators)",
+                self.name,
+            )));
+        }
+
         if self.sources.is_empty() {
             return Err(Error::ConfigParse(format!(
                 "backup spec {:?}: sources must not be empty",
@@ -309,5 +367,91 @@ impl BackupSpec {
         }
 
         Ok(())
+    }
+}
+
+// ===========================================================================
+// Tests
+// ===========================================================================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn name_allowlist_accepts_safe_names() {
+        assert!(is_valid_name("nightly"));
+        assert!(is_valid_name("db.v2"));
+        assert!(is_valid_name("my_job-1"));
+        assert!(is_valid_name("A.B_C-D"));
+    }
+
+    #[test]
+    fn name_allowlist_rejects_unsafe_names() {
+        assert!(!is_valid_name(""));
+        assert!(!is_valid_name("a b"));
+        assert!(!is_valid_name("a;b"));
+        assert!(!is_valid_name("../etc"));
+        assert!(!is_valid_name("a`b"));
+        assert!(!is_valid_name("a$b"));
+        assert!(!is_valid_name("café")); // non-ASCII
+    }
+
+    #[test]
+    fn cron_field_allowlist_accepts_safe_tokens() {
+        assert!(is_valid_cron_field("0"));
+        assert!(is_valid_cron_field("*"));
+        assert!(is_valid_cron_field("*/15"));
+        assert!(is_valid_cron_field("1,15"));
+        assert!(is_valid_cron_field("1-5"));
+        assert!(is_valid_cron_field("1-5/2"));
+    }
+
+    #[test]
+    fn cron_field_allowlist_rejects_shell_metacharacters() {
+        assert!(!is_valid_cron_field(""));
+        assert!(!is_valid_cron_field("0 2")); // whitespace
+        assert!(!is_valid_cron_field("$(x)"));
+        assert!(!is_valid_cron_field("; rm"));
+        assert!(!is_valid_cron_field("1|2"));
+    }
+
+    fn spec_with_name(name: &str) -> BackupSpec {
+        BackupSpec {
+            name: name.into(),
+            backend: Backend::Restic,
+            repository: PathBuf::from("/srv/repo"),
+            sources: vec![PathBuf::from("/etc")],
+            schedule: Schedule::new("0 2 * * *"),
+            retention: RetentionPolicy::default_policy(),
+            encryption: Encryption::None,
+            password_command: None,
+            exclude_patterns: vec![],
+            tags: vec![],
+            extra_env: std::collections::HashMap::new(),
+        }
+    }
+
+    #[test]
+    fn validate_rejects_unsafe_name() {
+        let err = spec_with_name("nightly; rm -rf /").validate().unwrap_err();
+        assert!(matches!(err, Error::ConfigParse(_)));
+        let err = spec_with_name("../etc/passwd").validate().unwrap_err();
+        assert!(matches!(err, Error::ConfigParse(_)));
+    }
+
+    #[test]
+    fn schedule_validate_rejects_shell_metacharacters_in_field() {
+        let err = Schedule::new("0 2 * * * ; rm -rf /")
+            .validate()
+            .unwrap_err();
+        assert!(matches!(err, Error::ScheduleError(_)));
+    }
+
+    #[test]
+    fn schedule_validate_accepts_list_range_and_step() {
+        Schedule::new("*/15 2 1,15 * 1-5")
+            .validate()
+            .expect("list/range/step cron is valid");
     }
 }

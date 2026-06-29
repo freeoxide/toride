@@ -122,7 +122,11 @@ fn parse_only_comments() {
     let input = "# comment 1\n# comment 2\n";
     let ast = parse(input);
     assert_eq!(ast.nodes.len(), 2);
-    assert!(ast.nodes.iter().all(|n| matches!(n, ConfigNode::Comment { .. })));
+    assert!(
+        ast.nodes
+            .iter()
+            .all(|n| matches!(n, ConfigNode::Comment { .. }))
+    );
 }
 
 #[test]
@@ -164,15 +168,13 @@ fn parse_directive_with_tab_separator() {
     let input = "Host example\n\tHostName example.com\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock(b) => {
-            match &b.nodes[0] {
-                ConfigNode::Directive(d) => {
-                    assert_eq!(d.keyword, "HostName");
-                    assert_eq!(d.indent, "\t");
-                }
-                _ => panic!("expected Directive"),
+        ConfigNode::HostBlock(b) => match &b.nodes[0] {
+            ConfigNode::Directive(d) => {
+                assert_eq!(d.keyword, "HostName");
+                assert_eq!(d.indent, "\t");
             }
-        }
+            _ => panic!("expected Directive"),
+        },
         _ => panic!("expected HostBlock"),
     }
 }
@@ -492,14 +494,12 @@ fn parse_directive_with_very_long_value() {
     let input = format!("Host example\n    HostName {long_value}\n");
     let ast = parse(&input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock(b) => {
-            match &b.nodes[0] {
-                ConfigNode::Directive(d) => {
-                    assert_eq!(d.value.len(), 100000);
-                }
-                _ => panic!("expected Directive"),
+        ConfigNode::HostBlock(b) => match &b.nodes[0] {
+            ConfigNode::Directive(d) => {
+                assert_eq!(d.value.len(), 100000);
             }
-        }
+            _ => panic!("expected Directive"),
+        },
         _ => panic!("expected HostBlock"),
     }
 }
@@ -544,14 +544,12 @@ fn parse_comment_with_hash_in_value() {
     let input = "Host example\n    # This is a comment with # inside\n";
     let ast = parse(input);
     match &ast.nodes[0] {
-        ConfigNode::HostBlock(b) => {
-            match &b.nodes[0] {
-                ConfigNode::Comment { text, .. } => {
-                    assert!(text.contains('#'));
-                }
-                _ => panic!("expected Comment"),
+        ConfigNode::HostBlock(b) => match &b.nodes[0] {
+            ConfigNode::Comment { text, .. } => {
+                assert!(text.contains('#'));
             }
-        }
+            _ => panic!("expected Comment"),
+        },
         _ => panic!("expected HostBlock"),
     }
 }
@@ -597,7 +595,8 @@ fn round_trip_preserves_mixed_separators() {
 
 #[test]
 fn round_trip_preserves_multiple_blank_lines() {
-    let input = "Host example\n    HostName example.com\n\n\n\nHost other\n    HostName other.com\n";
+    let input =
+        "Host example\n    HostName example.com\n\n\n\nHost other\n    HostName other.com\n";
     let ast = parse(input);
     let output = ast.to_string_lossless();
     assert_eq!(output, input);
@@ -633,7 +632,11 @@ fn parse_only_comments_roundtrip() {
     let input = "# comment 1\n# comment 2\n";
     let ast = parse(input);
     assert_eq!(ast.nodes.len(), 2);
-    assert!(ast.nodes.iter().all(|n| matches!(n, ConfigNode::Comment { .. })));
+    assert!(
+        ast.nodes
+            .iter()
+            .all(|n| matches!(n, ConfigNode::Comment { .. }))
+    );
     assert_eq!(ast.to_string_lossless(), input);
 }
 

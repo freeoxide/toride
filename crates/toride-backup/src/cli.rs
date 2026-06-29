@@ -15,11 +15,7 @@ use crate::restore::RestoreOptions;
 #[command(name = "toride-backup", about = "Backup scheduling and management")]
 pub struct Cli {
     /// Path to configuration file.
-    #[arg(
-        short,
-        long,
-        default_value = "~/.config/toride/backup/config.json"
-    )]
+    #[arg(short, long, default_value = "~/.config/toride/backup/config.json")]
     pub config: PathBuf,
 
     /// Enable verbose logging.
@@ -131,7 +127,7 @@ impl Cli {
     /// method. Spec-bearing variants load the job from the config file given by
     /// `--config` (defaulting to the XDG path) and look it up by name.
     ///
-    /// This is the seam used by the FakeRunner-backed tests: the test builds a
+    /// This is the seam used by the `FakeRunner`-backed tests: the test builds a
     /// `BackupClient` wired to a shared fake runner and asserts the dispatched
     /// command.
     ///
@@ -186,7 +182,7 @@ impl Cli {
             }
             Commands::Doctor { scope } => {
                 let scope = parse_doctor_scope(scope.as_deref())?;
-                let report = client.doctor(scope)?;
+                let report = client.doctor(&scope)?;
                 println!("{report:?}");
                 Ok(())
             }
@@ -226,9 +222,9 @@ fn lookup_job<'c>(
     config: &'c crate::config::BackupConfig,
     name: &str,
 ) -> crate::Result<&'c crate::spec::BackupSpec> {
-    config.get_job(name).ok_or_else(|| {
-        crate::Error::ConfigParse(format!("no backup job named {name:?} in config"))
-    })
+    config
+        .get_job(name)
+        .ok_or_else(|| crate::Error::ConfigParse(format!("no backup job named {name:?} in config")))
 }
 
 /// Map the `--scope <string>` CLI argument onto a [`DoctorScope`].
@@ -267,8 +263,8 @@ mod tests {
     use super::*;
     use crate::client::BackupClient;
     use crate::spec::{Backend, Encryption, RetentionPolicy, Schedule};
-    use assert_fs::fixture::FileTouch;
     use assert_fs::NamedTempFile;
+    use assert_fs::fixture::FileTouch;
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::Arc;
@@ -311,7 +307,7 @@ mod tests {
     /// Verbatim `restic backup --json` summary record + snapshots/stats arrays,
     /// matching the documented restic scripting envelope so the backup facade
     /// assembles a truthful report.
-    /// Source: https://restic.readthedocs.io/en/stable/075_scripting.html
+    /// Source: <https://restic.readthedocs.io/en/stable/075_scripting.html>
     const RESTIC_SUMMARY: &str = r#"{"message_type":"summary","files_new":3,"files_changed":2,"files_unmodified":5,"dirs_new":1,"dirs_changed":0,"dirs_unmodified":4,"data_blobs":6,"tree_blobs":2,"data_added":2048,"data_added_packed":1024,"total_files_processed":10,"total_bytes_processed":4096,"total_duration":1.5,"snapshot_id":"5111c8ae5a5e3e2e8b6b4f0c5b8e3a2d1c9f0a1b2c3d4e5f6a7b8c9d0e1f2a3"}"#;
     const RESTIC_SNAPSHOTS: &str = r#"[{"time":"2024-09-18T12:34:56Z","tree":"x","paths":["/etc"],"hostname":"h","username":"u","tags":[],"id":"5111c8ae5a5e3e2e8b6b4f0c5b8e3a2d1c9f0a1b2c3d4e5f6a7b8c9d0e1f2a3","short_id":"5111c8ae"}]"#;
     const RESTIC_STATS: &str = r#"{"total_size":1048576,"total_file_count":42,"total_blob_count":100,"snapshots_count":1,"total_uncompressed_size":2000000,"compression_ratio":1.6,"compression_progress":100,"compression_space_saving":38}"#;
@@ -323,7 +319,7 @@ mod tests {
     /// `Cli::parse_from(["toride-backup", "--config", <path>, "backup", "nightly"])`
     /// must parse into `Commands::Backup { name: "nightly" }`, and
     /// `run_with_client` must dispatch to `BackupClient::backup`, which issues
-    /// the real `restic backup --json` command. We assert the FakeRunner
+    /// the real `restic backup --json` command. We assert the `FakeRunner`
     /// observed exactly that command (program + subcommand + repo flag +
     /// password-command flag + sources), proving the dispatch is real glue, not
     /// a stub.
@@ -431,7 +427,10 @@ mod tests {
             Ok(DoctorScope::Integrity(_))
         ));
         assert!(
-            matches!(parse_doctor_scope(Some("bogus")), Err(crate::Error::ConfigParse(_))),
+            matches!(
+                parse_doctor_scope(Some("bogus")),
+                Err(crate::Error::ConfigParse(_))
+            ),
             "unknown scope label must be a ConfigParse error"
         );
     }

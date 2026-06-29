@@ -59,13 +59,26 @@ impl AnimatedFloats {
     /// on the selected item immediately on the single redraw a keypress
     /// triggers — otherwise the value would be frozen mid-transition.
     ///
-    /// # Panics
-    ///
-    /// Panics if `targets.len() != self.values.len()`.
+    /// A render path must never panic on data, so a `targets` slice shorter
+    /// than `self.values` is tolerated: each value is snapped to its matching
+    /// target when one exists and left untouched otherwise (the mismatch is
+    /// debug-logged). This matches [`tick`](Self::tick)'s per-index stepping
+    /// rather than asserting equal length.
     pub fn snap_to_targets(&mut self, targets: &[f32]) {
-        assert_eq!(targets.len(), self.values.len(), "targets length mismatch");
-        for (slot, &target) in self.values.iter_mut().zip(targets.iter()) {
-            *slot = target;
+        if targets.len() != self.values.len() {
+            // Degrade gracefully instead of panicking inside a render path —
+            // a transient length mismatch (e.g. a sidebar resized between
+            // frames) must never crash the TUI.
+            tracing::debug!(
+                values = self.values.len(),
+                targets = targets.len(),
+                "AnimatedFloats::snap_to_targets: length mismatch; snapping only overlapping indices"
+            );
+        }
+        for (i, slot) in self.values.iter_mut().enumerate() {
+            if let Some(&target) = targets.get(i) {
+                *slot = target;
+            }
         }
         self.last_tick = Instant::now();
     }
@@ -120,16 +133,16 @@ mod tests {
     fn new_initializes_all_values() {
         let af = AnimatedFloats::new(3, 0.5);
         assert_eq!(af.len(), 3);
-        assert_eq!(af.get(0), 0.5);
-        assert_eq!(af.get(1), 0.5);
-        assert_eq!(af.get(2), 0.5);
+        assert!((af.get(0) - 0.5).abs() < f32::EPSILON);
+        assert!((af.get(1) - 0.5).abs() < f32::EPSILON);
+        assert!((af.get(2) - 0.5).abs() < f32::EPSILON);
     }
 
     #[test]
     fn set_updates_value() {
         let mut af = AnimatedFloats::new(3, 0.0);
         af.set(1, 1.0);
-        assert_eq!(af.get(1), 1.0);
+        assert!((af.get(1) - 1.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -141,7 +154,7 @@ mod tests {
     #[test]
     fn get_returns_zero_for_out_of_bounds() {
         let af = AnimatedFloats::new(2, 0.5);
-        assert_eq!(af.get(99), 0.0);
+        assert!((af.get(99) - 0.0).abs() < f32::EPSILON);
     }
 
     #[test]
@@ -181,10 +194,33 @@ mod tests {
         // (no lerp), so a highlight on a single redraw is correct, not mid-fade.
         let mut af = AnimatedFloats::new(3, 0.0);
         af.snap_to_targets(&[0.0, 1.0, 0.5]);
-        assert_eq!(af.get(0), 0.0);
-        assert_eq!(af.get(1), 1.0);
-        assert_eq!(af.get(2), 0.5);
+        assert!((af.get(0) - 0.0).abs() < f32::EPSILON);
+        assert!((af.get(1) - 1.0).abs() < f32::EPSILON);
+        assert!((af.get(2) - 0.5).abs() < f32::EPSILON);
         // And it reports settled against those targets.
         assert!(af.is_settled(&[0.0, 1.0, 0.5], 0.001));
+    }
+
+    #[test]
+    fn snap_to_targets_tolerates_length_mismatch_without_panic() {
+        // A render path must never panic on data: a targets slice shorter or
+        // longer than the values must degrade gracefully (snap the overlap,
+        // leave the rest untouched) rather than aborting the TUI.
+        let mut af = AnimatedFloats::new(3, 0.2);
+        // Shorter targets — index 2 has no target, must stay at its old value.
+        af.snap_to_targets(&[0.0, 1.0]);
+        assert!((af.get(0) - 0.0).abs() < f32::EPSILON);
+        assert!((af.get(1) - 1.0).abs() < f32::EPSILON);
+        assert!(
+            (af.get(2) - 0.2).abs() < f32::EPSILON,
+            "value with no target must be untouched"
+        );
+
+        // Longer targets — extras are simply ignored (no panic, no growth).
+        af.snap_to_targets(&[0.5, 0.5, 0.5, 9.0, 9.0]);
+        assert_eq!(af.len(), 3, "values vec must not grow");
+        assert!((af.get(0) - 0.5).abs() < f32::EPSILON);
+        assert!((af.get(1) - 0.5).abs() < f32::EPSILON);
+        assert!((af.get(2) - 0.5).abs() < f32::EPSILON);
     }
 }

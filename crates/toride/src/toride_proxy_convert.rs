@@ -37,9 +37,7 @@ fn severity_str(s: toride_proxy::doctor::DoctorSeverity) -> &'static str {
 /// Every finding maps 1:1. An empty `id` or `title` is logged and the entry is
 /// still produced with a placeholder so the row count matches the backend (the
 /// operator can see "something" even if the finding is malformed).
-pub fn convert_findings(
-    findings: Vec<toride_proxy::doctor::DoctorFinding>,
-) -> Vec<FindingEntry> {
+pub fn convert_findings(findings: Vec<toride_proxy::doctor::DoctorFinding>) -> Vec<FindingEntry> {
     findings
         .into_iter()
         .map(|f| {
@@ -106,17 +104,12 @@ pub fn convert_server_blocks(
 /// Each certificate maps 1:1 to a row carrying domain, issuer, expiry
 /// timestamp, and days remaining. A certificate with an empty domain is logged
 /// and produced with a placeholder so the operator sees the row.
-pub fn convert_certificates(
-    certs: Vec<toride_proxy::report::CertInfo>,
-) -> Vec<CertEntry> {
+pub fn convert_certificates(certs: Vec<toride_proxy::report::CertInfo>) -> Vec<CertEntry> {
     certs
         .into_iter()
         .map(|c| {
             if c.domain.is_empty() {
-                tracing::warn!(
-                    "proxy certificate with empty domain: issuer={:?}",
-                    c.issuer
-                );
+                tracing::warn!("proxy certificate with empty domain: issuer={:?}", c.issuer);
             }
             CertEntry {
                 domain: if c.domain.is_empty() {
@@ -219,9 +212,8 @@ mod tests {
     #[test]
     fn convert_server_blocks_tls_flag() {
         use toride_proxy::spec::TlsConfig;
-        let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000").with_tls(
-            TlsConfig::new("example.com", "/cert.pem", "/key.pem"),
-        );
+        let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000")
+            .with_tls(TlsConfig::new("example.com", "/cert.pem", "/key.pem"));
         let entries = convert_server_blocks(vec![block]);
         assert!(entries[0].tls_enabled);
     }
@@ -236,8 +228,20 @@ mod tests {
     #[test]
     fn convert_certificates_maps_fields() {
         let certs = vec![
-            CertInfo::new("example.com", "Let's Encrypt", "2024-01-01", "2024-04-01", 30),
-            CertInfo::new("expired.com", "Let's Encrypt", "2023-01-01", "2023-04-01", -5),
+            CertInfo::new(
+                "example.com",
+                "Let's Encrypt",
+                "2024-01-01",
+                "2024-04-01",
+                30,
+            ),
+            CertInfo::new(
+                "expired.com",
+                "Let's Encrypt",
+                "2023-01-01",
+                "2023-04-01",
+                -5,
+            ),
         ];
         let entries = convert_certificates(certs);
         assert_eq!(entries.len(), 2);

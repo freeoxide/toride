@@ -4,10 +4,15 @@
 //! suitable for logging and diagnostics. Sensitive flag values are replaced
 //! with `"***"` — the actual child process arguments are never modified.
 
+use crate::output::CommandOutput;
 use crate::redact::redact_args;
 use crate::spec::CommandSpec;
 
 /// Default environment variable key substrings whose values should be redacted.
+///
+/// Matching is case-insensitive: the key is upper-cased before checking for
+/// any of these (already upper-case) substrings, so e.g. `ghToken`, `auth`,
+/// and `MY_credential` all match.
 pub const REDACT_ENV_KEYS: &[&str] = &[
     "TOKEN",
     "SECRET",
@@ -18,6 +23,12 @@ pub const REDACT_ENV_KEYS: &[&str] = &[
     "PRIVATE_KEY",
     "PASSPHRASE",
     "PASSCOMMAND",
+    "AUTH",
+    "BEARER",
+    "GH",
+    "CREDENTIAL",
+    "ACCESS_KEY",
+    "ACCESSKEY",
 ];
 
 /// Produce a redacted display string for a command invocation.
@@ -205,38 +216,75 @@ pub const STDERR_TRUNCATION_MARKER: &str = "...[stderr truncated]";
 /// assert!(scrubbed.contains("***"));
 /// ```
 pub fn scrub_stderr(spec: &CommandSpec, stderr: &str) -> String {
-    let mut scrubbed = stderr.to_owned();
+    let scrubbed = redact_output(spec, stderr);
+    cap_stderr(&scrubbed)
+}
 
-    if spec.redact {
-        // Collect the secret values to scrub: argument values following a
-        // sensitive flag, `--flag=value` secret values, environment values
-        // whose key matches a redaction pattern, and secret-bearing values
-        // carried in stdin (e.g. a WireGuard private key piped to `wg pubkey`
-        // or embedded in a `wg setconf`/`wg syncconf` config blob).
-        let mut secrets: Vec<String> = Vec::new();
-        collect_arg_secret_values(&spec.args, &mut secrets);
-        for (key, value) in &spec.env {
-            if REDACT_ENV_KEYS
-                .iter()
-                .any(|pattern| key.to_uppercase().contains(pattern))
-            {
-                secrets.push(value.clone());
-            }
-        }
-        if let Some(ref stdin) = spec.stdin {
-            collect_stdin_secret_values(stdin, &mut secrets);
-        }
+/// Return a copy of `output` with secret values scrubbed from both stdout and
+/// stderr when `spec.redact()` is `true`, honoring the redact flag on the
+/// *returned* captured output (not just error variants).
+///
+/// Uses [`redact_output`] (value replacement only — no length cap), so a
+/// successful captured stdout/stderr stream never carries a token or passphrase
+/// a failing command would have had scrubbed. The exit code and `success` flag
+/// are preserved unchanged. When `spec.redact()` is `false`, the output is
+/// returned unchanged.
+pub fn scrub_output(spec: &CommandSpec, output: &CommandOutput) -> CommandOutput {
+    if !spec.redact {
+        return output.clone();
+    }
+    CommandOutput::new(
+        redact_output(spec, &output.stdout),
+        redact_output(spec, &output.stderr),
+        output.exit_code,
+    )
+}
 
-        // Longest-first so a longer secret shadows a shorter prefix overlap.
-        secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
-        for secret in secrets {
-            if !secret.is_empty() {
-                scrubbed = scrubbed.replace(&secret, "***");
-            }
-        }
+/// Replace secret *values* in `text` with `"***"`, honoring `spec.redact`.
+///
+/// This is the value-replacement core shared by [`scrub_stderr`] (which then
+/// applies the error-variant length cap) and the streaming path (which must
+/// redact each line/chunk without truncating live output). It collects the
+/// same secret sources as [`scrub_stderr`] — argument values following a
+/// sensitive flag, `--flag=value` secret values, environment values whose key
+/// matches a redaction pattern, and secret-bearing values carried in stdin —
+/// and replaces each occurrence with `"***"`, longest-first so a longer secret
+/// shadows a shorter prefix overlap.
+///
+/// Returns the text unchanged when `spec.redact` is `false`.
+pub fn redact_output(spec: &CommandSpec, text: &str) -> String {
+    if !spec.redact {
+        return text.to_owned();
     }
 
-    cap_stderr(&scrubbed)
+    // Collect the secret values to scrub: argument values following a
+    // sensitive flag, `--flag=value` secret values, environment values
+    // whose key matches a redaction pattern, and secret-bearing values
+    // carried in stdin (e.g. a WireGuard private key piped to `wg pubkey`
+    // or embedded in a `wg setconf`/`wg syncconf` config blob).
+    let mut secrets: Vec<String> = Vec::new();
+    collect_arg_secret_values(&spec.args, &mut secrets);
+    for (key, value) in &spec.env {
+        if REDACT_ENV_KEYS
+            .iter()
+            .any(|pattern| key.to_uppercase().contains(pattern))
+        {
+            secrets.push(value.clone());
+        }
+    }
+    if let Some(ref stdin) = spec.stdin {
+        collect_stdin_secret_values(stdin, &mut secrets);
+    }
+
+    // Longest-first so a longer secret shadows a shorter prefix overlap.
+    secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    let mut scrubbed = text.to_owned();
+    for secret in secrets {
+        if !secret.is_empty() {
+            scrubbed = scrubbed.replace(&secret, "***");
+        }
+    }
+    scrubbed
 }
 
 /// Collect the *value* tokens that follow a sensitive flag, plus the value
@@ -275,14 +323,8 @@ fn collect_arg_secret_values(args: &[String], out: &mut Vec<String>) {
 /// intent of [`REDACT_ENV_KEYS`] for the free-form stdin stream (e.g. a
 /// `WireGuard` `wg setconf`/`wg syncconf` config blob carrying
 /// `PrivateKey = <val>`).
-const STDIN_SECRET_NAME_KEYS: &[&str] = &[
-    "KEY",
-    "SECRET",
-    "PASSWORD",
-    "PASSWD",
-    "PASSPHRASE",
-    "TOKEN",
-];
+const STDIN_SECRET_NAME_KEYS: &[&str] =
+    &["KEY", "SECRET", "PASSWORD", "PASSWD", "PASSPHRASE", "TOKEN"];
 
 /// Collect secret values carried in [`CommandSpec::stdin`] into `out`.
 ///
@@ -334,10 +376,7 @@ fn collect_stdin_secret_values(stdin: &str, out: &mut Vec<String>) {
     // found_assignment stays false; a multi-line config blob has >1 non-empty
     // line (and is handled by the assignment loop above), so it's excluded.
     if !found_assignment {
-        let non_empty: Vec<&str> = stdin
-            .lines()
-            .filter(|l| !l.trim().is_empty())
-            .collect();
+        let non_empty: Vec<&str> = stdin.lines().filter(|l| !l.trim().is_empty()).collect();
         if non_empty.len() == 1 {
             out.push(non_empty[0].trim().to_owned());
         }
@@ -440,10 +479,7 @@ mod tests {
         let spec = CommandSpec::new("curl")
             .args(["--token", "secret", "url"])
             .redact(true);
-        assert_eq!(
-            redacted_args_vec(&spec),
-            vec!["--token", "***", "url"]
-        );
+        assert_eq!(redacted_args_vec(&spec), vec!["--token", "***", "url"]);
     }
 
     #[test]
@@ -536,9 +572,8 @@ mod tests {
         // Mirrors `wg setconf wg0 /dev/stdin` with a config carrying a private
         // key (toride-wireguard/src/client.rs `setconf_spec`). The spec is
         // built `redact(true)`, promising the secret is scrubbed from errors.
-        let config = format!(
-            "[Interface]\nPrivateKey = {WG_TEST_PRIVATE_KEY}\nListenPort = 51820\n"
-        );
+        let config =
+            format!("[Interface]\nPrivateKey = {WG_TEST_PRIVATE_KEY}\nListenPort = 51820\n");
         let spec = CommandSpec::new("wg")
             .args(["setconf", "wg0", "/dev/stdin"])
             .stdin(config)

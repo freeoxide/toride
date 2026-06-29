@@ -1,5 +1,13 @@
 use std::time::Instant;
 
+use crate::action::Action;
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
+use crate::ui::responsive::{self, Viewport};
+use crate::ui::screens::AppScreen;
+use crate::ui::screens::base::ScreenBase;
+use crate::ui::theme::Palette;
+use crate::ui::widgets::gradient::AnimatedBorder;
+use crate::version;
 use crossterm::event::{KeyCode, MouseEvent};
 use ratatui::{
     Frame,
@@ -8,14 +16,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use crate::action::Action;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
-use crate::ui::responsive::{self, Viewport};
-use crate::ui::screens::AppScreen;
-use crate::ui::theme::Palette;
-use crate::ui::screens::base::ScreenBase;
-use crate::ui::widgets::gradient::AnimatedBorder;
-use crate::version;
 
 // ANSI Shadow figlet — matches screens.jsx LOGO constant exactly
 const LOGO: &[&str] = &[
@@ -27,6 +27,7 @@ const LOGO: &[&str] = &[
     "   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝ ╚══════╝",
 ];
 
+/// Splash screen with an animated border, shimmer logo, and a button row.
 pub struct WelcomeScreen {
     base: ScreenBase,
     border: AnimatedBorder,
@@ -82,6 +83,7 @@ impl AppScreen for WelcomeScreen {
 }
 
 impl WelcomeScreen {
+    /// Construct a new welcome screen with the default button row.
     #[must_use]
     pub fn new() -> Self {
         let buttons = vec![
@@ -260,7 +262,7 @@ mod tests {
         // invalidate_cache should run without panicking
         screen.invalidate_cache();
         // Screen should still be functional after invalidation
-        assert_eq!(screen.needs_animation(), true);
+        assert!(screen.needs_animation());
     }
 
     #[test]

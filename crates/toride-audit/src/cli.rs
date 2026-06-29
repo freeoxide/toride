@@ -195,18 +195,20 @@ impl AuditCli {
                     Ok(())
                 }
                 RuleAction::Apply { preset } => {
-                    let preset = crate::auditd_presets::find_preset(preset).ok_or_else(|| {
-                        crate::Error::Other(format!("unknown preset: {preset}"))
-                    })?;
+                    let preset = crate::auditd_presets::find_preset(preset)
+                        .ok_or_else(|| crate::Error::Other(format!("unknown preset: {preset}")))?;
                     let content = preset.rules.join("\n") + "\n";
                     crate::auditd_rules::write_rule_file(audit.paths(), preset.id, &content)?;
-                    println!("applied preset '{}' ({} rules)", preset.id, preset.rules.len());
+                    println!(
+                        "applied preset '{}' ({} rules)",
+                        preset.id,
+                        preset.rules.len()
+                    );
                     Ok(())
                 }
                 RuleAction::Diff { preset } => {
-                    let preset = crate::auditd_presets::find_preset(preset).ok_or_else(|| {
-                        crate::Error::Other(format!("unknown preset: {preset}"))
-                    })?;
+                    let preset = crate::auditd_presets::find_preset(preset)
+                        .ok_or_else(|| crate::Error::Other(format!("unknown preset: {preset}")))?;
                     let current = match crate::auditd_rules::list_rule_files(audit.paths()) {
                         Ok(files) => crate::auditd_rules::merge_rules(&files).join("\n"),
                         Err(_) => String::new(),
@@ -295,8 +297,8 @@ impl AuditCli {
                         Ok(())
                     }
                     DaemonAction::Stop => {
-                        let spec = toride_runner::CommandSpec::new("systemctl")
-                            .args(["stop", "auditd"]);
+                        let spec =
+                            toride_runner::CommandSpec::new("systemctl").args(["stop", "auditd"]);
                         audit.runner().run_checked(&spec)?;
                         println!("auditd stopped");
                         Ok(())
@@ -370,9 +372,10 @@ mod tests {
     #[test]
     fn daemon_stop_dispatches_to_systemctl_stop() {
         let expected = toride_runner::CommandSpec::new("systemctl").args(["stop", "auditd"]);
-        let runner = FakeRunner::new()
-            .strict()
-            .respond(expected.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let runner = FakeRunner::new().strict().respond(
+            expected.clone(),
+            toride_runner::CommandOutput::from_stdout(""),
+        );
         let inspect = runner.clone();
         let audit = crate::Audit::with_runner(Box::new(runner));
         let cli: AuditCli = clap::Parser::try_parse_from(["toride-audit", "daemon", "stop"])
@@ -419,8 +422,8 @@ mod tests {
     fn doctor_dispatches_and_returns_report() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let paths = crate::AuditPaths::with_audit_dir(tmp.path().join("audit").into());
-        let audit = crate::Audit::with_runner(Box::new(FakeRunner::new()))
-            .with_paths_override(paths);
+        let audit =
+            crate::Audit::with_runner(Box::new(FakeRunner::new())).with_paths_override(paths);
         let cli: AuditCli =
             clap::Parser::try_parse_from(["toride-audit", "doctor"]).expect("parse doctor");
         cli.run_with_audit(&audit).expect("doctor dispatches");

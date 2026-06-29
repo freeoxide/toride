@@ -35,7 +35,10 @@ fn sample_action_config() -> ActionConfig {
     }
 }
 
-fn make_config_with_jail(log_path: std::path::PathBuf, jail_overrides: Option<JailConfig>) -> Fail2BanConfig {
+fn make_config_with_jail(
+    log_path: std::path::PathBuf,
+    jail_overrides: Option<JailConfig>,
+) -> Fail2BanConfig {
     let jail = jail_overrides.unwrap_or_else(|| sample_jail_config(log_path.clone()));
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), jail);
@@ -112,7 +115,10 @@ fn global_config_serialization_roundtrip() {
     let restored: GlobalConfig = serde_json::from_str(&json).unwrap();
     assert_eq!(restored.scan_interval, 30);
     assert_eq!(restored.log_level, "debug");
-    assert_eq!(restored.pid_file, Some(std::path::PathBuf::from("/var/run/f2b.pid")));
+    assert_eq!(
+        restored.pid_file,
+        Some(std::path::PathBuf::from("/var/run/f2b.pid"))
+    );
     assert_eq!(restored.max_history, 500);
 }
 
@@ -232,7 +238,10 @@ fn validate_rejects_zero_find_time() {
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("find_time must be > 0"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("find_time must be > 0"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[test]
@@ -249,7 +258,10 @@ fn validate_rejects_zero_max_retry() {
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("max_retry must be > 0"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("max_retry must be > 0"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[test]
@@ -262,7 +274,10 @@ fn validate_rejects_missing_log_file() {
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("log file does not exist"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("log file does not exist"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[test]
@@ -388,7 +403,10 @@ fn resolve_jail_preserves_log_path_and_pattern() {
     let config = make_config_with_jail(dir.path().join("custom.log"), Some(jail));
 
     let resolved = config.resolve_jail("sshd").unwrap();
-    assert_eq!(resolved.log_path, std::path::PathBuf::from(dir.path().join("custom.log")));
+    assert_eq!(
+        resolved.log_path,
+        std::path::PathBuf::from(dir.path().join("custom.log"))
+    );
     assert_eq!(resolved.pattern, r#"Invalid user .* from <HOST>"#);
 }
 
@@ -507,7 +525,10 @@ fn load_returns_error_for_missing_file() {
     let result = Fail2BanConfig::load(&missing);
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("Config file not found"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("Config file not found"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[test]
@@ -539,7 +560,10 @@ fn load_validates_after_deserialization() {
     let result = Fail2BanConfig::load(&config_path);
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("log file does not exist"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("log file does not exist"),
+        "unexpected error: {msg}"
+    );
 }
 
 #[test]
@@ -701,7 +725,10 @@ fn validate_rejects_zero_ban_time() {
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
-    assert!(msg.contains("ban_time must be > 0"), "unexpected error: {msg}");
+    assert!(
+        msg.contains("ban_time must be > 0"),
+        "unexpected error: {msg}"
+    );
 }
 
 // ---------------------------------------------------------------------------

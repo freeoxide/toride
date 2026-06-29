@@ -138,7 +138,11 @@ impl ServiceManager {
     /// `systemctl is-active <service>`.
     pub fn status(&self, service: &str) -> Result<ServiceStatus> {
         let output = self.run_systemctl(&["is-active", service])?;
-        let status: ServiceStatus = output.stdout.trim().parse().unwrap_or(ServiceStatus::Unknown);
+        let status: ServiceStatus = output
+            .stdout
+            .trim()
+            .parse()
+            .unwrap_or(ServiceStatus::Unknown);
         Ok(status)
     }
 
@@ -272,11 +276,29 @@ mod tests {
 
     #[test]
     fn service_status_from_str() {
-        assert_eq!("active".parse::<ServiceStatus>().unwrap(), ServiceStatus::Active);
-        assert_eq!("running".parse::<ServiceStatus>().unwrap(), ServiceStatus::Active);
-        assert_eq!("inactive".parse::<ServiceStatus>().unwrap(), ServiceStatus::Inactive);
-        assert_eq!("failed".parse::<ServiceStatus>().unwrap(), ServiceStatus::Failed);
-        assert_eq!("activating".parse::<ServiceStatus>().unwrap(), ServiceStatus::Activating);
-        assert_eq!("something-else".parse::<ServiceStatus>().unwrap(), ServiceStatus::Unknown);
+        assert_eq!(
+            "active".parse::<ServiceStatus>().unwrap(),
+            ServiceStatus::Active
+        );
+        assert_eq!(
+            "running".parse::<ServiceStatus>().unwrap(),
+            ServiceStatus::Active
+        );
+        assert_eq!(
+            "inactive".parse::<ServiceStatus>().unwrap(),
+            ServiceStatus::Inactive
+        );
+        assert_eq!(
+            "failed".parse::<ServiceStatus>().unwrap(),
+            ServiceStatus::Failed
+        );
+        assert_eq!(
+            "activating".parse::<ServiceStatus>().unwrap(),
+            ServiceStatus::Activating
+        );
+        assert_eq!(
+            "something-else".parse::<ServiceStatus>().unwrap(),
+            ServiceStatus::Unknown
+        );
     }
 }

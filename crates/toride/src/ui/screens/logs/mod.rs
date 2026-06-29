@@ -26,7 +26,7 @@ use ratatui::{
 };
 
 use crate::action::Action;
-use crate::logs_convert::{convert_source, LogSource};
+use crate::logs_convert::{LogSource, convert_source};
 use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::render_titled_panel;
@@ -210,6 +210,10 @@ impl LogsContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with the other scrollable panes.
@@ -249,18 +253,20 @@ impl LogsContent {
                     Style::new().fg(p.text).add_modifier(Modifier::BOLD),
                 ),
             ]);
-            let centered =
-                Rect::new(inner.x, inner.y + inner.height.saturating_sub(1) / 2, inner.width, 1);
+            let centered = Rect::new(
+                inner.x,
+                inner.y + inner.height.saturating_sub(1) / 2,
+                inner.width,
+                1,
+            );
             frame.render_widget(Paragraph::new(msg).centered(), centered);
             return;
         }
 
         // Build the full content (header + tail) as a Vec<Line> then render
         // only the visible window (manual scroll — no ratatui Scrollbar).
-        let active = self
-            .active_source()
-            .map(|s| convert_source(s.clone()))
-            .unwrap_or_else(|| LogSource {
+        let active = self.active_source().map_or_else(
+            || LogSource {
                 name: "(none)".into(),
                 path: String::new(),
                 exists: false,
@@ -268,7 +274,9 @@ impl LogsContent {
                 mtime: None,
                 line_count: 0,
                 lines: Vec::new(),
-            });
+            },
+            |s| convert_source(s.clone()),
+        );
 
         let lines = self.build_lines(&active, p, inner.width);
 
@@ -278,7 +286,7 @@ impl LogsContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -310,8 +318,12 @@ impl LogsContent {
             .clone()
             .unwrap_or_else(|| "log collection could not run on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -329,12 +341,7 @@ impl LogsContent {
     /// Build the complete content as a flat list of lines: a one-line header
     /// (active source name + path + size + mtime + cycle hint), then the
     /// active source's tail. Scrolling operates over this list.
-    fn build_lines(
-        &self,
-        active: &LogSource,
-        p: Palette,
-        inner_width: u16,
-    ) -> Vec<Line<'static>> {
+    fn build_lines(&self, active: &LogSource, p: Palette, inner_width: u16) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
 
         // ── Header: name + path + size + mtime ──────────────────────────────
@@ -346,10 +353,7 @@ impl LogsContent {
             active.name.as_str()
         };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("[{sel}/{total}] "),
-                Style::new().fg(p.text_muted),
-            ),
+            Span::styled(format!("[{sel}/{total}] "), Style::new().fg(p.text_muted)),
             Span::styled(
                 header_name.to_string(),
                 Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
@@ -371,10 +375,7 @@ impl LogsContent {
 
         // Size + mtime line.
         let size_str = format_bytes_human(active.size_bytes);
-        let mtime_str = active
-            .mtime
-            .clone()
-            .unwrap_or_else(|| "—".to_string());
+        let mtime_str = active.mtime.clone().unwrap_or_else(|| "—".to_string());
         // Extract to locals — format-string field access (`{active.line_count}`)
         // is not supported, so bind first.
         let line_count = active.line_count;
@@ -393,7 +394,10 @@ impl LogsContent {
         // Hint line.
         lines.push(Line::from(vec![
             Span::styled("  hint   ", Style::new().fg(p.text_muted)),
-            Span::styled("← → cycle source  ·  j/k scroll", Style::new().fg(p.text_dim)),
+            Span::styled(
+                "← → cycle source  ·  j/k scroll",
+                Style::new().fg(p.text_dim),
+            ),
         ]));
 
         // Blank separator between header and the tail.
@@ -408,10 +412,7 @@ impl LogsContent {
         } else {
             for raw in &active.lines {
                 let truncated = truncate_str(raw, inner_width as usize);
-                lines.push(Line::from(Span::styled(
-                    truncated,
-                    Style::new().fg(p.text),
-                )));
+                lines.push(Line::from(Span::styled(truncated, Style::new().fg(p.text))));
             }
         }
 
@@ -425,6 +426,7 @@ impl LogsContent {
 /// because the logs header wants a compact `123 B` / `4 KiB` style without
 /// the helpers' coloring / trailing-unit conventions; a divergence here is
 /// cheaper than threading a new helper signature through the format module.
+#[expect(clippy::cast_precision_loss, reason = "display-only")]
 fn format_bytes_human(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     if bytes == 0 {
@@ -494,12 +496,10 @@ mod tests {
     }
 
     /// Render a content area to a string (snapshot pattern from
-    /// fail2ban / ufw_kit / harden).
+    /// fail2ban / `ufw_kit` / harden).
     fn render_to_string(content: &mut LogsContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -577,10 +577,7 @@ mod tests {
     fn h_l_aliases_cycle_sources() {
         let mut c = LogsContent::new();
         c.set_available(true);
-        c.set_logs(vec![
-            sample_source("auth", 1),
-            sample_source("syslog", 1),
-        ]);
+        c.set_logs(vec![sample_source("auth", 1), sample_source("syslog", 1)]);
         assert_eq!(c.selected_source, 0);
         c.handle_key(KeyCode::Char('l'));
         assert_eq!(c.selected_source, 1);
@@ -592,10 +589,7 @@ mod tests {
     fn cycling_resets_scroll_to_top() {
         let mut c = LogsContent::new();
         c.set_available(true);
-        c.set_logs(vec![
-            sample_source("auth", 50),
-            sample_source("syslog", 50),
-        ]);
+        c.set_logs(vec![sample_source("auth", 50), sample_source("syslog", 50)]);
         c.scroll = 10;
         c.handle_key(KeyCode::Right);
         assert_eq!(c.selected_source, 1);
@@ -715,10 +709,7 @@ mod tests {
         ]);
         c.selected_source = 2; // kern
         // Refresh tick where kern has vanished (e.g. file deleted).
-        c.set_logs(vec![
-            sample_source("auth", 1),
-            sample_source("syslog", 1),
-        ]);
+        c.set_logs(vec![sample_source("auth", 1), sample_source("syslog", 1)]);
         assert_eq!(
             c.selected_source, 1,
             "selection must clamp to the last valid index, not point past the end"
@@ -749,10 +740,10 @@ mod tests {
 
     #[test]
     fn section_overview_reports_active_with_no_findings() {
+        use crate::ui::screens::section_overview::SectionOverview;
         let mut c = LogsContent::new();
         c.set_available(true);
         c.set_logs(vec![sample_source("auth", 1), sample_source("syslog", 1)]);
-        use crate::ui::screens::section_overview::SectionOverview;
         assert!(c.available());
         assert_eq!(c.status_label(), "active");
         assert_eq!(c.findings_count(), 0);
@@ -761,8 +752,8 @@ mod tests {
 
     #[test]
     fn section_overview_reports_offline_when_unavailable() {
-        let c = LogsContent::new();
         use crate::ui::screens::section_overview::SectionOverview;
+        let c = LogsContent::new();
         assert!(!c.available());
         assert_eq!(c.status_label(), "offline");
         assert!(c.detail().is_none());
@@ -774,7 +765,7 @@ mod tests {
         assert_eq!(format_bytes_human(512), "512 B");
         assert_eq!(format_bytes_human(1024), "1.0 KiB");
         assert_eq!(format_bytes_human(1536), "1.5 KiB");
-        assert_eq!(format_bytes_human(1048576), "1.0 MiB");
+        assert_eq!(format_bytes_human(1_048_576), "1.0 MiB");
     }
 
     #[test]

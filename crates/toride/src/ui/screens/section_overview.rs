@@ -102,6 +102,9 @@ mod tests {
 
     #[test]
     fn label_degraded_when_any_finding_elevated() {
-        assert_eq!(status_label_for(true, ["ok", "warning", "info"]), "degraded");
+        assert_eq!(
+            status_label_for(true, ["ok", "warning", "info"]),
+            "degraded"
+        );
     }
 }

@@ -52,19 +52,14 @@ pub fn restore_backup(path: &Path) -> Result<()> {
         .ok_or_else(|| crate::Error::Other("path has no file name".to_owned()))?
         .to_string_lossy();
 
-    let pattern = format!("{}.bak.", filename);
+    let pattern = format!("{filename}.bak.");
 
     let mut backups: Vec<_> = fs::read_dir(parent)?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(&pattern)
-        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&pattern))
         .collect();
 
-    backups.sort_by_key(|e| e.file_name());
+    backups.sort_by_key(std::fs::DirEntry::file_name);
 
     if let Some(most_recent) = backups.pop() {
         fs::copy(most_recent.path(), path)?;
@@ -90,16 +85,11 @@ pub fn list_backups(path: &Path) -> Result<Vec<PathBuf>> {
         .ok_or_else(|| crate::Error::Other("path has no file name".to_owned()))?
         .to_string_lossy();
 
-    let pattern = format!("{}.bak.", filename);
+    let pattern = format!("{filename}.bak.");
 
     let mut backups: Vec<_> = fs::read_dir(parent)?
-        .filter_map(|entry| entry.ok())
-        .filter(|entry| {
-            entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with(&pattern)
-        })
+        .filter_map(std::result::Result::ok)
+        .filter(|entry| entry.file_name().to_string_lossy().starts_with(&pattern))
         .map(|entry| entry.path())
         .collect();
 

@@ -55,7 +55,16 @@ pub fn parse_wg_show(output: &str) -> Result<Vec<WgShowEntry>> {
         let interface = parts[0].to_owned();
         // parts[1] is the private key; the public key follows it.
         let public_key = parts[2].to_owned();
-        let listen_port = parts[3].parse::<u16>().unwrap_or(0);
+        // Honor the documented contract: a non-numeric (malformed / tampered)
+        // listen-port is a parse error, not silently coerced to 0. Coercing to
+        // 0 would mask a corrupted dump and could route traffic to the wrong
+        // port (kernel auto-assign).
+        let listen_port = parts[3].parse::<u16>().map_err(|_| {
+            Error::ConfigParse(format!(
+                "invalid listen-port in `wg show all dump` row: {}",
+                parts[3]
+            ))
+        })?;
         entries.push(WgShowEntry {
             interface,
             public_key,
@@ -138,11 +147,11 @@ pub fn parse_interface_conf(interface_name: &str, content: &str) -> Result<Wireg
 
         match current_section.as_deref() {
             Some("Interface") => match key {
-                "Address" => spec.address = value.to_owned(),
+                "Address" => value.clone_into(&mut spec.address),
                 "ListenPort" => {
-                    spec.listen_port = value.parse().map_err(|_| {
-                        Error::ConfigParse(format!("invalid ListenPort: {value}"))
-                    })?;
+                    spec.listen_port = value
+                        .parse()
+                        .map_err(|_| Error::ConfigParse(format!("invalid ListenPort: {value}")))?;
                 }
                 "PrivateKey" => spec.private_key = Some(value.to_owned()),
                 "DNS" => spec.dns = Some(value.to_owned()),
@@ -151,19 +160,16 @@ pub fn parse_interface_conf(interface_name: &str, content: &str) -> Result<Wireg
             Some("Peer") => {
                 if let Some(ref mut peer) = current_peer {
                     match key {
-                        "PublicKey" => peer.public_key = value.to_owned(),
+                        "PublicKey" => value.clone_into(&mut peer.public_key),
                         "AllowedIPs" => {
                             peer.allowed_ips =
                                 value.split(',').map(|s| s.trim().to_owned()).collect();
                         }
                         "Endpoint" => peer.endpoint = Some(value.to_owned()),
                         "PersistentKeepalive" => {
-                            peer.persistent_keepalive =
-                                Some(value.parse().map_err(|_| {
-                                    Error::ConfigParse(format!(
-                                        "invalid PersistentKeepalive: {value}"
-                                    ))
-                                })?);
+                            peer.persistent_keepalive = Some(value.parse().map_err(|_| {
+                                Error::ConfigParse(format!("invalid PersistentKeepalive: {value}"))
+                            })?);
                         }
                         _ => {} // ignore unknown keys
                     }
@@ -306,5 +312,15 @@ wg1\tpeer1key=\t(none)\t10.0.0.3:51820\t10.0.0.3/32\t0\t0\t0\toff\n\
     fn parse_wg_show_empty_output() {
         let entries = parse_wg_show("").unwrap();
         assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn parse_wg_show_rejects_malformed_listen_port() {
+        // A 5-field interface row whose listen-port column is non-numeric must
+        // surface as a parse error per the documented contract, rather than
+        // being silently coerced to 0 (which could mask a tampered dump).
+        let output = "wg0\tpriv0=\tpub0=\tNOTAPORT\toff\n";
+        let err = parse_wg_show(output).unwrap_err();
+        assert!(matches!(err, Error::ConfigParse(_)));
     }
 }

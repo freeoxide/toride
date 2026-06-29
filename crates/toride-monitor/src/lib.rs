@@ -22,8 +22,10 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
-#![expect(clippy::missing_errors_doc, reason = "library is internal")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
+)]
 
 // ---------------------------------------------------------------------------
 // Module declarations -- always compiled
@@ -35,8 +37,8 @@ pub mod conntrack;
 pub mod error;
 pub mod output;
 pub mod parse;
-pub mod ports;
 pub mod paths;
+pub mod ports;
 pub mod report;
 pub mod spec;
 pub mod validate;

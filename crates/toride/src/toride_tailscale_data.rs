@@ -29,7 +29,7 @@
 //! collector task — the timeout caps each probe independently. A timed-out or errored
 //! probe degrades that field but the collector keeps going; the section stays
 //! `available == true` whenever ANY probe succeeded or the doctor produced findings, so
-//! the operator sees what is wrong rather than a blank panel. Only a task panic (JoinError)
+//! the operator sees what is wrong rather than a blank panel. Only a task panic (`JoinError`)
 //! flips `available` to `false`.
 //!
 //! ## Doctor findings cache
@@ -42,9 +42,7 @@ use std::time::Duration;
 
 use tokio::sync::oneshot;
 
-use crate::toride_tailscale_convert::{
-    self, NetcheckInfo, NodeStatusInfo,
-};
+use crate::toride_tailscale_convert::{self, NetcheckInfo, NodeStatusInfo};
 use crate::ui::screens::toride_tailscale::{
     DerpLatencyEntry, DnsInfo, PeerEntry, PortMapEntry, TailscaleFindingEntry,
 };
@@ -57,11 +55,11 @@ const NET_TIMEOUT: Duration = Duration::from_secs(3);
 #[derive(Clone, Debug)]
 pub struct TailscaleDataBundle {
     /// Whether the Tailscale backend was reachable at all. `false` is reserved for the
-    /// panic case (a `tokio::spawn` JoinError) — an absent daemon degrades individual
+    /// panic case (a `tokio::spawn` `JoinError`) — an absent daemon degrades individual
     /// probes but the doctor surfaces that as a `critical` finding, keeping
     /// `available == true` so the operator SEES the finding rather than a blank panel.
     pub available: bool,
-    /// Local-node status (connected, name, tailnet, IPs, exit node, MagicDNS).
+    /// Local-node status (connected, name, tailnet, IPs, exit node, `MagicDNS`).
     pub status: NodeStatusInfo,
     /// Peers in the tailnet (from the topology query).
     pub peers: Vec<PeerEntry>,
@@ -72,7 +70,7 @@ pub struct TailscaleDataBundle {
     /// Doctor findings (cached for 60s between collections).
     pub findings: Vec<TailscaleFindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` because a collection task panicked (JoinError). `None`
+    /// `available == false` because a collection task panicked (`JoinError`). `None`
     /// otherwise — notably also `None` for a freshly-constructed empty bundle before any
     /// collection has run. Surfaced to the UI so the degraded panel can show what
     /// actually went wrong instead of guessing.
@@ -100,6 +98,10 @@ pub struct TailscaleCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: Duration = Duration::from_secs(60);
 
 impl TailscaleCollector {
@@ -144,9 +146,8 @@ impl TailscaleCollector {
         // Without this wrap a panic would drop `tx`, `rx.await` would return `Err`, and
         // poll() would map that to `None`, leaving the dashboard showing stale last-good
         // data indefinitely with no degraded-state signal.
-        let handle = tokio::spawn(async move {
-            collect_real_tailscale(use_cache, cached_findings).await
-        });
+        let handle =
+            tokio::spawn(async move { collect_real_tailscale(use_cache, cached_findings).await });
         tokio::spawn(async move {
             let result = handle.await;
             let (bundle, reused_cache) = match result {
@@ -215,7 +216,7 @@ impl Default for TailscaleCollector {
 /// All probes run concurrently via `tokio::join!`. Each network call is individually
 /// wrapped in [`tokio::time::timeout(NET_TIMEOUT)`] so an absent or hung `tailscaled`
 /// cannot stall the task — a timed-out probe degrades its field but the collection keeps
-/// going. Doctor findings may be reused from the cache. On ANY panic (JoinError from the
+/// going. Doctor findings may be reused from the cache. On ANY panic (`JoinError` from the
 /// outer `tokio::spawn` — the inner probes cannot panic because they use `?`/match)
 /// returns [`empty_bundle_with_reason`] with `available = false`.
 ///
@@ -226,6 +227,10 @@ impl Default for TailscaleCollector {
 /// actually taken from the cache on a successful collection. The caller advances the TTL
 /// clock ONLY when `used_cache == false`, so a cache-hit poll never resets the freshness
 /// timestamp with stale data.
+#[expect(
+    clippy::similar_names,
+    reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
+)]
 async fn collect_real_tailscale(
     use_cache: bool,
     cached_findings: Option<Vec<TailscaleFindingEntry>>,
@@ -242,7 +247,12 @@ async fn collect_real_tailscale(
     // The doctor is skipped when the cache is fresh; its slot is computed after the join
     // from either the cache or the freshly-run report.
     let (status_r, topology_r, netcheck_r, dns_r, doctor_r) = tokio::join!(
-        timeout_probe(async { client.status_report().await.map(toride_tailscale_convert::convert_status) }),
+        timeout_probe(async {
+            client
+                .status_report()
+                .await
+                .map(toride_tailscale_convert::convert_status)
+        }),
         timeout_probe(async { client.topology().await }),
         timeout_probe(async {
             client
@@ -266,7 +276,7 @@ async fn collect_real_tailscale(
     );
 
     // ── Assemble the bundle from whatever probes returned ───────────────────
-    let status = status_r.unwrap_or_else(|| empty_status());
+    let status = status_r.unwrap_or_else(empty_status);
     // topology_r is Option<TailnetTopology> — timeout_probe already collapsed
     // Result/timeout into None.
     let (peers, topology_ok) = match topology_r {
@@ -288,8 +298,7 @@ async fn collect_real_tailscale(
             Some(Some(report)) => toride_tailscale_convert::convert_findings(report.findings),
             // doctor ran but the probe timed out / errored — timeout_probe already
             // logged the failure, so there is nothing to surface beyond an empty list.
-            Some(None) => Vec::new(),
-            None => Vec::new(),
+            Some(None) | None => Vec::new(),
         };
         (f, false)
     };
@@ -359,7 +368,9 @@ async fn doctor_run(
     client: &toride_tailscale::TailscaleClient,
 ) -> Result<toride_tailscale::doctor::DoctorReport, toride_tailscale::Error> {
     let doctor = toride_tailscale::doctor::Doctor::new(client);
-    doctor.run(&toride_tailscale::doctor::DoctorScope::All).await
+    doctor
+        .run(&toride_tailscale::doctor::DoctorScope::All)
+        .await
 }
 
 /// Default empty node status (everything zeroed / placeholder).
@@ -397,10 +408,10 @@ fn empty_dns() -> DnsInfo {
     }
 }
 
-/// Empty bundle used when the collection task panicked (`tokio::spawn` JoinError) —
+/// Empty bundle used when the collection task panicked (`tokio::spawn` `JoinError`) —
 /// mirrors [`fail2ban_data::empty_bundle`] and the sibling collectors. `available = false`
 /// signals the UI to render the degraded panel; no reason is attached because none is
-/// known at this point (the JoinError reason is added by [`empty_bundle_with_reason`]).
+/// known at this point (the `JoinError` reason is added by [`empty_bundle_with_reason`]).
 ///
 /// [`fail2ban_data::empty_bundle`]: crate::fail2ban_data::empty_bundle
 fn empty_bundle() -> TailscaleDataBundle {
@@ -416,8 +427,8 @@ fn empty_bundle() -> TailscaleDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned collection
-/// task panicked (JoinError) — the reason string is rendered by the UI's degraded panel
-/// so the operator sees what actually went wrong, mirroring the spawn_blocking JoinError
+/// task panicked (`JoinError`) — the reason string is rendered by the UI's degraded panel
+/// so the operator sees what actually went wrong, mirroring the `spawn_blocking` `JoinError`
 /// path in fail2ban/cloud/etc.
 fn empty_bundle_with_reason(reason: String) -> TailscaleDataBundle {
     let mut b = empty_bundle();
@@ -486,7 +497,7 @@ mod tests {
         // daemon answered or the doctor produced findings.
         let mut collector = TailscaleCollector::new();
         collector.start();
-        tokio::time::sleep(Duration::from_millis(4000)).await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -535,7 +546,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = TailscaleCollector::new();
         collector.start();
-        tokio::time::sleep(Duration::from_millis(4000)).await;
+        tokio::time::sleep(Duration::from_secs(4)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty Vec on a
         // host where the doctor produced no findings).

@@ -39,13 +39,13 @@ fn validate_cidr_v4(cidr: &str) -> Result<()> {
         )));
     }
 
-    let ip: Ipv4Addr = parts[0].parse().map_err(|_| {
-        Error::ConfigParse(format!("invalid IPv4 address in CIDR: {}", parts[0]))
-    })?;
+    let ip: Ipv4Addr = parts[0]
+        .parse()
+        .map_err(|_| Error::ConfigParse(format!("invalid IPv4 address in CIDR: {}", parts[0])))?;
 
-    let prefix: u8 = parts[1].parse().map_err(|_| {
-        Error::ConfigParse(format!("invalid prefix length in CIDR: {}", parts[1]))
-    })?;
+    let prefix: u8 = parts[1]
+        .parse()
+        .map_err(|_| Error::ConfigParse(format!("invalid prefix length in CIDR: {}", parts[1])))?;
 
     if prefix > 32 {
         return Err(Error::ConfigParse(format!(
@@ -65,13 +65,13 @@ fn validate_cidr_v6(cidr: &str) -> Result<()> {
         )));
     }
 
-    let ip: Ipv6Addr = parts[0].parse().map_err(|_| {
-        Error::ConfigParse(format!("invalid IPv6 address in CIDR: {}", parts[0]))
-    })?;
+    let ip: Ipv6Addr = parts[0]
+        .parse()
+        .map_err(|_| Error::ConfigParse(format!("invalid IPv6 address in CIDR: {}", parts[0])))?;
 
-    let prefix: u8 = parts[1].parse().map_err(|_| {
-        Error::ConfigParse(format!("invalid prefix length in CIDR: {}", parts[1]))
-    })?;
+    let prefix: u8 = parts[1]
+        .parse()
+        .map_err(|_| Error::ConfigParse(format!("invalid prefix length in CIDR: {}", parts[1])))?;
 
     if prefix > 128 {
         return Err(Error::ConfigParse(format!(

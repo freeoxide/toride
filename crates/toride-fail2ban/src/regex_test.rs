@@ -27,9 +27,9 @@ use std::path::{Path, PathBuf};
 
 use regex::Regex;
 
+use crate::Result;
 use crate::command::{CommandOutput, Runner};
 use crate::report::RegexTestResult;
-use crate::Result;
 
 // ---------------------------------------------------------------------------
 // RegexTester
@@ -99,11 +99,7 @@ impl<'a> RegexTester<'a> {
     ///
     /// * `filter_path` - Path to a Fail2Ban filter `.conf` file.
     /// * `log_path` - Path to a log file to scan.
-    pub fn test_filter_file(
-        &self,
-        filter_path: &Path,
-        log_path: &Path,
-    ) -> Result<RegexTestResult> {
+    pub fn test_filter_file(&self, filter_path: &Path, log_path: &Path) -> Result<RegexTestResult> {
         let log_str = log_path.to_string_lossy();
         let filter_str = filter_path.to_string_lossy();
         self.run_regex(&[&log_str, &filter_str])
@@ -119,11 +115,7 @@ impl<'a> RegexTester<'a> {
     /// * `filter_path` - Path to a Fail2Ban filter `.conf` file.
     /// * `journal_match` - A journal match expression
     ///   (e.g. `_SYSTEMD_UNIT=sshd.service + _COMM=sshd`).
-    pub fn test_journal(
-        &self,
-        filter_path: &Path,
-        journal_match: &str,
-    ) -> Result<RegexTestResult> {
+    pub fn test_journal(&self, filter_path: &Path, journal_match: &str) -> Result<RegexTestResult> {
         let journal_arg = format!("journal {journal_match}");
         let filter_str = filter_path.to_string_lossy();
         self.run_regex(&[&journal_arg, &filter_str])

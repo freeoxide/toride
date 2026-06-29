@@ -285,13 +285,12 @@ impl Mise {
         // mise may return a single object `{...}` or an array `[...]`.
         let trimmed = raw.trim();
         if trimmed.starts_with('{') {
-            let tool: RegistryTool = serde_json::from_str(trimmed).map_err(|e| {
-                crate::error::MiseError::JsonParse {
+            let tool: RegistryTool =
+                serde_json::from_str(trimmed).map_err(|e| crate::error::MiseError::JsonParse {
                     command: self.binary_name().to_owned(),
                     source: e,
                     stdout: raw_owned,
-                }
-            })?;
+                })?;
             Ok(vec![tool])
         } else {
             serde_json::from_str(raw).map_err(|e| crate::error::MiseError::JsonParse {
@@ -400,7 +399,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_registry_lookup() {
-        let json = r#"[{"short":"node","backends":["core:node"],"description":"Node.js","aliases":[]}]"#;
+        let json =
+            r#"[{"short":"node","backends":["core:node"],"description":"Node.js","aliases":[]}]"#;
         let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(json)));
         let mise = build_mise(fake.clone());
 

@@ -3,6 +3,7 @@
 //! Provides [`validate_logging_rule`] and [`validate_threshold`] for checking
 //! that configuration values are sane before applying them.
 
+use crate::output::TORIDE_LOG_PREFIX_MARKER;
 use crate::spec::{AnomalyThreshold, LoggingRule};
 use crate::{Error, Result};
 
@@ -14,6 +15,8 @@ use crate::{Error, Result};
 ///
 /// Checks:
 /// - `name` is non-empty.
+/// - `log_prefix` contains the toride ownership marker (so teardown only ever
+///   removes rules toride installed).
 /// - `destination` is a valid CIDR or IP.
 /// - `protocol` is one of `"tcp"`, `"udp"`, `"icmp"`, `"all"`.
 /// - `log_prefix` is at most 29 characters (iptables limit).
@@ -29,6 +32,17 @@ pub fn validate_logging_rule(rule: &LoggingRule) -> Result<()> {
         return Err(Error::Other("logging rule name must not be empty".into()));
     }
 
+    // Ownership marker: every toride-installed LOG rule must carry the toride
+    // log-prefix marker so teardown can identify and remove *only* rules we
+    // created — never unrelated LOG rules in the OUTPUT chain.
+    if !rule.log_prefix.contains(TORIDE_LOG_PREFIX_MARKER) {
+        return Err(Error::Other(format!(
+            "logging rule `{}`: log_prefix must contain the toride marker `{}` \
+             (got `{}`)",
+            rule.name, TORIDE_LOG_PREFIX_MARKER, rule.log_prefix
+        )));
+    }
+
     if rule.destination.is_empty() {
         return Err(Error::Other(format!(
             "logging rule `{}`: destination must not be empty",
@@ -40,9 +54,7 @@ pub fn validate_logging_rule(rule: &LoggingRule) -> Result<()> {
     if !valid_protocols.contains(&rule.protocol.as_str()) {
         return Err(Error::Other(format!(
             "logging rule `{}`: invalid protocol `{}` (expected one of {:?})",
-            rule.name,
-            rule.protocol,
-            valid_protocols
+            rule.name, rule.protocol, valid_protocols
         )));
     }
 
@@ -54,13 +66,13 @@ pub fn validate_logging_rule(rule: &LoggingRule) -> Result<()> {
         )));
     }
 
-    let valid_levels = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
+    let valid_levels = [
+        "emerg", "alert", "crit", "err", "warning", "notice", "info", "debug",
+    ];
     if !valid_levels.contains(&rule.log_level.as_str()) {
         return Err(Error::Other(format!(
             "logging rule `{}`: invalid log level `{}` (expected one of {:?})",
-            rule.name,
-            rule.log_level,
-            valid_levels
+            rule.name, rule.log_level, valid_levels
         )));
     }
 
@@ -136,7 +148,7 @@ mod tests {
             destination: "0.0.0.0/0".into(),
             dest_port: None,
             protocol: "tcp".into(),
-            log_prefix: "TORIDE_OUT".into(),
+            log_prefix: "toride-mon-test".into(),
             log_level: "info".into(),
             limit_burst: 10,
             limit_rate: "10/minute".into(),
@@ -165,7 +177,16 @@ mod tests {
     #[test]
     fn long_prefix_fails() {
         let mut rule = valid_rule();
-        rule.log_prefix = "x".repeat(30);
+        // Include the marker so we exercise the length check, not the marker
+        // check (the marker stays under the limit on its own).
+        rule.log_prefix = format!("{}{}", "toride-mon-", "x".repeat(30));
+        assert!(validate_logging_rule(&rule).is_err());
+    }
+
+    #[test]
+    fn prefix_without_marker_fails() {
+        let mut rule = valid_rule();
+        rule.log_prefix = "NOT_OURS".into();
         assert!(validate_logging_rule(&rule).is_err());
     }
 
@@ -176,15 +197,19 @@ mod tests {
 
     #[test]
     fn zero_max_connections_fails() {
-        let mut t = AnomalyThreshold::default();
-        t.max_connections = 0;
+        let t = AnomalyThreshold {
+            max_connections: 0,
+            ..AnomalyThreshold::default()
+        };
         assert!(validate_threshold(&t).is_err());
     }
 
     #[test]
     fn zero_window_fails() {
-        let mut t = AnomalyThreshold::default();
-        t.window = Duration::ZERO;
+        let t = AnomalyThreshold {
+            window: Duration::ZERO,
+            ..AnomalyThreshold::default()
+        };
         assert!(validate_threshold(&t).is_err());
     }
 }

@@ -116,7 +116,10 @@ fn resolve_config_dir_has_three_components() {
     // Should end with: <base>/toride/fail2ban
     let components: Vec<_> = p.config_dir.iter().collect();
     let len = components.len();
-    assert!(len >= 3, "config_dir should have at least 3 components: {components:?}");
+    assert!(
+        len >= 3,
+        "config_dir should have at least 3 components: {components:?}"
+    );
     assert_eq!(components[len - 1].to_str().unwrap(), "fail2ban");
     assert_eq!(components[len - 2].to_str().unwrap(), "toride");
 }
@@ -127,7 +130,10 @@ fn resolve_data_dir_has_three_components() {
     let p = Fail2BanPaths::resolve().unwrap();
     let components: Vec<_> = p.data_dir.iter().collect();
     let len = components.len();
-    assert!(len >= 3, "data_dir should have at least 3 components: {components:?}");
+    assert!(
+        len >= 3,
+        "data_dir should have at least 3 components: {components:?}"
+    );
     assert_eq!(components[len - 1].to_str().unwrap(), "fail2ban");
     assert_eq!(components[len - 2].to_str().unwrap(), "toride");
 }
@@ -220,12 +226,7 @@ fn ensure_directories_creates_deeply_nested_paths() {
             .join("z")
             .join("data")
             .join("fail2ban.pid"),
-        log_dir: base
-            .join("x")
-            .join("y")
-            .join("z")
-            .join("data")
-            .join("logs"),
+        log_dir: base.join("x").join("y").join("z").join("data").join("logs"),
         journal_dir: base
             .join("x")
             .join("y")
@@ -386,13 +387,34 @@ fn test_paths_struct_is_debug_printable() {
     let p = Fail2BanPaths::resolve().unwrap();
 
     let dbg = format!("{p:?}");
-    assert!(dbg.contains("config_dir"), "Debug output should contain config_dir: {dbg}");
-    assert!(dbg.contains("config_file"), "Debug output should contain config_file: {dbg}");
-    assert!(dbg.contains("data_dir"), "Debug output should contain data_dir: {dbg}");
-    assert!(dbg.contains("ban_db"), "Debug output should contain ban_db: {dbg}");
-    assert!(dbg.contains("pid_file"), "Debug output should contain pid_file: {dbg}");
-    assert!(dbg.contains("log_dir"), "Debug output should contain log_dir: {dbg}");
-    assert!(dbg.contains("journal_dir"), "Debug output should contain journal_dir: {dbg}");
+    assert!(
+        dbg.contains("config_dir"),
+        "Debug output should contain config_dir: {dbg}"
+    );
+    assert!(
+        dbg.contains("config_file"),
+        "Debug output should contain config_file: {dbg}"
+    );
+    assert!(
+        dbg.contains("data_dir"),
+        "Debug output should contain data_dir: {dbg}"
+    );
+    assert!(
+        dbg.contains("ban_db"),
+        "Debug output should contain ban_db: {dbg}"
+    );
+    assert!(
+        dbg.contains("pid_file"),
+        "Debug output should contain pid_file: {dbg}"
+    );
+    assert!(
+        dbg.contains("log_dir"),
+        "Debug output should contain log_dir: {dbg}"
+    );
+    assert!(
+        dbg.contains("journal_dir"),
+        "Debug output should contain journal_dir: {dbg}"
+    );
 }
 
 // ---------- prefix consistency ----------
@@ -429,7 +451,11 @@ fn test_ensure_directories_creates_journal_dir_nested() {
         ban_db: base.join("data").join("bans.json"),
         pid_file: base.join("data").join("fail2ban.pid"),
         log_dir: base.join("data").join("logs"),
-        journal_dir: base.join("data").join("deep").join("nested").join("journals"),
+        journal_dir: base
+            .join("data")
+            .join("deep")
+            .join("nested")
+            .join("journals"),
     };
 
     paths.ensure_directories().unwrap();

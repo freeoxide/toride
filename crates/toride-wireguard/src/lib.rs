@@ -30,7 +30,10 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
+)]
 #![expect(clippy::missing_errors_doc, reason = "library is internal")]
 #![expect(clippy::doc_markdown, reason = "WireGuard is a well-known name")]
 
@@ -38,30 +41,30 @@
 // Always-on core modules
 // ---------------------------------------------------------------------------
 
-/// Unified error type and [`Result`] alias.
-pub mod error;
-/// WireGuard system path layout.
-pub mod paths;
-/// Data types for WireGuard interfaces and peers.
-pub mod spec;
-/// Parsers for `wg show`, `wg showconf`, and INI config files.
-pub mod parse;
-/// INI config rendering for interface and peer entries.
-pub mod render;
-/// Input validation for interface names, addresses, and ports.
-pub mod validate;
-/// Config diffing via the `similar` crate.
-pub mod diff;
 /// Config file backup and restore.
 pub mod backup;
-/// Network interface helpers.
-pub mod net;
-/// Peer management types.
-pub mod peer;
+/// Config diffing via the `similar` crate.
+pub mod diff;
+/// Unified error type and [`Result`] alias.
+pub mod error;
 /// Key generation with `zeroize` hygiene.
 pub mod key;
+/// Network interface helpers.
+pub mod net;
+/// Parsers for `wg show`, `wg showconf`, and INI config files.
+pub mod parse;
+/// WireGuard system path layout.
+pub mod paths;
+/// Peer management types.
+pub mod peer;
+/// INI config rendering for interface and peer entries.
+pub mod render;
 /// Diagnostic and status reports.
 pub mod report;
+/// Data types for WireGuard interfaces and peers.
+pub mod spec;
+/// Input validation for interface names, addresses, and ports.
+pub mod validate;
 
 // ---------------------------------------------------------------------------
 // Feature-gated modules

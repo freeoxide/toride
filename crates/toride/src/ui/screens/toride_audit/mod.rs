@@ -86,7 +86,7 @@ pub struct AuditLogSourceEntry {
 /// driven by [`AuditCollector`](crate::toride_audit_data::AuditCollector).
 pub struct AuditContent {
     /// Whether the audit backend produced any data at all. `false` only when a
-    /// collection task panicked (JoinError) — a missing binary surfaces as a
+    /// collection task panicked (`JoinError`) — a missing binary surfaces as a
     /// Critical finding and keeps `available == true` so the operator sees the
     /// findings panel.
     available: bool,
@@ -153,7 +153,11 @@ impl AuditContent {
     /// backend is unavailable so the badge stays honestly empty.
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.rules.len()) } else { None }
+        if self.available {
+            Some(self.rules.len())
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -204,12 +208,6 @@ impl AuditContent {
     /// message can't linger after recovery.
     pub fn set_unavailable_reason(&mut self, reason: Option<String>) {
         self.unavailable_reason = if self.available { None } else { reason };
-    }
-
-    /// Current vertical scroll offset (crate-visible for dispatch tests).
-    #[cfg(test)]
-    pub(crate) fn scroll(&self) -> usize {
-        self.scroll
     }
 
     // ── Input ────────────────────────────────────────────────────────────────
@@ -265,6 +263,10 @@ impl AuditContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with the other read-only sections.
@@ -307,7 +309,7 @@ impl AuditContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -320,7 +322,7 @@ impl AuditContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens exclusively when the `spawn_blocking`
-    /// task PANICS (JoinError) — not when a binary is missing (a missing
+    /// task PANICS (`JoinError`) — not when a binary is missing (a missing
     /// binary instead produces a Critical doctor finding, which keeps
     /// `available == true` so the operator sees the findings panel). The reason
     /// string is surfaced here so the operator can see what actually panicked;
@@ -329,15 +331,22 @@ impl AuditContent {
         let inner = render_titled_panel(frame, area, p, " AUDIT ", p.text_dim, false);
         let msg = Line::from(vec![
             Span::styled("✦ ", Style::new().fg(p.warn)),
-            Span::styled("audit unavailable", Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "audit unavailable",
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
         ]);
         let detail_text = self
             .unavailable_reason
             .clone()
             .unwrap_or_else(|| "audit data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -345,7 +354,10 @@ impl AuditContent {
             1,
         );
         frame.render_widget(Paragraph::new(msg).centered(), centered_msg);
-        frame.render_widget(Paragraph::new(detail).centered().wrap(Wrap { trim: false }), centered_detail);
+        frame.render_widget(
+            Paragraph::new(detail).centered().wrap(Wrap { trim: false }),
+            centered_detail,
+        );
     }
 
     /// Build the complete content as a flat list of lines (auditd, integrity,
@@ -385,7 +397,12 @@ impl AuditContent {
 
         // Raw `auditctl -s` status text, one line per status line. Empty on
         // failure (or when auditctl is missing).
-        if !self.auditd_status.is_empty() {
+        if self.auditd_status.is_empty() {
+            lines.push(Line::from(Span::styled(
+                "  no status output",
+                Style::new().fg(p.text_dim),
+            )));
+        } else {
             for raw in self.auditd_status.lines().take(8) {
                 let trimmed = raw.trim();
                 if trimmed.is_empty() {
@@ -396,11 +413,6 @@ impl AuditContent {
                     Span::styled(truncate_str(trimmed, 70), Style::new().fg(p.text_dim)),
                 ]));
             }
-        } else {
-            lines.push(Line::from(Span::styled(
-                "  no status output",
-                Style::new().fg(p.text_dim),
-            )));
         }
     }
 
@@ -458,8 +470,7 @@ impl AuditContent {
             let files = self
                 .integrity
                 .file_count
-                .map(|n| n.to_string())
-                .unwrap_or_else(|| "(unknown)".into());
+                .map_or_else(|| "(unknown)".into(), |n| n.to_string());
             lines.push(Line::from(vec![
                 Span::styled("  files    ", Style::new().fg(p.text_muted)),
                 Span::styled(files, Style::new().fg(p.text)),
@@ -497,8 +508,14 @@ impl AuditContent {
             let name = truncate_str(&rule.name, 20);
             lines.push(Line::from(vec![
                 Span::styled("  ▸ ", Style::new().fg(p.accent2)),
-                Span::styled(format!("{name:<20}"), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
-                Span::styled(format!("  {} rule(s)", rule.rule_count), Style::new().fg(p.text_muted)),
+                Span::styled(
+                    format!("{name:<20}"),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {} rule(s)", rule.rule_count),
+                    Style::new().fg(p.text_muted),
+                ),
             ]));
             // Show up to the first few rule lines so the panel stays scannable.
             for raw in rule.rules.iter().take(3) {
@@ -525,8 +542,8 @@ impl AuditContent {
         )));
 
         // Backend availability.
-        self.push_backend_line(lines, p, "rsyslog ", self.rsyslog_available);
-        self.push_backend_line(lines, p, "journald", self.journald_available);
+        Self::push_backend_line(lines, p, "rsyslog ", self.rsyslog_available);
+        Self::push_backend_line(lines, p, "journald", self.journald_available);
 
         if self.log_sources.is_empty() {
             lines.push(Line::from(Span::styled(
@@ -541,14 +558,16 @@ impl AuditContent {
             let path = truncate_str(&src.path, 40);
             lines.push(Line::from(vec![
                 Span::styled("  ≡ ", Style::new().fg(p.accent2)),
-                Span::styled(format!("{label:<22}"), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{label:<22}"),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(path, Style::new().fg(p.text_dim)),
             ]));
         }
     }
 
     fn push_backend_line(
-        &self,
         lines: &mut Vec<Line<'static>>,
         p: Palette,
         label: &str,
@@ -583,17 +602,17 @@ impl AuditContent {
         // Group by severity: Critical > Error > Warning > Info > Ok.
         let order = ["critical", "error", "warning", "info", "ok"];
         for sev in order {
-            let group: Vec<&AuditFindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
+            let group: Vec<&AuditFindingEntry> =
+                self.findings.iter().filter(|f| f.severity == sev).collect();
             if group.is_empty() {
                 continue;
             }
             let (icon, color) = severity_style(sev, p);
             lines.push(Line::from(vec![
-                Span::styled(format!("{icon} "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{icon} "),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(
                     format!("{} ({})", sev.to_uppercase(), group.len()),
                     Style::new().fg(color).add_modifier(Modifier::BOLD),
@@ -642,7 +661,11 @@ impl crate::ui::screens::section_overview::SectionOverview for AuditContent {
         }
         Some(format!(
             "{} · {} rule(s)",
-            if self.auditd_running { "auditd running" } else { "auditd stopped" },
+            if self.auditd_running {
+                "auditd running"
+            } else {
+                "auditd stopped"
+            },
             self.rules.len()
         ))
     }
@@ -722,9 +745,7 @@ mod tests {
     /// Render a content area to a string (snapshot pattern from fail2ban/users).
     fn render_to_string(content: &mut AuditContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -797,10 +818,8 @@ mod tests {
         // returns the honest `not_installed()` shape: { initialized: false,
         // file_count: Some(0), last_check_passed: Some(false),
         // last_check_output: Some("AIDE not installed") } — never `None`.
-        let audit = toride_audit::Audit::with_paths(
-            toride_audit::AuditPaths::default_system(),
-        )
-        .expect("Audit::with_paths only allocates a runner and paths");
+        let audit = toride_audit::Audit::with_paths(toride_audit::AuditPaths::default_system())
+            .expect("Audit::with_paths only allocates a runner and paths");
         let real_status = audit
             .integrity()
             .status()
@@ -837,9 +856,7 @@ mod tests {
         let integrity_card: String = out
             .lines()
             .skip_while(|l| !l.contains("Integrity (AIDE)"))
-            .take_while(|l| {
-                !l.contains("Audit Rules") && !l.contains("Log Sources")
-            })
+            .take_while(|l| !l.contains("Audit Rules") && !l.contains("Log Sources"))
             .collect::<Vec<_>>()
             .join("\n");
 

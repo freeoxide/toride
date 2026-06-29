@@ -1,4 +1,4 @@
-//! DoctorReport health check display with emoji-style icons and summary.
+//! `DoctorReport` health check display with emoji-style icons and summary.
 //!
 //! Runs all health checks across system, daemon, and SSH subsystems
 //! and displays each check with a status icon and summary counts.
@@ -73,20 +73,17 @@ fn main() {
     let total = report.checks.len();
 
     println!("--- Summary ---");
-    println!(
-        "  {} passed, {} warnings, {} failures ({} total)",
-        pass, warn, fail, total,
-    );
+    println!("  {pass} passed, {warn} warnings, {fail} failures ({total} total)");
 
     if report.all_passed() {
         println!("  Status: ALL CHECKS PASSED");
     } else {
         println!("  Status: ISSUES DETECTED");
         if fail > 0 {
-            println!("  {} check(s) FAILED -- action required", fail);
+            println!("  {fail} check(s) FAILED -- action required");
         }
         if warn > 0 {
-            println!("  {} check(s) have warnings -- review recommended", warn);
+            println!("  {warn} check(s) have warnings -- review recommended");
         }
     }
 }

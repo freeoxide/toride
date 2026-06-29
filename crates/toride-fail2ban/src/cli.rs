@@ -9,7 +9,10 @@ use crate::types::ExecutionMode;
 
 /// Fail2Ban CLI for toride.
 #[derive(Parser, Debug)]
-#[command(name = "toride-fail2ban", about = "Fail2Ban-style intrusion prevention")]
+#[command(
+    name = "toride-fail2ban",
+    about = "Fail2Ban-style intrusion prevention"
+)]
 pub struct Cli {
     /// Path to configuration file.
     #[arg(short, long, default_value = "~/.config/toride/fail2ban/config.json")]

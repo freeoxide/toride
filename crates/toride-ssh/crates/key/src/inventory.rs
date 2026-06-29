@@ -44,7 +44,10 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
 
     let pub_path = path.with_extension("pub");
     let cert_path = {
-        let name = path.file_name().unwrap_or_else(|| OsStr::new("")).to_string_lossy();
+        let name = path
+            .file_name()
+            .unwrap_or_else(|| OsStr::new(""))
+            .to_string_lossy();
         path.with_file_name(format!("{name}-cert.pub"))
     };
 
@@ -71,8 +74,7 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
         Ok(pk) => {
             // Explicit fallback: if we can't determine the algorithm, treat as
             // Ed25519. This is a best-effort heuristic for encrypted/unknown keys.
-            let mut key_type = algorithm_to_key_type(&pk.algorithm())
-                .unwrap_or(KeyType::Ed25519);
+            let mut key_type = algorithm_to_key_type(&pk.algorithm()).unwrap_or(KeyType::Ed25519);
             let public_key = pk.public_key();
 
             // Extract RSA bit size from the public key data.
@@ -84,8 +86,7 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
             }
             let fp = public_key.fingerprint(ssh_key::HashAlg::Sha256);
             let fingerprint = Some(Fingerprint {
-                hash: base64::engine::general_purpose::STANDARD_NO_PAD
-                    .encode(fp.as_bytes()),
+                hash: base64::engine::general_purpose::STANDARD_NO_PAD.encode(fp.as_bytes()),
                 key_type,
             });
             let comment_str = pk.comment().to_string();
@@ -197,7 +198,8 @@ fn detect_key_format(data: &str) -> Option<KeyFormat> {
     let first_line = data.lines().next().unwrap_or("");
     if first_line.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
         Some(KeyFormat::OpenSSH)
-    } else if first_line.starts_with("-----BEGIN ") && first_line.ends_with(" PRIVATE KEY-----")
+    } else if first_line.starts_with("-----BEGIN ")
+        && first_line.ends_with(" PRIVATE KEY-----")
         && !first_line.contains("OPENSSH")
     {
         Some(KeyFormat::Pem)
@@ -240,7 +242,7 @@ struct ConfigKeyScan {
     identity_paths: Vec<PathBuf>,
     /// `PKCS11Provider` values found in the config.
     pkcs11_providers: Vec<String>,
-    /// Maps expanded IdentityFile path -> host aliases that reference it.
+    /// Maps expanded `IdentityFile` path -> host aliases that reference it.
     identity_host_map: HashMap<PathBuf, Vec<String>>,
 }
 
@@ -271,21 +273,18 @@ fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
 
     for node in &ast.nodes {
         // Determine the host alias (if any) and the child nodes to scan.
-        let (host_alias, nodes): (Option<String>, &[toride_ssh_config::ast::ConfigNode]) = match node {
-            toride_ssh_config::ast::ConfigNode::HostBlock(b) => {
-                let alias = b.patterns.first().cloned().unwrap_or_default();
-                (Some(alias), &b.nodes)
-            }
-            toride_ssh_config::ast::ConfigNode::MatchBlock(b) => {
-                (None, &b.nodes)
-            }
-            toride_ssh_config::ast::ConfigNode::Directive(_) => {
-                (None, std::slice::from_ref(node))
-            }
-            _ => {
-                (None, &[])
-            }
-        };
+        let (host_alias, nodes): (Option<String>, &[toride_ssh_config::ast::ConfigNode]) =
+            match node {
+                toride_ssh_config::ast::ConfigNode::HostBlock(b) => {
+                    let alias = b.patterns.first().cloned().unwrap_or_default();
+                    (Some(alias), &b.nodes)
+                }
+                toride_ssh_config::ast::ConfigNode::MatchBlock(b) => (None, &b.nodes),
+                toride_ssh_config::ast::ConfigNode::Directive(_) => {
+                    (None, std::slice::from_ref(node))
+                }
+                _ => (None, &[]),
+            };
 
         for child in nodes {
             if let toride_ssh_config::ast::ConfigNode::Directive(d) = child {
@@ -358,10 +357,7 @@ fn check_ssh_v1_keys(ssh_dir: &Path) {
 /// corresponding private key (i.e. the path without `.pub` extension does
 /// not exist or is not in `known_private_keys`). Certificate files
 /// (`*-cert.pub`) and SSH v1 `identity.pub` are excluded.
-fn scan_standalone_pub_files(
-    ssh_dir: &Path,
-    known_private_keys: &HashSet<PathBuf>,
-) -> Vec<SshKey> {
+fn scan_standalone_pub_files(ssh_dir: &Path, known_private_keys: &HashSet<PathBuf>) -> Vec<SshKey> {
     let Ok(entries) = std::fs::read_dir(ssh_dir) else {
         return Vec::new();
     };
@@ -402,28 +398,25 @@ fn scan_standalone_pub_files(
             continue;
         };
 
-        let (key_type, fingerprint, comment) =
-            match ssh_key::PublicKey::from_openssh(&pub_data) {
-                Ok(pk) => {
-                    let kt =
-                        algorithm_to_key_type(&pk.algorithm()).unwrap_or(KeyType::Ed25519);
-                    let fp = pk.fingerprint(ssh_key::HashAlg::Sha256);
-                    let fingerprint = Some(Fingerprint {
-                        hash: base64::engine::general_purpose::STANDARD_NO_PAD
-                            .encode(fp.as_bytes()),
-                        key_type: kt,
-                    });
-                    let comment_str = pk.comment().to_string();
-                    let comment = if comment_str.is_empty() {
-                        None
-                    } else {
-                        Some(comment_str)
-                    };
-                    (kt, fingerprint, comment)
-                }
-                // Not a valid SSH public key — skip.
-                Err(_) => continue,
-            };
+        let (key_type, fingerprint, comment) = match ssh_key::PublicKey::from_openssh(&pub_data) {
+            Ok(pk) => {
+                let kt = algorithm_to_key_type(&pk.algorithm()).unwrap_or(KeyType::Ed25519);
+                let fp = pk.fingerprint(ssh_key::HashAlg::Sha256);
+                let fingerprint = Some(Fingerprint {
+                    hash: base64::engine::general_purpose::STANDARD_NO_PAD.encode(fp.as_bytes()),
+                    key_type: kt,
+                });
+                let comment_str = pk.comment().to_string();
+                let comment = if comment_str.is_empty() {
+                    None
+                } else {
+                    Some(comment_str)
+                };
+                (kt, fingerprint, comment)
+            }
+            // Not a valid SSH public key — skip.
+            Err(_) => continue,
+        };
 
         standalone.push(SshKey {
             path: pub_path,
@@ -513,27 +506,21 @@ async fn query_pkcs11_provider(
     let output = match runner.run("ssh-keygen", args).await {
         Ok(o) => o,
         Err(e) => {
-            tracing::warn!(
-                "ssh-keygen -D {provider} failed: {e}; defaulting to Ed25519"
-            );
+            tracing::warn!("ssh-keygen -D {provider} failed: {e}; defaulting to Ed25519");
             return (KeyType::Ed25519, None);
         }
     };
 
     let Some(first_line) = output.lines().next() else {
-        tracing::warn!(
-            "ssh-keygen -D {provider} produced no output; defaulting to Ed25519"
-        );
+        tracing::warn!("ssh-keygen -D {provider} produced no output; defaulting to Ed25519");
         return (KeyType::Ed25519, None);
     };
 
     if let Ok(pk) = ssh_key::PublicKey::from_openssh(first_line) {
-        let key_type = algorithm_to_key_type(&pk.algorithm())
-            .unwrap_or(KeyType::Ed25519);
+        let key_type = algorithm_to_key_type(&pk.algorithm()).unwrap_or(KeyType::Ed25519);
         let fp = pk.fingerprint(ssh_key::HashAlg::Sha256);
         let fingerprint = Some(Fingerprint {
-            hash: base64::engine::general_purpose::STANDARD_NO_PAD
-                .encode(fp.as_bytes()),
+            hash: base64::engine::general_purpose::STANDARD_NO_PAD.encode(fp.as_bytes()),
             key_type,
         });
         (key_type, fingerprint)
@@ -722,17 +709,26 @@ mod tests {
 
     #[test]
     fn guess_key_type_from_name_ed25519() {
-        assert!(matches!(guess_key_type_from_name("id_ed25519"), KeyType::Ed25519));
+        assert!(matches!(
+            guess_key_type_from_name("id_ed25519"),
+            KeyType::Ed25519
+        ));
     }
 
     #[test]
     fn guess_key_type_from_name_rsa() {
-        assert!(matches!(guess_key_type_from_name("id_rsa"), KeyType::Rsa { .. }));
+        assert!(matches!(
+            guess_key_type_from_name("id_rsa"),
+            KeyType::Rsa { .. }
+        ));
     }
 
     #[test]
     fn guess_key_type_from_name_ecdsa() {
-        assert!(matches!(guess_key_type_from_name("id_ecdsa"), KeyType::EcdsaP256));
+        assert!(matches!(
+            guess_key_type_from_name("id_ecdsa"),
+            KeyType::EcdsaP256
+        ));
     }
 
     #[test]
@@ -743,23 +739,38 @@ mod tests {
     #[test]
     fn guess_key_type_from_name_sk_ed25519() {
         // SK variants must be checked before base algo (ed25519_sk contains "ed25519")
-        assert!(matches!(guess_key_type_from_name("id_ed25519_sk"), KeyType::SkEd25519));
+        assert!(matches!(
+            guess_key_type_from_name("id_ed25519_sk"),
+            KeyType::SkEd25519
+        ));
     }
 
     #[test]
     fn guess_key_type_from_name_sk_ecdsa() {
-        assert!(matches!(guess_key_type_from_name("id_ecdsa_sk"), KeyType::SkEcdsaP256));
+        assert!(matches!(
+            guess_key_type_from_name("id_ecdsa_sk"),
+            KeyType::SkEcdsaP256
+        ));
     }
 
     #[test]
     fn guess_key_type_from_name_unknown_defaults_to_ed25519() {
-        assert!(matches!(guess_key_type_from_name("my_custom_key"), KeyType::Ed25519));
+        assert!(matches!(
+            guess_key_type_from_name("my_custom_key"),
+            KeyType::Ed25519
+        ));
     }
 
     #[test]
     fn guess_key_type_from_name_case_insensitive() {
-        assert!(matches!(guess_key_type_from_name("ID_ED25519"), KeyType::Ed25519));
-        assert!(matches!(guess_key_type_from_name("Id_RSA"), KeyType::Rsa { .. }));
+        assert!(matches!(
+            guess_key_type_from_name("ID_ED25519"),
+            KeyType::Ed25519
+        ));
+        assert!(matches!(
+            guess_key_type_from_name("Id_RSA"),
+            KeyType::Rsa { .. }
+        ));
     }
 
     #[test]
@@ -771,13 +782,15 @@ mod tests {
 
     #[test]
     fn is_likely_encrypted_pem_format() {
-        let data = "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,...\n";
+        let data =
+            "-----BEGIN RSA PRIVATE KEY-----\nProc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,...\n";
         assert!(is_likely_encrypted(data));
     }
 
     #[test]
     fn is_likely_encrypted_unencrypted() {
-        let data = "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAEbm9uZQAAAAEAAAAEAAA...\n";
+        let data =
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAEbm9uZQAAAAEAAAAEAAA...\n";
         assert!(!is_likely_encrypted(data));
     }
 
@@ -790,9 +803,24 @@ mod tests {
     fn algorithm_to_key_type_all_known() {
         assert!(algorithm_to_key_type(&ssh_key::Algorithm::Ed25519).is_some());
         assert!(algorithm_to_key_type(&ssh_key::Algorithm::Rsa { hash: None }).is_some());
-        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP256 }).is_some());
-        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP384 }).is_some());
-        assert!(algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP521 }).is_some());
+        assert!(
+            algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa {
+                curve: ssh_key::EcdsaCurve::NistP256
+            })
+            .is_some()
+        );
+        assert!(
+            algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa {
+                curve: ssh_key::EcdsaCurve::NistP384
+            })
+            .is_some()
+        );
+        assert!(
+            algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa {
+                curve: ssh_key::EcdsaCurve::NistP521
+            })
+            .is_some()
+        );
         assert!(algorithm_to_key_type(&ssh_key::Algorithm::Dsa).is_some());
         assert!(algorithm_to_key_type(&ssh_key::Algorithm::SkEd25519).is_some());
         assert!(algorithm_to_key_type(&ssh_key::Algorithm::SkEcdsaSha2NistP256).is_some());
@@ -800,13 +828,22 @@ mod tests {
 
     #[test]
     fn algorithm_to_key_type_ecdsa_curves() {
-        let p256 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP256 }).unwrap();
+        let p256 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa {
+            curve: ssh_key::EcdsaCurve::NistP256,
+        })
+        .unwrap();
         assert!(matches!(p256, KeyType::EcdsaP256));
 
-        let p384 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP384 }).unwrap();
+        let p384 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa {
+            curve: ssh_key::EcdsaCurve::NistP384,
+        })
+        .unwrap();
         assert!(matches!(p384, KeyType::EcdsaP384));
 
-        let p521 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa { curve: ssh_key::EcdsaCurve::NistP521 }).unwrap();
+        let p521 = algorithm_to_key_type(&ssh_key::Algorithm::Ecdsa {
+            curve: ssh_key::EcdsaCurve::NistP521,
+        })
+        .unwrap();
         assert!(matches!(p521, KeyType::EcdsaP521));
     }
 
@@ -821,20 +858,32 @@ mod tests {
     #[test]
     fn guess_key_type_from_name_partial_match() {
         // "rsa_backup" should match because it contains "rsa"
-        assert!(matches!(guess_key_type_from_name("rsa_backup"), KeyType::Rsa { .. }));
+        assert!(matches!(
+            guess_key_type_from_name("rsa_backup"),
+            KeyType::Rsa { .. }
+        ));
     }
 
     #[test]
     fn guess_key_type_from_name_no_match() {
         // Random name with no algo hint
-        assert!(matches!(guess_key_type_from_name("my_ssh_key"), KeyType::Ed25519));
+        assert!(matches!(
+            guess_key_type_from_name("my_ssh_key"),
+            KeyType::Ed25519
+        ));
     }
 
     #[test]
     fn guess_key_type_from_name_sk_before_base() {
         // "id_ed25519_sk" must match SkEd25519, not Ed25519
-        assert!(matches!(guess_key_type_from_name("id_ed25519_sk"), KeyType::SkEd25519));
-        assert!(matches!(guess_key_type_from_name("id_ecdsa_sk"), KeyType::SkEcdsaP256));
+        assert!(matches!(
+            guess_key_type_from_name("id_ed25519_sk"),
+            KeyType::SkEd25519
+        ));
+        assert!(matches!(
+            guess_key_type_from_name("id_ecdsa_sk"),
+            KeyType::SkEcdsaP256
+        ));
     }
 
     // Edge cases for is_likely_encrypted
@@ -873,18 +922,25 @@ mod tests {
         let key_path = ssh_dir.join("id_config_key");
         let output = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519", "-f", key_path.to_str().unwrap(),
-                "-N", "", "-C", "config-test",
+                "-t",
+                "ed25519",
+                "-f",
+                key_path.to_str().unwrap(),
+                "-N",
+                "",
+                "-C",
+                "config-test",
             ])
             .output()
             .unwrap();
-        assert!(output.status.success(), "ssh-keygen failed: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         // Write a config referencing this key via IdentityFile.
-        let config_content = format!(
-            "Host myhost\n    IdentityFile {}\n",
-            key_path.display()
-        );
+        let config_content = format!("Host myhost\n    IdentityFile {}\n", key_path.display());
         std::fs::write(ssh_dir.join("config"), &config_content).unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(ssh_dir);
@@ -913,8 +969,14 @@ mod tests {
             let key_path = ssh_dir.join(name);
             let output = std::process::Command::new("ssh-keygen")
                 .args([
-                    "-t", "ed25519", "-f", key_path.to_str().unwrap(),
-                    "-N", "", "-C", name,
+                    "-t",
+                    "ed25519",
+                    "-f",
+                    key_path.to_str().unwrap(),
+                    "-N",
+                    "",
+                    "-C",
+                    name,
                 ])
                 .output()
                 .unwrap();
@@ -947,8 +1009,14 @@ Host personal
         let key_path = ssh_dir.join("id_encrypted");
         let output = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519", "-f", key_path.to_str().unwrap(),
-                "-N", "testpass", "-C", "encrypted-test",
+                "-t",
+                "ed25519",
+                "-f",
+                key_path.to_str().unwrap(),
+                "-N",
+                "testpass",
+                "-C",
+                "encrypted-test",
             ])
             .output()
             .unwrap();
@@ -961,7 +1029,10 @@ Host personal
         assert!(found.is_some(), "encrypted key should still be discovered");
         let key = found.unwrap();
         assert!(key.encrypted, "encrypted key should be marked as encrypted");
-        assert!(key.fingerprint.is_some(), "encrypted key should have a fingerprint");
+        assert!(
+            key.fingerprint.is_some(),
+            "encrypted key should have a fingerprint"
+        );
     }
 
     #[test]
@@ -972,19 +1043,33 @@ Host personal
         let key_path = dir.path().join("id_ed25519");
         let output = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519",
-                "-f", key_path.to_str().unwrap(),
-                "-N", "secretpass",
-                "-C", "encrypted-inspect-test",
+                "-t",
+                "ed25519",
+                "-f",
+                key_path.to_str().unwrap(),
+                "-N",
+                "secretpass",
+                "-C",
+                "encrypted-inspect-test",
             ])
             .output()
             .unwrap();
-        assert!(output.status.success(), "ssh-keygen failed: {}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
 
         let key = inspect_private_key(&key_path).unwrap();
 
-        assert!(key.encrypted, "inspect_private_key should detect encrypted key (got encrypted=false)");
-        assert!(key.fingerprint.is_some(), "encrypted key should still produce a fingerprint when ssh_key parses it");
+        assert!(
+            key.encrypted,
+            "inspect_private_key should detect encrypted key (got encrypted=false)"
+        );
+        assert!(
+            key.fingerprint.is_some(),
+            "encrypted key should still produce a fingerprint when ssh_key parses it"
+        );
         assert!(matches!(key.key_type, KeyType::Ed25519));
     }
 
@@ -1018,10 +1103,14 @@ Host personal
         let key_pair_path = ssh_dir.join("id_standalone");
         let output = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519",
-                "-f", key_pair_path.to_str().unwrap(),
-                "-N", "",
-                "-C", "standalone-test",
+                "-t",
+                "ed25519",
+                "-f",
+                key_pair_path.to_str().unwrap(),
+                "-N",
+                "",
+                "-C",
+                "standalone-test",
             ])
             .output()
             .unwrap();
@@ -1033,7 +1122,11 @@ Host personal
 
         let pub_path = ssh_dir.join("id_standalone.pub");
         let found = keys.iter().find(|k| k.path == pub_path);
-        assert!(found.is_some(), "standalone .pub file should be discovered: found {:?}", keys.iter().map(|k| &k.path).collect::<Vec<_>>());
+        assert!(
+            found.is_some(),
+            "standalone .pub file should be discovered: found {:?}",
+            keys.iter().map(|k| &k.path).collect::<Vec<_>>()
+        );
         let key = found.unwrap();
         assert!(key.has_public_pair);
         assert!(!key.encrypted);
@@ -1057,7 +1150,8 @@ Host personal
         let keys = scan_keys(&paths, None).await.unwrap();
 
         assert!(
-            keys.iter().all(|k| !k.path.to_string_lossy().contains("cert.pub")),
+            keys.iter()
+                .all(|k| !k.path.to_string_lossy().contains("cert.pub")),
             "certificate files should not appear as standalone .pub entries",
         );
     }
@@ -1093,7 +1187,8 @@ Host personal
 
         // identity.pub is explicitly excluded from standalone .pub scanning.
         assert!(
-            keys.iter().all(|k| k.path.file_name().map_or(true, |n| n != "identity.pub")),
+            keys.iter()
+                .all(|k| k.path.file_name().is_none_or(|n| n != "identity.pub")),
             "identity.pub should be excluded from standalone scan (handled by SSH v1 warning)",
         );
     }
@@ -1116,7 +1211,10 @@ Host hsm
         let paths = toride_ssh_core::SshPaths::with_dir(ssh_dir);
         let keys = scan_keys(&paths, None).await.unwrap();
 
-        let pkcs11: Vec<_> = keys.iter().filter(|k| k.source == KeySource::Pkcs11).collect();
+        let pkcs11: Vec<_> = keys
+            .iter()
+            .filter(|k| k.source == KeySource::Pkcs11)
+            .collect();
         assert_eq!(pkcs11.len(), 1, "exactly one PKCS#11 entry expected");
         let key = pkcs11[0];
         assert!(key.path.to_string_lossy().contains("pkcs11:"));
@@ -1142,8 +1240,15 @@ Host hsm2
         let paths = toride_ssh_core::SshPaths::with_dir(ssh_dir);
         let keys = scan_keys(&paths, None).await.unwrap();
 
-        let pkcs11: Vec<_> = keys.iter().filter(|k| k.source == KeySource::Pkcs11).collect();
-        assert_eq!(pkcs11.len(), 1, "duplicate PKCS#11 providers should be deduplicated");
+        let pkcs11: Vec<_> = keys
+            .iter()
+            .filter(|k| k.source == KeySource::Pkcs11)
+            .collect();
+        assert_eq!(
+            pkcs11.len(),
+            1,
+            "duplicate PKCS#11 providers should be deduplicated"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1160,20 +1265,21 @@ Host hsm2
         let key_path = external_dir.path().join("id_external");
         let output = std::process::Command::new("ssh-keygen")
             .args([
-                "-t", "ed25519",
-                "-f", key_path.to_str().unwrap(),
-                "-N", "",
-                "-C", "external-test",
+                "-t",
+                "ed25519",
+                "-f",
+                key_path.to_str().unwrap(),
+                "-N",
+                "",
+                "-C",
+                "external-test",
             ])
             .output()
             .unwrap();
         assert!(output.status.success());
 
         // Config references the external key by absolute path.
-        let config_content = format!(
-            "Host external\n    IdentityFile {}\n",
-            key_path.display()
-        );
+        let config_content = format!("Host external\n    IdentityFile {}\n", key_path.display());
         std::fs::write(ssh_dir.join("config"), &config_content).unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(ssh_dir);
@@ -1199,6 +1305,7 @@ Host hsm2
     // -----------------------------------------------------------------------
 
     /// Helper: build an `SshKey` with the given fingerprint hash and source.
+    #[cfg(feature = "agent-integration")]
     fn make_key(hash: &str, source: KeySource) -> SshKey {
         SshKey {
             path: PathBuf::from(format!("/{hash}")),
@@ -1220,6 +1327,7 @@ Host hsm2
     }
 
     /// Helper: build an `SshKey` with no fingerprint.
+    #[cfg(feature = "agent-integration")]
     fn make_key_no_fp(source: KeySource) -> SshKey {
         SshKey {
             path: PathBuf::from("/no-fp"),
@@ -1272,7 +1380,11 @@ Host hsm2
         ];
 
         let result = filter_new_agent_keys(&existing, agent);
-        assert_eq!(result.len(), 2, "only non-matching agent keys should be kept");
+        assert_eq!(
+            result.len(),
+            2,
+            "only non-matching agent keys should be kept"
+        );
         let hashes: Vec<_> = result
             .iter()
             .map(|k| k.fingerprint.as_ref().unwrap().hash.as_str())

@@ -124,7 +124,9 @@ pub enum Error {
     EnableFailed(String),
 
     /// UFW disable requires explicit confirmation.
-    #[error("UFW disable requires explicit confirmation (set require_explicit_confirmation = true)")]
+    #[error(
+        "UFW disable requires explicit confirmation (set require_explicit_confirmation = true)"
+    )]
     DisableRequiresConfirmation,
 
     /// UFW disable failed.

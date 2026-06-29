@@ -33,8 +33,7 @@ impl<'a> AuditdManager<'a> {
     /// Returns [`Error::BinaryNotFound`] if `auditctl` is not available.
     /// Returns [`Error::CommandFailed`] if the rules cannot be loaded.
     pub fn load_rules_file(&self, rules_path: &std::path::Path) -> Result<()> {
-        which::which("auditctl")
-            .map_err(|_| Error::BinaryNotFound("auditctl".to_owned()))?;
+        which::which("auditctl").map_err(|_| Error::BinaryNotFound("auditctl".to_owned()))?;
         let spec = CommandSpec::new("auditctl")
             .arg("-R")
             .arg(rules_path.to_str().unwrap_or_default());
@@ -48,8 +47,7 @@ impl<'a> AuditdManager<'a> {
     ///
     /// Returns [`Error::BinaryNotFound`] if `auditctl` is not available.
     pub fn status(&self) -> Result<String> {
-        which::which("auditctl")
-            .map_err(|_| Error::BinaryNotFound("auditctl".to_owned()))?;
+        which::which("auditctl").map_err(|_| Error::BinaryNotFound("auditctl".to_owned()))?;
         let spec = CommandSpec::new("auditctl").arg("-s");
         let output = self.runner.run_checked(&spec)?;
         Ok(output.stdout)
@@ -62,8 +60,7 @@ impl<'a> AuditdManager<'a> {
     /// Returns [`Error::BinaryNotFound`] if `auditctl` is not available.
     pub fn reload_rules(&self) -> Result<()> {
         // Delete existing rules.
-        which::which("auditctl")
-            .map_err(|_| Error::BinaryNotFound("auditctl".to_owned()))?;
+        which::which("auditctl").map_err(|_| Error::BinaryNotFound("auditctl".to_owned()))?;
         let spec = CommandSpec::new("auditctl").arg("-D");
         self.runner.run_checked(&spec)?;
 

@@ -136,7 +136,11 @@ impl ToolsContent {
     /// rather than flashing a fabricated number.
     #[must_use]
     pub fn installed_count(&self) -> Option<usize> {
-        if self.available { Some(self.installed_count) } else { None }
+        if self.available {
+            Some(self.installed_count)
+        } else {
+            None
+        }
     }
 
     /// Set the human-readable reason the backend was unreachable. Cleared
@@ -243,7 +247,7 @@ impl ToolsContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -255,7 +259,7 @@ impl ToolsContent {
     /// Render the degraded state when the scan could not run on this host.
     ///
     /// `available == false` is set ONLY when a collection task panicked
-    /// (JoinError) — the scan itself always runs otherwise. The degraded panel
+    /// (`JoinError`) — the scan itself always runs otherwise. The degraded panel
     /// surfaces the panic reason (if any) so the operator sees what went wrong
     /// rather than a generic message.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
@@ -276,8 +280,12 @@ impl ToolsContent {
             .clone()
             .unwrap_or_else(|| "tool scan could not run on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -307,10 +315,7 @@ impl ToolsContent {
             ("! some tools missing", p.warn)
         };
         lines.push(Line::from(vec![
-            Span::styled(
-                format!("{summary_label}  "),
-                Style::new().fg(summary_color),
-            ),
+            Span::styled(format!("{summary_label}  "), Style::new().fg(summary_color)),
             Span::styled(
                 format!("{} / {} tools", self.installed_count, self.total_count),
                 Style::new().fg(p.text).add_modifier(Modifier::BOLD),
@@ -347,7 +352,7 @@ impl ToolsContent {
                     Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
                 )));
             }
-            lines.push(self.tool_line(tool, p, inner_width));
+            lines.push(Self::tool_line(tool, p, inner_width));
         }
 
         if self.tools.is_empty() {
@@ -364,7 +369,11 @@ impl ToolsContent {
     }
 
     /// Build a single tool row line: glyph + name + version + path.
-    fn tool_line(&self, tool: &ToolEntry, p: Palette, inner_width: u16) -> Line<'static> {
+    fn tool_line(tool: &ToolEntry, p: Palette, inner_width: u16) -> Line<'static> {
+        // Path column: the resolved path truncated to the remainder of the row.
+        // Fixed-width prefix keeps columns aligned: "  " (2) + glyph(1) + " "
+        // (1) + name(16) + " " (1) + version(24) + " " (1) = 46.
+        const PREFIX_WIDTH: usize = 46;
         let (icon, color) = if tool.installed {
             ("✓", p.ok)
         } else if tool.expected {
@@ -378,19 +387,10 @@ impl ToolsContent {
         let version_text = tool
             .version
             .as_deref()
-            .map(|v| truncate_str(v, 24))
-            .unwrap_or_else(|| "—".to_string());
-        // Path column: the resolved path truncated to the remainder of the row.
-        // Fixed-width prefix keeps columns aligned: "  " (2) + glyph(1) + " "
-        // (1) + name(16) + " " (1) + version(24) + " " (1) = 46.
-        const PREFIX_WIDTH: usize = 46;
+            .map_or_else(|| "—".to_string(), |v| truncate_str(v, 24));
         let path_text = match &tool.path {
             Some(path) => {
-                let path_max = if (inner_width as usize) >= PREFIX_WIDTH {
-                    (inner_width as usize) - PREFIX_WIDTH
-                } else {
-                    0
-                };
+                let path_max = (inner_width as usize).saturating_sub(PREFIX_WIDTH);
                 truncate_str(path, path_max)
             }
             None => String::new(),
@@ -424,7 +424,10 @@ impl crate::ui::screens::section_overview::SectionOverview for ToolsContent {
         if !self.available {
             return None;
         }
-        Some(format!("{}/{} tools", self.installed_count, self.total_count))
+        Some(format!(
+            "{}/{} tools",
+            self.installed_count, self.total_count
+        ))
     }
 
     fn findings_count(&self) -> usize {
@@ -511,9 +514,7 @@ mod tests {
     /// Render a content area to a string (snapshot pattern from harden/mise).
     fn render_to_string(content: &mut ToolsContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -598,7 +599,10 @@ mod tests {
             expected: true,
         }]);
         let out = render_to_string(&mut c, 110, 20);
-        assert!(out.contains("fully equipped"), "summary when all present: {out}");
+        assert!(
+            out.contains("fully equipped"),
+            "summary when all present: {out}"
+        );
         assert!(out.contains("1 / 1 tools"));
     }
 
@@ -694,7 +698,10 @@ mod tests {
         assert_eq!(c.unavailable_reason.as_deref(), Some("boom"));
         c.set_available(true);
         c.set_unavailable_reason(Some("boom".into()));
-        assert!(c.unavailable_reason.is_none(), "reason must clear when available");
+        assert!(
+            c.unavailable_reason.is_none(),
+            "reason must clear when available"
+        );
     }
 
     #[test]

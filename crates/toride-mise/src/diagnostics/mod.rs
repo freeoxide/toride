@@ -157,10 +157,7 @@ impl DoctorReport {
     }
 
     /// Build a [`DoctorReport`] from a parsed [`DoctorOutput`](crate::serde_utils::json_outputs::DoctorOutput).
-    fn from_json(
-        parsed: &crate::serde_utils::json_outputs::DoctorOutput,
-        raw: String,
-    ) -> Self {
+    fn from_json(parsed: &crate::serde_utils::json_outputs::DoctorOutput, raw: String) -> Self {
         let mut warnings = Vec::new();
         let mut errors = Vec::new();
 
@@ -317,78 +314,75 @@ impl<'a> DiagnosticsBuilder<'a> {
                         }
                     }
                 }
-                DiagnosticKind::MissingTools => {
-                    match self.mise.list_missing().await {
-                        Ok(tools) => {
-                            for tool in &tools {
-                                warnings.push(Diagnostic::new(
-                                    DiagnosticKind::MissingTools,
-                                    format!("tool `{}` is referenced but not installed", tool.name),
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            errors.push(Diagnostic::new(
+                DiagnosticKind::MissingTools => match self.mise.list_missing().await {
+                    Ok(tools) => {
+                        for tool in &tools {
+                            warnings.push(Diagnostic::new(
                                 DiagnosticKind::MissingTools,
-                                format!("failed to list missing tools: {e}"),
+                                format!("tool `{}` is referenced but not installed", tool.name),
                             ));
                         }
                     }
-                }
-                DiagnosticKind::OutdatedTools => {
-                    match self.mise.list_outdated().await {
-                        Ok(tools) => {
-                            for tool in &tools {
-                                warnings.push(Diagnostic::new(
-                                    DiagnosticKind::OutdatedTools,
-                                    format!("tool `{}` has an update available", tool.name),
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            errors.push(Diagnostic::new(
+                    Err(e) => {
+                        errors.push(Diagnostic::new(
+                            DiagnosticKind::MissingTools,
+                            format!("failed to list missing tools: {e}"),
+                        ));
+                    }
+                },
+                DiagnosticKind::OutdatedTools => match self.mise.list_outdated().await {
+                    Ok(tools) => {
+                        for tool in &tools {
+                            warnings.push(Diagnostic::new(
                                 DiagnosticKind::OutdatedTools,
-                                format!("failed to list outdated tools: {e}"),
+                                format!("tool `{}` has an update available", tool.name),
                             ));
                         }
                     }
-                }
+                    Err(e) => {
+                        errors.push(Diagnostic::new(
+                            DiagnosticKind::OutdatedTools,
+                            format!("failed to list outdated tools: {e}"),
+                        ));
+                    }
+                },
                 DiagnosticKind::LockfileMissing => {
                     // Check if .mise.lock or mise.lock exists in cwd.
                     // Fall back to std::env::current_dir() when no cwd is configured.
-                    let cwd = self
-                        .mise
-                        .cwd
-                        .clone()
-                        .or_else(|| std::env::current_dir().ok().and_then(|p| camino::Utf8PathBuf::from_path_buf(p).ok()));
+                    let cwd = self.mise.cwd.clone().or_else(|| {
+                        std::env::current_dir()
+                            .ok()
+                            .and_then(|p| camino::Utf8PathBuf::from_path_buf(p).ok())
+                    });
                     let has_lockfile = cwd.as_ref().is_some_and(|cwd| {
                         cwd.join(".mise.lock").is_file() || cwd.join("mise.lock").is_file()
                     });
                     if !has_lockfile {
-                        warnings.push(Diagnostic::new(
-                            DiagnosticKind::LockfileMissing,
-                            "no lockfile found in project directory",
-                        ).with_detail("Run `mise lock` to generate one"));
+                        warnings.push(
+                            Diagnostic::new(
+                                DiagnosticKind::LockfileMissing,
+                                "no lockfile found in project directory",
+                            )
+                            .with_detail("Run `mise lock` to generate one"),
+                        );
                     }
                 }
-                DiagnosticKind::ConfigNotFound => {
-                    match self.mise.config_path().await {
-                        Ok(path) => {
-                            if !path.as_std_path().exists() {
-                                warnings.push(Diagnostic::new(
-                                    DiagnosticKind::ConfigNotFound,
-                                    format!("config file not found at {path}"),
-                                ));
-                            }
-                        }
-                        Err(e) => {
-                            errors.push(Diagnostic::new(
+                DiagnosticKind::ConfigNotFound => match self.mise.config_path().await {
+                    Ok(path) => {
+                        if !path.as_std_path().exists() {
+                            warnings.push(Diagnostic::new(
                                 DiagnosticKind::ConfigNotFound,
-                                format!("failed to locate config: {e}"),
+                                format!("config file not found at {path}"),
                             ));
                         }
                     }
-                }
+                    Err(e) => {
+                        errors.push(Diagnostic::new(
+                            DiagnosticKind::ConfigNotFound,
+                            format!("failed to locate config: {e}"),
+                        ));
+                    }
+                },
                 _ => {
                     // For unrecognised checks, just run doctor and extract.
                     let report = self.mise.doctor().await?;
@@ -493,10 +487,7 @@ fn classify_line(text: &str) -> Diagnostic {
         || lower.contains("fetch")
     {
         DiagnosticKind::NetworkIssue
-    } else if lower.contains("permission")
-        || lower.contains("denied")
-        || lower.contains("eacces")
-    {
+    } else if lower.contains("permission") || lower.contains("denied") || lower.contains("eacces") {
         DiagnosticKind::PermissionIssue
     } else {
         DiagnosticKind::Other
@@ -602,7 +593,9 @@ mod tests {
 
     #[test]
     fn parse_error_lines() {
-        let raw = "ERROR mise not found on PATH\nSome info line\nerror: config not found at .mise.toml\n".to_owned();
+        let raw =
+            "ERROR mise not found on PATH\nSome info line\nerror: config not found at .mise.toml\n"
+                .to_owned();
         let report = parse_doctor_output(raw);
         assert!(!report.ok);
         assert!(report.warnings.is_empty());
@@ -623,7 +616,8 @@ mod tests {
 
     #[test]
     fn parse_mixed_output() {
-        let raw = "WARN outdated: python@3.11\nERROR mise not found on PATH\nAll good otherwise\n".to_owned();
+        let raw = "WARN outdated: python@3.11\nERROR mise not found on PATH\nAll good otherwise\n"
+            .to_owned();
         let report = parse_doctor_output(raw);
         assert!(!report.ok);
         assert_eq!(report.warnings.len(), 1);

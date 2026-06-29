@@ -282,8 +282,12 @@ pub fn parse_dnf_check(output: &str) -> Result<(usize, usize)> {
             // Check for security advisory patterns.
             if line.contains("security")
                 || line.contains("ALSA-")
-                || line.contains("FEDORA-")
+                || line.contains("ALAS-")
                 || line.contains("RHSA-")
+                || line.contains("CESA-")
+                || line.contains("ELSA-")
+                || line.contains("CLA-")
+                || line.contains("FEDORA-")
             {
                 security += 1;
             }
@@ -472,7 +476,7 @@ mod tests {
     /// Real `/var/log/unattended-upgrades/unattended-upgrades.log` sample.
     ///
     /// Source: Ubuntu Server docs, "Automatic updates" -- the PPA-origin example
-    /// run. https://ubuntu.com/server/docs/how-to/software/automatic-updates/
+    /// run. <https://ubuntu.com/server/docs/how-to/software/automatic-updates/>
     #[test]
     fn parse_unattended_upgrades_status_real_log_with_upgrades() {
         let log = "\
@@ -497,7 +501,7 @@ mod tests {
     /// Source: Ubuntu Server docs, "Notifications" -- the no-changes email body
     /// uses the exact "No packages found that can be upgraded unattended"
     /// marker that unattended-upgrades writes to the log.
-    /// https://ubuntu.com/server/docs/how-to/software/automatic-updates/
+    /// <https://ubuntu.com/server/docs/how-to/software/automatic-updates/>
     #[test]
     fn parse_unattended_upgrades_status_real_log_nothing_to_do() {
         let log = "\
@@ -530,8 +534,8 @@ mod tests {
     ///
     /// Source: dnf upstream `dnf/automatic/emitter.py`:
     ///   APPLIED = "The following updates have been applied on '%s':"
-    ///   APPLIED_TIMESTAMP = "Updates completed at %s"
-    /// https://github.com/rpm-software-management/dnf/blob/master/dnf/automatic/emitter.py
+    ///   `APPLIED_TIMESTAMP` = "Updates completed at %s"
+    /// <https://github.com/rpm-software-management/dnf/blob/master/dnf/automatic/emitter.py>
     #[test]
     fn parse_dnf_automatic_journal_real_applied_run() {
         let journal = "\

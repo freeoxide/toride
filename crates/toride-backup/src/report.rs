@@ -116,10 +116,7 @@ pub struct RestoreReport {
 impl RestoreReport {
     /// Create a successful restore report.
     #[must_use]
-    pub fn success(
-        snapshot_id: impl Into<String>,
-        target_path: impl Into<String>,
-    ) -> Self {
+    pub fn success(snapshot_id: impl Into<String>, target_path: impl Into<String>) -> Self {
         Self {
             snapshot_id: snapshot_id.into(),
             target_path: target_path.into(),

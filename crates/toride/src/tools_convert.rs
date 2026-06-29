@@ -125,10 +125,7 @@ pub fn convert_findings(tools: &[ToolEntry]) -> Vec<FindingEntry> {
         .filter(|t| t.expected && !t.installed)
         .map(|t| {
             if t.name.is_empty() {
-                tracing::warn!(
-                    "tools finding with empty name: category={:?}",
-                    t.category
-                );
+                tracing::warn!("tools finding with empty name: category={:?}", t.category);
             }
             FindingEntry {
                 id: if t.name.is_empty() {
@@ -160,7 +157,11 @@ mod tests {
         // Every spec has at least one alias and a non-empty category.
         for spec in &c {
             assert!(!spec.binaries.is_empty(), "{} has no aliases", spec.name);
-            assert!(!spec.category.is_empty(), "{} has empty category", spec.name);
+            assert!(
+                !spec.category.is_empty(),
+                "{} has empty category",
+                spec.name
+            );
         }
     }
 
@@ -187,7 +188,11 @@ mod tests {
         let c = catalogue();
         let mut seen = std::collections::HashSet::new();
         for spec in &c {
-            assert!(seen.insert(spec.name), "duplicate catalogue name: {}", spec.name);
+            assert!(
+                seen.insert(spec.name),
+                "duplicate catalogue name: {}",
+                spec.name
+            );
         }
     }
 
@@ -197,7 +202,9 @@ mod tests {
         // drops one surfaces here.
         let c = catalogue();
         let names: Vec<&str> = c.iter().map(|s| s.name).collect();
-        for required in ["vim", "fzf", "rg", "fd", "docker", "cargo", "git", "curl", "tmux"] {
+        for required in [
+            "vim", "fzf", "rg", "fd", "docker", "cargo", "git", "curl", "tmux",
+        ] {
             assert!(names.contains(&required), "catalogue missing {required}");
         }
     }

@@ -29,14 +29,17 @@
 use std::path::Path;
 use std::sync::Arc;
 
+#[cfg(unix)]
+use std::io::Write;
+
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 use crate::extract::extract_executable;
-use crate::tool::{Checksum, ReleaseResolver, Tool};
 use crate::target::Target;
+use crate::tool::{Checksum, ReleaseResolver, Tool};
 
 /// Default upper bound on a single download: 256 MiB.
 pub const DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -197,8 +200,16 @@ impl Installer {
         Ok(dest)
     }
 
-    /// Download `url` into memory, enforcing the size cap via
-    /// `Content-Length` (when present) and a hard byte count while reading.
+    /// Download `url` into memory, enforcing the size cap on the **stream**:
+    ///
+    /// - If the response carries a `Content-Length`, reject immediately when
+    ///   it exceeds the cap (before reading any of the body).
+    /// - Otherwise (or if the header lies), read the body incrementally and
+    ///   abort the moment the running byte count crosses the cap.
+    ///
+    /// We never assemble the whole body first: a misbehaving server with no
+    /// `Content-Length` (or a header that under-reports) cannot force us to
+    /// buffer gigabytes before we notice.
     async fn download(&self, url: &str) -> Result<Vec<u8>> {
         let resp = self
             .client
@@ -218,7 +229,8 @@ impl Installer {
         }
 
         // Pre-check declared size to fail fast on obviously-huge downloads.
-        if let Some(len) = resp.content_length()
+        let declared_len = resp.content_length();
+        if let Some(len) = declared_len
             && len > self.max_bytes
         {
             return Err(Error::TooLarge {
@@ -228,29 +240,37 @@ impl Installer {
             });
         }
 
-        // The `bytes::Bytes` materialiser will surface an error on a body
-        // larger than the configured client cap, but we also cap via
-        // Content-Length above. For bodies without a declared length, a
-        // misbehaving server could still stream past `max_bytes`; the
-        // built-in reqwest default has no read cap, so we additionally
-        // guard the final size here.
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|source| Error::Download {
-                url: url.to_owned(),
-                source,
-            })?;
+        // Stream the body chunk-by-chunk via `Response::chunk`, keeping a
+        // running byte counter and aborting the instant the cap is exceeded.
+        // This closes the gap a missing/lying `Content-Length` would
+        // otherwise open: we never buffer the whole body before checking.
+        let mut resp = resp;
+        // Pre-reserve at most the declared length (when known and within the
+        // cap) so the common case avoids repeated re-allocations.
+        let reserve = declared_len
+            .filter(|&len| len <= self.max_bytes)
+            .map_or(0, |len| usize::try_from(len).unwrap_or(0));
+        let mut buf: Vec<u8> = Vec::with_capacity(reserve);
+        let mut total: u64 = 0;
+        while let Some(chunk) = resp.chunk().await.map_err(|source| Error::Download {
+            url: url.to_owned(),
+            source,
+        })? {
+            // Saturating add guards against overflow on a pathologically
+            // large stream — saturating to `u64::MAX` then trips the cap.
+            total = total.saturating_add(chunk.len() as u64);
+            if total > self.max_bytes {
+                return Err(Error::TooLarge {
+                    url: url.to_owned(),
+                    size: total,
+                    max: self.max_bytes,
+                });
+            }
 
-        if bytes.len() as u64 > self.max_bytes {
-            return Err(Error::TooLarge {
-                url: url.to_owned(),
-                size: bytes.len() as u64,
-                max: self.max_bytes,
-            });
+            buf.extend_from_slice(&chunk);
         }
 
-        Ok(bytes.to_vec())
+        Ok(buf)
     }
 
     /// Verify the downloaded bytes against the tool's checksum policy.
@@ -341,38 +361,65 @@ fn resolve_install_dir(tool: &Tool, override_dir: Option<&Utf8PathBuf>) -> Resul
         return Ok(d.clone());
     }
     let home = dirs::home_dir().ok_or(Error::NoHomeDir)?;
-    let dir = Utf8PathBuf::from_path_buf(home.join(".local/bin"))
-        .map_err(|_| Error::NoHomeDir)?;
+    let dir = Utf8PathBuf::from_path_buf(home.join(".local/bin")).map_err(|_| Error::NoHomeDir)?;
     Ok(dir)
 }
 
 /// Write `bytes` to `dest` atomically (temp file in the same dir, then
 /// rename) and set executable permissions on Unix.
+///
+/// To avoid a transient permissions window, the temp file is created with
+/// the executable mode up front (chmod-on-temp-before-rename): the final
+/// inode is reachable the instant the rename completes, already `0o755` on
+/// Unix, so there is never a moment where a fresh executable sits on disk
+/// readable but not executable (or vice-versa).
 fn write_executable(dest: &Path, bytes: &[u8]) -> Result<()> {
     // Ensure the parent directory exists.
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    // toride-fs writes to a NamedTempFile in the parent dir then renames —
-    // readers never see a partial binary.
-    toride_fs::atomic_write_bytes(dest, bytes)?;
-
-    set_executable(dest)?;
-    Ok(())
-}
-
-/// `chmod 0o755` on Unix; no-op elsewhere.
-fn set_executable(path: &Path) -> Result<()> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755))?;
+
+        // Create the temp file in the SAME directory as the destination so
+        // the rename stays atomic on the same filesystem. `tempfile`'s
+        // `.permissions(...)` sets the mode at creation (overriding umask,
+        // matching the pattern used by toride-fs' atomic-write core), so the
+        // renamed inode is already `0o755` the instant it becomes reachable.
+        let mut tmp = tempfile::Builder::new()
+            .permissions(std::fs::Permissions::from_mode(0o755))
+            .tempfile_in(dest.parent().unwrap_or(Path::new(".")))
+            .map_err(|source| {
+                Error::Atomic(toride_fs::Error::AtomicWriteFailed {
+                    path: dest.display().to_string(),
+                    reason: format!("failed to create temp file: {source}"),
+                })
+            })?;
+
+        tmp.write_all(bytes)?;
+        tmp.flush()?;
+        tmp.as_file().sync_all().map_err(|source| {
+            Error::Atomic(toride_fs::Error::AtomicWriteFailed {
+                path: dest.display().to_string(),
+                reason: format!("failed to fsync temp file: {source}"),
+            })
+        })?;
+
+        tmp.persist(dest).map_err(|source| {
+            Error::Atomic(toride_fs::Error::AtomicWriteFailed {
+                path: dest.display().to_string(),
+                reason: format!("failed to persist temp file: {source}"),
+            })
+        })?;
     }
     #[cfg(not(unix))]
     {
-        let _ = path;
+        // No executable-bit concept off Unix; a plain atomic write suffices.
+        toride_fs::atomic_write_bytes(dest, bytes)?;
     }
+
     Ok(())
 }
 
@@ -476,8 +523,8 @@ pub async fn install_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::target::{Arch, Os};
     use crate::ArtifactKind;
+    use crate::target::{Arch, Os};
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
@@ -583,7 +630,9 @@ mod tests {
             ..Default::default()
         };
         // 5 bytes >= 4-byte floor.
-        installer.verify(&tool, "1.0", b"enough", "https://x").unwrap();
+        installer
+            .verify(&tool, "1.0", b"enough", "https://x")
+            .unwrap();
     }
 
     #[test]
@@ -623,7 +672,9 @@ mod tests {
             checksum: Checksum::Digest(digest),
             ..Default::default()
         };
-        installer.verify(&tool, "1.0", b"MATCH", "https://x").unwrap();
+        installer
+            .verify(&tool, "1.0", b"MATCH", "https://x")
+            .unwrap();
     }
 
     #[test]
@@ -631,7 +682,9 @@ mod tests {
         let installer = Installer::new();
         let tool = Tool {
             name: "demo".into(),
-            checksum: Checksum::Digest("0000000000000000000000000000000000000000000000000000000000000000".into()),
+            checksum: Checksum::Digest(
+                "0000000000000000000000000000000000000000000000000000000000000000".into(),
+            ),
             ..Default::default()
         };
         let err = installer
@@ -657,7 +710,9 @@ mod tests {
             ..Default::default()
         };
         let installer = Installer::new().with_min_bytes(1);
-        installer.verify(&tool, "latest", bytes, "https://x").unwrap();
+        installer
+            .verify(&tool, "latest", bytes, "https://x")
+            .unwrap();
         let exec = extract_executable(bytes, tool.artifact, &tool.name, None).unwrap();
         write_executable(&dest, &exec).unwrap();
 
@@ -683,10 +738,7 @@ mod tests {
         let r = TemplateResolver {
             template: "https://x.test/{version}/tool-{target}".into(),
         };
-        let (v, u) = r
-            .resolve(host_target(), "9.9.9")
-            .await
-            .unwrap();
+        let (v, u) = r.resolve(host_target(), "9.9.9").await.unwrap();
         assert_eq!(v, "9.9.9");
         assert!(u.contains("9.9.9"));
         assert!(u.contains("tool-"));
@@ -697,7 +749,10 @@ mod tests {
     #[tokio::test]
     async fn real_download_errors_on_bad_host() {
         // Gated: hits the network (DNS). Run with TORIDE_INSTALLER_INTEGRATION=1.
-        if !matches!(std::env::var("TORIDE_INSTALLER_INTEGRATION").as_deref(), Ok("1")) {
+        if !matches!(
+            std::env::var("TORIDE_INSTALLER_INTEGRATION").as_deref(),
+            Ok("1")
+        ) {
             eprintln!("TORIDE_INSTALLER_INTEGRATION not set; skipping live network test");
             return;
         }
@@ -712,14 +767,19 @@ mod tests {
     #[tokio::test]
     async fn real_download_errors_on_404() {
         // Gated: hits the network. Run with TORIDE_INSTALLER_INTEGRATION=1.
-        if !matches!(std::env::var("TORIDE_INSTALLER_INTEGRATION").as_deref(), Ok("1")) {
+        if !matches!(
+            std::env::var("TORIDE_INSTALLER_INTEGRATION").as_deref(),
+            Ok("1")
+        ) {
             eprintln!("TORIDE_INSTALLER_INTEGRATION not set; skipping live network test");
             return;
         }
         let installer = Installer::new();
         // A URL that resolves but returns 404.
         let err = installer
-            .download("https://github.com/jdx/mise/releases/latest/download/this-asset-does-not-exist")
+            .download(
+                "https://github.com/jdx/mise/releases/latest/download/this-asset-does-not-exist",
+            )
             .await
             .unwrap_err();
         assert!(matches!(err, Error::HttpStatus { status, .. } if status == 404));

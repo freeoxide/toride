@@ -1,7 +1,7 @@
 //! Full SSH config resolution.
 //!
 //! Handles Include chains, token/env expansion, first-match-wins
-//! (with IdentityFile accumulation), and CanonicalizeHostname double-parse.
+//! (with `IdentityFile` accumulation), and `CanonicalizeHostname` double-parse.
 
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -24,27 +24,27 @@ pub struct ResolvedHost {
     pub identity_files: Vec<String>,
     /// Certificate files (accumulative across matching blocks).
     pub certificate_files: Vec<String>,
-    /// ProxyJump hosts.
+    /// `ProxyJump` hosts.
     pub proxy_jump: Option<String>,
-    /// IdentityAgent socket path.
+    /// `IdentityAgent` socket path.
     pub identity_agent: Option<String>,
-    /// ForwardAgent setting (yes/no).
+    /// `ForwardAgent` setting (yes/no).
     pub forward_agent: Option<String>,
-    /// AddKeysToAgent setting (yes/confirm/ask/no/lifetime).
+    /// `AddKeysToAgent` setting (yes/confirm/ask/no/lifetime).
     pub add_keys_to_agent: Option<String>,
-    /// UseKeychain setting (yes/no, macOS only).
+    /// `UseKeychain` setting (yes/no, macOS only).
     pub use_keychain: Option<String>,
-    /// ControlMaster setting (yes/no/auto/ask/autoask).
+    /// `ControlMaster` setting (yes/no/auto/ask/autoask).
     pub control_master: Option<String>,
-    /// ControlPath socket path.
+    /// `ControlPath` socket path.
     pub control_path: Option<String>,
-    /// ControlPersist duration.
+    /// `ControlPersist` duration.
     pub control_persist: Option<String>,
-    /// LocalForward entries (accumulative).
+    /// `LocalForward` entries (accumulative).
     pub local_forwards: Vec<String>,
-    /// RemoteForward entries (accumulative).
+    /// `RemoteForward` entries (accumulative).
     pub remote_forwards: Vec<String>,
-    /// DynamicForward entries (accumulative).
+    /// `DynamicForward` entries (accumulative).
     pub dynamic_forwards: Vec<String>,
     /// All raw key-value directives from matching blocks.
     pub directives: Vec<(String, String)>,
@@ -102,7 +102,7 @@ const TOKEN_EXPANDABLE: &[&str] = &[
 /// 1. Loading and parsing the main config file.
 /// 2. Inlining `Include` directives (with cycle detection).
 /// 3. Token and environment variable expansion.
-/// 4. First-match-wins resolution with IdentityFile accumulation.
+/// 4. First-match-wins resolution with `IdentityFile` accumulation.
 /// 5. If `CanonicalizeHostname` is enabled, a second resolution pass using
 ///    the resolved `HostName` as the lookup key.
 ///
@@ -130,10 +130,7 @@ pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<R
 
     // CanonicalizeHostname: if enabled, re-resolve using the resolved HostName.
     if is_canonicalize_enabled(&resolved) {
-        let canonical_host = resolved
-            .host_name
-            .take()
-            .unwrap_or_else(|| host.to_owned());
+        let canonical_host = resolved.host_name.take().unwrap_or_else(|| host.to_owned());
 
         let mut canon = resolve_pass(&flat_ast, &canonical_host, host, &local_user);
 
@@ -195,11 +192,7 @@ fn resolve_pass(
         match node {
             ConfigNode::HostBlock(b) => {
                 if host_matches(target_host, &b.patterns) {
-                    resolve_block(
-                        &b.nodes,
-                        &mut resolved,
-                        &mut seen_keys,
-                    );
+                    resolve_block(&b.nodes, &mut resolved, &mut seen_keys);
                 }
             }
             ConfigNode::MatchBlock(b) => {
@@ -213,11 +206,7 @@ fn resolve_pass(
                     resolved.unevaluated_match_warnings.push(warning);
                 }
                 if match_criteria_host(&b.criteria, target_host, local_user, original_host) {
-                    resolve_block(
-                        &b.nodes,
-                        &mut resolved,
-                        &mut seen_keys,
-                    );
+                    resolve_block(&b.nodes, &mut resolved, &mut seen_keys);
                 }
             }
             _ => {}
@@ -236,12 +225,12 @@ fn load_and_flatten<'a>(
         // PERF: If canonicalize fails (e.g. permission denied, broken symlink),
         // cycle detection may not catch symlink loops. This is acceptable because
         // SSH config files are unlikely to use symlinks.
-        let canonical = path
-            .canonicalize()
-            .unwrap_or_else(|_| path.to_owned());
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_owned());
 
         if visited.contains(&canonical) {
-            return Err(toride_ssh_core::Error::ConfigIncludeCycle(canonical.display().to_string()));
+            return Err(toride_ssh_core::Error::ConfigIncludeCycle(
+                canonical.display().to_string(),
+            ));
         }
         visited.insert(canonical);
 
@@ -540,14 +529,10 @@ fn simple_glob_match(name: &str, pattern: &str) -> bool {
 
 /// Apply first-match-wins resolution from a block's nodes.
 ///
-/// Accumulative directives (IdentityFile, CertificateFile, etc.) are
+/// Accumulative directives (`IdentityFile`, `CertificateFile`, etc.) are
 /// collected across all matching blocks. All other directives use
 /// first-match-wins semantics.
-fn resolve_block(
-    nodes: &[ConfigNode],
-    resolved: &mut ResolvedHost,
-    seen: &mut HashSet<String>,
-) {
+fn resolve_block(nodes: &[ConfigNode], resolved: &mut ResolvedHost, seen: &mut HashSet<String>) {
     for node in nodes {
         if let ConfigNode::Directive(d) = node {
             // Accumulative directives — collect with dedup.
@@ -655,10 +640,14 @@ struct TokenContext<'a> {
     remote_user: &'a str,
     local_user: &'a str,
     port: &'a str,
-    /// Canonical hostname (same as host unless CanonicalizeHostname is enabled).
+    /// Canonical hostname (same as host unless `CanonicalizeHostname` is enabled).
     canonical_host: &'a str,
     /// Identity file being expanded (`%i` → basename).  `None` when
     /// expanding a non-IdentityFile directive.
+    #[allow(
+        dead_code,
+        reason = "placeholder for `%i` token expansion, not yet wired"
+    )]
     identity_file: Option<&'a str>,
     /// Local host key (`%k`).
     local_host_key: &'a str,
@@ -675,7 +664,10 @@ struct TokenContext<'a> {
 /// fields (`identity_files`, `host_name`, `proxy_jump`) and every
 /// entry in the raw `directives` vec whose key is listed in
 /// [`TOKEN_EXPANDABLE`].
-#[expect(clippy::too_many_lines, reason = "serial field-by-field expansion over ResolvedHost")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "serial field-by-field expansion over ResolvedHost"
+)]
 fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
     let local_user = whoami();
     let local_hostname = hostname();
@@ -821,7 +813,7 @@ fn is_canonicalize_enabled(resolved: &ResolvedHost) -> bool {
 
 /// Expand SSH tokens in a value string.
 ///
-/// Supported tokens (matching OpenSSH ssh_config(5)):
+/// Supported tokens (matching OpenSSH `ssh_config(5)`):
 /// - `%%` → literal `%`
 /// - `%C` → hash of connection (host+port+user) — placeholder
 /// - `%d` → home directory
@@ -874,7 +866,11 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
                 Some('L') => {
                     // Short hostname (first component before '.').
                     chars.next();
-                    let short = ctx.local_hostname.split('.').next().unwrap_or(ctx.local_hostname);
+                    let short = ctx
+                        .local_hostname
+                        .split('.')
+                        .next()
+                        .unwrap_or(ctx.local_hostname);
                     result.push_str(short);
                 }
                 Some('l') => {
@@ -964,11 +960,8 @@ fn whoami() -> String {
 
 /// Get the local hostname.
 fn hostname() -> String {
-    std::env::var("HOSTNAME").unwrap_or_else(|_| {
-        gethostname::gethostname()
-            .to_string_lossy()
-            .into_owned()
-    })
+    std::env::var("HOSTNAME")
+        .unwrap_or_else(|_| gethostname::gethostname().to_string_lossy().into_owned())
 }
 
 /// Check if a hostname matches SSH config patterns (reuses directive logic).
@@ -1039,10 +1032,7 @@ fn match_criteria_host(
                 has_user = true;
                 // OpenSSH matches user names case-insensitively.
                 let names: Vec<&str> = names_str.split(',').collect();
-                if names
-                    .iter()
-                    .any(|n| n.eq_ignore_ascii_case(target_user))
-                {
+                if names.iter().any(|n| n.eq_ignore_ascii_case(target_user)) {
                     user_matched = true;
                 }
             }

@@ -93,28 +93,26 @@ pub fn add_user_to_group(username: &str, group: &str) -> Result<()> {
 
 /// Remove a user from a group.
 ///
-/// This is done by re-setting the user's supplementary group list minus the
-/// target group using `usermod -G`.
+/// Uses `gpasswd -d <user> <group>`, which removes a single group membership
+/// in place. This preserves any other supplementary groups the user belongs to
+/// (including memberships discovered via NSS / LDAP that are not present in
+/// the local `/etc/group`). The previous `usermod -G` implementation rebuilt
+/// the entire supplementary-group list from the local `group` file and would
+/// silently drop those NSS memberships.
 ///
 /// # Errors
 ///
-/// - [`Error::BinaryNotFound`] if `usermod` is not on `$PATH`.
-/// - [`Error::CommandFailed`] if `usermod` returns a non-zero exit code.
+/// - [`Error::BinaryNotFound`] if `gpasswd` is not on `$PATH`.
+/// - [`Error::CommandFailed`] if `gpasswd` returns a non-zero exit code.
 #[cfg(feature = "client")]
 pub fn remove_user_from_group(username: &str, group: &str) -> Result<()> {
-    // Get current groups for the user, filter out the target group. This
-    // mutates the live system via `usermod`, so it reads the real /etc/group.
-    let current = get_user_groups(std::path::Path::new("/etc/group"), username)?;
-    let remaining: Vec<String> = current.into_iter().filter(|g| g != group).collect();
+    let gpasswd = which::which("gpasswd").map_err(|_| Error::BinaryNotFound("gpasswd".into()))?;
 
-    let usermod = which::which("usermod").map_err(|_| Error::BinaryNotFound("usermod".into()))?;
-
-    let groups_str = remaining.join(",");
-    duct::cmd(&usermod, ["-G", &groups_str, username])
+    duct::cmd(&gpasswd, ["-d", username, group])
         .stderr_to_stdout()
         .read()
         .map_err(|e| Error::CommandFailed {
-            program: "usermod".to_owned(),
+            program: "gpasswd".to_owned(),
             code: None,
             stderr: e.to_string(),
         })?;

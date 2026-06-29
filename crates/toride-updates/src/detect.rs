@@ -12,7 +12,7 @@
 pub enum PackageManager {
     /// APT (Debian, Ubuntu, and derivatives).
     Apt,
-    /// DNF (Fedora, RHEL, CentOS, and derivatives).
+    /// DNF (Fedora, `RHEL`, `CentOS`, and derivatives).
     Dnf,
     /// Could not detect a supported package manager.
     Unknown,

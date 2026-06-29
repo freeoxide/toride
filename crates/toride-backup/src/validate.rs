@@ -102,7 +102,9 @@ pub fn validate_retention_policy(policy: &RetentionPolicy) -> Vec<ValidationFind
                 findings.push(ValidationFinding {
                     field: format!("retention.{name}"),
                     severity: ValidationSeverity::Warning,
-                    message: format!("{name} = {n} is very high; this may consume significant storage"),
+                    message: format!(
+                        "{name} = {n} is very high; this may consume significant storage"
+                    ),
                 });
             }
         }
@@ -153,7 +155,10 @@ pub fn validate_schedule(schedule: &Schedule) -> Vec<ValidationFinding> {
     let field_names = ["minute", "hour", "day-of-month", "month", "day-of-week"];
     let max_values: [u32; 5] = [59, 23, 31, 12, 7];
 
-    for (i, (part, (name, &max))) in parts.iter().zip(field_names.iter().zip(&max_values)).enumerate()
+    for (i, (part, (name, &max))) in parts
+        .iter()
+        .zip(field_names.iter().zip(&max_values))
+        .enumerate()
     {
         // Skip wildcards, ranges, steps, and lists.
         if *part == "*" || part.contains('-') || part.contains('/') || part.contains(',') {
@@ -161,7 +166,7 @@ pub fn validate_schedule(schedule: &Schedule) -> Vec<ValidationFinding> {
         }
 
         if let Ok(val) = part.parse::<u32>() {
-            let effective_min = if i == 2 { 1 } else { 0 }; // day-of-month starts at 1
+            let effective_min = u32::from(i == 2); // day-of-month starts at 1
             if val < effective_min || val > max {
                 findings.push(ValidationFinding {
                     field: "schedule.cron".into(),
@@ -225,18 +230,16 @@ pub fn validate_spec(spec: &BackupSpec) -> Result<Vec<ValidationFinding>> {
                 findings.push(ValidationFinding {
                     field: "sources".into(),
                     severity: ValidationSeverity::Error,
-                    message: format!(
-                        "backup spec {:?}: source path must not be empty",
-                        spec.name,
-                    ),
+                    message: format!("backup spec {:?}: source path must not be empty", spec.name),
                 });
             } else if !s.starts_with('/') {
                 findings.push(ValidationFinding {
                     field: "sources".into(),
                     severity: ValidationSeverity::Warning,
                     message: format!(
-                        "backup spec {:?}: source path {:?} is not absolute",
-                        spec.name, source,
+                        "backup spec {:?}: source path {} is not absolute",
+                        spec.name,
+                        source.display(),
                     ),
                 });
             }

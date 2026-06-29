@@ -74,9 +74,7 @@ impl Mise {
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     pub async fn tool_alias_get(&self, tool: &str, alias: &str) -> MiseResult<String> {
-        let output = self
-            .run_checked(["tool-alias", "get", tool, alias])
-            .await?;
+        let output = self.run_checked(["tool-alias", "get", tool, alias]).await?;
         Ok(output.stdout_trimmed().to_owned())
     }
 
@@ -87,12 +85,7 @@ impl Mise {
     /// # Errors
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    pub async fn tool_alias_set(
-        &self,
-        tool: &str,
-        alias: &str,
-        version: &str,
-    ) -> MiseResult<()> {
+    pub async fn tool_alias_set(&self, tool: &str, alias: &str, version: &str) -> MiseResult<()> {
         self.run_checked(["tool-alias", "set", tool, alias, version])
             .await?;
         Ok(())

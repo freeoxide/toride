@@ -2,6 +2,7 @@ pub mod about;
 pub mod base;
 pub mod dashboard;
 pub mod fail2ban;
+/// Help modal overlay content renderer.
 pub mod help;
 pub mod logs;
 pub mod quit;
@@ -22,8 +23,10 @@ pub mod toride_updates;
 pub mod toride_users;
 pub mod toride_wireguard;
 pub mod ufw_kit;
+/// Welcome splash screen.
 pub mod welcome;
 
+pub use crate::ssh_data::{SecurityCheck, SecurityGrade, SshSecurityData};
 pub use base::ScreenBase;
 pub use dashboard::DashboardScreen;
 pub use help::HelpScreen;
@@ -32,7 +35,6 @@ pub use ssh::{
     AgentKeyEntry, AgentStatus, AuthorizedKeyEntry, CertificateEntry, ConfigHostEntry,
     DiagnosticEntry, ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshContent, SshKeyEntry,
 };
-pub use crate::ssh_data::{SecurityCheck, SecurityGrade, SshSecurityData};
 pub use welcome::WelcomeScreen;
 
 use crossterm::event::{KeyCode, MouseEvent};
@@ -200,8 +202,14 @@ mod tests {
         // or a "RECENTLY INSTALLED" panel at cold start — those were mock data.
         assert!(output.contains("toride"), "header logo: {output}");
         assert!(output.contains("MODULES"), "modules panel title/label");
-        assert!(output.contains("STORAGE & NETWORK"), "updates->storage panel");
-        assert!(output.contains("TOP PROCESSES"), "activity->top processes panel");
+        assert!(
+            output.contains("STORAGE & NETWORK"),
+            "updates->storage panel"
+        );
+        assert!(
+            output.contains("TOP PROCESSES"),
+            "activity->top processes panel"
+        );
         // Honest cold-start sentinel (replaces the fabricated "ssh hardening" card).
         assert!(
             output.contains("collecting system status"),
@@ -220,11 +228,16 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::duration_suboptimal_units,
+        reason = "stable std lacks larger-unit constructors"
+    )]
+    #[expect(clippy::too_many_lines, reason = "test fixture")]
     fn dashboard_screen_live_snapshot() {
         use crate::status::{
-            DaemonStatus, DiskIoSnapshot, DiskStatus, HardwareInventory, LoadAverage,
-            MemoryStatus, NetworkStatus, OsInfo, ProcessSnapshot, ProcessStatus, SensorSnapshot,
-            StaticInfo, SwapStatus, SshStatus, SystemStatus, TorideStatus, VirtualizationSnapshot,
+            DaemonStatus, DiskIoSnapshot, DiskStatus, HardwareInventory, LoadAverage, MemoryStatus,
+            NetworkStatus, OsInfo, ProcessSnapshot, ProcessStatus, SensorSnapshot, SshStatus,
+            StaticInfo, SwapStatus, SystemStatus, TorideStatus, VirtualizationSnapshot,
         };
         use std::time::{Duration, SystemTime};
 
@@ -419,28 +432,42 @@ mod tests {
         // Sanity assertions on the live path before snapshotting.
         assert!(output.contains("MANAGED"), "live stat card label: {output}");
         assert!(output.contains("FINDINGS"), "findings stat card: {output}");
-        assert!(output.contains("MANAGED SERVICES"), "live panel title: {output}");
-        assert!(output.contains("STORAGE & NETWORK"), "storage panel title: {output}");
-        assert!(output.contains("TOP PROCESSES"), "processes panel title: {output}");
+        assert!(
+            output.contains("MANAGED SERVICES"),
+            "live panel title: {output}"
+        );
+        assert!(
+            output.contains("STORAGE & NETWORK"),
+            "storage panel title: {output}"
+        );
+        assert!(
+            output.contains("TOP PROCESSES"),
+            "processes panel title: {output}"
+        );
         assert!(output.contains("firefox"), "top process row: {output}");
         assert!(output.contains("edge-prod-01"), "live hostname: {output}");
         // Compact daemon/ssh health glyphs appear on the uptime line.
         assert!(
-            output.contains("d") && output.contains("✓"),
+            output.contains('d') && output.contains("✓"),
             "health glyphs: {output}"
         );
         insta::assert_snapshot!("dashboard_screen_live", output);
     }
 
     #[test]
+    #[expect(
+        clippy::duration_suboptimal_units,
+        reason = "stable std lacks larger-unit constructors"
+    )]
+    #[expect(clippy::too_many_lines, reason = "test fixture")]
     fn dashboard_screen_live_empty_disks_and_processes_does_not_panic() {
         // Adversarial edge case: live status with no disks, no processes, no
         // network rates (macOS degradation / preset-gated empty fields). The
         // live panels must render their "no data" placeholders without panicking.
         use crate::status::{
             DaemonStatus, DiskIoSnapshot, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo,
-            ProcessSnapshot, SensorSnapshot, StaticInfo, SwapStatus, SshStatus, SystemStatus,
-            TorideStatus, VirtualizationSnapshot,
+            ProcessSnapshot, SensorSnapshot, SshStatus, StaticInfo, SystemStatus, TorideStatus,
+            VirtualizationSnapshot,
         };
         use std::time::{Duration, SystemTime};
 
@@ -583,7 +610,13 @@ mod tests {
         screen.set_status(status);
         // Must not panic: empty disks → placeholder, empty processes → placeholder.
         let output = render_to_string(&mut screen, 160, 44);
-        assert!(output.contains("no storage/network data"), "storage placeholder: {output}");
-        assert!(output.contains("no process data"), "process placeholder: {output}");
+        assert!(
+            output.contains("no storage/network data"),
+            "storage placeholder: {output}"
+        );
+        assert!(
+            output.contains("no process data"),
+            "process placeholder: {output}"
+        );
     }
 }

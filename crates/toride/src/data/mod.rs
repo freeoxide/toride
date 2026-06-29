@@ -99,7 +99,7 @@ pub enum Section {
     Tailscale,
     /// Kernel-hardening management (sysctl profiles, shm mounts, doctor).
     Harden,
-    /// WireGuard VPN tunnel management (read-only).
+    /// `WireGuard` VPN tunnel management (read-only).
     WireGuard,
     /// Automatic security updates management (read-only).
     Updates,
@@ -317,28 +317,109 @@ impl DashboardData {
     /// and were pure dead public-API surface. The two dashboard reads that
     /// referenced them now use literal `0` / the live `pending_total` Option.
     #[must_use]
+    #[allow(clippy::too_many_lines)]
     pub fn empty() -> Self {
         let sidebar = vec![
-            SidebarItem { icon: "◑", section: Section::Dashboard, badge: None },
-            SidebarItem { icon: "▣", section: Section::Tools, badge: None },
-            SidebarItem { icon: "▲", section: Section::Templates, badge: None },
-            SidebarItem { icon: "◆", section: Section::Ssh, badge: None },
-            SidebarItem { icon: "▦", section: Section::Firewall, badge: None },
-            SidebarItem { icon: "✦", section: Section::Fail2ban, badge: None },
-            SidebarItem { icon: "⛓", section: Section::Tailscale, badge: None },
-            SidebarItem { icon: "⚙", section: Section::Harden, badge: None },
-            SidebarItem { icon: "◇", section: Section::WireGuard, badge: None },
-            SidebarItem { icon: "↻", section: Section::Updates, badge: None },
-            SidebarItem { icon: "◉", section: Section::Users, badge: None },
-            SidebarItem { icon: "⚖", section: Section::Audit, badge: None },
-            SidebarItem { icon: "◎", section: Section::Monitor, badge: None },
-            SidebarItem { icon: "▣", section: Section::Backup, badge: None },
-            SidebarItem { icon: "⊕", section: Section::Proxy, badge: None },
-            SidebarItem { icon: "☁", section: Section::Cloud, badge: None },
-            SidebarItem { icon: "Ⓜ", section: Section::Mise, badge: None },
-            SidebarItem { icon: "≡", section: Section::Logs, badge: None },
-            SidebarItem { icon: "◇", section: Section::About, badge: None },
-            SidebarItem { icon: "⚙", section: Section::Settings, badge: None },
+            SidebarItem {
+                icon: "◑",
+                section: Section::Dashboard,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "▣",
+                section: Section::Tools,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "▲",
+                section: Section::Templates,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "◆",
+                section: Section::Ssh,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "▦",
+                section: Section::Firewall,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "✦",
+                section: Section::Fail2ban,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "⛓",
+                section: Section::Tailscale,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "⚙",
+                section: Section::Harden,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "◇",
+                section: Section::WireGuard,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "↻",
+                section: Section::Updates,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "◉",
+                section: Section::Users,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "⚖",
+                section: Section::Audit,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "◎",
+                section: Section::Monitor,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "▣",
+                section: Section::Backup,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "⊕",
+                section: Section::Proxy,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "☁",
+                section: Section::Cloud,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "Ⓜ",
+                section: Section::Mise,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "≡",
+                section: Section::Logs,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "◇",
+                section: Section::About,
+                badge: None,
+            },
+            SidebarItem {
+                icon: "⚙",
+                section: Section::Settings,
+                badge: None,
+            },
         ];
 
         let modules = vec![Module {
@@ -403,7 +484,10 @@ mod tests {
     #[test]
     fn status_colors_differ_by_variant() {
         let p = Palette::default();
-        assert_ne!(ModuleStatus::Installed.color(p), ModuleStatus::Active.color(p));
+        assert_ne!(
+            ModuleStatus::Installed.color(p),
+            ModuleStatus::Active.color(p)
+        );
     }
 
     /// Regression for the green-✓-on-offline bug: `offline` must not share the
@@ -416,13 +500,22 @@ mod tests {
         assert_eq!(ModuleStatus::Offline.glyph(), "✗");
         assert_eq!(ModuleStatus::Offline.label(), "offline");
         assert_eq!(ModuleStatus::Offline.color(p), p.err);
-        assert_ne!(ModuleStatus::Offline.glyph(), ModuleStatus::Installed.glyph());
-        assert_ne!(ModuleStatus::Offline.color(p), ModuleStatus::Installed.color(p));
+        assert_ne!(
+            ModuleStatus::Offline.glyph(),
+            ModuleStatus::Installed.glyph()
+        );
+        assert_ne!(
+            ModuleStatus::Offline.color(p),
+            ModuleStatus::Installed.color(p)
+        );
         // Degraded: ! in warn, never the ready ✓ / info.
         assert_eq!(ModuleStatus::Degraded.glyph(), "!");
         assert_eq!(ModuleStatus::Degraded.label(), "degraded");
         assert_eq!(ModuleStatus::Degraded.color(p), p.warn);
         assert_ne!(ModuleStatus::Degraded.glyph(), ModuleStatus::Ready.glyph());
-        assert_ne!(ModuleStatus::Degraded.color(p), ModuleStatus::Ready.color(p));
+        assert_ne!(
+            ModuleStatus::Degraded.color(p),
+            ModuleStatus::Ready.color(p)
+        );
     }
 }

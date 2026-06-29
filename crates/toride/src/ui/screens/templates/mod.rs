@@ -221,6 +221,10 @@ impl TemplatesContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with harden/fail2ban/ufw-kit tabs"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with the harden / fail2ban / ufw-kit tabs.
@@ -241,7 +245,9 @@ impl TemplatesContent {
             p,
             &format!(
                 " HARDENING RECIPES · {}/{} recipes ready · {} finding(s) ",
-                self.ready_count, self.total_count, self.findings.len(),
+                self.ready_count,
+                self.total_count,
+                self.findings.len(),
             ),
             p.accent,
             true,
@@ -261,7 +267,7 @@ impl TemplatesContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -295,8 +301,12 @@ impl TemplatesContent {
             .clone()
             .unwrap_or_else(|| "recipe catalogue could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -345,9 +355,9 @@ impl TemplatesContent {
             if group.is_empty() {
                 continue;
             }
-            self.push_category_header(&mut lines, p, category, group.len());
+            Self::push_category_header(&mut lines, p, category, group.len());
             for recipe in group {
-                self.push_recipe_line(&mut lines, p, recipe, inner_width);
+                Self::push_recipe_line(&mut lines, p, recipe, inner_width);
             }
             lines.push(Line::raw(""));
         }
@@ -373,7 +383,10 @@ impl TemplatesContent {
         lines.push(Line::from(vec![
             Span::styled("  audit    ", Style::new().fg(p.text_muted)),
             Span::styled(
-                format!("{summary_label}  ({}/{})", self.ready_count, self.total_count),
+                format!(
+                    "{summary_label}  ({}/{})",
+                    self.ready_count, self.total_count
+                ),
                 Style::new().fg(summary_color),
             ),
         ]));
@@ -388,7 +401,6 @@ impl TemplatesContent {
     }
 
     fn push_category_header(
-        &self,
         lines: &mut Vec<Line<'static>>,
         p: Palette,
         category: &str,
@@ -401,12 +413,15 @@ impl TemplatesContent {
     }
 
     fn push_recipe_line(
-        &self,
         lines: &mut Vec<Line<'static>>,
         p: Palette,
         recipe: &RecipeEntry,
         inner_width: u16,
     ) {
+        // Prefix width: "  "(2) + icon(1) + " "(1) + name(34) + " "(1) + label(9)
+        // + " "(1) + target(18) + " "(1) + diff(6) + " "(1) = 75.
+        const PREFIX_WIDTH: usize = 75;
+        const FALLBACK_DESC: usize = 30;
         let (icon, color, label) = if recipe.status == "ready" {
             ("✓", p.ok, "ready")
         } else {
@@ -415,10 +430,6 @@ impl TemplatesContent {
         let (diff_color, diff_label) = difficulty_style(&recipe.difficulty, p);
         let name = truncate_str(&recipe.name, 34);
         let target = truncate_str(&recipe.target_tool, 18);
-        // Prefix width: "  "(2) + icon(1) + " "(1) + name(34) + " "(1) + label(9)
-        // + " "(1) + target(18) + " "(1) + diff(6) + " "(1) = 75.
-        const PREFIX_WIDTH: usize = 75;
-        const FALLBACK_DESC: usize = 30;
         let desc_max = if inner_width as usize >= PREFIX_WIDTH {
             let scaled = inner_width as usize - PREFIX_WIDTH;
             if scaled >= 1 { scaled } else { FALLBACK_DESC }
@@ -428,7 +439,10 @@ impl TemplatesContent {
         let desc = truncate_str(&recipe.description, desc_max);
         lines.push(Line::from(vec![
             Span::styled(format!("  {icon} "), Style::new().fg(color)),
-            Span::styled(format!("{name:<34}"), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                format!("{name:<34}"),
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(format!(" {label:<9}"), Style::new().fg(color)),
             Span::styled(format!(" {target:<18}"), Style::new().fg(p.text_muted)),
             Span::styled(format!(" [{diff_label:<6}]"), Style::new().fg(diff_color)),
@@ -487,8 +501,8 @@ fn difficulty_style(difficulty: &str, p: Palette) -> (ratatui::style::Color, &st
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::theme::CHARM;
     use crate::ui::screens::section_overview::SectionOverview;
+    use crate::ui::theme::CHARM;
     use ratatui::{Terminal, backend::TestBackend};
 
     fn sample_recipes() -> Vec<RecipeEntry> {
@@ -559,20 +573,14 @@ mod tests {
                 "id '{}' must start with 'templates.missing.'",
                 f.id
             );
-            assert!(
-                f.id.contains('.'),
-                "id '{}' must be dot-separated",
-                f.id
-            );
+            assert!(f.id.contains('.'), "id '{}' must be dot-separated", f.id);
         }
     }
 
     /// Render a content area to a string (snapshot pattern from harden/fail2ban).
     fn render_to_string(content: &mut TemplatesContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -657,7 +665,10 @@ mod tests {
         assert!(out.contains("Backup (1)"), "backup group: {out}");
         // Recipe names + status glyphs.
         assert!(out.contains("SSH Hardening"), "ssh recipe name: {out}");
-        assert!(out.contains("UFW Default-Deny Firewall"), "ufw recipe name: {out}");
+        assert!(
+            out.contains("UFW Default-Deny Firewall"),
+            "ufw recipe name: {out}"
+        );
     }
 
     #[test]

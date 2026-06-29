@@ -13,11 +13,7 @@ use toride_ssh_core::Result;
 ///
 /// Returns [`Error::DuplicateHost`] if a Host block with the same name
 /// already exists.
-pub fn add_host(
-    ast: &mut ConfigAst,
-    name: &str,
-    directives: Vec<(String, String)>,
-) -> Result<()> {
+pub fn add_host(ast: &mut ConfigAst, name: &str, directives: Vec<(String, String)>) -> Result<()> {
     // Check for duplicate.
     if find_host_index(ast, name).is_some() {
         return Err(toride_ssh_core::Error::DuplicateHost(name.to_owned()));
@@ -25,13 +21,15 @@ pub fn add_host(
 
     let nodes: Vec<ConfigNode> = directives
         .into_iter()
-        .map(|(key, value)| ConfigNode::Directive(Box::new(DirectiveData {
-            keyword: key,
-            separator: Separator::Space,
-            value,
-            comment: None,
-            indent: String::new(),
-        })))
+        .map(|(key, value)| {
+            ConfigNode::Directive(Box::new(DirectiveData {
+                keyword: key,
+                separator: Separator::Space,
+                value,
+                comment: None,
+                indent: String::new(),
+            }))
+        })
         .collect();
 
     let block = ConfigNode::HostBlock(Box::new(HostBlockData {
@@ -49,8 +47,7 @@ pub fn add_host(
 
     // Insert a blank line separator before the new block if needed.
     if insert_pos > 0 {
-        let prev_is_blank =
-            matches!(ast.nodes.get(insert_pos - 1), Some(ConfigNode::BlankLine));
+        let prev_is_blank = matches!(ast.nodes.get(insert_pos - 1), Some(ConfigNode::BlankLine));
         if !prev_is_blank {
             ast.nodes.insert(insert_pos, ConfigNode::BlankLine);
             ast.nodes.insert(insert_pos + 1, block);
@@ -98,8 +95,7 @@ pub fn rename_host(ast: &mut ConfigAst, old_name: &str, new_name: &str) -> Resul
         return Err(toride_ssh_core::Error::DuplicateHost(new_name.to_owned()));
     }
 
-    if let ConfigNode::HostBlock(b) = &mut ast.nodes[idx]
-    {
+    if let ConfigNode::HostBlock(b) = &mut ast.nodes[idx] {
         b.header = format!("Host {new_name}");
         b.patterns = vec![new_name.to_owned()];
     }
@@ -112,6 +108,7 @@ pub fn rename_host(ast: &mut ConfigAst, old_name: &str, new_name: &str) -> Resul
 /// # Errors
 ///
 /// Returns [`Error::HostNotFound`] if no Host block matches the given name.
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn add_directive_to_host(
     ast: &mut ConfigAst,
     name: &str,
@@ -139,6 +136,7 @@ pub fn add_directive_to_host(
 /// # Errors
 ///
 /// Returns [`Error::HostNotFound`] if no Host block matches the given name.
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn remove_directive_from_host(ast: &mut ConfigAst, name: &str, key: &str) -> Result<()> {
     let idx = find_host_index(ast, name)
         .ok_or_else(|| toride_ssh_core::Error::HostNotFound(name.to_owned()))?;

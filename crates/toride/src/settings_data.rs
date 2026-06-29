@@ -39,16 +39,16 @@ use crate::ui::screens::settings::{SettingsConfig, SettingsRuntime};
 #[derive(Clone, Debug)]
 pub struct SettingsDataBundle {
     /// Whether collection ran at all. `false` is reserved for the panic case
-    /// (a `tokio::spawn` JoinError); an unreadable config file degrades the
+    /// (a `tokio::spawn` `JoinError`); an unreadable config file degrades the
     /// `config` field but keeps `available == true` so the operator still sees
     /// the runtime block + theme list.
     pub available: bool,
     /// Parsed toride config (path, exists, theme, log level, raw key=value rows).
     pub config: SettingsConfig,
-    /// Runtime environment snapshot (RUST_LOG, dirs, shell, term, ...).
+    /// Runtime environment snapshot (`RUST_LOG`, dirs, shell, term, ...).
     pub runtime: SettingsRuntime,
     /// Human-readable reason collection failed, populated ONLY when
-    /// `available == false` because the collection task panicked (JoinError).
+    /// `available == false` because the collection task panicked (`JoinError`).
     /// `None` otherwise — notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
@@ -141,7 +141,7 @@ impl Default for SettingsCollector {
 /// gracefully: an unreadable / absent config file sets `config.exists = false`
 /// and empties `raw_keys` but keeps `available == true`; a missing env var
 /// just yields `None` for its slot. Only a collection-task panic (caught as a
-/// JoinError in `start()`) flips `available` to `false`.
+/// `JoinError` in `start()`) flips `available` to `false`.
 async fn collect_real_settings() -> SettingsDataBundle {
     let result = tokio::task::spawn_blocking(settings_convert::collect_local).await;
     match result {
@@ -155,7 +155,7 @@ async fn collect_real_settings() -> SettingsDataBundle {
 
 /// Empty bundle used before the first collection and when the collection task
 /// panicked. `available = false` signals the UI to render the degraded panel;
-/// no reason is attached here (the JoinError reason is added by
+/// no reason is attached here (the `JoinError` reason is added by
 /// [`empty_bundle_with_reason`]).
 fn empty_bundle() -> SettingsDataBundle {
     SettingsDataBundle {
@@ -167,7 +167,7 @@ fn empty_bundle() -> SettingsDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned
-/// collection task panicked (JoinError) — the reason string is rendered by the
+/// collection task panicked (`JoinError`) — the reason string is rendered by the
 /// UI's degraded panel so the operator sees what actually went wrong, mirroring
 /// every sibling collector's panic path.
 fn empty_bundle_with_reason(reason: String) -> SettingsDataBundle {

@@ -17,8 +17,7 @@ use toride_ssh_core::{CliRunner, Error, Fingerprint, KeySource, KeyType, Result,
 /// does not exist.
 #[cfg(feature = "native")]
 pub async fn connect() -> Result<Box<dyn ssh_agent_lib::agent::Session>> {
-    let socket_path = std::env::var("SSH_AUTH_SOCK")
-        .map_err(|_| Error::AgentNotAvailable)?;
+    let socket_path = std::env::var("SSH_AUTH_SOCK").map_err(|_| Error::AgentNotAvailable)?;
 
     let path = std::path::PathBuf::from(&socket_path);
     if !path.exists() {
@@ -49,9 +48,7 @@ pub async fn connect() -> Result<Box<dyn ssh_agent_lib::agent::Session>> {
     let tokio_stream = tokio::net::UnixStream::from_std(stream)
         .map_err(|e| Error::AgentOperationFailed(e.to_string()))?;
 
-    Ok(Box::new(
-        ssh_agent_lib::client::Client::new(tokio_stream),
-    ))
+    Ok(Box::new(ssh_agent_lib::client::Client::new(tokio_stream)))
 }
 
 /// List all identities currently loaded in the SSH agent.
@@ -141,10 +138,7 @@ pub async fn destination_constrained_add(
 
     let constraint = hosts.join(">");
     runner
-        .run(
-            "ssh-add",
-            vec!["-h".to_owned(), constraint, path_str],
-        )
+        .run("ssh-add", vec!["-h".to_owned(), constraint, path_str])
         .await
         .map_err(|e| Error::AgentOperationFailed(e.to_string()))?;
     Ok(())
@@ -229,9 +223,7 @@ async fn list_identities_native() -> Result<Vec<SshKey>> {
 
 /// Encode `ssh_key 0.6` `KeyData` to bytes using the `Encode` trait.
 #[cfg(feature = "native")]
-fn encode_key_data(
-    key_data: &ssh_agent_lib::ssh_key::public::KeyData,
-) -> Result<Vec<u8>> {
+fn encode_key_data(key_data: &ssh_agent_lib::ssh_key::public::KeyData) -> Result<Vec<u8>> {
     use ssh_agent_lib::ssh_encoding::Encode;
 
     let len = key_data
@@ -245,9 +237,10 @@ fn encode_key_data(
 }
 
 /// Compute a SHA-256 fingerprint from raw public key bytes.
+#[allow(dead_code, reason = "public API helper, not exercised in-workspace")]
 fn compute_sha256_fingerprint(bytes: &[u8], key_type: KeyType) -> Fingerprint {
-    use base64::engine::general_purpose::STANDARD_NO_PAD;
     use base64::Engine;
+    use base64::engine::general_purpose::STANDARD_NO_PAD;
     use ssh_key::sha2::{Digest, Sha256};
 
     let hash = Sha256::digest(bytes);
@@ -261,6 +254,7 @@ fn compute_sha256_fingerprint(bytes: &[u8], key_type: KeyType) -> Fingerprint {
 ///
 /// Returns `None` for unknown algorithms so callers can decide how to handle them
 /// rather than silently misidentifying the key type.
+#[allow(dead_code, reason = "public API helper, not exercised in-workspace")]
 pub(crate) fn parse_key_type_from_algorithm(alg: &str) -> Option<KeyType> {
     match alg {
         "ssh-ed25519" => Some(KeyType::Ed25519),
@@ -329,10 +323,7 @@ pub(crate) fn parse_ssh_add_line(line: &str) -> Option<SshKey> {
         .to_string();
 
     Some(SshKey {
-        path: std::path::PathBuf::from(format!(
-            "agent:{}",
-            comment_part.unwrap_or("unknown")
-        )),
+        path: std::path::PathBuf::from(format!("agent:{}", comment_part.unwrap_or("unknown"))),
         key_type,
         fingerprint: Some(Fingerprint { hash, key_type }),
         comment: comment_part.map(str::to_owned),

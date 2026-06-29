@@ -24,7 +24,7 @@ pub fn doctor(runner: &dyn Runner) -> Vec<Finding> {
     findings
 }
 
-/// Check that ASLR is enabled (kernel.randomize_va_space >= 1).
+/// Check that ASLR is enabled (`kernel.randomize_va_space` >= 1).
 fn check_aslr(runner: &dyn Runner) -> Vec<Finding> {
     match kernel::read_aslr(runner) {
         Ok(val) => match val.as_str() {
@@ -198,7 +198,7 @@ fn check_shm_mounts(runner: &dyn Runner) -> Vec<Finding> {
                             "{} should be mounted with nosuid,nodev,noexec.",
                             mount.target
                         ))
-                        .fix_hint(&format!(
+                        .fix_hint(format!(
                             "mount -o remount,nosuid,nodev,noexec {}",
                             mount.target
                         )),
@@ -298,7 +298,7 @@ mod tests {
     use toride_runner::CommandOutput;
     use toride_runner::fake::FakeRunner;
 
-    /// Build a FakeRunner that returns specific values for sysctl -n queries.
+    /// Build a `FakeRunner` that returns specific values for `sysctl -n` queries.
     ///
     /// Each call to `sysctl -n <key>` consumes one response in order.
     /// After that, `findmnt` gets one response.

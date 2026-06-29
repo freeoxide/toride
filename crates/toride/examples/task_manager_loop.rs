@@ -61,7 +61,7 @@ fn main() {
         }
 
         // Disk I/O rates
-        if let Some(ref dio) = delta.as_ref().and_then(|d| d.disk_io.as_ref()) {
+        if let Some(dio) = delta.as_ref().and_then(|d| d.disk_io.as_ref()) {
             println!(
                 "  Disk read:  {} ({:.1} B/s)",
                 format_bytes(dio.read_bytes_delta),
@@ -75,7 +75,7 @@ fn main() {
         }
 
         // Process delta
-        if let Some(ref proc) = delta.as_ref().and_then(|d| d.process.as_ref()) {
+        if let Some(proc) = delta.as_ref().and_then(|d| d.process.as_ref()) {
             println!(
                 "  Processes: {:+} ({} new, {} exited)",
                 proc.count_delta, proc.new_count, proc.exited_count,
@@ -87,7 +87,7 @@ fn main() {
         if !top_cpu.is_empty() {
             println!("  Top CPU:");
             for p in &top_cpu {
-                println!("    PID {:<7} {:>6.1}%  {}", p.pid, p.cpu_usage, p.name,);
+                println!("    PID {:<7} {:>6.1}%  {}", p.pid, p.cpu_usage, p.name);
             }
         }
 

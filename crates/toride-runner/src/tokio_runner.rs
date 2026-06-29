@@ -37,6 +37,15 @@ use crate::spec::CommandSpec;
 /// Default command timeout in seconds when none is specified.
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
+/// Bounded budget for the post-drain reap wait in the cap-aware path.
+///
+/// After both pipes reach EOF under the cap but the child has not yet exited
+/// (the `Drained` outcome), this bounds how long we wait for the child's exit
+/// status before killing it. A child that closes its pipes early but lingers
+/// (ignoring signals or stuck in uninterruptible sleep) would otherwise hang
+/// the runner indefinitely.
+const POST_DRAIN_REAP_TIMEOUT: Duration = Duration::from_secs(30);
+
 /// An [`AsyncRunner`] implementation that executes commands via `tokio::process`.
 ///
 /// # Examples
@@ -64,7 +73,10 @@ impl AsyncRunner for TokioRunner {
 
         // Box::pin keeps the future off the caller's stack (these async fns are
         // large state machines); see clippy::large_futures.
-        Box::pin(run_tokio_command(spec, timeout)).await
+        let output = Box::pin(run_tokio_command(spec, timeout)).await?;
+        // Honor the redact flag on the *returned* output too (parity with
+        // DuctRunner): scrub secret values from captured stdout/stderr.
+        Ok(crate::display::scrub_output(spec, &output))
     }
 }
 
@@ -193,14 +205,21 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
 /// paths. stdin is piped only when the spec carries stdin data.
 fn build_tokio_command(spec: &CommandSpec) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&spec.program);
-    cmd.args(&spec.args);
+    cmd.args(&spec.args)
+        // Ensure the child is SIGKILLed when the `Child` handle is dropped
+        // (e.g. on future cancellation), so the documented kill-on-drop
+        // guarantee actually holds regardless of how the future is polled.
+        .kill_on_drop(true);
 
     // Honor the spec's output mode. Capture pipes both streams so they can be
     // drained below; Inherit leaves them connected to the parent (the drain
     // then observes `None` pipes and returns empty captured strings, while the
     // real exit code is still returned). Stream is rejected upstream by
     // `run_tokio_command` (it is the streaming runner's domain).
-    let piped = matches!(spec.output_mode, crate::OutputMode::Capture | crate::OutputMode::Stream);
+    let piped = matches!(
+        spec.output_mode,
+        crate::OutputMode::Capture | crate::OutputMode::Stream
+    );
     if piped {
         cmd.stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped());
@@ -355,25 +374,27 @@ async fn run_tokio_limited(
     let race = async {
         let mut drain = Box::pin(drain);
         let mut wait = Box::pin(child.wait());
-        loop {
-            tokio::select! {
-                outcome = &mut drain => {
-                    return match outcome {
-                        DrainOutcome::Breach => RaceOutcome::Breach,
-                        DrainOutcome::Done(bytes) => RaceOutcome::Drained(bytes),
-                    };
+        // Both arms resolve the race on their own (the drain finishes or the
+        // child exits and we then drain to EOF), so a single `select!`
+        // resolves the race without a loop. (A loop here would be a
+        // clippy::never_loop: neither arm ever falls through to iterate.)
+        tokio::select! {
+            outcome = &mut drain => {
+                match outcome {
+                    DrainOutcome::Breach => RaceOutcome::Breach,
+                    DrainOutcome::Done(bytes) => RaceOutcome::Drained(bytes),
                 }
-                status = &mut wait => {
-                    // The child exited. Let the drain finish (it will reach EOF
-                    // quickly now) so we have the captured bytes, then map.
-                    let bytes = match drain.as_mut().await {
-                        DrainOutcome::Breach => return RaceOutcome::Breach,
-                        DrainOutcome::Done(b) => b,
-                    };
-                    match status {
-                        Ok(s) => return RaceOutcome::Exited(bytes, s.code()),
-                        Err(e) => return RaceOutcome::WaitFailed(e),
-                    }
+            }
+            status = &mut wait => {
+                // The child exited. Let the drain finish (it will reach EOF
+                // quickly now) so we have the captured bytes, then map.
+                let bytes = match drain.as_mut().await {
+                    DrainOutcome::Breach => return RaceOutcome::Breach,
+                    DrainOutcome::Done(b) => b,
+                };
+                match status {
+                    Ok(s) => RaceOutcome::Exited(bytes, s.code()),
+                    Err(e) => RaceOutcome::WaitFailed(e),
                 }
             }
         }
@@ -407,13 +428,31 @@ async fn run_tokio_limited(
             // Both pipes reached EOF under the cap, but the child had not yet
             // exited when the drain finished. Since `race` completed (not the
             // timeout arm), this means the drain finished inside the timeout
-            // window. Wait for the child to exit to get its status.
-            match child.wait().await {
-                Ok(status) => Ok(finish_under_cap(spec, status.code(), bytes)),
-                Err(e) => Err(Error::WaitFailed {
+            // window. Wait for the child to exit to get its status, bounded by
+            // a post-drain reap budget so a child that closes its pipes early
+            // but lingers (ignoring signals, stuck in uninterruptible sleep,
+            // or a surviving grandchild keeping the process entry alive) cannot
+            // hang the runner indefinitely. On reap-timeout, kill+reap and
+            // surface a timeout error.
+            match tokio::time::timeout(POST_DRAIN_REAP_TIMEOUT, child.wait()).await {
+                Ok(Ok(status)) => Ok(finish_under_cap(spec, status.code(), bytes)),
+                Ok(Err(e)) => Err(Error::WaitFailed {
                     program: spec.program.clone(),
                     detail: e.to_string(),
                 }),
+                Err(_) => {
+                    let _ = child.kill().await;
+                    let _ = child.wait().await;
+                    tracing::warn!(
+                        program = %spec.program,
+                        "child did not exit after pipes closed; killed after reap timeout"
+                    );
+                    Err(Error::CommandTimeout {
+                        program: spec.program.clone(),
+                        args: crate::display::redacted_args_vec(spec),
+                        timeout,
+                    })
+                }
             }
         }
         Ok(RaceOutcome::Exited(bytes, exit_code)) => Ok(finish_under_cap(spec, exit_code, bytes)),
@@ -493,6 +532,10 @@ async fn run_streaming_command(
     // --- Phase 1: spawn the child (not timed, should be instant) ---
     let mut cmd = tokio::process::Command::new(&spec.program);
     cmd.args(&spec.args)
+        // Ensure the child is SIGKILLed when the `Child` handle is dropped
+        // (e.g. on future cancellation), so the documented kill-on-drop
+        // guarantee actually holds.
+        .kill_on_drop(true)
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped());
 
@@ -604,8 +647,7 @@ async fn run_streaming_command(
                                     }
                                 }
                                 stdout_bytes.extend_from_slice(&chunk);
-                                sink.on_event(CommandEvent::StdoutChunk(chunk.clone())).await?;
-                                emit_stdout_lines(&chunk, &mut stdout_line_buf, sink).await?;
+                                forward_stream_chunk(StreamKind::Stdout, &chunk, &mut stdout_line_buf, spec, sink).await?;
                             }
                         }
                     }
@@ -619,8 +661,7 @@ async fn run_streaming_command(
                                     }
                                 }
                                 stderr_bytes.extend_from_slice(&chunk);
-                                sink.on_event(CommandEvent::StderrChunk(chunk.clone())).await?;
-                                emit_stderr_lines(&chunk, &mut stderr_line_buf, sink).await?;
+                                forward_stream_chunk(StreamKind::Stderr, &chunk, &mut stderr_line_buf, spec, sink).await?;
                             }
                             None => { stderr_closed = true; }
                         }
@@ -644,9 +685,7 @@ async fn run_streaming_command(
                             }
                         }
                         stdout_bytes.extend_from_slice(&chunk);
-                        sink.on_event(CommandEvent::StdoutChunk(chunk.clone()))
-                            .await?;
-                        emit_stdout_lines(&chunk, &mut stdout_line_buf, sink).await?;
+                        forward_stream_chunk(StreamKind::Stdout, &chunk, &mut stdout_line_buf, spec, sink).await?;
                     }
                 }
                 continue;
@@ -664,9 +703,7 @@ async fn run_streaming_command(
                             }
                         }
                         stderr_bytes.extend_from_slice(&chunk);
-                        sink.on_event(CommandEvent::StderrChunk(chunk.clone()))
-                            .await?;
-                        emit_stderr_lines(&chunk, &mut stderr_line_buf, sink).await?;
+                        forward_stream_chunk(StreamKind::Stderr, &chunk, &mut stderr_line_buf, spec, sink).await?;
                     }
                     None => {
                         stderr_closed = true;
@@ -677,19 +714,13 @@ async fn run_streaming_command(
             break;
         }
 
-        // Flush any trailing partial lines (no terminating newline).
-        if !stdout_line_buf.is_empty() {
-            sink.on_event(CommandEvent::StdoutLine(std::mem::take(
-                &mut stdout_line_buf,
-            )))
+        // Flush any trailing partial lines (no terminating newline). When the
+        // spec requests redaction, the trailing chunk/line is scrubbed too, so
+        // a secret in the final partial line never reaches the sink.
+        flush_stream_line(StreamKind::Stdout, &mut stdout_line_buf, spec, sink)
             .await?;
-        }
-        if !stderr_line_buf.is_empty() {
-            sink.on_event(CommandEvent::StderrLine(std::mem::take(
-                &mut stderr_line_buf,
-            )))
+        flush_stream_line(StreamKind::Stderr, &mut stderr_line_buf, spec, sink)
             .await?;
-        }
 
         // Wait for the child to exit.
         let status = child.wait().await.map_err(|e| Error::WaitFailed {
@@ -754,43 +785,159 @@ fn stream_breach_error(spec: &CommandSpec, limit: usize, observed: usize) -> Err
     }
 }
 
-/// Emit one `StdoutLine` event per complete line in `chunk`, buffering any
-/// trailing partial line into `buf` (flushed at stream EOF). Lines are split on
-/// `\n`, with trailing `\r` trimmed. The buffer is bounded because it holds at
-/// most one partial line per bounded read (≤ `STREAM_READ_BUF` bytes).
+/// Which child stream a forwarded chunk belongs to.
 #[cfg(feature = "stream")]
-async fn emit_stdout_lines(
-    chunk: &[u8],
-    buf: &mut String,
+#[derive(Clone, Copy)]
+enum StreamKind {
+    Stdout,
+    Stderr,
+}
+
+#[cfg(feature = "stream")]
+impl StreamKind {
+    /// Build the raw-bytes chunk event for this stream.
+    fn chunk_event(self, bytes: Vec<u8>) -> CommandEvent {
+        match self {
+            Self::Stdout => CommandEvent::StdoutChunk(bytes),
+            Self::Stderr => CommandEvent::StderrChunk(bytes),
+        }
+    }
+
+    /// Build the complete-line event for this stream.
+    fn line_event(self, line: String) -> CommandEvent {
+        match self {
+            Self::Stdout => CommandEvent::StdoutLine(line),
+            Self::Stderr => CommandEvent::StderrLine(line),
+        }
+    }
+}
+
+/// Forward one raw chunk to the sink, emitting both the chunk event and any
+/// newly completed line events.
+///
+/// When `spec.redact()` is `false` (the default), behavior is unchanged: the
+/// raw chunk bytes are forwarded verbatim, and lines are emitted as they
+/// complete (trailing partial lines stay buffered in `line_buf` across chunks,
+/// matching the pre-redact implementation).
+///
+/// When `spec.redact()` is `true`, streamed output is scrubbed so secret
+/// values never reach the sink:
+///
+/// - The chunk is appended to the per-stream `line_buf`, and only the portion
+///   up to and including the **last newline boundary** is emitted (as a chunk
+///   event and as completed lines), with secret values replaced by `"***"` via
+///   [`crate::display::redact_output`]. The trailing partial line is held in
+///   `line_buf` until the next chunk or EOF, so a secret *split across an 8 KB
+///   chunk boundary* is reassembled inside `line_buf` before redaction and is
+///   caught. At EOF the remaining buffer is flushed (redacted) by
+///   [`flush_stream_line`].
+/// - Each completed line is redacted before its `StdoutLine`/`StderrLine`
+///   event.
+///
+/// The buffer is bounded: it holds at most one partial line per bounded read
+/// (≤ `STREAM_READ_BUF` bytes), plus whatever tail has not yet reached a
+/// newline under redact (flushed at EOF). A secret is assumed not to contain a
+/// newline — matching the assumption of the captured-output scrubber — so
+/// newline boundaries are safe split points.
+#[cfg(feature = "stream")]
+async fn forward_stream_chunk(
+    kind: StreamKind,
+    raw: &[u8],
+    line_buf: &mut String,
+    spec: &CommandSpec,
     sink: &mut dyn CommandEventSink,
 ) -> Result<()> {
-    buf.push_str(&String::from_utf8_lossy(chunk));
-    while let Some(idx) = buf.find('\n') {
-        let line: String = buf.drain(..=idx).collect();
-        let trimmed = line
-            .trim_end_matches('\n')
-            .trim_end_matches('\r')
-            .to_owned();
-        sink.on_event(CommandEvent::StdoutLine(trimmed)).await?;
+    // Append the incoming chunk to the line buffer first, so a partial line
+    // (or, under redact, a secret) split across a chunk boundary is
+    // reassembled before it is emitted/redacted.
+    line_buf.push_str(&String::from_utf8_lossy(raw));
+
+    if spec.redact {
+        // Only the portion through the last newline is "safe" to emit: any
+        // secret within it is fully contained (secrets do not span newlines),
+        // so redaction will catch it. The trailing partial line stays buffered.
+        let safe_end = line_buf.rfind('\n').map_or(0, |i| i + 1);
+        if safe_end == 0 {
+            // No complete line yet — keep buffering; nothing to emit.
+            return Ok(());
+        }
+        let safe: String = line_buf.drain(..safe_end).collect();
+        // Redact the raw chunk bytes (including their newlines) before emitting.
+        let redacted = crate::display::redact_output(spec, &safe);
+        sink.on_event(kind.chunk_event(redacted.as_bytes().to_vec()))
+            .await?;
+        // Walk the (already-redacted) safe region for line events. There is no
+        // trailing partial line here — `safe` ends at a newline.
+        emit_complete_lines(kind, &redacted, sink).await
+    } else {
+        // Forward the raw chunk verbatim, then emit the newly completed lines
+        // (leaving the partial tail buffered in `line_buf`).
+        sink.on_event(kind.chunk_event(raw.to_vec())).await?;
+        drain_complete_lines(kind, line_buf, sink).await
+    }
+}
+
+/// Emit one line event per complete line at the *front* of `line_buf`,
+/// draining them from the buffer and leaving any trailing partial line
+/// buffered for the next chunk. Lines are split on `\n`, with a trailing `\r`
+/// trimmed. Used by the non-redact streaming path (line text is forwarded
+/// verbatim).
+#[cfg(feature = "stream")]
+async fn drain_complete_lines(
+    kind: StreamKind,
+    line_buf: &mut String,
+    sink: &mut dyn CommandEventSink,
+) -> Result<()> {
+    while let Some(idx) = line_buf.find('\n') {
+        let line: String = line_buf.drain(..=idx).collect();
+        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+        sink.on_event(kind.line_event(trimmed.to_owned())).await?;
     }
     Ok(())
 }
 
-/// Like [`emit_stdout_lines`] but emits `StderrLine` events.
+/// Emit one line event per complete line in `text` (which is expected to end at
+/// a newline boundary, so there is no partial tail to buffer). Lines are split
+/// on `\n`, with a trailing `\r` trimmed. Used by the redact streaming path,
+/// where `text` is already-redacted text.
 #[cfg(feature = "stream")]
-async fn emit_stderr_lines(
-    chunk: &[u8],
-    buf: &mut String,
+async fn emit_complete_lines(
+    kind: StreamKind,
+    text: &str,
     sink: &mut dyn CommandEventSink,
 ) -> Result<()> {
-    buf.push_str(&String::from_utf8_lossy(chunk));
-    while let Some(idx) = buf.find('\n') {
-        let line: String = buf.drain(..=idx).collect();
-        let trimmed = line
-            .trim_end_matches('\n')
-            .trim_end_matches('\r')
-            .to_owned();
-        sink.on_event(CommandEvent::StderrLine(trimmed)).await?;
+    let mut rest = text;
+    while let Some(idx) = rest.find('\n') {
+        let line = &rest[..idx];
+        rest = &rest[idx + 1..];
+        let trimmed = line.trim_end_matches('\r');
+        sink.on_event(kind.line_event(trimmed.to_owned())).await?;
+    }
+    Ok(())
+}
+
+/// Flush a per-stream line buffer at EOF, emitting a final (redacted when the
+/// spec requests it) chunk and/or line event for any trailing partial line.
+#[cfg(feature = "stream")]
+async fn flush_stream_line(
+    kind: StreamKind,
+    line_buf: &mut String,
+    spec: &CommandSpec,
+    sink: &mut dyn CommandEventSink,
+) -> Result<()> {
+    if line_buf.is_empty() {
+        return Ok(());
+    }
+    let trailing = std::mem::take(line_buf);
+    if spec.redact {
+        let redacted = crate::display::redact_output(spec, &trailing);
+        // Emit the redacted trailing chunk so a sink counting raw bytes still
+        // observes the final segment, then the line form.
+        sink.on_event(kind.chunk_event(redacted.as_bytes().to_vec()))
+            .await?;
+        sink.on_event(kind.line_event(redacted)).await?;
+    } else {
+        sink.on_event(kind.line_event(trailing)).await?;
     }
     Ok(())
 }
@@ -803,7 +950,11 @@ impl AsyncStreamingRunner for TokioRunner {
         spec: &CommandSpec,
         sink: &mut dyn CommandEventSink,
     ) -> Result<CommandOutput> {
-        run_streaming_command(spec, sink).await
+        let output = run_streaming_command(spec, sink).await?;
+        // Honor the redact flag on the *returned* captured output (the emitted
+        // chunks/lines are already scrubbed inline; scrub the final aggregate
+        // too for parity with the non-streaming run path).
+        Ok(crate::display::scrub_output(spec, &output))
     }
 }
 
@@ -951,8 +1102,7 @@ mod tests {
         // On macOS /tmp is a symlink to /private/tmp, so canonicalize for comparison.
         let resolved = std::path::Path::new("/tmp")
             .canonicalize()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/tmp".to_owned());
+            .map_or_else(|_| "/tmp".to_owned(), |p| p.to_string_lossy().into_owned());
         assert_eq!(output.stdout_trimmed(), resolved);
     }
 
@@ -1038,7 +1188,7 @@ mod tests {
         }
     }
 
-    /// CommandTimeout must store already-redacted args so the derived Debug
+    /// `CommandTimeout` must store already-redacted args so the derived `Debug`
     /// never leaks secret flag values for a redact(true) spec.
     #[tokio::test]
     async fn timeout_redacts_args_when_requested() {
@@ -1064,8 +1214,8 @@ mod tests {
         }
     }
 
-    /// run_checked (async default) must redact args when spec.redact is true —
-    /// this is the async-runner parity gap with the sync Runner default.
+    /// `run_checked` (async default) must redact args when spec.redact is true —
+    /// this is the async-runner parity gap with the sync `Runner` default.
     #[tokio::test]
     async fn run_checked_redacts_args_when_requested() {
         let runner = TokioRunner;
@@ -1083,8 +1233,8 @@ mod tests {
         }
     }
 
-    /// OutputMode::Inherit must connect child stdio to the parent and return
-    /// empty captured strings plus the real exit code — matching DuctRunner.
+    /// `OutputMode::Inherit` must connect child stdio to the parent and return
+    /// empty captured strings plus the real exit code — matching `DuctRunner`.
     #[tokio::test]
     async fn inherit_output_mode_returns_empty_captured_output() {
         let runner = TokioRunner;
@@ -1099,8 +1249,8 @@ mod tests {
         assert!(output.stderr.is_empty());
     }
 
-    /// OutputMode::Inherit must ignore output_limit and still return the real
-    /// exit code (parity with DuctRunner's output_limit_inherit_mode_is_ignored).
+    /// `OutputMode::Inherit` must ignore `output_limit` and still return the real
+    /// exit code (parity with `DuctRunner`'s `output_limit_inherit_mode_is_ignored`).
     #[tokio::test]
     async fn inherit_output_mode_ignores_output_limit() {
         let runner = TokioRunner;
@@ -1116,8 +1266,8 @@ mod tests {
         assert!(output.stderr.is_empty());
     }
 
-    /// OutputMode::Stream is rejected by the captured-output run path (it is
-    /// the streaming runner's domain), matching DuctRunner's explicit error.
+    /// `OutputMode::Stream` is rejected by the captured-output run path (it is
+    /// the streaming runner's domain), matching `DuctRunner`'s explicit error.
     #[tokio::test]
     async fn stream_output_mode_is_rejected_by_run() {
         let runner = TokioRunner;
@@ -1152,7 +1302,7 @@ mod tests {
         );
     }
 
-    /// Verify that stdin write errors surface as StdinFailed.
+    /// Verify that stdin write errors surface as `StdinFailed`.
     ///
     /// We pipe stdin to a command that exits immediately — the stdin write
     /// should succeed because the child accepted the pipe. The real test
@@ -1372,7 +1522,7 @@ mod tests {
     /// Regression: when the cap is breached by a child that would otherwise keep
     /// running, the runner must return `OutputLimitExceeded` AND kill the child
     /// promptly (not wait for self-exit or a timeout). Previously the breach was
-    /// sometimes misrouted and reported as CommandTimeout, or the child kept
+    /// sometimes misrouted and reported as `CommandTimeout`, or the child kept
     /// running until self-exit.
     #[tokio::test]
     async fn output_limit_breach_kills_promptly() {

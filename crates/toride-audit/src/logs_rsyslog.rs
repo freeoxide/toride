@@ -4,7 +4,6 @@
 //! for audit log aggregation.
 
 use std::fs;
-use std::path::Path;
 
 use crate::{AuditPaths, Error, Result};
 
@@ -55,7 +54,7 @@ pub fn read_config(paths: &AuditPaths) -> Result<String> {
 ///
 /// # Arguments
 ///
-/// * `paths` - Audit paths containing the rsyslog_d directory.
+/// * `paths` - Audit paths containing the `rsyslog_d` directory.
 /// * `name` - Drop-in file name (without `.conf` extension).
 /// * `content` - Configuration content.
 ///
@@ -140,9 +139,7 @@ pub fn parse_rsyslog_config(content: &str) -> Vec<RsyslogRule> {
             let fac_pri = parts[0];
             let action = parts[1].trim();
 
-            let (facility, priority) = fac_pri
-                .split_once('.')
-                .unwrap_or((fac_pri, "*"));
+            let (facility, priority) = fac_pri.split_once('.').unwrap_or((fac_pri, "*"));
 
             Some(RsyslogRule {
                 facility: facility.to_owned(),

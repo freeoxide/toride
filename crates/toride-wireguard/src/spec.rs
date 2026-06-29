@@ -41,12 +41,14 @@ impl PeerSpec {
     }
 
     /// Set the peer's endpoint address.
+    #[must_use]
     pub fn with_endpoint(mut self, endpoint: String) -> Self {
         self.endpoint = Some(endpoint);
         self
     }
 
     /// Set the persistent keepalive interval in seconds.
+    #[must_use]
     pub fn with_persistent_keepalive(mut self, seconds: u32) -> Self {
         self.persistent_keepalive = Some(seconds);
         self
@@ -96,24 +98,28 @@ impl WireguardSpec {
     }
 
     /// Set the listen port.
+    #[must_use]
     pub fn with_listen_port(mut self, port: u16) -> Self {
         self.listen_port = port;
         self
     }
 
     /// Set the DNS server(s).
+    #[must_use]
     pub fn with_dns(mut self, dns: String) -> Self {
         self.dns = Some(dns);
         self
     }
 
     /// Set the private key.
+    #[must_use]
     pub fn with_private_key(mut self, key: String) -> Self {
         self.private_key = Some(key);
         self
     }
 
     /// Add a peer to this interface.
+    #[must_use]
     pub fn with_peer(mut self, peer: PeerSpec) -> Self {
         self.peers.push(peer);
         self

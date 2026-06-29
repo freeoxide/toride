@@ -157,13 +157,21 @@ mod tests {
             ..valid_spec()
         };
         let findings = validate_spec(&spec).unwrap();
-        assert!(findings.iter().any(|f| f.id == "config.schedule.empty-custom"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.id == "config.schedule.empty-custom")
+        );
     }
 
     #[test]
     fn disabled_with_origins_info() {
         let spec = UpdateSpec::disabled();
         let findings = validate_spec(&spec).unwrap();
-        assert!(findings.iter().any(|f| f.id == "config.consistency.disabled-with-origins"));
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.id == "config.consistency.disabled-with-origins")
+        );
     }
 }

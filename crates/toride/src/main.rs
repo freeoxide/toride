@@ -27,14 +27,18 @@ fn main() -> Result<()> {
     // sprayed over the live display and make the app unreadable. The guard is
     // held for the whole process so the non-blocking appender flushes on exit.
     // Default level `warn` (failures); override with `RUST_LOG`.
+    #[expect(
+        clippy::single_match_else,
+        reason = "both arms perform real tracing-subscriber setup; an if/else over the let-binding reads worse"
+    )]
     let _log_guard = match log_file_path() {
         Some(path) => {
             let parent = path.parent().unwrap_or(std::path::Path::new("."));
             let _ = std::fs::create_dir_all(parent);
-            let file_name = path
-                .file_name()
-                .map(std::ffi::OsStr::to_owned)
-                .unwrap_or_else(|| std::ffi::OsString::from("toride.log"));
+            let file_name = path.file_name().map_or_else(
+                || std::ffi::OsString::from("toride.log"),
+                std::ffi::OsStr::to_owned,
+            );
             let appender = tracing_appender::rolling::never(parent, file_name);
             let (writer, guard) = tracing_appender::non_blocking(appender);
             tracing_subscriber::fmt()
@@ -42,8 +46,7 @@ fn main() -> Result<()> {
                 .with_target(false)
                 .with_ansi(false)
                 .with_env_filter(
-                    EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| EnvFilter::new("warn")),
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
                 )
                 .init();
             // Logged to the file (not the TUI) so the path is discoverable.
@@ -58,8 +61,7 @@ fn main() -> Result<()> {
                 .with_target(false)
                 .with_ansi(false)
                 .with_env_filter(
-                    EnvFilter::try_from_default_env()
-                        .unwrap_or_else(|_| EnvFilter::new("warn")),
+                    EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("warn")),
                 )
                 .init();
             None

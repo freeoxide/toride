@@ -64,9 +64,7 @@ use crate::{Error, Result};
 // ---------------------------------------------------------------------------
 
 /// Diagnostic severity level for doctor findings.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Severity {
     /// No issue detected.
     Ok,
@@ -113,11 +111,7 @@ pub struct Finding {
 
 impl Finding {
     /// Create a new finding with the mandatory fields.
-    pub fn new(
-        id: impl Into<String>,
-        severity: Severity,
-        title: impl Into<String>,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, severity: Severity, title: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             severity,
@@ -265,7 +259,9 @@ impl DoctorReport {
     /// Returns `true` if any finding has severity [`Severity::Critical`].
     #[must_use]
     pub fn has_critical(&self) -> bool {
-        self.findings.iter().any(|f| f.severity == Severity::Critical)
+        self.findings
+            .iter()
+            .any(|f| f.severity == Severity::Critical)
     }
 }
 
@@ -283,6 +279,10 @@ mod json_shapes {
     /// for staleness; unknown fields are ignored.
     ///
     /// Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#snapshots>
+    #[expect(
+        dead_code,
+        reason = "mirrors restic JSON; fields kept for future diagnostics"
+    )]
     #[derive(Debug, Deserialize)]
     pub(super) struct ResticSnapshot {
         /// RFC3339 timestamp of when the backup was started.
@@ -294,6 +294,10 @@ mod json_shapes {
     /// `restic stats --json` payload (repository-mode).
     ///
     /// Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#stats>
+    #[expect(
+        dead_code,
+        reason = "mirrors restic JSON; fields kept for future diagnostics"
+    )]
     #[derive(Debug, Deserialize)]
     pub(super) struct ResticStats {
         #[serde(default)]
@@ -307,6 +311,10 @@ mod json_shapes {
     /// Docs: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
     /// ("The root object of '--json' output will contain at least a repository
     /// key ... The encryption key, if present, contains mode ...")
+    #[expect(
+        dead_code,
+        reason = "mirrors borg JSON; fields kept for future diagnostics"
+    )]
     #[derive(Debug, Deserialize)]
     pub(super) struct BorgInfo {
         #[serde(default)]
@@ -338,6 +346,10 @@ mod json_shapes {
         pub total_csize: u64,
     }
 
+    #[expect(
+        dead_code,
+        reason = "mirrors borg JSON; fields kept for future diagnostics"
+    )]
     #[derive(Debug, Deserialize)]
     pub(super) struct BorgRepository {
         #[serde(default)]
@@ -348,6 +360,10 @@ mod json_shapes {
     ///
     /// Docs: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
     /// ("Either return archives in an array under the archives key ...")
+    #[expect(
+        dead_code,
+        reason = "mirrors borg JSON; fields kept for future diagnostics"
+    )]
     #[derive(Debug, Deserialize)]
     pub(super) struct BorgList {
         #[serde(default)]
@@ -357,6 +373,10 @@ mod json_shapes {
     }
 
     /// Shared archive shape (the simpler `borg list` form).
+    #[expect(
+        dead_code,
+        reason = "mirrors borg JSON; fields kept for future diagnostics"
+    )]
     #[derive(Debug, Deserialize)]
     pub(super) struct BorgArchive {
         #[serde(default)]
@@ -416,19 +436,19 @@ fn iso_to_days(ts: &str) -> Option<i64> {
 fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = (y - era * 400) as u64; // [0, 399]
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) as u64 + 2) / 5 + d as u64 - 1; // [0, 365]
+    let yoe = (y - era * 400).cast_unsigned(); // [0, 399]
+    let doy =
+        (153 * (if m > 2 { m - 3 } else { m + 9 }).cast_unsigned() + 2) / 5 + d.cast_unsigned() - 1; // [0, 365]
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146097 + doe as i64 - 719468
+    era * 146_097 + doe.cast_signed() - 719_468
 }
 
 /// Current day count since 1970-01-01, UTC.
 fn now_days() -> i64 {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    (secs / 86_400) as i64
+        .map_or(0, |d| d.as_secs());
+    (secs / 86_400).cast_signed()
 }
 
 /// Returns the number of whole days between `ts` (ISO-8601) and now.
@@ -501,37 +521,39 @@ impl Doctor {
     ///
     /// Returns an error only if a fundamental failure occurs. Individual
     /// check failures appear as findings in the report.
+    // `run` keeps a `&self` receiver for API symmetry with `run_spec` (which
+    // genuinely needs the instance for its runner).
     pub fn run(&self, scope: &DoctorScope) -> Result<DoctorReport> {
         let mut report = DoctorReport::empty();
 
         match scope {
             DoctorScope::All => {
-                report.findings.extend(self.check_binaries());
+                report.findings.extend(Self::check_binaries());
                 report.findings.push(spec_hint_finding());
             }
             DoctorScope::Binary => {
-                report.findings.extend(self.check_binaries());
+                report.findings.extend(Self::check_binaries());
             }
             DoctorScope::Repository(name) => {
-                report.findings.extend(self.check_repository(name));
+                report.findings.extend(Self::check_repository(name));
             }
             DoctorScope::Staleness(name) => {
-                report.findings.extend(self.check_staleness(name));
+                report.findings.extend(Self::check_staleness(name));
             }
             DoctorScope::Integrity(name) => {
-                report.findings.extend(self.check_integrity(name));
+                report.findings.extend(Self::check_integrity(name));
             }
             DoctorScope::Encryption(name) => {
-                report.findings.extend(self.check_encryption(name));
+                report.findings.extend(Self::check_encryption(name));
             }
             DoctorScope::Schedule(name) => {
-                report.findings.extend(self.check_schedule(name));
+                report.findings.extend(Self::check_schedule(name));
             }
             DoctorScope::Retention(name) => {
-                report.findings.extend(self.check_retention(name));
+                report.findings.extend(Self::check_retention(name));
             }
             DoctorScope::Space(name) => {
-                report.findings.extend(self.check_space(name));
+                report.findings.extend(Self::check_space(name));
             }
         }
 
@@ -555,12 +577,12 @@ impl Doctor {
 
         match scope {
             SpecScope::All => {
-                report.findings.extend(self.check_binaries());
+                report.findings.extend(Self::check_binaries());
                 report.findings.extend(self.probe_repository(spec)?);
                 report.findings.extend(self.probe_integrity(spec)?);
                 report.findings.extend(self.probe_encryption(spec)?);
                 report.findings.extend(self.probe_staleness(spec)?);
-                report.findings.extend(self.probe_schedule(spec)?);
+                report.findings.extend(Self::probe_schedule(spec));
                 report.findings.extend(self.probe_retention(spec)?);
                 report.findings.extend(self.probe_restore(spec)?);
                 report.findings.extend(self.probe_space(spec)?);
@@ -569,7 +591,7 @@ impl Doctor {
             SpecScope::Integrity => report.findings.extend(self.probe_integrity(spec)?),
             SpecScope::Encryption => report.findings.extend(self.probe_encryption(spec)?),
             SpecScope::Staleness => report.findings.extend(self.probe_staleness(spec)?),
-            SpecScope::Schedule => report.findings.extend(self.probe_schedule(spec)?),
+            SpecScope::Schedule => report.findings.extend(Self::probe_schedule(spec)),
             SpecScope::Retention => report.findings.extend(self.probe_retention(spec)?),
             SpecScope::Restore => report.findings.extend(self.probe_restore(spec)?),
             SpecScope::Space => report.findings.extend(self.probe_space(spec)?),
@@ -583,7 +605,7 @@ impl Doctor {
     // =======================================================================
 
     /// Check that at least one backup binary (restic or borg) is available.
-    fn check_binaries(&self) -> Vec<Finding> {
+    fn check_binaries() -> Vec<Finding> {
         let mut findings = Vec::new();
 
         let restic_available = which::which("restic").is_ok();
@@ -654,31 +676,31 @@ impl Doctor {
     // They honestly tell the caller to supply a BackupSpec via run_spec.
     // =======================================================================
 
-    fn check_repository(&self, name: &str) -> Vec<Finding> {
+    fn check_repository(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("repository", name)]
     }
 
-    fn check_staleness(&self, name: &str) -> Vec<Finding> {
+    fn check_staleness(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("staleness", name)]
     }
 
-    fn check_integrity(&self, name: &str) -> Vec<Finding> {
+    fn check_integrity(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("integrity", name)]
     }
 
-    fn check_encryption(&self, name: &str) -> Vec<Finding> {
+    fn check_encryption(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("encryption", name)]
     }
 
-    fn check_schedule(&self, name: &str) -> Vec<Finding> {
+    fn check_schedule(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("schedule", name)]
     }
 
-    fn check_retention(&self, name: &str) -> Vec<Finding> {
+    fn check_retention(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("retention", name)]
     }
 
-    fn check_space(&self, name: &str) -> Vec<Finding> {
+    fn check_space(name: &str) -> Vec<Finding> {
         vec![spec_hint_for("space", name)]
     }
 
@@ -687,6 +709,17 @@ impl Doctor {
     // =======================================================================
 
     /// Resolve the backup binary for `spec.backend`, failing if it is absent.
+    // `self` is only read under `cfg(test)` (for the binary_override hermetic
+    // probe). In non-test builds clippy sees it as unused; under `--tests` it is
+    // used, so we allow rather than expect (an expect would be unfulfilled in
+    // the test build).
+    #[cfg_attr(
+        not(test),
+        expect(
+            clippy::unused_self,
+            reason = "`self.binary_override` is read under cfg(test) for hermetic probes"
+        )
+    )]
     fn resolve_binary(&self, spec: &BackupSpec) -> Result<String> {
         let name = match spec.backend {
             Backend::Restic => "restic",
@@ -704,34 +737,6 @@ impl Doctor {
             .map_err(|_| Error::BinaryNotFound(name.into()))
     }
 
-    /// Resolve the raw passphrase (if any) from the spec's `password_command`.
-    ///
-    /// For doctor probes we only need *a* passphrase to satisfy the backend;
-    /// the actual retrieval is delegated to restic's `--password-command` /
-    /// borg's `BORG_PASSCOMMAND` plumbing when configured, or to the raw
-    /// `RESTIC_PASSWORD` / `BORG_PASSPHRASE` env when the command output is
-    /// directly available. Returns `None` when no passphrase is configured.
-    fn passphrase_env(&self, spec: &BackupSpec) -> Vec<(String, String)> {
-        let mut env = Vec::new();
-        // The spec stores a *command* that yields the passphrase (e.g.
-        // "cat /etc/restic/password"). We forward it verbatim to the backend's
-        // own passcommand plumbing rather than executing it ourselves, so the
-        // secret never enters this process. restic uses --password-command
-        // (attached at spec-build time), borg uses BORG_PASSCOMMAND env.
-        if spec.backend == Backend::Borg {
-            if let Some(cmd) = &spec.password_command {
-                env.push(("BORG_PASSCOMMAND".into(), cmd.clone()));
-            }
-        }
-        // For restic the raw passphrase is unavailable here (we only have the
-        // command); restic's --password-command flag is attached in
-        // restic_repo_spec. Extra env from the spec is always forwarded.
-        for (k, v) in &spec.extra_env {
-            env.push((k.clone(), v.clone()));
-        }
-        env
-    }
-
     // -----------------------------------------------------------------------
     // Repository accessibility
     // -----------------------------------------------------------------------
@@ -739,9 +744,9 @@ impl Doctor {
     /// Probe repository accessibility by listing snapshots/archives.
     ///
     /// - restic: `restic --repo <repo> snapshots --json`
-    ///   (Docs: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#snapshots)
+    ///   (Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#snapshots>)
     /// - borg:   `borg list --json <repo>`
-    ///   (Docs: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html)
+    ///   (Docs: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>)
     ///
     /// Both commands succeed only when the repository exists, is readable,
     /// and (if encrypted) the passphrase is correct.
@@ -750,8 +755,8 @@ impl Doctor {
         let mut findings = Vec::new();
 
         let spec_cmd = match spec.backend {
-            Backend::Restic => self.restic_repo_spec(&binary, spec)?,
-            Backend::Borg => self.borg_repo_spec(&binary, spec)?,
+            Backend::Restic => Self::restic_repo_spec(&binary, spec)?,
+            Backend::Borg => Self::borg_repo_spec(&binary, spec),
         };
 
         let list_spec = match spec.backend {
@@ -779,7 +784,7 @@ impl Doctor {
                     findings.push(Finding::new(
                         "repository.snapshots",
                         Severity::Ok,
-                        format!("{} snapshot(s) present", n),
+                        format!("{n} snapshot(s) present"),
                     ));
                 }
             }
@@ -790,10 +795,7 @@ impl Doctor {
                         Severity::Error,
                         format!("{} repository is not accessible", spec.backend),
                     )
-                    .detail(format!(
-                        "Listing snapshots failed:\n{}",
-                        runner_err(&e)
-                    ))
+                    .detail(format!("Listing snapshots failed:\n{}", runner_err(&e)))
                     .fix(format!(
                         "Verify the repository path {} is correct and the \
                          passphrase is right.",
@@ -814,23 +816,25 @@ impl Doctor {
     ///
     /// - restic: `restic --repo <repo> check` (no --json; check emits
     ///   human-readable progress and a final "no errors were found").
-    ///   Docs: https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency
+    ///   Docs: <https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency>
     /// - borg:   `borg check --repository-only <repo>` (cheap structural
     ///   check; --verify-data is much more expensive and reserved for
-    ///   Restore). Docs: https://borgbackup.readthedocs.io/en/stable/usage/check.html
+    ///   Restore). Docs: <https://borgbackup.readthedocs.io/en/stable/usage/check.html>
     fn probe_integrity(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
         let binary = self.resolve_binary(spec)?;
         let mut findings = Vec::new();
 
         let check_spec = match spec.backend {
             Backend::Restic => {
-                let s = self.restic_repo_spec(&binary, spec)?;
+                let s = Self::restic_repo_spec(&binary, spec)?;
                 s.arg("check").redact(true)
             }
             Backend::Borg => {
                 // borg check takes the repo as a positional arg, not a flag.
-                let mut s = CommandSpec::new(&binary).arg("check").arg("--repository-only");
-                s = self.apply_borg_secrets(s, spec);
+                let mut s = CommandSpec::new(&binary)
+                    .arg("check")
+                    .arg("--repository-only");
+                s = Self::apply_borg_secrets(s, spec);
                 s.arg(path_string(&spec.repository)?).redact(true)
             }
         };
@@ -861,7 +865,10 @@ impl Doctor {
                         Finding::new(
                             "integrity.unknown",
                             Severity::Warning,
-                            format!("{} integrity check exited 0 but reported no clean signal", spec.backend),
+                            format!(
+                                "{} integrity check exited 0 but reported no clean signal",
+                                spec.backend
+                            ),
                         )
                         .detail(output.combined_output()),
                     );
@@ -897,17 +904,17 @@ impl Doctor {
     /// - restic: encryption is *always* on (restic has no unencrypted mode);
     ///   we confirm the repo is openable by reading the config via
     ///   `restic --repo <repo> cat config` (exit 0 ⇒ key/password works).
-    ///   Docs: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#cat
+    ///   Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#cat>
     /// - borg: `borg info --json <repo>` exposes `encryption.mode`
     ///   (`repokey` / `keyfile` / `none` / ...).
-    ///   Docs: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
+    ///   Docs: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
     fn probe_encryption(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
         let binary = self.resolve_binary(spec)?;
         let mut findings = Vec::new();
 
         match spec.backend {
             Backend::Restic => {
-                let base = self.restic_repo_spec(&binary, spec)?;
+                let base = Self::restic_repo_spec(&binary, spec)?;
                 let cat_spec = base.arg("cat").arg("config").redact(true);
                 match self.runner.run_checked(&cat_spec) {
                     Ok(_) => findings.push(Finding::new(
@@ -928,7 +935,7 @@ impl Doctor {
             }
             Backend::Borg => {
                 let mut s = CommandSpec::new(&binary).arg("info").arg("--json");
-                s = self.apply_borg_secrets(s, spec);
+                s = Self::apply_borg_secrets(s, spec);
                 let info_spec = s.arg(path_string(&spec.repository)?).redact(true);
                 match self.runner.run_checked(&info_spec) {
                     Ok(output) => {
@@ -1006,12 +1013,12 @@ impl Doctor {
 
         let list_spec = match spec.backend {
             Backend::Restic => {
-                let s = self.restic_repo_spec(&binary, spec)?;
+                let s = Self::restic_repo_spec(&binary, spec)?;
                 s.arg("snapshots").arg("--json").redact(true)
             }
             Backend::Borg => {
                 let mut s = CommandSpec::new(&binary).arg("list").arg("--json");
-                s = self.apply_borg_secrets(s, spec);
+                s = Self::apply_borg_secrets(s, spec);
                 s.arg(path_string(&spec.repository)?).redact(true)
             }
         };
@@ -1047,17 +1054,13 @@ impl Doctor {
                     ));
                     if age > max_age {
                         findings.push(
-                            Finding::new(
-                                "staleness.stale",
-                                Severity::Error,
-                                "backups are stale",
-                            )
-                            .detail(format!(
-                                "Newest snapshot is {age} day(s) old but the \
+                            Finding::new("staleness.stale", Severity::Error, "backups are stale")
+                                .detail(format!(
+                                    "Newest snapshot is {age} day(s) old but the \
                                  schedule ({}) expects a run at most every ~{max_age} day(s).",
-                                spec.schedule.cron,
-                            ))
-                            .fix("Run the backup manually or fix the schedule."),
+                                    spec.schedule.cron,
+                                ))
+                                .fix("Run the backup manually or fix the schedule."),
                         );
                     }
                 }
@@ -1068,13 +1071,9 @@ impl Doctor {
                 )),
             },
             None => findings.push(
-                Finding::new(
-                    "staleness.never",
-                    Severity::Error,
-                    "no snapshots found",
-                )
-                .detail("The repository is accessible but contains no snapshots.")
-                .fix("Run the initial backup."),
+                Finding::new("staleness.never", Severity::Error, "no snapshots found")
+                    .detail("The repository is accessible but contains no snapshots.")
+                    .fix("Run the initial backup."),
             ),
         }
 
@@ -1089,7 +1088,7 @@ impl Doctor {
     ///
     /// Delegates to [`crate::schedule::ScheduleManager::is_installed`] so the
     /// doctor and the scheduler agree on what "installed" means.
-    fn probe_schedule(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
+    fn probe_schedule(spec: &BackupSpec) -> Vec<Finding> {
         let mgr = crate::schedule::ScheduleManager::new();
         let mut findings = Vec::new();
 
@@ -1128,7 +1127,7 @@ impl Doctor {
             ),
         }
 
-        Ok(findings)
+        findings
     }
 
     // -----------------------------------------------------------------------
@@ -1138,9 +1137,9 @@ impl Doctor {
     /// Probe the retention policy is applied by running a dry-run forget/prune.
     ///
     /// - restic: `restic --repo <repo> forget --json --keep-daily N ...`
-    ///   (Docs: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget)
+    ///   (Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget>)
     /// - borg:   `borg prune --dry-run --list <repo> --keep-daily N ...`
-    ///   (Docs: https://borgbackup.readthedocs.io/en/stable/usage/prune.html)
+    ///   (Docs: <https://borgbackup.readthedocs.io/en/stable/usage/prune.html>)
     ///
     /// A successful dry-run proves the policy is well-formed and the repo can
     /// be scanned for retention; it does NOT remove any data.
@@ -1152,7 +1151,7 @@ impl Doctor {
 
         let dry_spec = match spec.backend {
             Backend::Restic => {
-                let mut s = self.restic_repo_spec(&binary, spec)?;
+                let mut s = Self::restic_repo_spec(&binary, spec)?;
                 s = s.arg("forget").arg("--json");
                 for a in &keep_args {
                     s = s.arg(a);
@@ -1167,7 +1166,7 @@ impl Doctor {
                 for a in &keep_args {
                     s = s.arg(a);
                 }
-                s = self.apply_borg_secrets(s, spec);
+                s = Self::apply_borg_secrets(s, spec);
                 s.arg(path_string(&spec.repository)?).redact(true)
             }
         };
@@ -1179,7 +1178,9 @@ impl Doctor {
                     Severity::Warning,
                     "no retention policy configured",
                 )
-                .detail("The retention policy has no keep-* values; snapshots will accumulate forever.")
+                .detail(
+                    "The retention policy has no keep-* values; snapshots will accumulate forever.",
+                )
                 .fix("Set keep-daily / keep-weekly / keep-monthly on the spec."),
             );
             return Ok(findings);
@@ -1189,7 +1190,10 @@ impl Doctor {
             Ok(_) => findings.push(Finding::new(
                 "retention.ok",
                 Severity::Ok,
-                format!("retention policy dry-run succeeded ({})", keep_args.join(" ")),
+                format!(
+                    "retention policy dry-run succeeded ({})",
+                    keep_args.join(" ")
+                ),
             )),
             Err(e) => findings.push(
                 Finding::new(
@@ -1225,22 +1229,22 @@ impl Doctor {
     ///   documented lightweight data-verification; falling back to a plain
     ///   `check` when the subset flag is unavailable. Exit 0 ⇒ packs are
     ///   decryptable and restorable.
-    ///   Docs: https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency
+    ///   Docs: <https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency>
     /// - borg:   `borg check --verify-data <repo>` reads and authenticates
     ///   every chunk — the strongest pre-restore confidence check.
-    ///   Docs: https://borgbackup.readthedocs.io/en/stable/usage/check.html
+    ///   Docs: <https://borgbackup.readthedocs.io/en/stable/usage/check.html>
     fn probe_restore(&self, spec: &BackupSpec) -> Result<Vec<Finding>> {
         let binary = self.resolve_binary(spec)?;
         let mut findings = Vec::new();
 
         let verify_spec = match spec.backend {
             Backend::Restic => {
-                let s = self.restic_repo_spec(&binary, spec)?;
+                let s = Self::restic_repo_spec(&binary, spec)?;
                 s.arg("check").arg("--read-data-subset=5%").redact(true)
             }
             Backend::Borg => {
                 let mut s = CommandSpec::new(&binary).arg("check").arg("--verify-data");
-                s = self.apply_borg_secrets(s, spec);
+                s = Self::apply_borg_secrets(s, spec);
                 s.arg(path_string(&spec.repository)?).redact(true)
             }
         };
@@ -1249,7 +1253,10 @@ impl Doctor {
             Ok(_) => findings.push(Finding::new(
                 "restore.viable",
                 Severity::Ok,
-                format!("{} data verification passed — restore path is viable", spec.backend),
+                format!(
+                    "{} data verification passed — restore path is viable",
+                    spec.backend
+                ),
             )),
             Err(e) => findings.push(
                 Finding::new(
@@ -1275,10 +1282,10 @@ impl Doctor {
     /// Probe the repository size / free space is sane.
     ///
     /// - restic: `restic --repo <repo> stats --json` → `total_size`.
-    ///   Docs: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#stats
+    ///   Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#stats>
     /// - borg:   `borg info --json <repo>` → `cache.stats.total_csize`
     ///   (compressed+encrypted on-disk repo size).
-    ///   Docs: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
+    ///   Docs: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
     ///
     /// This reports the repo's own size as an informational finding; a true
     /// free-disk check would need statvfs(2) on the repo's mountpoint, which
@@ -1289,12 +1296,12 @@ impl Doctor {
 
         let size_spec = match spec.backend {
             Backend::Restic => {
-                let s = self.restic_repo_spec(&binary, spec)?;
+                let s = Self::restic_repo_spec(&binary, spec)?;
                 s.arg("stats").arg("--json").redact(true)
             }
             Backend::Borg => {
                 let mut s = CommandSpec::new(&binary).arg("info").arg("--json");
-                s = self.apply_borg_secrets(s, spec);
+                s = Self::apply_borg_secrets(s, spec);
                 s.arg(path_string(&spec.repository)?).redact(true)
             }
         };
@@ -1308,11 +1315,20 @@ impl Doctor {
                         Backend::Borg => parse_borg_total_csize(output.stdout_trimmed()),
                     };
                     match bytes {
-                        Some(b) => findings.push(Finding::new(
-                            "space.repo-size",
-                            Severity::Info,
-                            format!("repository occupies {:.2} MiB", b as f64 / 1_048_576.0),
-                        )),
+                        Some(b) => {
+                            // u64 -> f64 may lose precision, but for a human-readable
+                            // MiB figure that is irrelevant.
+                            #[expect(
+                                clippy::cast_precision_loss,
+                                reason = "byte count rendered as MiB; precision irrelevant"
+                            )]
+                            let mib = b as f64 / 1_048_576.0;
+                            findings.push(Finding::new(
+                                "space.repo-size",
+                                Severity::Info,
+                                format!("repository occupies {mib:.2} MiB"),
+                            ));
+                        }
                         None => findings.push(Finding::new(
                             "space.unparseable",
                             Severity::Info,
@@ -1354,7 +1370,7 @@ impl Doctor {
     /// here from `spec.extra_env` / a future raw-passphrase field). The repo
     /// URL is treated as potentially secret. Callers MUST finish with
     /// `.redact(true)`.
-    fn restic_repo_spec(&self, binary: &str, spec: &BackupSpec) -> Result<CommandSpec> {
+    fn restic_repo_spec(binary: &str, spec: &BackupSpec) -> Result<CommandSpec> {
         let mut s = CommandSpec::new(binary)
             .arg("--repo")
             .arg(path_string(&spec.repository)?);
@@ -1372,20 +1388,20 @@ impl Doctor {
 
     /// Build the base of a borg repo-touching subcommand that takes the repo
     /// as a leading flag-less token (e.g. `borg list`). The repo is appended
-    /// by the caller. Secrets (BORG_PASSCOMMAND / extra env) are attached here.
+    /// by the caller. Secrets (`BORG_PASSCOMMAND` / extra env) are attached here.
     ///
     /// Borg repo URLs are positional, so unlike restic the repo argument is
     /// added at each call site (after the subcommand verb).
-    fn borg_repo_spec(&self, binary: &str, spec: &BackupSpec) -> Result<CommandSpec> {
+    fn borg_repo_spec(binary: &str, spec: &BackupSpec) -> CommandSpec {
         // `borg list --json <repo>` — repo is positional. We build the verb
         // base here and let the caller append the repo, OR we append it.
         // For consistency with the list probe, append the repo here.
         let s = CommandSpec::new(binary);
-        Ok(self.apply_borg_secrets(s, spec))
+        Self::apply_borg_secrets(s, spec)
     }
 
-    /// Attach borg-specific secret env (BORG_PASSCOMMAND + caller extra env).
-    fn apply_borg_secrets(&self, mut spec: CommandSpec, backup_spec: &BackupSpec) -> CommandSpec {
+    /// Attach borg-specific secret env (`BORG_PASSCOMMAND` + caller extra env).
+    fn apply_borg_secrets(mut spec: CommandSpec, backup_spec: &BackupSpec) -> CommandSpec {
         if let Some(cmd) = &backup_spec.password_command {
             // Borg fetches the passphrase itself via BORG_PASSCOMMAND; the
             // secret never enters this process.
@@ -1482,7 +1498,7 @@ fn retention_args(policy: &crate::spec::RetentionPolicy) -> Vec<String> {
 /// - A specific day-of-month (and `*` month) → monthly-ish (tolerate 35 days).
 /// - A specific day-of-week (and `*` day-of-month) → weekly-ish (tolerate 10).
 /// - Otherwise (`*` day-of-month) → at least daily (tolerate 2 days).
-/// This is a heuristic staleness threshold, not an exact schedule prediction.
+///   This is a heuristic staleness threshold, not an exact schedule prediction.
 fn max_age_days_from_cron(cron: &str) -> i64 {
     let dom = cron.split_whitespace().nth(2);
     let month = cron.split_whitespace().nth(3);
@@ -1517,7 +1533,19 @@ fn parse_restic_latest_time(stdout: &str) -> Option<String> {
 #[cfg(feature = "client")]
 fn parse_restic_total_size(stdout: &str) -> Option<u64> {
     let stats: json_shapes::ResticStats = serde_json::from_str(stdout).ok()?;
-    Some(stats.total_size as u64)
+    // `total_size` is a non-negative byte count reported by restic; serde parses
+    // the JSON number into f64, so clamp NaN/negatives defensively.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "restic total_size is a non-negative byte count; clamped below"
+    )]
+    let bytes = if stats.total_size.is_finite() && stats.total_size >= 0.0 {
+        stats.total_size as u64
+    } else {
+        0
+    };
+    Some(bytes)
 }
 
 #[cfg(feature = "client")]
@@ -1554,14 +1582,14 @@ fn parse_borg_total_csize(stdout: &str) -> Option<u64> {
 mod tests {
     use super::*;
     use crate::spec::{Backend, Encryption, RetentionPolicy, Schedule};
-    use toride_runner::fake::FakeRunner;
     use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
 
     // -----------------------------------------------------------------------
     // Test fixtures
     // -----------------------------------------------------------------------
 
-    /// Build a restic BackupSpec pointing at a local repo.
+    /// Build a restic `BackupSpec` pointing at a local repo.
     fn restic_spec(repo: &str) -> BackupSpec {
         BackupSpec {
             name: "nightly".into(),
@@ -1578,7 +1606,7 @@ mod tests {
         }
     }
 
-    /// Build a borg BackupSpec pointing at a local repo.
+    /// Build a borg `BackupSpec` pointing at a local repo.
     fn borg_spec(repo: &str) -> BackupSpec {
         BackupSpec {
             name: "nightly".into(),
@@ -1617,10 +1645,7 @@ mod tests {
         let doc = Doctor::new();
         let report = doc.run(&DoctorScope::Binary).expect("run ok");
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.id.starts_with("binary.")),
+            report.findings.iter().any(|f| f.id.starts_with("binary.")),
             "binary scope must produce binary.* findings: {:?}",
             report.findings
         );
@@ -1642,18 +1667,8 @@ mod tests {
     fn run_all_includes_binary_findings_and_hint() {
         let doc = Doctor::new();
         let report = doc.run(&DoctorScope::All).expect("run ok");
-        assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.id.starts_with("binary."))
-        );
-        assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.id == "doctor.needs-spec")
-        );
+        assert!(report.findings.iter().any(|f| f.id.starts_with("binary.")));
+        assert!(report.findings.iter().any(|f| f.id == "doctor.needs-spec"));
     }
 
     // -------------------------------------------------------------------------
@@ -1683,8 +1698,18 @@ mod tests {
         let report = doc
             .run_spec(&spec, SpecScope::Repository)
             .expect("probe ok");
-        assert!(report.findings.iter().any(|f| f.id == "repository.accessible"));
-        assert!(report.findings.iter().any(|f| f.id == "repository.snapshots"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "repository.accessible")
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "repository.snapshots")
+        );
 
         // The passphrase-command is forwarded via restic's --password-command
         // flag; redact(true) is mandatory because the repo URL is present.
@@ -1706,13 +1731,26 @@ mod tests {
 
         // Exact command shape.
         let expected = CommandSpec::new("restic")
-            .args(["--repo", "/srv/backup", "--password-command", "cat /etc/restic/pw", "snapshots", "--json"])
+            .args([
+                "--repo",
+                "/srv/backup",
+                "--password-command",
+                "cat /etc/restic/pw",
+                "snapshots",
+                "--json",
+            ])
             .redact(true);
         rc.assert_called_with(&expected);
 
         // And a spec built WITHOUT redact must fail an exact match (non-vacuous).
-        let unredacted = CommandSpec::new("restic")
-            .args(["--repo", "/srv/backup", "--password-command", "cat /etc/restic/pw", "snapshots", "--json"]);
+        let unredacted = CommandSpec::new("restic").args([
+            "--repo",
+            "/srv/backup",
+            "--password-command",
+            "cat /etc/restic/pw",
+            "snapshots",
+            "--json",
+        ]);
         let did_panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             rc.assert_called_with(&unredacted);
         }));
@@ -1731,8 +1769,12 @@ mod tests {
         let report = doc
             .run_spec(&restic_spec("/srv/backup"), SpecScope::Repository)
             .expect("probe ok");
-        assert!(report.findings.iter().any(|f| f.id == "repository.inaccessible"
-            && f.severity == Severity::Error));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "repository.inaccessible" && f.severity == Severity::Error)
+        );
         assert!(report.has_errors());
     }
 
@@ -1766,8 +1808,18 @@ mod tests {
         let report = doc
             .run_spec(&spec, SpecScope::Repository)
             .expect("probe ok");
-        assert!(report.findings.iter().any(|f| f.id == "repository.accessible"));
-        assert!(report.findings.iter().any(|f| f.id == "repository.snapshots"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "repository.accessible")
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "repository.snapshots")
+        );
 
         // borg passes the passphrase via BORG_PASSCOMMAND env (never an arg),
         // and the repo URL is positional. redact(true) is mandatory.
@@ -1787,7 +1839,10 @@ mod tests {
             "passphrase command must NOT appear in args: {:?}",
             calls[0].args
         );
-        assert!(calls[0].redact, "repo-touching borg command MUST set redact(true)");
+        assert!(
+            calls[0].redact,
+            "repo-touching borg command MUST set redact(true)"
+        );
 
         let expected = CommandSpec::new("borg")
             .args(["list", "--json", "/home/user/repository"])
@@ -1815,7 +1870,13 @@ mod tests {
         assert!(report.findings.iter().any(|f| f.id == "integrity.ok"));
 
         let expected = CommandSpec::new("restic")
-            .args(["--repo", "/srv/backup", "--password-command", "cat /etc/restic/pw", "check"])
+            .args([
+                "--repo",
+                "/srv/backup",
+                "--password-command",
+                "cat /etc/restic/pw",
+                "check",
+            ])
             .redact(true);
         rc.assert_called_with(&expected);
     }
@@ -1878,10 +1939,12 @@ mod tests {
         let report = doc
             .run_spec(&borg_spec("/srv/backup"), SpecScope::Encryption)
             .expect("probe ok");
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.id == "encryption.enabled" && f.title.contains("repokey-blake2")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "encryption.enabled" && f.title.contains("repokey-blake2"))
+        );
 
         let expected = CommandSpec::new("borg")
             .args(["info", "--json", "/srv/backup"])
@@ -1902,10 +1965,12 @@ mod tests {
         let report = doc
             .run_spec(&borg_spec("/srv/backup"), SpecScope::Encryption)
             .expect("probe ok");
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.id == "encryption.disabled" && f.severity == Severity::Warning));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "encryption.disabled" && f.severity == Severity::Warning)
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -1914,9 +1979,8 @@ mod tests {
 
     #[test]
     fn restic_encryption_probe_builds_cat_config_command() {
-        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(
-            "{\"version\":2,\"id\":\"abc\"}",
-        ));
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("{\"version\":2,\"id\":\"abc\"}"));
         let (doc, rc) = doctor_with_fake(runner, "restic");
 
         let report = doc
@@ -1925,7 +1989,14 @@ mod tests {
         assert!(report.findings.iter().any(|f| f.id == "encryption.enabled"));
 
         let expected = CommandSpec::new("restic")
-            .args(["--repo", "/srv/backup", "--password-command", "cat /etc/restic/pw", "cat", "config"])
+            .args([
+                "--repo",
+                "/srv/backup",
+                "--password-command",
+                "cat /etc/restic/pw",
+                "cat",
+                "config",
+            ])
             .redact(true);
         rc.assert_called_with(&expected);
     }
@@ -1945,11 +2016,11 @@ mod tests {
                 .as_secs();
             let days = secs / 86_400;
             // invert days -> civil (Howard Hinnant inverse)
-            let z = days as i64 + 719_468;
+            let z = days.cast_signed() + 719_468;
             let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-            let doe = (z - era * 146_097) as u64;
+            let doe = (z - era * 146_097).cast_unsigned();
             let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-            let y = yoe as i64 + era * 400;
+            let y = yoe.cast_signed() + era * 400;
             let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
             let mp = (5 * doy + 2) / 153;
             let d = doy - (153 * mp + 2) / 5 + 1;
@@ -1981,8 +2052,12 @@ mod tests {
         let report = doc
             .run_spec(&restic_spec("/srv/backup"), SpecScope::Staleness)
             .expect("probe ok");
-        assert!(report.findings.iter().any(|f| f.id == "staleness.stale"
-            && f.severity == Severity::Error));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "staleness.stale" && f.severity == Severity::Error)
+        );
     }
 
     #[test]
@@ -1992,10 +2067,12 @@ mod tests {
         let report = doc
             .run_spec(&restic_spec("/srv/backup"), SpecScope::Staleness)
             .expect("probe ok");
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.id == "staleness.never" && f.severity == Severity::Error));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "staleness.never" && f.severity == Severity::Error)
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -2016,9 +2093,18 @@ mod tests {
         // Default policy: keep_daily=7, keep_weekly=4, keep_monthly=6.
         let expected = CommandSpec::new("restic")
             .args([
-                "--repo", "/srv/backup", "--password-command", "cat /etc/restic/pw",
-                "forget", "--json",
-                "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "6",
+                "--repo",
+                "/srv/backup",
+                "--password-command",
+                "cat /etc/restic/pw",
+                "forget",
+                "--json",
+                "--keep-daily",
+                "7",
+                "--keep-weekly",
+                "4",
+                "--keep-monthly",
+                "6",
             ])
             .redact(true);
         rc.assert_called_with(&expected);
@@ -2037,10 +2123,12 @@ mod tests {
         let runner = FakeRunner::new();
         let (doc, _rc) = doctor_with_fake(runner, "restic");
         let report = doc.run_spec(&spec, SpecScope::Retention).expect("probe ok");
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.id == "retention.unconfigured" && f.severity == Severity::Warning));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "retention.unconfigured" && f.severity == Severity::Warning)
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -2060,8 +2148,15 @@ mod tests {
 
         let expected = CommandSpec::new("borg")
             .args([
-                "prune", "--dry-run", "--list",
-                "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "6",
+                "prune",
+                "--dry-run",
+                "--list",
+                "--keep-daily",
+                "7",
+                "--keep-weekly",
+                "4",
+                "--keep-monthly",
+                "6",
                 "/srv/backup",
             ])
             .env("BORG_PASSCOMMAND", "cat /etc/borg/pw")
@@ -2076,9 +2171,8 @@ mod tests {
 
     #[test]
     fn restic_restore_probe_builds_read_subset_command() {
-        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(
-            "no errors were found\n",
-        ));
+        let runner =
+            FakeRunner::new().push_response(CommandOutput::from_stdout("no errors were found\n"));
         let (doc, rc) = doctor_with_fake(runner, "restic");
 
         let report = doc
@@ -2088,8 +2182,12 @@ mod tests {
 
         let expected = CommandSpec::new("restic")
             .args([
-                "--repo", "/srv/backup", "--password-command", "cat /etc/restic/pw",
-                "check", "--read-data-subset=5%",
+                "--repo",
+                "/srv/backup",
+                "--password-command",
+                "cat /etc/restic/pw",
+                "check",
+                "--read-data-subset=5%",
             ])
             .redact(true);
         rc.assert_called_with(&expected);
@@ -2144,7 +2242,14 @@ mod tests {
         assert!(size_f.title.contains("1.00 MiB"));
 
         let expected = CommandSpec::new("restic")
-            .args(["--repo", "/srv/backup", "--password-command", "cat /etc/restic/pw", "stats", "--json"])
+            .args([
+                "--repo",
+                "/srv/backup",
+                "--password-command",
+                "cat /etc/restic/pw",
+                "stats",
+                "--json",
+            ])
             .redact(true);
         rc.assert_called_with(&expected);
     }
@@ -2214,11 +2319,36 @@ mod tests {
             .expect("probe ok");
         // binary.* findings plus at least one finding per probe.
         assert!(report.findings.iter().any(|f| f.id.starts_with("binary.")));
-        assert!(report.findings.iter().any(|f| f.id.starts_with("repository.")));
-        assert!(report.findings.iter().any(|f| f.id.starts_with("integrity.")));
-        assert!(report.findings.iter().any(|f| f.id.starts_with("encryption.")));
-        assert!(report.findings.iter().any(|f| f.id.starts_with("staleness.")));
-        assert!(report.findings.iter().any(|f| f.id.starts_with("retention.")));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id.starts_with("repository."))
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id.starts_with("integrity."))
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id.starts_with("encryption."))
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id.starts_with("staleness."))
+        );
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id.starts_with("retention."))
+        );
         assert!(report.findings.iter().any(|f| f.id.starts_with("restore.")));
         assert!(report.findings.iter().any(|f| f.id.starts_with("space.")));
     }

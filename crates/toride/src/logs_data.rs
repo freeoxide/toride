@@ -92,11 +92,11 @@ pub struct LogSource {
 /// exist on this host `available` STAYS `true` and the viewer surfaces an
 /// honest `"no log sources found on this host"` line (NOT a fake "coming
 /// soon"). `available` flips to `false` ONLY when the collection task itself
-/// panicked (JoinError) — the viewer then renders the degraded panel.
+/// panicked (`JoinError`) — the viewer then renders the degraded panel.
 #[derive(Clone, Debug)]
 pub struct LogsDataBundle {
     /// Whether collection ran at all. `false` is reserved for the panic
-    /// (JoinError) case; an empty host keeps `true` so the "no sources" line
+    /// (`JoinError`) case; an empty host keeps `true` so the "no sources" line
     /// surfaces honestly.
     pub available: bool,
     /// Every probed source that exists (or that was degraded with a
@@ -192,7 +192,7 @@ impl Default for LogsCollector {
 /// `available` is `true` whenever ANY source returned content; on a host with
 /// ZERO readable sources `available` stays `true` so the viewer surfaces the
 /// honest "no log sources found on this host" line. Only a `spawn_blocking`
-/// panic (JoinError) flips `available` to `false`.
+/// panic (`JoinError`) flips `available` to `false`.
 async fn collect_real_logs() -> LogsDataBundle {
     // Build the candidate set OUTSIDE spawn_blocking (cheap: a few path
     // joins + env lookups). The blocking closure then owns the Vec and does
@@ -209,9 +209,7 @@ async fn collect_real_logs() -> LogsDataBundle {
         Ok(sources) => sources,
         Err(e) => {
             tracing::warn!("logs file collection panicked: {e}");
-            return empty_bundle_with_reason(format!(
-                "logs data collection panicked: {e}"
-            ));
+            return empty_bundle_with_reason(format!("logs data collection panicked: {e}"));
         }
     };
 
@@ -270,10 +268,7 @@ fn candidate_sources() -> Vec<(&'static str, PathBuf)> {
     out.push(("system.log", PathBuf::from("/var/log/system.log")));
     out.push(("install.log", PathBuf::from("/var/log/install.log")));
     if let Some(home) = dirs::home_dir() {
-        out.push((
-            "toride (user)",
-            home.join("Library/Logs/toride.log"),
-        ));
+        out.push(("toride (user)", home.join("Library/Logs/toride.log")));
     }
 
     out
@@ -302,7 +297,11 @@ fn read_file_sources(candidates: &[(&'static str, PathBuf)]) -> Vec<LogSource> {
 
     for (name, path) in candidates {
         match read_file_tail(path) {
-            FileRead::Ok { size_bytes, mtime, lines } => {
+            FileRead::Ok {
+                size_bytes,
+                mtime,
+                lines,
+            } => {
                 sources.push(LogSource {
                     name: (*name).to_string(),
                     path: path.display().to_string(),
@@ -351,6 +350,10 @@ enum FileRead {
     /// File exists but could not be opened/read (likely EACCES).
     PermissionDenied,
     /// Some other I/O error (logged at debug).
+    #[expect(
+        dead_code,
+        reason = "error string retained for Debug rendering / future surfacing"
+    )]
     Other(String),
 }
 
@@ -360,6 +363,10 @@ enum FileRead {
 /// Never panics: every I/O step is matched and mapped to a [`FileRead`]
 /// variant. Non-UTF-8 bytes decode lossily (logs must never crash the
 /// viewer).
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "MAX_FILE_BYTES is a small constant that fits in usize"
+)]
 fn read_file_tail(path: &std::path::Path) -> FileRead {
     use std::fs::File;
     use std::io::{Read, Seek, SeekFrom};
@@ -385,10 +392,10 @@ fn read_file_tail(path: &std::path::Path) -> FileRead {
     };
 
     // Seek near the end for large files so we never slurp a multi-GB syslog.
-    if size_bytes > MAX_FILE_BYTES {
-        if let Err(e) = file.seek(SeekFrom::Start(size_bytes - MAX_FILE_BYTES)) {
-            return FileRead::Other(e.to_string());
-        }
+    if size_bytes > MAX_FILE_BYTES
+        && let Err(e) = file.seek(SeekFrom::Start(size_bytes - MAX_FILE_BYTES))
+    {
+        return FileRead::Other(e.to_string());
     }
 
     let mut bytes = Vec::with_capacity(MAX_FILE_BYTES as usize);
@@ -397,10 +404,10 @@ fn read_file_tail(path: &std::path::Path) -> FileRead {
     }
 
     // Drop a likely-partial first line (we started mid-line after the seek).
-    if size_bytes > MAX_FILE_BYTES {
-        if let Some(nl) = bytes.iter().position(|&b| b == b'\n') {
-            bytes.drain(..=nl);
-        }
+    if size_bytes > MAX_FILE_BYTES
+        && let Some(nl) = bytes.iter().position(|&b| b == b'\n')
+    {
+        bytes.drain(..=nl);
     }
 
     let text = String::from_utf8_lossy(&bytes);
@@ -429,6 +436,10 @@ fn read_file_tail(path: &std::path::Path) -> FileRead {
 
 /// Format a unix mtime as `YYYY-MM-DD HH:MM` (UTC). Good enough for a log
 /// viewer header; the operator rarely needs second-precision.
+#[expect(
+    clippy::cast_possible_wrap,
+    reason = "unix days are well within i64 range"
+)]
 fn format_mtime(unix_secs: u64) -> String {
     // Minimal civil-time conversion from unix seconds (UTC). Avoids pulling
     // in chrono just for one header field; logs are usually read in the same
@@ -444,6 +455,12 @@ fn format_mtime(unix_secs: u64) -> String {
 
 /// Howard Hinnant's days-from-civil algorithm (inverse of the Gregorian
 /// leap-year rules). Returns `(year, month, day)` in `1..=12` / `1..=31`.
+#[expect(
+    clippy::cast_possible_wrap,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation,
+    reason = "Howard Hinnant days-from-civil: all values are bounded by the algorithm's invariants"
+)]
 fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
@@ -521,7 +538,7 @@ fn empty_bundle() -> LogsDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned
-/// collection task panicked (JoinError) — the reason string is rendered by
+/// collection task panicked (`JoinError`) — the reason string is rendered by
 /// the viewer's degraded panel.
 fn empty_bundle_with_reason(reason: String) -> LogsDataBundle {
     let mut b = empty_bundle();
@@ -693,9 +710,11 @@ mod tests {
         // Generate > MAX_LINES lines and confirm only the last MAX_LINES are
         // returned (the tail).
         let tmp = std::env::temp_dir().join("toride-logs-data-many.log");
-        let body: String = (0..MAX_LINES * 2)
-            .map(|i| format!("line {i}\n"))
-            .collect();
+        let mut body = String::new();
+        for i in 0..MAX_LINES * 2 {
+            use std::fmt::Write as _;
+            let _ = writeln!(body, "line {i}");
+        }
         std::fs::write(&tmp, body).unwrap();
         let lines = match read_file_tail(&tmp) {
             FileRead::Ok { lines, .. } => lines,
@@ -708,10 +727,17 @@ mod tests {
         assert_eq!(lines.len(), MAX_LINES);
         // The FIRST kept line should be line `MAX_LINES` (we dropped the
         // earliest MAX_LINES, keeping the tail).
-        assert_eq!(lines[0], format!("line {}", MAX_LINES));
-        assert_eq!(lines.last().unwrap(), &format!("line {}", MAX_LINES * 2 - 1));
+        assert_eq!(lines[0], format!("line {MAX_LINES}"));
+        assert_eq!(
+            lines.last().unwrap(),
+            &format!("line {}", MAX_LINES * 2 - 1)
+        );
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "MAX_FILE_BYTES is a small constant that fits in usize"
+    )]
     #[test]
     fn read_file_tail_seek_does_not_read_whole_large_file() {
         // A file larger than MAX_FILE_BYTES must be seeked: we can detect the
@@ -728,7 +754,9 @@ mod tests {
         }
         std::fs::write(&tmp, body.as_bytes()).unwrap();
         let (lines, size_bytes) = match read_file_tail(&tmp) {
-            FileRead::Ok { lines, size_bytes, .. } => (lines, size_bytes),
+            FileRead::Ok {
+                lines, size_bytes, ..
+            } => (lines, size_bytes),
             other => {
                 let _ = std::fs::remove_file(&tmp);
                 panic!("expected Ok, got {other:?}");

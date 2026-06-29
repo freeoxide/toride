@@ -13,8 +13,8 @@ use std::time::Duration;
 
 use toride_runner::{CommandSpec, Runner};
 
-use crate::error::{Error, Result};
-use crate::parse::{parse_wg_show, WgShowEntry};
+use crate::error::Result;
+use crate::parse::{WgShowEntry, parse_wg_show};
 
 /// Default wall-clock timeout for `wg` commands (seconds).
 const WG_TIMEOUT_SECS: u64 = 15;
@@ -72,7 +72,7 @@ impl<R: Runner> WireguardClient<R> {
     /// field of every row.
     ///
     /// [`wg`(8)]: https://www.mankier.com/8/wg
-    fn show_spec(&self) -> CommandSpec {
+    fn show_spec() -> CommandSpec {
         CommandSpec::new("wg")
             .args(["show", "all", "dump"])
             .timeout(Duration::from_secs(WG_TIMEOUT_SECS))
@@ -88,12 +88,12 @@ impl<R: Runner> WireguardClient<R> {
     /// Returns [`Error::CommandFailed`] if the command fails.
     pub fn show(&self) -> Result<Vec<WgShowEntry>> {
         tracing::debug!("running `wg show all dump`");
-        let output = self.runner.run_checked(&self.show_spec())?;
+        let output = self.runner.run_checked(&Self::show_spec())?;
         parse_wg_show(&output.stdout)
     }
 
     /// Build the `wg showconf <interface>` command spec.
-    fn showconf_spec(&self, interface: &str) -> CommandSpec {
+    fn showconf_spec(interface: &str) -> CommandSpec {
         CommandSpec::new("wg")
             .args(["showconf", interface])
             .timeout(Duration::from_secs(WG_TIMEOUT_SECS))
@@ -109,7 +109,7 @@ impl<R: Runner> WireguardClient<R> {
     /// the interface does not exist).
     pub fn showconf(&self, interface: &str) -> Result<String> {
         tracing::debug!("running `wg showconf {interface}`");
-        let output = self.runner.run_checked(&self.showconf_spec(interface))?;
+        let output = self.runner.run_checked(&Self::showconf_spec(interface))?;
         Ok(output.stdout)
     }
 
@@ -118,7 +118,7 @@ impl<R: Runner> WireguardClient<R> {
     /// `wg setconf` reads its configuration from stdin, so the config text is
     /// passed via [`CommandSpec::stdin`]. The spec is marked `redact(true)` so
     /// any embedded private keys are scrubbed from error messages and logs.
-    fn setconf_spec(&self, interface: &str, config: &str) -> CommandSpec {
+    fn setconf_spec(interface: &str, config: &str) -> CommandSpec {
         CommandSpec::new("wg")
             .args(["setconf", interface, "/dev/stdin"])
             .stdin(config)
@@ -137,7 +137,9 @@ impl<R: Runner> WireguardClient<R> {
     /// Returns [`Error::CommandFailed`] if the command fails.
     pub fn setconf(&self, interface: &str, config: &str) -> Result<()> {
         tracing::debug!("running `wg setconf {interface}`");
-        let _ = self.runner.run_checked(&self.setconf_spec(interface, config))?;
+        let _ = self
+            .runner
+            .run_checked(&Self::setconf_spec(interface, config))?;
         Ok(())
     }
 
@@ -145,7 +147,7 @@ impl<R: Runner> WireguardClient<R> {
     ///
     /// As with `setconf`, the config is supplied via stdin and redaction is
     /// enabled because it may contain a private key.
-    fn syncconf_spec(&self, interface: &str, config: &str) -> CommandSpec {
+    fn syncconf_spec(interface: &str, config: &str) -> CommandSpec {
         CommandSpec::new("wg")
             .args(["syncconf", interface, "/dev/stdin"])
             .stdin(config)
@@ -164,7 +166,9 @@ impl<R: Runner> WireguardClient<R> {
     /// Returns [`Error::CommandFailed`] if the command fails.
     pub fn syncconf(&self, interface: &str, config: &str) -> Result<()> {
         tracing::debug!("running `wg syncconf {interface}`");
-        let _ = self.runner.run_checked(&self.syncconf_spec(interface, config))?;
+        let _ = self
+            .runner
+            .run_checked(&Self::syncconf_spec(interface, config))?;
         Ok(())
     }
 
@@ -190,6 +194,7 @@ impl<R: Runner + Default> Default for WireguardClient<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::Error;
     use toride_runner::fake::FakeRunner;
 
     #[test]
@@ -203,7 +208,8 @@ mod tests {
 wg1\tAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAEE=\t/TOE4TKtAqVsePRVR+5AA43HkAK5DSntkOCO7nYq5xU=\t51821\toff\n\
 wg1\tfE/wdxzl0klVp/IR8UcaoGUMjqaWi3jAd7KzHKFS6Ds=\t(none)\t172.19.0.8:51822\t10.0.0.2/32\t1617235493\t3481633\t33460136\toff\n\
 ";
-        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(canned));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(canned));
         let client = WireguardClient::with_runner(runner);
         let entries = client.show().unwrap();
         // One interface row surfaced; the peer row is skipped.
@@ -229,8 +235,8 @@ wg1\tfE/wdxzl0klVp/IR8UcaoGUMjqaWi3jAd7KzHKFS6Ds=\t(none)\t172.19.0.8:51822\t10.
 
     #[test]
     fn show_propagates_command_failure() {
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stderr("exit 1", 1));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr("exit 1", 1));
         let client = WireguardClient::with_runner(runner);
         let err = client.show().unwrap_err();
         assert!(matches!(err, Error::Runner(_)), "got {err:?}");
@@ -263,7 +269,10 @@ wg1\tfE/wdxzl0klVp/IR8UcaoGUMjqaWi3jAd7KzHKFS6Ds=\t(none)\t172.19.0.8:51822\t10.
             .expect("wg setconf was called");
         assert_eq!(setconf_call.args, vec!["setconf", "wg0", "/dev/stdin"]);
         assert_eq!(setconf_call.stdin.as_deref(), Some(config));
-        assert!(setconf_call.redact, "config carrying a private key must be redacted");
+        assert!(
+            setconf_call.redact,
+            "config carrying a private key must be redacted"
+        );
     }
 
     #[test]

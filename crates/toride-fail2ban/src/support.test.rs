@@ -203,7 +203,11 @@ fn detect_init_returns_valid_variant() {
     let init = detect_init();
     let is_valid = matches!(
         init,
-        InitSystem::Systemd | InitSystem::OpenRC | InitSystem::Launchd | InitSystem::Rc | InitSystem::Unknown
+        InitSystem::Systemd
+            | InitSystem::OpenRC
+            | InitSystem::Launchd
+            | InitSystem::Rc
+            | InitSystem::Unknown
     );
     assert!(is_valid, "detect_init returned an invalid variant");
 }
@@ -222,7 +226,15 @@ fn detect_platform_returns_non_empty_os_and_arch() {
 #[test]
 fn detect_platform_returns_expected_os_values() {
     let info = detect_platform();
-    let valid_os = ["linux", "macos", "freebsd", "windows", "openbsd", "netbsd", "dragonfly"];
+    let valid_os = [
+        "linux",
+        "macos",
+        "freebsd",
+        "windows",
+        "openbsd",
+        "netbsd",
+        "dragonfly",
+    ];
     assert!(
         valid_os.contains(&info.os.as_str()) || !info.os.is_empty(),
         "os should be a known platform or at least non-empty, got: {}",
@@ -246,7 +258,10 @@ fn detect_platform_firewall_and_init_are_consistent() {
 #[test]
 fn default_ban_commands_iptables() {
     let cmds = default_ban_commands(Firewall::Iptables);
-    assert!(!cmds.linux.is_empty(), "iptables ban commands should have linux entries");
+    assert!(
+        !cmds.linux.is_empty(),
+        "iptables ban commands should have linux entries"
+    );
     assert!(cmds.linux[0].contains("iptables"));
     assert!(cmds.linux[0].contains("-I INPUT"));
     assert!(cmds.linux[0].contains("<ip>"));
@@ -255,7 +270,10 @@ fn default_ban_commands_iptables() {
 #[test]
 fn default_ban_commands_nftables() {
     let cmds = default_ban_commands(Firewall::Nftables);
-    assert!(!cmds.linux.is_empty(), "nftables ban commands should have linux entries");
+    assert!(
+        !cmds.linux.is_empty(),
+        "nftables ban commands should have linux entries"
+    );
     assert!(cmds.linux[0].contains("nft"));
     assert!(cmds.linux[0].contains("<ip>"));
 }
@@ -263,9 +281,15 @@ fn default_ban_commands_nftables() {
 #[test]
 fn default_ban_commands_pf() {
     let cmds = default_ban_commands(Firewall::Pf);
-    assert!(cmds.linux.is_empty(), "pf ban should have no linux commands");
+    assert!(
+        cmds.linux.is_empty(),
+        "pf ban should have no linux commands"
+    );
     assert!(!cmds.macos.is_empty(), "pf ban should have macos commands");
-    assert!(!cmds.freebsd.is_empty(), "pf ban should have freebsd commands");
+    assert!(
+        !cmds.freebsd.is_empty(),
+        "pf ban should have freebsd commands"
+    );
     assert!(cmds.macos[0].contains("pfctl"));
     assert!(cmds.macos[0].contains("<ip>"));
 }
@@ -273,7 +297,10 @@ fn default_ban_commands_pf() {
 #[test]
 fn default_ban_commands_firewalld() {
     let cmds = default_ban_commands(Firewall::Firewalld);
-    assert!(!cmds.linux.is_empty(), "firewalld ban commands should have linux entries");
+    assert!(
+        !cmds.linux.is_empty(),
+        "firewalld ban commands should have linux entries"
+    );
     assert!(cmds.linux[0].contains("firewall-cmd"));
     assert!(cmds.linux[0].contains("<ip>"));
 }
@@ -292,9 +319,18 @@ fn default_ban_commands_windows_firewall() {
 #[test]
 fn default_ban_commands_unknown_returns_empty() {
     let cmds = default_ban_commands(Firewall::Unknown);
-    assert!(cmds.linux.is_empty(), "Unknown ban should have empty linux commands");
-    assert!(cmds.macos.is_empty(), "Unknown ban should have empty macos commands");
-    assert!(cmds.freebsd.is_empty(), "Unknown ban should have empty freebsd commands");
+    assert!(
+        cmds.linux.is_empty(),
+        "Unknown ban should have empty linux commands"
+    );
+    assert!(
+        cmds.macos.is_empty(),
+        "Unknown ban should have empty macos commands"
+    );
+    assert!(
+        cmds.freebsd.is_empty(),
+        "Unknown ban should have empty freebsd commands"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -363,7 +399,10 @@ fn default_unban_commands_nftables_includes_ipv6_variant() {
 #[test]
 fn default_unban_commands_iptables() {
     let cmds = default_unban_commands(Firewall::Iptables);
-    assert!(!cmds.linux.is_empty(), "iptables unban commands should have linux entries");
+    assert!(
+        !cmds.linux.is_empty(),
+        "iptables unban commands should have linux entries"
+    );
     assert!(cmds.linux[0].contains("iptables"));
     assert!(cmds.linux[0].contains("-D INPUT"));
     assert!(cmds.linux[0].contains("<ip>"));
@@ -372,7 +411,10 @@ fn default_unban_commands_iptables() {
 #[test]
 fn default_unban_commands_nftables() {
     let cmds = default_unban_commands(Firewall::Nftables);
-    assert!(!cmds.linux.is_empty(), "nftables unban commands should have linux entries");
+    assert!(
+        !cmds.linux.is_empty(),
+        "nftables unban commands should have linux entries"
+    );
     assert!(cmds.linux[0].contains("nft"));
     assert!(cmds.linux[0].contains("delete"));
     assert!(cmds.linux[0].contains("<ip>"));
@@ -381,16 +423,28 @@ fn default_unban_commands_nftables() {
 #[test]
 fn default_unban_commands_pf() {
     let cmds = default_unban_commands(Firewall::Pf);
-    assert!(cmds.linux.is_empty(), "pf unban should have no linux commands");
-    assert!(!cmds.macos.is_empty(), "pf unban should have macos commands");
-    assert!(!cmds.freebsd.is_empty(), "pf unban should have freebsd commands");
+    assert!(
+        cmds.linux.is_empty(),
+        "pf unban should have no linux commands"
+    );
+    assert!(
+        !cmds.macos.is_empty(),
+        "pf unban should have macos commands"
+    );
+    assert!(
+        !cmds.freebsd.is_empty(),
+        "pf unban should have freebsd commands"
+    );
     assert!(cmds.macos[0].contains("pfctl"));
 }
 
 #[test]
 fn default_unban_commands_firewalld() {
     let cmds = default_unban_commands(Firewall::Firewalld);
-    assert!(!cmds.linux.is_empty(), "firewalld unban commands should have linux entries");
+    assert!(
+        !cmds.linux.is_empty(),
+        "firewalld unban commands should have linux entries"
+    );
     assert!(cmds.linux[0].contains("firewall-cmd"));
     assert!(cmds.linux[0].contains("remove-source"));
     assert!(cmds.linux[0].contains("<ip>"));
@@ -710,9 +764,18 @@ fn default_ban_and_unban_commands_empty_for_unknown() {
 
     assert!(ban.linux.is_empty(), "Unknown ban linux should be empty");
     assert!(ban.macos.is_empty(), "Unknown ban macos should be empty");
-    assert!(ban.freebsd.is_empty(), "Unknown ban freebsd should be empty");
-    assert!(unban.linux.is_empty(), "Unknown unban linux should be empty");
-    assert!(unban.macos.is_empty(), "Unknown unban macos should be empty");
+    assert!(
+        ban.freebsd.is_empty(),
+        "Unknown ban freebsd should be empty"
+    );
+    assert!(
+        unban.linux.is_empty(),
+        "Unknown unban linux should be empty"
+    );
+    assert!(
+        unban.macos.is_empty(),
+        "Unknown unban macos should be empty"
+    );
     assert!(
         unban.freebsd.is_empty(),
         "Unknown unban freebsd should be empty"

@@ -4,7 +4,9 @@ use base64::Engine;
 
 use crate::get_permissions;
 use toride_ssh_core::SshPaths;
-use toride_ssh_core::{CliRunner, Error, Fingerprint, KeyCreateParams, KeyFormat, KeySource, KeyType, Result, SshKey};
+use toride_ssh_core::{
+    CliRunner, Error, Fingerprint, KeyCreateParams, KeyFormat, KeySource, KeyType, Result, SshKey,
+};
 
 /// Minimum RSA key size accepted by OpenSSH.
 const MIN_RSA_BITS: u32 = 1024;
@@ -85,7 +87,10 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
 }
 
 /// Generate a new SSH key pair.
-#[expect(clippy::too_many_lines, reason = "orchestrates generation, permissions, agent, config")]
+#[expect(
+    clippy::too_many_lines,
+    reason = "orchestrates generation, permissions, agent, config"
+)]
 pub async fn generate_key(
     paths: &SshPaths,
     params: KeyCreateParams,
@@ -123,10 +128,7 @@ pub async fn generate_key(
         );
     }
 
-    let passphrase_nonempty = params
-        .passphrase
-        .as_deref()
-        .is_some_and(|p| !p.is_empty());
+    let passphrase_nonempty = params.passphrase.as_deref().is_some_and(|p| !p.is_empty());
 
     let private_path_str = private_path
         .to_str()
@@ -145,23 +147,27 @@ pub async fn generate_key(
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            if let Err(e) = std::fs::set_permissions(
-                &ssh_dir,
-                std::fs::Permissions::from_mode(0o700),
-            ) {
+            if let Err(e) =
+                std::fs::set_permissions(&ssh_dir, std::fs::Permissions::from_mode(0o700))
+            {
                 tracing::warn!("failed to set permissions on {}: {e}", ssh_dir.display());
             }
             if let Err(e) = std::fs::set_permissions(
                 &private_path_clone,
                 std::fs::Permissions::from_mode(0o600),
             ) {
-                tracing::warn!("failed to set permissions on {}: {e}", private_path_clone.display());
+                tracing::warn!(
+                    "failed to set permissions on {}: {e}",
+                    private_path_clone.display()
+                );
             }
-            if let Err(e) = std::fs::set_permissions(
-                &public_path,
-                std::fs::Permissions::from_mode(0o644),
-            ) {
-                tracing::warn!("failed to set permissions on {}: {e}", public_path.display());
+            if let Err(e) =
+                std::fs::set_permissions(&public_path, std::fs::Permissions::from_mode(0o644))
+            {
+                tracing::warn!(
+                    "failed to set permissions on {}: {e}",
+                    public_path.display()
+                );
             }
         }
 
@@ -278,8 +284,14 @@ mod tests {
         assert_eq!(key_type_to_cli_arg(KeyType::EcdsaP384), "ecdsa");
         assert_eq!(key_type_to_cli_arg(KeyType::EcdsaP521), "ecdsa");
         assert_eq!(key_type_to_cli_arg(KeyType::Dsa), "dsa");
-        assert_eq!(key_type_to_cli_arg(KeyType::SkEd25519), "sk-ssh-ed25519@openssh.com");
-        assert_eq!(key_type_to_cli_arg(KeyType::SkEcdsaP256), "sk-ecdsa-sha2-nistp256@openssh.com");
+        assert_eq!(
+            key_type_to_cli_arg(KeyType::SkEd25519),
+            "sk-ssh-ed25519@openssh.com"
+        );
+        assert_eq!(
+            key_type_to_cli_arg(KeyType::SkEcdsaP256),
+            "sk-ecdsa-sha2-nistp256@openssh.com"
+        );
     }
 
     #[test]
@@ -297,7 +309,10 @@ mod tests {
             verify_required: false,
         };
         let args = build_keygen_args(&params, "/home/user/.ssh/id_ed25519");
-        assert_eq!(args[0..4], ["-t", "ed25519", "-f", "/home/user/.ssh/id_ed25519"]);
+        assert_eq!(
+            args[0..4],
+            ["-t", "ed25519", "-f", "/home/user/.ssh/id_ed25519"]
+        );
         assert_eq!(args[4..6], ["-N", ""]);
         assert!(!args.contains(&"-b".to_owned()));
         assert!(!args.contains(&"-C".to_owned()));

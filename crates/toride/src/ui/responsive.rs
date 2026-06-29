@@ -13,7 +13,9 @@ use super::theme::Palette;
 
 // ── Breakpoints ──────────────────────────────────────────────────────────────
 
+/// Minimum terminal width (columns) below which the layout collapses to `TooSmall`.
 pub const MIN_WIDTH: u16 = 30;
+/// Minimum terminal height (rows) below which the layout collapses to `TooSmall`.
 pub const MIN_HEIGHT: u16 = 10;
 
 const FULL_W: u16 = 72;
@@ -38,6 +40,7 @@ pub enum Viewport {
 }
 
 impl Viewport {
+    /// Classify a terminal area into a [`Viewport`] size category.
     #[must_use]
     pub fn from_area(area: Rect) -> Self {
         let (w, h) = (area.width, area.height);

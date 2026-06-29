@@ -15,12 +15,12 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::ssh_data::SshOp;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
-    ConfirmModal, ConfirmResult, FormModal, FormResult, InteractiveModal, ModalEvent,
-    TextInput, render_titled_panel,
+    ConfirmModal, ConfirmResult, FormModal, FormResult, InteractiveModal, ModalEvent, TextInput,
+    render_titled_panel,
 };
 
 use super::{AuthorizedKeyEntry, SshTab, char_to_keycode};
@@ -62,7 +62,7 @@ pub struct AuthorizedKeysTab {
     form: FormModal,
     /// Confirm modal for remove operation.
     confirm: ConfirmModal,
-    /// Pending write operations to be forwarded to SshContent.
+    /// Pending write operations to be forwarded to `SshContent`.
     pending_ops: Vec<SshOp>,
 }
 
@@ -181,11 +181,9 @@ impl AuthorizedKeysTab {
                     self.clamp_scroll();
                 }
             }
-            MouseEventKind::ScrollUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.clamp_scroll();
-                }
+            MouseEventKind::ScrollUp if self.selected > 0 => {
+                self.selected -= 1;
+                self.clamp_scroll();
             }
             _ => {}
         }
@@ -207,6 +205,10 @@ impl Default for AuthorizedKeysTab {
 }
 
 impl SshTab for AuthorizedKeysTab {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keyboard dispatch table kept whole for clarity"
+    )]
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If detail modal is open, delegate to InteractiveModal.
         if self.detail_modal.is_visible() {
@@ -223,8 +225,10 @@ impl SshTab for AuthorizedKeysTab {
                 ActionModal::Add => {
                     match self.form.handle_key(code) {
                         FormResult::Submitted => {
-                            let key_string = self.form.text_value(0)
-                                .map(|s| s.to_string())
+                            let key_string = self
+                                .form
+                                .text_value(0)
+                                .map(std::string::ToString::to_string)
                                 .unwrap_or_default();
                             if key_string.is_empty() {
                                 self.action_modal = None;
@@ -232,12 +236,12 @@ impl SshTab for AuthorizedKeysTab {
                             }
                             // Parse the pasted key: "key-type base64-data [comment]"
                             let parts: Vec<&str> = key_string.splitn(3, ' ').collect();
-                            let key_type = parts.first().map(|s| *s).unwrap_or("unknown");
-                            let base64_key = parts.get(1).map(|s| *s).unwrap_or("");
-                            let comment = parts.get(2).map(|s| s.to_string());
+                            let key_type = parts.first().copied().unwrap_or("unknown");
+                            let base64_key = parts.get(1).copied().unwrap_or("");
+                            let comment = parts.get(2).map(std::string::ToString::to_string);
                             // Compute fingerprint for Remove support
                             let openssh_line = if parts.len() >= 2 {
-                                format!("{} {}", key_type, base64_key)
+                                format!("{key_type} {base64_key}")
                             } else {
                                 key_string.clone()
                             };
@@ -277,7 +281,8 @@ impl SshTab for AuthorizedKeysTab {
                                 let fingerprint = self.entries[self.selected].fingerprint.clone();
                                 // Persist to disk
                                 if !fingerprint.is_empty() {
-                                    self.pending_ops.push(SshOp::AuthorizedKeyRemove { fingerprint });
+                                    self.pending_ops
+                                        .push(SshOp::AuthorizedKeyRemove { fingerprint });
                                 }
                                 // Optimistic in-memory update
                                 self.entries.remove(self.selected);
@@ -320,8 +325,11 @@ impl SshTab for AuthorizedKeysTab {
             }
             // CRUD shortcuts
             KeyCode::Char('a') => {
-                self.form = FormModal::new(40)
-                    .text_field(TextInput::new("Key", 40).placeholder("ssh-ed25519 AAAA... user@host").required());
+                self.form = FormModal::new(40).text_field(
+                    TextInput::new("Key", 40)
+                        .placeholder("ssh-ed25519 AAAA... user@host")
+                        .required(),
+                );
                 self.action_modal = Some(ActionModal::Add);
                 None
             }
@@ -337,7 +345,7 @@ impl SshTab for AuthorizedKeysTab {
                     } else {
                         label.to_string()
                     };
-                    self.confirm = ConfirmModal::new(format!("Remove key \"{}\"?", display_label));
+                    self.confirm = ConfirmModal::new(format!("Remove key \"{display_label}\"?"));
                     self.action_modal = Some(ActionModal::Remove);
                 }
                 None
@@ -349,23 +357,27 @@ impl SshTab for AuthorizedKeysTab {
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
         if self.entries.is_empty() {
-            self.render_empty(frame, area, p);
+            Self::render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_entry_idx {
-            if let Some(entry) = self.entries.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &entry);
-            }
+        if let Some(idx) = self.detail_entry_idx
+            && let Some(entry) = self.entries.get(idx).cloned()
+        {
+            self.render_detail_modal(frame, p, &entry);
         }
 
         // Render action modal on top
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Authorized Key", 56, 13,
+                    frame,
+                    p,
+                    "Add Authorized Key",
+                    56,
+                    13,
                     "Paste public key string, Esc to cancel",
                 );
             }
@@ -398,17 +410,24 @@ impl SshTab for AuthorizedKeysTab {
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 impl AuthorizedKeysTab {
-    fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_empty(frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " AUTHORIZED KEYS ", p.text, false);
         let msg = Line::from(vec![
             Span::styled("No authorized keys found", Style::new().fg(p.text_dim)),
-            Span::styled("  a", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  a",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" add", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_list(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(
             frame,
@@ -463,22 +482,21 @@ impl AuthorizedKeysTab {
             // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
-                Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
+                Style::new().fg(if is_selected || is_hovered {
+                    p.accent
+                } else {
+                    p.text_dim
+                }),
             ));
 
             // Comment or truncated public key (20 chars bold)
-            let label_text = entry
-                .comment
-                .as_deref()
-                .unwrap_or(&entry.public_key);
+            let label_text = entry.comment.as_deref().unwrap_or(&entry.public_key);
             let label_w = 20.min(inner.width.saturating_sub(4) as usize);
             let label = truncate_str(label_text, label_w);
             let label_chars = label.chars().count();
             spans.push(Span::styled(
                 label,
-                Style::new()
-                    .fg(p.text)
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ));
 
             // Padding
@@ -519,68 +537,70 @@ impl AuthorizedKeysTab {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
         let viewport = Viewport::from_area(area);
-        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
+        self.buttons
+            .render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
-    fn render_detail_modal(
-        &mut self,
-        frame: &mut Frame,
-        p: Palette,
-        entry: &AuthorizedKeyEntry,
-    ) {
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
+    fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, entry: &AuthorizedKeyEntry) {
         self.detail_modal.render(frame, p, |frame, content_area| {
-                let key_display = truncate_str(
-                    &entry.public_key,
-                    content_area.width.saturating_sub(6) as usize,
-                );
-                let lines = vec![
-                    Line::from(vec![
-                        Span::styled("Type:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.key_type, Style::new().fg(p.info)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Comment: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            entry.comment.as_deref().unwrap_or("—"),
-                            Style::new().fg(p.text),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("FP:      ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.fingerprint, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Options: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            entry.options.as_deref().unwrap_or("none"),
-                            Style::new().fg(if entry.options.is_some() { p.warn } else { p.text_muted }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Line:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            format!("{}", entry.line),
-                            Style::new().fg(p.text),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Key:     ", Style::new().fg(p.text_dim)),
-                        Span::styled(key_display, Style::new().fg(p.text_dim)),
-                    ]),
-                    Line::raw(""),
-                    Line::from(
-                        Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
+            let key_display = truncate_str(
+                &entry.public_key,
+                content_area.width.saturating_sub(6) as usize,
+            );
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("Type:    ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.key_type, Style::new().fg(p.info)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Comment: ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        entry.comment.as_deref().unwrap_or("—"),
+                        Style::new().fg(p.text),
                     ),
-                ];
+                ]),
+                Line::from(vec![
+                    Span::styled("FP:      ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.fingerprint, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Options: ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        entry.options.as_deref().unwrap_or("none"),
+                        Style::new().fg(if entry.options.is_some() {
+                            p.warn
+                        } else {
+                            p.text_muted
+                        }),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Line:    ", Style::new().fg(p.text_dim)),
+                    Span::styled(format!("{}", entry.line), Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Key:     ", Style::new().fg(p.text_dim)),
+                    Span::styled(key_display, Style::new().fg(p.text_dim)),
+                ]),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "Press Esc to close",
+                    Style::new().fg(p.text_muted),
+                )),
+            ];
 
-                for (i, line) in lines.into_iter().enumerate() {
-                    let y = content_area.y + i as u16;
-                    if y < content_area.bottom() {
-                        let row_area = Rect::new(content_area.x, y, content_area.width, 1);
-                        frame.render_widget(Paragraph::new(line), row_area);
-                    }
+            for (i, line) in lines.into_iter().enumerate() {
+                let y = content_area.y + i as u16;
+                if y < content_area.bottom() {
+                    let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+                    frame.render_widget(Paragraph::new(line), row_area);
                 }
-            });
+            }
+        });
     }
 }
 
@@ -726,7 +746,10 @@ mod tests {
             output.contains("Authorized Key Detail"),
             "modal title: {output}"
         );
-        assert!(output.contains("ssh-ed25519"), "key type in modal: {output}");
+        assert!(
+            output.contains("ssh-ed25519"),
+            "key type in modal: {output}"
+        );
     }
 
     #[test]

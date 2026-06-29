@@ -8,9 +8,7 @@
 // ---------------------------------------------------------------------------
 
 /// Diagnostic severity level for user security findings.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Severity {
     /// No issue detected.
@@ -131,9 +129,7 @@ impl UserReport {
     /// Returns `true` if any finding has severity [`Severity::Error`] or higher.
     #[must_use]
     pub fn has_errors(&self) -> bool {
-        self.findings
-            .iter()
-            .any(|f| f.severity >= Severity::Error)
+        self.findings.iter().any(|f| f.severity >= Severity::Error)
     }
 
     /// Returns `true` if any finding has severity [`Severity::Critical`].

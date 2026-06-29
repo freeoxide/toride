@@ -1,4 +1,4 @@
-//! Port forwarding control via ControlMaster sessions.
+//! Port forwarding control via `ControlMaster` sessions.
 
 #[cfg(unix)]
 use std::os::unix::fs::FileTypeExt;
@@ -33,7 +33,7 @@ impl std::fmt::Display for ForwardType {
     }
 }
 
-/// A single active port forward on a ControlMaster session.
+/// A single active port forward on a `ControlMaster` session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PortForward {
     /// Local bind address (e.g. `127.0.0.1` or `*`).
@@ -48,7 +48,7 @@ pub struct PortForward {
     pub forward_type: ForwardType,
 }
 
-/// A discovered ControlMaster session.
+/// A discovered `ControlMaster` session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ControlSession {
     /// Path to the control socket.
@@ -82,12 +82,10 @@ async fn ssh_control_cmd(control_path: &Path, action: &str) -> Result<String> {
 
 /// Check whether a control socket is still alive.
 async fn check_alive(control_path: &Path) -> bool {
-    ssh_control_cmd(control_path, "check")
-        .await
-        .is_ok()
+    ssh_control_cmd(control_path, "check").await.is_ok()
 }
 
-/// List active port forwards on a ControlMaster session.
+/// List active port forwards on a `ControlMaster` session.
 ///
 /// Sends `ssh -O list -S <control_path>` and parses the output to extract
 /// individual forward entries.
@@ -163,10 +161,7 @@ pub(crate) fn parse_forward_line(line: &str, forward_type: ForwardType) -> Optio
     let line = line.trim_start();
 
     let port_idx = line.find(" port ")?;
-    let local_addr = line[..port_idx]
-        .trim()
-        .trim_end_matches('.')
-        .to_owned();
+    let local_addr = line[..port_idx].trim().trim_end_matches('.').to_owned();
 
     let rest = &line[port_idx + 6..]; // skip " port "
 
@@ -205,7 +200,7 @@ pub(crate) fn parse_forward_line(line: &str, forward_type: ForwardType) -> Optio
     })
 }
 
-/// Cancel a port forward on a ControlMaster session.
+/// Cancel a port forward on a `ControlMaster` session.
 ///
 /// For local forwards this sends `ssh -O cancel -L <addr>:<host>:<port> -S <path>`.
 /// For remote forwards, `-R` is used instead.  Since we only receive the
@@ -229,9 +224,7 @@ pub async fn cancel_forward(control_path: &Path, local_port: u16) -> Result<()> 
         .iter()
         .find(|f| f.local_port == local_port)
         .ok_or_else(|| {
-            Error::ForwardNotFound(format!(
-                "no forward found on local port {local_port}"
-            ))
+            Error::ForwardNotFound(format!("no forward found on local port {local_port}"))
         })?;
 
     cancel_known_forward(control_path, forward).await
@@ -304,7 +297,7 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
     Ok(())
 }
 
-/// Gracefully close a ControlMaster session (`ssh -O exit`).
+/// Gracefully close a `ControlMaster` session (`ssh -O exit`).
 ///
 /// After this call the control socket file may still exist on disk (it is
 /// cleaned up asynchronously by the master process).  Callers that need to
@@ -360,7 +353,7 @@ fn is_stale_socket(path: &Path) -> bool {
     }
 }
 
-/// Discover active ControlMaster sessions by scanning common socket locations.
+/// Discover active `ControlMaster` sessions by scanning common socket locations.
 ///
 /// Checks:
 /// 1. `~/.ssh/cm-*`, `~/.ssh/control-*`, `~/.ssh/mux-*`, `~/.ssh/ctrl-*`
@@ -473,10 +466,7 @@ fn build_session(control_path: &Path) -> ControlSession {
 
     let pid = extract_pid_from_name(name);
 
-    let established = control_path
-        .metadata()
-        .ok()
-        .and_then(|m| m.modified().ok());
+    let established = control_path.metadata().ok().and_then(|m| m.modified().ok());
 
     ControlSession {
         control_path: control_path.to_path_buf(),
