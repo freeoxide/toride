@@ -74,7 +74,11 @@ impl Cli {
                     // the same way the dedicated `totp-enroll` command does.
                     let totp_out = client.totp().enroll(username)?;
                     writeln!(writer, "TOTP enrolled for '{username}':").ok();
-                    writeln!(writer, "{totp_out}").ok();
+                    // Propagate the secret write: a broken writer here would
+                    // otherwise silently lose the ONLY copy of the secret and
+                    // lock the user out (the `.google_authenticator` file is
+                    // already created). The informational lines stay best-effort.
+                    writeln!(writer, "{totp_out}")?;
                     writeln!(writer, "Store the secret and scratch codes above securely.").ok();
                 }
                 writeln!(writer, "created user '{username}'").ok();
@@ -97,7 +101,10 @@ impl Cli {
             Commands::TotpEnroll { username } => {
                 // `cli` implies `client`, which compiles `totp::enroll_totp`.
                 let out = client.totp().enroll(username)?;
-                writeln!(writer, "{out}").ok();
+                // This command's whole purpose is to surface the secret;
+                // propagate the write so a broken writer fails loudly rather
+                // than silently losing the only copy of the secret.
+                writeln!(writer, "{out}")?;
             }
             Commands::TotpRemove { username } => {
                 client.totp().remove(username)?;

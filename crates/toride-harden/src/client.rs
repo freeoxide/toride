@@ -136,14 +136,18 @@ impl HardenClient {
 
         let mut applied = Vec::new();
         let mut skipped = Vec::new();
+        let mut failed = Vec::new();
 
         for param in params {
             match self.apply_param(param) {
                 Ok(true) => applied.push(param.clone()),
                 Ok(false) => skipped.push(param.clone()),
                 Err(e) => {
-                    tracing::warn!("skipping {}: {e}", param.key);
-                    // Continue applying other parameters
+                    // Continue applying the remaining parameters, but record
+                    // the failure so it is surfaced in the report (previously
+                    // it was only logged, making a partial apply look clean).
+                    tracing::warn!("failed to apply {}: {e}", param.key);
+                    failed.push((param.clone(), e.to_string()));
                 }
             }
         }
@@ -153,6 +157,7 @@ impl HardenClient {
         Ok(HardenReport {
             applied,
             skipped,
+            failed,
             current,
         })
     }

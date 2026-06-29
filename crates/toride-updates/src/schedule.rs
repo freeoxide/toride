@@ -325,6 +325,10 @@ fn parse_apt_periodic_interval(content: &str) -> Option<Schedule> {
                 "1" => Some(Schedule::Daily),
                 "7" => Some(Schedule::Weekly),
                 "30" => Some(Schedule::Monthly),
+                // "0" (and empty) disables the timer in APT — the codebase's
+                // own remove_apt_schedule writes "0" to disable — so treat it
+                // as absent rather than a custom schedule, matching the doc.
+                "0" | "" => None,
                 _ => Some(Schedule::Custom(val.to_owned())),
             };
         }
@@ -412,7 +416,7 @@ mod tests {
         );
         assert_eq!(
             parse_apt_periodic_interval("APT::Periodic::Update-Package-Lists \"0\";\n"),
-            Some(Schedule::Custom("0".into()))
+            None
         );
         assert_eq!(parse_apt_periodic_interval("Unrelated \"1\";\n"), None);
     }

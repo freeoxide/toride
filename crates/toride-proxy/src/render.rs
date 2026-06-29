@@ -117,6 +117,8 @@ pub fn render_nginx_server_block_with_headers(
     synthetic.extra_directives = combined;
     render_nginx_server_block(&synthetic)
 }
+
+/// Render a complete Caddyfile from a [`ProxySpec`].
 ///
 /// Produces Caddy-format configuration for all server blocks in the spec.
 ///

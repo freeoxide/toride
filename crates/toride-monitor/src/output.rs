@@ -107,11 +107,12 @@ impl<'a> OutputChain<'a> {
     /// fails for a reason other than "rule does not exist".
     pub fn remove_all(&self) -> Result<()> {
         let rules = self.list_rules()?;
-        for rule_line in &rules {
+        let total = rules.len();
+        for (idx, rule_line) in rules.iter().enumerate() {
             match self.delete_saved_rule(rule_line) {
                 Ok(()) => tracing::info!(
-                    "removed toride OUTPUT LOG rule ({} total remaining)",
-                    rules.len().saturating_sub(1)
+                    "removed toride OUTPUT LOG rule ({}/{total} cleaned)",
+                    idx + 1,
                 ),
                 Err(crate::Error::CommandFailed(msg)) => {
                     // iptables -D exits 1 with "Rule does not exist" when the

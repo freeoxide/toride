@@ -157,7 +157,13 @@ pub struct DefaultCliRunner;
 #[async_trait]
 impl CliRunner for DefaultCliRunner {
     async fn run(&self, cmd: &str, args: Vec<String>) -> Result<String> {
-        let spec = CommandSpec::new(cmd).args(args);
+        // Redact by default: SSH tooling routinely carries passphrases
+        // (`ssh-keygen -N`/`-P`), tokens, or keys. The runner only scrubs
+        // recognized secret flags/env (`-N`, `-P`, `--password`, …), so this
+        // is a no-op for commands that carry no secret and ensures a
+        // passphrase piped through `-N` is scrubbed from captured stderr
+        // before it is interpolated into the failure message below.
+        let spec = CommandSpec::new(cmd).args(args).redact(true);
         let runner = TokioRunner;
         let output = runner
             .run(&spec)
@@ -179,7 +185,7 @@ impl CliRunner for DefaultCliRunner {
         args: Vec<String>,
         env: Vec<(String, String)>,
     ) -> Result<String> {
-        let spec = CommandSpec::new(cmd).args(args).envs(env);
+        let spec = CommandSpec::new(cmd).args(args).envs(env).redact(true);
         let runner = TokioRunner;
         let output = runner
             .run(&spec)

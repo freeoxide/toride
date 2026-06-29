@@ -848,3 +848,28 @@ fn diagnose_iptables_missing_finding_has_detail_and_fix() {
     assert!(f.fix.is_some());
     assert!(!f.fix.as_ref().unwrap().is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Graceful-error contract for the not-yet-wired inspect_* stubs.
+// Commit 3e5e085 replaced two todo!() panics with Error::CommandFailed
+// returns. These lock that contract so the stubs cannot silently regress to
+// a panic before the nft/iptables CLI integration lands.
+// ---------------------------------------------------------------------------
+
+#[test]
+#[cfg(feature = "firewall-nft")]
+fn inspect_nft_ruleset_json_returns_graceful_error() {
+    let fake = FakeRunner::new();
+    let checker = FirewallChecker::new(&fake);
+    let err = checker.inspect_nft_ruleset_json().unwrap_err();
+    assert!(matches!(err, Error::CommandFailed(_)), "got {err:?}");
+}
+
+#[test]
+#[cfg(feature = "firewall-iptables")]
+fn inspect_iptables_rules_returns_graceful_error() {
+    let fake = FakeRunner::new();
+    let checker = FirewallChecker::new(&fake);
+    let err = checker.inspect_iptables_rules().unwrap_err();
+    assert!(matches!(err, Error::CommandFailed(_)), "got {err:?}");
+}

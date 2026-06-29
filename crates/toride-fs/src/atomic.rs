@@ -22,6 +22,12 @@ const ATOMIC_FILE_MODE: u32 = 0o600;
 /// the content, and then renames the temp file to `path`. If the rename
 /// fails the temp file is cleaned up automatically.
 ///
+/// The final file is created with mode `0o600` (owner-only read/write) — a
+/// safer-by-default choice than the process umask. For config files that a
+/// daemon running as a *different* user must read (e.g. an nginx/caddy site
+/// config read by a worker process, or a ufw application profile), use
+/// [`atomic_write_with_perms`] with `0o644` instead.
+///
 /// # Errors
 ///
 /// Returns [`Error::AtomicWriteFailed`] if the temp file cannot be created,
@@ -34,6 +40,10 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
 ///
 /// Creates a named temporary file in the same directory as `path`, writes
 /// the bytes, and then renames the temp file to `path`.
+///
+/// The final file is created with mode `0o600` (owner-only read/write). For
+/// daemon-readable config files that need group/other read permission, use
+/// [`atomic_write_with_perms`] with `0o644`.
 ///
 /// # Errors
 ///

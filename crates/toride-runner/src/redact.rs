@@ -5,11 +5,22 @@
 
 /// Common command-line flags whose values should be redacted.
 ///
-/// This list contains only long-form flags to avoid ambiguity. Short flags
-/// like `-p` (port, protocol, PID) and `-k` (KRL generation) mean different
-/// things across tools and would cause false-positive redaction. Domain crates
-/// should add their own short flags via the `flags` parameter to
-/// [`redact_args`] when they know the context.
+/// This list prefers long-form flags to avoid ambiguity: short flags like
+/// `-p` (port, protocol, PID) and `-k` (KRL generation) mean different things
+/// across tools and would cause false-positive redaction. Domain crates should
+/// add their own short flags via the `flags` parameter to [`redact_args`] when
+/// they know the context.
+///
+/// Two short flags are included as narrow exceptions because they carry
+/// passphrases in tools this workspace shells out to, and the secret would
+/// otherwise survive into captured stderr/args on failure:
+///   - `-N` — `ssh-keygen` new passphrase (`ssh-keygen -t ... -N <passphrase>`)
+///   - `-P` — `ssh-keygen` old passphrase (`ssh-keygen -y -f key -P <pass>`)
+///
+/// Redaction is opt-in (`spec.redact`), so these only take effect on specs that
+/// request it. Caveat: OpenSSH `ssh -N` (no remote command) takes no value, so a
+/// redacted `ssh -N ...` would over-redact the following token — the workspace
+/// does not invoke `ssh -N`, and over-redaction is the safe failure direction.
 pub const REDACT_FLAGS: &[&str] = &[
     "--password",
     "--passwd",
@@ -24,6 +35,9 @@ pub const REDACT_FLAGS: &[&str] = &[
     "--passphrase",
     "--password-command",
     "--email",
+    // ssh-keygen passphrase short flags; see the doc comment above.
+    "-N",
+    "-P",
 ];
 
 /// Redact sensitive values from a list of command arguments.
@@ -60,10 +74,17 @@ pub fn redact_args(args: &[String], flags: &[&str]) -> Vec<String> {
         // Check for `--flag=value` form.
         let mut handled = false;
         for flag in flags {
-            if let Some(value) = arg.strip_prefix(&format!("{flag}="))
-                && !value.is_empty()
-            {
-                result.push(format!("{flag}=***"));
+            if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
+                if value.is_empty() {
+                    // `--flag=` with no inline value: treat it as a standalone
+                    // sensitive flag so the NEXT arg (the real secret, e.g.
+                    // `--token= hunter2`) is redacted. Without this the empty
+                    // value would be skipped and the following secret leaked.
+                    redact_next = true;
+                    result.push(arg.clone());
+                } else {
+                    result.push(format!("{flag}=***"));
+                }
                 handled = true;
                 break;
             }
@@ -161,5 +182,55 @@ mod tests {
             pw_cmd_result[2], "***",
             "--password-command value must be redacted"
         );
+    }
+
+    /// `ssh-keygen -N <passphrase>` and `-P <passphrase>` (old passphrase)
+    /// MUST be redacted: these short flags carry passphrases and reach this
+    /// list as narrow exceptions. Without them the passphrase survives into
+    /// captured args/stderr even when `redact(true)` is set.
+    #[test]
+    fn redact_ssh_keygen_passphrase_short_flags() {
+        let args: Vec<String> = vec![
+            "ssh-keygen".into(),
+            "-t".into(),
+            "ed25519".into(),
+            "-f".into(),
+            "/tmp/key".into(),
+            "-N".into(),
+            "hunter2".into(),
+        ];
+        let result = redact_args(&args, REDACT_FLAGS);
+        assert_eq!(result[5], "-N");
+        assert_eq!(result[6], "***", "-N passphrase must be redacted");
+
+        let args_p: Vec<String> = vec![
+            "ssh-keygen".into(),
+            "-y".into(),
+            "-f".into(),
+            "/tmp/key".into(),
+            "-P".into(),
+            "hunter2".into(),
+        ];
+        let result_p = redact_args(&args_p, REDACT_FLAGS);
+        assert_eq!(result_p[4], "-P");
+        assert_eq!(result_p[5], "***", "-P passphrase must be redacted");
+    }
+
+    /// Regression: `--flag=` (empty inline value) followed by the real secret
+    /// as the next arg must still redact that next arg. Previously the empty
+    /// value was skipped and the bare `--flag=` did not match the standalone
+    /// flag check, so the following secret leaked.
+    #[test]
+    fn redact_empty_equals_form_redacts_next_arg() {
+        let args: Vec<String> = vec![
+            "cmd".into(),
+            "--token=".into(),
+            "secret-value".into(),
+            "ok".into(),
+        ];
+        let result = redact_args(&args, REDACT_FLAGS);
+        assert_eq!(result[1], "--token=");
+        assert_eq!(result[2], "***", "secret after empty `--token=` must be redacted");
+        assert_eq!(result[3], "ok");
     }
 }

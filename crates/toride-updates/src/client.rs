@@ -227,7 +227,11 @@ impl UpdatesClient {
             PackageManager::Dnf => "dnf-automatic.timer",
             PackageManager::Unknown => return Ok(()),
         };
-        let spec = toride_runner::CommandSpec::new("systemctl").args(["enable", "--now", unit]);
+        // Insert `--` before the unit name for defense-in-depth (the backup
+        // crate's systemctl helpers do the same), so a unit name can never be
+        // parsed as a flag. The unit is a hardcoded literal today, but this
+        // keeps the surface safe if it ever flows in from config.
+        let spec = toride_runner::CommandSpec::new("systemctl").args(["enable", "--now", "--", unit]);
         self.runner.run_checked(&spec).map_err(|e| {
             Error::CommandFailed(format!("systemctl enable --now {unit} failed: {e}"))
         })?;

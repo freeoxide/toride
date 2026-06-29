@@ -40,11 +40,16 @@ impl<'a> MonitorService<'a> {
         }
     }
 
-    /// Create a new `MonitorService` using the client's runner.
+    /// Create a new `MonitorService` using a fresh `DuctRunner` for the
+    /// systemctl lifecycle path.
     ///
-    /// Spawns a thin `systemctl`-only runner distinct from the client's
-    /// runner. In practice you usually want [`MonitorService::with_runner`]
-    /// so the same runner (and thus the same test fakes) drives both paths.
+    /// Note: the monitoring client retains its OWN runner (the one it was
+    /// constructed with), so the iptables-logging and systemctl paths run
+    /// through two independent runner instances — a single injected fake will
+    /// not observe both. [`MonitorService::with_runner`] lets you inject the
+    /// systemctl-side runner for testing that path, but it does not unify the
+    /// two runners. (Sharing one runner across both, à la toride-tailscale,
+    /// would require plumbing `Arc<dyn Runner>` here.)
     #[must_use]
     pub fn new(client: MonitorClient, paths: &'a MonitorPaths) -> Self {
         Self::with_runner(client, paths, Box::new(toride_runner::DuctRunner))

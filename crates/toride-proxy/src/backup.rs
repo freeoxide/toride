@@ -90,9 +90,11 @@ pub fn create_backup(paths: &ProxyPaths) -> Result<BackupSnapshot> {
 ///
 /// Returns an error if any file cannot be written.
 pub fn restore_backup(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Result<()> {
+    // Restored files are live, daemon-readable configs — write them 0o644 to
+    // match how they are originally written (not the 0o600 atomic_write default).
     // Restore main nginx.conf
     if let Some(content) = &snapshot.nginx_conf {
-        toride_fs::atomic_write(&paths.nginx_conf, content)?;
+        toride_fs::atomic_write_with_perms(&paths.nginx_conf, content, 0o644)?;
         tracing::info!("backup: restored {}", paths.nginx_conf.display());
     }
 
@@ -102,7 +104,7 @@ pub fn restore_backup(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Result<(
     // Restore nginx site configs
     for (name, content) in &snapshot.nginx_sites {
         let path = paths.nginx_sites_available.join(name);
-        toride_fs::atomic_write(&path, content)?;
+        toride_fs::atomic_write_with_perms(&path, content, 0o644)?;
         tracing::info!("backup: restored {}", path.display());
     }
 
@@ -111,7 +113,7 @@ pub fn restore_backup(paths: &ProxyPaths, snapshot: &BackupSnapshot) -> Result<(
         if let Some(parent) = paths.caddyfile.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        toride_fs::atomic_write(&paths.caddyfile, content)?;
+        toride_fs::atomic_write_with_perms(&paths.caddyfile, content, 0o644)?;
         tracing::info!("backup: restored {}", paths.caddyfile.display());
     }
 

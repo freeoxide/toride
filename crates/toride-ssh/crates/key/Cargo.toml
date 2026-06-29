@@ -5,12 +5,15 @@ edition = "2024"
 
 [features]
 default = []
-agent-integration = ["dep:toride-ssh-agent"]
+# Legacy code-gating flag for the agent-integration code paths in
+# `inventory.rs`. The `toride-ssh-agent` dependency itself is now always
+# available (needed for passphrase key generation via SSH_ASKPASS).
+agent-integration = []
 
 [dependencies]
 toride-ssh-core = { path = "../core" }
 toride-ssh-config = { path = "../config" }
-toride-ssh-agent = { path = "../agent", optional = true }
+toride-ssh-agent = { path = "../agent" }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 thiserror = { workspace = true }
 serde = { workspace = true }

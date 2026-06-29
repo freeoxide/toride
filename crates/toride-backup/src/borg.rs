@@ -402,10 +402,28 @@ impl BorgClient {
         spec
     }
 
-    /// `true` when the configured commands will carry a secret (the
-    /// passphrase) in their environment. Such commands must be redacted.
+    /// `true` when the configured commands will carry a secret in their
+    /// environment. Such commands must be redacted.
+    ///
+    /// A secret reaches the borg subprocess via env in two ways:
+    ///   - `BORG_PASSPHRASE`, added in [`Self::command`] from the `passphrase`
+    ///     field; or
+    ///   - `BORG_PASSCOMMAND` (or a caller-supplied `BORG_PASSPHRASE`), added
+    ///     via `extra_env` — e.g. the production `BackupClient` facade wires
+    ///     the spec's `password_command` onto `BORG_PASSCOMMAND` through
+    ///     `with_env`, which never populates `passphrase`.
+    ///
+    /// Gating only on `passphrase.is_some()` left that env-borne path
+    /// unredacted (every backup/prune/snapshots command ran with
+    /// `redact(false)`), so a failing `BORG_PASSCOMMAND` echoed to stderr
+    /// would leak unscrubbed. Matching the restic path, treat either source as
+    /// secret-bearing.
     fn carries_secret(&self) -> bool {
         self.passphrase.is_some()
+            || self
+                .extra_env
+                .iter()
+                .any(|(k, _)| k.starts_with("BORG_PASS"))
     }
 
     /// Map the [`Encryption`] enum to the borg `--encryption` mode token.
@@ -1017,6 +1035,39 @@ mod tests {
         assert_eq!(
             BorgClient::encryption_mode(&Encryption::Authenticated),
             "authenticated"
+        );
+    }
+
+    /// Regression: the production `BackupClient` facade wires the passphrase
+    /// onto `BORG_PASSCOMMAND` via `with_env` (not `with_passphrase`), so
+    /// `carries_secret()` MUST treat a `BORG_PASS*`-bearing `extra_env` as
+    /// secret-bearing — otherwise every backup/prune/snapshots command runs
+    /// `redact(false)` and the passcommand leaks into captured stderr.
+    #[test]
+    fn carries_secret_for_env_borne_borg_passcommand() {
+        // No passphrase field set — the secret arrives purely via env, as in
+        // the production facade (BackupClient::build_borg_client).
+        let client = BorgClient::with_binary(PathBuf::from("borg"), "/repo")
+            .with_env("BORG_PASSCOMMAND", "cat /etc/borg/pw");
+        assert!(
+            client.carries_secret(),
+            "BORG_PASSCOMMAND in extra_env must trigger redaction"
+        );
+
+        // Same for a caller-supplied raw passphrase env.
+        let client_pw = BorgClient::with_binary(PathBuf::from("borg"), "/repo")
+            .with_env("BORG_PASSPHRASE", "s3cret");
+        assert!(
+            client_pw.carries_secret(),
+            "BORG_PASSPHRASE in extra_env must trigger redaction"
+        );
+
+        // A non-secret borg env var must NOT trigger redaction.
+        let client_benign = BorgClient::with_binary(PathBuf::from("borg"), "/repo")
+            .with_env("BORG_HOST_ID", "deadbeef");
+        assert!(
+            !client_benign.carries_secret(),
+            "non-secret borg env must not trigger redaction"
         );
     }
 }

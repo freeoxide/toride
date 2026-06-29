@@ -206,7 +206,9 @@ impl<'a> ConfigManager<'a> {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::ConfigWrite(format!("create nginx dir: {e}")))?;
         }
-        toride_fs::atomic_write(&self.paths.nginx_conf, content)
+        // nginx.conf is daemon-readable config; write it 0o644 rather than the
+        // 0o600 atomic_write default, for parity with write_site_config.
+        toride_fs::atomic_write_with_perms(&self.paths.nginx_conf, content, 0o644)
             .map_err(|e| Error::ConfigWrite(format!("write nginx.conf: {e}")))?;
         tracing::info!(
             "config: wrote nginx.conf to {}",
@@ -229,7 +231,9 @@ impl<'a> ConfigManager<'a> {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::ConfigWrite(format!("create caddy dir: {e}")))?;
         }
-        toride_fs::atomic_write(&self.paths.caddyfile, content)
+        // Caddy commonly drops privileges to a non-owner user, so the Caddyfile
+        // must stay daemon-readable: write it 0o644, not the 0o600 default.
+        toride_fs::atomic_write_with_perms(&self.paths.caddyfile, content, 0o644)
             .map_err(|e| Error::ConfigWrite(format!("write Caddyfile: {e}")))?;
         tracing::info!(
             "config: wrote Caddyfile to {}",

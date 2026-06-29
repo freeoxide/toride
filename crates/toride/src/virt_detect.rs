@@ -186,6 +186,10 @@ pub fn detect_with(probe: &dyn Probe) -> VirtProbe {
                 continue;
             }
             if let Some(&sig) = VENDOR_SIGS.iter().find(|&&sig| v.contains(sig)) {
+                // The DMI layer returns the matched vendor sig as-is (e.g.
+                // "qemu"); the systemd-binary layer normalizes via vm_label
+                // (e.g. "kvm"). This intentional difference is exercised by
+                // the systemd_detect_virt_none_falls_through_to_dmi test.
                 return VirtProbe {
                     reduce_motion: true,
                     label: Some(sig),

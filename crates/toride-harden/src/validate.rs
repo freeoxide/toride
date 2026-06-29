@@ -245,6 +245,17 @@ mod tests {
         let spec = HardenSpec::builder()
             .profile(crate::profile::HardeningProfile::Server)
             .build();
+
+        // Non-vacuous: prove the profile's params were actually expanded into
+        // the spec (validate_spec operates on `all_parameters()`). A Server-only
+        // key must be present; if expansion regressed to an empty pass-through,
+        // it would be absent.
+        let params = spec.all_parameters();
+        assert!(
+            params.iter().any(|p| p.key == "net.ipv4.tcp_syncookies"),
+            "Server profile params should be expanded, got: {params:?}"
+        );
+
         let findings = validate_spec(&spec).unwrap();
         assert!(
             findings
@@ -252,10 +263,6 @@ mod tests {
                 .all(|f| f.severity != ValidationSeverity::Error),
             "Server profile params should validate cleanly, got: {findings:?}"
         );
-        // And it must have actually inspected parameters (not returned an
-        // empty pass-through): the profile ships far more than zero params.
-        // Sanity-check indirectly by confirming no spurious duplicate warning
-        // is emitted for the profile's own overridden entries.
     }
 
     #[test]

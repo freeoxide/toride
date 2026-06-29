@@ -31,23 +31,29 @@ fn key_type_to_cli_arg(kt: KeyType) -> &'static str {
 
 /// Build the `ssh-keygen` CLI argument list from creation parameters.
 ///
-/// SECURITY NOTE: The passphrase is passed via `-N` as a command-line
-/// argument, which makes it visible through `/proc/<pid>/cmdline` or `ps`
-/// on multi-user systems. This is the standard approach used by most SSH
-/// wrappers. A more secure alternative would be to generate the key without
-/// a passphrase and then use `ssh-keygen -p` with the passphrase piped
-/// through stdin, but that requires more complex process spawning.
+/// SECURITY NOTE: `-N` is only included for the *empty*-passphrase case. When a
+/// passphrase is requested it is omitted entirely so `ssh-keygen` prompts for
+/// it and reads it via `SSH_ASKPASS` (see [`generate_key`]) — the passphrase
+/// never appears in `argv` or `/proc/<pid>/cmdline`, unlike the old
+/// `-N <passphrase>` approach which exposed it to every local user via `ps` for
+/// the lifetime of the ssh-keygen process.
 fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<String> {
     let key_type_str = key_type_to_cli_arg(params.key_type);
+    let passphrase_nonempty = params.passphrase.as_deref().is_some_and(|p| !p.is_empty());
 
     let mut args: Vec<String> = vec![
         "-t".to_owned(),
         key_type_str.to_owned(),
         "-f".to_owned(),
         private_path_str.to_owned(),
-        "-N".to_owned(),
-        params.passphrase.as_deref().unwrap_or("").to_owned(),
     ];
+    // Only pin an empty passphrase (`-N ""`) when none was requested. When one
+    // IS requested, omit `-N` so ssh-keygen prompts and reads it via
+    // SSH_ASKPASS — never argv.
+    if !passphrase_nonempty {
+        args.push("-N".to_owned());
+        args.push(String::new());
+    }
 
     // RSA bit size — only accept values that OpenSSH actually supports.
     if let KeyType::Rsa { bits } = params.key_type
@@ -135,7 +141,28 @@ pub async fn generate_key(
         .ok_or_else(|| Error::KeyGenerationFailed("invalid key path".to_owned()))?;
 
     let args = build_keygen_args(&params, private_path_str);
-    runner.run("ssh-keygen", args).await?;
+
+    // When a passphrase is requested, ssh-keygen is invoked WITHOUT `-N` (see
+    // `build_keygen_args`) so it prompts for it. Feed the passphrase via an
+    // SSH_ASKPASS helper script so it is read from a temp file rather than
+    // passed in argv — `-N <passphrase>` would expose it via `ps`/cmdline. The
+    // handler's Drop removes the script as soon as the run completes.
+    if passphrase_nonempty {
+        let askpass = toride_ssh_agent::AskpassHandler::new(
+            params.passphrase.as_deref().unwrap_or(""),
+        )?;
+        let askpass_env = vec![
+            (
+                "SSH_ASKPASS".to_owned(),
+                askpass.script_path().to_string_lossy().into_owned(),
+            ),
+            ("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()),
+            ("DISPLAY".to_owned(), ":0".to_owned()),
+        ];
+        runner.run_with_env("ssh-keygen", args, askpass_env).await?;
+    } else {
+        runner.run("ssh-keygen", args).await?;
+    }
 
     // Set file permissions and read the generated key in a blocking context
     // to avoid blocking the async runtime with synchronous filesystem ops.
@@ -371,8 +398,91 @@ mod tests {
             verify_required: false,
         };
         let args = build_keygen_args(&params, "/tmp/key");
-        assert!(args.contains(&"-N".to_owned()));
-        assert!(args.contains(&"secret".to_owned()));
+        // When a passphrase is requested, `-N` is OMITTED entirely so
+        // ssh-keygen prompts and reads it via SSH_ASKPASS — neither `-N` nor
+        // the passphrase value appears in argv.
+        assert!(
+            !args.contains(&"-N".to_owned()),
+            "-N must be omitted when a passphrase is requested: {args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a == "secret"),
+            "passphrase leaked into ssh-keygen argv: {args:?}"
+        );
+    }
+
+    /// Validate the `SSH_ASKPASS` key-generation path end-to-end with real
+    /// `ssh-keygen`: generating WITHOUT `-N` while feeding the passphrase via
+    /// an askpass helper yields an encrypted key OpenSSH can read with that
+    /// passphrase (and rejects a wrong one). This is the load-bearing
+    /// compatibility guarantee for the askpass path in [`generate_key`].
+    /// Skips when `ssh-keygen` is not on PATH.
+    #[test]
+    fn askpass_keygen_is_openssh_compatible() {
+        let ssh_keygen_present = std::process::Command::new("ssh-keygen")
+            .arg("--help")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
+        if !ssh_keygen_present {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        }
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let keypath = dir.path().join("askpass_key");
+        let keypath_str = keypath.to_str().expect("utf-8 path");
+
+        // Build an askpass helper mirroring AskpassHandler (echo the passphrase).
+        let askpass_script = dir.path().join("askpass.sh");
+        std::fs::write(&askpass_script, "#!/bin/sh\necho testpass\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&askpass_script, std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+
+        // Generate WITHOUT `-N` (the passphrase-case shape), reading the
+        // passphrase via SSH_ASKPASS so it never enters argv.
+        let generate = std::process::Command::new("ssh-keygen")
+            .args(["-t", "ed25519", "-f", keypath_str, "-C", "askpass-test"])
+            .env("SSH_ASKPASS", &askpass_script)
+            .env("SSH_ASKPASS_REQUIRE", "force")
+            .env("DISPLAY", ":0")
+            .stdin(std::process::Stdio::null())
+            .output()
+            .expect("spawn ssh-keygen");
+        assert!(
+            generate.status.success(),
+            "ssh-keygen askpass generate failed: {}",
+            String::from_utf8_lossy(&generate.stderr)
+        );
+
+        // OpenSSH must derive the public key with the correct passphrase.
+        let verify = std::process::Command::new("ssh-keygen")
+            .args(["-y", "-P", "testpass", "-f", keypath_str])
+            .output()
+            .expect("spawn ssh-keygen verify");
+        assert!(
+            verify.status.success(),
+            "ssh-keygen could not read askpass-generated key: {}",
+            String::from_utf8_lossy(&verify.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&verify.stdout).starts_with("ssh-ed25519 "),
+            "unexpected public key output"
+        );
+
+        // A wrong passphrase must be rejected.
+        let wrong = std::process::Command::new("ssh-keygen")
+            .args(["-y", "-P", "wrongpass", "-f", keypath_str])
+            .output()
+            .expect("spawn ssh-keygen wrong");
+        assert!(
+            !wrong.status.success(),
+            "wrong passphrase unexpectedly accepted"
+        );
     }
 
     #[test]

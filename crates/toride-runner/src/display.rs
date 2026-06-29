@@ -25,7 +25,10 @@ pub const REDACT_ENV_KEYS: &[&str] = &[
     "PASSCOMMAND",
     "AUTH",
     "BEARER",
-    "GH",
+    // Catch gh-CLI token vars (GH_TOKEN, GH_ENTERPRISE_TOKEN, GH_PAT) without
+    // the bare "GH" substring, which case-insensitively matched benign names
+    // like HIGHLIGHT/WEIGHT/THROUGHPUT and over-redacted their values.
+    "GH_",
     "CREDENTIAL",
     "ACCESS_KEY",
     "ACCESSKEY",
@@ -176,6 +179,12 @@ pub const STDERR_CAP_BYTES: usize = 4 * 1024;
 /// Truncation marker appended when stderr exceeds [`STDERR_CAP_BYTES`].
 pub const STDERR_TRUNCATION_MARKER: &str = "...[stderr truncated]";
 
+/// Minimum length a secret value must reach before [`redact_output`] will
+/// substring-scrub it from captured output. Shorter values are skipped for the
+/// free-form scrub (they would mangle benign output) but are still position-
+/// redacted in argv by [`redact_args`](crate::redact::redact_args).
+pub const MIN_SUBSTRING_SCRUB_LEN: usize = 3;
+
 /// Scrub captured stderr for inclusion in an error variant.
 ///
 /// Two policies apply, in order:
@@ -280,7 +289,12 @@ pub fn redact_output(spec: &CommandSpec, text: &str) -> String {
     secrets.sort_by_key(|s| std::cmp::Reverse(s.len()));
     let mut scrubbed = text.to_owned();
     for secret in secrets {
-        if !secret.is_empty() {
+        // Skip trivially short values for substring scrubbing: a 1-2 char
+        // "secret" would redact every occurrence of that sequence across the
+        // whole stream (e.g. token "a" redacts every 'a', mangling output).
+        // Position redaction (`redact_args`) still hides short secrets in argv;
+        // only the free-form stream scrub is guarded. Real secrets are longer.
+        if secret.len() >= MIN_SUBSTRING_SCRUB_LEN {
             scrubbed = scrubbed.replace(&secret, "***");
         }
     }
@@ -302,7 +316,12 @@ fn collect_arg_secret_values(args: &[String], out: &mut Vec<String>) {
         let mut handled = false;
         for flag in crate::redact::REDACT_FLAGS {
             if let Some(value) = arg.strip_prefix(&format!("{flag}=")) {
-                if !value.is_empty() {
+                if value.is_empty() {
+                    // `--flag=` with no inline value: the real secret is the
+                    // NEXT arg (e.g. `--token= hunter2`). Arm `redact_next` to
+                    // collect it, mirroring `redact_args`.
+                    redact_next = true;
+                } else {
                     out.push(value.to_owned());
                 }
                 handled = true;
@@ -690,5 +709,52 @@ mod tests {
         let scrubbed = scrub_stderr(&spec, stderr);
         assert!(scrubbed.contains("51820"));
         assert!(!scrubbed.contains("***"));
+    }
+
+    /// The `"GH_"` env pattern must catch gh-CLI token vars without
+    /// over-redacting benign names that merely contain the letters "GH".
+    #[test]
+    fn display_env_redacts_gh_token_not_benign_highlight() {
+        let spec = CommandSpec::new("cmd")
+            .env("GH_TOKEN", "ghp_secret")
+            .env("HIGHLIGHT_COLOR", "yellow")
+            .env("WEIGHT_LIMIT", "100");
+        let env = display_env(&spec, &[]);
+        let by_key: std::collections::HashMap<&str, &str> = env
+            .iter()
+            .map(|(k, v)| (k.as_str(), v.as_str()))
+            .collect();
+        assert_eq!(by_key["GH_TOKEN"], "***", "GH_TOKEN must be redacted");
+        assert_eq!(
+            by_key["HIGHLIGHT_COLOR"], "yellow",
+            "HIGHLIGHT must NOT be over-redacted by the bare GH substring"
+        );
+        assert_eq!(by_key["WEIGHT_LIMIT"], "100", "WEIGHT must NOT be over-redacted");
+    }
+
+    /// A trivially short secret value (1-2 chars) is position-redacted in argv
+    /// but NOT substring-scrubbed from the free-form stream — otherwise a
+    /// 1-char token would redact every occurrence of that char and mangle the
+    /// output. Real-length secrets are still scrubbed.
+    #[test]
+    fn redact_output_skips_trivially_short_secret_substring() {
+        let spec_short = CommandSpec::new("cmd")
+            .args(["--token", "a"])
+            .redact(true);
+        let scrubbed = redact_output(&spec_short, "auth failed at api endpoint");
+        assert!(
+            scrubbed.contains('a'),
+            "1-char secret must not substring-mangle benign output: {scrubbed}"
+        );
+
+        let spec_real = CommandSpec::new("cmd")
+            .args(["--token", "auth"])
+            .redact(true);
+        let scrubbed_real = redact_output(&spec_real, "auth failed at api endpoint");
+        assert!(
+            !scrubbed_real.contains("auth"),
+            "normal-length secret must be scrubbed: {scrubbed_real}"
+        );
+        assert!(scrubbed_real.contains("***"));
     }
 }

@@ -380,8 +380,28 @@ fn run_duct_command_limited(
     let breached = killed.load(Ordering::Acquire);
 
     match (wait_result, breached) {
+        // A cap breach must be attributed to OutputLimitExceeded regardless of
+        // how `wait_result` resolved: the reader tripped the latch and killed
+        // the child, but `wait_timeout` can still report `Timeout` if the
+        // budget elapsed before the killed child was reaped. Checking `breached`
+        // first prevents that timeout/breach race from mislabeling the failure
+        // as CommandTimeout.
+        (_, true) => {
+            // Cap breached. The breaching reader already killed the handle;
+            // reap it, discard partial output, and return the error.
+            kill_and_reap(&shared_handle, &displayed);
+            let _ = recv_reader_bytes(&stdout_rx, READER_DETACH_WAIT);
+            let _ = recv_reader_bytes(&stderr_rx, READER_DETACH_WAIT);
+            Err(Error::OutputLimitExceeded {
+                program: spec.program.clone(),
+                args: crate::display::redacted_args_display(spec),
+                limit: cap,
+                observed: counter.load(Ordering::Acquire),
+            })
+        }
         (Err(WaitOutcome::Timeout(timeout)), _) => {
-            // Timeout fired. Kill+reap to avoid zombies.
+            // Timeout fired (breach not tripped — `true` is handled above).
+            // Kill+reap to avoid zombies.
             kill_and_reap(&shared_handle, &displayed);
             // Detach readers (bounded recv, discard any partial output).
             let _ = recv_reader_bytes(&stdout_rx, READER_DETACH_WAIT);
@@ -397,19 +417,6 @@ fn run_duct_command_limited(
             let _ = recv_reader_bytes(&stdout_rx, READER_DETACH_WAIT);
             let _ = recv_reader_bytes(&stderr_rx, READER_DETACH_WAIT);
             Err(wait_failed(spec, &e))
-        }
-        (Ok(_), true) => {
-            // Cap breached. The breaching reader already killed the handle;
-            // reap it, discard partial output, and return the error.
-            kill_and_reap(&shared_handle, &displayed);
-            let _ = recv_reader_bytes(&stdout_rx, READER_DETACH_WAIT);
-            let _ = recv_reader_bytes(&stderr_rx, READER_DETACH_WAIT);
-            Err(Error::OutputLimitExceeded {
-                program: spec.program.clone(),
-                args: crate::display::redacted_args_display(spec),
-                limit: cap,
-                observed: counter.load(Ordering::Acquire),
-            })
         }
         (Ok(output), false) => {
             // Clean exit under the cap. The readers reach EOF once the child

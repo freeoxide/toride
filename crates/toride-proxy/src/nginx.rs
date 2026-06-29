@@ -133,7 +133,10 @@ impl<'a> NginxManager<'a> {
             }
         }
 
-        toride_fs::atomic_write(&site_path, &config)?;
+        // Site configs are read by nginx (and symlinked into sites-enabled);
+        // write them 0o644 — the daemon-readable convention — rather than the
+        // 0o600 atomic_write default, matching ProxyConfig::write_site_config.
+        toride_fs::atomic_write_with_perms(&site_path, &config, 0o644)?;
 
         if enable {
             self.enable_site(&block.server_name)?;

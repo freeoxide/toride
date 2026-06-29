@@ -186,6 +186,15 @@ fn run_apply(client: &HardenClient, profile: &str, dry_run: bool, no_backup: boo
         client.apply_profile(&profile)?
     };
     println!("{}", report.to_summary());
+    if report.has_failures() {
+        // A partial apply is a failure: the operator asked for the profile and
+        // not all parameters landed. Exit non-zero so scripts/CI notice, rather
+        // than reporting success while some sysctls were not set.
+        return Err(crate::error::Error::Other(format!(
+            "{} parameter(s) failed to apply (see report above)",
+            report.failed.len()
+        )));
+    }
     Ok(())
 }
 

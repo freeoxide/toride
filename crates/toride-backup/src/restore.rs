@@ -298,10 +298,13 @@ fn run_restic_restore<R: Runner + ?Sized>(
         .map_err(|e| Error::RestoreFailed(format!("restic restore command failed: {e}")))?;
 
     let (files_restored, bytes_restored) = parse_restic_restore_output(&output.stdout);
+    // Surface the backend's stderr diagnostic (warnings) as advisory messages.
+    // The condition tests stderr, so the payload must be stderr too — emitting
+    // stdout here (backend progress) was a copy-paste bug.
     let messages = if output.stderr.trim().is_empty() {
         Vec::new()
     } else {
-        vec![output.stdout.trim().to_string()]
+        vec![output.stderr.trim().to_string()]
     };
 
     Ok(RestoreReport {
@@ -404,10 +407,13 @@ fn run_borg_extract<R: Runner + ?Sized>(
         .map_err(|e| Error::RestoreFailed(format!("borg extract command failed: {e}")))?;
 
     let (files_restored, bytes_restored) = parse_borg_extract_output(&output.stdout);
+    // Surface the backend's stderr diagnostic (warnings) as advisory messages.
+    // The condition tests stderr, so the payload must be stderr too — emitting
+    // stdout here (backend progress) was a copy-paste bug.
     let messages = if output.stderr.trim().is_empty() {
         Vec::new()
     } else {
-        vec![output.stdout.trim().to_string()]
+        vec![output.stderr.trim().to_string()]
     };
 
     Ok(RestoreReport {
@@ -454,11 +460,12 @@ fn apply_borg_passphrase(spec: &BackupSpec, cmd: CommandSpec) -> Result<CommandS
 ///
 /// When restic is invoked with `--json` it emits a final summary object whose
 /// documented shape (restic 0.19+, see
-/// <https://restic.readthedocs.io/en/stable/075_scripting.html>) includes
-/// `message_type: "summary"` plus `files_new`, `files_modified`, `files_unmodified`,
-/// `dirs_new`, and (for restore) `bytes_restored`. We scan the stdout line by
-/// line for the last JSON object with a `summary` `message_type` and sum the new
-/// and modified file/directory counts.
+/// <https://restic.readthedocs.io/en/stable/075_scripting.html>) is the
+/// *restore* summary: `message_type: "summary"` with `files_restored`,
+/// `total_files`, `bytes_restored`, and `total_bytes` — NOT the backup-summary
+/// fields (`files_new`/`files_modified`/`dirs_new`). We scan the stdout line by
+/// line for the last JSON object with a `summary` `message_type` and read the
+/// restored file and byte counts from it.
 ///
 /// When no JSON summary is present (e.g. plain-text restore output), we fall
 /// back to counting lines that look like restored-file entries, returning
@@ -826,7 +833,8 @@ mod tests {
         let runner = FakeRunner::new()
             .push_response(CommandOutput::from_stdout(RESTIC_RESTORE_SUMMARY_JSON));
         let report = restore_with_runner(&spec, &options, &runner).unwrap();
-        // files_new(42) + files_modified(3) + dirs_new(5) + dirs_modified(0)
+        // Restore summary carries files_restored / bytes_restored directly
+        // (NOT the backup-summary fields files_new/dirs_new).
         assert_eq!(report.files_restored, 50);
         assert_eq!(report.bytes_restored, 1_572_864);
     }

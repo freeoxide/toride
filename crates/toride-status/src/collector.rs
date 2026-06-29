@@ -70,10 +70,11 @@ pub struct Collector {
 
 /// Per-metric collection toggles.
 ///
-/// When a toggle is `false`, the corresponding metric is skipped during
-/// collection regardless of the configured [`Preset`]: its fields are zeroed
-/// / emptied in the produced [`SystemStatus`]. Core always-collected fields
-/// (hostname, `os_info`, uptime, load average) are never affected.
+/// When a toggle is `false`, the corresponding metric's fields are zeroed /
+/// emptied in the produced [`SystemStatus`] after collection, regardless of the
+/// configured [`Preset`] (the probe itself still runs — toggles gate the
+/// output, not the collection). Core always-collected fields (hostname,
+/// `os_info`, uptime, load average) are never affected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[expect(
     clippy::struct_excessive_bools,
@@ -408,8 +409,8 @@ impl Collector {
 /// Builder for configuring a [`Collector`].
 ///
 /// Supports per-metric toggles and a preset. When a metric toggle is set
-/// to `false`, that metric is skipped during collection regardless of the
-/// preset.
+/// to `false`, that metric's fields are zeroed in the output after collection,
+/// regardless of the preset.
 ///
 /// # Examples
 ///
@@ -537,8 +538,8 @@ impl CollectorBuilder {
 
     /// Build the [`Collector`].
     ///
-    /// The per-metric toggles are honored during collection: any metric
-    /// disabled here is skipped (its fields are zeroed / emptied) regardless
+    /// The per-metric toggles are honored after collection: any metric
+    /// disabled here has its fields zeroed / emptied in the output, regardless
     /// of the configured preset.
     #[must_use]
     pub fn build(self) -> Collector {

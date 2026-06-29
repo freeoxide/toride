@@ -162,7 +162,13 @@ fn desktop_params() -> Vec<SysctlParam> {
 fn server_params() -> Vec<SysctlParam> {
     let mut params = desktop_params();
 
-    // Additional/overridden server parameters
+    // Override the desktop ptrace_scope (1) with the stricter server value (2).
+    // Drop the inherited entry first so we don't emit a duplicate key: the
+    // direct-apply path iterates and writes every entry (so `sysctl -w
+    // kernel.yama.ptrace_scope=1` then `=2` would run), and the c62c8d5
+    // dedup_by_key_last_wins only covers the spec-expansion path, not this
+    // list. Mirror the `ip_forward` retain used in `router_params`.
+    params.retain(|p| p.key != "kernel.yama.ptrace_scope");
     params.push(SysctlParam::new(
         "kernel.yama.ptrace_scope",
         "2",
@@ -250,6 +256,31 @@ mod tests {
             assert!(
                 !params.is_empty(),
                 "{} profile should have parameters",
+                profile.name()
+            );
+        }
+    }
+
+    /// Regression for the c62c8d5 duplicate-key fix and its sibling on the
+    /// direct-apply path: every profile's param list MUST have unique keys, or
+    /// `apply_profile` writes the same sysctl twice (e.g. the old Server list
+    /// emitted `kernel.yama.ptrace_scope=1` then `=2`).
+    #[test]
+    fn profiles_have_no_duplicate_keys() {
+        for profile in &[
+            HardeningProfile::Desktop,
+            HardeningProfile::Server,
+            HardeningProfile::Router,
+        ] {
+            let params = profile.params();
+            let mut keys: Vec<String> = params.iter().map(|p| p.key.clone()).collect();
+            let total = keys.len();
+            keys.sort();
+            keys.dedup();
+            assert_eq!(
+                keys.len(),
+                total,
+                "{} profile has duplicate sysctl keys",
                 profile.name()
             );
         }

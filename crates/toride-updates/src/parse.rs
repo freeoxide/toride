@@ -103,10 +103,13 @@ pub fn parse_unattended_upgrades_status(content: &str) -> Result<UpdateStatus> {
             // `rest` may be empty (no packages matched) or a space-separated
             // list of `name (version origin)` entries. Count whitespace-split
             // tokens that look like bare package names (start at the token, not
-            // a parenthesised origin string).
+            // a parenthesised origin string). Origin tokens like `o=Ubuntu`
+            // live on the separate `Allowed origins are:` line, NOT here, so we
+            // must not exclude names starting with 'o' — that would silently
+            // drop openssl/openldap/openssh-*/openjdk-* and undercount.
             let count = rest
                 .split_whitespace()
-                .filter(|tok| !tok.starts_with('(') && !tok.starts_with('o'))
+                .filter(|tok| !tok.starts_with('('))
                 .count();
             current_packages = Some(count);
         } else if line.contains(UU_ALL_INSTALLED_MARKER) || line.contains(UU_NOTHING_MARKER) {

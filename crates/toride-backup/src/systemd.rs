@@ -595,7 +595,12 @@ fn quote_env_value(value: &str) -> String {
             .chars()
             .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\' | '='));
     if needs_quote {
-        let escaped = value.replace('\'', "'\\''");
+        // systemd.syntax(7): inside a single-quoted item, C-style escapes
+        // apply — an embedded single quote is `\'` and a literal backslash is
+        // `\\`. Do NOT use the POSIX-shell `'\''` concatenation: systemd
+        // requires the closing quote to be followed by whitespace/EOL, so
+        // `'a'\''b'` would be misparsed.
+        let escaped = value.replace('\\', "\\\\").replace('\'', "\\'");
         format!("'{escaped}'")
     } else {
         value.to_owned()
