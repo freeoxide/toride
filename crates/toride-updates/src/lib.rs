@@ -31,31 +31,34 @@
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
 #![expect(dead_code, reason = "scaffolding for modules under active development")]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
+)]
 #![expect(clippy::missing_errors_doc, reason = "library is internal")]
 
 // ---------------------------------------------------------------------------
 // Module declarations -- always compiled
 // ---------------------------------------------------------------------------
 
-/// Error types for the crate.
-pub mod error;
-/// Resolved filesystem paths for update configuration files.
-pub mod paths;
-/// Declarative update specification types.
-pub mod spec;
-/// Structured status reports and diagnostic findings.
-pub mod report;
-/// Parsers for command output (unattended-upgrades, apt-check, dnf).
-pub mod parse;
-/// Config file renderers (auto-upgrades, dnf-automatic, apt).
-pub mod render;
-/// Spec and configuration validation.
-pub mod validate;
 /// Pre-mutation config file backup.
 pub mod backup;
 /// Package manager detection (apt vs dnf).
 pub mod detect;
+/// Error types for the crate.
+pub mod error;
+/// Parsers for command output (unattended-upgrades, apt-check, dnf).
+pub mod parse;
+/// Resolved filesystem paths for update configuration files.
+pub mod paths;
+/// Config file renderers (auto-upgrades, dnf-automatic, apt).
+pub mod render;
+/// Structured status reports and diagnostic findings.
+pub mod report;
+/// Declarative update specification types.
+pub mod spec;
+/// Spec and configuration validation.
+pub mod validate;
 
 // ---------------------------------------------------------------------------
 // Module declarations -- feature-gated

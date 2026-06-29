@@ -254,9 +254,15 @@ fn parse_rule_line(line: &str, _is_numbered: bool) -> Option<ParsedRule> {
 
     // Try to parse action
     let (action, rest) = if trimmed.starts_with("ALLOW") {
-        (Some(Action::Allow), trimmed.strip_prefix("ALLOW").unwrap().trim())
+        (
+            Some(Action::Allow),
+            trimmed.strip_prefix("ALLOW").unwrap().trim(),
+        )
     } else if trimmed.starts_with("DENY") {
-        (Some(Action::Deny), trimmed.strip_prefix("DENY").unwrap().trim())
+        (
+            Some(Action::Deny),
+            trimmed.strip_prefix("DENY").unwrap().trim(),
+        )
     } else if trimmed.starts_with("REJECT") {
         (
             Some(Action::Reject),

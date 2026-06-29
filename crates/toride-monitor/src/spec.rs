@@ -49,7 +49,10 @@ pub struct LoggingRule {
     /// Destination CIDR or host to match (e.g. `"0.0.0.0/0"` for all).
     pub destination: String,
     /// Destination port to match, or `None` for any port.
-    #[cfg_attr(feature = "serde", serde(default, skip_serializing_if = "Option::is_none"))]
+    #[cfg_attr(
+        feature = "serde",
+        serde(default, skip_serializing_if = "Option::is_none")
+    )]
     pub dest_port: Option<u16>,
     /// Protocol to match (e.g. `"tcp"`, `"udp"`).
     pub protocol: String,
@@ -93,7 +96,7 @@ impl Default for AnomalyThreshold {
             max_unique_destinations: 200,
             max_bytes: 100 * 1024 * 1024, // 100 MB
             max_packets_per_second: 10_000,
-            window: Duration::from_secs(60),
+            window: Duration::from_mins(1),
         }
     }
 }
@@ -107,10 +110,7 @@ impl Default for AnomalyThreshold {
 /// Defines where anomaly alerts are sent when triggered.
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-#[cfg_attr(
-    feature = "serde",
-    serde(tag = "kind", rename_all = "lowercase")
-)]
+#[cfg_attr(feature = "serde", serde(tag = "kind", rename_all = "lowercase"))]
 pub enum AlertTarget {
     /// Send alerts to the systemd journal.
     Journald {
@@ -150,7 +150,7 @@ pub struct MonitorSpec {
     #[cfg_attr(feature = "serde", serde(default))]
     pub thresholds: AnomalyThreshold,
     /// Alert dispatch targets.
-    #[cfg_attr(feature = "serde", serde(default))]
+    #[cfg_attr(feature = "serde", serde(default = "default_alert_targets"))]
     pub alert_targets: Vec<AlertTarget>,
     /// Whether monitoring is enabled.
     #[cfg_attr(feature = "serde", serde(default = "default_enabled"))]
@@ -160,6 +160,16 @@ pub struct MonitorSpec {
 #[cfg(feature = "serde")]
 fn default_enabled() -> bool {
     true
+}
+
+/// Serde default for [`MonitorSpec::alert_targets`].
+///
+/// Mirrors [`MonitorSpec::default`] so that a config file omitting
+/// `alert_targets` deserializes to the same value as the `Default` impl (a
+/// single Journald target at `warning` priority) rather than an empty list.
+#[cfg(feature = "serde")]
+fn default_alert_targets() -> Vec<AlertTarget> {
+    MonitorSpec::default().alert_targets
 }
 
 impl Default for MonitorSpec {
@@ -226,7 +236,7 @@ mod serde_tests {
                 destination: "0.0.0.0/0".into(),
                 dest_port: Some(443),
                 protocol: "tcp".into(),
-                log_prefix: "TORIDE_OUT".into(),
+                log_prefix: "toride-mon-out".into(),
                 log_level: "info".into(),
                 limit_burst: 5,
                 limit_rate: "5/minute".into(),
@@ -239,5 +249,34 @@ mod serde_tests {
         assert!(!back.enabled);
         assert_eq!(back.logging_rules.len(), 1);
         assert_eq!(back.logging_rules[0].dest_port, Some(443));
+    }
+
+    #[test]
+    fn missing_alert_targets_uses_serde_default_matching_default_impl() {
+        // A spec payload with no `alert_targets` field must deserialize to the
+        // SAME value as `MonitorSpec::default()` (a single Journald target),
+        // not an empty list.
+        let json = r#"{
+            "logging_rules": [],
+            "thresholds": {
+                "max_connections": 1,
+                "max_unique_destinations": 1,
+                "max_bytes": 1,
+                "max_packets_per_second": 1,
+                "window": 1
+            },
+            "enabled": true
+        }"#;
+        let parsed: MonitorSpec = serde_json::from_str(json).unwrap();
+        assert_eq!(parsed.alert_targets.len(), 1);
+        assert!(matches!(
+            parsed.alert_targets[0],
+            AlertTarget::Journald { .. }
+        ));
+        // Fully agree with the Default impl.
+        assert_eq!(
+            parsed.alert_targets.len(),
+            MonitorSpec::default().alert_targets.len()
+        );
     }
 }

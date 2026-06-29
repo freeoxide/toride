@@ -11,12 +11,10 @@
 //! the `toride_harden` crate root so this module never names the diagnostic
 //! crate directly).
 
-use crate::ui::screens::toride_harden::{
-    FindingEntry, HardenProfileEntry, MountEntry, SysctlRow,
-};
+use crate::ui::screens::toride_harden::{FindingEntry, HardenProfileEntry, MountEntry, SysctlRow};
+use toride_harden::HardeningProfile;
 use toride_harden::shm::MountInfo;
 use toride_harden::spec::SysctlParam;
-use toride_harden::HardeningProfile;
 
 /// Map a backend [`toride_harden::Severity`] (re-exported from
 /// `toride_diagnostic_types::Severity`) to a lowercase string used by the
@@ -40,7 +38,7 @@ fn severity_str(s: toride_harden::Severity) -> &'static str {
 /// operator can see "something" even if the finding is malformed). The backend
 /// `detail` / `fix_hint` are `Option<String>`; the UI carries `String` /
 /// `Option<String>` respectively, so `None` detail flattens to an empty string
-/// and `None` fix_hint stays `None`.
+/// and `None` `fix_hint` stays `None`.
 pub fn convert_findings(findings: Vec<toride_harden::Finding>) -> Vec<FindingEntry> {
     findings
         .into_iter()
@@ -110,10 +108,7 @@ pub fn convert_mounts(mounts: Vec<MountInfo>) -> Vec<MountEntry> {
         .into_iter()
         .map(|m| {
             if m.target.is_empty() {
-                tracing::warn!(
-                    "harden mount with empty target: options={:?}",
-                    m.options
-                );
+                tracing::warn!("harden mount with empty target: options={:?}", m.options);
             }
             let hardened = toride_harden::shm::missing_security_options(&m).is_empty();
             MountEntry {
@@ -361,8 +356,16 @@ mod tests {
     #[test]
     fn convert_profiles_server_has_more_params_than_desktop() {
         let profiles = convert_profiles();
-        let desktop = profiles.iter().find(|p| p.name == "desktop").unwrap().param_count;
-        let server = profiles.iter().find(|p| p.name == "server").unwrap().param_count;
+        let desktop = profiles
+            .iter()
+            .find(|p| p.name == "desktop")
+            .unwrap()
+            .param_count;
+        let server = profiles
+            .iter()
+            .find(|p| p.name == "server")
+            .unwrap()
+            .param_count;
         assert!(server > desktop);
     }
 
@@ -409,10 +412,19 @@ mod tests {
         // count consistent with the backend profile's params(). Also asserts
         // the result is non-empty (the contract above).
         let profiles = convert_profiles();
-        assert!(!profiles.is_empty(), "convert_profiles must yield at least one profile");
+        assert!(
+            !profiles.is_empty(),
+            "convert_profiles must yield at least one profile"
+        );
         for entry in &profiles {
-            assert!(!entry.name.is_empty(), "profile name must be non-empty: {entry:?}");
-            assert!(!entry.label.is_empty(), "profile label must be non-empty: {entry:?}");
+            assert!(
+                !entry.name.is_empty(),
+                "profile name must be non-empty: {entry:?}"
+            );
+            assert!(
+                !entry.label.is_empty(),
+                "profile label must be non-empty: {entry:?}"
+            );
             let backend_count = HardeningProfile::from_name(&entry.name)
                 .expect("advertised name must round-trip")
                 .params()

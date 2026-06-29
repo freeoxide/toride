@@ -36,10 +36,15 @@ pub struct Dropdown {
 impl Dropdown {
     /// Create a new dropdown with the given label, options, and box width.
     ///
+    /// # Panics
+    ///
     /// Panics if `options` is empty.
     #[must_use]
     pub fn new(label: &'static str, options: Vec<&'static str>, width: u16) -> Self {
-        assert!(!options.is_empty(), "Dropdown must have at least one option");
+        assert!(
+            !options.is_empty(),
+            "Dropdown must have at least one option"
+        );
         Self {
             label,
             options,
@@ -123,9 +128,8 @@ impl Dropdown {
                 }
                 InputAction::None
             }
-            KeyCode::Enter => InputAction::NextField,
+            KeyCode::Enter | KeyCode::Tab => InputAction::NextField,
             KeyCode::Esc => InputAction::Cancel,
-            KeyCode::Tab => InputAction::NextField,
             KeyCode::BackTab => InputAction::PrevField,
             _ => InputAction::None,
         }
@@ -136,7 +140,14 @@ impl Dropdown {
     /// Render the dropdown at the given position.
     ///
     /// `area` should be a 3-row-tall rect (top border + content + bottom border).
-    pub fn render(&self, frame: &mut Frame, area: Rect, p: Palette, focused: bool, error: Option<&str>) {
+    pub fn render(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        p: Palette,
+        focused: bool,
+        error: Option<&str>,
+    ) {
         let border_color = if error.is_some() {
             p.err
         } else if focused {
@@ -160,17 +171,18 @@ impl Dropdown {
             ""
         };
 
-        let mut label_spans = vec![
-            Span::styled(
-                format!("{} ", self.label),
-                Style::new().fg(p.text_dim),
-            ),
-        ];
+        let mut label_spans = vec![Span::styled(
+            format!("{} ", self.label),
+            Style::new().fg(p.text_dim),
+        )];
         if self.required {
             label_spans.push(Span::styled("*", Style::new().fg(p.err)));
         }
         label_spans.push(Span::styled(current.to_string(), Style::new().fg(p.text)));
-        label_spans.push(Span::styled(arrows.to_string(), Style::new().fg(p.text_muted)));
+        label_spans.push(Span::styled(
+            arrows.to_string(),
+            Style::new().fg(p.text_muted),
+        ));
 
         let line = Line::from(label_spans);
 
@@ -179,6 +191,10 @@ impl Dropdown {
 
     /// The total width this dropdown needs (label + box + borders).
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "static label length is bounded < u16::MAX"
+    )]
     pub fn total_width(&self) -> u16 {
         let label_w = self.label.len() as u16 + 1;
         let box_w = self.width;
@@ -305,7 +321,7 @@ mod tests {
     #[test]
     #[should_panic(expected = "Dropdown must have at least one option")]
     fn new_panics_with_empty_options() {
-        Dropdown::new("X", vec![], 10);
+        let _ = Dropdown::new("X", vec![], 10);
     }
 
     #[test]
@@ -319,7 +335,10 @@ mod tests {
             .draw(|f| dd.render(f, Rect::new(0, 1, 28, 3), CHARM, true, None))
             .unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("RSA 4096"), "selected option visible: {output}");
+        assert!(
+            output.contains("RSA 4096"),
+            "selected option visible: {output}"
+        );
         assert!(output.contains("▲▼"), "arrows visible: {output}");
     }
 

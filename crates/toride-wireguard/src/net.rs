@@ -243,8 +243,9 @@ mod tests {
 
     #[test]
     fn interface_exists_true_when_ip_link_succeeds() {
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout("2: wg0: <UP> mtu 1420"));
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
+            "2: wg0: <UP> mtu 1420",
+        ));
         let exists = interface_exists_with(&runner, "wg0").unwrap();
         assert!(exists);
         runner.assert_called_with(&CommandSpec::new("ip").args(["link", "show", "wg0"]));
@@ -252,43 +253,48 @@ mod tests {
 
     #[test]
     fn interface_exists_false_when_device_missing() {
-        let runner = FakeRunner::new().push_response(
-            toride_runner::CommandOutput::from_stderr("Device \"wg0\" does not exist.", 1),
-        );
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(
+            "Device \"wg0\" does not exist.",
+            1,
+        ));
         let exists = interface_exists_with(&runner, "wg0").unwrap();
         assert!(!exists);
     }
 
     #[test]
     fn interface_exists_propagates_other_errors() {
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stderr("permission denied", 1));
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(
+            "permission denied",
+            1,
+        ));
         let result = interface_exists_with(&runner, "wg0");
         assert!(result.is_err());
     }
 
     #[test]
     fn interface_status_up_when_flag_present() {
-        let runner = FakeRunner::new().push_response(
-            toride_runner::CommandOutput::from_stdout("2: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420"),
-        );
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
+            "2: wg0: <POINTOPOINT,NOARP,UP,LOWER_UP> mtu 1420",
+        ));
         let status = interface_status_with(&runner, "wg0").unwrap();
         assert_eq!(status, InterfaceStatus::Up);
     }
 
     #[test]
     fn interface_status_down_when_no_up_flag() {
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout("2: wg0: <POINTOPOINT,NOARP> mtu 1420"));
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
+            "2: wg0: <POINTOPOINT,NOARP> mtu 1420",
+        ));
         let status = interface_status_with(&runner, "wg0").unwrap();
         assert_eq!(status, InterfaceStatus::Down);
     }
 
     #[test]
     fn interface_status_not_found_when_missing() {
-        let runner = FakeRunner::new().push_response(
-            toride_runner::CommandOutput::from_stderr("Device \"wg0\" does not exist.", 1),
-        );
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(
+            "Device \"wg0\" does not exist.",
+            1,
+        ));
         let status = interface_status_with(&runner, "wg0").unwrap();
         assert_eq!(status, InterfaceStatus::NotFound);
     }
@@ -305,8 +311,7 @@ mod tests {
 
     #[test]
     fn list_wireguard_interfaces_empty_when_none() {
-        let runner =
-            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(""));
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(""));
         let ifaces = list_wireguard_interfaces_with(&runner).unwrap();
         assert!(ifaces.is_empty());
     }
@@ -325,8 +330,7 @@ mod tests {
 
     #[test]
     fn interface_stats_zero_when_no_peers() {
-        let runner =
-            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(""));
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(""));
         let stats = interface_stats_with(&runner, "wg0").unwrap();
         assert_eq!(stats.bytes_received, 0);
         assert_eq!(stats.bytes_sent, 0);

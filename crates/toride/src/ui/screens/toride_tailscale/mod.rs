@@ -9,7 +9,7 @@
 //! 1. Status panel — connected badge, node name, tailnet, IPs, exit node.
 //! 2. Peers table — name, IPs, online state, exit-node flag.
 //! 3. Netcheck / DERP — UDP/IPv6/Hairpin flags + per-region DERP latencies.
-//! 4. DNS — MagicDNS, nameservers, search domains.
+//! 4. DNS — `MagicDNS`, nameservers, search domains.
 //! 5. Doctor findings — grouped by severity (Critical > Warning > Info > Ok).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
@@ -53,7 +53,7 @@ pub struct DerpLatencyEntry {
 /// A single port-mapping probe row.
 #[derive(Clone, Debug)]
 pub struct PortMapEntry {
-    /// Probe name (e.g. "UPnP", "PMP", "PCP").
+    /// Probe name (e.g. `UPnP`, `PMP`, `PCP`).
     pub name: String,
     /// Whether the port-mapping method is available.
     pub open: bool,
@@ -62,7 +62,7 @@ pub struct PortMapEntry {
 /// DNS configuration summary.
 #[derive(Clone, Debug)]
 pub struct DnsInfo {
-    /// Whether MagicDNS is enabled.
+    /// Whether `MagicDNS` is enabled.
     pub magic_dns: bool,
     /// Custom DNS resolver addresses.
     pub nameservers: Vec<String>,
@@ -92,6 +92,10 @@ pub struct TailscaleFindingEntry {
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
 /// spinner, no cooldown. Data arrives via [`TailscaleContent::set_*`] setters
 /// driven by [`TailscaleCollector`](crate::toride_tailscale_data::TailscaleCollector).
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "domain state flags, each independently sourced"
+)]
 pub struct TailscaleContent {
     /// Whether the Tailscale backend (local HTTP API) was reachable at all. `false`
     /// means the section renders a degraded "unavailable" panel instead of live data.
@@ -106,7 +110,7 @@ pub struct TailscaleContent {
     ip_addresses: Vec<String>,
     /// Exit node in use, if any.
     exit_node: Option<String>,
-    /// Whether MagicDNS is enabled (from the status report).
+    /// Whether `MagicDNS` is enabled (from the status report).
     dns_enabled: bool,
     /// Peers in the tailnet.
     peers: Vec<PeerEntry>,
@@ -183,7 +187,11 @@ impl TailscaleContent {
     /// unavailable so the badge stays honestly empty.
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.peers.len()) } else { None }
+        if self.available {
+            Some(self.peers.len())
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -213,6 +221,14 @@ impl TailscaleContent {
     }
 
     /// Replace the netcheck fields.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "netcheck probe fields map 1:1 to the report"
+    )]
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "netcheck probe fields map 1:1 to the report"
+    )]
     pub fn set_netcheck(
         &mut self,
         connectivity: bool,
@@ -310,6 +326,10 @@ impl TailscaleContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens at render
     /// time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
     }
@@ -355,7 +375,7 @@ impl TailscaleContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -386,8 +406,12 @@ impl TailscaleContent {
             .clone()
             .unwrap_or_else(|| "Tailscale daemon (localhost:41642) is not reachable".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -443,10 +467,7 @@ impl TailscaleContent {
         };
         lines.push(Line::from(vec![
             Span::styled("  host      ", Style::new().fg(p.text_muted)),
-            Span::styled(
-                truncate_str(node_name, 40),
-                Style::new().fg(p.text),
-            ),
+            Span::styled(truncate_str(node_name, 40), Style::new().fg(p.text)),
         ]));
 
         let tailnet = if self.tailnet.is_empty() {
@@ -456,10 +477,7 @@ impl TailscaleContent {
         };
         lines.push(Line::from(vec![
             Span::styled("  tailnet   ", Style::new().fg(p.text_muted)),
-            Span::styled(
-                truncate_str(tailnet, 40),
-                Style::new().fg(p.text),
-            ),
+            Span::styled(truncate_str(tailnet, 40), Style::new().fg(p.text)),
         ]));
 
         let ips = if self.ip_addresses.is_empty() {
@@ -520,10 +538,7 @@ impl TailscaleContent {
                     format!("{name:<24}"),
                     Style::new().fg(p.text).add_modifier(Modifier::BOLD),
                 ),
-                Span::styled(
-                    format!("  {ips}{exit_tag}"),
-                    Style::new().fg(p.text_muted),
-                ),
+                Span::styled(format!("  {ips}{exit_tag}"), Style::new().fg(p.text_muted)),
             ]));
         }
     }
@@ -555,9 +570,9 @@ impl TailscaleContent {
         ]));
 
         // Capability flags.
-        self.push_flag_line(lines, p, "UDP     ", self.nc_udp);
-        self.push_flag_line(lines, p, "IPv6    ", self.nc_ipv6);
-        self.push_flag_line(lines, p, "Hairpin ", self.nc_hairpin);
+        Self::push_flag_line(lines, p, "UDP     ", self.nc_udp);
+        Self::push_flag_line(lines, p, "IPv6    ", self.nc_ipv6);
+        Self::push_flag_line(lines, p, "Hairpin ", self.nc_hairpin);
 
         // Port-mapping probes.
         if !self.nc_port_mapping.is_empty() {
@@ -611,7 +626,7 @@ impl TailscaleContent {
         }
     }
 
-    fn push_flag_line(&self, lines: &mut Vec<Line<'static>>, p: Palette, label: &str, on: bool) {
+    fn push_flag_line(lines: &mut Vec<Line<'static>>, p: Palette, label: &str, on: bool) {
         let (icon, text, color) = if on {
             ("✓", "yes", p.ok)
         } else {
@@ -687,11 +702,8 @@ impl TailscaleContent {
         // Group by severity: Critical > Warning > Info > Ok.
         let order = ["critical", "warning", "info", "ok"];
         for sev in order {
-            let group: Vec<&TailscaleFindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
+            let group: Vec<&TailscaleFindingEntry> =
+                self.findings.iter().filter(|f| f.severity == sev).collect();
             if group.is_empty() {
                 continue;
             }
@@ -742,7 +754,11 @@ impl crate::ui::screens::section_overview::SectionOverview for TailscaleContent 
         }
         Some(format!(
             "{} · {} peer(s)",
-            if self.connected { "connected" } else { "disconnected" },
+            if self.connected {
+                "connected"
+            } else {
+                "disconnected"
+            },
             self.peers.len()
         ))
     }
@@ -848,7 +864,7 @@ mod tests {
         ]
     }
 
-    /// Render a content area to a string (snapshot pattern from ssh keys_tab.rs).
+    /// Render a content area to a string (snapshot pattern from ssh `keys_tab.rs`).
     fn render_to_string(content: &mut TailscaleContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
@@ -875,7 +891,10 @@ mod tests {
     fn render_unavailable_when_not_available() {
         let mut c = TailscaleContent::new();
         let out = render_to_string(&mut c, 100, 24);
-        assert!(out.contains("tailscale unavailable"), "degraded panel: {out}");
+        assert!(
+            out.contains("tailscale unavailable"),
+            "degraded panel: {out}"
+        );
     }
 
     #[test]

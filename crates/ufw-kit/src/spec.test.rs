@@ -68,10 +68,7 @@ fn protocol_filter_any_should_render_empty() {
 
 #[test]
 fn protocol_filter_specific_should_render_protocol() {
-    assert_eq!(
-        ProtocolFilter::Specific(Protocol::Tcp).to_string(),
-        "tcp"
-    );
+    assert_eq!(ProtocolFilter::Specific(Protocol::Tcp).to_string(), "tcp");
 }
 
 // ---------------------------------------------------------------------------
@@ -150,10 +147,7 @@ fn port_spec_range_should_render_colon_separated() {
 
 #[test]
 fn port_spec_list_should_render_comma_separated() {
-    let ports = PortSpec::List(vec![
-        PortSpec::Single(80),
-        PortSpec::Single(443),
-    ]);
+    let ports = PortSpec::List(vec![PortSpec::Single(80), PortSpec::Single(443)]);
     assert_eq!(ports.to_string(), "80,443");
 }
 
@@ -175,45 +169,43 @@ fn port_spec_validate_should_accept_valid_port() {
 
 #[test]
 fn port_spec_validate_should_reject_reversed_range() {
-    assert!(PortSpec::Range {
-        start: 9000,
-        end: 8000
-    }
-    .validate()
-    .is_err());
+    assert!(
+        PortSpec::Range {
+            start: 9000,
+            end: 8000
+        }
+        .validate()
+        .is_err()
+    );
 }
 
 #[test]
 fn port_spec_validate_should_accept_valid_range() {
-    assert!(PortSpec::Range {
-        start: 8000,
-        end: 9000
-    }
-    .validate()
-    .is_ok());
+    assert!(
+        PortSpec::Range {
+            start: 8000,
+            end: 9000
+        }
+        .validate()
+        .is_ok()
+    );
 }
 
 #[test]
 fn port_spec_validate_should_reject_zero_in_range() {
-    assert!(PortSpec::Range {
-        start: 0,
-        end: 100
-    }
-    .validate()
-    .is_err());
+    assert!(PortSpec::Range { start: 0, end: 100 }.validate().is_err());
 }
 
 #[test]
 fn port_spec_requires_protocol_should_be_true_for_ranges() {
-    assert!(PortSpec::Range {
-        start: 8000,
-        end: 9000
-    }
-    .requires_protocol());
     assert!(
-        PortSpec::List(vec![PortSpec::Single(80), PortSpec::Single(443)])
-            .requires_protocol()
+        PortSpec::Range {
+            start: 8000,
+            end: 9000
+        }
+        .requires_protocol()
     );
+    assert!(PortSpec::List(vec![PortSpec::Single(80), PortSpec::Single(443)]).requires_protocol());
     assert!(!PortSpec::Single(80).requires_protocol());
     assert!(!PortSpec::Any.requires_protocol());
 }
@@ -269,10 +261,7 @@ fn port_spec_single_min_port_should_render() {
 
 #[test]
 fn address_ipv6_should_render_correctly() {
-    assert_eq!(
-        Address::Ip("::1".parse().unwrap()).to_string(),
-        "::1"
-    );
+    assert_eq!(Address::Ip("::1".parse().unwrap()).to_string(), "::1");
 }
 
 #[test]

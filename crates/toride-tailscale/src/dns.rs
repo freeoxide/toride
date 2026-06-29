@@ -77,7 +77,7 @@ impl<'a> DnsManager<'a> {
     pub fn parse(raw: &serde_json::Value) -> DnsConfigInfo {
         let magic_dns = raw
             .get("MagicDNS")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false);
 
         let nameservers = raw
@@ -199,7 +199,10 @@ mod tests {
             config.split_dns,
             vec![
                 ("corp.local".to_owned(), "10.0.0.53".to_owned()),
-                ("internal.example.com".to_owned(), "100.100.100.100".to_owned()),
+                (
+                    "internal.example.com".to_owned(),
+                    "100.100.100.100".to_owned()
+                ),
             ]
         );
     }

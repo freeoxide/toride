@@ -3,8 +3,8 @@
 //! Manages the lifecycle of cloud provider agents and helper services
 //! (e.g. the AWS SSM agent, GCP guest agent, etc.).
 
-use crate::error::Result;
 use crate::CloudProvider;
+use crate::error::Result;
 
 // ---------------------------------------------------------------------------
 // ServiceManager
@@ -38,7 +38,7 @@ impl ServiceManager {
 
     /// Build a [`toride_service::ServiceManager`] for the provider's agent,
     /// backed by the default [`toride_runner::DuctRunner`].
-    fn agent_service(&self) -> toride_service::ServiceManager {
+    fn agent_service() -> toride_service::ServiceManager {
         toride_service::ServiceManager::new(Box::new(toride_runner::DuctRunner))
     }
 
@@ -53,7 +53,7 @@ impl ServiceManager {
     ///
     /// Returns [`crate::error::Error::Other`] if the systemctl probe fails.
     pub fn is_agent_running(&self) -> Result<bool> {
-        Self::map_svc_err(self.agent_service().is_active(self.agent_service_name()))
+        Self::map_svc_err(Self::agent_service().is_active(self.agent_service_name()))
     }
 
     /// Start the provider's agent service.
@@ -62,7 +62,7 @@ impl ServiceManager {
     ///
     /// Returns [`crate::error::Error::Other`] if the start fails.
     pub fn start_agent(&self) -> Result<()> {
-        Self::map_svc_err(self.agent_service().start(self.agent_service_name()))
+        Self::map_svc_err(Self::agent_service().start(self.agent_service_name()))
     }
 
     /// Stop the provider's agent service.
@@ -71,7 +71,7 @@ impl ServiceManager {
     ///
     /// Returns [`crate::error::Error::Other`] if the stop fails.
     pub fn stop_agent(&self) -> Result<()> {
-        Self::map_svc_err(self.agent_service().stop(self.agent_service_name()))
+        Self::map_svc_err(Self::agent_service().stop(self.agent_service_name()))
     }
 
     /// Restart the provider's agent service.
@@ -80,7 +80,7 @@ impl ServiceManager {
     ///
     /// Returns [`crate::error::Error::Other`] if the restart fails.
     pub fn restart_agent(&self) -> Result<()> {
-        Self::map_svc_err(self.agent_service().restart(self.agent_service_name()))
+        Self::map_svc_err(Self::agent_service().restart(self.agent_service_name()))
     }
 
     /// Check if the provider's agent service is enabled at boot.
@@ -89,7 +89,7 @@ impl ServiceManager {
     ///
     /// Returns [`crate::error::Error::Other`] if the check fails.
     pub fn is_agent_enabled(&self) -> Result<bool> {
-        Self::map_svc_err(self.agent_service().is_enabled(self.agent_service_name()))
+        Self::map_svc_err(Self::agent_service().is_enabled(self.agent_service_name()))
     }
 
     /// Enable the provider's agent service at boot.
@@ -98,7 +98,7 @@ impl ServiceManager {
     ///
     /// Returns [`crate::error::Error::Other`] if the enable fails.
     pub fn enable_agent(&self) -> Result<()> {
-        Self::map_svc_err(self.agent_service().enable(self.agent_service_name()))
+        Self::map_svc_err(Self::agent_service().enable(self.agent_service_name()))
     }
 
     /// Disable the provider's agent service at boot.
@@ -107,7 +107,7 @@ impl ServiceManager {
     ///
     /// Returns [`crate::error::Error::Other`] if the disable fails.
     pub fn disable_agent(&self) -> Result<()> {
-        Self::map_svc_err(self.agent_service().disable(self.agent_service_name()))
+        Self::map_svc_err(Self::agent_service().disable(self.agent_service_name()))
     }
 
     /// Return the name of the agent service for the current provider.

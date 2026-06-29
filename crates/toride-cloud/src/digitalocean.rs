@@ -1,6 +1,6 @@
-//! DigitalOcean firewall management.
+//! `DigitalOcean` firewall management.
 //!
-//! Provides typed wrappers around the `doctl` CLI for managing DigitalOcean
+//! Provides typed wrappers around the `doctl` CLI for managing `DigitalOcean`
 //! cloud firewalls and their rules.
 //!
 //! Every operation shells out via [`toride_runner::CommandSpec`] and parses the
@@ -17,9 +17,10 @@
 //! - add:    `doctl compute firewall add-rules <id> [--inbound-rules ...] [--outbound-rules ...]`
 //! - remove: `doctl compute firewall remove-rules <id> [--inbound-rules ...] [--outbound-rules ...]`
 
+use crate::CloudProvider;
 use crate::error::{Error, Result};
 use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
-use crate::CloudProvider;
+use std::fmt::Write as _;
 use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 /// Map a [`toride_runner::Error`] into the crate's [`Error`] type.
@@ -33,9 +34,7 @@ fn map_runner_err(err: toride_runner::Error) -> Error {
         toride_runner::Error::BinaryNotFound(name) => Error::BinaryNotFound(name),
         toride_runner::Error::Io(msg) => Error::Other(msg),
         toride_runner::Error::CommandFailed {
-            program,
-            stderr,
-            ..
+            program, stderr, ..
         } => Error::CommandFailed {
             program,
             message: stderr,
@@ -73,7 +72,7 @@ struct DoFirewall {
     tags: Vec<String>,
 }
 
-/// A single DigitalOcean inbound/outbound rule.
+/// A single `DigitalOcean` inbound/outbound rule.
 #[derive(Debug, serde::Deserialize)]
 struct DoRule {
     protocol: String,
@@ -88,7 +87,7 @@ struct DoRule {
 /// Traffic source/destination endpoints.
 ///
 /// Each field is optional; at least one is typically populated. Mirrors the
-/// `sources` / `destinations` objects of the DigitalOcean firewall API.
+/// `sources` / `destinations` objects of the `DigitalOcean` firewall API.
 /// Fields beyond `addresses` are deserialized for fidelity to the API shape
 /// even when not yet surfaced into the domain model.
 #[derive(Debug, Default, serde::Deserialize)]
@@ -108,20 +107,20 @@ struct DoEndpoints {
 // DigitalOceanClient
 // ---------------------------------------------------------------------------
 
-/// Client for managing DigitalOcean firewalls.
+/// Client for managing `DigitalOcean` firewalls.
 ///
 /// Delegates command execution to the `doctl` CLI through an injectable
 /// [`Runner`]. Production code uses [`DuctRunner`]; tests inject a
 /// [`FakeRunner`](toride_runner::FakeRunner).
 pub struct DigitalOceanClient<R: Runner = DuctRunner> {
-    /// DigitalOcean access token (uses `doctl` config if `None`).
+    /// `DigitalOcean` access token (uses `doctl` config if `None`).
     pub access_token: Option<String>,
     /// Command executor used to shell out to `doctl`.
     runner: R,
 }
 
 impl DigitalOceanClient<DuctRunner> {
-    /// Create a new DigitalOcean client backed by a [`DuctRunner`].
+    /// Create a new `DigitalOcean` client backed by a [`DuctRunner`].
     ///
     /// Credentials are read from `doctl`'s own config unless
     /// [`with_token`](Self::with_token) supplies an access token.
@@ -143,8 +142,9 @@ impl Default for DigitalOceanClient<DuctRunner> {
 impl DigitalOceanClient<DuctRunner> {
     /// Set the access token explicitly.
     ///
-    /// When set, the token is passed to `doctl` via the global `--access-token`
-    /// flag on every command rather than read from config.
+    /// When set, the token is passed to `doctl` via the
+    /// `DIGITALOCEAN_ACCESS_TOKEN` environment variable on every command
+    /// rather than read from config.
     #[must_use]
     pub fn with_token(mut self, token: impl Into<String>) -> Self {
         self.access_token = Some(token.into());
@@ -171,13 +171,17 @@ impl<R: Runner> DigitalOceanClient<R> {
 
     // --- command construction ------------------------------------------------
 
-    /// Build the `doctl` program prefix, injecting `--access-token` when one
-    /// is configured. The token is a credential, so any command that carries
-    /// it inline is marked `redact(true)`.
+    /// Build the `doctl` program prefix, supplying the access token via the
+    /// `DIGITALOCEAN_ACCESS_TOKEN` environment variable when one is configured.
+    /// Passing the token as an env var (rather than the `--access-token` flag)
+    /// keeps it off the process argv and out of `ps` listings; `doctl` reads
+    /// this env var natively. The token is a credential, so any command that
+    /// carries it is marked `redact(true)` so the runner scrubs its value from
+    /// logs and error variants.
     fn base_command(&self, sub: &[&str]) -> CommandSpec {
         let mut spec = CommandSpec::new("doctl");
         if let Some(token) = &self.access_token {
-            spec = spec.arg("--access-token").arg(token).redact(true);
+            spec = spec.env("DIGITALOCEAN_ACCESS_TOKEN", token).redact(true);
         }
         for s in sub {
             spec = spec.arg(*s);
@@ -217,12 +221,14 @@ impl<R: Runner> DigitalOceanClient<R> {
             .arg("--name")
             .arg(name);
         if !inbound_rules.is_empty() {
-            spec = spec.arg("--inbound-rules").arg(render_rules(inbound_rules, true)?);
+            let refs: Vec<&FirewallRule> = inbound_rules.iter().collect();
+            spec = spec.arg("--inbound-rules").arg(render_rules(&refs, true)?);
         }
         if !outbound_rules.is_empty() {
+            let refs: Vec<&FirewallRule> = outbound_rules.iter().collect();
             spec = spec
                 .arg("--outbound-rules")
-                .arg(render_rules(outbound_rules, false)?);
+                .arg(render_rules(&refs, false)?);
         }
         Ok(spec)
     }
@@ -252,14 +258,14 @@ impl<R: Runner> DigitalOceanClient<R> {
             .base_command(&["compute", "firewall", verb])
             .arg(firewall_id);
         if !inbound.is_empty() {
-            let owned: Vec<FirewallRule> = inbound.into_iter().cloned().collect();
-            spec = spec.arg("--inbound-rules").arg(render_rules(&owned, true)?);
+            spec = spec
+                .arg("--inbound-rules")
+                .arg(render_rules(&inbound, true)?);
         }
         if !outbound.is_empty() {
-            let owned: Vec<FirewallRule> = outbound.into_iter().cloned().collect();
             spec = spec
                 .arg("--outbound-rules")
-                .arg(render_rules(&owned, false)?);
+                .arg(render_rules(&outbound, false)?);
         }
         Ok(spec)
     }
@@ -303,7 +309,7 @@ impl<R: Runner> DigitalOceanClient<R> {
     /// # Errors
     ///
     /// Returns [`Error::CommandFailed`] if creation fails, or [`Error::Other`]
-    /// if no inbound or outbound rules are supplied (DigitalOcean requires at
+    /// if no inbound or outbound rules are supplied (`DigitalOcean` requires at
     /// least one rule).
     pub fn create_firewall(
         &self,
@@ -363,10 +369,7 @@ impl<R: Runner> DigitalOceanClient<R> {
     /// Returns [`Error::CommandFailed`] if removal fails.
     pub fn remove_rules(&self, firewall_id: &str, rules: &[FirewallRule]) -> Result<()> {
         let cmd = self.rules_command("remove-rules", firewall_id, rules)?;
-        let _ = self
-            .runner
-            .run_checked(&cmd)
-            .map_err(map_runner_err)?;
+        let _ = self.runner.run_checked(&cmd).map_err(map_runner_err)?;
         Ok(())
     }
 }
@@ -419,7 +422,7 @@ fn firewall_to_group(fw: DoFirewall) -> SecurityGroup {
     group
 }
 
-/// Expand a single DigitalOcean rule into one [`FirewallRule`] per source/destination
+/// Expand a single `DigitalOcean` rule into one [`FirewallRule`] per source/destination
 /// CIDR (the domain model carries a single CIDR per rule).
 fn expand_rule(r: DoRule, is_ingress: bool) -> Vec<FirewallRule> {
     let protocol = parse_protocol(&r.protocol);
@@ -457,7 +460,7 @@ fn expand_rule(r: DoRule, is_ingress: bool) -> Vec<FirewallRule> {
         .collect()
 }
 
-/// Parse a DigitalOcean ports string into a [`PortRange`].
+/// Parse a `DigitalOcean` ports string into a [`PortRange`].
 ///
 /// `"0"`, `"all"`, or empty means all ports (mapped to the full u16 range).
 /// A single number maps to a single-port range; `"8000-9000"` maps to a range.
@@ -471,10 +474,10 @@ fn parse_ports(ports: &str, protocol: Protocol) -> Option<PortRange> {
             Some(PortRange::range(0, 65535))
         };
     }
-    if let Some((start_s, end_s)) = lower.split_once('-') {
-        if let (Ok(start), Ok(end)) = (start_s.parse::<u16>(), end_s.parse::<u16>()) {
-            return Some(PortRange::range(start, end));
-        }
+    if let Some((start_s, end_s)) = lower.split_once('-')
+        && let (Ok(start), Ok(end)) = (start_s.parse::<u16>(), end_s.parse::<u16>())
+    {
+        return Some(PortRange::range(start, end));
     }
     if let Ok(single) = lower.parse::<u16>() {
         return Some(PortRange::single(single));
@@ -482,7 +485,7 @@ fn parse_ports(ports: &str, protocol: Protocol) -> Option<PortRange> {
     None
 }
 
-/// Parse a DigitalOcean protocol string into a [`Protocol`].
+/// Parse a `DigitalOcean` protocol string into a [`Protocol`].
 fn parse_protocol(s: &str) -> Protocol {
     match s.trim().to_ascii_lowercase().as_str() {
         "tcp" => Protocol::Tcp,
@@ -506,19 +509,21 @@ fn parse_protocol(s: &str) -> Protocol {
 /// Multiple rules are separated by spaces. Source key is `address`; for
 /// non-ingress rules the key remains `address` (doctl uses the same key for
 /// destinations).
-fn render_rules(rules: &[FirewallRule], is_ingress: bool) -> Result<String> {
+fn render_rules(rules: &[&FirewallRule], is_ingress: bool) -> Result<String> {
     let mut parts = Vec::with_capacity(rules.len());
     for r in rules {
         if r.is_ingress != is_ingress {
             continue;
         }
         let proto = r.protocol.to_string();
-        let mut kv = format!("protocol:{}", proto);
+        let mut kv = format!("protocol:{proto}");
         match r.port_range {
-            Some(p) if !matches!(r.protocol, Protocol::Icmp) => kv.push_str(&format!(",ports:{p}")),
+            Some(p) if !matches!(r.protocol, Protocol::Icmp) => {
+                let _ = write!(kv, ",ports:{p}");
+            }
             _ => {}
         }
-        kv.push_str(&format!(",address:{}", r.cidr));
+        let _ = write!(kv, ",address:{}", r.cidr);
         parts.push(kv);
     }
     if parts.is_empty() {
@@ -541,7 +546,7 @@ mod tests {
 
     /// Real `doctl compute firewall list --format JSON` shape.
     ///
-    /// Source: DigitalOcean Firewalls API reference and doctl firewall list docs:
+    /// Source: `DigitalOcean` Firewalls API reference and doctl firewall list docs:
     /// <https://docs.digitalocean.com/reference/doctl/reference/compute/firewall/list/>
     /// <https://docs.digitalocean.com/reference/api/reference/firewalls/>
     const LIST_JSON: &str = r#"[
@@ -597,7 +602,11 @@ mod tests {
         );
 
         // droplet_ids + tags are surfaced as SecurityGroup tags.
-        assert!(g.tags.iter().any(|(k, v)| k == "droplet_id" && v == "386734086"));
+        assert!(
+            g.tags
+                .iter()
+                .any(|(k, v)| k == "droplet_id" && v == "386734086")
+        );
         assert!(g.tags.iter().any(|(k, v)| k == "tag" && v == "frontend"));
         assert!(g.tags.iter().any(|(k, v)| k == "tag" && v == "backend"));
 
@@ -669,13 +678,14 @@ mod tests {
 
         client.list_firewalls().unwrap();
 
-        let expected = CommandSpec::new("doctl")
-            .args(["compute", "firewall", "list", "--format", "JSON"]);
+        let expected =
+            CommandSpec::new("doctl").args(["compute", "firewall", "list", "--format", "JSON"]);
         client.runner.assert_called_with(&expected);
     }
 
-    /// When an access token is configured it is injected as a global
-    /// `--access-token` flag and the command is marked redacted.
+    /// When an access token is configured it is supplied via the
+    /// `DIGITALOCEAN_ACCESS_TOKEN` environment variable (doctl reads this env
+    /// var) and the command is marked redacted.
     #[test]
     fn list_injects_access_token_and_redacts() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("[]"));
@@ -684,21 +694,31 @@ mod tests {
         client.list_firewalls().unwrap();
 
         let expected = CommandSpec::new("doctl")
-            .arg("--access-token")
-            .arg("tok-abc")
+            .env("DIGITALOCEAN_ACCESS_TOKEN", "tok-abc")
             .args(["compute", "firewall", "list", "--format", "JSON"])
             .redact(true);
         client.runner.assert_called_with(&expected);
 
-        // Non-vacuous: prove the token VALUE is actually scrubbed from the
-        // redacted display, not merely that redact==true. (Regression for the
-        // REDACT_FLAGS gap that previously left --access-token unredacted, so
-        // the doctl token leaked into runner logs/errors despite redact(true).)
-        let display = toride_runner::display::redacted_args_display(&expected);
+        // Non-vacuous: prove the token VALUE is never present on the argv (it
+        // lives in the environment, off `ps`) and that the runner's env display
+        // path scrubs its value. (Regression for the REDACT_FLAGS gap that
+        // previously left the doctl token leaking via the --access-token flag.)
+        let args_display = toride_runner::display::redacted_args_display(&expected);
         assert!(
-            !display.contains("tok-abc"),
-            "doctl access token leaked into redacted display: {display}"
+            !args_display.contains("tok-abc"),
+            "doctl access token leaked into redacted args display: {args_display}"
         );
+        let env = toride_runner::display::display_env(&expected, &[]);
+        let token_val = env
+            .iter()
+            .find(|(k, _)| k == "DIGITALOCEAN_ACCESS_TOKEN")
+            .map(|(_, v)| v.as_str())
+            .expect("token env var present");
+        assert_ne!(
+            token_val, "tok-abc",
+            "doctl access token value leaked into redacted env display: {env:?}"
+        );
+        assert_eq!(token_val, "***");
     }
 
     /// Builds `doctl compute firewall get <id> --format JSON`.
@@ -706,8 +726,7 @@ mod tests {
     /// Source: <https://docs.digitalocean.com/reference/doctl/reference/compute/firewall/get/>
     #[test]
     fn get_builds_exact_doctl_command() {
-        let runner =
-            FakeRunner::new().push_response(CommandOutput::from_stdout(LIST_JSON));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(LIST_JSON));
         let client = DigitalOceanClient::with_runner(runner);
 
         let group = client.get_firewall("fe4ff2c8-8c3f").unwrap();
@@ -734,8 +753,7 @@ mod tests {
     /// Source: <https://docs.digitalocean.com/reference/doctl/reference/compute/firewall/create/>
     #[test]
     fn create_builds_exact_doctl_command() {
-        let runner =
-            FakeRunner::new().push_response(CommandOutput::from_stdout(LIST_JSON));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(LIST_JSON));
         let client = DigitalOceanClient::with_runner(runner);
 
         let inbound = vec![FirewallRule {
@@ -757,7 +775,9 @@ mod tests {
             action: RuleAction::Allow,
         }];
 
-        let created = client.create_firewall("example-firewall", &inbound, &outbound).unwrap();
+        let created = client
+            .create_firewall("example-firewall", &inbound, &outbound)
+            .unwrap();
         assert_eq!(created.name, "my-firewall");
 
         let expected = CommandSpec::new("doctl")
@@ -857,7 +877,9 @@ mod tests {
             cidr: "0.0.0.0/0".into(),
             action: RuleAction::Allow,
         };
-        let err = client.add_rules("fw", std::slice::from_ref(&rule)).unwrap_err();
+        let err = client
+            .add_rules("fw", std::slice::from_ref(&rule))
+            .unwrap_err();
         assert!(matches!(err, Error::FirewallRuleConflict(_)), "{err:?}");
     }
 
@@ -879,7 +901,9 @@ mod tests {
             action: RuleAction::Allow,
         };
 
-        client.remove_rules("f81d4fae", std::slice::from_ref(&rule)).unwrap();
+        client
+            .remove_rules("f81d4fae", std::slice::from_ref(&rule))
+            .unwrap();
 
         let expected = CommandSpec::new("doctl")
             .args(["compute", "firewall", "remove-rules"])
@@ -911,7 +935,7 @@ mod tests {
             cidr: "0.0.0.0/0".into(),
             action: RuleAction::Allow,
         };
-        let rendered = render_rules(std::slice::from_ref(&rule), true).unwrap();
+        let rendered = render_rules(&[&rule], true).unwrap();
         assert_eq!(rendered, "protocol:tcp,ports:22,address:0.0.0.0/0");
     }
 
@@ -926,7 +950,7 @@ mod tests {
             cidr: "0.0.0.0/0".into(),
             action: RuleAction::Allow,
         };
-        let rendered = render_rules(std::slice::from_ref(&rule), true).unwrap();
+        let rendered = render_rules(&[&rule], true).unwrap();
         assert_eq!(rendered, "protocol:icmp,address:0.0.0.0/0");
     }
 
@@ -952,7 +976,8 @@ mod tests {
                 action: RuleAction::Allow,
             },
         ];
-        let rendered = render_rules(&rules, true).unwrap();
+        let refs: Vec<&FirewallRule> = rules.iter().collect();
+        let rendered = render_rules(&refs, true).unwrap();
         assert_eq!(
             rendered,
             "protocol:tcp,ports:22,address:0.0.0.0/0 protocol:tcp,ports:8000-9000,address:10.0.0.0/8"

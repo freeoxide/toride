@@ -101,10 +101,8 @@ pub mod tools;
 // Re-exports — the public API surface.
 pub use error::{Error, Result};
 pub use installer::{
-    install_tool, Installer, InstallerBuilder, TemplateResolver, Verifier, DEFAULT_MAX_BYTES,
-    DEFAULT_MIN_BYTES,
+    DEFAULT_MAX_BYTES, DEFAULT_MIN_BYTES, Installer, InstallerBuilder, TemplateResolver, Verifier,
+    install_tool,
 };
 pub use target::{Arch, Os, Target};
-pub use tool::{
-    ArtifactKind, Checksum, ReleaseResolver, Tarball, Tool, ToolBuilder,
-};
+pub use tool::{ArtifactKind, Checksum, ReleaseResolver, Tarball, Tool, ToolBuilder};

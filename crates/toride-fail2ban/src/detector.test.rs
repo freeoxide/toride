@@ -36,7 +36,10 @@ fn new_invalid_regex_returns_error() {
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::InvalidRegex(msg) => {
-            assert!(msg.contains("(unclosed"), "error should mention the bad pattern");
+            assert!(
+                msg.contains("(unclosed"),
+                "error should mention the bad pattern"
+            );
         }
         other => panic!("expected InvalidRegex, got {:?}", other),
     }
@@ -68,10 +71,8 @@ fn match_line_returns_detail_on_match() {
 
 #[test]
 fn match_line_returns_none_on_no_match() {
-    let (detector, _tmp) = detector_with_content(
-        "irrelevant\n",
-        r"Failed password from (?P<ip>\S+)",
-    );
+    let (detector, _tmp) =
+        detector_with_content("irrelevant\n", r"Failed password from (?P<ip>\S+)");
     let detail = detector.match_line("Accepted publickey for user", 1);
     assert!(detail.is_none());
 }
@@ -105,20 +106,16 @@ fn match_line_with_no_capture_groups_still_matches() {
 
 #[test]
 fn extract_ip_from_named_group_ip() {
-    let (detector, _tmp) = detector_with_content(
-        "anything\n",
-        r"(?P<ip>\d+\.\d+\.\d+\.\d+) login failure",
-    );
+    let (detector, _tmp) =
+        detector_with_content("anything\n", r"(?P<ip>\d+\.\d+\.\d+\.\d+) login failure");
     let detail = detector.match_line("10.20.30.40 login failure", 1).unwrap();
     assert_eq!(detail.ip, Some("10.20.30.40".parse().unwrap()));
 }
 
 #[test]
 fn extract_ip_from_named_group_host() {
-    let (detector, _tmp) = detector_with_content(
-        "anything\n",
-        r"(?P<host>\d+\.\d+\.\d+\.\d+) auth fail",
-    );
+    let (detector, _tmp) =
+        detector_with_content("anything\n", r"(?P<host>\d+\.\d+\.\d+\.\d+) auth fail");
     let detail = detector.match_line("172.16.0.5 auth fail", 1).unwrap();
     assert_eq!(detail.ip, Some("172.16.0.5".parse().unwrap()));
 }
@@ -126,10 +123,8 @@ fn extract_ip_from_named_group_host() {
 #[test]
 fn extract_ip_prefers_ip_over_host() {
     // Pattern has both `ip` and `host` named groups; `ip` should take priority.
-    let (detector, _tmp) = detector_with_content(
-        "anything\n",
-        r"(?P<host>\S+) -> (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (detector, _tmp) =
+        detector_with_content("anything\n", r"(?P<host>\S+) -> (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let detail = detector.match_line("server -> 10.0.0.99", 1).unwrap();
     assert_eq!(detail.ip, Some("10.0.0.99".parse().unwrap()));
 }
@@ -155,13 +150,8 @@ fn extract_ip_returns_none_when_no_ip_present() {
 #[test]
 fn extract_ip_with_ipv6_via_named_group() {
     // IPv6 does not match the fallback IPv4-only regex, but named groups still work.
-    let (detector, _tmp) = detector_with_content(
-        "anything\n",
-        r"from (?P<ip>[0-9a-fA-F:]+) port",
-    );
-    let detail = detector
-        .match_line("from ::1 port 22", 1)
-        .unwrap();
+    let (detector, _tmp) = detector_with_content("anything\n", r"from (?P<ip>[0-9a-fA-F:]+) port");
+    let detail = detector.match_line("from ::1 port 22", 1).unwrap();
     assert_eq!(detail.ip, Some("::1".parse().unwrap()));
 }
 
@@ -194,10 +184,8 @@ fn scan_file_with_matching_lines() {
 Failed password from 10.0.0.1 port 22
 Failed password from 10.0.0.2 port 22
 ";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().expect("scan should succeed");
 
     assert_eq!(result.lines_scanned, 2);
@@ -213,10 +201,8 @@ fn scan_file_with_no_matches() {
 accepted login for admin
 connection established
 ";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().expect("scan should succeed");
 
     assert_eq!(result.lines_scanned, 2);
@@ -256,7 +242,10 @@ fn scan_incremental_with_appended_content() {
     assert_eq!(first.lines_scanned, 1);
 
     // Append a new line (must use append mode so writes go to end of file).
-    let mut file = std::fs::OpenOptions::new().append(true).open(tmp.path()).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(tmp.path())
+        .unwrap();
     write!(file, "line two\n").unwrap();
     file.flush().unwrap();
 
@@ -272,10 +261,8 @@ Failed from 10.0.0.1
 Failed from 10.0.0.1
 Failed from 10.0.0.2
 ";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 3);
     assert_eq!(result.new_bans.len(), 3);
@@ -288,10 +275,8 @@ Failed from 10.0.0.2
 #[test]
 fn scan_ban_entry_has_correct_jail_name() {
     let content = "Failed from 10.0.0.1\n";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
     assert_eq!(result.new_bans[0].jail_name, "test-jail");
 }
@@ -299,10 +284,8 @@ fn scan_ban_entry_has_correct_jail_name() {
 #[test]
 fn scan_ban_entry_prefix_is_32_for_ipv4() {
     let content = "Failed from 10.0.0.1\n";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
     assert_eq!(result.new_bans[0].prefix, 32);
 }
@@ -310,10 +293,8 @@ fn scan_ban_entry_prefix_is_32_for_ipv4() {
 #[test]
 fn scan_duration_is_accessible() {
     let content = "Failed from 10.0.0.1\n";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
     // Duration can technically be zero for very fast I/O, but the field must exist.
     // Just assert we can access it without panic.
@@ -322,14 +303,21 @@ fn scan_duration_is_accessible() {
 
 #[test]
 fn scan_returns_error_for_missing_file() {
-    let result = LogDetector::new("jail", std::path::Path::new("/nonexistent/path/log.txt"), "pattern");
+    let result = LogDetector::new(
+        "jail",
+        std::path::Path::new("/nonexistent/path/log.txt"),
+        "pattern",
+    );
     // new() succeeds (it doesn't check file existence).
     let mut detector = result.unwrap();
     let scan_result = detector.scan();
     assert!(scan_result.is_err());
     match scan_result.unwrap_err() {
         crate::Error::LogFileError(msg) => {
-            assert!(msg.contains("Cannot open"), "error should mention open failure");
+            assert!(
+                msg.contains("Cannot open"),
+                "error should mention open failure"
+            );
         }
         other => panic!("expected LogFileError, got {:?}", other),
     }
@@ -446,10 +434,7 @@ fn edge_case_very_long_line() {
     let long_ip = "10.0.0.1";
     let padding = "x".repeat(16_000);
     let line = format!("Failed {} {}\n", long_ip, padding);
-    let (mut detector, _tmp) = detector_with_content(
-        &line,
-        r"Failed (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) = detector_with_content(&line, r"Failed (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
@@ -459,10 +444,8 @@ fn edge_case_very_long_line() {
 #[test]
 fn edge_case_no_trailing_newline_at_eof() {
     let content = "Failed from 10.0.0.1";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().unwrap();
     // The last line without a newline should still be read.
     assert_eq!(result.lines_scanned, 1);
@@ -527,7 +510,10 @@ fn edge_case_multiple_scans_accumulate_position() {
     assert_eq!(r1.lines_scanned, 2);
 
     // Append more content (must use append mode so writes go to end of file).
-    let mut file = std::fs::OpenOptions::new().append(true).open(tmp.path()).unwrap();
+    let mut file = std::fs::OpenOptions::new()
+        .append(true)
+        .open(tmp.path())
+        .unwrap();
     write!(file, "c\n").unwrap();
     file.flush().unwrap();
 
@@ -543,7 +529,9 @@ fn edge_case_multiple_scans_accumulate_position() {
 fn extract_ip_fallback_picks_first_ip_in_line() {
     let content = "proxy 10.0.0.1 forwarded to 10.0.0.2\n";
     let (detector, _tmp) = detector_with_content(content, r"proxy .* forwarded");
-    let detail = detector.match_line("proxy 10.0.0.1 forwarded to 10.0.0.2", 1).unwrap();
+    let detail = detector
+        .match_line("proxy 10.0.0.1 forwarded to 10.0.0.2", 1)
+        .unwrap();
     // Fallback regex finds the first IP-like match.
     assert_eq!(detail.ip, Some("10.0.0.1".parse().unwrap()));
 }
@@ -600,7 +588,10 @@ fn scan_non_utf8_content() {
         LogDetector::new("test-jail", tmp.path(), r"pattern").expect("LogDetector::new");
     let result = detector.scan();
     // Non-UTF-8 content is handled gracefully via lossy conversion.
-    assert!(result.is_ok(), "scan should succeed for non-UTF-8 content (lossy conversion)");
+    assert!(
+        result.is_ok(),
+        "scan should succeed for non-UTF-8 content (lossy conversion)"
+    );
     assert_eq!(result.unwrap().lines_scanned, 1);
 }
 
@@ -621,10 +612,7 @@ fn set_position_beyond_eof_resets_on_rotation() {
 fn match_line_with_host_group_containing_hostname() {
     // When the only named group is `host` and it captures a hostname
     // (not an IP address), extract_ip should return None.
-    let (detector, _tmp) = detector_with_content(
-        "anything\n",
-        r"(?P<host>\S+) auth failure",
-    );
+    let (detector, _tmp) = detector_with_content("anything\n", r"(?P<host>\S+) auth failure");
     let detail = detector
         .match_line("example.com auth failure", 1)
         .expect("should match");
@@ -639,10 +627,8 @@ fn match_line_with_host_group_containing_hostname() {
 #[test]
 fn scan_crlf_line_endings() {
     let content = "Failed password from 10.0.0.1\r\nFailed password from 10.0.0.2\r\n";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 2);
@@ -652,12 +638,9 @@ fn scan_crlf_line_endings() {
 
 #[test]
 fn scan_mixed_line_endings() {
-    let content =
-        "Failed password from 10.0.0.1\nFailed password from 10.0.0.2\r\nFailed password from 10.0.0.3\n";
-    let (mut detector, _tmp) = detector_with_content(
-        content,
-        r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let content = "Failed password from 10.0.0.1\nFailed password from 10.0.0.2\r\nFailed password from 10.0.0.3\n";
+    let (mut detector, _tmp) =
+        detector_with_content(content, r"Failed password from (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 3);
     assert_eq!(result.matches_found, 3);
@@ -686,10 +669,7 @@ fn scan_very_long_line_100kb() {
     let ip = "10.0.0.1";
     let padding = "x".repeat(102_400);
     let line = format!("Failed {} {}\n", ip, padding);
-    let (mut detector, _tmp) = detector_with_content(
-        &line,
-        r"Failed (?P<ip>\d+\.\d+\.\d+\.\d+)",
-    );
+    let (mut detector, _tmp) = detector_with_content(&line, r"Failed (?P<ip>\d+\.\d+\.\d+\.\d+)");
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 1);
     assert_eq!(result.matches_found, 1);
@@ -792,7 +772,10 @@ fn scan_errors_on_oversized_line() {
     assert!(result.is_err(), "should error on oversized line");
     match result.unwrap_err() {
         crate::Error::LogFileError(msg) => {
-            assert!(msg.contains("exceeds"), "error should mention exceeding limit");
+            assert!(
+                msg.contains("exceeds"),
+                "error should mention exceeding limit"
+            );
         }
         other => panic!("expected LogFileError, got {:?}", other),
     }
@@ -808,15 +791,16 @@ fn extract_ip_fallback_matches_full_ipv6() {
     let detail = detector
         .match_line("blocked 2001:0db8:85a3:0000:0000:8a2e:0370:7334 request", 1)
         .unwrap();
-    assert_eq!(detail.ip, Some("2001:db8:85a3::8a2e:370:7334".parse().unwrap()));
+    assert_eq!(
+        detail.ip,
+        Some("2001:db8:85a3::8a2e:370:7334".parse().unwrap())
+    );
 }
 
 #[test]
 fn extract_ip_fallback_matches_ipv6_double_colon() {
     let (detector, _tmp) = detector_with_content("anything\n", r"blocked .*");
-    let detail = detector
-        .match_line("blocked ::1 request", 1)
-        .unwrap();
+    let detail = detector.match_line("blocked ::1 request", 1).unwrap();
     assert_eq!(detail.ip, Some("::1".parse().unwrap()));
 }
 

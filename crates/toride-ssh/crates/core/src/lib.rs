@@ -1,5 +1,4 @@
 #![warn(missing_docs)]
-#![expect(dead_code, reason = "scaffolding for modules under active development")]
 #![expect(
     clippy::must_use_candidate,
     reason = "service methods are call-and-forget; callers rarely use return"
@@ -20,7 +19,7 @@ pub mod runner;
 pub mod undo;
 
 pub use paths::SshPaths;
-pub use privilege::{is_root, PrivilegedOp, run_privileged};
+pub use privilege::{PrivilegedOp, is_root, run_privileged};
 pub use runner::{CliRunner, DefaultCliRunner, MockCliRunner};
 pub use types::*;
 

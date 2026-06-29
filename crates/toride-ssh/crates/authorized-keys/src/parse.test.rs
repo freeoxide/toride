@@ -90,7 +90,10 @@ fn find_key_type_offset_ecdsa() {
 
 #[test]
 fn find_key_type_offset_sk_key() {
-    assert_eq!(find_key_type_offset("sk-ssh-ed25519@openssh.com AAAA..."), Some(0));
+    assert_eq!(
+        find_key_type_offset("sk-ssh-ed25519@openssh.com AAAA..."),
+        Some(0)
+    );
 }
 
 #[test]
@@ -213,11 +216,13 @@ fn find_key_type_offset_with_escaped_quote_at_boundary() {
 // ---------------------------------------------------------------------------
 // These tests use a valid ed25519 public key so ssh_key validation passes.
 
-const VALID_ED25519: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
+const VALID_ED25519: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
 
 #[test]
 fn parse_line_restrict_with_permit_open_and_no_pty() {
-    let line = format!("restrict,permit-open=\"host1:22,host2:80\",no-pty {VALID_ED25519} deploy@server");
+    let line =
+        format!("restrict,permit-open=\"host1:22,host2:80\",no-pty {VALID_ED25519} deploy@server");
     let entry = parse_line(&line, 1, &line).unwrap();
 
     assert!(entry.options.is_some());
@@ -238,7 +243,10 @@ fn parse_line_command_with_from_and_environment() {
     let opts = entry.options.as_ref().unwrap();
     assert_eq!(opts.from, vec!["10.0.0.*", "192.168.1.0/24"]);
     assert_eq!(opts.command.as_deref(), Some("/usr/bin/backup.sh"));
-    assert_eq!(opts.environment, vec![("BACKUP_DIR".to_string(), "/data".to_string())]);
+    assert_eq!(
+        opts.environment,
+        vec![("BACKUP_DIR".to_string(), "/data".to_string())]
+    );
     assert_eq!(entry.comment.as_deref(), Some("backup@cron"));
 }
 
@@ -282,9 +290,7 @@ fn parse_line_tunnel_with_expiry() {
 
 #[test]
 fn parse_line_command_with_escaped_quotes_and_commas() {
-    let line = format!(
-        "command=\"echo \\\"hello, world\\\"\" {VALID_ED25519} user@host"
-    );
+    let line = format!("command=\"echo \\\"hello, world\\\"\" {VALID_ED25519} user@host");
     let entry = parse_line(&line, 1, &line).unwrap();
 
     let opts = entry.options.as_ref().unwrap();

@@ -16,7 +16,7 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::ssh_data::SshOp;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
@@ -64,7 +64,7 @@ pub struct ConfigTab {
     form: FormModal,
     /// Confirm modal for remove operations.
     confirm: ConfirmModal,
-    /// Pending write operations to be forwarded to SshContent.
+    /// Pending write operations to be forwarded to `SshContent`.
     pending_ops: Vec<SshOp>,
 }
 
@@ -161,14 +161,14 @@ impl ConfigTab {
 
         // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
-            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left)) {
-                if let Some(mr) = self.detail_modal_rect {
-                    let col = mouse.column;
-                    let row = mouse.row;
-                    if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
-                        self.detail_open = None;
-                        self.detail_modal_rect = None;
-                    }
+            if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+                && let Some(mr) = self.detail_modal_rect
+            {
+                let col = mouse.column;
+                let row = mouse.row;
+                if col < mr.x || col >= mr.right() || row < mr.y || row >= mr.bottom() {
+                    self.detail_open = None;
+                    self.detail_modal_rect = None;
                 }
             }
             return None;
@@ -195,11 +195,9 @@ impl ConfigTab {
                     self.clamp_scroll();
                 }
             }
-            MouseEventKind::ScrollUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.clamp_scroll();
-                }
+            MouseEventKind::ScrollUp if self.selected > 0 => {
+                self.selected -= 1;
+                self.clamp_scroll();
             }
             _ => {}
         }
@@ -221,6 +219,10 @@ impl Default for ConfigTab {
 }
 
 impl SshTab for ConfigTab {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keyboard dispatch table kept whole for clarity"
+    )]
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If detail modal is open, handle modal keys
         if self.detail_open.is_some() {
@@ -237,17 +239,26 @@ impl SshTab for ConfigTab {
                 ActionModal::Add => {
                     match self.form.handle_key(code) {
                         FormResult::Submitted => {
-                            let name = self.form.text_value(0)
-                                .map(|s| s.to_string())
+                            let name = self
+                                .form
+                                .text_value(0)
+                                .map(std::string::ToString::to_string)
                                 .unwrap_or_default();
-                            let host_name = self.form.text_value(1)
-                                .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
-                                .unwrap_or(None);
-                            let user = self.form.text_value(2)
-                                .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
-                                .unwrap_or(None);
-                            let port_str = self.form.text_value(3)
-                                .unwrap_or("");
+                            let host_name = self.form.text_value(1).and_then(|s| {
+                                if s.is_empty() {
+                                    None
+                                } else {
+                                    Some(s.to_string())
+                                }
+                            });
+                            let user = self.form.text_value(2).and_then(|s| {
+                                if s.is_empty() {
+                                    None
+                                } else {
+                                    Some(s.to_string())
+                                }
+                            });
+                            let port_str = self.form.text_value(3).unwrap_or("");
                             let port = port_str.parse::<u16>().ok();
                             let display_name = if name.is_empty() {
                                 "new-host".to_string()
@@ -308,17 +319,26 @@ impl SshTab for ConfigTab {
                         FormResult::Submitted => {
                             if let Some(host) = self.hosts.get_mut(self.selected) {
                                 let old_name = host.name.clone();
-                                let name = self.form.text_value(0)
-                                    .map(|s| s.to_string())
+                                let name = self
+                                    .form
+                                    .text_value(0)
+                                    .map(std::string::ToString::to_string)
                                     .unwrap_or_default();
-                                let host_name = self.form.text_value(1)
-                                    .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
-                                    .unwrap_or(None);
-                                let user = self.form.text_value(2)
-                                    .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
-                                    .unwrap_or(None);
-                                let port_str = self.form.text_value(3)
-                                    .unwrap_or("");
+                                let host_name = self.form.text_value(1).and_then(|s| {
+                                    if s.is_empty() {
+                                        None
+                                    } else {
+                                        Some(s.to_string())
+                                    }
+                                });
+                                let user = self.form.text_value(2).and_then(|s| {
+                                    if s.is_empty() {
+                                        None
+                                    } else {
+                                        Some(s.to_string())
+                                    }
+                                });
+                                let port_str = self.form.text_value(3).unwrap_or("");
                                 let port = port_str.parse::<u16>().ok();
                                 let new_name = if name.is_empty() {
                                     old_name.clone()
@@ -334,7 +354,7 @@ impl SshTab for ConfigTab {
                                     port,
                                 });
                                 // Optimistic in-memory update
-                                host.name = new_name.clone();
+                                host.name.clone_from(&new_name);
                                 host.patterns = vec![new_name];
                                 host.host_name = host_name;
                                 host.user = user;
@@ -375,17 +395,24 @@ impl SshTab for ConfigTab {
                 // CRUD shortcuts
                 KeyCode::Char('a') => {
                     self.form = FormModal::new(40)
-                        .text_field(TextInput::new("Host", 30).placeholder("myserver").required())
+                        .text_field(
+                            TextInput::new("Host", 30)
+                                .placeholder("myserver")
+                                .required(),
+                        )
                         .text_field(TextInput::new("HostName", 30).placeholder("192.168.1.1"))
                         .text_field(TextInput::new("User", 30).placeholder("user"))
-                        .text_field_validated(TextInput::new("Port", 30).placeholder("22"), Box::new(Port));
+                        .text_field_validated(
+                            TextInput::new("Port", 30).placeholder("22"),
+                            Box::new(Port),
+                        );
                     self.action_modal = Some(ActionModal::Add);
                     None
                 }
                 KeyCode::Char('d') => {
                     if !self.hosts.is_empty() {
                         let name = self.hosts[self.selected].name.clone();
-                        self.confirm = ConfirmModal::new(format!("Remove host \"{}\"?", name));
+                        self.confirm = ConfirmModal::new(format!("Remove host \"{name}\"?"));
                         self.action_modal = Some(ActionModal::Remove);
                     }
                     None
@@ -395,15 +422,19 @@ impl SshTab for ConfigTab {
                         let host = &self.hosts[self.selected];
                         self.form = FormModal::new(40)
                             .text_field(TextInput::new("Host", 30).value(&host.name).required())
-                            .text_field(TextInput::new("HostName", 30).value(
-                                host.host_name.as_deref().unwrap_or("")
-                            ))
-                            .text_field(TextInput::new("User", 30).value(
-                                host.user.as_deref().unwrap_or("")
-                            ))
-                            .text_field_validated(TextInput::new("Port", 30).value(
-                                host.port.map_or(String::new(), |p| p.to_string())
-                            ), Box::new(Port));
+                            .text_field(
+                                TextInput::new("HostName", 30)
+                                    .value(host.host_name.as_deref().unwrap_or("")),
+                            )
+                            .text_field(
+                                TextInput::new("User", 30)
+                                    .value(host.user.as_deref().unwrap_or("")),
+                            )
+                            .text_field_validated(
+                                TextInput::new("Port", 30)
+                                    .value(host.port.map_or(String::new(), |p| p.to_string())),
+                                Box::new(Port),
+                            );
                         self.action_modal = Some(ActionModal::Edit);
                     }
                     None
@@ -416,23 +447,27 @@ impl SshTab for ConfigTab {
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
         if self.hosts.is_empty() {
-            self.render_empty(frame, area, p);
+            Self::render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_open {
-            if let Some(host) = self.hosts.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &host);
-            }
+        if let Some(idx) = self.detail_open
+            && let Some(host) = self.hosts.get(idx).cloned()
+        {
+            self.render_detail_modal(frame, p, &host);
         }
 
         // Render action modal on top
         match self.action_modal {
             Some(ActionModal::Add) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Add Host", 52, 22,
+                    frame,
+                    p,
+                    "Add Host",
+                    52,
+                    22,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }
@@ -441,7 +476,11 @@ impl SshTab for ConfigTab {
             }
             Some(ActionModal::Edit) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Edit Host", 52, 22,
+                    frame,
+                    p,
+                    "Edit Host",
+                    52,
+                    22,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }
@@ -471,17 +510,24 @@ impl SshTab for ConfigTab {
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 impl ConfigTab {
-    fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_empty(frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " SSH CONFIG ", p.text, false);
         let msg = Line::from(vec![
             Span::styled("No SSH config hosts found", Style::new().fg(p.text_dim)),
-            Span::styled("  a", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  a",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" add", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_list(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(
             frame,
@@ -536,7 +582,11 @@ impl ConfigTab {
             // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
-                Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
+                Style::new().fg(if is_selected || is_hovered {
+                    p.accent
+                } else {
+                    p.text_dim
+                }),
             ));
 
             // Host name (truncated to 18 chars)
@@ -545,9 +595,7 @@ impl ConfigTab {
             let name_chars = name.chars().count();
             spans.push(Span::styled(
                 name,
-                Style::new()
-                    .fg(p.text)
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ));
 
             // Padding
@@ -563,13 +611,13 @@ impl ConfigTab {
             }
 
             // Port (skip if default 22)
-            if let Some(port) = host.port {
-                if port != 22 {
-                    spans.push(Span::styled(
-                        format!(" Port:{}", port),
-                        Style::new().fg(p.accent3),
-                    ));
-                }
+            if let Some(port) = host.port
+                && port != 22
+            {
+                spans.push(Span::styled(
+                    format!(" Port:{port}"),
+                    Style::new().fg(p.accent3),
+                ));
             }
 
             // HostName
@@ -577,7 +625,7 @@ impl ConfigTab {
                 let hn_w = 20.min(inner.width.saturating_sub(50) as usize);
                 let hn_display = truncate_str(hn, hn_w);
                 spans.push(Span::styled(
-                    format!(" →{}", hn_display),
+                    format!(" →{hn_display}"),
                     Style::new().fg(p.text_muted),
                 ));
             }
@@ -610,85 +658,92 @@ impl ConfigTab {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
         let viewport = Viewport::from_area(area);
-        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
+        self.buttons
+            .render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, host: &ConfigHostEntry) {
         let modal = Modal::new("Host Config").dimensions(56, 14);
         self.detail_modal_rect = Some(modal.rect(frame.area()));
         modal.render(frame, p, |frame, content_area| {
-                let lines = vec![
-                    Line::from(vec![
-                        Span::styled("Name:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(&host.name, Style::new().fg(p.text).bold()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Match:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(host.patterns.join(", "), Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("HostName:", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            host.host_name.as_deref().unwrap_or("—"),
-                            Style::new().fg(p.text),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("User:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            host.user.as_deref().unwrap_or("—"),
-                            Style::new().fg(p.info),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Port:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            host.port.map_or("—".into(), |p| p.to_string()),
-                            Style::new().fg(p.text),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Key:     ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            host.identity_file.as_deref().unwrap_or("—"),
-                            Style::new().fg(p.text),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Proxy:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            host.proxy_jump.as_deref().unwrap_or("—"),
-                            Style::new().fg(p.text),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Dirs:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            format!("{} directives", host.directive_count),
-                            Style::new().fg(p.text),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Diag:    ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if host.has_diagnostic { "⚠ flagged" } else { "✓ clean" },
-                            Style::new().fg(if host.has_diagnostic { p.warn } else { p.ok }),
-                        ),
-                    ]),
-                    Line::raw(""),
-                    Line::from(
-                        Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("Name:    ", Style::new().fg(p.text_dim)),
+                    Span::styled(&host.name, Style::new().fg(p.text).bold()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Match:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(host.patterns.join(", "), Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("HostName:", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        host.host_name.as_deref().unwrap_or("—"),
+                        Style::new().fg(p.text),
                     ),
-                ];
+                ]),
+                Line::from(vec![
+                    Span::styled("User:    ", Style::new().fg(p.text_dim)),
+                    Span::styled(host.user.as_deref().unwrap_or("—"), Style::new().fg(p.info)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Port:    ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        host.port.map_or("—".into(), |p| p.to_string()),
+                        Style::new().fg(p.text),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Key:     ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        host.identity_file.as_deref().unwrap_or("—"),
+                        Style::new().fg(p.text),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Proxy:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        host.proxy_jump.as_deref().unwrap_or("—"),
+                        Style::new().fg(p.text),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Dirs:    ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        format!("{} directives", host.directive_count),
+                        Style::new().fg(p.text),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Diag:    ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        if host.has_diagnostic {
+                            "⚠ flagged"
+                        } else {
+                            "✓ clean"
+                        },
+                        Style::new().fg(if host.has_diagnostic { p.warn } else { p.ok }),
+                    ),
+                ]),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "Press Esc to close",
+                    Style::new().fg(p.text_muted),
+                )),
+            ];
 
-                for (i, line) in lines.into_iter().enumerate() {
-                    let y = content_area.y + i as u16;
-                    if y < content_area.bottom() {
-                        let row_area = Rect::new(content_area.x, y, content_area.width, 1);
-                        frame.render_widget(Paragraph::new(line), row_area);
-                    }
+            for (i, line) in lines.into_iter().enumerate() {
+                let y = content_area.y + i as u16;
+                if y < content_area.bottom() {
+                    let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+                    frame.render_widget(Paragraph::new(line), row_area);
                 }
-            });
+            }
+        });
     }
 }
 
@@ -803,7 +858,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("No SSH config hosts found"), "empty state: {output}");
+        assert!(
+            output.contains("No SSH config hosts found"),
+            "empty state: {output}"
+        );
     }
 
     #[test]
@@ -832,7 +890,10 @@ mod tests {
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("Host Config"), "modal title: {output}");
-        assert!(output.contains("192.168.1.100"), "hostname in modal: {output}");
+        assert!(
+            output.contains("192.168.1.100"),
+            "hostname in modal: {output}"
+        );
     }
 
     #[test]

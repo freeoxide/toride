@@ -4,8 +4,8 @@
 //! through the Tailscale local API. Reports UDP availability, IPv6 support,
 //! DERP relay latency, and NAT traversal capabilities.
 
-use crate::report::NetcheckReport;
 use crate::Result;
+use crate::report::NetcheckReport;
 
 // ---------------------------------------------------------------------------
 // NetcheckRunner
@@ -57,13 +57,22 @@ impl<'a> NetcheckRunner<'a> {
     /// Exposed so the same parser covers the HTTP API path (`run`) and the
     /// CLI path (`tailscale netcheck --format=json`).
     pub fn parse(raw: &serde_json::Value) -> NetcheckReport {
-        let udp = raw.get("UDP").and_then(|v| v.as_bool()).unwrap_or(false);
-        let ipv6 = raw.get("IPv6").and_then(|v| v.as_bool()).unwrap_or(false);
-        let hairpin = raw.get("HairPinning").and_then(|v| v.as_bool()).unwrap_or(false);
+        let udp = raw
+            .get("UDP")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let ipv6 = raw
+            .get("IPv6")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+        let hairpin = raw
+            .get("HairPinning")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
 
         let derp_region = raw
             .get("PreferredDERP")
-            .and_then(|v| v.as_i64())
+            .and_then(serde_json::Value::as_i64)
             .map(|id| format!("DERP-{id}"));
 
         // Parse DERP latency map.
@@ -199,8 +208,16 @@ mod tests {
     #[test]
     fn derp_latency_sorted_by_region_name() {
         let report = NetcheckRunner::parse(&sample());
-        let names: Vec<&str> = report.derp_latency.iter().map(|(k, _)| k.as_str()).collect();
+        let names: Vec<&str> = report
+            .derp_latency
+            .iter()
+            .map(|(k, _)| k.as_str())
+            .collect();
         assert_eq!(names, vec!["region-3", "region-7"]);
-        assert_eq!(report.derp_latency[1].1, 9.0);
+        assert!(
+            (report.derp_latency[1].1 - 9.0).abs() < f64::EPSILON,
+            "latency was {}",
+            report.derp_latency[1].1
+        );
     }
 }

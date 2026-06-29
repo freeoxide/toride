@@ -56,7 +56,9 @@ impl<A: Copy + PartialEq> ButtonRow<A> {
             return;
         }
 
-        let widths: Vec<u16> = (0..n).map(|i| self.buttons[i].min_width(viewport)).collect();
+        let widths: Vec<u16> = (0..n)
+            .map(|i| self.buttons[i].min_width(viewport))
+            .collect();
         let total_btn: u16 = widths.iter().sum();
         let total_gap: u16 = self.gaps.iter().sum();
         let total_width = total_btn + total_gap;

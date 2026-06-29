@@ -22,12 +22,15 @@ pub async fn parse_config(path: &Path) -> Result<SshConfig> {
         Ok(config)
     })
     .await
-    .map_err(|e| toride_ssh_core::Error::ConfigParseFailed(format!("blocking task panicked: {e}")))?
+    .map_err(|e| {
+        toride_ssh_core::Error::ConfigParseFailed(format!("blocking task panicked: {e}"))
+    })?
 }
 
 /// Parse SSH config from a string using ssh2-config-rs.
 ///
 /// Useful for testing or when the content is already in memory.
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn parse_config_str(input: &str) -> Result<SshConfig> {
     let mut reader = BufReader::new(input.as_bytes());
     SshConfig::default()

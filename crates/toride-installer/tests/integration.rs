@@ -14,14 +14,11 @@ use std::process::Command;
 
 use camino::Utf8PathBuf;
 use tempfile::TempDir;
-use toride_installer::{tools::mise, Error};
+use toride_installer::{Error, tools::mise};
 
 /// Returns `true` only when the integration gate env var is `1`.
 fn should_run() -> bool {
-    matches!(
-        env::var("TORIDE_INSTALLER_INTEGRATION").as_deref(),
-        Ok("1")
-    )
+    matches!(env::var("TORIDE_INSTALLER_INTEGRATION").as_deref(), Ok("1"))
 }
 
 /// Run the downloaded `mise --version` and assert it produces output.
@@ -45,7 +42,10 @@ fn assert_mise_runs(bin: &Utf8PathBuf) {
     // (a `\d+\.\d+\.\d+` substring) and mentions the platform keyword.
     assert!(
         combined.chars().any(|c| c.is_ascii_digit())
-            && (combined.contains("linux") || combined.contains("macos") || combined.contains("x64") || combined.contains("arm64")),
+            && (combined.contains("linux")
+                || combined.contains("macos")
+                || combined.contains("x64")
+                || combined.contains("arm64")),
         "mise --version produced no version-like output: {combined}"
     );
 }
@@ -58,8 +58,7 @@ async fn install_mise_latest_into_temp_dir() {
     }
 
     let dir = TempDir::new().expect("temp dir creation");
-    let install_dir =
-        Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("tempdir is utf-8");
+    let install_dir = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("tempdir is utf-8");
 
     let dest = mise::install_mise("latest", Some(&install_dir))
         .await
@@ -104,8 +103,7 @@ async fn install_mise_pinned_version_into_temp_dir() {
     }
 
     let dir = TempDir::new().expect("temp dir creation");
-    let install_dir =
-        Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("tempdir is utf-8");
+    let install_dir = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("tempdir is utf-8");
 
     let dest = mise::install_mise(PINNED_VERSION, Some(&install_dir))
         .await
@@ -123,8 +121,7 @@ async fn install_mise_bad_version_is_http_error() {
     }
 
     let dir = TempDir::new().expect("temp dir creation");
-    let install_dir =
-        Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("tempdir is utf-8");
+    let install_dir = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("tempdir is utf-8");
 
     let err = mise::install_mise("this-version-cannot-exist-9999.99.99", Some(&install_dir))
         .await

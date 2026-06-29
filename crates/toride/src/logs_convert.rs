@@ -197,8 +197,8 @@ mod tests {
         // LogSource (not a newtype). A future rename of the alias would break
         // the screen module at compile time; this test makes that a loud
         // failure here instead.
-        fn _accept(_e: LogsSourceEntry) {}
-        _accept(LogSource {
+        fn accept(_e: LogsSourceEntry) {}
+        accept(LogSource {
             name: String::new(),
             path: String::new(),
             exists: false,

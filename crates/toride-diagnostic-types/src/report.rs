@@ -49,7 +49,11 @@ impl DoctorReport {
 
     /// Create a report with a specific timestamp.
     #[must_use]
-    pub fn with_timestamp(domain: impl Into<String>, findings: Vec<Finding>, checked_at: impl Into<String>) -> Self {
+    pub fn with_timestamp(
+        domain: impl Into<String>,
+        findings: Vec<Finding>,
+        checked_at: impl Into<String>,
+    ) -> Self {
         Self {
             domain: domain.into(),
             findings,
@@ -119,19 +123,13 @@ mod tests {
 
     #[test]
     fn not_healthy_with_critical() {
-        let r = DoctorReport::new(
-            "ssh",
-            vec![Finding::new("a", Severity::Critical, "broken")],
-        );
+        let r = DoctorReport::new("ssh", vec![Finding::new("a", Severity::Critical, "broken")]);
         assert!(!r.is_healthy());
     }
 
     #[test]
     fn not_healthy_with_important() {
-        let r = DoctorReport::new(
-            "ssh",
-            vec![Finding::new("a", Severity::Important, "bad")],
-        );
+        let r = DoctorReport::new("ssh", vec![Finding::new("a", Severity::Important, "bad")]);
         assert!(!r.is_healthy());
     }
 

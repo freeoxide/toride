@@ -30,7 +30,7 @@ fn severity_str(s: toride_updates::Severity) -> &'static str {
 /// (the operator can see "something" even if the finding is malformed).
 /// `detail` / `fix_hint` are `Option<String>` in the backend; the UI carries
 /// `String` / `Option<String>`, so a `None` detail becomes an empty string and
-/// a `None` fix_hint stays `None`.
+/// a `None` `fix_hint` stays `None`.
 pub fn convert_findings(findings: Vec<toride_updates::Finding>) -> Vec<FindingEntry> {
     findings
         .into_iter()
@@ -75,12 +75,12 @@ pub fn convert_findings(findings: Vec<toride_updates::Finding>) -> Vec<FindingEn
 /// lands.
 #[allow(dead_code)]
 pub fn schedule_label(schedule: Option<&toride_updates::spec::Schedule>) -> Option<String> {
-    schedule.map(|s| s.to_string())
+    schedule.map(std::string::ToString::to_string)
 }
 
 /// Map a backend [`toride_updates::detect::PackageManager`] to a lowercase
 /// display string: `"apt" | "dnf" | "unknown"`. Kept here so the TUI never
-/// imports the PackageManager enum directly.
+/// imports the `PackageManager` enum directly.
 pub fn package_manager_str(pm: toride_updates::detect::PackageManager) -> &'static str {
     use toride_updates::detect::PackageManager;
     match pm {

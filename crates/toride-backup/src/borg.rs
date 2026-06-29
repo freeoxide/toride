@@ -76,9 +76,7 @@ impl BorgClient {
     ///
     /// Returns [`Error::BinaryNotFound`] if `borg` is not on `$PATH`.
     pub fn new(repo: impl AsRef<Path>) -> Result<Self> {
-        let binary = which::which("borg").map_err(|_| {
-            Error::BinaryNotFound("borg".into())
-        })?;
+        let binary = which::which("borg").map_err(|_| Error::BinaryNotFound("borg".into()))?;
         Ok(Self {
             binary,
             repo: repo.as_ref().to_path_buf(),
@@ -145,7 +143,7 @@ impl BorgClient {
     ///
     /// Returns [`Error::RepositoryInit`] if the init command fails.
     pub fn init(&self) -> Result<()> {
-        let mode = self.encryption_mode(&Encryption::RepoKey);
+        let mode = Self::encryption_mode(&Encryption::RepoKey);
         let spec = self
             .command("init")
             .args(["--encryption", mode])
@@ -191,10 +189,7 @@ impl BorgClient {
     /// Returns [`Error::CommandFailed`] if the create command fails.
     pub fn create(&self, archive: &str, paths: &[&Path]) -> Result<String> {
         let target = format!("{}::{}", self.repo_arg(), archive);
-        let mut spec = self
-            .command("create")
-            .arg("--stats")
-            .arg(target);
+        let mut spec = self.command("create").arg("--stats").arg(target);
         for path in paths {
             spec = spec.arg(path.to_string_lossy().to_string());
         }
@@ -417,7 +412,7 @@ impl BorgClient {
     ///
     /// Defaults to `repokey` (Borg's documented general recommendation) when
     /// the caller has not otherwise constrained the mode.
-    fn encryption_mode(&self, default: &Encryption) -> &'static str {
+    fn encryption_mode(default: &Encryption) -> &'static str {
         match default {
             Encryption::None => "none",
             Encryption::RepoKey => "repokey",
@@ -440,11 +435,7 @@ impl BorgClient {
 
     /// Run a spec whose stdout is returned as a trimmed string, mapping runner
     /// errors to the supplied error constructor.
-    fn run_string(
-        &self,
-        spec: &CommandSpec,
-        mk_err: fn(String) -> Error,
-    ) -> Result<String> {
+    fn run_string(&self, spec: &CommandSpec, mk_err: fn(String) -> Error) -> Result<String> {
         self.runner
             .run_checked(spec)
             .map(|o| o.stdout_trimmed().to_owned())
@@ -557,8 +548,8 @@ impl Error {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use toride_runner::fake::FakeRunner;
     use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
 
     // ---- helpers --------------------------------------------------------
 
@@ -634,12 +625,14 @@ mod tests {
 
     #[test]
     fn init_failure_maps_to_repository_init_error() {
-        let rc = Arc::new(FakeRunner::new().push_result(Err(toride_runner::Error::CommandFailed {
-            program: "borg".into(),
-            args: String::new(),
-            exit_code: Some(10),
-            stderr: "Repository.AlreadyExists".into(),
-        })));
+        let rc = Arc::new(FakeRunner::new().push_result(Err(
+            toride_runner::Error::CommandFailed {
+                program: "borg".into(),
+                args: String::new(),
+                exit_code: Some(10),
+                stderr: "Repository.AlreadyExists".into(),
+            },
+        )));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/mnt/repo").with_runner(rc.clone());
         let err = c.init().unwrap_err();
         assert!(matches!(err, Error::RepositoryInit(_)), "got {err:?}");
@@ -661,17 +654,22 @@ mod tests {
         assert_eq!(out, "Repository integrity check complete.");
         let call = &rc.calls()[0];
         assert_eq!(call.args, vec!["check", "/mnt/repo"]);
-        assert!(call.redact, "check against encrypted repo carries the passphrase");
+        assert!(
+            call.redact,
+            "check against encrypted repo carries the passphrase"
+        );
     }
 
     #[test]
     fn check_failure_maps_to_repository_access_error() {
-        let rc = Arc::new(FakeRunner::new().push_result(Err(toride_runner::Error::CommandFailed {
-            program: "borg".into(),
-            args: String::new(),
-            exit_code: Some(12),
-            stderr: "Repository.CheckNeeded".into(),
-        })));
+        let rc = Arc::new(FakeRunner::new().push_result(Err(
+            toride_runner::Error::CommandFailed {
+                program: "borg".into(),
+                args: String::new(),
+                exit_code: Some(12),
+                stderr: "Repository.CheckNeeded".into(),
+            },
+        )));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/mnt/repo").with_runner(rc.clone());
         let err = c.check().unwrap_err();
         assert!(matches!(err, Error::RepositoryAccess(_)), "got {err:?}");
@@ -684,9 +682,9 @@ mod tests {
         // Source: https://borgbackup.readthedocs.io/en/stable/usage/create.html
         //   `borg create [options] ARCHIVE [PATH...]`
         //   ARCHIVE is `<repo>::<archive>`.
-        let rc = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
-            "Created archive daily.",
-        )));
+        let rc = Arc::new(
+            FakeRunner::new().push_response(CommandOutput::from_stdout("Created archive daily.")),
+        );
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/mnt/repo")
             .with_passphrase("pw")
             .with_runner(rc.clone());
@@ -704,12 +702,14 @@ mod tests {
 
     #[test]
     fn create_failure_maps_to_command_failed() {
-        let rc = Arc::new(FakeRunner::new().push_result(Err(toride_runner::Error::CommandFailed {
-            program: "borg".into(),
-            args: String::new(),
-            exit_code: Some(30),
-            stderr: "Archive.AlreadyExists".into(),
-        })));
+        let rc = Arc::new(FakeRunner::new().push_result(Err(
+            toride_runner::Error::CommandFailed {
+                program: "borg".into(),
+                args: String::new(),
+                exit_code: Some(30),
+                stderr: "Archive.AlreadyExists".into(),
+            },
+        )));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/mnt/repo").with_runner(rc.clone());
         let err = c.create("dup", &[Path::new("/etc")]).unwrap_err();
         assert!(matches!(err, Error::CommandFailed(_)), "got {err:?}");
@@ -742,9 +742,8 @@ mod tests {
     #[test]
     fn list_parses_official_borg_list_json() {
         // Source: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
-        let rc = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
-            BORG_LIST_JSON,
-        )));
+        let rc =
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(BORG_LIST_JSON)));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/home/user/repository")
             .with_runner(rc.clone());
         let raw = c.list().unwrap();
@@ -777,9 +776,8 @@ mod tests {
 
     #[test]
     fn list_returns_raw_json_string() {
-        let rc = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
-            BORG_LIST_JSON,
-        )));
+        let rc =
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(BORG_LIST_JSON)));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/repo")
             .with_passphrase("pw")
             .with_runner(rc.clone());
@@ -822,9 +820,8 @@ mod tests {
     #[test]
     fn info_parses_official_borg_info_json() {
         // Source: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
-        let rc = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
-            BORG_INFO_JSON,
-        )));
+        let rc =
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(BORG_INFO_JSON)));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/home/user/testrepo")
             .with_runner(rc.clone());
         let raw = c.info().unwrap();
@@ -832,7 +829,10 @@ mod tests {
 
         assert_eq!(parsed.encryption.mode, "repokey");
         assert_eq!(parsed.repository.location, "/home/user/testrepo");
-        assert!(parsed.archives.is_empty(), "this sample repo has no archives");
+        assert!(
+            parsed.archives.is_empty(),
+            "this sample repo has no archives"
+        );
 
         let call = &rc.calls()[0];
         assert_eq!(call.args, vec!["info", "--json", "/home/user/testrepo"]);
@@ -840,9 +840,8 @@ mod tests {
 
     #[test]
     fn info_returns_raw_json_string() {
-        let rc = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
-            BORG_INFO_JSON,
-        )));
+        let rc =
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(BORG_INFO_JSON)));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/repo").with_runner(rc.clone());
         let raw = c.info().unwrap();
         assert!(raw.contains("\"encryption\""));
@@ -864,7 +863,14 @@ mod tests {
         let call = &rc.calls()[0];
         assert_eq!(
             call.args,
-            vec!["prune", "/mnt/repo", "--keep-daily", "7", "--keep-monthly", "6",],
+            vec![
+                "prune",
+                "/mnt/repo",
+                "--keep-daily",
+                "7",
+                "--keep-monthly",
+                "6",
+            ],
             "only Some(_) retention counts become flags"
         );
         assert!(call.redact);
@@ -878,7 +884,14 @@ mod tests {
         assert_eq!(
             rc.calls()[0].args,
             vec![
-                "prune", "/r", "--keep-daily", "1", "--keep-weekly", "2", "--keep-monthly", "3",
+                "prune",
+                "/r",
+                "--keep-daily",
+                "1",
+                "--keep-weekly",
+                "2",
+                "--keep-monthly",
+                "3",
             ]
         );
     }
@@ -913,12 +926,14 @@ mod tests {
 
     #[test]
     fn extract_failure_maps_to_restore_failed() {
-        let rc = Arc::new(FakeRunner::new().push_result(Err(toride_runner::Error::CommandFailed {
-            program: "borg".into(),
-            args: String::new(),
-            exit_code: Some(31),
-            stderr: "Archive.DoesNotExist".into(),
-        })));
+        let rc = Arc::new(FakeRunner::new().push_result(Err(
+            toride_runner::Error::CommandFailed {
+                program: "borg".into(),
+                args: String::new(),
+                exit_code: Some(31),
+                stderr: "Archive.DoesNotExist".into(),
+            },
+        )));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/mnt/repo").with_runner(rc.clone());
         let err = c.extract("nope", Path::new("/tmp/r")).unwrap_err();
         assert!(matches!(err, Error::RestoreFailed(_)), "got {err:?}");
@@ -943,12 +958,15 @@ mod tests {
         c.prune(Some(1), Some(1), None).unwrap();
         c.extract("a", Path::new("/tmp/r")).unwrap();
 
-        assert!(!rc.calls().is_empty(), "should have issued several borg calls");
+        assert!(
+            !rc.calls().is_empty(),
+            "should have issued several borg calls"
+        );
         for (i, call) in rc.calls().iter().enumerate() {
             assert!(
                 call.redact,
                 "call #{i} ({}) must be redacted (passphrase configured)",
-                call.args.first().map(String::as_str).unwrap_or("<none>")
+                call.args.first().map_or("<none>", String::as_str)
             );
             assert!(
                 call.env
@@ -989,11 +1007,16 @@ mod tests {
 
     #[test]
     fn encryption_mode_mappings() {
-        let c = BorgClient::with_binary(PathBuf::from("borg"), "/r");
-        assert_eq!(c.encryption_mode(&Encryption::RepoKey), "repokey");
-        assert_eq!(c.encryption_mode(&Encryption::None), "none");
-        assert_eq!(c.encryption_mode(&Encryption::KeyFile), "keyfile");
-        assert_eq!(c.encryption_mode(&Encryption::Blake2), "repokey-blake2");
-        assert_eq!(c.encryption_mode(&Encryption::Authenticated), "authenticated");
+        assert_eq!(BorgClient::encryption_mode(&Encryption::RepoKey), "repokey");
+        assert_eq!(BorgClient::encryption_mode(&Encryption::None), "none");
+        assert_eq!(BorgClient::encryption_mode(&Encryption::KeyFile), "keyfile");
+        assert_eq!(
+            BorgClient::encryption_mode(&Encryption::Blake2),
+            "repokey-blake2"
+        );
+        assert_eq!(
+            BorgClient::encryption_mode(&Encryption::Authenticated),
+            "authenticated"
+        );
     }
 }

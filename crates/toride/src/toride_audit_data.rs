@@ -39,7 +39,7 @@ use crate::ui::screens::toride_audit::{
 #[derive(Clone, Debug)]
 pub struct AuditDataBundle {
     /// Whether the audit backend was reachable at all. `false` only when a
-    /// collection task panicked (JoinError) — a missing binary surfaces as a
+    /// collection task panicked (`JoinError`) — a missing binary surfaces as a
     /// Critical finding and keeps `available == true` so the operator sees the
     /// findings panel. `false` means the UI renders a degraded "unavailable"
     /// panel.
@@ -62,7 +62,7 @@ pub struct AuditDataBundle {
     /// Doctor findings (cached for 60s between collections).
     pub findings: Vec<AuditFindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` because a collection task panicked (JoinError).
+    /// `available == false` because a collection task panicked (`JoinError`).
     /// `None` otherwise — notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
@@ -90,6 +90,10 @@ pub struct AuditCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl AuditCollector {
@@ -113,6 +117,7 @@ impl AuditCollector {
     /// If a collection is already in-flight, this is a no-op. The 60s findings
     /// cache is consulted: when fresh, the spawned task reuses the cached
     /// findings instead of re-running the doctor suite.
+    #[allow(clippy::similar_names)]
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
@@ -121,10 +126,14 @@ impl AuditCollector {
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
-                .map_or(false, |t| t.elapsed() < FINDINGS_TTL);
+                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
+            #[allow(
+                clippy::similar_names,
+                reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
+            )]
             let (bundle, used_cache) = collect_real_audit(use_cache, cached_findings).await;
             let _ = tx.send((bundle, used_cache));
         });
@@ -193,7 +202,7 @@ async fn collect_real_audit(
     // resolve a DuctRunner + default Linux paths; on macOS where no audit
     // binaries exist, construction still succeeds (the runner is inert) and
     // the doctor surfaces the missing binaries as Critical findings.
-    let audit = match tokio::task::spawn_blocking(|| toride_audit::Audit::system()).await {
+    let audit = match tokio::task::spawn_blocking(toride_audit::Audit::system).await {
         Ok(Ok(audit)) => audit,
         Ok(Err(e)) => {
             tracing::warn!("audit construction failed: {e}");
@@ -205,9 +214,7 @@ async fn collect_real_audit(
         Err(e) => {
             tracing::warn!("audit construction task panicked: {e}");
             return (
-                empty_bundle_with_reason(format!(
-                    "audit backend construction panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("audit backend construction panicked: {e}")),
                 false,
             );
         }
@@ -245,14 +252,12 @@ async fn collect_real_audit(
             Ok(s) => toride_audit_convert::convert_integrity(s),
             Err(e) => {
                 tracing::debug!("audit integrity status: {e}");
-                toride_audit_convert::convert_integrity(
-                    toride_audit::integrity::IntegrityStatus {
-                        database_initialized: false,
-                        file_count: None,
-                        last_check_passed: None,
-                        last_check_output: None,
-                    },
-                )
+                toride_audit_convert::convert_integrity(toride_audit::integrity::IntegrityStatus {
+                    database_initialized: false,
+                    file_count: None,
+                    last_check_passed: None,
+                    last_check_output: None,
+                })
             }
         };
 
@@ -315,9 +320,7 @@ async fn collect_real_audit(
         Err(e) => {
             tracing::warn!("audit collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "audit data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("audit data collection panicked: {e}")),
                 false,
             )
         }
@@ -328,7 +331,7 @@ async fn collect_real_audit(
 ///
 /// `available = false` signals the UI to render the degraded panel. No reason
 /// is attached because none is known at this point; collection-time panics use
-/// [`empty_bundle_with_reason`] to surface the JoinError.
+/// [`empty_bundle_with_reason`] to surface the `JoinError`.
 fn empty_bundle() -> AuditDataBundle {
     AuditDataBundle {
         available: false,
@@ -350,7 +353,7 @@ fn empty_bundle() -> AuditDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> AuditDataBundle {
     let mut b = empty_bundle();
@@ -418,7 +421,7 @@ mod tests {
         // `available` flag reflects whether any audit subsystem was found.
         let mut collector = AuditCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -445,7 +448,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = AuditCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).

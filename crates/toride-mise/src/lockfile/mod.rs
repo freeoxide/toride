@@ -92,7 +92,10 @@ impl LockRequest {
     /// Replace the full set of platform triplets.
     #[must_use]
     pub fn platforms(mut self, platforms: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
-        self.platforms = platforms.into_iter().map(|p| p.as_ref().to_owned()).collect();
+        self.platforms = platforms
+            .into_iter()
+            .map(|p| p.as_ref().to_owned())
+            .collect();
         self
     }
 
@@ -367,7 +370,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_lock_builds_correct_command() {
-        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("locked node")));
+        let fake =
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("locked node")));
         let mise = build_mise(fake.clone());
 
         let req = LockRequest::new(["node", "python@3.12"]);
@@ -387,7 +391,9 @@ mod tests {
 
     #[tokio::test]
     async fn test_lock_dry_run() {
-        let fake = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("would lock node")));
+        let fake = Arc::new(
+            FakeRunner::new().push_response(CommandOutput::from_stdout("would lock node")),
+        );
         let mise = build_mise(fake.clone());
 
         let req = LockRequest::new(["node"]);

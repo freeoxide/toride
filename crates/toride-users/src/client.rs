@@ -3,8 +3,8 @@
 //! [`UsersClient`] is the main entry point for user management operations.
 //! It resolves system paths and provides accessor methods for each subsystem.
 
-use crate::paths::UserPaths;
 use crate::Result;
+use crate::paths::UserPaths;
 
 // ---------------------------------------------------------------------------
 // UsersClient
@@ -278,11 +278,7 @@ impl PasswordOps<'_> {
     }
 
     /// Apply a password policy.
-    pub fn apply_policy(
-        &self,
-        username: &str,
-        policy: &crate::spec::PasswordPolicy,
-    ) -> Result<()> {
+    pub fn apply_policy(&self, username: &str, policy: &crate::spec::PasswordPolicy) -> Result<()> {
         crate::password::apply_password_policy(username, policy)
     }
 }

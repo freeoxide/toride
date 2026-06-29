@@ -21,7 +21,7 @@
 //! ## Availability
 //!
 //! `available == true` once [`collect_real_about`] returns. The only path to
-//! `available == false` is a `spawn_blocking` JoinError (a panic inside
+//! `available == false` is a `spawn_blocking` `JoinError` (a panic inside
 //! `TorideStatus::collect`) — that yields [`empty_bundle_with_reason`] so the
 //! UI renders a degraded panel with the reason. Individual field failures
 //! degrade that field (via the convert layer's placeholders) but keep
@@ -45,7 +45,7 @@ use crate::ui::screens::about::{AboutApp, AboutRuntime, AboutSystem};
 #[derive(Clone, Debug)]
 pub struct AboutDataBundle {
     /// Whether the About bundle was collected at all. `false` is reserved for
-    /// the panic case (a `spawn_blocking` JoinError) — individual probe
+    /// the panic case (a `spawn_blocking` `JoinError`) — individual probe
     /// failures degrade a field (via placeholders) but keep `available == true`
     /// so the operator sees what is populated rather than a blank panel.
     pub available: bool,
@@ -59,7 +59,7 @@ pub struct AboutDataBundle {
     /// / data dir, log path).
     pub runtime: AboutRuntime,
     /// Human-readable reason the bundle was unavailable, populated ONLY when
-    /// `available == false` (a `spawn_blocking` JoinError). `None` otherwise —
+    /// `available == false` (a `spawn_blocking` `JoinError`). `None` otherwise —
     /// notably also `None` for a freshly-constructed empty bundle before any
     /// collection has run. Surfaced to the UI so the degraded panel can show
     /// what actually went wrong instead of guessing.
@@ -144,7 +144,7 @@ impl Default for AboutCollector {
 /// All blocking work (`TorideStatus::collect`) runs on the blocking thread
 /// pool. The convert layer assembles the three presentation blocks
 /// (system / app / runtime) from the snapshot + env, degrading each field
-/// gracefully. On a `spawn_blocking` JoinError (a panic inside
+/// gracefully. On a `spawn_blocking` `JoinError` (a panic inside
 /// `TorideStatus::collect`) returns [`empty_bundle_with_reason`] with
 /// `available = false`.
 ///
@@ -163,9 +163,7 @@ async fn collect_real_about() -> AboutDataBundle {
         Ok(status) => status,
         Err(e) => {
             tracing::warn!("about status collection panicked: {e}");
-            return empty_bundle_with_reason(format!(
-                "about data collection panicked: {e}"
-            ));
+            return empty_bundle_with_reason(format!("about data collection panicked: {e}"));
         }
     };
 
@@ -194,7 +192,7 @@ async fn collect_real_about() -> AboutDataBundle {
 /// blocks are placeholder-only so a stale render (if any) does not show
 /// partial identity data. No reason is attached because none is known at this
 /// point; collection-time panics use [`empty_bundle_with_reason`] to surface
-/// the JoinError.
+/// the `JoinError`.
 fn empty_bundle() -> AboutDataBundle {
     AboutDataBundle {
         available: false,
@@ -206,9 +204,9 @@ fn empty_bundle() -> AboutDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong,
-/// mirroring the empty_bundle_with_reason path in harden / tailscale / etc.
+/// mirroring the `empty_bundle_with_reason` path in harden / tailscale / etc.
 fn empty_bundle_with_reason(reason: String) -> AboutDataBundle {
     let mut b = empty_bundle();
     b.unavailable_reason = Some(reason);
@@ -276,7 +274,7 @@ mod tests {
         // collection completed.
         let mut collector = AboutCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
         let b = bundle.unwrap();
@@ -290,7 +288,7 @@ mod tests {
         // Each system field degrades to a placeholder rather than blank.
         let mut collector = AboutCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let b = collector.poll().await.expect("poll should return Some");
         for (label, value) in [
             ("hostname", &b.system.hostname),

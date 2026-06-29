@@ -136,11 +136,7 @@ fn parse_rule_line_should_parse_direction_out() {
 
 #[test]
 fn parse_rule_line_should_extract_comment() {
-    let rule = parse_rule_line(
-        "ALLOW IN    Anywhere comment managed:https",
-        false,
-    )
-    .unwrap();
+    let rule = parse_rule_line("ALLOW IN    Anywhere comment managed:https", false).unwrap();
     assert_eq!(rule.comment, Some("managed:https".to_string()));
 }
 

@@ -41,6 +41,10 @@ use crate::ui::screens::toride_users::{GroupEntry, SudoersEntry, UserEntry, User
 
 /// Aggregated user & access-control data for the read-only section.
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent per-file read-status flags"
+)]
 pub struct UsersDataBundle {
     /// Whether the users backend produced any data at all. `false` only when a
     /// collection task panicked (`JoinError`). Per-file read failures keep this
@@ -92,6 +96,10 @@ pub struct UsersCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl UsersCollector {
@@ -184,6 +192,10 @@ impl Default for UsersCollector {
 ///
 /// Returns `(bundle, took_cache)` where `took_cache` records whether the
 /// findings were actually taken from the cache on a successful collection.
+#[expect(
+    clippy::too_many_lines,
+    reason = "real-data collection is inherently linear"
+)]
 async fn collect_real_users(
     use_cache: bool,
     cached_findings: Option<Vec<UserFindingEntry>>,
@@ -305,32 +317,36 @@ async fn collect_real_users(
 
         // shadow -> username::is_locked map (None if /etc/shadow is unreadable,
         // matching the old "every per-user is_locked call fails -> None" path).
-        let locked_map: Option<HashMap<String, bool>> =
-            match std::fs::read_to_string(&paths.shadow) {
-                Ok(shadow) => {
-                    let mut m = HashMap::new();
-                    for line in shadow.lines() {
-                        let mut parts = line.split(':');
-                        let Some(username) = parts.next() else { continue };
-                        let Some(pw_field) = parts.next() else { continue };
-                        if username.starts_with('#') {
-                            continue;
-                        }
-                        m.insert(
-                            username.to_owned(),
-                            pw_field.starts_with('!') || pw_field.starts_with("!!"),
-                        );
+        let locked_map: Option<HashMap<String, bool>> = match std::fs::read_to_string(&paths.shadow)
+        {
+            Ok(shadow) => {
+                let mut m = HashMap::new();
+                for line in shadow.lines() {
+                    let mut parts = line.split(':');
+                    let Some(username) = parts.next() else {
+                        continue;
+                    };
+                    let Some(pw_field) = parts.next() else {
+                        continue;
+                    };
+                    if username.starts_with('#') {
+                        continue;
                     }
-                    Some(m)
-                }
-                Err(e) => {
-                    tracing::debug!(
-                        "users is_locked pre-read {} failed (degraded for all users): {e}",
-                        paths.shadow.display()
+                    m.insert(
+                        username.to_owned(),
+                        pw_field.starts_with('!') || pw_field.starts_with("!!"),
                     );
-                    None
                 }
-            };
+                Some(m)
+            }
+            Err(e) => {
+                tracing::debug!(
+                    "users is_locked pre-read {} failed (degraded for all users): {e}",
+                    paths.shadow.display()
+                );
+                None
+            }
+        };
 
         // main sudoers -> set of `who` with access (None if unreadable, matching
         // the old "every per-user has_sudo main-file lookup fails -> None for that
@@ -438,9 +454,7 @@ async fn collect_real_users(
         Err(e) => {
             tracing::warn!("users collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "users data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("users data collection panicked: {e}")),
                 false,
             )
         }
@@ -537,7 +551,7 @@ mod tests {
         // failures degrade fields but a panic forces available=false.
         let mut collector = UsersCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -564,7 +578,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = UsersCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         assert!(collector.cached_findings.is_some());
         assert!(collector.findings_fresh_at.is_some());
@@ -599,7 +613,10 @@ mod tests {
                 Ok(e) => (e, true),
                 Err(_) => (Vec::new(), false),
             };
-        assert!(entries.is_empty(), "comment-only passwd parses to empty vec");
+        assert!(
+            entries.is_empty(),
+            "comment-only passwd parses to empty vec"
+        );
         assert!(
             passwd_read,
             "a successful read of an empty-but-valid passwd must read as true"

@@ -66,14 +66,14 @@ pub fn convert_findings(findings: Vec<toride_fail2ban::report::Finding>) -> Vec<
 pub fn parse_jail_names(status: &str) -> Vec<String> {
     for line in status.lines() {
         let lower = line.to_ascii_lowercase();
-        if lower.contains("jail list") {
-            if let Some(idx) = line.find(':') {
-                return line[idx + 1..]
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-            }
+        if lower.contains("jail list")
+            && let Some(idx) = line.find(':')
+        {
+            return line[idx + 1..]
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
         }
     }
     Vec::new()
@@ -87,8 +87,8 @@ pub fn parse_jail_names(status: &str) -> Vec<String> {
 /// `fail2ban-client status <name>` call, so this mapper only sets the name and
 /// `is_running = true` (the jail appearing in the list implies it is active);
 /// the collector enriches counts from the per-jail call when it has them.
-pub fn parse_jails_from_status(status: String) -> Vec<JailEntry> {
-    let names = parse_jail_names(&status);
+pub fn parse_jails_from_status(status: &str) -> Vec<JailEntry> {
+    let names = parse_jail_names(status);
     if names.is_empty() {
         return Vec::new();
     }
@@ -122,6 +122,10 @@ pub fn parse_jails_from_status(status: String) -> Vec<JailEntry> {
 ///
 /// Returns the updated entry, or a clone with `is_running = false` if the
 /// output indicates the jail is not running.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "banned/file counts fit in usize on any target"
+)]
 pub fn enrich_jail_from_status(mut jail: JailEntry, status: &str) -> JailEntry {
     // A jail that is "not running" reports a stub. Best-effort detection.
     if status.contains("not running") {
@@ -133,32 +137,28 @@ pub fn enrich_jail_from_status(mut jail: JailEntry, status: &str) -> JailEntry {
     // fallback below only fires when this line was absent.
     let banned_from_primary = extract_int(status, "Currently banned").map(|n| n as usize);
     jail.banned_count = banned_from_primary.unwrap_or(jail.banned_count);
-    jail.total_bans = extract_int(status, "Total banned")
-        .map(|n| n as usize)
-        .unwrap_or(jail.total_bans);
-    jail.file_count = extract_int(status, "File list")
-        .map(|n| n as usize)
-        .unwrap_or(jail.file_count);
+    jail.total_bans = extract_int(status, "Total banned").map_or(jail.total_bans, |n| n as usize);
+    jail.file_count = extract_int(status, "File list").map_or(jail.file_count, |n| n as usize);
 
     // Fallback: if no "Currently banned" line was found, but a
     // "Banned IP list:" line exists, count the IPs on it. This handles older
     // fail2ban output that only lists banned IPs without a count.
-    if banned_from_primary.is_none() {
-        if let Some(idx) = status.find("Banned IP list:") {
-            let rest = &status[idx..];
-            // Take up to the next newline.
-            let line = rest.lines().next().unwrap_or("");
-            if let Some(colon) = line.find(':') {
-                // Mirror parse_bans: only count tokens that look like IPs, so a
-                // stray label or parse artifact on the line can't inflate the count.
-                let ip_count = line[colon + 1..]
-                    .split_whitespace()
-                    .filter(|s| !s.is_empty())
-                    .filter(|s| looks_like_ip(s))
-                    .count();
-                if ip_count > 0 {
-                    jail.banned_count = ip_count;
-                }
+    if banned_from_primary.is_none()
+        && let Some(idx) = status.find("Banned IP list:")
+    {
+        let rest = &status[idx..];
+        // Take up to the next newline.
+        let line = rest.lines().next().unwrap_or("");
+        if let Some(colon) = line.find(':') {
+            // Mirror parse_bans: only count tokens that look like IPs, so a
+            // stray label or parse artifact on the line can't inflate the count.
+            let ip_count = line[colon + 1..]
+                .split_whitespace()
+                .filter(|s| !s.is_empty())
+                .filter(|s| looks_like_ip(s))
+                .count();
+            if ip_count > 0 {
+                jail.banned_count = ip_count;
             }
         }
     }
@@ -172,21 +172,21 @@ pub fn enrich_jail_from_status(mut jail: JailEntry, status: &str) -> JailEntry {
 /// return the count of whitespace-separated tokens instead.
 fn extract_int(status: &str, label: &str) -> Option<u64> {
     for line in status.lines() {
-        if line.contains(label) {
-            if let Some(colon) = line.find(':') {
-                let rest = line[colon + 1..].trim();
-                if label == "File list" {
-                    // Count tokens (paths).
-                    return Some(rest.split_whitespace().count() as u64);
-                }
-                // Take the first whitespace-delimited token and parse it.
-                let token = rest.split_whitespace().next()?;
-                if let Ok(n) = token.parse::<u64>() {
-                    return Some(n);
-                }
-                // Some fail2ban versions put the number before a trailing
-                // label; skip silently on parse failure.
+        if line.contains(label)
+            && let Some(colon) = line.find(':')
+        {
+            let rest = line[colon + 1..].trim();
+            if label == "File list" {
+                // Count tokens (paths).
+                return Some(rest.split_whitespace().count() as u64);
             }
+            // Take the first whitespace-delimited token and parse it.
+            let token = rest.split_whitespace().next()?;
+            if let Ok(n) = token.parse::<u64>() {
+                return Some(n);
+            }
+            // Some fail2ban versions put the number before a trailing
+            // label; skip silently on parse failure.
         }
     }
     None
@@ -208,7 +208,7 @@ fn extract_int(status: &str, label: &str) -> Option<u64> {
 /// and in v1 a flat line `Banned IP list: 1.2.3.4 5.6.7.8`. Both forms are
 /// handled: bare IPs become entries with empty `jails`, and an indented
 /// `- jail` line attaches its jail to the preceding IP.
-pub fn parse_bans(raw: String) -> Vec<BanEntry> {
+pub fn parse_bans(raw: &str) -> Vec<BanEntry> {
     let mut entries: Vec<BanEntry> = Vec::new();
 
     for raw_line in raw.lines() {
@@ -248,20 +248,17 @@ pub fn parse_bans(raw: String) -> Vec<BanEntry> {
             // [' ', 'J', 'a', 'i', 'l', ':'] would eat any leading char that
             // happens to be one of those (e.g. '- apache-auth' -> "pache-auth",
             // '- asterisk-irc' -> "sterisk-irc").
-            let jail_name = line
-                .trim_start_matches('-')
-                .trim_start();
+            let jail_name = line.trim_start_matches('-').trim_start();
             let jail_name = jail_name
                 .strip_prefix("Jail:")
                 .unwrap_or(jail_name)
                 .trim()
                 .to_string();
-            if !jail_name.is_empty() {
-                if let Some(last) = entries.last_mut() {
-                    if !last.jails.contains(&jail_name) {
-                        last.jails.push(jail_name);
-                    }
-                }
+            if !jail_name.is_empty()
+                && let Some(last) = entries.last_mut()
+                && !last.jails.contains(&jail_name)
+            {
+                last.jails.push(jail_name);
             }
             continue;
         }
@@ -287,7 +284,11 @@ pub fn parse_bans(raw: String) -> Vec<BanEntry> {
 fn looks_like_ip(s: &str) -> bool {
     // IPv4: four dot-separated groups of 1-3 digits.
     let v4: Vec<&str> = s.split('.').collect();
-    if v4.len() == 4 && v4.iter().all(|g| !g.is_empty() && g.chars().all(|c| c.is_ascii_digit())) {
+    if v4.len() == 4
+        && v4
+            .iter()
+            .all(|g| !g.is_empty() && g.chars().all(|c| c.is_ascii_digit()))
+    {
         return true;
     }
     // IPv6: contains at least one ':' and only hex digits / ':' / '.'.
@@ -296,7 +297,8 @@ fn looks_like_ip(s: &str) -> bool {
     // rejected while real addresses ('::', '::1', '2001:db8::1', and the
     // uncompressed 8-group form) are still accepted.
     if s.contains(':')
-        && s.chars().all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
+        && s.chars()
+            .all(|c| c.is_ascii_hexdigit() || c == ':' || c == '.')
     {
         let non_empty_groups = s.split(':').filter(|g| !g.is_empty()).count();
         if s.contains("::") || non_empty_groups >= 8 {
@@ -363,7 +365,7 @@ mod tests {
         let status = "\
 |- Number of jail:      2
 `- Jail list:   sshd, nginx-limit-req";
-        let jails = parse_jails_from_status(status.to_string());
+        let jails = parse_jails_from_status(status);
         assert_eq!(jails.len(), 2);
         assert_eq!(jails[0].name, "sshd");
         assert_eq!(jails[1].name, "nginx-limit-req");
@@ -373,12 +375,12 @@ mod tests {
     #[test]
     fn parse_jails_from_status_no_jail_list_returns_empty() {
         let status = "Status\n|- Number of jail: 0";
-        assert!(parse_jails_from_status(status.to_string()).is_empty());
+        assert!(parse_jails_from_status(status).is_empty());
     }
 
     #[test]
     fn parse_jails_from_status_empty_input() {
-        assert!(parse_jails_from_status(String::new()).is_empty());
+        assert!(parse_jails_from_status("").is_empty());
     }
 
     // ── enrich_jail_from_status ───────────────────────────────────────────────
@@ -442,7 +444,7 @@ Status for the jail: sshd
     #[test]
     fn parse_bans_flat_v1_line() {
         let raw = "Banned IP list: 1.2.3.4 5.6.7.8";
-        let bans = parse_bans(raw.to_string());
+        let bans = parse_bans(raw);
         assert_eq!(bans.len(), 2);
         assert_eq!(bans[0].ip, "1.2.3.4");
         assert_eq!(bans[1].ip, "5.6.7.8");
@@ -456,7 +458,7 @@ Banned IP list:
    - sshd
 198.51.100.7
    - sshd";
-        let bans = parse_bans(raw.to_string());
+        let bans = parse_bans(raw);
         assert_eq!(bans.len(), 2);
         assert_eq!(bans[0].ip, "203.0.113.42");
         assert_eq!(bans[0].jails, vec!["sshd".to_string()]);
@@ -479,7 +481,7 @@ Banned IP list:
    - asterisk-irc
 203.0.113.99
    - Jail: sshd";
-        let bans = parse_bans(raw.to_string());
+        let bans = parse_bans(raw);
         assert_eq!(bans.len(), 3);
         assert_eq!(bans[0].ip, "192.0.2.10");
         assert_eq!(bans[0].jails, vec!["apache-auth".to_string()]);
@@ -491,7 +493,7 @@ Banned IP list:
 
     #[test]
     fn parse_bans_empty_returns_empty() {
-        assert!(parse_bans(String::new()).is_empty());
+        assert!(parse_bans("").is_empty());
     }
 
     #[test]
@@ -499,7 +501,7 @@ Banned IP list:
         let raw = "Sorry, but no IP is currently banned.";
         // The "sorry" / "no ip is currently banned" guard skips this line,
         // and there are no bare IP lines — result is empty.
-        assert!(parse_bans(raw.to_string()).is_empty());
+        assert!(parse_bans(raw).is_empty());
     }
 
     #[test]
@@ -508,7 +510,7 @@ Banned IP list:
 Banned IP list:
 1.2.3.4
 some garbage line";
-        let bans = parse_bans(raw.to_string());
+        let bans = parse_bans(raw);
         assert_eq!(bans.len(), 1);
         assert_eq!(bans[0].ip, "1.2.3.4");
     }
@@ -516,7 +518,7 @@ some garbage line";
     #[test]
     fn parse_bans_ipv6_supported() {
         let raw = "Banned IP list: ::1 2001:db8::1";
-        let bans = parse_bans(raw.to_string());
+        let bans = parse_bans(raw);
         assert_eq!(bans.len(), 2);
     }
 

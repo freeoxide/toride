@@ -118,7 +118,10 @@ impl UsersConfig {
     pub fn default_path() -> Result<std::path::PathBuf> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| Error::Other("cannot determine config directory".into()))?;
-        Ok(config_dir.join("toride").join("users").join(CONFIG_FILENAME))
+        Ok(config_dir
+            .join("toride")
+            .join("users")
+            .join(CONFIG_FILENAME))
     }
 
     /// Add or update a user spec in the config.
@@ -176,10 +179,18 @@ mod tests {
         let mut cfg = UsersConfig::new();
         cfg.upsert_user(sample_spec());
 
-        let json = cfg.to_json().expect("to_json must work under config feature");
+        let json = cfg
+            .to_json()
+            .expect("to_json must work under config feature");
         // The user and a representative scalar survive.
-        assert!(json.contains("\"username\""), "json should contain username: {json}");
-        assert!(json.contains("deployer"), "json should contain deployer: {json}");
+        assert!(
+            json.contains("\"username\""),
+            "json should contain username: {json}"
+        );
+        assert!(
+            json.contains("deployer"),
+            "json should contain deployer: {json}"
+        );
 
         let back = UsersConfig::from_json(&json).expect("from_json must work under config feature");
         assert_eq!(back.users.len(), 1);
@@ -197,13 +208,17 @@ mod tests {
         let mut cfg = UsersConfig::new();
         cfg.upsert_user(sample_spec());
 
-        cfg.write(&path).expect("write must succeed under config feature");
+        cfg.write(&path)
+            .expect("write must succeed under config feature");
         assert!(path.exists(), "config file should exist after write");
 
         let loaded = UsersConfig::read(&path).expect("read must succeed under config feature");
         assert_eq!(loaded.users.len(), 1);
         assert_eq!(loaded.users[0].username, "deployer");
-        assert_eq!(loaded.users[0].password_policy.complexity, Complexity::Strong);
+        assert_eq!(
+            loaded.users[0].password_policy.complexity,
+            Complexity::Strong
+        );
     }
 
     /// Malformed JSON must surface a parse error (not a "serde feature
@@ -236,7 +251,10 @@ mod tests {
         let mut cfg = UsersConfig::new();
         cfg.upsert_user(sample_spec());
         assert!(cfg.remove_user("deployer"), "should report removal");
-        assert!(!cfg.remove_user("deployer"), "second removal should be false");
+        assert!(
+            !cfg.remove_user("deployer"),
+            "second removal should be false"
+        );
         assert!(cfg.users.is_empty());
     }
 }

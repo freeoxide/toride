@@ -44,27 +44,19 @@ impl BackupPaths {
     pub fn resolve() -> crate::Result<Self> {
         let config_dir = dirs::config_dir()
             .ok_or_else(|| {
-                crate::Error::ConfigParse(
-                    "Cannot determine XDG config directory".into(),
-                )
+                crate::Error::ConfigParse("Cannot determine XDG config directory".into())
             })?
             .join("toride")
             .join("backup");
 
         let data_dir = dirs::data_dir()
-            .ok_or_else(|| {
-                crate::Error::ConfigParse(
-                    "Cannot determine XDG data directory".into(),
-                )
-            })?
+            .ok_or_else(|| crate::Error::ConfigParse("Cannot determine XDG data directory".into()))?
             .join("toride")
             .join("backup");
 
         let cache_dir = dirs::cache_dir()
             .ok_or_else(|| {
-                crate::Error::ConfigParse(
-                    "Cannot determine XDG cache directory".into(),
-                )
+                crate::Error::ConfigParse("Cannot determine XDG cache directory".into())
             })?
             .join("toride")
             .join("backup");

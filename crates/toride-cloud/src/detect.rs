@@ -19,7 +19,7 @@ pub enum CloudProvider {
     Aws,
     /// Google Cloud Platform (GCE).
     Gcp,
-    /// DigitalOcean (Droplets).
+    /// `DigitalOcean` (Droplets).
     DigitalOcean,
     /// Hetzner Cloud.
     Hetzner,
@@ -119,9 +119,7 @@ fn detect_from_env() -> Option<CloudProvider> {
     }
 
     // GCP
-    if std::env::var("GCE_METADATA_HOST").is_ok()
-        || std::env::var("GOOGLE_CLOUD_PROJECT").is_ok()
-    {
+    if std::env::var("GCE_METADATA_HOST").is_ok() || std::env::var("GOOGLE_CLOUD_PROJECT").is_ok() {
         return Some(CloudProvider::Gcp);
     }
 
@@ -141,41 +139,36 @@ fn detect_from_env() -> Option<CloudProvider> {
 /// Try to detect the cloud provider from well-known system files.
 fn detect_from_files() -> Option<CloudProvider> {
     // AWS
-    if std::path::Path::new("/sys/class/dmi/id/board_vendor")
-        .exists()
+    if std::path::Path::new("/sys/class/dmi/id/board_vendor").exists()
+        && let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/board_vendor")
+        && vendor.trim() == "Amazon EC2"
     {
-        if let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/board_vendor") {
-            if vendor.trim() == "Amazon EC2" {
-                return Some(CloudProvider::Aws);
-            }
-        }
+        return Some(CloudProvider::Aws);
     }
 
     // GCP
-    if std::path::Path::new("/sys/class/dmi/id/product_name").exists() {
-        if let Ok(name) = std::fs::read_to_string("/sys/class/dmi/id/product_name") {
-            if name.trim().starts_with("Google Compute Engine") {
-                return Some(CloudProvider::Gcp);
-            }
-        }
+    if std::path::Path::new("/sys/class/dmi/id/product_name").exists()
+        && let Ok(name) = std::fs::read_to_string("/sys/class/dmi/id/product_name")
+        && name.trim().starts_with("Google Compute Engine")
+    {
+        return Some(CloudProvider::Gcp);
     }
 
     // DigitalOcean
-    if std::path::Path::new("/sys/class/dmi/id/sys_vendor").exists() {
-        if let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor") {
-            if vendor.trim() == "DigitalOcean" {
-                return Some(CloudProvider::DigitalOcean);
-            }
-        }
+    if std::path::Path::new("/sys/class/dmi/id/sys_vendor").exists()
+        && let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor")
+        && vendor.trim() == "DigitalOcean"
+    {
+        return Some(CloudProvider::DigitalOcean);
     }
 
     // Hetzner
-    if std::path::Path::new("/sys/class/dmi/id/board_vendor").exists() {
-        if let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/board_vendor") {
-            let v = vendor.trim();
-            if v == "Hetzner" || v == "hcloud" {
-                return Some(CloudProvider::Hetzner);
-            }
+    if std::path::Path::new("/sys/class/dmi/id/board_vendor").exists()
+        && let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/board_vendor")
+    {
+        let v = vendor.trim();
+        if v == "Hetzner" || v == "hcloud" {
+            return Some(CloudProvider::Hetzner);
         }
     }
 
@@ -223,7 +216,10 @@ mod tests {
 
     #[test]
     fn from_str_loose_do() {
-        assert_eq!(CloudProvider::from_str_loose("do"), CloudProvider::DigitalOcean);
+        assert_eq!(
+            CloudProvider::from_str_loose("do"),
+            CloudProvider::DigitalOcean
+        );
     }
 
     #[test]
@@ -238,12 +234,18 @@ mod tests {
 
     #[test]
     fn from_str_loose_hetzner() {
-        assert_eq!(CloudProvider::from_str_loose("hetzner"), CloudProvider::Hetzner);
+        assert_eq!(
+            CloudProvider::from_str_loose("hetzner"),
+            CloudProvider::Hetzner
+        );
     }
 
     #[test]
     fn from_str_loose_hcloud() {
-        assert_eq!(CloudProvider::from_str_loose("hcloud"), CloudProvider::Hetzner);
+        assert_eq!(
+            CloudProvider::from_str_loose("hcloud"),
+            CloudProvider::Hetzner
+        );
     }
 
     // -- from_str_loose: unknown returns Unknown -----------------------------
@@ -264,9 +266,18 @@ mod tests {
         assert_eq!(CloudProvider::from_str_loose("AWS"), CloudProvider::Aws);
         assert_eq!(CloudProvider::from_str_loose("Aws"), CloudProvider::Aws);
         assert_eq!(CloudProvider::from_str_loose("GCP"), CloudProvider::Gcp);
-        assert_eq!(CloudProvider::from_str_loose("DO"), CloudProvider::DigitalOcean);
-        assert_eq!(CloudProvider::from_str_loose("HETZNER"), CloudProvider::Hetzner);
-        assert_eq!(CloudProvider::from_str_loose("HCloud"), CloudProvider::Hetzner);
+        assert_eq!(
+            CloudProvider::from_str_loose("DO"),
+            CloudProvider::DigitalOcean
+        );
+        assert_eq!(
+            CloudProvider::from_str_loose("HETZNER"),
+            CloudProvider::Hetzner
+        );
+        assert_eq!(
+            CloudProvider::from_str_loose("HCloud"),
+            CloudProvider::Hetzner
+        );
     }
 
     // -- all() returns 4 known providers -------------------------------------

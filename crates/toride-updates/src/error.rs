@@ -66,9 +66,7 @@ impl From<toride_runner::Error> for Error {
     fn from(err: toride_runner::Error) -> Self {
         // Honour the explicit timeout variant so callers can match on it.
         match err {
-            toride_runner::Error::CommandTimeout { timeout, .. } => {
-                Error::CommandTimeout(timeout)
-            }
+            toride_runner::Error::CommandTimeout { timeout, .. } => Error::CommandTimeout(timeout),
             toride_runner::Error::BinaryNotFound(program) => Error::BinaryNotFound(program),
             other => Error::CommandFailed(other.to_string()),
         }

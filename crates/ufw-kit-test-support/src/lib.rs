@@ -6,7 +6,7 @@
 pub mod fixtures;
 
 // Re-export command types
-pub use ufw_kit::command::{redact_args, CommandLog, CommandRunner, FakeRunner};
+pub use ufw_kit::command::{CommandLog, CommandRunner, FakeRunner, redact_args};
 
 // Re-export spec types for convenience
 pub use ufw_kit::spec::{

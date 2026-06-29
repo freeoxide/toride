@@ -8,6 +8,7 @@ use crate::nginx_headers::SecurityHeaders;
 use crate::paths::ProxyPaths;
 use crate::render::render_nginx_server_block_with_headers;
 use crate::spec::ServerBlock;
+use crate::validate::validate_site_domain;
 use toride_runner::{CommandSpec, Runner};
 
 /// Nginx management facade.
@@ -149,10 +150,18 @@ impl<'a> NginxManager<'a> {
 
     /// Enable a site by creating a symlink in sites-enabled.
     ///
+    /// `domain` is validated as a single, safe path segment before joining onto
+    /// the sites directory, mirroring [`ConfigManager`](crate::config::ConfigManager)
+    /// — defense-in-depth against traversal-shaped inputs reaching the
+    /// `symlink` primitive.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the symlink cannot be created.
+    /// Returns [`Error::Validation`] if `domain` is not a safe segment, or an
+    /// error if the symlink cannot be created.
     pub fn enable_site(&self, domain: &str) -> Result<()> {
+        validate_site_domain(domain)?;
+
         let source = self.paths.nginx_site_path(domain);
         let link = self.paths.nginx_enabled_path(domain);
 
@@ -181,10 +190,17 @@ impl<'a> NginxManager<'a> {
 
     /// Disable a site by removing the symlink from sites-enabled.
     ///
+    /// `domain` is validated as a single, safe path segment before joining onto
+    /// the sites directory, so traversal-shaped inputs cannot delete arbitrary
+    /// files via the `remove_file` call.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the symlink cannot be removed.
+    /// Returns [`Error::Validation`] if `domain` is not a safe segment, or an
+    /// error if the symlink cannot be removed.
     pub fn disable_site(&self, domain: &str) -> Result<()> {
+        validate_site_domain(domain)?;
+
         let link = self.paths.nginx_enabled_path(domain);
 
         if link.exists() {
@@ -197,10 +213,18 @@ impl<'a> NginxManager<'a> {
 
     /// Remove a site configuration file and its symlink.
     ///
+    /// `domain` is validated as a single, safe path segment before joining onto
+    /// the sites directory — defense-in-depth on this delete primitive, so a
+    /// traversal-shaped input cannot target an arbitrary file via the
+    /// `remove_file` call on `site_path`.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the files cannot be removed.
+    /// Returns [`Error::Validation`] if `domain` is not a safe segment, or an
+    /// error if the files cannot be removed.
     pub fn remove_site(&self, domain: &str) -> Result<()> {
+        validate_site_domain(domain)?;
+
         self.disable_site(domain)?;
 
         let site_path = self.paths.nginx_site_path(domain);
@@ -279,8 +303,7 @@ mod tests {
         assert!(
             entries.iter().any(|e| {
                 e.as_ref()
-                    .map(|e| e.file_name().to_string_lossy().starts_with("proxy-backup-"))
-                    .unwrap_or(false)
+                    .is_ok_and(|e| e.file_name().to_string_lossy().starts_with("proxy-backup-"))
             }),
             "expected a proxy-backup-*.txt snapshot in backup_dir"
         );
@@ -288,5 +311,63 @@ mod tests {
         // The site file was overwritten with the new config.
         let written = std::fs::read_to_string(sites_dir.join("example.com")).unwrap();
         assert!(written.contains("listen 443"));
+    }
+
+    #[test]
+    fn enable_disable_remove_reject_traversal_domains() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = NginxManager::new(&fake, &paths);
+
+        // A guard file outside sites-enabled that traversal would otherwise
+        // let an attacker create/replace/delete.
+        let guard = dir.path().join("guard-file");
+        std::fs::write(&guard, "must not be touched").unwrap();
+
+        for bad in ["..", "../guard-file", "/etc/passwd", "a/b", "foo\\bar"] {
+            assert!(
+                matches!(mgr.enable_site(bad).unwrap_err(), Error::Validation(_)),
+                "enable_site must reject {bad:?}"
+            );
+            assert!(
+                matches!(mgr.disable_site(bad).unwrap_err(), Error::Validation(_)),
+                "disable_site must reject {bad:?}"
+            );
+            assert!(
+                matches!(mgr.remove_site(bad).unwrap_err(), Error::Validation(_)),
+                "remove_site must reject {bad:?}"
+            );
+        }
+        assert!(
+            guard.exists(),
+            "guard file must not be touched by traversal"
+        );
+    }
+
+    #[test]
+    fn enable_disable_remove_accept_valid_domain() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = NginxManager::new(&fake, &paths);
+
+        // Seed a site config so enable_site has a source to point at.
+        std::fs::create_dir_all(&paths.nginx_sites_available).unwrap();
+        std::fs::write(
+            paths.nginx_site_path("example.com"),
+            "server { listen 80; }",
+        )
+        .unwrap();
+
+        // Valid domains pass the gate and exercise the real primitives.
+        assert!(mgr.enable_site("example.com").is_ok());
+        assert!(paths.nginx_enabled_path("example.com").exists());
+
+        assert!(mgr.disable_site("example.com").is_ok());
+        assert!(!paths.nginx_enabled_path("example.com").exists());
+
+        assert!(mgr.remove_site("example.com").is_ok());
+        assert!(!paths.nginx_site_path("example.com").exists());
     }
 }

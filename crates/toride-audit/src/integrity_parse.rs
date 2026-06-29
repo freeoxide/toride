@@ -82,12 +82,12 @@ pub fn parse_aide_check(output: &str) -> crate::Result<AideCheckResult> {
         let trimmed = line.trim();
 
         // Look for summary line like "Changed entries: 5"
-        if trimmed.starts_with("Changed entries:") {
-            if let Some(num) = extract_number(trimmed) {
-                result.changed = num;
-                if num > 0 {
-                    result.passed = false;
-                }
+        if trimmed.starts_with("Changed entries:")
+            && let Some(num) = extract_number(trimmed)
+        {
+            result.changed = num;
+            if num > 0 {
+                result.passed = false;
             }
         } else if trimmed.starts_with("Added entries:") {
             if let Some(num) = extract_number(trimmed) {
@@ -96,12 +96,12 @@ pub fn parse_aide_check(output: &str) -> crate::Result<AideCheckResult> {
                     result.passed = false;
                 }
             }
-        } else if trimmed.starts_with("Removed entries:") {
-            if let Some(num) = extract_number(trimmed) {
-                result.removed = num;
-                if num > 0 {
-                    result.passed = false;
-                }
+        } else if trimmed.starts_with("Removed entries:")
+            && let Some(num) = extract_number(trimmed)
+        {
+            result.removed = num;
+            if num > 0 {
+                result.passed = false;
             }
         }
 
@@ -112,9 +112,9 @@ pub fn parse_aide_check(output: &str) -> crate::Result<AideCheckResult> {
                 change_type: AideChangeType::Added,
                 details: Vec::new(),
             });
-        } else if trimmed.starts_with("f--- ") {
+        } else if let Some(stripped) = trimmed.strip_prefix("f--- ") {
             result.changes.push(AideChange {
-                path: trimmed[5..].trim().to_owned(),
+                path: stripped.trim().to_owned(),
                 change_type: AideChangeType::Removed,
                 details: Vec::new(),
             });
@@ -139,9 +139,7 @@ pub fn parse_aide_init(output: &str) -> crate::Result<bool> {
 
 /// Extract a trailing number from a string like "Changed entries: 5".
 fn extract_number(s: &str) -> Option<usize> {
-    s.split_whitespace()
-        .last()
-        .and_then(|v| v.parse().ok())
+    s.split_whitespace().last().and_then(|v| v.parse().ok())
 }
 
 // ---------------------------------------------------------------------------
@@ -199,7 +197,8 @@ Removed entries: 0
 
     #[test]
     fn parse_aide_check_f_equals_prefix_is_added() {
-        let output = "f = /etc/something\nChanged entries: 0\nAdded entries: 0\nRemoved entries: 0\n";
+        let output =
+            "f = /etc/something\nChanged entries: 0\nAdded entries: 0\nRemoved entries: 0\n";
         let result = parse_aide_check(output).unwrap();
         assert!(result.passed);
         assert_eq!(result.changes.len(), 1);

@@ -15,8 +15,8 @@
 //! println!("Connected as {} in {}", report.node_name, report.tailnet);
 //! ```
 
-use crate::report::TailscaleReport;
 use crate::Result;
+use crate::report::TailscaleReport;
 
 // ---------------------------------------------------------------------------
 // TailscaleClient

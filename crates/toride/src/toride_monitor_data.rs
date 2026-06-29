@@ -177,6 +177,10 @@ impl Default for MonitorCollector {
 ///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
 /// findings were actually taken from the cache on a successful collection.
+#[expect(
+    clippy::too_many_lines,
+    reason = "real-data collection is inherently linear"
+)]
 async fn collect_real_monitor(
     use_cache: bool,
     cached_findings: Option<Vec<FindingEntry>>,
@@ -184,28 +188,26 @@ async fn collect_real_monitor(
     // Build the MonitorClient on the blocking pool. `system()` resolves
     // iptables/iptables-save/conntrack/ss/journalctl via `which`; on macOS
     // this returns Err(BinaryNotFound) and the section degrades cleanly.
-    let client = match tokio::task::spawn_blocking(toride_monitor::client::MonitorClient::system).await
-    {
-        Ok(Ok(client)) => client,
-        Ok(Err(e)) => {
-            // Construction failed (typically BinaryNotFound on macOS). This is
-            // a clean Err, NOT a panic, so we can surface the backend's own
-            // error string verbatim. used_cache is irrelevant on this path —
-            // nothing was collected, so the caller must NOT advance the TTL
-            // clock (false).
-            tracing::debug!("monitor backend unavailable: {e}");
-            return (empty_bundle_with_reason(format!("{e}")), false);
-        }
-        Err(e) => {
-            tracing::warn!("monitor construction task panicked: {e}");
-            return (
-                empty_bundle_with_reason(format!(
-                    "monitor backend construction panicked: {e}"
-                )),
-                false,
-            );
-        }
-    };
+    let client =
+        match tokio::task::spawn_blocking(toride_monitor::client::MonitorClient::system).await {
+            Ok(Ok(client)) => client,
+            Ok(Err(e)) => {
+                // Construction failed (typically BinaryNotFound on macOS). This is
+                // a clean Err, NOT a panic, so we can surface the backend's own
+                // error string verbatim. used_cache is irrelevant on this path —
+                // nothing was collected, so the caller must NOT advance the TTL
+                // clock (false).
+                tracing::debug!("monitor backend unavailable: {e}");
+                return (empty_bundle_with_reason(format!("{e}")), false);
+            }
+            Err(e) => {
+                tracing::warn!("monitor construction task panicked: {e}");
+                return (
+                    empty_bundle_with_reason(format!("monitor backend construction panicked: {e}")),
+                    false,
+                );
+            }
+        };
 
     // Run ALL blocking probes in a single spawn_blocking that owns `client`.
     // This keeps every shell-out / socket enumeration off the tokio worker and
@@ -318,18 +320,16 @@ async fn collect_real_monitor(
         };
 
         // ── OUTPUT chain LOG rules ─────────────────────────────────────────
-        let output_rule_count = match toride_monitor::output::OutputChain::new(
-            client.paths(),
-            client.runner(),
-        )
-        .list_rules()
-        {
-            Ok(rules) => Some(rules.len()),
-            Err(e) => {
-                tracing::debug!("monitor output list_rules: {e}");
-                None
-            }
-        };
+        let output_rule_count =
+            match toride_monitor::output::OutputChain::new(client.paths(), client.runner())
+                .list_rules()
+            {
+                Ok(rules) => Some(rules.len()),
+                Err(e) => {
+                    tracing::debug!("monitor output list_rules: {e}");
+                    None
+                }
+            };
 
         // ── Availability heuristic ─────────────────────────────────────────
         // Mirrors the sibling read-only collectors (fail2ban_data,
@@ -389,7 +389,7 @@ async fn collect_real_monitor(
 /// Mirrors the sibling read-only collectors' disjunction of probe-success
 /// signals. Returns `false` when EVERY probe failed at runtime — the case the
 /// audit's dimension #2 targets: construction succeeded (binaries exist on
-/// `$PATH`) but `conntrack -L` failed for lack of CAP_NET_ADMIN and `ss
+/// `$PATH`) but `conntrack -L` failed for lack of `CAP_NET_ADMIN` and `ss
 /// -tunap` failed under seccomp, so the host produced no connections, no
 /// ports, no findings, and the snapshot itself errored. Such a host must NOT
 /// be reported as `available` (it would render misleading empty-state messages
@@ -398,6 +398,10 @@ async fn collect_real_monitor(
 /// `snapshot_ok` is the canonical 'is the monitor actually working' signal;
 /// the remaining arguments keep the section available when the snapshot alone
 /// failed but another probe still produced data.
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "four independent probe-presence flags ORed together"
+)]
 fn monitor_available(
     snapshot_ok: bool,
     has_connections: bool,
@@ -428,7 +432,7 @@ fn empty_bundle() -> MonitorDataBundle {
 
 /// Empty bundle carrying the reason collection failed. Used for both a
 /// construction `Err` (e.g. `BinaryNotFound` on macOS) and a `spawn_blocking`
-/// task panic (JoinError) — the reason string is rendered by the UI's degraded
+/// task panic (`JoinError`) — the reason string is rendered by the UI's degraded
 /// panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> MonitorDataBundle {
     let mut b = empty_bundle();
@@ -498,7 +502,7 @@ mod tests {
         // bundle's `available` flag reflects whether the backend was found.
         let mut collector = MonitorCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -523,7 +527,10 @@ mod tests {
     fn empty_bundle_with_reason_attaches_reason() {
         let b = empty_bundle_with_reason("binary not found: iptables".into());
         assert!(!b.available);
-        assert_eq!(b.unavailable_reason.as_deref(), Some("binary not found: iptables"));
+        assert_eq!(
+            b.unavailable_reason.as_deref(),
+            Some("binary not found: iptables")
+        );
     }
 
     #[test]
@@ -562,7 +569,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = MonitorCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).

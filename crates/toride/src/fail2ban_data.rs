@@ -56,7 +56,7 @@ pub struct Fail2banDataBundle {
     /// Whether the `iptables` binary is available (`None` if the probe failed).
     pub fw_iptables_available: Option<bool>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` because a collection task panicked (JoinError).
+    /// `available == false` because a collection task panicked (`JoinError`).
     /// `None` otherwise — notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
@@ -184,6 +184,10 @@ impl Default for Fail2banCollector {
 /// findings were actually taken from the cache on a successful collection.
 /// The caller advances the TTL clock ONLY when `used_cache == false`, so a
 /// cache-hit poll never resets the freshness timestamp with stale data.
+#[expect(
+    clippy::too_many_lines,
+    reason = "real-data collection is inherently linear"
+)]
 async fn collect_real_fail2ban(
     use_cache: bool,
     cached_findings: Option<Vec<FindingEntry>>,
@@ -191,18 +195,19 @@ async fn collect_real_fail2ban(
     // Build the Fail2Ban facade on the blocking pool. with_runner skips the
     // /etc/fail2ban existence check, so construction succeeds even on macOS.
     let f2b = match tokio::task::spawn_blocking(|| {
-        toride_fail2ban::Fail2Ban::with_runner(Box::new(
-            toride_fail2ban::command::DuctRunner::new(),
-        ))
+        toride_fail2ban::Fail2Ban::with_runner(
+            Box::new(toride_fail2ban::command::DuctRunner::new()),
+        )
     })
     .await
     {
         Ok(f2b) => f2b,
         Err(e) => {
             tracing::warn!("fail2ban construction task panicked: {e}");
-            return (empty_bundle_with_reason(format!(
-                "fail2ban backend construction panicked: {e}"
-            )), false);
+            return (
+                empty_bundle_with_reason(format!("fail2ban backend construction panicked: {e}")),
+                false,
+            );
         }
     };
 
@@ -239,8 +244,7 @@ async fn collect_real_fail2ban(
                 let version = client.version().ok();
                 let jails = match client.status() {
                     Ok(status) => {
-                        let mut parsed =
-                            fail2ban_convert::parse_jails_from_status(status.clone());
+                        let mut parsed = fail2ban_convert::parse_jails_from_status(&status);
                         // Enrich each jail from its per-jail status (best-effort;
                         // a failed per-jail call leaves the row with name only).
                         for jail in &mut parsed {
@@ -270,7 +274,7 @@ async fn collect_real_fail2ban(
         // ── Banned IPs ────────────────────────────────────────────────────
         let bans = match f2b.client() {
             Ok(client) => match client.banned() {
-                Ok(raw) => fail2ban_convert::parse_bans(raw),
+                Ok(raw) => fail2ban_convert::parse_bans(&raw),
                 Err(e) => {
                     tracing::debug!("fail2ban client banned: {e}");
                     Vec::new()
@@ -291,10 +295,8 @@ async fn collect_real_fail2ban(
         // (binary.fail2ban-client.missing) but no jails/version — that still
         // counts as available so the operator SEES the finding rather than a
         // blank panel.
-        let available = !jails.is_empty()
-            || version.is_some()
-            || !findings.is_empty()
-            || service_active;
+        let available =
+            !jails.is_empty() || version.is_some() || !findings.is_empty() || service_active;
 
         Fail2banDataBundle {
             available,
@@ -318,9 +320,7 @@ async fn collect_real_fail2ban(
         Err(e) => {
             tracing::warn!("fail2ban collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "fail2ban data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("fail2ban data collection panicked: {e}")),
                 false,
             )
         }
@@ -331,7 +331,7 @@ async fn collect_real_fail2ban(
 ///
 /// `available = false` signals the UI to render the degraded panel. No reason
 /// is attached because none is known at this point; collection-time panics use
-/// [`empty_bundle_with_reason`] to surface the JoinError.
+/// [`empty_bundle_with_reason`] to surface the `JoinError`.
 fn empty_bundle() -> Fail2banDataBundle {
     Fail2banDataBundle {
         available: false,
@@ -348,7 +348,7 @@ fn empty_bundle() -> Fail2banDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> Fail2banDataBundle {
     let mut b = empty_bundle();
@@ -416,7 +416,7 @@ mod tests {
         // `available` flag reflects whether fail2ban was found.
         let mut collector = Fail2banCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -441,7 +441,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = Fail2banCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).

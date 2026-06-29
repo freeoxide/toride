@@ -114,23 +114,21 @@ pub fn convert_system(status: &TorideStatus) -> AboutSystem {
     };
 
     // ── uptime ──────────────────────────────────────────────────────────
-    let uptime = match sys.uptime_secs {
-        Some(secs) => format_duration(secs),
-        None => {
-            tracing::warn!("about: status uptime_secs is None");
-            "(unknown)".into()
-        }
+    let uptime = if let Some(secs) = sys.uptime_secs {
+        format_duration(secs)
+    } else {
+        tracing::warn!("about: status uptime_secs is None");
+        "(unknown)".into()
     };
 
     // ── load average ────────────────────────────────────────────────────
-    let load = match sys.load_average {
-        Some(la) => format!("{:.2} {:.2} {:.2}", la.one, la.five, la.fifteen),
-        None => {
-            // load_average is legitimately None on some platforms (Windows);
-            // debug-log rather than warn to avoid noise on those hosts.
-            tracing::debug!("about: status load_average is None (platform-specific)");
-            "(unknown)".into()
-        }
+    let load = if let Some(la) = sys.load_average {
+        format!("{:.2} {:.2} {:.2}", la.one, la.five, la.fifteen)
+    } else {
+        // load_average is legitimately None on some platforms (Windows);
+        // debug-log rather than warn to avoid noise on those hosts.
+        tracing::debug!("about: status load_average is None (platform-specific)");
+        "(unknown)".into()
     };
 
     AboutSystem {
@@ -203,27 +201,29 @@ pub fn convert_runtime() -> AboutRuntime {
         cwd: match std::env::var("PWD") {
             Ok(v) if !v.is_empty() => v,
             _ => std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "(none)".into()),
+                .map_or_else(|_| "(none)".into(), |p| p.display().to_string()),
         },
-        config_dir: dirs::config_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| {
+        config_dir: dirs::config_dir().map_or_else(
+            || {
                 tracing::warn!("about: dirs::config_dir() returned None");
                 "(none)".into()
-            }),
-        data_dir: dirs::data_dir()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| {
+            },
+            |p| p.display().to_string(),
+        ),
+        data_dir: dirs::data_dir().map_or_else(
+            || {
                 tracing::warn!("about: dirs::data_dir() returned None");
                 "(none)".into()
-            }),
-        log_path: log_file_path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_else(|| {
+            },
+            |p| p.display().to_string(),
+        ),
+        log_path: log_file_path().map_or_else(
+            || {
                 tracing::warn!("about: could not resolve toride log path");
                 "(none)".into()
-            }),
+            },
+            |p| p.display().to_string(),
+        ),
     }
 }
 
@@ -247,10 +247,10 @@ fn env_or_none(key: &str) -> String {
 /// `"(none)"` when none are set. Used for `USER`/`LOGNAME` and `LC_ALL`/`LANG`
 /// where a POSIX fallback exists.
 fn env_or(primary: &str, fallback: &str) -> String {
-    if let Ok(v) = std::env::var(primary) {
-        if !v.is_empty() {
-            return v;
-        }
+    if let Ok(v) = std::env::var(primary)
+        && !v.is_empty()
+    {
+        return v;
     }
     env_or_none(fallback)
 }
@@ -272,12 +272,20 @@ mod tests {
     use super::*;
     use crate::status::{
         Capabilities, DaemonStatus, DiskIoSnapshot, DiskStatus, HardwareInventory, LoadAverage,
-        MemoryStatus, NetworkStatus, OsInfo, ProcessSnapshot, SensorSnapshot,
-        StaticInfo, SshStatus, SystemStatus, TorideStatus, VirtualizationSnapshot,
+        MemoryStatus, NetworkStatus, OsInfo, ProcessSnapshot, SensorSnapshot, SshStatus,
+        StaticInfo, SystemStatus, TorideStatus, VirtualizationSnapshot,
     };
     use std::time::{Duration, SystemTime};
 
     /// Build a minimal-but-populated [`TorideStatus`] for the convert tests.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "fixture builds a fully-populated status"
+    )]
+    #[expect(
+        clippy::duration_suboptimal_units,
+        reason = "stable std lacks larger-unit constructors"
+    )]
     fn sample_status() -> TorideStatus {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         TorideStatus {

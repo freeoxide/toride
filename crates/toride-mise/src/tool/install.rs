@@ -592,7 +592,8 @@ mod tests {
     async fn test_install_strict_mode() {
         let expected = toride_runner::CommandSpec::new("/usr/bin/mise")
             .arg("install")
-            .arg("node@22");
+            .arg("node@22")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -610,7 +611,8 @@ mod tests {
     async fn test_install_assert_called_with() {
         let expected = toride_runner::CommandSpec::new("/usr/bin/mise")
             .arg("install")
-            .arg("node@22");
+            .arg("node@22")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -620,9 +622,12 @@ mod tests {
 
         mise.install("node@22").await.unwrap();
 
-        fake.assert_called_with(&toride_runner::CommandSpec::new("/usr/bin/mise")
-            .arg("install")
-            .arg("node@22"));
+        fake.assert_called_with(
+            &toride_runner::CommandSpec::new("/usr/bin/mise")
+                .arg("install")
+                .arg("node@22")
+                .redact(true),
+        );
     }
 
     #[tokio::test]
@@ -631,7 +636,8 @@ mod tests {
             .arg("install")
             .arg("--force")
             .arg("--verbose")
-            .arg("node@22");
+            .arg("node@22")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -657,7 +663,8 @@ mod tests {
             .arg("install")
             .arg("--jobs")
             .arg("4")
-            .arg("python@3.12");
+            .arg("python@3.12")
+            .redact(true);
         let fake = Arc::new(
             FakeRunner::new()
                 .strict()
@@ -668,10 +675,13 @@ mod tests {
         let req = super::InstallRequest::new(["python@3.12"]).jobs(4);
         mise.install_with(&req).await.unwrap();
 
-        fake.assert_called_with(&toride_runner::CommandSpec::new("/usr/bin/mise")
-            .arg("install")
-            .arg("--jobs")
-            .arg("4")
-            .arg("python@3.12"));
+        fake.assert_called_with(
+            &toride_runner::CommandSpec::new("/usr/bin/mise")
+                .arg("install")
+                .arg("--jobs")
+                .arg("4")
+                .arg("python@3.12")
+                .redact(true),
+        );
     }
 }

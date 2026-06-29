@@ -24,23 +24,15 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
+)]
 #![expect(clippy::missing_errors_doc, reason = "library is internal")]
 #![cfg_attr(
     test,
     expect(
-        unsafe_code,
         clippy::needless_raw_string_hashes,
-        clippy::uninlined_format_args,
-        clippy::clone_on_copy,
-        clippy::items_after_statements,
-        clippy::redundant_closure_for_method_calls,
-        clippy::needless_pass_by_value,
-        clippy::useless_conversion,
-        clippy::stable_sort_primitive,
-        clippy::write_with_newline,
-        clippy::no_effect_underscore_binding,
-        clippy::op_ref,
         reason = "test code tolerates stricter lint patterns"
     )
 )]
@@ -55,12 +47,12 @@ pub mod parse;
 pub mod paths;
 pub mod render;
 pub mod report;
-pub mod validate;
 pub mod restic;
 pub mod restore;
 pub mod schedule;
 pub mod spec;
 pub mod systemd;
+pub mod validate;
 
 // ---------------------------------------------------------------------------
 // Module declarations -- feature-gated

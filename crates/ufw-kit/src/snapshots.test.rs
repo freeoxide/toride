@@ -274,5 +274,8 @@ fn snapshot_doctor_report_markdown() {
         },
     ];
 
-    insta::assert_snapshot!("doctor_report_markdown", render_findings_markdown(&findings));
+    insta::assert_snapshot!(
+        "doctor_report_markdown",
+        render_findings_markdown(&findings)
+    );
 }

@@ -49,12 +49,17 @@ async fn install_tiny_tool() {
         return;
     }
     let mise = build_real_mise();
-    mise.install("usage@latest").await.expect("install usage failed");
+    mise.install("usage@latest")
+        .await
+        .expect("install usage failed");
 
     // Verify the tool shows up in `mise ls`.
     let output = mise.run_checked(["ls", "--json"]).await.expect("ls failed");
     let stdout = output.stdout_trimmed();
-    assert!(stdout.contains("usage"), "usage not found in mise ls output after install");
+    assert!(
+        stdout.contains("usage"),
+        "usage not found in mise ls output after install"
+    );
 }
 
 /// Install node@22. This is expensive because the Node.js tarball is large.
@@ -64,14 +69,19 @@ async fn node_install() {
         return;
     }
     let mise = build_real_mise();
-    mise.install("node@22").await.expect("install node@22 failed");
+    mise.install("node@22")
+        .await
+        .expect("install node@22 failed");
 
     let output = mise.run_checked(["ls", "--json"]).await.expect("ls failed");
     let stdout = output.stdout_trimmed();
-    assert!(stdout.contains("node"), "node not found in mise ls output after install");
+    assert!(
+        stdout.contains("node"),
+        "node not found in mise ls output after install"
+    );
 }
 
-/// Install python@3.12. This is expensive because CPython must be compiled or
+/// Install python@3.12. This is expensive because `CPython` must be compiled or
 /// a large binary distribution must be downloaded.
 #[tokio::test]
 async fn python_install() {
@@ -79,9 +89,14 @@ async fn python_install() {
         return;
     }
     let mise = build_real_mise();
-    mise.install("python@3.12").await.expect("install python@3.12 failed");
+    mise.install("python@3.12")
+        .await
+        .expect("install python@3.12 failed");
 
     let output = mise.run_checked(["ls", "--json"]).await.expect("ls failed");
     let stdout = output.stdout_trimmed();
-    assert!(stdout.contains("python"), "python not found in mise ls output after install");
+    assert!(
+        stdout.contains("python"),
+        "python not found in mise ls output after install"
+    );
 }

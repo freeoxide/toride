@@ -11,11 +11,26 @@ pub fn render_findings(findings: &[Finding]) -> String {
 
     out.push_str("=== UFW Doctor Report ===\n\n");
 
-    let critical = findings.iter().filter(|f| f.severity == Severity::Critical).count();
-    let errors = findings.iter().filter(|f| f.severity == Severity::Important).count();
-    let warnings = findings.iter().filter(|f| f.severity == Severity::Warning).count();
-    let ok = findings.iter().filter(|f| f.severity == Severity::Ok).count();
-    let info = findings.iter().filter(|f| f.severity == Severity::Info).count();
+    let critical = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Critical)
+        .count();
+    let errors = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Important)
+        .count();
+    let warnings = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Warning)
+        .count();
+    let ok = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Ok)
+        .count();
+    let info = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Info)
+        .count();
 
     let _ = write!(
         out,
@@ -23,7 +38,10 @@ pub fn render_findings(findings: &[Finding]) -> String {
     );
 
     // Show critical and errors first
-    for finding in findings.iter().filter(|f| f.severity >= Severity::Important) {
+    for finding in findings
+        .iter()
+        .filter(|f| f.severity >= Severity::Important)
+    {
         let _ = writeln!(out, "[{}] {}", finding.severity, finding.title);
         let _ = writeln!(out, "  {}", finding.detail);
         if let Some(fix) = &finding.fix {
@@ -94,11 +112,26 @@ pub fn render_findings_markdown(findings: &[Finding]) -> String {
     out.push_str("# UFW Doctor Report\n\n");
 
     // Summary table
-    let critical = findings.iter().filter(|f| f.severity == Severity::Critical).count();
-    let errors = findings.iter().filter(|f| f.severity == Severity::Important).count();
-    let warnings = findings.iter().filter(|f| f.severity == Severity::Warning).count();
-    let ok = findings.iter().filter(|f| f.severity == Severity::Ok).count();
-    let info = findings.iter().filter(|f| f.severity == Severity::Info).count();
+    let critical = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Critical)
+        .count();
+    let errors = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Important)
+        .count();
+    let warnings = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Warning)
+        .count();
+    let ok = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Ok)
+        .count();
+    let info = findings
+        .iter()
+        .filter(|f| f.severity == Severity::Info)
+        .count();
     let total = findings.len();
 
     out.push_str("| Severity | Count |\n|----------|-------|\n");

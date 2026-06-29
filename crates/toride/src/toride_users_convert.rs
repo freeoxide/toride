@@ -6,9 +6,7 @@
 //! malformed input is skipped with a `tracing::warn!` and a placeholder, never
 //! propagated (the read-only section must never crash the TUI).
 
-use crate::ui::screens::toride_users::{
-    GroupEntry, SudoersEntry, UserEntry, UserFindingEntry,
-};
+use crate::ui::screens::toride_users::{GroupEntry, SudoersEntry, UserEntry, UserFindingEntry};
 
 /// Map a backend [`toride_users::report::Severity`] to a lowercase string used
 /// by the presentation layer: `"ok" | "info" | "warning" | "error" |
@@ -110,9 +108,7 @@ pub fn convert_sudoers_all(entries: Vec<toride_users::parse::SudoersEntry>) -> V
 /// Every finding maps 1:1. An empty `id` or `title` is logged and the entry is
 /// still produced with a placeholder so the row count matches the backend (the
 /// operator can see "something" even if the finding is malformed).
-pub fn convert_findings(
-    findings: Vec<toride_users::report::UserFinding>,
-) -> Vec<UserFindingEntry> {
+pub fn convert_findings(findings: Vec<toride_users::report::UserFinding>) -> Vec<UserFindingEntry> {
     findings
         .into_iter()
         .map(|f| {
@@ -147,7 +143,9 @@ pub fn convert_findings(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use toride_users::parse::{GroupEntry as RawGroup, PasswdEntry as RawPasswd, SudoersEntry as RawSudoers};
+    use toride_users::parse::{
+        GroupEntry as RawGroup, PasswdEntry as RawPasswd, SudoersEntry as RawSudoers,
+    };
     use toride_users::report::{Severity, UserFinding};
 
     // ── convert_passwd ────────────────────────────────────────────────────────

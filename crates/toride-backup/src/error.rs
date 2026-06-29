@@ -19,7 +19,6 @@ pub enum Error {
     // =======================================================================
     // I/O subsystem
     // =======================================================================
-
     /// An I/O error propagated from `std::io`.
     #[error("I/O error: {0}")]
     Io(#[from] std::io::Error),
@@ -27,7 +26,6 @@ pub enum Error {
     // =======================================================================
     // Binary / command subsystem
     // =======================================================================
-
     /// Required binary (restic or borg) not found on `$PATH`.
     #[error("binary not found: {0}")]
     BinaryNotFound(String),
@@ -40,7 +38,6 @@ pub enum Error {
     // =======================================================================
     // Repository subsystem
     // =======================================================================
-
     /// Failed to initialize a backup repository.
     #[error("repository init failed: {0}")]
     RepositoryInit(String),
@@ -56,7 +53,6 @@ pub enum Error {
     // =======================================================================
     // Restore subsystem
     // =======================================================================
-
     /// Restore operation failed.
     #[error("restore failed: {0}")]
     RestoreFailed(String),
@@ -64,7 +60,6 @@ pub enum Error {
     // =======================================================================
     // Schedule subsystem
     // =======================================================================
-
     /// Scheduling error (cron expression, systemd timer, etc.).
     #[error("schedule error: {0}")]
     ScheduleError(String),
@@ -72,7 +67,6 @@ pub enum Error {
     // =======================================================================
     // Configuration subsystem
     // =======================================================================
-
     /// Configuration file could not be parsed.
     #[error("config parse error: {0}")]
     ConfigParse(String),
@@ -80,7 +74,6 @@ pub enum Error {
     // =======================================================================
     // Serialization subsystem (gated behind the `serde` feature)
     // =======================================================================
-
     /// A JSON serialization/deserialization error from `serde_json`.
     ///
     /// Only present when the `serde` feature is enabled, so the various
@@ -93,7 +86,6 @@ pub enum Error {
     // =======================================================================
     // Generic
     // =======================================================================
-
     /// A generic error for cases that do not warrant a dedicated variant.
     #[error("{0}")]
     Other(String),

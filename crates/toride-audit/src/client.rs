@@ -26,6 +26,9 @@ use crate::{AuditPaths, Error, Result};
 /// ```
 pub struct AuditClient<'a> {
     runner: &'a dyn toride_runner::Runner,
+    /// System paths; kept for API symmetry with the other managers though
+    /// not read by this client yet.
+    #[allow(dead_code)]
     paths: &'a AuditPaths,
 }
 

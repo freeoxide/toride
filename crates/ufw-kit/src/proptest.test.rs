@@ -1,7 +1,7 @@
 //! Property-based tests using proptest.
 
+use crate::spec::{Action, Direction, LoggingLevel, PortSpec, Protocol, ProtocolFilter, RuleSpec};
 use proptest::prelude::*;
-use crate::spec::{Action, Direction, Protocol, PortSpec, LoggingLevel, RuleSpec, ProtocolFilter};
 
 // --- Strategies ---
 
@@ -18,7 +18,12 @@ fn reversed_port_range() -> impl Strategy<Value = (u16, u16)> {
 }
 
 fn action_strategy() -> impl Strategy<Value = Action> {
-    proptest::sample::select(vec![Action::Allow, Action::Deny, Action::Reject, Action::Limit])
+    proptest::sample::select(vec![
+        Action::Allow,
+        Action::Deny,
+        Action::Reject,
+        Action::Limit,
+    ])
 }
 
 fn direction_strategy() -> impl Strategy<Value = Direction> {
@@ -27,8 +32,13 @@ fn direction_strategy() -> impl Strategy<Value = Direction> {
 
 fn protocol_strategy() -> impl Strategy<Value = Protocol> {
     proptest::sample::select(vec![
-        Protocol::Tcp, Protocol::Udp, Protocol::Ah, Protocol::Esp,
-        Protocol::Gre, Protocol::Ipv6, Protocol::Igmp,
+        Protocol::Tcp,
+        Protocol::Udp,
+        Protocol::Ah,
+        Protocol::Esp,
+        Protocol::Gre,
+        Protocol::Ipv6,
+        Protocol::Igmp,
     ])
 }
 
@@ -38,14 +48,22 @@ fn port_protocol_strategy() -> impl Strategy<Value = Protocol> {
 
 fn logging_level_strategy() -> impl Strategy<Value = LoggingLevel> {
     proptest::sample::select(vec![
-        LoggingLevel::Off, LoggingLevel::On, LoggingLevel::Low,
-        LoggingLevel::Medium, LoggingLevel::High, LoggingLevel::Full,
+        LoggingLevel::Off,
+        LoggingLevel::On,
+        LoggingLevel::Low,
+        LoggingLevel::Medium,
+        LoggingLevel::High,
+        LoggingLevel::Full,
     ])
 }
 
 fn non_port_protocol_strategy() -> impl Strategy<Value = Protocol> {
     proptest::sample::select(vec![
-        Protocol::Ah, Protocol::Esp, Protocol::Gre, Protocol::Ipv6, Protocol::Igmp,
+        Protocol::Ah,
+        Protocol::Esp,
+        Protocol::Gre,
+        Protocol::Ipv6,
+        Protocol::Igmp,
     ])
 }
 

@@ -87,7 +87,7 @@ fn main() {
         }
 
         // I/O rates from delta
-        if let Some(ref dio) = delta.as_ref().and_then(|d| d.disk_io.as_ref()) {
+        if let Some(dio) = delta.as_ref().and_then(|d| d.disk_io.as_ref()) {
             println!("  I/O rates:");
             println!(
                 "    Read:  {:.1} B/s ({} delta, {} ops)",

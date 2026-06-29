@@ -168,7 +168,11 @@ impl FirewallContent {
     /// (`available == false`) so the badge stays honestly empty.
     #[must_use]
     pub fn is_active(&self) -> Option<bool> {
-        if self.available { Some(self.active) } else { None }
+        if self.available {
+            Some(self.active)
+        } else {
+            None
+        }
     }
 
     /// Set the human-readable reason the backend was unreachable. Cleared
@@ -231,6 +235,10 @@ impl FirewallContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with SSH / fail2ban tabs (which clamp on set).
@@ -272,7 +280,7 @@ impl FirewallContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -285,7 +293,7 @@ impl FirewallContent {
     ///
     /// `available == false` is only ever set when a collection task returned an
     /// empty bundle, which today happens when the `spawn_blocking` task PANICS
-    /// (JoinError) or when `Ufw::system()` construction failed entirely (the
+    /// (`JoinError`) or when `Ufw::system()` construction failed entirely (the
     /// spawn returned `Err`). A missing `ufw` binary instead surfaces as a
     /// Critical doctor finding, which keeps `available == true` so the operator
     /// sees the findings panel. The reason string is surfaced here so the
@@ -315,8 +323,12 @@ impl FirewallContent {
             .clone()
             .unwrap_or_else(|| "UFW data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -368,21 +380,27 @@ impl FirewallContent {
         lines.push(Line::from(vec![
             Span::styled("  in       ", Style::new().fg(p.text_muted)),
             Span::styled(
-                self.default_incoming.clone().unwrap_or_else(|| "(unset)".into()),
+                self.default_incoming
+                    .clone()
+                    .unwrap_or_else(|| "(unset)".into()),
                 Style::new().fg(p.text),
             ),
         ]));
         lines.push(Line::from(vec![
             Span::styled("  out      ", Style::new().fg(p.text_muted)),
             Span::styled(
-                self.default_outgoing.clone().unwrap_or_else(|| "(unset)".into()),
+                self.default_outgoing
+                    .clone()
+                    .unwrap_or_else(|| "(unset)".into()),
                 Style::new().fg(p.text),
             ),
         ]));
         lines.push(Line::from(vec![
             Span::styled("  routed   ", Style::new().fg(p.text_muted)),
             Span::styled(
-                self.default_routed.clone().unwrap_or_else(|| "(unset)".into()),
+                self.default_routed
+                    .clone()
+                    .unwrap_or_else(|| "(unset)".into()),
                 Style::new().fg(p.text),
             ),
         ]));
@@ -391,7 +409,9 @@ impl FirewallContent {
         lines.push(Line::from(vec![
             Span::styled("  logging  ", Style::new().fg(p.text_muted)),
             Span::styled(
-                self.logging_level.clone().unwrap_or_else(|| "(unset)".into()),
+                self.logging_level
+                    .clone()
+                    .unwrap_or_else(|| "(unset)".into()),
                 Style::new().fg(p.text),
             ),
         ]));
@@ -404,12 +424,15 @@ impl FirewallContent {
         ]));
     }
 
-    fn push_rules_lines(
-        &self,
-        lines: &mut Vec<Line<'static>>,
-        p: Palette,
-        inner_width: u16,
-    ) {
+    fn push_rules_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette, inner_width: u16) {
+        // Fixed-width prefix for every rule row:
+        //   "  " (2) + num(6) + action(6) + " "(1) + dir(3) + " "(1) = 19 cols.
+        // The raw column fills the remainder, scaled to the viewport so wider
+        // terminals reveal more of the raw text and narrower ones clip less
+        // abruptly. Falls back to a 50-col cap when the pane is degenerate or
+        // narrower than the prefix (saturating, never panics).
+        const PREFIX_WIDTH: usize = 19;
+        const FALLBACK_RAW: usize = 50;
         let header = format!("Rules ({})", self.rules.len());
         lines.push(Line::from(Span::styled(
             header,
@@ -424,14 +447,6 @@ impl FirewallContent {
             return;
         }
 
-        // Fixed-width prefix for every rule row:
-        //   "  " (2) + num(6) + action(6) + " "(1) + dir(3) + " "(1) = 19 cols.
-        // The raw column fills the remainder, scaled to the viewport so wider
-        // terminals reveal more of the raw text and narrower ones clip less
-        // abruptly. Falls back to a 50-col cap when the pane is degenerate or
-        // narrower than the prefix (saturating, never panics).
-        const PREFIX_WIDTH: usize = 19;
-        const FALLBACK_RAW: usize = 50;
         let raw_max = if inner_width as usize >= PREFIX_WIDTH {
             let scaled = inner_width as usize - PREFIX_WIDTH;
             if scaled >= 1 { scaled } else { FALLBACK_RAW }
@@ -442,22 +457,21 @@ impl FirewallContent {
         for rule in &self.rules {
             let action_color = match rule.action.as_str() {
                 "allow" => p.ok,
-                "deny" => p.err,
-                "reject" => p.err,
+                "deny" | "reject" => p.err,
                 "limit" => p.warn,
                 _ => p.text_dim,
             };
-            let num = rule
-                .number
-                .map(|n| format!("[{n}] "))
-                .unwrap_or_default();
+            let num = rule.number.map(|n| format!("[{n}] ")).unwrap_or_default();
             let num = truncate_str(&num, 6);
             let action = format!("{:<6}", rule.action);
             let dir = format!("{:<3}", rule.direction);
             let raw = truncate_str(&rule.raw, raw_max);
             lines.push(Line::from(vec![
                 Span::styled(format!("  {num}"), Style::new().fg(p.text_dim)),
-                Span::styled(action, Style::new().fg(action_color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    action,
+                    Style::new().fg(action_color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!(" {dir} "), Style::new().fg(p.text_muted)),
                 Span::styled(raw, Style::new().fg(p.text)),
             ]));
@@ -482,11 +496,8 @@ impl FirewallContent {
         // Group by severity: Critical > Important > Warning > Info > Ok.
         let order = ["critical", "important", "warning", "info", "ok"];
         for sev in order {
-            let group: Vec<&FindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
+            let group: Vec<&FindingEntry> =
+                self.findings.iter().filter(|f| f.severity == sev).collect();
             if group.is_empty() {
                 continue;
             }
@@ -641,19 +652,20 @@ mod tests {
         // silent rename in `doctor.rs` surfaces here too.
         let findings = sample_findings();
         let ids: Vec<&str> = findings.iter().map(|f| f.id.as_str()).collect();
-        assert!(ids.contains(&"bin:ufw:exists"), "missing bin:ufw:exists: {ids:?}");
+        assert!(
+            ids.contains(&"bin:ufw:exists"),
+            "missing bin:ufw:exists: {ids:?}"
+        );
         assert!(
             ids.contains(&"bin:ufw:version-fail"),
             "missing bin:ufw:version-fail: {ids:?}"
         );
     }
 
-    /// Render a content area to a string (snapshot pattern from ssh keys_tab.rs).
+    /// Render a content area to a string (snapshot pattern from ssh `keys_tab.rs`).
     fn render_to_string(content: &mut FirewallContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -813,10 +825,7 @@ mod tests {
             out.contains("Could not read UFW version"),
             "finding title: {out}"
         );
-        assert!(
-            out.contains("Install ufw"),
-            "fix hint: {out}"
-        );
+        assert!(out.contains("Install ufw"), "fix hint: {out}");
     }
 
     #[test]

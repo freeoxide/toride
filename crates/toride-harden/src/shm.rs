@@ -48,7 +48,7 @@ pub fn missing_security_options(mount: &MountInfo) -> Vec<&'static str> {
 
     SHM_REQUIRED_OPTIONS
         .iter()
-        .filter(|&&required| !opts.iter().any(|opt| *opt == required))
+        .filter(|&&required| !opts.contains(&required))
         .copied()
         .collect()
 }

@@ -306,67 +306,149 @@ fn check_system(system: &SystemStatus) -> Vec<DoctorCheck> {
         },
         message: system.os_info.name.as_ref().map_or_else(
             || "OS info unavailable".to_string(),
-            |n| format!(
-                "OS: {n} {}",
-                system.os_info.version.as_deref().unwrap_or("unknown")
-            ),
+            |n| {
+                format!(
+                    "OS: {n} {}",
+                    system.os_info.version.as_deref().unwrap_or("unknown")
+                )
+            },
         ),
     });
     checks
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "enumerates many independent system checks; splitting adds indirection without clarity"
+)]
 fn check_system_extended(system: &SystemStatus) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     checks.push(DoctorCheck {
         name: "system.gpu_provider".to_string(),
-        status: if system.gpu.is_empty() { CheckStatus::Warn } else { CheckStatus::Pass },
+        status: if system.gpu.is_empty() {
+            CheckStatus::Warn
+        } else {
+            CheckStatus::Pass
+        },
         message: format!("{} GPU(s) detected", system.gpu.len()),
     });
     checks.push(DoctorCheck {
         name: "system.battery_provider".to_string(),
-        status: if system.battery.is_some() { CheckStatus::Pass } else { CheckStatus::Warn },
-        message: if system.battery.is_some() { "battery detected" } else { "no battery detected" }.to_string(),
+        status: if system.battery.is_some() {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Warn
+        },
+        message: if system.battery.is_some() {
+            "battery detected"
+        } else {
+            "no battery detected"
+        }
+        .to_string(),
     });
     checks.push(DoctorCheck {
         name: "system.sensor_provider".to_string(),
-        status: if system.sensors.is_empty() { CheckStatus::Warn } else { CheckStatus::Pass },
+        status: if system.sensors.is_empty() {
+            CheckStatus::Warn
+        } else {
+            CheckStatus::Pass
+        },
         message: format!("{} sensor(s) found", system.sensors.len()),
     });
     checks.push(DoctorCheck {
         name: "system.cpu_sample_quality".to_string(),
-        status: if let Some(cpu) = system.cpu_usage { if (0.0..=100.0).contains(&cpu) { CheckStatus::Pass } else { CheckStatus::Fail } } else { CheckStatus::Warn },
-        message: system.cpu_usage.map_or_else(|| "CPU usage unavailable".to_string(), |u| format!("CPU usage: {u:.1}%")),
+        status: if let Some(cpu) = system.cpu_usage {
+            if (0.0..=100.0).contains(&cpu) {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Fail
+            }
+        } else {
+            CheckStatus::Warn
+        },
+        message: system.cpu_usage.map_or_else(
+            || "CPU usage unavailable".to_string(),
+            |u| format!("CPU usage: {u:.1}%"),
+        ),
     });
     checks.push(DoctorCheck {
         name: "system.memory_sanity".to_string(),
-        status: if system.memory.total_bytes > 0 && system.memory.used_bytes <= system.memory.total_bytes { CheckStatus::Pass } else if system.memory.total_bytes == 0 { CheckStatus::Fail } else { CheckStatus::Warn },
-        message: format!("memory: {} / {} (used <= total: {})", system.memory.used_bytes, system.memory.total_bytes, system.memory.used_bytes <= system.memory.total_bytes),
+        status: if system.memory.total_bytes > 0
+            && system.memory.used_bytes <= system.memory.total_bytes
+        {
+            CheckStatus::Pass
+        } else if system.memory.total_bytes == 0 {
+            CheckStatus::Fail
+        } else {
+            CheckStatus::Warn
+        },
+        message: format!(
+            "memory: {} / {} (used <= total: {})",
+            system.memory.used_bytes,
+            system.memory.total_bytes,
+            system.memory.used_bytes <= system.memory.total_bytes
+        ),
     });
-    let mut mount_points: Vec<&str> = system.disks.iter().map(|d| d.mount_point.as_str()).collect();
-    mount_points.sort();
+    let mut mount_points: Vec<&str> = system
+        .disks
+        .iter()
+        .map(|d| d.mount_point.as_str())
+        .collect();
+    mount_points.sort_unstable();
     let has_dupes = mount_points.windows(2).any(|w| w[0] == w[1]);
     checks.push(DoctorCheck {
         name: "system.disk_duplicates".to_string(),
-        status: if has_dupes { CheckStatus::Warn } else { CheckStatus::Pass },
-        message: if has_dupes { "duplicate mount points detected".to_string() } else { format!("{} disk(s), no duplicates", system.disks.len()) },
+        status: if has_dupes {
+            CheckStatus::Warn
+        } else {
+            CheckStatus::Pass
+        },
+        message: if has_dupes {
+            "duplicate mount points detected".to_string()
+        } else {
+            format!("{} disk(s), no duplicates", system.disks.len())
+        },
     });
     let virt = &system.virtualization;
     let mut envs = Vec::new();
-    if virt.in_docker { envs.push("docker"); }
-    if virt.in_lxc { envs.push("lxc"); }
-    if virt.in_containerd { envs.push("containerd"); }
-    if virt.in_kubernetes { envs.push("kubernetes"); }
-    if virt.in_wsl { envs.push("wsl"); }
-    if virt.in_vm { envs.push("vm"); }
+    if virt.in_docker {
+        envs.push("docker");
+    }
+    if virt.in_lxc {
+        envs.push("lxc");
+    }
+    if virt.in_containerd {
+        envs.push("containerd");
+    }
+    if virt.in_kubernetes {
+        envs.push("kubernetes");
+    }
+    if virt.in_wsl {
+        envs.push("wsl");
+    }
+    if virt.in_vm {
+        envs.push("vm");
+    }
     checks.push(DoctorCheck {
         name: "system.virtualization".to_string(),
         status: CheckStatus::Pass,
-        message: if envs.is_empty() { "bare metal or unknown".to_string() } else { format!("running in: {}", envs.join(", ")) },
+        message: if envs.is_empty() {
+            "bare metal or unknown".to_string()
+        } else {
+            format!("running in: {}", envs.join(", "))
+        },
     });
     checks.push(DoctorCheck {
         name: "system.disk_io".to_string(),
-        status: if system.disk_io.read_bytes > 0 || system.disk_io.written_bytes > 0 { CheckStatus::Pass } else { CheckStatus::Warn },
-        message: format!("read: {} bytes, written: {} bytes", system.disk_io.read_bytes, system.disk_io.written_bytes),
+        status: if system.disk_io.read_bytes > 0 || system.disk_io.written_bytes > 0 {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Warn
+        },
+        message: format!(
+            "read: {} bytes, written: {} bytes",
+            system.disk_io.read_bytes, system.disk_io.written_bytes
+        ),
     });
 
     // --- Data quality checks ---
@@ -376,9 +458,8 @@ fn check_system_extended(system: &SystemStatus) -> Vec<DoctorCheck> {
     checks.push(DoctorCheck {
         name: "quality.cpu_interval".to_string(),
         status: match system.cpu_usage {
-            Some(0.0) => CheckStatus::Warn,
+            Some(0.0) | None => CheckStatus::Warn,
             Some(_) => CheckStatus::Pass,
-            None => CheckStatus::Warn,
         },
         message: system.cpu_usage.map_or_else(
             || "CPU usage unavailable (possible sampling issue)".to_string(),
@@ -412,7 +493,11 @@ fn check_system_extended(system: &SystemStatus) -> Vec<DoctorCheck> {
         let reasonable = bt > 946_684_800 && bt < 1_893_456_000;
         checks.push(DoctorCheck {
             name: "quality.clock_sanity".to_string(),
-            status: if reasonable { CheckStatus::Pass } else { CheckStatus::Fail },
+            status: if reasonable {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Fail
+            },
             message: if reasonable {
                 format!("boot time {bt} is reasonable")
             } else {
@@ -443,10 +528,7 @@ fn check_system_extended(system: &SystemStatus) -> Vec<DoctorCheck> {
         message: if virtual_disks.is_empty() {
             "no virtual filesystems in disk list".to_string()
         } else {
-            format!(
-                "virtual filesystems detected: {}",
-                virtual_disks.join(", ")
-            )
+            format!("virtual filesystems detected: {}", virtual_disks.join(", "))
         },
     });
 
@@ -457,10 +539,7 @@ fn check_system_extended(system: &SystemStatus) -> Vec<DoctorCheck> {
             checks.push(DoctorCheck {
                 name: format!("quality.gpu_{i}_identity_no_metrics"),
                 status: CheckStatus::Warn,
-                message: format!(
-                    "GPU '{}' has name but no utilization data",
-                    gpu.name
-                ),
+                message: format!("GPU '{}' has name but no utilization data", gpu.name),
             });
         }
     }
@@ -472,14 +551,36 @@ fn check_privacy(system: &SystemStatus) -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
     checks.push(DoctorCheck {
         name: "privacy.hostname".to_string(),
-        status: if system.hostname.is_empty() { CheckStatus::Warn } else { CheckStatus::Pass },
-        message: if system.hostname.is_empty() { "hostname is empty (may be redacted)" } else { "hostname present" }.to_string(),
+        status: if system.hostname.is_empty() {
+            CheckStatus::Warn
+        } else {
+            CheckStatus::Pass
+        },
+        message: if system.hostname.is_empty() {
+            "hostname is empty (may be redacted)"
+        } else {
+            "hostname present"
+        }
+        .to_string(),
     });
-    let has_details = system.processes.processes.iter().any(|p| p.executable_path.is_some() || p.user.is_some() || p.thread_count.is_some());
+    let has_details = system
+        .processes
+        .processes
+        .iter()
+        .any(|p| p.executable_path.is_some() || p.user.is_some() || p.thread_count.is_some());
     checks.push(DoctorCheck {
         name: "privacy.process_details".to_string(),
-        status: if has_details { CheckStatus::Pass } else { CheckStatus::Warn },
-        message: if has_details { "process details available" } else { "no process details available" }.to_string(),
+        status: if has_details {
+            CheckStatus::Pass
+        } else {
+            CheckStatus::Warn
+        },
+        message: if has_details {
+            "process details available"
+        } else {
+            "no process details available"
+        }
+        .to_string(),
     });
     checks
 }
@@ -588,7 +689,11 @@ fn check_permissions() -> Vec<DoctorCheck> {
             || std::path::Path::new("/proc/self/exe").exists();
         checks.push(DoctorCheck {
             name: "permissions.process_executable".to_string(),
-            status: if readable { CheckStatus::Pass } else { CheckStatus::Warn },
+            status: if readable {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            },
             message: if readable {
                 "process executable path is readable".to_string()
             } else {
@@ -603,7 +708,11 @@ fn check_permissions() -> Vec<DoctorCheck> {
         let readable = std::fs::read_to_string("/proc/self/cmdline").is_ok();
         checks.push(DoctorCheck {
             name: "permissions.process_cmdline".to_string(),
-            status: if readable { CheckStatus::Pass } else { CheckStatus::Warn },
+            status: if readable {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            },
             message: if readable {
                 "process command line is readable".to_string()
             } else {
@@ -618,7 +727,11 @@ fn check_permissions() -> Vec<DoctorCheck> {
         let readable = std::fs::read_to_string("/proc/diskstats").is_ok();
         checks.push(DoctorCheck {
             name: "permissions.disk_stats".to_string(),
-            status: if readable { CheckStatus::Pass } else { CheckStatus::Warn },
+            status: if readable {
+                CheckStatus::Pass
+            } else {
+                CheckStatus::Warn
+            },
             message: if readable {
                 "/proc/diskstats is readable".to_string()
             } else {
@@ -713,7 +826,11 @@ fn check_privacy_redaction(system: &SystemStatus, mode: PrivacyMode) -> Vec<Doct
             || system.disks.iter().any(|d| d.serial.is_some());
         checks.push(DoctorCheck {
             name: "privacy.serial_redacted".to_string(),
-            status: if has_serial { CheckStatus::Warn } else { CheckStatus::Pass },
+            status: if has_serial {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Pass
+            },
             message: if has_serial {
                 "serial numbers present in data (should be redacted in output)".to_string()
             } else {
@@ -725,10 +842,17 @@ fn check_privacy_redaction(system: &SystemStatus, mode: PrivacyMode) -> Vec<Doct
     // privacy.mac_redacted: Check that MAC addresses are redacted in Safe
     // mode.
     if mode == PrivacyMode::Safe {
-        let has_mac = system.network_interfaces.iter().any(|i| i.mac_address.is_some());
+        let has_mac = system
+            .network_interfaces
+            .iter()
+            .any(|i| i.mac_address.is_some());
         checks.push(DoctorCheck {
             name: "privacy.mac_redacted".to_string(),
-            status: if has_mac { CheckStatus::Warn } else { CheckStatus::Pass },
+            status: if has_mac {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Pass
+            },
             message: if has_mac {
                 "MAC addresses present in data (should be redacted in Safe mode)".to_string()
             } else {
@@ -739,12 +863,21 @@ fn check_privacy_redaction(system: &SystemStatus, mode: PrivacyMode) -> Vec<Doct
 
     // privacy.command_args: Check that command lines are redacted in Safe mode.
     if mode == PrivacyMode::Safe {
-        let has_cmdline = system.processes.processes.iter().any(|p| p.command_line.is_some());
+        let has_cmdline = system
+            .processes
+            .processes
+            .iter()
+            .any(|p| p.command_line.is_some());
         checks.push(DoctorCheck {
             name: "privacy.command_args".to_string(),
-            status: if has_cmdline { CheckStatus::Warn } else { CheckStatus::Pass },
+            status: if has_cmdline {
+                CheckStatus::Warn
+            } else {
+                CheckStatus::Pass
+            },
             message: if has_cmdline {
-                "command line arguments present in data (should be redacted in Safe mode)".to_string()
+                "command line arguments present in data (should be redacted in Safe mode)"
+                    .to_string()
             } else {
                 "no command line arguments in collected data".to_string()
             },
@@ -786,8 +919,15 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "table-driven test covering many custom status combinations"
+    )]
     fn check_with_custom_statuses() {
-        use crate::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
+        use crate::system::{
+            DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo,
+            SensorSnapshot, StaticInfo, VirtualizationSnapshot,
+        };
         let system = SystemStatus {
             cpu_usage: Some(50.0),
             memory: MemoryStatus {
@@ -857,9 +997,31 @@ mod tests {
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -899,24 +1061,109 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustively asserts each doctor check outcome for an empty hostname"
+    )]
     fn check_system_hostname_empty_fails() {
-        use crate::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
+        use crate::system::{
+            DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo,
+            SensorSnapshot, StaticInfo, VirtualizationSnapshot,
+        };
         let system = SystemStatus {
             cpu_usage: Some(50.0),
-            memory: MemoryStatus { used_bytes: 100, total_bytes: 200, percentage: 50.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
-            disk: DiskStatus { name: "test".to_string(), mount_point: "/".to_string(), filesystem: "ext4".to_string(), used_bytes: 100, total_bytes: 200, percentage: 50.0, is_removable: false, free_bytes: 0, available_bytes: 0, disk_type: "Unknown".to_string(), physical_device_path: None, model: None, serial: None, temperature: None, wear_percent: None },
-            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
-            load_average: None, uptime_secs: Some(100), hostname: String::new(),
-            os_info: OsInfo { name: Some("TestOS".to_string()), version: Some("1.0".to_string()), kernel_version: None, arch: "x86_64".to_string(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
-            cpu_cores: vec![], physical_cores: Some(4), swap: None, disks: vec![],
-            network_interfaces: vec![], sensors: vec![], boot_time: None,
-            processes: crate::system::ProcessSnapshot { processes: vec![], total_count: 0 },
-            gpu: vec![], battery: None,
+            memory: MemoryStatus {
+                used_bytes: 100,
+                total_bytes: 200,
+                percentage: 50.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
+            disk: DiskStatus {
+                name: "test".to_string(),
+                mount_point: "/".to_string(),
+                filesystem: "ext4".to_string(),
+                used_bytes: 100,
+                total_bytes: 200,
+                percentage: 50.0,
+                is_removable: false,
+                free_bytes: 0,
+                available_bytes: 0,
+                disk_type: "Unknown".to_string(),
+                physical_device_path: None,
+                model: None,
+                serial: None,
+                temperature: None,
+                wear_percent: None,
+            },
+            network: NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            },
+            load_average: None,
+            uptime_secs: Some(100),
+            hostname: String::new(),
+            os_info: OsInfo {
+                name: Some("TestOS".to_string()),
+                version: Some("1.0".to_string()),
+                kernel_version: None,
+                arch: "x86_64".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
+            },
+            cpu_cores: vec![],
+            physical_cores: Some(4),
+            swap: None,
+            disks: vec![],
+            network_interfaces: vec![],
+            sensors: vec![],
+            boot_time: None,
+            processes: crate::system::ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
+            gpu: vec![],
+            battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -937,17 +1184,40 @@ mod tests {
                 cache_l3: None,
             },
         };
-        let daemon = DaemonStatus { alive: false, pid: None, uptime_secs: None, restart_count: 0, stale_socket: false };
-        let ssh = SshStatus { mux_master_alive: false, control_path_valid: false, config_valid: false, agent_running: false, key_count: 0 };
+        let daemon = DaemonStatus {
+            alive: false,
+            pid: None,
+            uptime_secs: None,
+            restart_count: 0,
+            stale_socket: false,
+        };
+        let ssh = SshStatus {
+            mux_master_alive: false,
+            control_path_valid: false,
+            config_valid: false,
+            agent_running: false,
+            key_count: 0,
+        };
         let report = DoctorReport::check_with(&system, &daemon, &ssh);
-        let hostname_check = report.checks.iter().find(|c| c.name == "system.hostname").unwrap();
+        let hostname_check = report
+            .checks
+            .iter()
+            .find(|c| c.name == "system.hostname")
+            .unwrap();
         assert_eq!(hostname_check.status, crate::doctor::CheckStatus::Fail);
     }
 
     // --- Helpers ---
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture fully populates a wide SystemStatus struct"
+    )]
     fn happy_system() -> SystemStatus {
-        use crate::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
+        use crate::system::{
+            DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo,
+            SensorSnapshot, StaticInfo, VirtualizationSnapshot,
+        };
         SystemStatus {
             cpu_usage: Some(50.0),
             memory: MemoryStatus {
@@ -1033,9 +1303,31 @@ mod tests {
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -1093,7 +1385,10 @@ mod tests {
         let mut system = happy_system();
         system.hostname = String::new();
         let report = DoctorReport::check_with(&system, &happy_daemon(), &happy_ssh());
-        assert_eq!(find_check(&report, "system.hostname").status, CheckStatus::Fail);
+        assert_eq!(
+            find_check(&report, "system.hostname").status,
+            CheckStatus::Fail
+        );
     }
 
     #[test]
@@ -1109,7 +1404,10 @@ mod tests {
             buffers_bytes: 0,
         };
         let report = DoctorReport::check_with(&system, &happy_daemon(), &happy_ssh());
-        assert_eq!(find_check(&report, "system.memory").status, CheckStatus::Fail);
+        assert_eq!(
+            find_check(&report, "system.memory").status,
+            CheckStatus::Fail
+        );
     }
 
     #[test]
@@ -1117,7 +1415,10 @@ mod tests {
         let mut system = happy_system();
         system.disks = vec![];
         let report = DoctorReport::check_with(&system, &happy_daemon(), &happy_ssh());
-        assert_eq!(find_check(&report, "system.disks").status, CheckStatus::Warn);
+        assert_eq!(
+            find_check(&report, "system.disks").status,
+            CheckStatus::Warn
+        );
     }
 
     #[test]
@@ -1125,7 +1426,10 @@ mod tests {
         let mut system = happy_system();
         system.os_info.name = None;
         let report = DoctorReport::check_with(&system, &happy_daemon(), &happy_ssh());
-        assert_eq!(find_check(&report, "system.os_info").status, CheckStatus::Warn);
+        assert_eq!(
+            find_check(&report, "system.os_info").status,
+            CheckStatus::Warn
+        );
     }
 
     #[test]
@@ -1133,7 +1437,10 @@ mod tests {
         let mut daemon = happy_daemon();
         daemon.stale_socket = true;
         let report = DoctorReport::check_with(&happy_system(), &daemon, &happy_ssh());
-        assert_eq!(find_check(&report, "daemon.socket").status, CheckStatus::Fail);
+        assert_eq!(
+            find_check(&report, "daemon.socket").status,
+            CheckStatus::Fail
+        );
     }
 
     #[test]
@@ -1157,8 +1464,16 @@ mod tests {
     fn all_pass_report_returns_true() {
         let report = DoctorReport {
             checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Pass, message: "ok".into() },
-                DoctorCheck { name: "b".into(), status: CheckStatus::Pass, message: "ok".into() },
+                DoctorCheck {
+                    name: "a".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
+                DoctorCheck {
+                    name: "b".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
             ],
         };
         assert!(report.all_passed());
@@ -1168,8 +1483,16 @@ mod tests {
     fn mixed_pass_and_warn_returns_true() {
         let report = DoctorReport {
             checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Pass, message: "ok".into() },
-                DoctorCheck { name: "b".into(), status: CheckStatus::Warn, message: "warn".into() },
+                DoctorCheck {
+                    name: "a".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
+                DoctorCheck {
+                    name: "b".into(),
+                    status: CheckStatus::Warn,
+                    message: "warn".into(),
+                },
             ],
         };
         assert!(report.all_passed());
@@ -1179,9 +1502,21 @@ mod tests {
     fn any_fail_returns_false() {
         let report = DoctorReport {
             checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Pass, message: "ok".into() },
-                DoctorCheck { name: "b".into(), status: CheckStatus::Fail, message: "bad".into() },
-                DoctorCheck { name: "c".into(), status: CheckStatus::Warn, message: "warn".into() },
+                DoctorCheck {
+                    name: "a".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
+                DoctorCheck {
+                    name: "b".into(),
+                    status: CheckStatus::Fail,
+                    message: "bad".into(),
+                },
+                DoctorCheck {
+                    name: "c".into(),
+                    status: CheckStatus::Warn,
+                    message: "warn".into(),
+                },
             ],
         };
         assert!(!report.all_passed());
@@ -1199,8 +1534,16 @@ mod tests {
     fn summary_all_pass() {
         let report = DoctorReport {
             checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Pass, message: "ok".into() },
-                DoctorCheck { name: "b".into(), status: CheckStatus::Pass, message: "ok".into() },
+                DoctorCheck {
+                    name: "a".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
+                DoctorCheck {
+                    name: "b".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
             ],
         };
         assert_eq!(report.summary(), (2, 0, 0));
@@ -1210,8 +1553,16 @@ mod tests {
     fn summary_all_warn() {
         let report = DoctorReport {
             checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Warn, message: "w".into() },
-                DoctorCheck { name: "b".into(), status: CheckStatus::Warn, message: "w".into() },
+                DoctorCheck {
+                    name: "a".into(),
+                    status: CheckStatus::Warn,
+                    message: "w".into(),
+                },
+                DoctorCheck {
+                    name: "b".into(),
+                    status: CheckStatus::Warn,
+                    message: "w".into(),
+                },
             ],
         };
         assert_eq!(report.summary(), (0, 2, 0));
@@ -1220,9 +1571,11 @@ mod tests {
     #[test]
     fn summary_all_fail() {
         let report = DoctorReport {
-            checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Fail, message: "f".into() },
-            ],
+            checks: vec![DoctorCheck {
+                name: "a".into(),
+                status: CheckStatus::Fail,
+                message: "f".into(),
+            }],
         };
         assert_eq!(report.summary(), (0, 0, 1));
     }
@@ -1231,10 +1584,26 @@ mod tests {
     fn summary_mixed_statuses() {
         let report = DoctorReport {
             checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Pass, message: "ok".into() },
-                DoctorCheck { name: "b".into(), status: CheckStatus::Warn, message: "w".into() },
-                DoctorCheck { name: "c".into(), status: CheckStatus::Fail, message: "f".into() },
-                DoctorCheck { name: "d".into(), status: CheckStatus::Pass, message: "ok".into() },
+                DoctorCheck {
+                    name: "a".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
+                DoctorCheck {
+                    name: "b".into(),
+                    status: CheckStatus::Warn,
+                    message: "w".into(),
+                },
+                DoctorCheck {
+                    name: "c".into(),
+                    status: CheckStatus::Fail,
+                    message: "f".into(),
+                },
+                DoctorCheck {
+                    name: "d".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
             ],
         };
         assert_eq!(report.summary(), (2, 1, 1));
@@ -1246,8 +1615,16 @@ mod tests {
     fn display_all_pass() {
         let report = DoctorReport {
             checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Pass, message: "ok".into() },
-                DoctorCheck { name: "b".into(), status: CheckStatus::Pass, message: "fine".into() },
+                DoctorCheck {
+                    name: "a".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
+                DoctorCheck {
+                    name: "b".into(),
+                    status: CheckStatus::Pass,
+                    message: "fine".into(),
+                },
             ],
         };
         let output = format!("{report}");
@@ -1258,9 +1635,11 @@ mod tests {
     #[test]
     fn display_all_fail() {
         let report = DoctorReport {
-            checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Fail, message: "bad".into() },
-            ],
+            checks: vec![DoctorCheck {
+                name: "a".into(),
+                status: CheckStatus::Fail,
+                message: "bad".into(),
+            }],
         };
         let output = format!("{report}");
         assert!(output.contains("0 passed, 0 warnings, 1 failures"));
@@ -1270,9 +1649,21 @@ mod tests {
     fn display_mixed_statuses() {
         let report = DoctorReport {
             checks: vec![
-                DoctorCheck { name: "a".into(), status: CheckStatus::Pass, message: "ok".into() },
-                DoctorCheck { name: "b".into(), status: CheckStatus::Warn, message: "w".into() },
-                DoctorCheck { name: "c".into(), status: CheckStatus::Fail, message: "f".into() },
+                DoctorCheck {
+                    name: "a".into(),
+                    status: CheckStatus::Pass,
+                    message: "ok".into(),
+                },
+                DoctorCheck {
+                    name: "b".into(),
+                    status: CheckStatus::Warn,
+                    message: "w".into(),
+                },
+                DoctorCheck {
+                    name: "c".into(),
+                    status: CheckStatus::Fail,
+                    message: "f".into(),
+                },
             ],
         };
         let output = format!("{report}");
@@ -1295,8 +1686,15 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "insta snapshot test building a full report"
+    )]
     fn snapshot_doctor_report_display() {
-        use crate::system::{DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo, SensorSnapshot, StaticInfo, VirtualizationSnapshot};
+        use crate::system::{
+            DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo,
+            SensorSnapshot, StaticInfo, VirtualizationSnapshot,
+        };
         let system = SystemStatus {
             cpu_usage: Some(42.5),
             memory: MemoryStatus {
@@ -1370,9 +1768,31 @@ mod tests {
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -1607,7 +2027,12 @@ mod tests {
             &happy_ssh(),
             PrivacyMode::Full,
         );
-        assert!(report.checks.iter().all(|c| c.name != "privacy.serial_redacted"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|c| c.name != "privacy.serial_redacted")
+        );
     }
 
     #[test]
@@ -1668,7 +2093,12 @@ mod tests {
             &happy_ssh(),
             PrivacyMode::Full,
         );
-        assert!(report.checks.iter().all(|c| c.name != "privacy.mac_redacted"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|c| c.name != "privacy.mac_redacted")
+        );
     }
 
     #[test]
@@ -1728,7 +2158,12 @@ mod tests {
             &happy_ssh(),
             PrivacyMode::Full,
         );
-        assert!(report.checks.iter().all(|c| c.name != "privacy.command_args"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|c| c.name != "privacy.command_args")
+        );
     }
 
     // --- Data quality checks ---
@@ -1816,7 +2251,12 @@ mod tests {
         let mut system = happy_system();
         system.boot_time = None;
         let report = DoctorReport::check_with(&system, &happy_daemon(), &happy_ssh());
-        assert!(report.checks.iter().all(|c| c.name != "quality.clock_sanity"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|c| c.name != "quality.clock_sanity")
+        );
     }
 
     #[test]
@@ -1907,7 +2347,12 @@ mod tests {
             clock_speed_mhz: None,
         }];
         let report = DoctorReport::check_with(&system, &happy_daemon(), &happy_ssh());
-        assert!(report.checks.iter().all(|c| c.name != "quality.gpu_0_identity_no_metrics"));
+        assert!(
+            report
+                .checks
+                .iter()
+                .all(|c| c.name != "quality.gpu_0_identity_no_metrics")
+        );
     }
 
     // --- check_with_privacy integration ---

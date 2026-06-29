@@ -7,9 +7,7 @@
 //! placeholder, never propagated (the read-only section must never crash the
 //! TUI).
 
-use crate::ui::screens::toride_wireguard::{
-    FindingEntry, InterfaceEntry, PeerEntry, ServiceEntry,
-};
+use crate::ui::screens::toride_wireguard::{FindingEntry, InterfaceEntry, PeerEntry, ServiceEntry};
 
 /// Map a backend [`toride_wireguard::report::Severity`] to a lowercase string
 /// used by the presentation layer: `"info" | "warning" | "error"`. The backend
@@ -281,7 +279,10 @@ mod tests {
         };
         let entry = convert_show_entry(&e);
         assert_eq!(entry.peer_count, None, "peer_count must be unknown (None)");
-        assert_eq!(entry.active_peers, None, "active_peers must be unknown (None)");
+        assert_eq!(
+            entry.active_peers, None,
+            "active_peers must be unknown (None)"
+        );
         assert_eq!(entry.rx_bytes, None, "rx_bytes must be unknown (None)");
         assert_eq!(entry.tx_bytes, None, "tx_bytes must be unknown (None)");
     }
@@ -309,8 +310,8 @@ mod tests {
     /// fields are what the UI renders as "(none)"; this test pins that the
     /// converter surfaces them as `None`/empty rather than panicking or filling
     /// a default value. Mirrors the empty-input coverage on the sibling
-    /// converters (convert_findings_empty, convert_interface_placeholder_for_empty_name,
-    /// convert_show_entry_empty_interface_is_down).
+    /// converters (`convert_findings_empty`, `convert_interface_placeholder_for_empty_name`,
+    /// `convert_show_entry_empty_interface_is_down`).
     #[test]
     fn convert_peer_empty_fields_pass_through() {
         let p = PeerSpec::new("KEY".into(), Vec::new());
@@ -363,8 +364,7 @@ mod tests {
             let out = severity_str(s);
             assert_ne!(
                 out, "ok",
-                "severity_str emitted \"ok\" for {:?} — the backend Severity enum is not expected to have an Ok variant",
-                s
+                "severity_str emitted \"ok\" for {s:?} — the backend Severity enum is not expected to have an Ok variant"
             );
         }
     }

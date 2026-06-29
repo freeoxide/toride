@@ -10,7 +10,7 @@
 //! placeholder and a `tracing::warn!` is logged, never propagated (the
 //! read-only section must never crash the TUI).
 
-use crate::ui::screens::toride_backup::{FindingEntry};
+use crate::ui::screens::toride_backup::FindingEntry;
 
 /// Map a backend [`toride_backup::doctor::Severity`] to a lowercase string
 /// used by the presentation layer: `"ok" | "info" | "warning" | "error" |
@@ -40,9 +40,7 @@ fn severity_str(s: toride_backup::doctor::Severity) -> &'static str {
 /// never shows a dangling `→ ` arrow implying a fix exists when none does —
 /// consistent with the placeholder treatment for empty `id`/`title`. Mirrors
 /// [`fail2ban_convert::convert_findings`].
-pub fn convert_findings(
-    findings: Vec<toride_backup::doctor::Finding>,
-) -> Vec<FindingEntry> {
+pub fn convert_findings(findings: Vec<toride_backup::doctor::Finding>) -> Vec<FindingEntry> {
     findings
         .into_iter()
         .map(|f| {
@@ -100,10 +98,7 @@ pub fn convert_findings(
 /// `Some(true)`. This is a defensible "optimistic" default; the resolution
 /// rule is documented here and exercised by
 /// `derive_availability_found_wins_when_both_present`.
-pub fn derive_binary_availability(
-    findings: &[FindingEntry],
-    binary: BackupBinary,
-) -> Option<bool> {
+pub fn derive_binary_availability(findings: &[FindingEntry], binary: BackupBinary) -> Option<bool> {
     let found_id = match binary {
         BackupBinary::Restic => "binary.restic.found",
         BackupBinary::Borg => "binary.borg.found",

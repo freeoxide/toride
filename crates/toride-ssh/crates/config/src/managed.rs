@@ -24,6 +24,7 @@ fn close_marker(name: &str) -> String {
 
 /// A managed block extracted from the AST, with its name and directive nodes.
 #[derive(Debug, Clone)]
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub struct ManagedBlock {
     /// The name of this managed block (the part after `toride`).
     pub name: String,
@@ -36,6 +37,7 @@ pub struct ManagedBlock {
 /// Scans top-level nodes looking for `# >>> toride {name}` /
 /// `# <<< toride {name}` comment pairs at the *top level* of the config.
 /// Returns the directive nodes between the markers.
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Option<ManagedBlock> {
     let open = open_marker(name);
     let close = close_marker(name);
@@ -93,26 +95,23 @@ pub fn list_managed_blocks(ast: &ConfigAst) -> Vec<String> {
 ///
 /// If a block with the same name already exists, it is replaced in place.
 /// Otherwise the block is appended at the end of the config file.
-pub fn upsert_managed_block(
-    ast: &mut ConfigAst,
-    name: &str,
-    directives: Vec<(String, String)>,
-) {
+pub fn upsert_managed_block(ast: &mut ConfigAst, name: &str, directives: Vec<(String, String)>) {
     // Try to find and replace existing block.
     let open = open_marker(name);
     let close = close_marker(name);
 
-    let open_idx = ast.nodes.iter().position(|node| {
-        matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open)
-    });
+    let open_idx = ast
+        .nodes
+        .iter()
+        .position(|node| matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open));
 
     if let Some(start) = open_idx {
         // Find the closing marker.
         let end = ast.nodes[start + 1..]
             .iter()
-            .position(|node| {
-                matches!(node, ConfigNode::Comment { text, .. } if text.trim() == close)
-            })
+            .position(
+                |node| matches!(node, ConfigNode::Comment { text, .. } if text.trim() == close),
+            )
             .map(|i| start + 1 + i);
 
         if let Some(end) = end {
@@ -121,15 +120,15 @@ pub fn upsert_managed_block(
             let insert_at = start + 1;
             ast.nodes.splice(
                 insert_at..insert_at,
-                directives
-                    .into_iter()
-                    .map(|(key, value)| ConfigNode::Directive(Box::new(DirectiveData {
+                directives.into_iter().map(|(key, value)| {
+                    ConfigNode::Directive(Box::new(DirectiveData {
                         keyword: key,
                         separator: Separator::Space,
                         value,
                         comment: None,
                         indent: String::new(),
-                    }))),
+                    }))
+                }),
             );
             return;
         }
@@ -140,20 +139,28 @@ pub fn upsert_managed_block(
     }
 
     // No existing block (or unclosed block was cleaned up) — append a new one.
-    let open_comment = ConfigNode::Comment { text: open, indent: String::new() };
-    let close_comment = ConfigNode::Comment { text: close, indent: String::new() };
+    let open_comment = ConfigNode::Comment {
+        text: open,
+        indent: String::new(),
+    };
+    let close_comment = ConfigNode::Comment {
+        text: close,
+        indent: String::new(),
+    };
 
     if !ast.nodes.is_empty() {
         ast.nodes.push(ConfigNode::BlankLine);
     }
     ast.nodes.push(open_comment);
-    ast.nodes.extend(directives.into_iter().map(|(key, value)| ConfigNode::Directive(Box::new(DirectiveData {
-        keyword: key,
-        separator: Separator::Space,
-        value,
-        comment: None,
-        indent: String::new(),
-    }))));
+    ast.nodes.extend(directives.into_iter().map(|(key, value)| {
+        ConfigNode::Directive(Box::new(DirectiveData {
+            keyword: key,
+            separator: Separator::Space,
+            value,
+            comment: None,
+            indent: String::new(),
+        }))
+    }));
     ast.nodes.push(close_comment);
 }
 
@@ -165,9 +172,10 @@ pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
     let open = open_marker(name);
     let close = close_marker(name);
 
-    let open_idx = ast.nodes.iter().position(|node| {
-        matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open)
-    });
+    let open_idx = ast
+        .nodes
+        .iter()
+        .position(|node| matches!(node, ConfigNode::Comment { text, .. } if text.trim() == open));
 
     let Some(start) = open_idx else {
         return Err(toride_ssh_core::Error::ManagedBlockNotFound(format!(
@@ -177,9 +185,7 @@ pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
 
     let end = ast.nodes[start + 1..]
         .iter()
-        .position(|node| {
-            matches!(node, ConfigNode::Comment { text, .. } if text.trim() == close)
-        })
+        .position(|node| matches!(node, ConfigNode::Comment { text, .. } if text.trim() == close))
         .map(|i| start + 1 + i);
 
     let Some(end) = end else {
@@ -200,6 +206,7 @@ pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
 }
 
 /// Check whether a managed block with the given name exists.
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn has_managed_block(ast: &ConfigAst, name: &str) -> bool {
     let open = open_marker(name);
     ast.nodes

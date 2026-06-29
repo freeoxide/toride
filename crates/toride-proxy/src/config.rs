@@ -7,8 +7,9 @@
 
 use crate::backup;
 use crate::error::{Error, Result};
-use crate::nginx_config::{parse_server_blocks, ParsedServerBlock};
+use crate::nginx_config::{ParsedServerBlock, parse_server_blocks};
 use crate::paths::ProxyPaths;
+use crate::validate::validate_site_domain;
 
 /// Configuration file manager for proxy settings.
 ///
@@ -101,7 +102,11 @@ impl<'a> ConfigManager<'a> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() {
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 sites.push(name);
             }
         }
@@ -126,7 +131,11 @@ impl<'a> ConfigManager<'a> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_file() || path.is_symlink() {
-                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                let name = path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .to_string();
                 sites.push(name);
             }
         }
@@ -171,9 +180,15 @@ impl<'a> ConfigManager<'a> {
             std::fs::create_dir_all(parent)
                 .map_err(|e| Error::ConfigWrite(format!("create sites dir: {e}")))?;
         }
-        toride_fs::atomic_write(&site_path, content)
+        // Explicit 0o644 so the resulting config is world-readable (Nginx
+        // workers need read access) regardless of the process umask, rather
+        // than inheriting the 0o600 default of `atomic_write`.
+        toride_fs::atomic_write_with_perms(&site_path, content, 0o644)
             .map_err(|e| Error::ConfigWrite(format!("write site config: {e}")))?;
-        tracing::info!("config: wrote site config for {domain} to {}", site_path.display());
+        tracing::info!(
+            "config: wrote site config for {domain} to {}",
+            site_path.display()
+        );
         Ok(())
     }
 
@@ -193,7 +208,10 @@ impl<'a> ConfigManager<'a> {
         }
         toride_fs::atomic_write(&self.paths.nginx_conf, content)
             .map_err(|e| Error::ConfigWrite(format!("write nginx.conf: {e}")))?;
-        tracing::info!("config: wrote nginx.conf to {}", self.paths.nginx_conf.display());
+        tracing::info!(
+            "config: wrote nginx.conf to {}",
+            self.paths.nginx_conf.display()
+        );
         Ok(())
     }
 
@@ -213,17 +231,30 @@ impl<'a> ConfigManager<'a> {
         }
         toride_fs::atomic_write(&self.paths.caddyfile, content)
             .map_err(|e| Error::ConfigWrite(format!("write Caddyfile: {e}")))?;
-        tracing::info!("config: wrote Caddyfile to {}", self.paths.caddyfile.display());
+        tracing::info!(
+            "config: wrote Caddyfile to {}",
+            self.paths.caddyfile.display()
+        );
         Ok(())
     }
 
     /// Enable a site by creating a `sites-enabled` symlink.
     ///
+    /// `domain` is validated as a single, safe path segment before it is joined
+    /// onto the sites directory, so traversal-shaped inputs (`..`, absolute
+    /// paths, nested segments) cannot target arbitrary files. The symlink is
+    /// created atomically (temp name + `rename`) to close the TOCTOU window
+    /// that a plain `symlink`-after-`remove_file` sequence leaves between the
+    /// two calls.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::NotFound`] if the source config is missing, or
-    /// [`Error::Io`] if the symlink cannot be created.
+    /// Returns [`Error::Validation`] if `domain` is not a safe segment,
+    /// [`Error::NotFound`] if the source config is missing, or [`Error::Io`]
+    /// if the symlink cannot be created.
     pub fn enable_site(&self, domain: &str) -> Result<()> {
+        validate_site_domain(domain)?;
+
         let source = self.paths.nginx_site_path(domain);
         let link = self.paths.nginx_enabled_path(domain);
 
@@ -233,25 +264,54 @@ impl<'a> ConfigManager<'a> {
                 source.display()
             )));
         }
-        if link.exists() {
-            std::fs::remove_file(&link)?;
-        }
         if let Some(parent) = link.parent() {
             std::fs::create_dir_all(parent)?;
         }
-        std::os::unix::fs::symlink(&source, &link)?;
+
+        // Create the symlink at a unique temp name, then atomically rename it
+        // into place. This removes the TOCTOU window of the previous
+        // `remove_file` + `symlink` pair: the rename is atomic, so an observer
+        // never sees sites-enabled without the link. Using the target's
+        // directory with a distinctive suffix keeps the temp name on the same
+        // filesystem as the final rename (a requirement for atomic rename).
+        let link_parent = link.parent().unwrap_or(std::path::Path::new("."));
+        let tmp_link = link_parent.join(format!(
+            ".{}.toride-tmp",
+            link.file_name()
+                .map(|f| f.to_string_lossy().into_owned())
+                .unwrap_or_else(|| domain.to_string())
+        ));
+        // Clean up any stale temp link from a previous crashed attempt, then
+        // ignore the (likely) not-found error.
+        let _ = std::fs::remove_file(&tmp_link);
+
+        std::os::unix::fs::symlink(&source, &tmp_link)?;
+        // Atomic publish. Overwrites an existing link on Unix.
+        std::fs::rename(&tmp_link, &link).map_err(|e| {
+            // Best-effort cleanup of the temp link if the rename failed, so we
+            // don't leave an orphaned symlink behind.
+            let _ = std::fs::remove_file(&tmp_link);
+            e
+        })?;
+
         tracing::info!("config: enabled site {domain}");
         Ok(())
     }
 
     /// Disable a site by removing its `sites-enabled` symlink.
     ///
-    /// No-op (returns `Ok`) if the symlink does not exist.
+    /// `domain` is validated as a single, safe path segment before joining onto
+    /// the sites directory, so traversal-shaped inputs cannot delete arbitrary
+    /// files via the `remove_file` call. No-op (returns `Ok`) if the symlink
+    /// does not exist.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if the symlink exists but cannot be removed.
+    /// Returns [`Error::Validation`] if `domain` is not a safe segment, or
+    /// [`Error::Io`] if the symlink exists but cannot be removed.
     pub fn disable_site(&self, domain: &str) -> Result<()> {
+        validate_site_domain(domain)?;
+
         let link = self.paths.nginx_enabled_path(domain);
         if link.exists() {
             std::fs::remove_file(&link)?;
@@ -297,8 +357,7 @@ mod tests {
             .unwrap();
 
         // File written.
-        let written =
-            std::fs::read_to_string(paths.nginx_site_path("example.com")).unwrap();
+        let written = std::fs::read_to_string(paths.nginx_site_path("example.com")).unwrap();
         assert!(written.contains("listen 80"));
 
         // Backup persisted to disk.
@@ -343,5 +402,76 @@ mod tests {
         let paths = ProxyPaths::with_root(dir.path());
         let mgr = ConfigManager::new(&paths);
         assert!(mgr.enable_site("nope.com").is_err());
+    }
+
+    #[test]
+    fn enable_site_rejects_traversal_domains() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let mgr = ConfigManager::new(&paths);
+
+        // Seed a sibling file outside sites-enabled that a traversal-shaped
+        // domain would otherwise let an attacker delete/replace.
+        let guard = dir.path().join("guard-file");
+        std::fs::write(&guard, "must not be touched").unwrap();
+
+        for bad in ["..", "../guard-file", "/etc/passwd", "a/b", "foo\\bar"] {
+            let err = mgr.enable_site(bad).unwrap_err();
+            assert!(
+                matches!(err, Error::Validation(_)),
+                "expected Error::Validation for {bad:?}, got {err:?}"
+            );
+        }
+        assert!(
+            guard.exists(),
+            "guard file must not be touched by traversal"
+        );
+    }
+
+    #[test]
+    fn disable_site_rejects_traversal_domains() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let mgr = ConfigManager::new(&paths);
+
+        let guard = dir.path().join("guard-file");
+        std::fs::write(&guard, "must not be deleted").unwrap();
+
+        for bad in ["..", "../guard-file", "/etc/passwd", "a/b"] {
+            let err = mgr.disable_site(bad).unwrap_err();
+            assert!(
+                matches!(err, Error::Validation(_)),
+                "expected Error::Validation for {bad:?}, got {err:?}"
+            );
+        }
+        assert!(
+            guard.exists(),
+            "guard file must not be deleted by traversal"
+        );
+    }
+
+    #[test]
+    fn enable_site_is_atomic_and_overwrites_existing() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+        let mgr = ConfigManager::new(&paths);
+
+        mgr.write_site_config("example.com", "server { listen 80; }")
+            .unwrap();
+        mgr.enable_site("example.com").unwrap();
+        let link = paths.nginx_enabled_path("example.com");
+        assert!(link.exists());
+
+        // Re-enabling must replace the existing link atomically, not error.
+        mgr.enable_site("example.com").unwrap();
+        assert!(link.exists());
+
+        // No leftover temp links remain in sites-enabled.
+        let leftovers: Vec<_> = std::fs::read_dir(&paths.nginx_sites_enabled)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(".toride-tmp"))
+            .collect();
+        assert!(leftovers.is_empty(), "temp link leaked: {leftovers:?}");
     }
 }

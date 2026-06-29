@@ -60,7 +60,9 @@ impl DoctorReport {
 
     /// Returns `true` if any finding has a critical severity.
     pub fn has_critical(&self) -> bool {
-        self.findings.iter().any(|f| f.severity == Severity::Critical)
+        self.findings
+            .iter()
+            .any(|f| f.severity == Severity::Critical)
     }
 
     /// Returns `true` if all findings are OK.
@@ -104,6 +106,7 @@ impl Finding {
     }
 
     /// Attach a suggested fix.
+    #[must_use]
     pub fn with_fix(mut self, fix: impl Into<String>) -> Self {
         self.fix = Some(fix.into());
         self
@@ -200,6 +203,7 @@ impl<'a> Doctor<'a> {
 
     /// Attach a command runner so service checks can shell out to `systemctl`
     /// via [`toride_service::ServiceManager`].
+    #[must_use]
     pub fn with_runner(mut self, runner: Arc<dyn toride_runner::Runner>) -> Self {
         self.runner = Some(runner);
         self
@@ -258,28 +262,28 @@ impl<'a> Doctor<'a> {
                 "tailscale binary found on PATH",
             )]
         } else {
-            vec![Finding::critical("tailscale.binary", "tailscale binary not found on PATH")
-                .with_fix("Install Tailscale: https://tailscale.com/download")]
+            vec![
+                Finding::critical("tailscale.binary", "tailscale binary not found on PATH")
+                    .with_fix("Install Tailscale: https://tailscale.com/download"),
+            ]
         }
     }
 
     /// Check that the daemon is connected to the tailnet.
     async fn check_connected(&self) -> Vec<Finding> {
         match self.client.is_connected().await {
-            Ok(true) => vec![Finding::ok(
-                "tailscale.connected",
-                "Connected to tailnet",
-            )],
-            Ok(false) => vec![Finding::critical(
-                "tailscale.connected",
-                "Not connected to tailnet",
-            )
-            .with_fix("Run: tailscale up")],
-            Err(e) => vec![Finding::critical(
-                "tailscale.connected",
-                format!("Could not determine connection status: {e}"),
-            )
-            .with_fix("Ensure tailscaled is running: systemctl start tailscaled")],
+            Ok(true) => vec![Finding::ok("tailscale.connected", "Connected to tailnet")],
+            Ok(false) => vec![
+                Finding::critical("tailscale.connected", "Not connected to tailnet")
+                    .with_fix("Run: tailscale up"),
+            ],
+            Err(e) => vec![
+                Finding::critical(
+                    "tailscale.connected",
+                    format!("Could not determine connection status: {e}"),
+                )
+                .with_fix("Ensure tailscaled is running: systemctl start tailscaled"),
+            ],
         }
     }
 
@@ -328,31 +332,29 @@ impl<'a> Doctor<'a> {
                 fn run(
                     &self,
                     spec: &toride_runner::CommandSpec,
-                ) -> std::result::Result<
-                    toride_runner::CommandOutput,
-                    toride_runner::Error,
-                > {
+                ) -> std::result::Result<toride_runner::CommandOutput, toride_runner::Error>
+                {
                     self.0.run(spec)
                 }
             }
-            let mgr = toride_service::ServiceManager::new(Box::new(SharedRunner(Arc::clone(
-                runner,
-            ))));
+            let mgr =
+                toride_service::ServiceManager::new(Box::new(SharedRunner(Arc::clone(runner))));
             match mgr.is_active("tailscaled") {
                 Ok(true) => vec![Finding::ok(
                     "tailscale.service",
                     "tailscaled service is active",
                 )],
-                Ok(false) => vec![Finding::critical(
-                    "tailscale.service",
-                    "tailscaled service is not active",
-                )
-                .with_fix("Run: sudo systemctl start tailscaled")],
-                Err(e) => vec![Finding::critical(
-                    "tailscale.service",
-                    format!("Could not determine service status: {e}"),
-                )
-                .with_fix("Ensure systemctl is available and tailscaled is installed")],
+                Ok(false) => vec![
+                    Finding::critical("tailscale.service", "tailscaled service is not active")
+                        .with_fix("Run: sudo systemctl start tailscaled"),
+                ],
+                Err(e) => vec![
+                    Finding::critical(
+                        "tailscale.service",
+                        format!("Could not determine service status: {e}"),
+                    )
+                    .with_fix("Ensure systemctl is available and tailscaled is installed"),
+                ],
             }
         } else {
             // Fallback: probe the daemon via the HTTP API. If the daemon
@@ -362,11 +364,13 @@ impl<'a> Doctor<'a> {
                     "tailscale.service",
                     "tailscaled daemon is responding (service assumed active)",
                 )],
-                Err(e) => vec![Finding::critical(
-                    "tailscale.service",
-                    format!("tailscaled daemon unreachable: {e}"),
-                )
-                .with_fix("Run: sudo systemctl start tailscaled")],
+                Err(e) => vec![
+                    Finding::critical(
+                        "tailscale.service",
+                        format!("tailscaled daemon unreachable: {e}"),
+                    )
+                    .with_fix("Run: sudo systemctl start tailscaled"),
+                ],
             }
         }
     }
@@ -389,11 +393,13 @@ impl<'a> Doctor<'a> {
                         "Daemon is running; effective ACL policy is active",
                     )]
                 } else {
-                    vec![Finding::warn(
-                        "tailscale.acl",
-                        format!("Daemon state is `{backend}`, ACL policy may not be enforced"),
-                    )
-                    .with_fix("Run: tailscale up")]
+                    vec![
+                        Finding::warn(
+                            "tailscale.acl",
+                            format!("Daemon state is `{backend}`, ACL policy may not be enforced"),
+                        )
+                        .with_fix("Run: tailscale up"),
+                    ]
                 }
             }
             Err(e) => vec![Finding::critical(
@@ -459,34 +465,37 @@ mod tests {
     /// directly through a minimal stand-in. This test exercises the real
     /// ServiceManager plumbing by invoking it the same way `check_service`
     /// does.
-    #[tokio::test]
-    async fn check_service_probes_systemctl_when_runner_attached() {
+    #[test]
+    fn check_service_probes_systemctl_when_runner_attached() {
         let active_spec = CommandSpec::new("systemctl").args(["is-active", "tailscaled"]);
 
         // Active service -> ok finding.
-        let runner: std::sync::Arc<dyn Runner> = std::sync::Arc::new(
-            FakeRunner::new().respond(active_spec.clone(), toride_runner::CommandOutput::from_stdout("active")),
-        );
-        let finding = probe_via_runner(&runner).await;
+        let runner: std::sync::Arc<dyn Runner> = std::sync::Arc::new(FakeRunner::new().respond(
+            active_spec.clone(),
+            toride_runner::CommandOutput::from_stdout("active"),
+        ));
+        let finding = probe_via_runner(&runner);
         assert_eq!(finding.severity, Severity::Ok);
 
         // Inactive service -> critical finding, and the probe still ran.
-        let runner: std::sync::Arc<dyn Runner> = std::sync::Arc::new(
-            FakeRunner::new().respond(active_spec.clone(), toride_runner::CommandOutput::from_stderr("inactive", 3)),
-        );
-        let finding = probe_via_runner(&runner).await;
+        let runner: std::sync::Arc<dyn Runner> = std::sync::Arc::new(FakeRunner::new().respond(
+            active_spec.clone(),
+            toride_runner::CommandOutput::from_stderr("inactive", 3),
+        ));
+        let finding = probe_via_runner(&runner);
         assert_eq!(finding.severity, Severity::Critical);
     }
 
     /// Mirrors `Doctor::check_service`'s runner branch without requiring a
     /// live `TailscaleClient`.
-    async fn probe_via_runner(runner: &std::sync::Arc<dyn Runner>) -> Finding {
+    fn probe_via_runner(runner: &std::sync::Arc<dyn Runner>) -> Finding {
         struct SharedRunner(std::sync::Arc<dyn Runner>);
         impl Runner for SharedRunner {
             fn run(
                 &self,
                 spec: &toride_runner::CommandSpec,
-            ) -> std::result::Result<toride_runner::CommandOutput, toride_runner::Error> {
+            ) -> std::result::Result<toride_runner::CommandOutput, toride_runner::Error>
+            {
                 self.0.run(spec)
             }
         }

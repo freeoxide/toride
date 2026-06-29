@@ -100,7 +100,10 @@ impl MiseBuilder {
     /// to a [`CommandEventSink`](toride_runner::CommandEventSink). When absent,
     /// those methods fall back to regular non-streaming execution.
     #[must_use]
-    pub fn streaming_runner(mut self, runner: Arc<dyn toride_runner::AsyncStreamingRunner>) -> Self {
+    pub fn streaming_runner(
+        mut self,
+        runner: Arc<dyn toride_runner::AsyncStreamingRunner>,
+    ) -> Self {
         self.streaming_runner = Some(runner);
         self
     }
@@ -220,9 +223,9 @@ impl MiseBuilder {
     /// Returns [`MiseError::BinaryNotFound`](crate::MiseError::BinaryNotFound)
     /// if no binary was provided and `mise` cannot be found on `$PATH`.
     pub fn build(self) -> MiseResult<Mise> {
-        let runner = self.runner.unwrap_or_else(|| {
-            Arc::new(toride_runner::tokio_runner::TokioRunner)
-        });
+        let runner = self
+            .runner
+            .unwrap_or_else(|| Arc::new(toride_runner::tokio_runner::TokioRunner));
 
         let binary = match self.binary {
             Some(b) => b,

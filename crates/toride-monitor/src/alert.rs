@@ -34,13 +34,11 @@ impl<'a> AlertDispatcher<'a> {
 
         for target in targets {
             let report = match target {
-                AlertTarget::Journald { priority } => {
-                    self.dispatch_journald(finding, priority)
-                }
+                AlertTarget::Journald { priority } => self.dispatch_journald(finding, priority),
                 AlertTarget::Webhook { url, headers } => {
-                    self.dispatch_webhook(finding, url, headers)
+                    Self::dispatch_webhook(finding, url, headers)
                 }
-                AlertTarget::File { path } => self.dispatch_file(finding, path),
+                AlertTarget::File { path } => Self::dispatch_file(finding, path),
             };
 
             reports.push(report);
@@ -58,23 +56,18 @@ impl<'a> AlertDispatcher<'a> {
     fn dispatch_journald(&self, finding: &AnomalyFinding, priority: &str) -> AlertReport {
         let message = format!(
             "[toride-monitor] {} ({}): {} — observed: {}, threshold: {}",
-            finding.severity,
-            finding.id,
-            finding.title,
-            finding.observed_value,
-            finding.threshold,
+            finding.severity, finding.id, finding.title, finding.observed_value, finding.threshold,
         );
 
-        let spec = toride_runner::CommandSpec::new(
-            self.paths.systemd_cat.to_string_lossy().into_owned(),
-        )
-        .args([
-            "--priority".to_owned(),
-            priority.to_owned(),
-            "--identifier".to_owned(),
-            "toride-monitor".to_owned(),
-        ])
-        .stdin(message);
+        let spec =
+            toride_runner::CommandSpec::new(self.paths.systemd_cat.to_string_lossy().into_owned())
+                .args([
+                    "--priority".to_owned(),
+                    priority.to_owned(),
+                    "--identifier".to_owned(),
+                    "toride-monitor".to_owned(),
+                ])
+                .stdin(message);
 
         match self.runner.run(&spec) {
             Ok(output) if output.success => AlertReport {
@@ -105,7 +98,6 @@ impl<'a> AlertDispatcher<'a> {
     /// pulls in `reqwest`). Without the feature, the dispatch is reported as
     /// not-yet-dispatched with a clear error so callers can see the gap.
     fn dispatch_webhook(
-        &self,
         finding: &AnomalyFinding,
         url: &str,
         headers: &[(String, String)],
@@ -114,16 +106,16 @@ impl<'a> AlertDispatcher<'a> {
     }
 
     /// Dispatch an alert by appending to a log file.
-    fn dispatch_file(&self, finding: &AnomalyFinding, path: &str) -> AlertReport {
+    fn dispatch_file(finding: &AnomalyFinding, path: &str) -> AlertReport {
         use std::io::Write;
 
+        let now_secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs());
         let line = format!(
             "[{}] {} ({}): {} — observed: {}, threshold: {}",
             finding.severity,
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0),
+            now_secs,
             finding.id,
             finding.title,
             finding.observed_value,
@@ -174,9 +166,24 @@ fn dispatch_webhook_impl(
 ) -> AlertReport {
     let payload = webhook_payload(finding);
 
-    let mut req = reqwest::blocking::Client::new()
-        .post(url)
-        .json(&payload);
+    // Bound the request with a hard timeout so an unreachable or stalling
+    // endpoint cannot block the monitoring loop indefinitely.
+    let client = match reqwest::blocking::Client::builder()
+        .timeout(WEBHOOK_TIMEOUT)
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => {
+            return AlertReport {
+                finding: finding.clone(),
+                target: format!("webhook({url})"),
+                dispatched: false,
+                error: Some(format!("failed to build HTTP client: {e}")),
+            };
+        }
+    };
+
+    let mut req = client.post(url).json(&payload);
     for (key, value) in headers {
         req = req.header(key, value);
     }
@@ -202,6 +209,12 @@ fn dispatch_webhook_impl(
         },
     }
 }
+
+/// Upper bound on a single webhook dispatch. Generous enough for a normal
+/// alert POST, tight enough that a dead endpoint gives up well before the next
+/// monitoring tick.
+#[cfg(feature = "webhook")]
+const WEBHOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[cfg(not(feature = "webhook"))]
 fn dispatch_webhook_impl(
@@ -296,8 +309,7 @@ mod tests {
 
     #[test]
     fn journald_dispatch_reports_failure_on_nonzero_exit() {
-        let runner =
-            FakeRunner::new().push_response(CommandOutput::from_stderr("boom", 1));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stderr("boom", 1));
         let paths = test_paths();
         let dispatcher = AlertDispatcher::new(&paths, &runner);
 
@@ -316,11 +328,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("alerts.log");
 
-        let runner = FakeRunner::new();
-        let paths = test_paths();
-        let dispatcher = AlertDispatcher::new(&paths, &runner);
-
-        let report = dispatcher.dispatch_file(&sample_finding(), path.to_str().unwrap());
+        let report = AlertDispatcher::dispatch_file(&sample_finding(), path.to_str().unwrap());
         assert!(report.dispatched);
 
         let content = std::fs::read_to_string(&path).unwrap();
@@ -336,11 +344,7 @@ mod tests {
         // feature is on, the request is attempted (and fails against the
         // invalid host); either way the result must not be reported as
         // successfully dispatched.
-        let runner = FakeRunner::new();
-        let paths = test_paths();
-        let dispatcher = AlertDispatcher::new(&paths, &runner);
-
-        let report = dispatcher.dispatch_webhook(
+        let report = AlertDispatcher::dispatch_webhook(
             &sample_finding(),
             "https://example.invalid/hook",
             &[("X-Token".into(), "secret".into())],

@@ -4,7 +4,7 @@
 //! tools: `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers`,
 //! `/etc/sudoers.d/`, and `/etc/pam.d/`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 // ---------------------------------------------------------------------------
 // UserPaths
@@ -75,7 +75,7 @@ impl UserPaths {
     /// `sshd_config` resolves to `<base>/ssh/sshd_config`, mirroring the
     /// `/etc/ssh/sshd_config` layout on a real system.
     #[must_use]
-    pub fn with_base(base: PathBuf) -> Self {
+    pub fn with_base(base: &Path) -> Self {
         Self {
             passwd: base.join("passwd"),
             shadow: base.join("shadow"),

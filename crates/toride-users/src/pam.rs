@@ -3,9 +3,10 @@
 //! Provides functions to read, modify, and write PAM service configuration
 //! files under `/etc/pam.d/`.
 
+use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::{paths::UserPaths, render::PamRule, Error, Result};
+use crate::{Error, Result, paths::UserPaths, render::PamRule};
 
 /// Read PAM rules from a service configuration file.
 ///
@@ -17,13 +18,13 @@ use crate::{paths::UserPaths, render::PamRule, Error, Result};
 /// if a line cannot be parsed.
 pub fn read_pam_config(path: &Path) -> Result<Vec<PamRule>> {
     let content = std::fs::read_to_string(path)?;
-    parse_pam_lines(&content)
+    Ok(parse_pam_lines(&content))
 }
 
 /// Parse PAM configuration text into rules.
 ///
 /// Skips blank lines and comments.
-fn parse_pam_lines(content: &str) -> Result<Vec<PamRule>> {
+fn parse_pam_lines(content: &str) -> Vec<PamRule> {
     let mut rules = Vec::new();
     for line in content.lines() {
         let line = line.trim();
@@ -38,7 +39,10 @@ fn parse_pam_lines(content: &str) -> Result<Vec<PamRule>> {
         if parts.len() < 3 {
             continue; // skip malformed lines
         }
-        let arguments = parts[3..].iter().map(|s| s.to_string()).collect();
+        let arguments = parts[3..]
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect();
         rules.push(PamRule {
             management_group: parts[0].to_owned(),
             control: parts[1].to_owned(),
@@ -46,7 +50,7 @@ fn parse_pam_lines(content: &str) -> Result<Vec<PamRule>> {
             arguments,
         });
     }
-    Ok(rules)
+    rules
 }
 
 /// Write PAM rules to a service configuration file.
@@ -61,7 +65,7 @@ pub fn write_pam_config(path: &Path, rules: &[PamRule], comment: Option<&str>) -
     let mut content = String::new();
 
     if let Some(c) = comment {
-        content.push_str(&format!("# {c}\n"));
+        let _ = writeln!(content, "# {c}");
     }
 
     content.push_str(&crate::render::render_pam_config(rules));
@@ -97,7 +101,10 @@ pub fn enable_totp_for_service(paths: &UserPaths, service: &str) -> Result<()> {
     let mut rules = read_pam_config(&pam_path)?;
 
     // Check if google_authenticator is already configured
-    if rules.iter().any(|r| r.module.contains("pam_google_authenticator")) {
+    if rules
+        .iter()
+        .any(|r| r.module.contains("pam_google_authenticator"))
+    {
         return Err(Error::PamError(format!(
             "TOTP already enabled for service {service}"
         )));

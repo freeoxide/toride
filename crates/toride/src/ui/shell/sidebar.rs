@@ -167,8 +167,16 @@ impl Sidebar {
             return;
         }
         let max_offset = self.len - visible;
-        let new = self.scroll_offset as i32 + delta;
-        self.scroll_offset = new.clamp(0, max_offset as i32) as usize;
+        // Compute the new offset in `usize` to avoid cross-width sign/truncation
+        // casts; saturating arith keeps the result within the legal range.
+        let new = if delta >= 0 {
+            let up = u32::try_from(delta).unwrap_or(u32::MAX);
+            self.scroll_offset.saturating_add(up as usize)
+        } else {
+            let down = delta.unsigned_abs();
+            self.scroll_offset.saturating_sub(down as usize)
+        };
+        self.scroll_offset = new.min(max_offset);
     }
 
     /// Current viewport scroll offset (index of the topmost visible item).
@@ -268,7 +276,11 @@ impl Sidebar {
 
         // Compute number of visible items and keep the viewport in range.
         let list_rows = list_bottom.saturating_sub(list_top) as usize;
-        let visible = if step > 0 { list_rows / step as usize } else { 0 };
+        let visible = if step > 0 {
+            list_rows / step as usize
+        } else {
+            0
+        };
         self.last_visible = visible;
         self.clamp_scroll_bounds(visible);
 
@@ -291,7 +303,9 @@ impl Sidebar {
             if i < self.scroll_offset {
                 continue;
             }
-            let Ok(idx) = u16::try_from(i - self.scroll_offset) else { break };
+            let Ok(idx) = u16::try_from(i - self.scroll_offset) else {
+                break;
+            };
             let y = list_top + idx * step;
             if y > list_bottom {
                 break;
@@ -403,7 +417,10 @@ impl Sidebar {
             bar,
             Span::styled(format!(" {:>2} ", i + 1), num_style),
             Span::styled(format!("{} ", item.icon), Style::new().fg(icon_color)),
-            Span::styled(item.section.label().to_string(), Style::new().fg(label_color)),
+            Span::styled(
+                item.section.label().to_string(),
+                Style::new().fg(label_color),
+            ),
         ];
         if let Some(badge) = &item.badge {
             spans.push(Span::styled(

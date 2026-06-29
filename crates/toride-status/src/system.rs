@@ -60,11 +60,11 @@ use std::fmt;
 use std::path::Path;
 
 use serde::Serialize;
-use toride_runner::{CommandSpec, DuctRunner, Runner};
 use sysinfo::{
     Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
     ProcessesToUpdate, RefreshKind, System,
 };
+use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 use crate::error::StatusResult;
 use crate::provider::{
@@ -136,6 +136,7 @@ use cgroups_rs as _cgroups_rs;
 // ── Shared helpers ──────────────────────────────────────────────────────
 
 /// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
+#[cfg(any(target_os = "macos", test))]
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
@@ -145,17 +146,31 @@ use cgroups_rs as _cgroups_rs;
 fn parse_vram_to_bytes(v: &str) -> Option<u64> {
     let v = v.trim();
     if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
-        gb_str.trim().parse::<f64>().ok().map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64)
+        gb_str
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|gb| (gb * 1024.0 * 1024.0 * 1024.0) as u64)
     } else if let Some(mb_str) = v.strip_suffix("MB").or_else(|| v.strip_suffix(" MB")) {
-        mb_str.trim().parse::<f64>().ok().map(|mb| (mb * 1024.0 * 1024.0) as u64)
+        mb_str
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|mb| (mb * 1024.0 * 1024.0) as u64)
     } else if let Some(tb_str) = v.strip_suffix("TB").or_else(|| v.strip_suffix(" TB")) {
-        tb_str.trim().parse::<f64>().ok().map(|tb| (tb * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
+        tb_str
+            .trim()
+            .parse::<f64>()
+            .ok()
+            .map(|tb| (tb * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
     } else {
         // Bare number, assume MB
-        v.replace(' ', "").parse::<u64>().ok().map(|mb| mb.saturating_mul(1024 * 1024))
+        v.replace(' ', "")
+            .parse::<u64>()
+            .ok()
+            .map(|mb| mb.saturating_mul(1024 * 1024))
     }
 }
-
 
 /// Run a command via [`DuctRunner`] and return its stdout on success.
 ///
@@ -168,12 +183,16 @@ fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
         spec = spec.arg(*arg);
     }
     let runner = DuctRunner;
-    runner.run(&spec).ok().filter(|o| o.success).map(|o| o.stdout)
+    runner
+        .run(&spec)
+        .ok()
+        .filter(|o| o.success)
+        .map(|o| o.stdout)
 }
 
 // ── OS info helpers ──────────────────────────────────────────────────────
 
-/// Parse /etc/os-release into a HashMap of key=value pairs.
+/// Parse `/etc/os-release` into a `HashMap` of key=value pairs.
 #[cfg(target_os = "linux")]
 fn parse_os_release() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
@@ -216,16 +235,13 @@ fn macos_codename(version: &str) -> Option<String> {
 /// Detect system timezone by reading /etc/localtime symlink target.
 #[cfg(unix)]
 fn detect_timezone() -> Option<String> {
-    std::fs::read_link("/etc/localtime")
-        .ok()
-        .and_then(|path| {
-            let s = path.to_string_lossy();
-            // Typical path: /var/db/timezone/zoneinfo/America/New_York or
-            // /usr/share/zoneinfo/America/New_York
-            // Extract everything after "zoneinfo/"
-            s.rsplit_once("zoneinfo/")
-                .map(|(_, tz)| tz.to_string())
-        })
+    std::fs::read_link("/etc/localtime").ok().and_then(|path| {
+        let s = path.to_string_lossy();
+        // Typical path: /var/db/timezone/zoneinfo/America/New_York or
+        // /usr/share/zoneinfo/America/New_York
+        // Extract everything after "zoneinfo/"
+        s.rsplit_once("zoneinfo/").map(|(_, tz)| tz.to_string())
+    })
 }
 
 #[cfg(not(unix))]
@@ -266,7 +282,12 @@ fn detect_target_triple() -> String {
     } else {
         "unknown"
     };
-    format!("{}-{}-{}", std::env::consts::ARCH, std::env::consts::OS, env)
+    format!(
+        "{}-{}-{}",
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        env
+    )
 }
 
 /// Detect system locale from environment variables.
@@ -306,12 +327,11 @@ fn parse_meminfo_field(field_name: &str) -> Option<u64> {
 fn read_cached_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
-        return parse_meminfo_field("Cached:").unwrap_or(0);
+        parse_meminfo_field("Cached:").unwrap_or(0)
     }
     #[cfg(target_os = "macos")]
     {
-        if let Some(text) = run_cmd("vm_stat", &[])
-        {
+        if let Some(text) = run_cmd("vm_stat", &[]) {
             let mut page_size: u64 = 16384;
             let mut purgeable_pages: u64 = 0;
             for line in text.lines() {
@@ -400,8 +420,7 @@ fn read_interface_extras(name: &str) -> InterfaceExtras {
         drops_received: 0,
         drops_transmitted: 0,
     };
-    if let Some(text) = run_cmd("ifconfig", &[name])
-    {
+    if let Some(text) = run_cmd("ifconfig", &[name]) {
         for line in text.lines() {
             let trimmed = line.trim();
             if let Some(rest) = trimmed.strip_prefix("status:") {
@@ -512,8 +531,7 @@ fn detect_dns_servers() -> Vec<String> {
     #[cfg(target_os = "macos")]
     {
         if servers.is_empty() {
-            if let Some(text) = run_cmd("scutil", &["--dns"])
-            {
+            if let Some(text) = run_cmd("scutil", &["--dns"]) {
                 for line in text.lines() {
                     let trimmed = line.trim();
                     if trimmed.starts_with("nameserver[")
@@ -562,9 +580,8 @@ fn read_proc_working_dir(pid: u32) -> Option<String> {
 /// Read disk I/O bytes from /proc/<pid>/io.
 #[cfg(target_os = "linux")]
 fn read_proc_io(pid: u32) -> (Option<u64>, Option<u64>) {
-    let content = match std::fs::read_to_string(format!("/proc/{pid}/io")) {
-        Ok(c) => c,
-        Err(_) => return (None, None),
+    let Ok(content) = std::fs::read_to_string(format!("/proc/{pid}/io")) else {
+        return (None, None);
     };
     let mut read_bytes = None;
     let mut write_bytes = None;
@@ -593,15 +610,15 @@ fn read_proc_fd_count(pid: u32) -> Option<u32> {
 #[cfg(target_os = "linux")]
 fn read_hwmon_fans() -> Vec<SensorStatus> {
     let mut sensors = Vec::new();
-    let hwmon_dir = match std::fs::read_dir("/sys/class/hwmon") {
-        Ok(d) => d,
-        Err(_) => return sensors,
+    let Ok(hwmon_dir) = std::fs::read_dir("/sys/class/hwmon") else {
+        return sensors;
     };
     for entry in hwmon_dir.flatten() {
         let path = entry.path();
-        let name = std::fs::read_to_string(path.join("name"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
+        let name = std::fs::read_to_string(path.join("name")).map_or_else(
+            |_| entry.file_name().to_string_lossy().to_string(),
+            |s| s.trim().to_string(),
+        );
         for i in 1..=16u32 {
             let fan_path = path.join(format!("fan{i}_input"));
             if let Ok(rpm_str) = std::fs::read_to_string(fan_path)
@@ -625,15 +642,15 @@ fn read_hwmon_fans() -> Vec<SensorStatus> {
 #[allow(clippy::cast_precision_loss)] // millivolt to volt conversion; bounded sensor values
 fn read_hwmon_voltages() -> Vec<SensorStatus> {
     let mut sensors = Vec::new();
-    let hwmon_dir = match std::fs::read_dir("/sys/class/hwmon") {
-        Ok(d) => d,
-        Err(_) => return sensors,
+    let Ok(hwmon_dir) = std::fs::read_dir("/sys/class/hwmon") else {
+        return sensors;
     };
     for entry in hwmon_dir.flatten() {
         let path = entry.path();
-        let name = std::fs::read_to_string(path.join("name"))
-            .map(|s| s.trim().to_string())
-            .unwrap_or_else(|_| entry.file_name().to_string_lossy().to_string());
+        let name = std::fs::read_to_string(path.join("name")).map_or_else(
+            |_| entry.file_name().to_string_lossy().to_string(),
+            |s| s.trim().to_string(),
+        );
         for i in 0..=16u32 {
             let in_path = path.join(format!("in{i}_input"));
             if let Ok(mv_str) = std::fs::read_to_string(in_path)
@@ -717,8 +734,7 @@ struct CpuTopology {
 #[allow(clippy::cast_possible_truncation)] // core/thread/socket counts fit in u32
 fn read_cpu_topology() -> CpuTopology {
     fn sysctl_u64(name: &str) -> Option<u64> {
-        run_cmd("sysctl", &["-n", name])
-            .and_then(|s| s.trim().parse().ok())
+        run_cmd("sysctl", &["-n", name]).and_then(|s| s.trim().parse().ok())
     }
 
     let sockets = sysctl_u64("hw.packages")
@@ -748,9 +764,15 @@ fn read_cpu_topology() -> CpuTopology {
         .map(|hz| hz / 1_000_000);
 
     // Cache sizes in bytes.
-    let cache_l1d = sysctl_u64("hw.l1dcachesize").filter(|&v| v > 0).map(|v| v as u32);
-    let cache_l1i = sysctl_u64("hw.l1icachesize").filter(|&v| v > 0).map(|v| v as u32);
-    let cache_l2 = sysctl_u64("hw.l2cachesize").filter(|&v| v > 0).map(|v| v as u32);
+    let cache_l1d = sysctl_u64("hw.l1dcachesize")
+        .filter(|&v| v > 0)
+        .map(|v| v as u32);
+    let cache_l1i = sysctl_u64("hw.l1icachesize")
+        .filter(|&v| v > 0)
+        .map(|v| v as u32);
+    let cache_l2 = sysctl_u64("hw.l2cachesize")
+        .filter(|&v| v > 0)
+        .map(|v| v as u32);
     let cache_l3 = sysctl_u64("hw.l3cachesize").filter(|&v| v > 0);
 
     CpuTopology {
@@ -769,6 +791,10 @@ fn read_cpu_topology() -> CpuTopology {
 /// Read CPU topology from /proc/cpuinfo and sysfs on Linux.
 #[cfg(target_os = "linux")]
 #[allow(clippy::cast_possible_truncation)] // core/thread/socket counts fit in u32
+#[expect(
+    clippy::similar_names,
+    reason = "L1d/L1i cache level names mirror the hardware nomenclature"
+)]
 fn read_cpu_topology() -> CpuTopology {
     use std::collections::HashSet;
     use std::fs;
@@ -837,12 +863,12 @@ fn read_cpu_topology() -> CpuTopology {
     };
 
     // ── Frequencies from sysfs (kHz -> MHz) ──
-    fn read_freq_khz(path: &str) -> Option<u64> {
+    let read_freq_khz = |path: &str| -> Option<u64> {
         fs::read_to_string(path)
             .ok()
             .and_then(|s| s.trim().parse::<u64>().ok())
             .map(|khz| khz / 1000)
-    }
+    };
 
     let max_frequency = read_freq_khz("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
     let base_frequency = read_freq_khz("/sys/devices/system/cpu/cpu0/cpufreq/base_frequency");
@@ -858,7 +884,9 @@ fn read_cpu_topology() -> CpuTopology {
         let size_path = format!("/sys/devices/system/cpu/cpu0/cache/index{i}/size");
         let level_path = format!("/sys/devices/system/cpu/cpu0/cache/index{i}/level");
 
-        let cache_type = fs::read_to_string(&type_path).ok().map(|s| s.trim().to_lowercase());
+        let cache_type = fs::read_to_string(&type_path)
+            .ok()
+            .map(|s| s.trim().to_lowercase());
         let level = fs::read_to_string(&level_path)
             .ok()
             .and_then(|s| s.trim().parse::<u32>().ok());
@@ -1004,9 +1032,13 @@ fn read_hardware_inventory() -> HardwareInventory {
     HardwareInventory::default()
 }
 
-/// Build a fully populated OsInfo.
+/// Build a fully populated [`OsInfo`].
 fn build_os_info() -> OsInfo {
     let os_type = Some(std::env::consts::OS.to_string());
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "pointer width * 8 is at most 128, always fits u32"
+    )]
     let bitness = Some((std::mem::size_of::<usize>() * 8) as u32);
     let current_user = detect_current_user();
     let is_root = detect_is_root();
@@ -1058,39 +1090,57 @@ fn build_os_info() -> OsInfo {
     }
 }
 
+/// Convert a non-negative floating-point duration (seconds) into a whole `u64`.
+///
+/// Input is already filtered to be finite and `>= 0.0`; the `as i64` truncates
+/// the fractional remainder to whole seconds, which is the desired granularity
+/// for battery time-to-empty/full.
+#[cfg(feature = "battery")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "f32 seconds truncated to whole seconds; value is filtered finite & non-negative and well within i64 range"
+)]
+fn duration_secs_to_u64(secs: f32) -> Option<u64> {
+    u64::try_from(secs as i64).ok()
+}
+
 /// Read battery status from the OS.
 #[cfg(feature = "battery")]
 fn read_battery_os() -> Option<BatteryInfo> {
-    use starship_battery::units::energy::watt_hour;
     use starship_battery::units::electric_potential::volt;
+    use starship_battery::units::energy::watt_hour;
     use starship_battery::units::ratio::percent;
     use starship_battery::units::time::second;
 
     let manager = Manager::new().ok()?;
     let battery = manager.batteries().ok()?.next()?.ok()?;
 
-    let charge_percent = battery.state_of_charge().get::<percent>() as f32;
+    let charge_percent = battery.state_of_charge().get::<percent>();
     let state = match battery.state() {
         State::Charging => "Charging",
         State::Discharging => "Discharging",
         State::Empty => "Empty",
         State::Full => "Full",
-        _ => "Unknown",
+        State::Unknown => "Unknown",
     };
 
     let time_to_empty_secs = battery
         .time_to_empty()
-        .map(|t| t.get::<second>() as u64);
+        .map(|t| t.get::<second>())
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .and_then(duration_secs_to_u64);
     let time_to_full_secs = battery
         .time_to_full()
-        .map(|t| t.get::<second>() as u64);
+        .map(|t| t.get::<second>())
+        .filter(|s| s.is_finite() && *s >= 0.0)
+        .and_then(duration_secs_to_u64);
 
-    let voltage = Some(battery.voltage().get::<volt>() as f32);
+    let voltage = Some(battery.voltage().get::<volt>());
     let cycle_count = battery.cycle_count();
-    let health_percent = Some(battery.state_of_health().get::<percent>() as f32);
-    let energy_wh = Some(battery.energy().get::<watt_hour>() as f32);
-    let energy_full_wh = Some(battery.energy_full().get::<watt_hour>() as f32);
-    let energy_full_design_wh = Some(battery.energy_full_design().get::<watt_hour>() as f32);
+    let health_percent = Some(battery.state_of_health().get::<percent>());
+    let energy_wh = Some(battery.energy().get::<watt_hour>());
+    let energy_full_wh = Some(battery.energy_full().get::<watt_hour>());
+    let energy_full_design_wh = Some(battery.energy_full_design().get::<watt_hour>());
     let manufacturer = battery.vendor().map(std::string::ToString::to_string);
     let model = battery.model().map(std::string::ToString::to_string);
 
@@ -1164,6 +1214,10 @@ pub struct SensorSnapshot {
 
 /// Virtualization environment detection.
 #[derive(Debug, Clone, Serialize, Default)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "independent per-platform virtualization presence flags, not a state machine"
+)]
 pub struct VirtualizationSnapshot {
     pub in_docker: bool,
     pub in_lxc: bool,
@@ -1319,6 +1373,10 @@ pub struct LoadAverage {
 
 /// Operating system information.
 #[derive(Debug, Clone, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "OS descriptor carries several independent boolean detection flags alongside string metadata"
+)]
 pub struct OsInfo {
     /// OS name (e.g., "macOS", "Linux", "Windows").
     pub name: Option<String>,
@@ -1370,11 +1428,11 @@ pub struct CpuCore {
 /// Static CPU information that does not change between snapshots.
 #[derive(Debug, Clone, Serialize)]
 pub struct CpuStatic {
-    /// CPU vendor (e.g., "GenuineIntel", "Apple").
+    /// CPU vendor (e.g., `GenuineIntel`, `Apple`).
     pub vendor: String,
     /// CPU brand string (e.g., "Apple M2 Pro").
     pub brand: String,
-    /// CPU architecture (e.g., "x86_64", "aarch64").
+    /// CPU architecture (e.g., `x86_64`, `aarch64`).
     pub arch: String,
     /// Number of CPU sockets.
     pub sockets: Option<u32>,
@@ -1657,6 +1715,7 @@ impl ProcessSnapshot {
     }
 
     /// Get top N processes by disk I/O (total read+write bytes).
+    #[must_use]
     pub fn top_by_disk_io(&self, n: usize) -> Vec<&ProcessStatus> {
         let mut sorted: Vec<&ProcessStatus> = self.processes.iter().collect();
         sorted.sort_by(|a, b| {
@@ -1668,6 +1727,7 @@ impl ProcessSnapshot {
     }
 
     /// Build a parent-to-children mapping for process tree traversal.
+    #[must_use]
     pub fn process_tree(&self) -> std::collections::HashMap<u32, Vec<u32>> {
         let mut tree: std::collections::HashMap<u32, Vec<u32>> = std::collections::HashMap::new();
         for proc in &self.processes {
@@ -1848,11 +1908,7 @@ impl SystemStatus {
 
     fn read_uptime() -> Option<u64> {
         let uptime = System::uptime();
-        if uptime > 0 {
-            Some(uptime)
-        } else {
-            None
-        }
+        if uptime > 0 { Some(uptime) } else { None }
     }
 
     fn read_hostname() -> String {
@@ -1968,7 +2024,11 @@ impl SystemStatus {
                     errors_received: data.errors_on_received(),
                     errors_transmitted: data.errors_on_transmitted(),
                     mac_address: mac_str,
-                    mtu: if mtu_val > 0 { Some(mtu_val as u32) } else { None },
+                    mtu: if mtu_val > 0 {
+                        Some(u32::try_from(mtu_val).unwrap_or(u32::MAX))
+                    } else {
+                        None
+                    },
                     drops_received: extras.drops_received,
                     drops_transmitted: extras.drops_transmitted,
                     display_name: None,
@@ -1992,9 +2052,7 @@ impl SystemStatus {
             .iter()
             .map(|c| SensorStatus {
                 label: c.label().to_string(),
-                temperature: {
-                    c.temperature().filter(|t| !t.is_nan())
-                },
+                temperature: { c.temperature().filter(|t| !t.is_nan()) },
                 fan_rpm: None,
                 voltage: None,
                 thermal_throttling: None,
@@ -2014,14 +2072,19 @@ impl SystemStatus {
             .iter()
             .map(|(pid, p)| {
                 let pid_u32 = pid.as_u32();
-                let cmd_line = p.cmd().iter()
+                let cmd_line = p
+                    .cmd()
+                    .iter()
                     .map(|c| c.to_string_lossy().to_string())
                     .collect::<Vec<_>>()
                     .join(" ");
                 #[cfg(target_os = "linux")]
                 let (disk_read_bytes, disk_write_bytes) = read_proc_io(pid_u32);
                 #[cfg(not(target_os = "linux"))]
-                let (disk_read_bytes, disk_write_bytes): (Option<u64>, Option<u64>) = (None, None);
+                let (disk_read_bytes, disk_write_bytes): (
+                    Option<u64>,
+                    Option<u64>,
+                ) = (None, None);
                 #[cfg(target_os = "linux")]
                 let fd_count = read_proc_fd_count(pid_u32);
                 #[cfg(not(target_os = "linux"))]
@@ -2033,7 +2096,11 @@ impl SystemStatus {
                     cpu_usage: p.cpu_usage(),
                     memory_bytes: p.memory(),
                     status: format!("{}", p.status()),
-                    start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
+                    start_time: if p.start_time() > 0 {
+                        Some(p.start_time())
+                    } else {
+                        None
+                    },
                     executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
                     user: p.user_id().map(|uid| uid.to_string()),
                     virtual_memory: p.virtual_memory(),
@@ -2041,7 +2108,11 @@ impl SystemStatus {
                     thread_count: read_proc_thread_count(pid_u32),
                     #[cfg(not(target_os = "linux"))]
                     thread_count: None,
-                    command_line: if cmd_line.is_empty() { None } else { Some(cmd_line) },
+                    command_line: if cmd_line.is_empty() {
+                        None
+                    } else {
+                        Some(cmd_line)
+                    },
                     #[cfg(target_os = "linux")]
                     working_dir: read_proc_working_dir(pid_u32),
                     #[cfg(not(target_os = "linux"))]
@@ -2060,6 +2131,10 @@ impl SystemStatus {
         }
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "GPU enumeration spans multiple platform-specific probe strategies; splitting reduces readability"
+    )]
     fn read_gpus() -> Vec<GpuInfo> {
         let mut gpus = Vec::new();
         // Try system_profiler on macOS
@@ -2079,9 +2154,7 @@ impl SystemStatus {
                         .as_str()
                         .unwrap_or("Unknown")
                         .to_string();
-                    let vram = display["sppci_vram"]
-                        .as_str()
-                        .and_then(parse_vram_to_bytes);
+                    let vram = display["sppci_vram"].as_str().and_then(parse_vram_to_bytes);
                     let device_id = display["sppci_device_id"]
                         .as_str()
                         .map(std::string::ToString::to_string);
@@ -2116,8 +2189,13 @@ impl SystemStatus {
         // Try nvidia-smi on Linux
         #[cfg(target_os = "linux")]
         {
-            if let Some(text) = run_cmd("nvidia-smi", &["--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics", "--format=csv,noheader,nounits"])
-            {
+            if let Some(text) = run_cmd(
+                "nvidia-smi",
+                &[
+                    "--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics",
+                    "--format=csv,noheader,nounits",
+                ],
+            ) {
                 for line in text.lines() {
                     let parts: Vec<&str> = line.split(", ").collect();
                     if parts.len() >= 16 {
@@ -2166,9 +2244,13 @@ impl SystemStatus {
 
     fn read_static_info(sys: &System) -> StaticInfo {
         let cpus = sys.cpus();
-        let brand = cpus.first().map_or_else(String::new, |c| c.brand().to_string());
-        let vendor = cpus.first().map_or_else(String::new, |c| c.vendor_id().to_string());
-        let freq = cpus.first().map_or(0, |c| c.frequency());
+        let brand = cpus
+            .first()
+            .map_or_else(String::new, |c| c.brand().to_string());
+        let vendor = cpus
+            .first()
+            .map_or_else(String::new, |c| c.vendor_id().to_string());
+        let freq = cpus.first().map_or(0, sysinfo::Cpu::frequency);
         let topology = read_cpu_topology();
         let hardware = read_hardware_inventory();
         StaticInfo {
@@ -2207,33 +2289,67 @@ impl SystemStatus {
             })
             .collect();
         let cpu_temperature = readings.iter().find_map(|s| {
-            if s.label.to_lowercase().contains("cpu") { s.temperature } else { None }
+            if s.label.to_lowercase().contains("cpu") {
+                s.temperature
+            } else {
+                None
+            }
         });
         let gpu_temperature = readings.iter().find_map(|s| {
-            if s.label.to_lowercase().contains("gpu") { s.temperature } else { None }
+            if s.label.to_lowercase().contains("gpu") {
+                s.temperature
+            } else {
+                None
+            }
         });
-        SensorSnapshot { readings, cpu_temperature, gpu_temperature }
+        SensorSnapshot {
+            readings,
+            cpu_temperature,
+            gpu_temperature,
+        }
     }
 
     #[cfg(target_os = "linux")]
     fn read_virtualization() -> VirtualizationSnapshot {
         use std::fs;
-        let mut snap = VirtualizationSnapshot::default();
-        snap.in_docker = std::path::Path::new("/.dockerenv").exists();
+        let in_docker = std::path::Path::new("/.dockerenv").exists();
+        let mut snap = VirtualizationSnapshot {
+            in_docker,
+            ..VirtualizationSnapshot::default()
+        };
         if let Ok(cgroup) = fs::read_to_string("/proc/self/cgroup") {
-            if cgroup.contains("/lxc/") || cgroup.contains("lxc.payload") { snap.in_lxc = true; }
-            if cgroup.contains("containerd") { snap.in_containerd = true; }
-            if cgroup.contains("kubepods") { snap.in_kubernetes = true; }
-            snap.cgroup_version = Some(if cgroup.starts_with("0::/") { "v2" } else { "v1" }.to_string());
+            if cgroup.contains("/lxc/") || cgroup.contains("lxc.payload") {
+                snap.in_lxc = true;
+            }
+            if cgroup.contains("containerd") {
+                snap.in_containerd = true;
+            }
+            if cgroup.contains("kubepods") {
+                snap.in_kubernetes = true;
+            }
+            snap.cgroup_version = Some(
+                if cgroup.starts_with("0::/") {
+                    "v2"
+                } else {
+                    "v1"
+                }
+                .to_string(),
+            );
         }
         if let Ok(version) = fs::read_to_string("/proc/version") {
             let lower = version.to_lowercase();
-            if lower.contains("microsoft") || lower.contains("wsl") { snap.in_wsl = true; }
+            if lower.contains("microsoft") || lower.contains("wsl") {
+                snap.in_wsl = true;
+            }
         }
         if let Ok(product) = fs::read_to_string("/sys/class/dmi/id/product_name") {
             let lower = product.to_lowercase();
-            if lower.contains("virtualbox") || lower.contains("vmware") || lower.contains("kvm")
-                || lower.contains("qemu") || lower.contains("hyper-v") || lower.contains("virtual")
+            if lower.contains("virtualbox")
+                || lower.contains("vmware")
+                || lower.contains("kvm")
+                || lower.contains("qemu")
+                || lower.contains("hyper-v")
+                || lower.contains("virtual")
             {
                 snap.in_vm = true;
                 snap.hypervisor_vendor = Some(product.trim().to_string());
@@ -2250,15 +2366,19 @@ impl SystemStatus {
     #[cfg(target_os = "linux")]
     fn read_disk_io() -> DiskIoSnapshot {
         use std::fs;
-        let content = match fs::read_to_string("/proc/diskstats") {
-            Ok(c) => c, Err(_) => return DiskIoSnapshot::default(),
+        let Ok(content) = fs::read_to_string("/proc/diskstats") else {
+            return DiskIoSnapshot::default();
         };
         let mut snap = DiskIoSnapshot::default();
         for line in content.lines() {
             let fields: Vec<&str> = line.split_whitespace().collect();
-            if fields.len() < 14 { continue; }
+            if fields.len() < 14 {
+                continue;
+            }
             let name = fields[2];
-            if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") { continue; }
+            if name.starts_with("loop") || name.starts_with("ram") || name.starts_with("dm-") {
+                continue;
+            }
             let sectors_read: u64 = fields[5].parse().unwrap_or(0);
             let read_time: u64 = fields[6].parse().unwrap_or(0);
             let reads: u64 = fields[3].parse().unwrap_or(0);
@@ -2269,7 +2389,9 @@ impl SystemStatus {
             snap.written_bytes = snap.written_bytes.saturating_add(sectors_written * 512);
             snap.read_ops = snap.read_ops.saturating_add(reads);
             snap.write_ops = snap.write_ops.saturating_add(writes);
-            snap.busy_time_ms = snap.busy_time_ms.saturating_add(read_time.saturating_add(write_time));
+            snap.busy_time_ms = snap
+                .busy_time_ms
+                .saturating_add(read_time.saturating_add(write_time));
         }
         snap
     }
@@ -2324,7 +2446,11 @@ impl fmt::Display for SystemStatus {
         if !self.cpu_cores.is_empty() {
             writeln!(f, "  CPU cores:")?;
             for core in &self.cpu_cores {
-                writeln!(f, "    {}: {:.1}% ({} MHz)", core.name, core.usage, core.frequency)?;
+                writeln!(
+                    f,
+                    "    {}: {:.1}% ({} MHz)",
+                    core.name, core.usage, core.frequency
+                )?;
             }
         }
 
@@ -2353,7 +2479,11 @@ impl fmt::Display for SystemStatus {
         if self.disks.len() > 1 {
             writeln!(f, "  Disks:")?;
             for disk in &self.disks {
-                write!(f, "    {} ({}) [{}]: ", disk.mount_point, disk.name, disk.filesystem)?;
+                write!(
+                    f,
+                    "    {} ({}) [{}]: ",
+                    disk.mount_point, disk.name, disk.filesystem
+                )?;
                 write_bytes(f, disk.used_bytes)?;
                 write!(f, " / ")?;
                 write_bytes(f, disk.total_bytes)?;
@@ -2412,7 +2542,11 @@ impl fmt::Display for SystemStatus {
             }
         }
         if let Some(battery) = &self.battery {
-            writeln!(f, "  Battery: {:.0}% ({})", battery.charge_percent, battery.state)?;
+            writeln!(
+                f,
+                "  Battery: {:.0}% ({})",
+                battery.charge_percent, battery.state
+            )?;
         }
 
         if let Some(secs) = self.uptime_secs {
@@ -2470,7 +2604,6 @@ impl SysinfoProvider {
         sys.refresh_processes(ProcessesToUpdate::All, true);
         Self { sys }
     }
-
 }
 
 impl Default for SysinfoProvider {
@@ -2511,8 +2644,12 @@ impl CpuProvider for SysinfoProvider {
 
     fn cpu_static(&self) -> StatusResult<CpuStatic> {
         let cpus = self.sys.cpus();
-        let brand = cpus.first().map_or_else(String::new, |c| c.brand().to_string());
-        let vendor = cpus.first().map_or_else(String::new, |c| c.vendor_id().to_string());
+        let brand = cpus
+            .first()
+            .map_or_else(String::new, |c| c.brand().to_string());
+        let vendor = cpus
+            .first()
+            .map_or_else(String::new, |c| c.vendor_id().to_string());
         let topology = read_cpu_topology();
         Ok(CpuStatic {
             vendor,
@@ -2540,7 +2677,10 @@ impl CpuProvider for SysinfoProvider {
             Some(total / cpus.len() as f64)
         };
         let per_core: Vec<f64> = cpus.iter().map(|c| f64::from(c.cpu_usage())).collect();
-        Ok(CpuSample { total_usage, per_core })
+        Ok(CpuSample {
+            total_usage,
+            per_core,
+        })
     }
 }
 
@@ -2591,7 +2731,17 @@ impl MemoryProvider for SysinfoProvider {
             return Ok(None);
         }
         let used = self.sys.used_memory();
-        Ok(Some((used as f32 / total as f32).clamp(0.0, 1.0)))
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "memory ratio as f32 is a display-grade approximation; u64->f64 mantissa loss is negligible for byte counts"
+        )]
+        let ratio = used as f64 / total as f64;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "f64 ratio narrowed to f32 for a display-grade approximation; precision loss is negligible"
+        )]
+        let pressure = (ratio as f32).clamp(0.0, 1.0);
+        Ok(Some(pressure))
     }
 }
 
@@ -2715,7 +2865,11 @@ impl NetworkProvider for SysinfoProvider {
                     errors_received: data.errors_on_received(),
                     errors_transmitted: data.errors_on_transmitted(),
                     mac_address: mac_str,
-                    mtu: if mtu_val > 0 { Some(mtu_val as u32) } else { None },
+                    mtu: if mtu_val > 0 {
+                        Some(u32::try_from(mtu_val).unwrap_or(u32::MAX))
+                    } else {
+                        None
+                    },
                     drops_received: extras.drops_received,
                     drops_transmitted: extras.drops_transmitted,
                     display_name: None,
@@ -2752,7 +2906,11 @@ impl OsProvider for SysinfoProvider {
 
     fn uptime(&self) -> StatusResult<Option<u64>> {
         let uptime = System::uptime();
-        if uptime > 0 { Ok(Some(uptime)) } else { Ok(None) }
+        if uptime > 0 {
+            Ok(Some(uptime))
+        } else {
+            Ok(None)
+        }
     }
 
     fn boot_time(&self) -> StatusResult<Option<u64>> {
@@ -2790,14 +2948,19 @@ impl ProcessProvider for SysinfoProvider {
             .iter()
             .map(|(pid, p)| {
                 let pid_u32 = pid.as_u32();
-                let cmd_line = p.cmd().iter()
+                let cmd_line = p
+                    .cmd()
+                    .iter()
                     .map(|c| c.to_string_lossy().to_string())
                     .collect::<Vec<_>>()
                     .join(" ");
                 #[cfg(target_os = "linux")]
                 let (disk_read_bytes, disk_write_bytes) = read_proc_io(pid_u32);
                 #[cfg(not(target_os = "linux"))]
-                let (disk_read_bytes, disk_write_bytes): (Option<u64>, Option<u64>) = (None, None);
+                let (disk_read_bytes, disk_write_bytes): (
+                    Option<u64>,
+                    Option<u64>,
+                ) = (None, None);
                 #[cfg(target_os = "linux")]
                 let fd_count = read_proc_fd_count(pid_u32);
                 #[cfg(not(target_os = "linux"))]
@@ -2809,7 +2972,11 @@ impl ProcessProvider for SysinfoProvider {
                     cpu_usage: p.cpu_usage(),
                     memory_bytes: p.memory(),
                     status: format!("{}", p.status()),
-                    start_time: if p.start_time() > 0 { Some(p.start_time()) } else { None },
+                    start_time: if p.start_time() > 0 {
+                        Some(p.start_time())
+                    } else {
+                        None
+                    },
                     executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
                     user: p.user_id().map(|uid| uid.to_string()),
                     virtual_memory: p.virtual_memory(),
@@ -2817,7 +2984,11 @@ impl ProcessProvider for SysinfoProvider {
                     thread_count: read_proc_thread_count(pid_u32),
                     #[cfg(not(target_os = "linux"))]
                     thread_count: None,
-                    command_line: if cmd_line.is_empty() { None } else { Some(cmd_line) },
+                    command_line: if cmd_line.is_empty() {
+                        None
+                    } else {
+                        Some(cmd_line)
+                    },
                     #[cfg(target_os = "linux")]
                     working_dir: read_proc_working_dir(pid_u32),
                     #[cfg(not(target_os = "linux"))]
@@ -2853,7 +3024,12 @@ impl GpuProvider for SysinfoProvider {
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss,
         clippy::option_if_let_else
-    )] // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
+    )]
+    // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
+    #[expect(
+        clippy::too_many_lines,
+        reason = "GPU enumeration spans multiple platform-specific probe strategies; splitting reduces readability"
+    )]
     fn gpus(&self) -> StatusResult<Vec<GpuInfo>> {
         let mut gpus = Vec::new();
         // Try system_profiler on macOS
@@ -2873,9 +3049,7 @@ impl GpuProvider for SysinfoProvider {
                         .as_str()
                         .unwrap_or("Unknown")
                         .to_string();
-                    let vram = display["sppci_vram"]
-                        .as_str()
-                        .and_then(parse_vram_to_bytes);
+                    let vram = display["sppci_vram"].as_str().and_then(parse_vram_to_bytes);
                     let device_id = display["sppci_device_id"]
                         .as_str()
                         .map(std::string::ToString::to_string);
@@ -2910,8 +3084,13 @@ impl GpuProvider for SysinfoProvider {
         // Try nvidia-smi on Linux
         #[cfg(target_os = "linux")]
         {
-            if let Some(text) = run_cmd("nvidia-smi", &["--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics", "--format=csv,noheader,nounits"])
-            {
+            if let Some(text) = run_cmd(
+                "nvidia-smi",
+                &[
+                    "--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics",
+                    "--format=csv,noheader,nounits",
+                ],
+            ) {
                 for line in text.lines() {
                     let parts: Vec<&str> = line.split(", ").collect();
                     if parts.len() >= 16 {
@@ -3097,8 +3276,43 @@ impl SystemStatus {
         let battery = provider.battery().ok().flatten();
 
         let static_info = provider.static_info().unwrap_or_else(|_| StaticInfo {
-            os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
-            kernel_version: None, hostname: String::new(), cpu_brand: String::new(), cpu_vendor: String::new(), cpu_frequency: 0, physical_cores: None, logical_cores: 0, memory_total_bytes: 0, hardware: HardwareInventory::default(), sockets: None, cores_per_socket: None, threads_per_core: None, base_frequency: None, max_frequency: None, cache_l1d: None, cache_l1i: None, cache_l2: None, cache_l3: None,
+            os: OsInfo {
+                name: None,
+                version: None,
+                kernel_version: None,
+                arch: String::new(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
+            },
+            kernel_version: None,
+            hostname: String::new(),
+            cpu_brand: String::new(),
+            cpu_vendor: String::new(),
+            cpu_frequency: 0,
+            physical_cores: None,
+            logical_cores: 0,
+            memory_total_bytes: 0,
+            hardware: HardwareInventory::default(),
+            sockets: None,
+            cores_per_socket: None,
+            threads_per_core: None,
+            base_frequency: None,
+            max_frequency: None,
+            cache_l1d: None,
+            cache_l1i: None,
+            cache_l2: None,
+            cache_l3: None,
         });
         let sensor_snapshot = Self::read_sensor_snapshot();
         let virtualization = provider.virtualization().unwrap_or_default();
@@ -3237,10 +3451,7 @@ mod tests {
     #[test]
     fn collect_returns_nonzero_total_memory() {
         let status = SystemStatus::collect();
-        assert!(
-            status.memory.total_bytes > 0,
-            "total memory should be > 0"
-        );
+        assert!(status.memory.total_bytes > 0, "total memory should be > 0");
     }
 
     #[test]
@@ -3255,7 +3466,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cast_precision_loss, reason = "test compares percentages with tolerance")]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "test compares percentages with tolerance"
+    )]
     fn memory_percentage_is_consistent() {
         let status = SystemStatus::collect();
         let expected = if status.memory.total_bytes > 0 {
@@ -3283,7 +3497,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cast_precision_loss, reason = "test compares percentages with tolerance")]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "test compares percentages with tolerance"
+    )]
     fn disk_percentage_is_consistent() {
         let status = SystemStatus::collect();
         if status.disk.total_bytes > 0 {
@@ -3330,10 +3547,7 @@ mod tests {
     #[test]
     fn hostname_is_non_empty() {
         let status = SystemStatus::collect();
-        assert!(
-            !status.hostname.is_empty(),
-            "hostname should not be empty"
-        );
+        assert!(!status.hostname.is_empty(), "hostname should not be empty");
     }
 
     #[test]
@@ -3407,7 +3621,11 @@ mod tests {
     fn serialize_to_json_succeeds() {
         let status = SystemStatus::collect();
         let json = serde_json::to_string(&status);
-        assert!(json.is_ok(), "serialization should succeed: {:?}", json.err());
+        assert!(
+            json.is_ok(),
+            "serialization should succeed: {:?}",
+            json.err()
+        );
     }
 
     #[test]
@@ -3451,6 +3669,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "insta snapshot test assembling a full status display"
+    )]
     fn display_with_none_cpu() {
         let status = SystemStatus {
             cpu_usage: None,
@@ -3521,9 +3743,31 @@ mod tests {
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -3545,23 +3789,36 @@ mod tests {
             },
         };
         let output = format!("{status}");
-        assert!(output.contains("CPU: N/A"), "expected 'CPU: N/A' in output:\n{output}");
+        assert!(
+            output.contains("CPU: N/A"),
+            "expected 'CPU: N/A' in output:\n{output}"
+        );
     }
 
     #[test]
     fn os_info_fields_are_populated() {
         let status = SystemStatus::collect();
         assert!(status.os_info.name.is_some(), "os_info.name should be Some");
-        assert!(status.os_info.arch.is_ascii() && !status.os_info.arch.is_empty(), "arch should be non-empty");
+        assert!(
+            status.os_info.arch.is_ascii() && !status.os_info.arch.is_empty(),
+            "arch should be non-empty"
+        );
     }
 
     #[test]
     fn cpu_cores_is_non_empty() {
         let status = SystemStatus::collect();
-        assert!(!status.cpu_cores.is_empty(), "cpu_cores should be non-empty");
+        assert!(
+            !status.cpu_cores.is_empty(),
+            "cpu_cores should be non-empty"
+        );
         for core in &status.cpu_cores {
             assert!(!core.name.is_empty(), "core name should not be empty");
-            assert!((0.0..=100.0).contains(&core.usage), "core usage out of range: {}", core.usage);
+            assert!(
+                (0.0..=100.0).contains(&core.usage),
+                "core usage out of range: {}",
+                core.usage
+            );
         }
     }
 
@@ -3577,7 +3834,10 @@ mod tests {
     #[test]
     fn network_interfaces_is_non_empty() {
         let status = SystemStatus::collect();
-        assert!(!status.network_interfaces.is_empty(), "network_interfaces should be non-empty");
+        assert!(
+            !status.network_interfaces.is_empty(),
+            "network_interfaces should be non-empty"
+        );
     }
 
     #[cfg(unix)]
@@ -3587,19 +3847,31 @@ mod tests {
         // On most Unix systems swap is configured, but we only assert structure if present.
         if let Some(swap) = &status.swap {
             assert!(swap.used_bytes <= swap.total_bytes, "swap used > total");
-            assert!((0.0..=100.0).contains(&swap.percentage), "swap percentage out of range");
+            assert!(
+                (0.0..=100.0).contains(&swap.percentage),
+                "swap percentage out of range"
+            );
         }
     }
 
     #[test]
     fn physical_cores_is_some() {
         let status = SystemStatus::collect();
-        assert!(status.physical_cores.is_some(), "physical_cores should be Some on real hardware");
-        assert!(status.physical_cores.unwrap() > 0, "physical_cores should be > 0");
+        assert!(
+            status.physical_cores.is_some(),
+            "physical_cores should be Some on real hardware"
+        );
+        assert!(
+            status.physical_cores.unwrap() > 0,
+            "physical_cores should be > 0"
+        );
     }
 
     #[test]
-    #[allow(clippy::too_many_lines, reason = "snapshot test constructs a full SystemStatus with all fields populated")]
+    #[allow(
+        clippy::too_many_lines,
+        reason = "snapshot test constructs a full SystemStatus with all fields populated"
+    )]
     fn snapshot_system_status_display() {
         let status = SystemStatus {
             cpu_usage: Some(42.5),
@@ -3785,9 +4057,31 @@ mod tests {
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -4013,7 +4307,10 @@ mod tests {
     )]
     fn parse_vram_tb_fractional() {
         let result = parse_vram_to_bytes("1.5 TB");
-        assert_eq!(result, Some((1.5 * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64));
+        assert_eq!(
+            result,
+            Some((1.5 * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
+        );
     }
 
     #[test]
@@ -4076,7 +4373,10 @@ mod tests {
     fn format_duration_max_value() {
         // u64::MAX should not panic
         let result = format_duration(u64::MAX);
-        assert!(!result.is_empty(), "format_duration(u64::MAX) should not be empty");
+        assert!(
+            !result.is_empty(),
+            "format_duration(u64::MAX) should not be empty"
+        );
         assert!(result.ends_with('s'), "should end with seconds: {result}");
     }
 
@@ -4096,11 +4396,32 @@ mod tests {
             cpu_usage: None,
             memory,
             disk,
-            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            network: NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            },
             load_average: None,
             uptime_secs: None,
             hostname: String::new(),
-            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+            os_info: OsInfo {
+                name: None,
+                version: None,
+                kernel_version: None,
+                arch: String::new(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
+            },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -4108,11 +4429,32 @@ mod tests {
             network_interfaces: Vec::new(),
             sensors: Vec::new(),
             boot_time: None,
-            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
             gpu: vec![],
             battery: None,
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -4132,7 +4474,11 @@ mod tests {
                 cache_l2: None,
                 cache_l3: None,
             },
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             virtualization: VirtualizationSnapshot::default(),
             disk_io: DiskIoSnapshot::default(),
         }
@@ -4162,7 +4508,15 @@ mod tests {
     fn memory_percentage_zero_total() {
         // Division by zero protection: total_bytes = 0 should yield 0%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             empty_disk(),
         );
         assert!((status.memory.percentage).abs() < f64::EPSILON);
@@ -4172,7 +4526,15 @@ mod tests {
     fn memory_percentage_capped_at_100() {
         // When used > total (e.g. reclaimed/buffer memory), percentage should be capped at 100%.
         let status = make_status(
-            MemoryStatus { used_bytes: 20 * GB, total_bytes: 16 * GB, percentage: 100.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            MemoryStatus {
+                used_bytes: 20 * GB,
+                total_bytes: 16 * GB,
+                percentage: 100.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             empty_disk(),
         );
         assert!(
@@ -4188,7 +4550,15 @@ mod tests {
     fn disk_percentage_zero_total() {
         // Division by zero protection: total_bytes = 0 should yield 0%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -4214,7 +4584,15 @@ mod tests {
     fn disk_percentage_capped_at_100() {
         // When used > total (e.g. filesystem overhead), percentage should be capped at 100%.
         let status = make_status(
-            MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -4267,10 +4645,7 @@ mod tests {
     #[test]
     fn top_by_cpu_n_exceeds_len() {
         let snapshot = ProcessSnapshot {
-            processes: vec![
-                make_process(1, 10.0, 100),
-                make_process(2, 50.0, 200),
-            ],
+            processes: vec![make_process(1, 10.0, 100), make_process(2, 50.0, 200)],
             total_count: 2,
         };
         let top = snapshot.top_by_cpu(10);
@@ -4282,10 +4657,7 @@ mod tests {
     #[test]
     fn top_by_cpu_n_zero() {
         let snapshot = ProcessSnapshot {
-            processes: vec![
-                make_process(1, 10.0, 100),
-                make_process(2, 50.0, 200),
-            ],
+            processes: vec![make_process(1, 10.0, 100), make_process(2, 50.0, 200)],
             total_count: 2,
         };
         let top = snapshot.top_by_cpu(0);
@@ -4305,10 +4677,7 @@ mod tests {
     #[test]
     fn top_by_memory_n_exceeds_len() {
         let snapshot = ProcessSnapshot {
-            processes: vec![
-                make_process(1, 5.0, 1024),
-                make_process(2, 5.0, 4096),
-            ],
+            processes: vec![make_process(1, 5.0, 1024), make_process(2, 5.0, 4096)],
             total_count: 2,
         };
         let top = snapshot.top_by_memory(10);
@@ -4320,10 +4689,7 @@ mod tests {
     #[test]
     fn top_by_memory_n_zero() {
         let snapshot = ProcessSnapshot {
-            processes: vec![
-                make_process(1, 5.0, 1024),
-                make_process(2, 5.0, 4096),
-            ],
+            processes: vec![make_process(1, 5.0, 1024), make_process(2, 5.0, 4096)],
             total_count: 2,
         };
         let top = snapshot.top_by_memory(0);
@@ -4352,9 +4718,16 @@ mod tests {
             total_count: 3,
         };
         let top = snapshot.top_by_cpu(3);
-        assert_eq!(top.len(), 3, "all processes should be returned even with NaN");
+        assert_eq!(
+            top.len(),
+            3,
+            "all processes should be returned even with NaN"
+        );
         // Verify the non-NaN process is included.
-        assert!(top.iter().any(|p| p.pid == 2), "non-NaN process should be present");
+        assert!(
+            top.iter().any(|p| p.pid == 2),
+            "non-NaN process should be present"
+        );
     }
 
     #[test]
@@ -4371,14 +4744,27 @@ mod tests {
         };
         let top = snapshot.top_by_cpu(3);
         assert_eq!(top.len(), 3);
-        assert_eq!(top[0].pid, 1, "stable sort: first inserted should remain first");
-        assert_eq!(top[1].pid, 2, "stable sort: second inserted should remain second");
-        assert_eq!(top[2].pid, 3, "stable sort: third inserted should remain third");
+        assert_eq!(
+            top[0].pid, 1,
+            "stable sort: first inserted should remain first"
+        );
+        assert_eq!(
+            top[1].pid, 2,
+            "stable sort: second inserted should remain second"
+        );
+        assert_eq!(
+            top[2].pid, 3,
+            "stable sort: third inserted should remain third"
+        );
     }
 
     // ── Display edge cases ───────────────────────────────────────────────
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "insta snapshot test assembling a full status display"
+    )]
     fn display_with_all_none_fields() {
         let status = SystemStatus {
             cpu_usage: None,
@@ -4449,9 +4835,31 @@ mod tests {
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -4473,28 +4881,73 @@ mod tests {
             },
         };
         let output = format!("{status}");
-        assert!(output.contains("System:"), "should contain 'System:' header");
+        assert!(
+            output.contains("System:"),
+            "should contain 'System:' header"
+        );
         assert!(output.contains("CPU: N/A"), "should show 'CPU: N/A'");
         assert!(output.contains("Memory:"), "should contain 'Memory:'");
         assert!(output.contains("0 B / 0 B"), "should show 0 B / 0 B");
         assert!(output.contains("0.0%)"), "should show 0.0%");
         assert!(!output.contains("GPU"), "no GPU section when gpu is empty");
-        assert!(!output.contains("Battery"), "no Battery section when battery is None");
-        assert!(!output.contains("Uptime"), "no Uptime section when uptime is None");
-        assert!(!output.contains("Load:"), "no Load section when load_average is None");
+        assert!(
+            !output.contains("Battery"),
+            "no Battery section when battery is None"
+        );
+        assert!(
+            !output.contains("Uptime"),
+            "no Uptime section when uptime is None"
+        );
+        assert!(
+            !output.contains("Load:"),
+            "no Load section when load_average is None"
+        );
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "insta snapshot test assembling a full status display"
+    )]
     fn display_with_gpu_data() {
         let status = SystemStatus {
             cpu_usage: Some(50.0),
-            memory: MemoryStatus { used_bytes: 8 * GB, total_bytes: 16 * GB, percentage: 50.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            memory: MemoryStatus {
+                used_bytes: 8 * GB,
+                total_bytes: 16 * GB,
+                percentage: 50.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             disk: empty_disk(),
-            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            network: NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            },
             load_average: None,
             uptime_secs: None,
             hostname: "gpu-host".to_string(),
-            os_info: OsInfo { name: Some("Linux".to_string()), version: None, kernel_version: None, arch: "x86_64".to_string(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+            os_info: OsInfo {
+                name: Some("Linux".to_string()),
+                version: None,
+                kernel_version: None,
+                arch: "x86_64".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
+            },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -4502,7 +4955,10 @@ mod tests {
             network_interfaces: Vec::new(),
             sensors: Vec::new(),
             boot_time: None,
-            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
             gpu: vec![GpuInfo {
                 name: "NVIDIA RTX 4090".to_string(),
                 vendor: "NVIDIA".to_string(),
@@ -4526,9 +4982,31 @@ mod tests {
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -4551,22 +5029,58 @@ mod tests {
         };
         let output = format!("{status}");
         assert!(output.contains("GPU 0:"), "should contain GPU section");
-        assert!(output.contains("NVIDIA RTX 4090"), "should contain GPU name");
+        assert!(
+            output.contains("NVIDIA RTX 4090"),
+            "should contain GPU name"
+        );
         assert!(output.contains("NVIDIA"), "should contain GPU vendor");
         assert!(output.contains("24.0 GiB"), "should contain VRAM");
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "insta snapshot test assembling a full status display"
+    )]
     fn display_with_battery_data() {
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            memory: MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             disk: empty_disk(),
-            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            network: NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            },
             load_average: None,
             uptime_secs: None,
             hostname: "laptop".to_string(),
-            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: "aarch64".to_string(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+            os_info: OsInfo {
+                name: None,
+                version: None,
+                kernel_version: None,
+                arch: "aarch64".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
+            },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -4574,7 +5088,10 @@ mod tests {
             network_interfaces: Vec::new(),
             sensors: Vec::new(),
             boot_time: None,
-            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
             gpu: vec![],
             battery: Some(BatteryInfo {
                 charge_percent: 85.0,
@@ -4592,9 +5109,31 @@ mod tests {
             }),
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -4616,22 +5155,58 @@ mod tests {
             },
         };
         let output = format!("{status}");
-        assert!(output.contains("Battery:"), "should contain Battery section");
+        assert!(
+            output.contains("Battery:"),
+            "should contain Battery section"
+        );
         assert!(output.contains("85%"), "should contain charge percentage");
         assert!(output.contains("Charging"), "should contain battery state");
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "insta snapshot test assembling a full status display"
+    )]
     fn display_sensors_none_temperature() {
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            memory: MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             disk: empty_disk(),
-            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            network: NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            },
             load_average: None,
             uptime_secs: None,
             hostname: "sensor-host".to_string(),
-            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: "x86_64".to_string(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+            os_info: OsInfo {
+                name: None,
+                version: None,
+                kernel_version: None,
+                arch: "x86_64".to_string(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
+            },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -4654,14 +5229,39 @@ mod tests {
                 },
             ],
             boot_time: None,
-            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
             gpu: vec![],
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -4683,19 +5283,40 @@ mod tests {
             },
         };
         let output = format!("{status}");
-        assert!(output.contains("Sensors:"), "should contain Sensors section");
-        assert!(output.contains("CPU: 65.0"), "should show temperature for CPU sensor");
-        assert!(output.contains("Unknown: N/A"), "should show N/A for sensor with None temperature");
+        assert!(
+            output.contains("Sensors:"),
+            "should contain Sensors section"
+        );
+        assert!(
+            output.contains("CPU: 65.0"),
+            "should show temperature for CPU sensor"
+        );
+        assert!(
+            output.contains("Unknown: N/A"),
+            "should show N/A for sensor with None temperature"
+        );
     }
 
     // ── Critical edge case tests ───────────────────────────────────────
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "exhaustively exercises percentage derivation across zero/non-zero totals"
+    )]
     fn memory_percentage_zero_total_does_not_panic() {
         // Display should not panic when all memory/disk values are zero.
         let status = SystemStatus {
             cpu_usage: None,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            memory: MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             disk: DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -4713,7 +5334,10 @@ mod tests {
                 temperature: None,
                 wear_percent: None,
             },
-            network: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+            network: NetworkStatus {
+                bytes_received: 0,
+                bytes_transmitted: 0,
+            },
             load_average: None,
             uptime_secs: None,
             hostname: "test".to_string(),
@@ -4743,14 +5367,39 @@ mod tests {
             network_interfaces: vec![],
             sensors: vec![],
             boot_time: None,
-            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
             gpu: vec![],
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -4776,6 +5425,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "insta snapshot test assembling a full status display"
+    )]
     fn display_with_gpu_and_battery() {
         let status = SystemStatus {
             cpu_usage: Some(50.0),
@@ -4805,7 +5458,10 @@ mod tests {
                 temperature: None,
                 wear_percent: None,
             },
-            network: NetworkStatus { bytes_received: 100, bytes_transmitted: 50 },
+            network: NetworkStatus {
+                bytes_received: 100,
+                bytes_transmitted: 50,
+            },
             load_average: None,
             uptime_secs: Some(3600),
             hostname: "test".to_string(),
@@ -4835,7 +5491,10 @@ mod tests {
             network_interfaces: vec![],
             sensors: vec![],
             boot_time: None,
-            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
             gpu: vec![GpuInfo {
                 name: "Apple M1".to_string(),
                 vendor: "Apple".to_string(),
@@ -4872,9 +5531,31 @@ mod tests {
             }),
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -4947,10 +5628,7 @@ mod tests {
     #[test]
     fn collect_via_provider_returns_nonzero_total_memory() {
         let status = SystemStatus::collect_via_provider();
-        assert!(
-            status.memory.total_bytes > 0,
-            "total memory should be > 0"
-        );
+        assert!(status.memory.total_bytes > 0, "total memory should be > 0");
     }
 
     #[test]
@@ -4965,7 +5643,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cast_precision_loss, reason = "test compares percentages with tolerance")]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "test compares percentages with tolerance"
+    )]
     fn collect_via_provider_memory_percentage_is_consistent() {
         let status = SystemStatus::collect_via_provider();
         let expected = if status.memory.total_bytes > 0 {
@@ -4993,7 +5674,10 @@ mod tests {
     }
 
     #[test]
-    #[allow(clippy::cast_precision_loss, reason = "test compares percentages with tolerance")]
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "test compares percentages with tolerance"
+    )]
     fn collect_via_provider_disk_percentage_is_consistent() {
         let status = SystemStatus::collect_via_provider();
         if status.disk.total_bytes > 0 {
@@ -5039,10 +5723,7 @@ mod tests {
     #[test]
     fn collect_via_provider_hostname_is_non_empty() {
         let status = SystemStatus::collect_via_provider();
-        assert!(
-            !status.hostname.is_empty(),
-            "hostname should not be empty"
-        );
+        assert!(!status.hostname.is_empty(), "hostname should not be empty");
     }
 
     #[test]
@@ -5058,7 +5739,10 @@ mod tests {
     #[test]
     fn collect_via_provider_cpu_cores_is_non_empty() {
         let status = SystemStatus::collect_via_provider();
-        assert!(!status.cpu_cores.is_empty(), "cpu_cores should be non-empty");
+        assert!(
+            !status.cpu_cores.is_empty(),
+            "cpu_cores should be non-empty"
+        );
         for core in &status.cpu_cores {
             assert!(!core.name.is_empty(), "core name should not be empty");
             assert!(
@@ -5163,7 +5847,10 @@ mod tests {
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("JSON must be valid and parseable");
         assert!(parsed.is_object(), "JSON must be an object");
-        assert!(parsed.get("hostname").is_some(), "JSON must contain 'hostname'");
+        assert!(
+            parsed.get("hostname").is_some(),
+            "JSON must contain 'hostname'"
+        );
         assert!(parsed.get("memory").is_some(), "JSON must contain 'memory'");
     }
 
@@ -5174,7 +5861,10 @@ mod tests {
         let mut provider = SysinfoProvider::new();
         let cpu = provider.cpu_usage().expect("cpu_usage should succeed");
         if let Some(usage) = cpu {
-            assert!((0.0..=100.0).contains(&usage), "CPU usage out of range: {usage}");
+            assert!(
+                (0.0..=100.0).contains(&usage),
+                "CPU usage out of range: {usage}"
+            );
         }
     }
 
@@ -5188,8 +5878,13 @@ mod tests {
     #[test]
     fn provider_physical_cores_returns_some() {
         let provider = SysinfoProvider::new();
-        let cores = provider.physical_cores().expect("physical_cores should succeed");
-        assert!(cores.is_some(), "physical_cores should be Some on real hardware");
+        let cores = provider
+            .physical_cores()
+            .expect("physical_cores should succeed");
+        assert!(
+            cores.is_some(),
+            "physical_cores should be Some on real hardware"
+        );
         assert!(cores.unwrap() > 0, "physical_cores should be > 0");
     }
 
@@ -5213,7 +5908,10 @@ mod tests {
         let swap = provider.swap().expect("swap should succeed");
         if let Some(swap) = swap {
             assert!(swap.used_bytes <= swap.total_bytes, "swap used > total");
-            assert!((0.0..=100.0).contains(&swap.percentage), "swap percentage out of range");
+            assert!(
+                (0.0..=100.0).contains(&swap.percentage),
+                "swap percentage out of range"
+            );
         }
     }
 
@@ -5266,7 +5964,9 @@ mod tests {
     #[test]
     fn provider_load_average_returns_some_on_unix() {
         let provider = SysinfoProvider::new();
-        let load = provider.load_average().expect("load_average should succeed");
+        let load = provider
+            .load_average()
+            .expect("load_average should succeed");
         assert!(load.is_some(), "load average should be Some on Unix");
     }
 
@@ -5319,6 +6019,10 @@ mod tests {
 
     // ── FakeProvider ──────────────────────────────────────────────────
 
+    #[expect(
+        clippy::struct_field_names,
+        reason = "test mock uses _val suffix to avoid colliding with provider trait method names"
+    )]
     struct FakeProvider {
         cpu_usage_val: Option<f64>,
         cpu_cores_val: Vec<CpuCore>,
@@ -5343,19 +6047,80 @@ mod tests {
         fn happy() -> Self {
             Self {
                 cpu_usage_val: Some(42.0),
-                cpu_cores_val: vec![CpuCore { name: "cpu0".into(), usage: 45.0, frequency: 3200 }],
-                memory_val: MemoryStatus { used_bytes: 8_000_000_000, total_bytes: 16_000_000_000, percentage: 50.0, free_bytes: 8_000_000_000, available_bytes: 12_000_000_000, cached_bytes: 2_000_000_000, buffers_bytes: 0 },
-                swap_val: Some(SwapStatus { used_bytes: 500_000_000, total_bytes: 2_000_000_000, percentage: 25.0, free_bytes: 1_500_000_000 }),
-                disk_val: DiskStatus { name: "test".into(), mount_point: "/".into(), filesystem: "ext4".into(), used_bytes: 100, total_bytes: 200, percentage: 50.0, is_removable: false, free_bytes: 100, available_bytes: 100, disk_type: "SSD".into(), physical_device_path: None, model: None, serial: None, temperature: None, wear_percent: None },
+                cpu_cores_val: vec![CpuCore {
+                    name: "cpu0".into(),
+                    usage: 45.0,
+                    frequency: 3200,
+                }],
+                memory_val: MemoryStatus {
+                    used_bytes: 8_000_000_000,
+                    total_bytes: 16_000_000_000,
+                    percentage: 50.0,
+                    free_bytes: 8_000_000_000,
+                    available_bytes: 12_000_000_000,
+                    cached_bytes: 2_000_000_000,
+                    buffers_bytes: 0,
+                },
+                swap_val: Some(SwapStatus {
+                    used_bytes: 500_000_000,
+                    total_bytes: 2_000_000_000,
+                    percentage: 25.0,
+                    free_bytes: 1_500_000_000,
+                }),
+                disk_val: DiskStatus {
+                    name: "test".into(),
+                    mount_point: "/".into(),
+                    filesystem: "ext4".into(),
+                    used_bytes: 100,
+                    total_bytes: 200,
+                    percentage: 50.0,
+                    is_removable: false,
+                    free_bytes: 100,
+                    available_bytes: 100,
+                    disk_type: "SSD".into(),
+                    physical_device_path: None,
+                    model: None,
+                    serial: None,
+                    temperature: None,
+                    wear_percent: None,
+                },
                 disks_val: vec![],
-                network_val: NetworkStatus { bytes_received: 1000, bytes_transmitted: 500 },
+                network_val: NetworkStatus {
+                    bytes_received: 1000,
+                    bytes_transmitted: 500,
+                },
                 interfaces_val: vec![],
-                os_info_val: OsInfo { name: Some("TestOS".into()), version: Some("1.0".into()), kernel_version: Some("5.0".into()), arch: "x86_64".into(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os_info_val: OsInfo {
+                    name: Some("TestOS".into()),
+                    version: Some("1.0".into()),
+                    kernel_version: Some("5.0".into()),
+                    arch: "x86_64".into(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 hostname_val: "test-host".into(),
                 uptime_val: Some(3600),
-                boot_time_val: Some(1700000000),
-                load_avg_val: Some(LoadAverage { one: 1.0, five: 2.0, fifteen: 3.0 }),
-                processes_val: ProcessSnapshot { processes: vec![], total_count: 0 },
+                boot_time_val: Some(1_700_000_000),
+                load_avg_val: Some(LoadAverage {
+                    one: 1.0,
+                    five: 2.0,
+                    fifteen: 3.0,
+                }),
+                processes_val: ProcessSnapshot {
+                    processes: vec![],
+                    total_count: 0,
+                },
                 gpus_val: vec![],
                 battery_val: None,
                 sensors_val: vec![],
@@ -5366,18 +6131,66 @@ mod tests {
             Self {
                 cpu_usage_val: None,
                 cpu_cores_val: vec![],
-                memory_val: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+                memory_val: MemoryStatus {
+                    used_bytes: 0,
+                    total_bytes: 0,
+                    percentage: 0.0,
+                    free_bytes: 0,
+                    available_bytes: 0,
+                    cached_bytes: 0,
+                    buffers_bytes: 0,
+                },
                 swap_val: None,
-                disk_val: DiskStatus { name: String::new(), mount_point: "/".into(), filesystem: String::new(), used_bytes: 0, total_bytes: 0, percentage: 0.0, is_removable: false, free_bytes: 0, available_bytes: 0, disk_type: "Unknown".into(), physical_device_path: None, model: None, serial: None, temperature: None, wear_percent: None },
+                disk_val: DiskStatus {
+                    name: String::new(),
+                    mount_point: "/".into(),
+                    filesystem: String::new(),
+                    used_bytes: 0,
+                    total_bytes: 0,
+                    percentage: 0.0,
+                    is_removable: false,
+                    free_bytes: 0,
+                    available_bytes: 0,
+                    disk_type: "Unknown".into(),
+                    physical_device_path: None,
+                    model: None,
+                    serial: None,
+                    temperature: None,
+                    wear_percent: None,
+                },
                 disks_val: vec![],
-                network_val: NetworkStatus { bytes_received: 0, bytes_transmitted: 0 },
+                network_val: NetworkStatus {
+                    bytes_received: 0,
+                    bytes_transmitted: 0,
+                },
                 interfaces_val: vec![],
-                os_info_val: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os_info_val: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 hostname_val: String::new(),
                 uptime_val: None,
                 boot_time_val: None,
                 load_avg_val: None,
-                processes_val: ProcessSnapshot { processes: vec![], total_count: 0 },
+                processes_val: ProcessSnapshot {
+                    processes: vec![],
+                    total_count: 0,
+                },
                 gpus_val: vec![],
                 battery_val: None,
                 sensors_val: vec![],
@@ -5397,13 +6210,25 @@ mod tests {
         }
         fn cpu_static(&self) -> crate::error::StatusResult<CpuStatic> {
             Ok(CpuStatic {
-                vendor: String::new(), brand: String::new(), arch: String::new(),
-                sockets: None, cores_per_socket: None, threads_per_core: None,
-                base_freq: None, max_freq: None, cache_l1d: None, cache_l1i: None, cache_l2: None, cache_l3: None,
+                vendor: String::new(),
+                brand: String::new(),
+                arch: String::new(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_freq: None,
+                max_freq: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             })
         }
         fn cpu_sample(&mut self) -> crate::error::StatusResult<CpuSample> {
-            Ok(CpuSample { total_usage: self.cpu_usage_val, per_core: vec![] })
+            Ok(CpuSample {
+                total_usage: self.cpu_usage_val,
+                per_core: vec![],
+            })
         }
     }
 
@@ -5468,7 +6293,9 @@ mod tests {
         fn processes(&mut self) -> crate::error::StatusResult<ProcessSnapshot> {
             Ok(self.processes_val.clone())
         }
-        fn process_tree(&mut self) -> crate::error::StatusResult<std::collections::HashMap<u32, Vec<u32>>> {
+        fn process_tree(
+            &mut self,
+        ) -> crate::error::StatusResult<std::collections::HashMap<u32, Vec<u32>>> {
             Ok(std::collections::HashMap::new())
         }
     }
@@ -5506,12 +6333,25 @@ mod tests {
     impl StaticInfoProvider for FakeProvider {
         fn static_info(&self) -> crate::error::StatusResult<StaticInfo> {
             Ok(StaticInfo {
-                os: self.os_info_val.clone(), kernel_version: None, hostname: String::new(),
-                cpu_brand: String::new(), cpu_vendor: String::new(), cpu_frequency: 0,
-                physical_cores: None, logical_cores: 0, memory_total_bytes: 0,
-                hardware: HardwareInventory::default(), sockets: None, cores_per_socket: None,
-                threads_per_core: None, base_frequency: None, max_frequency: None,
-                cache_l1d: None, cache_l1i: None, cache_l2: None, cache_l3: None,
+                os: self.os_info_val.clone(),
+                kernel_version: None,
+                hostname: String::new(),
+                cpu_brand: String::new(),
+                cpu_vendor: String::new(),
+                cpu_frequency: 0,
+                physical_cores: None,
+                logical_cores: 0,
+                memory_total_bytes: 0,
+                hardware: HardwareInventory::default(),
+                sockets: None,
+                cores_per_socket: None,
+                threads_per_core: None,
+                base_frequency: None,
+                max_frequency: None,
+                cache_l1d: None,
+                cache_l1i: None,
+                cache_l2: None,
+                cache_l3: None,
             })
         }
     }
@@ -5536,7 +6376,10 @@ mod tests {
 
         let swap = p.swap().unwrap();
         assert!(swap.is_some());
-        assert_eq!(swap.unwrap().percentage, 25.0);
+        assert!(
+            (swap.unwrap().percentage - 25.0).abs() < f64::EPSILON,
+            "swap percentage should be ~25.0"
+        );
 
         let disk = p.root_disk().unwrap();
         assert_eq!(disk.mount_point, "/");
@@ -5555,7 +6398,7 @@ mod tests {
         assert_eq!(uptime, Some(3600));
 
         let boot = p.boot_time().unwrap();
-        assert_eq!(boot, Some(1700000000));
+        assert_eq!(boot, Some(1_700_000_000));
 
         let load = p.load_average().unwrap();
         assert!(load.is_some());

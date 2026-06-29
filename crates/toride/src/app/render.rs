@@ -109,7 +109,10 @@ impl App {
     ///
     /// This is needed during transitions where we must address a screen that
     /// may not be the *current* one.
-    pub(super) fn screen_by_enum(&mut self, screen: Screen) -> &mut dyn crate::ui::screens::AppScreen {
+    pub(super) fn screen_by_enum(
+        &mut self,
+        screen: Screen,
+    ) -> &mut dyn crate::ui::screens::AppScreen {
         match screen {
             Screen::Welcome => &mut self.welcome,
             Screen::Dashboard => &mut self.dashboard,

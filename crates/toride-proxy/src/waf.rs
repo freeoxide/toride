@@ -115,9 +115,8 @@ impl WafRule {
         pattern: &str,
     ) -> Result<Self> {
         let id = id.into();
-        let compiled = Regex::new(pattern).map_err(|e| {
-            Error::Validation(format!("invalid WAF rule pattern for {id}: {e}"))
-        })?;
+        let compiled = Regex::new(pattern)
+            .map_err(|e| Error::Validation(format!("invalid WAF rule pattern for {id}: {e}")))?;
         Ok(Self {
             id,
             description: description.into(),
@@ -613,7 +612,11 @@ mod tests {
         let decision = engine.evaluate(&req);
         assert!(decision.is_blocked(), "expected block, got {decision:?}");
         let matches = decision.matches();
-        assert!(matches.iter().any(|m| m.rule_type == WafRuleType::SqlInjection));
+        assert!(
+            matches
+                .iter()
+                .any(|m| m.rule_type == WafRuleType::SqlInjection)
+        );
     }
 
     #[test]
@@ -622,10 +625,12 @@ mod tests {
         let req = WafRequest::new("GET", "/search").query("q=<script>alert(1)</script>");
         let decision = engine.evaluate(&req);
         assert!(decision.is_blocked());
-        assert!(decision
-            .matches()
-            .iter()
-            .any(|m| m.rule_type == WafRuleType::Xss));
+        assert!(
+            decision
+                .matches()
+                .iter()
+                .any(|m| m.rule_type == WafRuleType::Xss)
+        );
     }
 
     #[test]
@@ -666,15 +671,13 @@ mod tests {
     fn body_and_headers_are_scanned() {
         let engine = engine(WafMode::Prevention);
         // XSS in the body.
-        let req = WafRequest::new("POST", "/comment")
-            .body("text=<script>alert(1)</script>");
+        let req = WafRequest::new("POST", "/comment").body("text=<script>alert(1)</script>");
         let decision = engine.evaluate(&req);
         assert!(decision.is_blocked());
         assert!(decision.matches().iter().any(|m| m.field == "body"));
 
         // SSRF indicator in a header (X-Forwarded-Host targeting 169.254.169.254).
-        let req = WafRequest::new("GET", "/")
-            .header("X-Forwarded-Host", "169.254.169.254");
+        let req = WafRequest::new("GET", "/").header("X-Forwarded-Host", "169.254.169.254");
         let decision = engine.evaluate(&req);
         assert!(decision.is_blocked());
         assert!(decision.matches().iter().any(|m| m.field == "header"));

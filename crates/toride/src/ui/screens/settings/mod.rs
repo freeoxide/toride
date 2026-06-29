@@ -11,7 +11,7 @@
 //!    [`Action::CycleTheme`] to cycle the global theme (already wired in
 //!    `App::update`) — the screen does NOT mutate the theme locally.
 //! 2. CONFIG — path, exists badge, key=value rows parsed from the config file.
-//! 3. RUNTIME — RUST_LOG, dirs, log path, shell, term.
+//! 3. RUNTIME — `RUST_LOG`, dirs, log path, shell, term.
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -205,8 +205,7 @@ impl SettingsContent {
             // screen does NOT mutate the theme locally: it emits the action and
             // App::update applies it + pushes the new theme back via
             // set_active_theme so the highlight + swatches stay in sync.
-            KeyCode::Right | KeyCode::Char('l') => Some(Action::CycleTheme),
-            KeyCode::Left | KeyCode::Char('h') => Some(Action::CycleTheme),
+            KeyCode::Right | KeyCode::Left | KeyCode::Char('l' | 'h') => Some(Action::CycleTheme),
             KeyCode::Esc => Some(Action::Back),
             _ => None,
         }
@@ -265,7 +264,7 @@ impl SettingsContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -277,7 +276,7 @@ impl SettingsContent {
     /// Render the degraded state when settings could not be collected.
     ///
     /// `available == false` is set only when the collection task panicked
-    /// (JoinError). The reason (if any) is surfaced; otherwise a generic
+    /// (`JoinError`). The reason (if any) is surfaced; otherwise a generic
     /// message accurate for the pre-first-poll state.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " SETTINGS ", p.text_dim, false);
@@ -298,8 +297,12 @@ impl SettingsContent {
             .clone()
             .unwrap_or_else(|| "settings data could not be collected on this host".to_string());
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -328,12 +331,7 @@ impl SettingsContent {
         lines
     }
 
-    fn push_theme_lines(
-        &self,
-        lines: &mut Vec<Line<'static>>,
-        p: Palette,
-        inner_width: u16,
-    ) {
+    fn push_theme_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette, inner_width: u16) {
         lines.push(Line::from(Span::styled(
             "Theme",
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
@@ -345,7 +343,7 @@ impl SettingsContent {
             .config
             .active_theme_name
             .as_deref()
-            .map_or(false, |n| n.eq_ignore_ascii_case(active_label));
+            .is_some_and(|n| n.eq_ignore_ascii_case(active_label));
         lines.push(Line::from(vec![
             Span::styled("  active   ", Style::new().fg(p.text_muted)),
             Span::styled(
@@ -388,17 +386,15 @@ impl SettingsContent {
                 Span::styled(" ", Style::new()),
             ];
             spans.extend(swatch.spans);
-            spans.push(Span::styled(format!(" {label}"), Style::new().fg(label_color)));
+            spans.push(Span::styled(
+                format!(" {label}"),
+                Style::new().fg(label_color),
+            ));
             lines.push(Line::from(spans));
         }
     }
 
-    fn push_config_lines(
-        &self,
-        lines: &mut Vec<Line<'static>>,
-        p: Palette,
-        inner_width: u16,
-    ) {
+    fn push_config_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette, inner_width: u16) {
         let header = format!("Config ({})", self.config.raw_keys.len());
         lines.push(Line::from(Span::styled(
             header,
@@ -450,10 +446,7 @@ impl SettingsContent {
         // Raw key=value rows.
         for (key, value) in &self.config.raw_keys {
             let k = truncate_str(key, 14);
-            let v = truncate_str(
-                value,
-                (inner_width as usize).saturating_sub(22),
-            );
+            let v = truncate_str(value, (inner_width as usize).saturating_sub(22));
             lines.push(Line::from(vec![
                 Span::styled(format!("  {k:<14}"), Style::new().fg(p.text_dim)),
                 Span::styled(format!(" = {v}"), Style::new().fg(p.text_muted)),
@@ -461,20 +454,29 @@ impl SettingsContent {
         }
     }
 
-    fn push_runtime_lines(
-        &self,
-        lines: &mut Vec<Line<'static>>,
-        p: Palette,
-        inner_width: u16,
-    ) {
+    fn push_runtime_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette, inner_width: u16) {
         lines.push(Line::from(Span::styled(
             "Runtime",
             Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
         )));
 
         let value_w = (inner_width as usize).saturating_sub(14);
-        push_kv_line(lines, p, "rust_log", self.runtime.rust_log.as_deref(), value_w, p.text);
-        push_kv_line(lines, p, "data_dir", self.runtime.data_dir.as_deref(), value_w, p.text_dim);
+        push_kv_line(
+            lines,
+            p,
+            "rust_log",
+            self.runtime.rust_log.as_deref(),
+            value_w,
+            p.text,
+        );
+        push_kv_line(
+            lines,
+            p,
+            "data_dir",
+            self.runtime.data_dir.as_deref(),
+            value_w,
+            p.text_dim,
+        );
         push_kv_line(
             lines,
             p,
@@ -483,9 +485,30 @@ impl SettingsContent {
             value_w,
             p.text_dim,
         );
-        push_kv_line(lines, p, "log_path", self.runtime.log_path.as_deref(), value_w, p.text_dim);
-        push_kv_line(lines, p, "shell", self.runtime.shell.as_deref(), value_w, p.text);
-        push_kv_line(lines, p, "term", self.runtime.term.as_deref(), value_w, p.text);
+        push_kv_line(
+            lines,
+            p,
+            "log_path",
+            self.runtime.log_path.as_deref(),
+            value_w,
+            p.text_dim,
+        );
+        push_kv_line(
+            lines,
+            p,
+            "shell",
+            self.runtime.shell.as_deref(),
+            value_w,
+            p.text,
+        );
+        push_kv_line(
+            lines,
+            p,
+            "term",
+            self.runtime.term.as_deref(),
+            value_w,
+            p.text,
+        );
     }
 }
 
@@ -532,11 +555,7 @@ fn palette_swatch(p: &Palette) -> Line<'static> {
         };
         Span::styled(glyph, Style::new().fg(c))
     };
-    Line::from(vec![
-        block(p.accent),
-        block(p.accent2),
-        block(p.accent3),
-    ])
+    Line::from(vec![block(p.accent), block(p.accent2), block(p.accent3)])
 }
 
 impl crate::ui::screens::section_overview::SectionOverview for SettingsContent {
@@ -548,7 +567,10 @@ impl crate::ui::screens::section_overview::SectionOverview for SettingsContent {
         // Settings has no findings concept — status is driven purely by
         // availability (active when collected, offline otherwise). Pass an
         // empty severity iterator so status_label_for reduces to availability.
-        crate::ui::screens::section_overview::status_label_for(self.available, std::iter::empty::<&str>())
+        crate::ui::screens::section_overview::status_label_for(
+            self.available,
+            std::iter::empty::<&str>(),
+        )
     }
 
     fn detail(&self) -> Option<String> {
@@ -594,12 +616,10 @@ mod tests {
         }
     }
 
-    /// Render a content area to a string (snapshot pattern from harden/ufw_kit).
+    /// Render a content area to a string (snapshot pattern from `harden/ufw_kit`).
     fn render_to_string(content: &mut SettingsContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -626,7 +646,10 @@ mod tests {
     fn render_unavailable_when_not_available() {
         let mut c = SettingsContent::new();
         let out = render_to_string(&mut c, 100, 24);
-        assert!(out.contains("Settings unavailable"), "degraded panel: {out}");
+        assert!(
+            out.contains("Settings unavailable"),
+            "degraded panel: {out}"
+        );
     }
 
     #[test]
@@ -698,7 +721,10 @@ mod tests {
         c.set_available(true);
         c.set_config(sample_config());
         let out = render_to_string(&mut c, 120, 40);
-        assert!(out.contains(".config/toride/config.toml"), "config path: {out}");
+        assert!(
+            out.contains(".config/toride/config.toml"),
+            "config path: {out}"
+        );
         assert!(out.contains("present"), "exists badge: {out}");
         assert!(out.contains("theme"), "typed theme row: {out}");
         assert!(out.contains("debug"), "log_level row: {out}");
@@ -716,7 +742,10 @@ mod tests {
             raw_keys: Vec::new(),
         });
         let out = render_to_string(&mut c, 100, 30);
-        assert!(out.contains("missing — using defaults"), "missing marker: {out}");
+        assert!(
+            out.contains("missing — using defaults"),
+            "missing marker: {out}"
+        );
         assert!(out.contains("no config rows"), "empty-rows marker: {out}");
     }
 
@@ -793,7 +822,10 @@ mod tests {
         c.set_available(true);
         let before = c.active_theme;
         c.handle_key(KeyCode::Right);
-        assert_eq!(c.active_theme, before, "screen must not mutate theme locally");
+        assert_eq!(
+            c.active_theme, before,
+            "screen must not mutate theme locally"
+        );
     }
 
     #[test]

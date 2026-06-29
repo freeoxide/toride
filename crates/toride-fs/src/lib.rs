@@ -15,8 +15,18 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
-#![expect(clippy::missing_errors_doc, reason = "library is internal")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
+)]
+// All public `Result`-returning functions already document their errors via
+// `# Errors` sections, so `missing_errors_doc` has nothing to flag. Use an
+// `allow` (with a reason) rather than an `expect`, which would otherwise
+// trigger `unfulfilled_lint_expectations` under `-D warnings`.
+#![allow(
+    clippy::missing_errors_doc,
+    reason = "all Result fns carry # Errors docs"
+)]
 
 // ---------------------------------------------------------------------------
 // Module declarations

@@ -10,7 +10,7 @@ use crate::error::Result;
 /// A parsed Nginx configuration directive.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Directive {
-    /// Directive name (e.g. "listen", "server_name", "proxy_pass").
+    /// Directive name (e.g. "listen", `server_name`, `proxy_pass`).
     pub name: String,
     /// Directive arguments (everything after the name, before the semicolon).
     pub args: Vec<String>,
@@ -55,12 +55,12 @@ impl ParsedServerBlock {
         self.directives.iter().find(|d| d.name == name)
     }
 
-    /// Extract the server_name value(s).
+    /// Extract the `server_name` value(s).
     pub fn server_names(&self) -> Vec<&str> {
         self.directives
             .iter()
             .filter(|d| d.name == "server_name")
-            .flat_map(|d| d.args.iter().map(|s| s.as_str()))
+            .flat_map(|d| d.args.iter().map(std::string::String::as_str))
             .collect()
     }
 

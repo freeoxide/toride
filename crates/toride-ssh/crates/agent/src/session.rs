@@ -1,11 +1,11 @@
-//! ControlMaster session management.
+//! `ControlMaster` session management.
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use toride_ssh_core::Result;
 
-/// A single active SSH ControlMaster session.
+/// A single active SSH `ControlMaster` session.
 #[derive(Debug, Clone)]
 pub struct ControlSession {
     /// Path to the control socket.
@@ -16,10 +16,10 @@ pub struct ControlSession {
     pub established: SystemTime,
 }
 
-/// List active ControlMaster sessions by scanning for control sockets.
+/// List active `ControlMaster` sessions by scanning for control sockets.
 ///
 /// Scans the SSH directory (and any `ControlPath` pattern locations) for Unix
-/// domain socket files that resemble OpenSSH ControlMaster sockets, then
+/// domain socket files that resemble OpenSSH `ControlMaster` sockets, then
 /// verifies each is still alive using `ssh -O check`.
 ///
 /// # Common socket patterns
@@ -84,13 +84,19 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
             Some(false) => {
                 // Dead socket — clean it up.
                 if let Err(e) = tokio::fs::remove_file(&socket_path).await {
-                    tracing::debug!("failed to remove dead socket {}: {e}", socket_path.display());
+                    tracing::debug!(
+                        "failed to remove dead socket {}: {e}",
+                        socket_path.display()
+                    );
                 }
             }
             None => {
                 // ssh binary not found — cannot determine status, skip cleanup
                 // to avoid destroying active sessions.
-                tracing::debug!("skipping socket {}: ssh binary not available", socket_path.display());
+                tracing::debug!(
+                    "skipping socket {}: ssh binary not available",
+                    socket_path.display()
+                );
             }
         }
     }
@@ -191,18 +197,15 @@ async fn verify_control_session(socket_path: &Path) -> Option<bool> {
     // anything since the -S option specifies the control socket path.
     // Using "localhost" as a placeholder.
     let result = tokio::task::spawn_blocking(move || {
-        duct::cmd(
-            "ssh",
-            ["-S", &path_str, "-O", "check", "localhost"],
-        )
-        .stdout_null()
-        .stderr_null()
-        .run()
+        duct::cmd("ssh", ["-S", &path_str, "-O", "check", "localhost"])
+            .stdout_null()
+            .stderr_null()
+            .run()
     })
     .await;
 
     match result {
-        Ok(Ok(_)) => Some(true),           // exit code 0 = master running
+        Ok(Ok(_)) => Some(true), // exit code 0 = master running
         Ok(Err(e)) => {
             // Distinguish between "ssh not found" and "master not running".
             // duct returns io::Error; when the binary is not found, kind is NotFound.
@@ -211,9 +214,9 @@ async fn verify_control_session(socket_path: &Path) -> Option<bool> {
                 tracing::warn!("ssh binary not found, cannot check control socket");
                 return None;
             }
-            Some(false)  // non-zero exit = master not running
+            Some(false) // non-zero exit = master not running
         }
-        Err(_) => Some(false),             // task panic = treat as dead
+        Err(_) => Some(false), // task panic = treat as dead
     }
 }
 

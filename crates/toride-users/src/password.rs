@@ -21,43 +21,34 @@ pub fn apply_password_policy(username: &str, policy: &PasswordPolicy) -> Result<
     let chage = which::which("chage").map_err(|_| Error::BinaryNotFound("chage".into()))?;
 
     // Set maximum days
-    duct::cmd(
-        &chage,
-        ["-M", &policy.max_days.to_string(), username],
-    )
-    .stderr_to_stdout()
-    .read()
-    .map_err(|e| Error::CommandFailed {
-        program: "chage".to_owned(),
-        code: None,
-        stderr: e.to_string(),
-    })?;
+    duct::cmd(&chage, ["-M", &policy.max_days.to_string(), username])
+        .stderr_to_stdout()
+        .read()
+        .map_err(|e| Error::CommandFailed {
+            program: "chage".to_owned(),
+            code: None,
+            stderr: e.to_string(),
+        })?;
 
     // Set minimum days
-    duct::cmd(
-        &chage,
-        ["-m", &policy.min_days.to_string(), username],
-    )
-    .stderr_to_stdout()
-    .read()
-    .map_err(|e| Error::CommandFailed {
-        program: "chage".to_owned(),
-        code: None,
-        stderr: e.to_string(),
-    })?;
+    duct::cmd(&chage, ["-m", &policy.min_days.to_string(), username])
+        .stderr_to_stdout()
+        .read()
+        .map_err(|e| Error::CommandFailed {
+            program: "chage".to_owned(),
+            code: None,
+            stderr: e.to_string(),
+        })?;
 
     // Set warning days
-    duct::cmd(
-        &chage,
-        ["-W", &policy.warn_days.to_string(), username],
-    )
-    .stderr_to_stdout()
-    .read()
-    .map_err(|e| Error::CommandFailed {
-        program: "chage".to_owned(),
-        code: None,
-        stderr: e.to_string(),
-    })?;
+    duct::cmd(&chage, ["-W", &policy.warn_days.to_string(), username])
+        .stderr_to_stdout()
+        .read()
+        .map_err(|e| Error::CommandFailed {
+            program: "chage".to_owned(),
+            code: None,
+            stderr: e.to_string(),
+        })?;
 
     tracing::info!(
         "applied password policy to {username}: max={} min={} warn={}",
@@ -148,7 +139,17 @@ pub fn unlock_account(username: &str) -> Result<()> {
 ///
 /// Reads `shadow` (usually `/etc/shadow`, or a redirect via
 /// [`crate::paths::UserPaths`]) for a `!` prefix on the password hash.
+///
+/// # Errors
+///
+/// - [`Error::Io`] if `shadow` is missing or unreadable (e.g. permission
+///   denied). This is distinguished from a missing user so callers can tell
+///   "cannot tell" apart from "user not present".
+/// - [`Error::UserNotFound`] if the file is readable but the user is absent.
 pub fn is_account_locked(shadow: &std::path::Path, username: &str) -> Result<bool> {
+    // Surface a missing/unreadable shadow file as an I/O error rather than
+    // conflating it with UserNotFound. `read_to_string` returns an EACCES /
+    // NotFound io::Error here, which converts into `Error::Io` via `?`.
     let shadow = std::fs::read_to_string(shadow)?;
     for line in shadow.lines() {
         let parts: Vec<&str> = line.split(':').collect();

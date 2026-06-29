@@ -18,9 +18,8 @@ use crate::types::{BanEntry, ScanResult};
 /// This prevents OOM on corrupted or binary files that lack newline characters.
 const MAX_LINE_BYTES: usize = 1024 * 1024; // 1 MiB
 
-static FALLBACK_IPV4_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("hardcoded regex is valid")
-});
+static FALLBACK_IPV4_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:\d{1,3}\.){3}\d{1,3}\b").expect("hardcoded regex is valid"));
 
 static FALLBACK_IPV6_RE: LazyLock<Regex> = LazyLock::new(|| {
     // Matches full IPv6 addresses including compressed :: forms.
@@ -61,11 +60,7 @@ impl LogDetector {
     /// # Errors
     ///
     /// Returns `InvalidRegex` if the pattern is not valid regex.
-    pub fn new(
-        jail_name: &str,
-        log_path: &Path,
-        pattern: &str,
-    ) -> crate::Result<Self> {
+    pub fn new(jail_name: &str, log_path: &Path, pattern: &str) -> crate::Result<Self> {
         let regex = Regex::new(pattern)
             .map_err(|e| crate::Error::InvalidRegex(format!("Invalid regex '{pattern}': {e}")))?;
 
@@ -110,8 +105,9 @@ impl LogDetector {
         let mut matches_found = 0u32;
         let mut lines_scanned = 0u64;
 
-        let file = fs::File::open(&self.log_path)
-            .map_err(|e| crate::Error::LogFileError(format!("Cannot open '{}': {}", self.log_path.display(), e)))?;
+        let file = fs::File::open(&self.log_path).map_err(|e| {
+            crate::Error::LogFileError(format!("Cannot open '{}': {}", self.log_path.display(), e))
+        })?;
 
         // Use a 64KB buffer for better performance on large log files.
         let mut reader = BufReader::with_capacity(65536, file);
@@ -120,8 +116,7 @@ impl LogDetector {
             // Detect log rotation: if the stored offset exceeds the current file
             // size, the log was likely rotated. Reset to the beginning so we
             // don't silently skip the entire new file.
-            let file_size = reader.get_ref().metadata()
-                .map_or(0, |m| m.len());
+            let file_size = reader.get_ref().metadata().map_or(0, |m| m.len());
             if file_size < self.offset {
                 tracing::warn!(
                     jail = %self.jail_name,
@@ -211,10 +206,14 @@ impl LogDetector {
         // Fallback: find first IP-like pattern in the full match.
         // Try IPv4 first (more common), then IPv6.
         let full_match = caps.get(0)?.as_str();
-        if let Some(ip) = FALLBACK_IPV4_RE.find(full_match).and_then(|m| m.as_str().parse().ok()) {
+        if let Some(ip) = FALLBACK_IPV4_RE
+            .find(full_match)
+            .and_then(|m| m.as_str().parse().ok())
+        {
             return Some(ip);
         }
-        FALLBACK_IPV6_RE.find(full_match)
+        FALLBACK_IPV6_RE
+            .find(full_match)
             .and_then(|m| m.as_str().parse().ok())
     }
 }

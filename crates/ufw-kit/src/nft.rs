@@ -281,7 +281,8 @@ fn parse_rules(content: &str) -> Vec<NftRule> {
                 if depth == 0 {
                     if let Some(start) = obj_start {
                         let obj = &content[start..=i];
-                        let handle = extract_json_number(obj, "\"handle\"").and_then(|h| u64::try_from(h).ok());
+                        let handle = extract_json_number(obj, "\"handle\"")
+                            .and_then(|h| u64::try_from(h).ok());
                         let comment = extract_json_string(obj, "\"comment\"");
                         let expr = extract_expr_summary(obj);
 
@@ -323,7 +324,8 @@ fn parse_sets(content: &str) -> Vec<NftSet> {
                         let obj = &content[start..=i];
                         let name = extract_json_string(obj, "\"name\"").unwrap_or_default();
                         let set_type = extract_json_string(obj, "\"type\"").unwrap_or_default();
-                        let size = extract_json_number(obj, "\"size\"").and_then(|s| usize::try_from(s).ok());
+                        let size = extract_json_number(obj, "\"size\"")
+                            .and_then(|s| usize::try_from(s).ok());
 
                         if !name.is_empty() {
                             sets.push(NftSet {
@@ -524,12 +526,7 @@ pub fn count_rules(ruleset: &NftRuleset) -> usize {
     ruleset
         .tables
         .iter()
-        .map(|t| {
-            t.chains
-                .iter()
-                .map(|c| c.rules.len())
-                .sum::<usize>()
-        })
+        .map(|t| t.chains.iter().map(|c| c.rules.len()).sum::<usize>())
         .sum()
 }
 
@@ -571,7 +568,10 @@ mod tests {
         assert_eq!(result.tables[0].name, "ufw");
         assert_eq!(result.tables[0].chains.len(), 1);
         assert_eq!(result.tables[0].chains[0].name, "ufw-before-input");
-        assert_eq!(result.tables[0].chains[0].hook_type.as_deref(), Some("input"));
+        assert_eq!(
+            result.tables[0].chains[0].hook_type.as_deref(),
+            Some("input")
+        );
     }
 
     #[test]

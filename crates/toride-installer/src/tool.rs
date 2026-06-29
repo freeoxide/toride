@@ -94,11 +94,7 @@ pub trait ReleaseResolver: Send + Sync {
     ///
     /// Returns the resolved concrete version string (e.g. `"2026.6.14"`,
     /// NOT `"latest"`) and the download URL.
-    async fn resolve(
-        &self,
-        target: Target,
-        version: &str,
-    ) -> Result<(String, String)>;
+    async fn resolve(&self, target: Target, version: &str) -> Result<(String, String)>;
 }
 
 /// Declarative description of an installable tool.

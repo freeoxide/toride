@@ -20,8 +20,10 @@ fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    with_lock(&lock_path, || f().map_err(|e| toride_fs::Error::Io(std::io::Error::other(e.to_string()))))
-        .map_err(|e| Error::Io(e.to_string()))
+    with_lock(&lock_path, || {
+        f().map_err(|e| toride_fs::Error::Io(std::io::Error::other(e.to_string())))
+    })
+    .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Start marker for a managed block.
@@ -39,10 +41,7 @@ pub fn upsert_block(content: &str, block: &FrameworkRuleBlock) -> Result<String>
     let start = start_marker(&block.id);
     let end = end_marker(&block.id);
 
-    let block_text = format!(
-        "# {start}\n{}\n# {end}\n",
-        block.content.trim_end()
-    );
+    let block_text = format!("# {start}\n{}\n# {end}\n", block.content.trim_end());
 
     // Find existing block
     if let Some(start_idx) = content.find(&start) {

@@ -4,6 +4,7 @@
 //! It composes the output chain, conntrack reader, anomaly detector, and
 //! alert dispatcher into a unified API.
 
+use crate::Result;
 use crate::alert::AlertDispatcher;
 use crate::anomaly::AnomalyDetector;
 use crate::conntrack::ConntrackReader;
@@ -12,7 +13,6 @@ use crate::parse::{parse_ss_output, ss_entry_to_connection};
 use crate::paths::MonitorPaths;
 use crate::report::{AnomalyReport, MonitorReport};
 use crate::spec::{AlertTarget, LoggingRule, MonitorSpec};
-use crate::Result;
 
 /// High-level client for outbound traffic monitoring.
 ///
@@ -147,7 +147,7 @@ impl MonitorClient {
         }
 
         // Try to get bandwidth data from conntrack.
-        let (total_bytes, total_packets) = self.collect_conntrack_stats()?;
+        let (total_bytes, total_packets) = self.collect_conntrack_stats();
 
         Ok(MonitorReport {
             timestamp: std::time::SystemTime::now(),
@@ -279,10 +279,7 @@ impl MonitorClient {
     /// # Errors
     ///
     /// Returns [`Error::PortsError`] if socket enumeration fails.
-    pub fn find_ports_by_process(
-        &self,
-        name: &str,
-    ) -> Result<Vec<crate::ports::PortEntry>> {
+    pub fn find_ports_by_process(&self, name: &str) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).find_by_process(name)
     }
 
@@ -301,10 +298,8 @@ impl MonitorClient {
 
     /// Collect outbound connections from `ss` output.
     fn collect_ss_connections(&self) -> Result<Vec<crate::report::ConnectionInfo>> {
-        let spec = toride_runner::CommandSpec::new(
-            self.paths.ss.to_string_lossy().into_owned(),
-        )
-        .args(["-tunap"]);
+        let spec = toride_runner::CommandSpec::new(self.paths.ss.to_string_lossy().into_owned())
+            .args(["-tunap"]);
 
         let output = self.runner.run(&spec)?;
         if !output.success {
@@ -319,17 +314,17 @@ impl MonitorClient {
     }
 
     /// Collect total bytes and packets from conntrack.
-    fn collect_conntrack_stats(&self) -> Result<(Option<u64>, Option<u64>)> {
+    fn collect_conntrack_stats(&self) -> (Option<u64>, Option<u64>) {
         let reader = ConntrackReader::new(&self.paths, self.runner.as_ref());
         match reader.list_all() {
             Ok(entries) => {
                 let total_bytes: u64 = entries.iter().filter_map(|e| e.bytes).sum();
                 let total_packets: u64 = entries.iter().filter_map(|e| e.packets).sum();
-                Ok((Some(total_bytes), Some(total_packets)))
+                (Some(total_bytes), Some(total_packets))
             }
             Err(e) => {
                 tracing::debug!("conntrack stats unavailable: {e}");
-                Ok((None, None))
+                (None, None)
             }
         }
     }

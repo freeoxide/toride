@@ -4,8 +4,8 @@
 //! daemon: whether it is connected, the node's identity, IP addresses, and
 //! the active exit node.
 
-use crate::report::{ConnectionStatus, TailscaleReport};
 use crate::Result;
+use crate::report::{ConnectionStatus, TailscaleReport};
 
 // ---------------------------------------------------------------------------
 // NodeStatus
@@ -60,12 +60,12 @@ impl NodeStatus {
     pub fn ip_addresses(&self) -> Vec<String> {
         let mut ips = Vec::new();
 
-        if let Some(addrs) = self.raw.get("Self").and_then(|s| s.get("TailscaleIPs")) {
-            if let Some(arr) = addrs.as_array() {
-                for ip in arr {
-                    if let Some(s) = ip.as_str() {
-                        ips.push(s.to_owned());
-                    }
+        if let Some(addrs) = self.raw.get("Self").and_then(|s| s.get("TailscaleIPs"))
+            && let Some(arr) = addrs.as_array()
+        {
+            for ip in arr {
+                if let Some(s) = ip.as_str() {
+                    ips.push(s.to_owned());
                 }
             }
         }
@@ -127,18 +127,21 @@ impl NodeStatus {
         for peer in peers.values() {
             let is_exit = peer
                 .get("ExitNodeOption")
-                .and_then(|e| e.as_bool())
+                .and_then(serde_json::Value::as_bool)
                 .unwrap_or(false);
-            let online = peer.get("Online").and_then(|o| o.as_bool()).unwrap_or(false);
-            if is_exit && online {
-                if let Some(ip) = peer
+            let online = peer
+                .get("Online")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false);
+            if is_exit
+                && online
+                && let Some(ip) = peer
                     .get("TailscaleIPs")
                     .and_then(|i| i.as_array())
                     .and_then(|arr| arr.first())
                     .and_then(|v| v.as_str())
-                {
-                    return Some(ip.to_owned());
-                }
+            {
+                return Some(ip.to_owned());
             }
         }
         None
@@ -149,7 +152,7 @@ impl NodeStatus {
     fn magic_dns_enabled(&self) -> bool {
         self.raw
             .get("MagicDNSEnabled")
-            .and_then(|v| v.as_bool())
+            .and_then(serde_json::Value::as_bool)
             .unwrap_or(false)
     }
 
@@ -234,7 +237,11 @@ mod tests {
         ];
         for (state, expected) in cases {
             let raw = serde_json::json!({ "BackendState": state });
-            assert_eq!(NodeStatus::from_raw(raw).connection(), expected, "state={state}");
+            assert_eq!(
+                NodeStatus::from_raw(raw).connection(),
+                expected,
+                "state={state}"
+            );
         }
     }
 }

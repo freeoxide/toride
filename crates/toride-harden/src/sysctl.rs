@@ -106,10 +106,6 @@ mod tests {
         FakeRunner::new().push_response(CommandOutput::from_stdout("1\n"))
     }
 
-    fn sysctl_write_runner() -> FakeRunner {
-        FakeRunner::new().push_response(CommandOutput::from_stdout(""))
-    }
-
     fn sysctl_read_all_runner() -> FakeRunner {
         FakeRunner::new().push_response(CommandOutput::from_stdout(
             "kernel.kptr_restrict = 1\nnet.ipv4.ip_forward = 0\n",

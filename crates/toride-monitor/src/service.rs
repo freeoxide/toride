@@ -3,10 +3,10 @@
 //! Provides [`MonitorService`] for managing the monitoring daemon lifecycle:
 //! start, stop, restart, status checks, and enable/disable on boot.
 
+use crate::Result;
 use crate::client::MonitorClient;
 use crate::paths::MonitorPaths;
 use crate::spec::MonitorSpec;
-use crate::Result;
 
 /// The systemd unit name the monitor daemon runs under.
 pub const MONITOR_UNIT: &str = "toride-monitor.service";
@@ -177,8 +177,7 @@ mod tests {
         // The previously-hardcoded Ok(false) stub is replaced by a real
         // systemctl is-active probe routed through the runner.
         let runner = FakeRunner::new().respond(
-            CommandSpec::new("systemctl")
-                .args(["is-active", "toride-monitor.service"]),
+            CommandSpec::new("systemctl").args(["is-active", "toride-monitor.service"]),
             CommandOutput::new("active\n".into(), String::new(), Some(0)),
         );
         let paths = test_paths();
@@ -191,8 +190,7 @@ mod tests {
     #[test]
     fn is_active_returns_false_for_inactive_unit() {
         let runner = FakeRunner::new().respond(
-            CommandSpec::new("systemctl")
-                .args(["is-active", "toride-monitor.service"]),
+            CommandSpec::new("systemctl").args(["is-active", "toride-monitor.service"]),
             CommandOutput::new("inactive\n".into(), String::new(), Some(3)),
         );
         let paths = test_paths();
@@ -202,4 +200,3 @@ mod tests {
         assert!(!svc.is_active().unwrap());
     }
 }
-

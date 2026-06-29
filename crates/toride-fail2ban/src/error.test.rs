@@ -338,7 +338,10 @@ fn json_error_converts_via_from() {
 fn debug_format_includes_variant_name() {
     let err = Error::Config("bad".into());
     let dbg = format!("{err:?}");
-    assert!(dbg.contains("Config"), "Debug should include variant name: {dbg}");
+    assert!(
+        dbg.contains("Config"),
+        "Debug should include variant name: {dbg}"
+    );
 }
 
 // -----------------------------------------------------------------------
@@ -460,8 +463,14 @@ mod serde_tests {
 
         assert_eq!(val["type"], "command");
         let detail = val["detail"].as_str().unwrap();
-        assert!(detail.contains("nft"), "detail should mention program: {detail}");
-        assert!(detail.contains("1"), "detail should mention exit code: {detail}");
+        assert!(
+            detail.contains("nft"),
+            "detail should mention program: {detail}"
+        );
+        assert!(
+            detail.contains("1"),
+            "detail should mention exit code: {detail}"
+        );
     }
 
     #[test]
@@ -473,7 +482,11 @@ mod serde_tests {
         let val = to_json(&err);
 
         assert_eq!(val["type"], "timeout");
-        assert!(val["detail"].as_str().unwrap().contains("1m"), "detail should mention duration: {}", val["detail"]);
+        assert!(
+            val["detail"].as_str().unwrap().contains("1m"),
+            "detail should mention duration: {}",
+            val["detail"]
+        );
     }
 
     #[test]
@@ -498,10 +511,7 @@ mod serde_tests {
             (Error::Parse("bad".into()), "parse"),
         ] {
             let val = to_json(&err);
-            assert_eq!(
-                val["type"], expected_type,
-                "type mismatch for {err:?}"
-            );
+            assert_eq!(val["type"], expected_type, "type mismatch for {err:?}");
             assert!(
                 val["detail"].is_string(),
                 "detail should be a string for {err:?}"

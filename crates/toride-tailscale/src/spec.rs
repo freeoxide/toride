@@ -65,7 +65,9 @@ impl TailscaleSpec {
     /// malformed routes).
     pub fn validate(&self) -> crate::Result<()> {
         if self.node_name.is_empty() {
-            return Err(crate::Error::Other("node name must not be empty".to_owned()));
+            return Err(crate::Error::Other(
+                "node name must not be empty".to_owned(),
+            ));
         }
         Ok(())
     }

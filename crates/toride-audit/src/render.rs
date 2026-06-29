@@ -3,6 +3,8 @@
 //! Converts structured types into text suitable for writing to
 //! `/etc/audit/`, `/etc/aide.conf`, and `/etc/rsyslog.conf`.
 
+use std::fmt::Write as _;
+
 // ---------------------------------------------------------------------------
 // Audit rules renderer
 // ---------------------------------------------------------------------------
@@ -15,7 +17,7 @@
 pub fn render_audit_rules(rules: &[String]) -> String {
     rules
         .iter()
-        .map(|r| r.as_str())
+        .map(String::as_str)
         .collect::<Vec<&str>>()
         .join("\n")
 }
@@ -43,13 +45,13 @@ pub fn render_aide_config(
 ) -> String {
     let mut out = String::new();
 
-    out.push_str(&format!("database=file:{database_path}\n"));
-    out.push_str(&format!("database_out=file:{database_out_path}\n"));
-    out.push_str(&format!("report_url={report_url}\n"));
+    let _ = writeln!(out, "database=file:{database_path}");
+    let _ = writeln!(out, "database_out=file:{database_out_path}");
+    let _ = writeln!(out, "report_url={report_url}");
     out.push('\n');
 
     for path in monitored_paths {
-        out.push_str(&format!("{path} ALL\n"));
+        let _ = writeln!(out, "{path} ALL");
     }
 
     out
@@ -69,14 +71,8 @@ pub fn render_aide_config(
 /// * `facility` - The syslog facility (e.g. `authpriv`, `local6`).
 /// * `log_path` - Path to the log file.
 /// * `template` - Optional template name for log formatting.
-pub fn render_rsyslog_config(
-    facility: &str,
-    log_path: &str,
-    template: Option<&str>,
-) -> String {
-    let template_directive = template
-        .map(|t| format!(";{t}"))
-        .unwrap_or_default();
+pub fn render_rsyslog_config(facility: &str, log_path: &str, template: Option<&str>) -> String {
+    let template_directive = template.map(|t| format!(";{t}")).unwrap_or_default();
     format!("{facility}.*\t{log_path}{template_directive}\n")
 }
 
@@ -113,10 +109,7 @@ mod tests {
 
     #[test]
     fn render_aide_config_contains_database_and_monitored_paths() {
-        let paths: Vec<String> = vec![
-            "/etc".to_owned(),
-            "/var/log".to_owned(),
-        ];
+        let paths: Vec<String> = vec!["/etc".to_owned(), "/var/log".to_owned()];
         let output = render_aide_config(
             "/var/lib/aide/aide.db",
             "/var/lib/aide/aide.db.new",
@@ -132,11 +125,8 @@ mod tests {
 
     #[test]
     fn render_rsyslog_config_with_template() {
-        let output = render_rsyslog_config(
-            "authpriv",
-            "/var/log/audit.log",
-            Some("AuditLogFormat"),
-        );
+        let output =
+            render_rsyslog_config("authpriv", "/var/log/audit.log", Some("AuditLogFormat"));
         assert!(output.contains("authpriv.*"));
         assert!(output.contains("/var/log/audit.log"));
         assert!(output.contains(";AuditLogFormat"));

@@ -5,6 +5,10 @@
 //! verified through both return values and the call log.
 
 #[cfg(test)]
+#[allow(
+    clippy::module_inception,
+    reason = "conventional inner test module name"
+)]
 mod tests {
     use std::path::PathBuf;
 
@@ -317,7 +321,11 @@ mod tests {
     #[test]
     fn status_trims_trailing_whitespace() {
         let mut fake = FakeRunner::new();
-        fake.with_response(BIN, &["status"], success("Status\n|- Number of jail: 0\n\n"));
+        fake.with_response(
+            BIN,
+            &["status"],
+            success("Status\n|- Number of jail: 0\n\n"),
+        );
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         let status = client.status().unwrap();
@@ -528,7 +536,11 @@ mod tests {
     fn ban_ip_different_jails() {
         let mut fake = FakeRunner::new();
         fake.with_response(BIN, &["set", "nginx", "banip", "192.168.0.1"], success("1"));
-        fake.with_response(BIN, &["set", "postfix", "banip", "172.16.0.1"], success("1"));
+        fake.with_response(
+            BIN,
+            &["set", "postfix", "banip", "172.16.0.1"],
+            success("1"),
+        );
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         client.ban_ip("nginx", "192.168.0.1").unwrap();
@@ -547,11 +559,7 @@ mod tests {
     #[test]
     fn unban_ip_constructs_correct_command() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["set", "sshd", "unbanip", "1.2.3.4"],
-            success(""),
-        );
+        fake.with_response(BIN, &["set", "sshd", "unbanip", "1.2.3.4"], success(""));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         client.unban_ip("sshd", "1.2.3.4").unwrap();
@@ -563,11 +571,7 @@ mod tests {
     #[test]
     fn unban_ip_returns_unit_on_success() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["set", "sshd", "unbanip", "10.0.0.1"],
-            success(""),
-        );
+        fake.with_response(BIN, &["set", "sshd", "unbanip", "10.0.0.1"], success(""));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         let result = client.unban_ip("sshd", "10.0.0.1");
@@ -795,11 +799,7 @@ mod tests {
     #[test]
     fn ping_returns_error_on_nonzero_exit() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["ping"],
-            failure("Failed to connect to server", 1),
-        );
+        fake.with_response(BIN, &["ping"], failure("Failed to connect to server", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         let result = client.ping();
@@ -809,11 +809,7 @@ mod tests {
     #[test]
     fn error_includes_exit_code_in_message() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["ping"],
-            failure("Connection refused", 2),
-        );
+        fake.with_response(BIN, &["ping"], failure("Connection refused", 2));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         let result = client.ping();
@@ -831,11 +827,7 @@ mod tests {
     #[test]
     fn error_includes_stderr_in_message() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["ping"],
-            failure("Failed to connect to server", 1),
-        );
+        fake.with_response(BIN, &["ping"], failure("Failed to connect to server", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         let result = client.ping();
@@ -853,11 +845,7 @@ mod tests {
     #[test]
     fn error_includes_binary_name_in_message() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["ping"],
-            failure("some error", 1),
-        );
+        fake.with_response(BIN, &["ping"], failure("some error", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         let result = client.ping();
@@ -931,11 +919,7 @@ mod tests {
     #[test]
     fn error_handles_no_exit_code_no_stderr() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["ping"],
-            failure_no_exit(""),
-        );
+        fake.with_response(BIN, &["ping"], failure_no_exit(""));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         let result = client.ping();
@@ -966,11 +950,7 @@ mod tests {
     #[test]
     fn reload_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["reload"],
-            failure("Cannot reload", 1),
-        );
+        fake.with_response(BIN, &["reload"], failure("Cannot reload", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.reload().is_err());
@@ -992,11 +972,7 @@ mod tests {
     #[test]
     fn status_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["status"],
-            failure("server not running", 1),
-        );
+        fake.with_response(BIN, &["status"], failure("server not running", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.status().is_err());
@@ -1005,11 +981,7 @@ mod tests {
     #[test]
     fn status_jail_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["status", "missing"],
-            failure("Jail not found", 255),
-        );
+        fake.with_response(BIN, &["status", "missing"], failure("Jail not found", 255));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.status_jail("missing").is_err());
@@ -1044,11 +1016,7 @@ mod tests {
     #[test]
     fn banned_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["banned"],
-            failure("server not running", 1),
-        );
+        fake.with_response(BIN, &["banned"], failure("server not running", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.banned().is_err());
@@ -1057,11 +1025,7 @@ mod tests {
     #[test]
     fn banned_ip_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["banned", "1.2.3.4"],
-            failure("error", 1),
-        );
+        fake.with_response(BIN, &["banned", "1.2.3.4"], failure("error", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.banned_ip("1.2.3.4").is_err());
@@ -1096,11 +1060,7 @@ mod tests {
     #[test]
     fn get_logtarget_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["get", "logtarget"],
-            failure("error", 1),
-        );
+        fake.with_response(BIN, &["get", "logtarget"], failure("error", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.get_logtarget().is_err());
@@ -1109,11 +1069,7 @@ mod tests {
     #[test]
     fn get_dbfile_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["get", "dbfile"],
-            failure("error", 1),
-        );
+        fake.with_response(BIN, &["get", "dbfile"], failure("error", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.get_dbfile().is_err());
@@ -1122,11 +1078,7 @@ mod tests {
     #[test]
     fn get_dbpurgeage_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["get", "dbpurgeage"],
-            failure("error", 1),
-        );
+        fake.with_response(BIN, &["get", "dbpurgeage"], failure("error", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.get_dbpurgeage().is_err());
@@ -1135,11 +1087,7 @@ mod tests {
     #[test]
     fn str_to_seconds_returns_error_on_nonzero() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["--str2sec", "invalid"],
-            failure("invalid format", 1),
-        );
+        fake.with_response(BIN, &["--str2sec", "invalid"], failure("invalid format", 1));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         assert!(client.str_to_seconds("invalid").is_err());
@@ -1171,16 +1119,8 @@ mod tests {
     #[test]
     fn ban_then_unban_sequence() {
         let mut fake = FakeRunner::new();
-        fake.with_response(
-            BIN,
-            &["set", "sshd", "banip", "1.2.3.4"],
-            success("1"),
-        );
-        fake.with_response(
-            BIN,
-            &["set", "sshd", "unbanip", "1.2.3.4"],
-            success(""),
-        );
+        fake.with_response(BIN, &["set", "sshd", "banip", "1.2.3.4"], success("1"));
+        fake.with_response(BIN, &["set", "sshd", "unbanip", "1.2.3.4"], success(""));
 
         let client = Fail2BanClient::with_binary(&fake, binary());
         client.ban_ip("sshd", "1.2.3.4").unwrap();

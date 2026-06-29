@@ -154,13 +154,19 @@ impl fmt::Display for PortEntry {
 
         match (&self.process_name, self.pid) {
             (Some(name), Some(pid)) => {
-                write!(f, "{proto:<4} {local:<24} {remote:<24} {state:<14} {name} (PID {pid})")
+                write!(
+                    f,
+                    "{proto:<4} {local:<24} {remote:<24} {state:<14} {name} (PID {pid})"
+                )
             }
             (Some(name), None) => {
                 write!(f, "{proto:<4} {local:<24} {remote:<24} {state:<14} {name}")
             }
             (None, Some(pid)) => {
-                write!(f, "{proto:<4} {local:<24} {remote:<24} {state:<14} PID {pid}")
+                write!(
+                    f,
+                    "{proto:<4} {local:<24} {remote:<24} {state:<14} PID {pid}"
+                )
             }
             (None, None) => {
                 write!(f, "{proto:<4} {local:<24} {remote:<24} {state}")
@@ -184,7 +190,7 @@ fn format_addr(addr: IpAddr, port: u16) -> String {
 /// Flexible filter for querying port entries.
 ///
 /// All fields are optional — `None` means "don't filter by this dimension".
-/// Multiple non-None fields are ANDed together.
+/// Multiple non-None fields are `AND`ed together.
 #[derive(Debug, Clone, Default)]
 pub struct PortQuery {
     /// Filter by port number.
@@ -252,15 +258,15 @@ impl PortQuery {
 
     /// Check if an entry matches this query.
     pub fn matches(&self, entry: &PortEntry) -> bool {
-        if let Some(port) = self.port {
-            if entry.local_port != port {
-                return false;
-            }
+        if let Some(port) = self.port
+            && entry.local_port != port
+        {
+            return false;
         }
-        if let Some(proto) = self.protocol {
-            if entry.protocol != proto {
-                return false;
-            }
+        if let Some(proto) = self.protocol
+            && entry.protocol != proto
+        {
+            return false;
         }
         if let Some(ref name) = self.process_name {
             let matches_name = entry
@@ -271,20 +277,20 @@ impl PortQuery {
                 return false;
             }
         }
-        if let Some(pid) = self.pid {
-            if entry.pid != Some(pid) {
-                return false;
-            }
+        if let Some(pid) = self.pid
+            && entry.pid != Some(pid)
+        {
+            return false;
         }
-        if let Some(ref state) = self.state {
-            if entry.state != *state {
-                return false;
-            }
+        if let Some(ref state) = self.state
+            && entry.state != *state
+        {
+            return false;
         }
-        if let Some(ipv) = self.ip_version {
-            if entry.ip_version != ipv {
-                return false;
-            }
+        if let Some(ipv) = self.ip_version
+            && entry.ip_version != ipv
+        {
+            return false;
         }
         true
     }
@@ -317,7 +323,10 @@ impl<'a> PortReader<'a> {
     #[cfg(feature = "client")]
     pub fn list_listening(&self) -> Result<Vec<PortEntry>> {
         let all = self.collect_all()?;
-        Ok(all.into_iter().filter(|e| e.state == PortState::Listen).collect())
+        Ok(all
+            .into_iter()
+            .filter(|e| e.state == PortState::Listen)
+            .collect())
     }
 
     /// List **all** network sockets (listening, established, time-wait, etc.)
@@ -394,9 +403,7 @@ impl<'a> PortReader<'a> {
     /// Collect all sockets from the kernel and enrich with process names.
     #[cfg(feature = "client")]
     fn collect_all(&self) -> Result<Vec<PortEntry>> {
-        use netstat2::{
-            get_sockets_info, AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo,
-        };
+        use netstat2::{AddressFamilyFlags, ProtocolFlags, ProtocolSocketInfo, get_sockets_info};
 
         // We don't actually use paths for netstat2 (it uses native APIs),
         // but we keep the field for API consistency and future extensions.
@@ -421,11 +428,19 @@ impl<'a> PortReader<'a> {
             }
         }
 
-        let entries: Vec<PortEntry> = sockets
-            .into_iter()
-            .filter_map(|sock| {
-                let (protocol, ip_version, local_addr, local_port, remote_addr, remote_port, state) =
-                    match &sock.protocol_socket_info {
+        let entries: Vec<PortEntry> =
+            sockets
+                .into_iter()
+                .map(|sock| {
+                    let (
+                        protocol,
+                        ip_version,
+                        local_addr,
+                        local_port,
+                        remote_addr,
+                        remote_port,
+                        state,
+                    ) = match &sock.protocol_socket_info {
                         ProtocolSocketInfo::Tcp(t) => {
                             let iv = match t.local_addr {
                                 IpAddr::V4(_) => IpVersion::V4,
@@ -459,25 +474,24 @@ impl<'a> PortReader<'a> {
                         }
                     };
 
-                let (process_name, pid) = sock
-                    .associated_pids
-                    .first()
-                    .map(|p| (pid_map.get(p).cloned(), Some(*p)))
-                    .unwrap_or((None, None));
+                    let (process_name, pid) = sock
+                        .associated_pids
+                        .first()
+                        .map_or((None, None), |p| (pid_map.get(p).cloned(), Some(*p)));
 
-                Some(PortEntry {
-                    protocol,
-                    ip_version,
-                    local_addr,
-                    local_port,
-                    remote_addr,
-                    remote_port,
-                    state,
-                    process_name,
-                    pid,
+                    PortEntry {
+                        protocol,
+                        ip_version,
+                        local_addr,
+                        local_port,
+                        remote_addr,
+                        remote_port,
+                        state,
+                        process_name,
+                        pid,
+                    }
                 })
-            })
-            .collect();
+                .collect();
 
         Ok(entries)
     }
@@ -617,10 +631,7 @@ mod tests {
         assert_eq!(format!("{}", PortState::Listen), "LISTEN");
         assert_eq!(format!("{}", PortState::Established), "ESTABLISHED");
         assert_eq!(format!("{}", PortState::TimeWait), "TIME_WAIT");
-        assert_eq!(
-            format!("{}", PortState::Unknown("FOO".into())),
-            "FOO"
-        );
+        assert_eq!(format!("{}", PortState::Unknown("FOO".into())), "FOO");
     }
 
     #[test]
@@ -677,7 +688,10 @@ mod tests {
             process_name: Some("nginx".into()),
             pid: Some(42),
         };
-        let q = PortQuery::new().port(80).protocol(PortProtocol::Tcp).state(PortState::Listen);
+        let q = PortQuery::new()
+            .port(80)
+            .protocol(PortProtocol::Tcp)
+            .state(PortState::Listen);
         assert!(q.matches(&entry));
         let q2 = PortQuery::new().port(80).protocol(PortProtocol::Udp);
         assert!(!q2.matches(&entry));

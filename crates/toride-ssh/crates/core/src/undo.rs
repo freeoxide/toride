@@ -159,10 +159,7 @@ impl UndoStack {
     /// Returns [`UndoError::StackEmpty`] if there are no snapshots to restore.
     /// Returns [`UndoError::Io`] if writing the file fails.
     pub async fn restore_last(&mut self) -> UndoResult<FileSnapshot> {
-        let snapshot = self
-            .snapshots
-            .pop()
-            .ok_or(UndoError::StackEmpty)?;
+        let snapshot = self.snapshots.pop().ok_or(UndoError::StackEmpty)?;
         atomic_write(&snapshot.path, &snapshot.contents).await?;
         Ok(snapshot)
     }
@@ -225,11 +222,10 @@ async fn atomic_write(path: &Path, contents: &str) -> UndoResult<()> {
     let path = path.to_path_buf();
     let contents = contents.to_owned();
     tokio::task::spawn_blocking(move || {
-        toride_fs::atomic_write(&path, &contents)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+        toride_fs::atomic_write(&path, &contents).map_err(std::io::Error::other)
     })
     .await
-    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))??;
+    .map_err(std::io::Error::other)??;
     Ok(())
 }
 

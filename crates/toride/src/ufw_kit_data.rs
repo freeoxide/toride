@@ -73,7 +73,7 @@ pub struct FirewallDataBundle {
     /// Doctor findings (cached for 60s between collections).
     pub findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` because a collection task panicked (JoinError).
+    /// `available == false` because a collection task panicked (`JoinError`).
     /// `None` otherwise — notably also `None` for a freshly-constructed empty
     /// bundle before any collection has run. Surfaced to the UI so the degraded
     /// panel can show what actually went wrong instead of guessing.
@@ -101,6 +101,10 @@ pub struct FirewallCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl FirewallCollector {
@@ -124,6 +128,7 @@ impl FirewallCollector {
     /// If a collection is already in-flight, this is a no-op. The 60s findings
     /// cache is consulted: when fresh, the spawned task reuses the cached
     /// findings instead of re-running the doctor suite.
+    #[allow(clippy::similar_names)]
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
@@ -132,10 +137,14 @@ impl FirewallCollector {
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
-                .map_or(false, |t| t.elapsed() < FINDINGS_TTL);
+                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
+            #[allow(
+                clippy::similar_names,
+                reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
+            )]
             let (bundle, used_cache) = collect_real_ufw(use_cache, cached_findings).await;
             let _ = tx.send((bundle, used_cache));
         });
@@ -213,9 +222,7 @@ async fn collect_real_ufw(
         Err(e) => {
             tracing::warn!("ufw construction task panicked: {e}");
             return (
-                empty_bundle_with_reason(format!(
-                    "ufw backend construction panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("ufw backend construction panicked: {e}")),
                 false,
             );
         }
@@ -267,14 +274,7 @@ async fn collect_real_ufw(
                     match ufw.status() {
                         Ok(s) => {
                             let rules = ufw_kit_convert::convert_rules(s.rules);
-                            (
-                                s.active,
-                                None,
-                                None,
-                                None,
-                                None,
-                                rules,
-                            )
+                            (s.active, None, None, None, None, rules)
                         }
                         Err(e2) => {
                             tracing::debug!("ufw status: {e2}");
@@ -329,9 +329,7 @@ async fn collect_real_ufw(
         Err(e) => {
             tracing::warn!("ufw collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "ufw data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("ufw data collection panicked: {e}")),
                 false,
             )
         }
@@ -342,7 +340,7 @@ async fn collect_real_ufw(
 ///
 /// `available = false` signals the UI to render the degraded panel. No reason
 /// is attached because none is known at this point; collection-time panics use
-/// [`empty_bundle_with_reason`] to surface the JoinError.
+/// [`empty_bundle_with_reason`] to surface the `JoinError`.
 fn empty_bundle() -> FirewallDataBundle {
     FirewallDataBundle {
         available: false,
@@ -359,7 +357,7 @@ fn empty_bundle() -> FirewallDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> FirewallDataBundle {
     let mut b = empty_bundle();
@@ -427,7 +425,7 @@ mod tests {
         // `available` flag reflects whether ufw was found.
         let mut collector = FirewallCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -451,7 +449,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = FirewallCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).

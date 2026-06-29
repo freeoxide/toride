@@ -28,12 +28,12 @@ use std::sync::Arc;
 
 use toride_runner::{DuctRunner, Runner};
 
+use crate::Result;
 use crate::paths::BackupPaths;
 use crate::report::{BackupReport, BackupStatus, IntegrityStatus, PruneReport};
 use crate::restore::{RestoreManager, RestoreOptions};
 use crate::schedule::ScheduleManager;
 use crate::spec::{Backend, BackupSpec};
-use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // BackupClient
@@ -105,6 +105,7 @@ impl BackupClient {
     /// Set dry-run mode.
     ///
     /// When enabled, backup operations are logged but not executed.
+    #[must_use]
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
@@ -116,6 +117,7 @@ impl BackupClient {
     /// backend client is built without probing `$PATH` for the real binary.
     ///
     /// [`FakeRunner`]: toride_runner::FakeRunner
+    #[must_use]
     pub fn with_runner(mut self, runner: Arc<dyn Runner>) -> Self {
         self.runner = runner;
         self
@@ -125,6 +127,7 @@ impl BackupClient {
     ///
     /// Required when combined with [`Self::with_runner`] for tests, since no
     /// real binary is present on the test machine.
+    #[must_use]
     pub fn with_binary(mut self, binary: PathBuf) -> Self {
         self.binary_override = Some(binary);
         self
@@ -222,10 +225,12 @@ impl BackupClient {
         // 1. Create the snapshot. `backup_typed` parses the documented
         //    `message_type:"summary"` JSON-lines record.
         //    Docs: https://restic.readthedocs.io/en/stable/075_scripting.html#summary
-        let summary = client.backup_typed(&collect_source_paths(spec)).map_err(|e| {
-            tracing::warn!(name = %spec.name, error = %e, "restic backup failed");
-            e
-        })?;
+        let summary = client
+            .backup_typed(&collect_source_paths(spec))
+            .map_err(|e| {
+                tracing::warn!(name = %spec.name, error = %e, "restic backup failed");
+                e
+            })?;
 
         // 2. Count snapshots. Best-effort: a failure to list does not fail the
         //    whole backup (the snapshot was already created).
@@ -245,7 +250,22 @@ impl BackupClient {
         // 3. Repository size. Best-effort, same rationale.
         //    Docs: https://restic.readthedocs.io/en/stable/075_scripting.html#stats
         let repo_size_bytes = match client.stats() {
-            Ok(stats) => stats.total_size as u64,
+            // `total_size` is a non-negative byte count reported by restic; the
+            // f64 field is just how serde deserialised the JSON number. Clamp
+            // NaN/negatives defensively before the lossy cast.
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "restic total_size is a non-negative byte count; clamped below"
+            )]
+            Ok(stats) => {
+                let bytes = stats.total_size;
+                if bytes.is_finite() && bytes >= 0.0 {
+                    bytes as u64
+                } else {
+                    0
+                }
+            }
             Err(e) => {
                 tracing::warn!(
                     name = %spec.name,
@@ -462,7 +482,7 @@ impl BackupClient {
     /// (see <https://borgbackup.readthedocs.io/en/stable/usage/general.html#environment-variables>).
     /// The `BorgClient` handles injecting `BORG_PASSPHRASE` once
     /// [`BorgClient::with_passphrase`] is called. We map the spec's
-    /// `password_command` onto `BORG_PASSCOMMAND` via extra_env (the borg
+    /// `password_command` onto `BORG_PASSCOMMAND` via `extra_env` (the borg
     /// equivalent of restic's `--password-command`).
     fn build_borg_client(&self, spec: &BackupSpec) -> Result<crate::borg::BorgClient> {
         use crate::borg::BorgClient;
@@ -516,10 +536,7 @@ impl BackupClient {
     /// # Errors
     ///
     /// Returns an error if the test restore fails.
-    pub fn test_restore(
-        &self,
-        spec: &BackupSpec,
-    ) -> Result<crate::report::RestoreReport> {
+    pub fn test_restore(&self, spec: &BackupSpec) -> Result<crate::report::RestoreReport> {
         RestoreManager::test_restore(spec)
     }
 
@@ -585,7 +602,7 @@ impl BackupClient {
         match name {
             Some(name) => {
                 let spec = config.get_job(name).ok_or_else(|| {
-                    Error::ConfigParse(format!("no backup job named {name:?} in config"))
+                    crate::Error::ConfigParse(format!("no backup job named {name:?} in config"))
                 })?;
                 let listing = self.snapshots(spec)?;
                 Ok(vec![BackupReport {
@@ -649,10 +666,10 @@ impl BackupClient {
     #[cfg(feature = "doctor")]
     pub fn doctor(
         &self,
-        scope: crate::doctor::DoctorScope,
+        scope: &crate::doctor::DoctorScope,
     ) -> Result<crate::doctor::DoctorReport> {
         let doc = crate::doctor::Doctor::new();
-        doc.run(&scope)
+        doc.run(scope)
     }
 
     // -----------------------------------------------------------------------
@@ -693,8 +710,11 @@ pub struct SnapshotListing {
 
 /// Collect the spec's source paths into the `Vec<&Path>` the backend clients
 /// expect (`restic backup <paths...>` / `borg create <archive> <paths...>`).
-fn collect_source_paths<'a>(spec: &'a BackupSpec) -> Vec<&'a Path> {
-    spec.sources.iter().map(std::path::PathBuf::as_path).collect()
+fn collect_source_paths(spec: &BackupSpec) -> Vec<&Path> {
+    spec.sources
+        .iter()
+        .map(std::path::PathBuf::as_path)
+        .collect()
 }
 
 /// Build a borg archive name from the spec.
@@ -717,8 +737,7 @@ fn make_borg_archive_name(spec: &BackupSpec) -> String {
         .collect::<String>();
     let epoch = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
     format!("{safe}-{epoch}")
 }
 
@@ -757,13 +776,13 @@ fn parse_borg_info_total_size(json: &str) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec::{Encryption, RetentionPolicy, Schedule};
     use crate::Error;
+    use crate::spec::{Encryption, RetentionPolicy, Schedule};
     use std::collections::HashMap;
     use std::path::{Path, PathBuf};
-    use toride_runner::fake::FakeRunner;
     use toride_runner::CommandOutput;
     use toride_runner::CommandSpec;
+    use toride_runner::fake::FakeRunner;
 
     // -----------------------------------------------------------------------
     // Test fixtures
@@ -838,14 +857,14 @@ mod tests {
 
     /// Verbatim `restic backup --json` summary record (the final line), per the
     /// official scripting docs.
-    /// Source: https://restic.readthedocs.io/en/stable/075_scripting.html#summary
-    /// Field meanings: message_type="summary", files_new/changed/unmodified,
-    /// data_added (bytes), total_bytes_processed (bytes), snapshot_id.
+    /// Source: <https://restic.readthedocs.io/en/stable/075_scripting.html#summary>
+    /// Field meanings: `message_type`="summary", `files_new`/changed/unmodified,
+    /// `data_added` (bytes), `total_bytes_processed` (bytes), `snapshot_id`.
     const RESTIC_BACKUP_SUMMARY: &str = r#"{"message_type":"summary","files_new":3,"files_changed":2,"files_unmodified":5,"dirs_new":1,"dirs_changed":0,"dirs_unmodified":4,"data_blobs":6,"tree_blobs":2,"data_added":2048,"data_added_packed":1024,"total_files_processed":10,"total_bytes_processed":4096,"total_duration":1.5,"snapshot_id":"5111c8ae5a5e3e2e8b6b4f0c5b8e3a2d1c9f0a1b2c3d4e5f6a7b8c9d0e1f2a3"}"#;
 
     /// `restic snapshots --json` array (single snapshot). The `len()` of this
     /// array is the repository snapshot count.
-    /// Source: https://restic.readthedocs.io/en/stable/075_scripting.html#snapshots
+    /// Source: <https://restic.readthedocs.io/en/stable/075_scripting.html#snapshots>
     const RESTIC_SNAPSHOTS: &str = r#"[
         {
             "time": "2024-09-18T12:34:56.789012345Z",
@@ -860,7 +879,7 @@ mod tests {
     ]"#;
 
     /// `restic stats --json` object. `total_size` is the repository size in bytes.
-    /// Source: https://restic.readthedocs.io/en/stable/075_scripting.html#stats
+    /// Source: <https://restic.readthedocs.io/en/stable/075_scripting.html#stats>
     const RESTIC_STATS: &str = r#"{
         "total_size": 1048576,
         "total_file_count": 42,
@@ -873,7 +892,7 @@ mod tests {
     }"#;
 
     /// `borg list --json` envelope (verbatim sample).
-    /// Source: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
+    /// Source: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
     const BORG_LIST_JSON: &str = r#"{
         "archives": [
             {
@@ -892,7 +911,7 @@ mod tests {
 
     /// `borg info --json` envelope. `cache.stats.total_size` is the repository
     /// size in bytes.
-    /// Source: https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
+    /// Source: <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
     const BORG_INFO_JSON: &str = r#"{
         "cache": {
             "path": "/home/user/.cache/borg/0cbe6166b46627fd26b97f8831e2ca97584280a46714ef84d2b668daf8271a23",
@@ -922,11 +941,11 @@ mod tests {
     ///   restic --repo <repo> [--password-command <cmd>] backup --json <srcs...>
     ///   restic --repo <repo> [--password-command <cmd>] snapshots --json
     ///   restic --repo <repo> [--password-command <cmd>] stats --json
-    /// and assembles a truthful BackupReport from the docs-sourced JSON.
+    /// and assembles a truthful `BackupReport` from the docs-sourced JSON.
     ///
     /// The exact `restic backup --json` summary shape and the snapshots/stats
     /// envelopes are documented at
-    /// https://restic.readthedocs.io/en/stable/075_scripting.html
+    /// <https://restic.readthedocs.io/en/stable/075_scripting.html>
     #[test]
     fn backup_restic_runs_real_command_sequence_and_assembles_report() {
         let runner = FakeRunner::new()
@@ -954,7 +973,10 @@ mod tests {
         assert_eq!(report.integrity, IntegrityStatus::NotChecked);
         assert!(report.last_run.is_some());
         assert!(
-            report.last_message.as_ref().is_some_and(|m| m.contains("5111c8ae")),
+            report
+                .last_message
+                .as_ref()
+                .is_some_and(|m| m.contains("5111c8ae")),
             "summary message should mention the snapshot id: {:?}",
             report.last_message
         );
@@ -1082,12 +1104,12 @@ mod tests {
     ///   borg create --stats <repo>::<archive> <srcs...>
     ///   borg list --json <repo>
     ///   borg info --json <repo>
-    /// and assembles a truthful BackupReport.
+    /// and assembles a truthful `BackupReport`.
     ///
     /// The exact `borg create` shape is documented at
-    /// https://borgbackup.readthedocs.io/en/stable/usage/create.html and the
+    /// <https://borgbackup.readthedocs.io/en/stable/usage/create.html> and the
     /// list/info JSON envelopes at
-    /// https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
+    /// <https://borgbackup.readthedocs.io/en/stable/internals/frontends.html>
     #[test]
     fn backup_borg_runs_real_command_sequence_and_assembles_report() {
         let runner = FakeRunner::new()
@@ -1112,12 +1134,16 @@ mod tests {
         assert_eq!(report.status, BackupStatus::Ok);
         assert_eq!(report.snapshot_count, 1, "archives array had one entry");
         assert_eq!(
-            report.repo_size_bytes,
-            22_635_749_792,
+            report.repo_size_bytes, 22_635_749_792,
             "repo size must come from borg info cache.stats.total_size"
         );
         assert_eq!(report.integrity, IntegrityStatus::NotChecked);
-        assert!(report.last_message.as_ref().is_some_and(|m| m.contains("archive")));
+        assert!(
+            report
+                .last_message
+                .as_ref()
+                .is_some_and(|m| m.contains("archive"))
+        );
 
         // Assert the EXACT borg create command shape. The archive target is
         // `<repo>::<archive>` per the borg create docs. The passphrase command
@@ -1126,7 +1152,10 @@ mod tests {
         assert_eq!(calls.len(), 3, "backup should issue create+list+info");
         let create = &calls[0];
         assert_eq!(create.program, "/usr/bin/borg");
-        assert_eq!(create.args[0], "create", "first arg is the create subcommand");
+        assert_eq!(
+            create.args[0], "create",
+            "first arg is the create subcommand"
+        );
         assert_eq!(create.args[1], "--stats");
         // args[2] is "<repo>::<archive>" — verify the repo prefix + :: separator.
         assert!(
@@ -1134,7 +1163,10 @@ mod tests {
             "create target must be <repo>::<archive>, got: {}",
             create.args[2]
         );
-        assert_eq!(create.args[3], "/etc", "source path follows the archive target");
+        assert_eq!(
+            create.args[3], "/etc",
+            "source path follows the archive target"
+        );
         // BORG_PASSCOMMAND env carries the password command (never argv). Borg
         // documents BORG_PASSCOMMAND as the non-interactive way to supply a
         // passphrase produced by a command — see
@@ -1218,9 +1250,8 @@ mod tests {
     #[test]
     fn borg_with_passphrase_marks_command_redacted() {
         use crate::borg::BorgClient;
-        let runner = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
-            "created",
-        )));
+        let runner =
+            Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("created")));
         let client = BorgClient::with_binary(PathBuf::from("/usr/bin/borg"), "/srv/repo")
             .with_passphrase("raw-borg-secret")
             .with_runner(runner.clone());
@@ -1232,10 +1263,11 @@ mod tests {
             call.redact,
             "BorgClient::with_passphrase must mark create redact(true)"
         );
-        assert!(call
-            .env
-            .iter()
-            .any(|(k, v)| k == "BORG_PASSPHRASE" && v == "raw-borg-secret"));
+        assert!(
+            call.env
+                .iter()
+                .any(|(k, v)| k == "BORG_PASSPHRASE" && v == "raw-borg-secret")
+        );
         assert!(
             !call.args.iter().any(|a| a.contains("raw-borg-secret")),
             "raw passphrase leaked into argv"
@@ -1272,7 +1304,7 @@ mod tests {
     /// regression where prune silently routed to a no-op stub.
     ///
     /// Command shape documented at
-    /// https://restic.readthedocs.io/en/stable/075_scripting.html#forget
+    /// <https://restic.readthedocs.io/en/stable/075_scripting.html#forget>
     #[test]
     fn prune_restic_runs_real_forget_prune_command_and_is_redacted() {
         let runner = FakeRunner::new()
@@ -1288,9 +1320,16 @@ mod tests {
 
         // Exactly one command issued — the real `restic forget --prune`.
         let calls = runner.calls();
-        assert_eq!(calls.len(), 1, "prune should issue exactly one restic command");
+        assert_eq!(
+            calls.len(),
+            1,
+            "prune should issue exactly one restic command"
+        );
         let call = &calls[0];
-        assert!(call.redact, "forget --prune must be redacted (carries password)");
+        assert!(
+            call.redact,
+            "forget --prune must be redacted (carries password)"
+        );
         assert_eq!(call.program, "/usr/bin/restic");
         // The retention policy on restic_spec is default_policy(): 7 daily,
         // 4 weekly, 6 monthly — all three flags must appear.
@@ -1339,7 +1378,7 @@ mod tests {
     /// regression where prune silently routed to a no-op stub.
     ///
     /// Command shape documented at
-    /// https://borgbackup.readthedocs.io/en/stable/usage/prune.html
+    /// <https://borgbackup.readthedocs.io/en/stable/usage/prune.html>
     #[test]
     fn prune_borg_runs_real_prune_command_and_carries_passcommand() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("pruned"));
@@ -1353,7 +1392,11 @@ mod tests {
         assert!(report.success);
 
         let calls = runner_arc.calls();
-        assert_eq!(calls.len(), 1, "prune should issue exactly one borg command");
+        assert_eq!(
+            calls.len(),
+            1,
+            "prune should issue exactly one borg command"
+        );
         let call = &calls[0];
         assert_eq!(call.program, "/usr/bin/borg");
         assert_eq!(call.args[0], "prune", "first arg is the prune subcommand");
@@ -1377,7 +1420,7 @@ mod tests {
         );
     }
 
-    /// In dry-run mode, prune() returns an Ok report WITHOUT issuing any
+    /// In dry-run mode, `prune()` returns an Ok report WITHOUT issuing any
     /// command (does not spawn the backend).
     #[test]
     fn prune_dry_run_does_not_invoke_backend() {
@@ -1396,7 +1439,7 @@ mod tests {
         );
     }
 
-    /// prune() validates the spec before dispatching.
+    /// `prune()` validates the spec before dispatching.
     #[test]
     fn prune_invalid_spec_returns_config_parse_error() {
         let (client, _runner) = client_with_fake(FakeRunner::new());
@@ -1416,7 +1459,7 @@ mod tests {
     // dry-run still short-circuits (does NOT spawn)
     // -----------------------------------------------------------------------
 
-    /// In dry-run mode, backup() returns an Ok report WITHOUT issuing any
+    /// In dry-run mode, `backup()` returns an Ok report WITHOUT issuing any
     /// command. This is the documented dry-run contract.
     #[test]
     fn backup_dry_run_does_not_invoke_backend() {
@@ -1427,7 +1470,9 @@ mod tests {
             .with_binary(PathBuf::from("/usr/bin/restic"))
             .with_dry_run(true);
 
-        let report = client.backup(&restic_spec("/srv/repo")).expect("dry-run ok");
+        let report = client
+            .backup(&restic_spec("/srv/repo"))
+            .expect("dry-run ok");
         assert_eq!(report.status, BackupStatus::Ok);
         assert_eq!(report.snapshot_count, 0);
         assert!(client.is_dry_run());
@@ -1468,8 +1513,7 @@ mod tests {
         // command fails fast — but the failure mode proves real execution.
         let (client, _runner) = client_with_fake(FakeRunner::new());
         let spec = restic_spec("/nonexistent/restic-repo");
-        let options = RestoreOptions::new("/tmp/toride-restore-test")
-            .with_snapshot("79766175");
+        let options = RestoreOptions::new("/tmp/toride-restore-test").with_snapshot("79766175");
         let result = client.restore(&spec, &options);
         // Either a real binary ran (and failed because the repo is absent) or
         // restic is absent on this host. Both prove the facade is not a stub.

@@ -96,8 +96,7 @@ impl MonitorConfig {
 /// Returns [`Error::Other`] with the TOML parse error message if the content
 /// is not valid TOML or does not match the expected schema.
 pub fn parse_config(content: &str) -> Result<MonitorSpec> {
-    toml::from_str(content)
-        .map_err(|e| Error::Other(format!("invalid monitor config: {e}")))
+    toml::from_str(content).map_err(|e| Error::Other(format!("invalid monitor config: {e}")))
 }
 
 /// Render a [`MonitorSpec`] into a TOML config string.
@@ -145,7 +144,7 @@ mod tests {
                 destination: "0.0.0.0/0".into(),
                 dest_port: Some(443),
                 protocol: "tcp".into(),
-                log_prefix: "TORIDE_OUT".into(),
+                log_prefix: "toride-mon-out".into(),
                 log_level: "info".into(),
                 limit_burst: 10,
                 limit_rate: "10/minute".into(),
@@ -198,7 +197,7 @@ mod tests {
                     destination: "10.0.0.0/8".into(),
                     dest_port: None,
                     protocol: "tcp".into(),
-                    log_prefix: "A".into(),
+                    log_prefix: "toride-mon-a".into(),
                     log_level: "info".into(),
                     limit_burst: 1,
                     limit_rate: "1/minute".into(),
@@ -208,7 +207,7 @@ mod tests {
                     destination: "192.168.0.0/16".into(),
                     dest_port: Some(22),
                     protocol: "tcp".into(),
-                    log_prefix: "B".into(),
+                    log_prefix: "toride-mon-b".into(),
                     log_level: "notice".into(),
                     limit_burst: 2,
                     limit_rate: "2/minute".into(),

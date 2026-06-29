@@ -158,7 +158,8 @@ fn apply_report_is_empty_when_truly_empty() {
 #[test]
 fn apply_report_is_not_empty_with_written_files() {
     let mut r = ApplyReport::empty();
-    r.files_written.push("/etc/fail2ban/jail.d/test.conf".into());
+    r.files_written
+        .push("/etc/fail2ban/jail.d/test.conf".into());
     assert!(!r.is_empty());
 }
 

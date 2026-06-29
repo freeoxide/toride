@@ -1,4 +1,4 @@
-//! Hardware inventory using the HardwareInventory preset.
+//! Hardware inventory using the `HardwareInventory` preset.
 //!
 //! Shows static hardware info, all disks, GPUs, battery, sensors,
 //! and per-core CPU data -- everything related to the physical machine.
@@ -8,6 +8,10 @@
 use toride_status::units::{Bytes, Celsius, Hertz, format_bytes};
 use toride_status::{Preset, TorideStatus};
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "example: linear top-to-bottom hardware demo"
+)]
 fn main() {
     let status = TorideStatus::collect_with_preset(Preset::HardwareInventory);
     let sys = &status.system;

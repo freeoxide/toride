@@ -189,7 +189,11 @@ impl MonitorContent {
     /// is unavailable so the badge stays honestly empty.
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.connections.len()) } else { None }
+        if self.available {
+            Some(self.connections.len())
+        } else {
+            None
+        }
     }
 
     /// Current scroll offset (used by dashboard tests).
@@ -304,6 +308,10 @@ impl MonitorContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with other scrollable panes"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
     }
@@ -346,7 +354,7 @@ impl MonitorContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -361,7 +369,7 @@ impl MonitorContent {
     /// `available == false` is set when `MonitorClient::system()` returned an
     /// error (typically `BinaryNotFound` on macOS, where `iptables`,
     /// `iptables-save`, `conntrack`, `ss`, or `journalctl` are missing) or
-    /// when the `spawn_blocking` collection task panicked (JoinError). The
+    /// when the `spawn_blocking` collection task panicked (`JoinError`). The
     /// reason string is surfaced here so the operator can see what actually
     /// went wrong; when no reason is known we fall back to a generic,
     /// accurate message.
@@ -384,13 +392,16 @@ impl MonitorContent {
         ]);
         // Prefer the concrete reason (BinaryNotFound / panic); otherwise a
         // generic message that is accurate for the macOS case.
-        let detail_text = self
-            .unavailable_reason
-            .clone()
-            .unwrap_or_else(|| "monitor backend requires iptables/conntrack/ss/journalctl (Linux)".to_string());
+        let detail_text = self.unavailable_reason.clone().unwrap_or_else(|| {
+            "monitor backend requires iptables/conntrack/ss/journalctl (Linux)".to_string()
+        });
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -440,7 +451,7 @@ impl MonitorContent {
             Span::styled("  conns    ", Style::new().fg(p.text_muted)),
             Span::styled(format!("{total}"), Style::new().fg(p.text)),
             Span::styled(
-                format!("  ({} unique dst)", uniq),
+                format!("  ({uniq} unique dst)"),
                 Style::new().fg(p.text_dim),
             ),
         ]));
@@ -448,8 +459,7 @@ impl MonitorContent {
         let bytes_label = self
             .summary
             .total_bytes
-            .map(format_bytes_count)
-            .unwrap_or_else(|| "—".to_string());
+            .map_or_else(|| "—".to_string(), format_bytes_count);
         lines.push(Line::from(vec![
             Span::styled("  bytes    ", Style::new().fg(p.text_muted)),
             Span::styled(bytes_label, Style::new().fg(p.text)),
@@ -458,8 +468,7 @@ impl MonitorContent {
         let packets_label = self
             .summary
             .total_packets
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "—".to_string());
+            .map_or_else(|| "—".to_string(), |n| n.to_string());
         lines.push(Line::from(vec![
             Span::styled("  packets  ", Style::new().fg(p.text_muted)),
             Span::styled(packets_label, Style::new().fg(p.text)),
@@ -486,10 +495,7 @@ impl MonitorContent {
             let src = truncate_str(&conn.src, 21);
             let dst = truncate_str(&conn.dst, 21);
             let state = truncate_str(&conn.state, 12);
-            let bytes = conn
-                .bytes
-                .map(format_bytes_count)
-                .unwrap_or_default();
+            let bytes = conn.bytes.map(format_bytes_count).unwrap_or_default();
             let bytes_span = if bytes.is_empty() {
                 Span::raw(String::new())
             } else {
@@ -538,8 +544,11 @@ impl MonitorContent {
             };
             lines.push(Line::from(vec![
                 Span::styled(format!("{proto:<4} "), Style::new().fg(p.accent3)),
-                Span::styled(format!("{addr:<20}:{:<6}", port.local_port), Style::new().fg(p.text)),
-                Span::styled(format!(" {state:<10}", ), Style::new().fg(p.text_dim)),
+                Span::styled(
+                    format!("{addr:<20}:{:<6}", port.local_port),
+                    Style::new().fg(p.text),
+                ),
+                Span::styled(format!(" {state:<10}"), Style::new().fg(p.text_dim)),
                 proc_span,
             ]));
         }
@@ -554,8 +563,7 @@ impl MonitorContent {
         let count = self
             .conntrack
             .count
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "—".to_string());
+            .map_or_else(|| "—".to_string(), |n| n.to_string());
         lines.push(Line::from(vec![
             Span::styled("  tracked  ", Style::new().fg(p.text_muted)),
             Span::styled(count, Style::new().fg(p.text)),
@@ -564,8 +572,7 @@ impl MonitorContent {
         let bytes = self
             .conntrack
             .total_bytes
-            .map(format_bytes_count)
-            .unwrap_or_else(|| "—".to_string());
+            .map_or_else(|| "—".to_string(), format_bytes_count);
         lines.push(Line::from(vec![
             Span::styled("  bytes    ", Style::new().fg(p.text_muted)),
             Span::styled(bytes, Style::new().fg(p.text)),
@@ -574,8 +581,7 @@ impl MonitorContent {
         let packets = self
             .conntrack
             .total_packets
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "—".to_string());
+            .map_or_else(|| "—".to_string(), |n| n.to_string());
         lines.push(Line::from(vec![
             Span::styled("  packets  ", Style::new().fg(p.text_muted)),
             Span::styled(packets, Style::new().fg(p.text)),
@@ -680,11 +686,8 @@ impl MonitorContent {
         // Group by severity: Critical > Error > Warning > Info.
         let order = ["critical", "error", "warning", "info"];
         for sev in order {
-            let group: Vec<&FindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
+            let group: Vec<&FindingEntry> =
+                self.findings.iter().filter(|f| f.severity == sev).collect();
             if group.is_empty() {
                 continue;
             }
@@ -768,6 +771,7 @@ fn severity_style(sev: &str, p: Palette) -> (&'static str, ratatui::style::Color
 }
 
 /// Format a byte count as a human-readable string (B / KB / MB / GB).
+#[expect(clippy::cast_precision_loss, reason = "display-only")]
 fn format_bytes_count(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = 1024 * KB;
@@ -865,9 +869,7 @@ mod tests {
     /// Render a content area to a string (snapshot pattern from fail2ban).
     fn render_to_string(content: &mut MonitorContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -999,10 +1001,7 @@ mod tests {
             out.contains("connection volume exceeds"),
             "anomaly title: {out}"
         );
-        assert!(
-            out.contains("Investigate processes"),
-            "fix hint: {out}"
-        );
+        assert!(out.contains("Investigate processes"), "fix hint: {out}");
     }
 
     #[test]
@@ -1116,11 +1115,7 @@ mod tests {
             (GB, "1.0 GB"),
         ];
         for &(input, expected) in cases {
-            assert_eq!(
-                format_bytes_count(input),
-                expected,
-                "input = {input}"
-            );
+            assert_eq!(format_bytes_count(input), expected, "input = {input}");
         }
         // u64::MAX must not panic; the helper caps at GB so it lands in the
         // GB branch (large float). Only assert the branch, not the exact

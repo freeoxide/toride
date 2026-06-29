@@ -50,11 +50,7 @@ impl Jail {
         actions: Option<&HashMap<String, ActionConfig>>,
         runner: Box<dyn Runner>,
     ) -> crate::Result<Self> {
-        let detector = LogDetector::new(
-            &config.name,
-            &config.log_path,
-            &config.pattern,
-        )?;
+        let detector = LogDetector::new(&config.name, &config.log_path, &config.pattern)?;
 
         let ban_manager = BanManager::new(store);
 
@@ -89,7 +85,10 @@ impl Jail {
 
     /// Set ignore IPs for this jail.
     #[must_use]
-    #[expect(clippy::needless_pass_by_value, reason = "builder pattern takes ownership")]
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "builder pattern takes ownership"
+    )]
     pub fn with_ignore_ips(mut self, ips: Vec<String>) -> Self {
         self.ignore_set = parse_ignore_list(&ips);
         self
@@ -123,10 +122,10 @@ impl Jail {
     ///
     /// Returns `Io` if the journal store cannot be read.
     pub fn restore_journal(&mut self) -> crate::Result<()> {
-        let journal = self.ban_manager.store().get_journal(
-            &self.config.name,
-            &self.config.log_path,
-        )?;
+        let journal = self
+            .ban_manager
+            .store()
+            .get_journal(&self.config.name, &self.config.log_path)?;
         if let Some(entry) = journal {
             self.detector.set_position(entry.offset, entry.line_number);
         }
@@ -155,10 +154,12 @@ impl Jail {
         let mut result = self.detector.scan()?;
 
         let now = Utc::now();
-        let find_time_secs = i64::try_from(self.config.find_time)
-            .map_err(|_| crate::Error::InvalidConfig(
-                format!("find_time {} exceeds maximum", self.config.find_time)
-            ))?;
+        let find_time_secs = i64::try_from(self.config.find_time).map_err(|_| {
+            crate::Error::InvalidConfig(format!(
+                "find_time {} exceeds maximum",
+                self.config.find_time
+            ))
+        })?;
         let find_time = Duration::seconds(find_time_secs);
 
         // Apply find_time/max_retry threshold logic.
@@ -187,7 +188,13 @@ impl Jail {
         result.new_bans = Vec::with_capacity(to_ban.len());
 
         for entry in to_ban {
-            let BanEntry { ip, prefix, fail_count, reason, .. } = entry;
+            let BanEntry {
+                ip,
+                prefix,
+                fail_count,
+                reason,
+                ..
+            } = entry;
             // Persist the ban to the store.
             match self.ban_manager.ban(
                 ip,
@@ -251,7 +258,9 @@ impl Jail {
         let prefix = crate::types::default_prefix(ip);
 
         // Persist to store first.
-        let entry = self.ban_manager.ban(ip, prefix, &self.config.name, 1, self.config.ban_time, None)?;
+        let entry =
+            self.ban_manager
+                .ban(ip, prefix, &self.config.name, 1, self.config.ban_time, None)?;
 
         // Execute ban action (skip in dry-run).
         if !mode.is_dry_run() {

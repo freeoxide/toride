@@ -1,6 +1,6 @@
-//! Parse and handle authorized_keys option fields.
+//! Parse and handle `authorized_keys` option fields.
 //!
-//! Supports all documented options from `man sshd` AUTHORIZED_KEYS FILE FORMAT:
+//! Supports all documented options from `man sshd` `AUTHORIZED_KEYS FILE FORMAT`:
 //! command, environment, from, permit-open, port-forwarding, principals,
 //! no-pty, no-port-forwarding, no-X11-forwarding, no-agent-forwarding,
 //! no-user-rc, restrict, tunnel, cert-authority, expiry-time, perferrp.
@@ -9,9 +9,13 @@ use serde::{Deserialize, Serialize};
 
 use toride_ssh_core::Result;
 
-/// Parsed options from an authorized_keys entry.
+/// Parsed options from an `authorized_keys` entry.
 ///
-/// See `man sshd` section "AUTHORIZED_KEYS FILE FORMAT" for full details.
+/// See `man sshd` section `AUTHORIZED_KEYS FILE FORMAT` for full details.
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "authorized_keys options are a fixed set of boolean flags per OpenSSH spec"
+)]
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct AuthorizedKeyOptions {
     /// Command that is executed (forced) whenever this key is used for authentication.
@@ -50,7 +54,7 @@ pub struct AuthorizedKeyOptions {
     pub custom: Vec<(String, Option<String>)>,
 }
 
-/// Parse the options field of an authorized_keys line.
+/// Parse the options field of an `authorized_keys` line.
 ///
 /// The options field is a comma-separated list of directives. Boolean flags
 /// (e.g. `no-pty`) are standalone, while string-valued options use the

@@ -6,8 +6,8 @@
 
 use std::net::IpAddr;
 
-use crate::report::ConnectionInfo;
 use crate::Result;
+use crate::report::ConnectionInfo;
 
 // ---------------------------------------------------------------------------
 // IptablesLogEntry
@@ -16,7 +16,7 @@ use crate::Result;
 /// A single entry parsed from iptables LOG target output.
 #[derive(Debug, Clone)]
 pub struct IptablesLogEntry {
-    /// Log prefix (e.g. `"TORIDE_OUT"`).
+    /// Log prefix (e.g. `"toride-mon-out"`).
     pub prefix: String,
     /// Source IP address.
     pub src: IpAddr,
@@ -216,10 +216,10 @@ pub fn parse_ss_output(input: &str) -> Result<Vec<SsEntry>> {
             continue;
         }
 
-        let netid = parts.first().unwrap().to_string();
-        let state = parts.get(1).unwrap().to_string();
-        let local = parts.get(2).unwrap().to_string();
-        let peer = parts.get(3).unwrap().to_string();
+        let netid = parts[0].to_string();
+        let state = parts[1].to_string();
+        let local = parts[2].to_string();
+        let peer = parts[3].to_string();
         let process = parts.get(4).map(|s| (*s).to_string());
 
         entries.push(SsEntry {
@@ -302,12 +302,10 @@ fn has_state_token(proto_name: &str) -> bool {
 }
 
 /// Extract a `KEY=VALUE` field from a log line.
-fn extract_field<'a>(line: &'a str, key: &str) -> Option<String> {
+fn extract_field(line: &str, key: &str) -> Option<String> {
     let start = line.find(key)?;
     let remainder = &line[start + key.len()..];
-    let end = remainder
-        .find(' ')
-        .unwrap_or(remainder.len());
+    let end = remainder.find(' ').unwrap_or(remainder.len());
     Some(remainder[..end].to_owned())
 }
 
@@ -379,10 +377,7 @@ udp  17 30 src=10.0.0.5 dst=10.0.0.6 sport=40002 dport=53 bytes=50 packets=1
         // UDP entries have only 3 leading tokens (no state machine). The fix
         // ensures the UDP entry reports NO state rather than silently capturing
         // the `src=` field as a bogus state.
-        assert_eq!(
-            entries[2].proto, 17,
-            "udp must still be parsed as proto 17"
-        );
+        assert_eq!(entries[2].proto, 17, "udp must still be parsed as proto 17");
         assert_eq!(
             entries[2].state, None,
             "udp entries must have NO state token"
@@ -391,17 +386,17 @@ udp  17 30 src=10.0.0.5 dst=10.0.0.6 sport=40002 dport=53 bytes=50 packets=1
         assert_eq!(entries[2].dport, Some(53));
     }
 
-    /// Real /proc/net/nf_conntrack sample exercising mixed protocols (tcp,
+    /// Real `/proc/net/nf_conntrack` sample exercising mixed protocols (tcp,
     /// udp, sctp, dccp, icmp). Sourced from kernel conntrack field layout
     /// documented at:
-    ///   - https://stackoverflow.com/questions/16034698 (field-by-field)
-    ///   - https://unix.stackexchange.com/questions/400394 (entry breakdown)
+    ///   - <https://stackoverflow.com/questions/16034698> (field-by-field)
+    ///   - <https://unix.stackexchange.com/questions/400394> (entry breakdown)
     ///   - docs.kernel.org/netlink/specs/conntrack.html (protoinfo containers:
     ///     only tcp/sctp/dccp emit a state keyword)
-    /// The state token only appears for tcp/sctp/dccp; udp/icmp must report
-    /// `state == None`. This is the exact regression the Wave-2a verify pass
-    /// found: the parser read parts[3] unconditionally and captured `src=`
-    /// as the UDP "state".
+    ///     The state token only appears for tcp/sctp/dccp; udp/icmp must report
+    ///     `state == None`. This is the exact regression the Wave-2a verify pass
+    ///     found: the parser read parts[3] unconditionally and captured `src=`
+    ///     as the UDP "state".
     #[test]
     fn conntrack_mixed_protocols_from_real_proc_sample() {
         let input = "\

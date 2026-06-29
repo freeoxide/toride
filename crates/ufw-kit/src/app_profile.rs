@@ -23,8 +23,10 @@ fn with_file_lock<T>(path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     if let Some(parent) = lock_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    with_lock(&lock_path, || f().map_err(|e| toride_fs::Error::Io(std::io::Error::other(e.to_string()))))
-        .map_err(|e| Error::Io(e.to_string()))
+    with_lock(&lock_path, || {
+        f().map_err(|e| toride_fs::Error::Io(std::io::Error::other(e.to_string())))
+    })
+    .map_err(|e| Error::Io(e.to_string()))
 }
 
 /// Ensure an application profile exists and is up to date.
@@ -75,11 +77,7 @@ pub fn ensure_app_profile(
 }
 
 /// Remove an application profile.
-pub fn remove_app_profile(
-    paths: &UfwPaths,
-    name: &str,
-    namespace: &str,
-) -> Result<bool> {
+pub fn remove_app_profile(paths: &UfwPaths, name: &str, namespace: &str) -> Result<bool> {
     let path = paths.app_profile_path(namespace, name);
 
     if !path.exists() {

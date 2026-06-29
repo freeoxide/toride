@@ -3,9 +3,7 @@
 //! Uses `clap` to define the command-line interface for applying,
 //! inspecting, and diffing kernel hardening parameters.
 
-use crate::backup::{
-    create_backup, load_backup_from_disk, restore_backup, save_backup_to_disk,
-};
+use crate::backup::{create_backup, load_backup_from_disk, restore_backup, save_backup_to_disk};
 use crate::client::HardenClient;
 use crate::doctor::doctor;
 use crate::error::{Error, Result};
@@ -163,12 +161,7 @@ fn default_spec() -> HardenSpec {
         .build()
 }
 
-fn run_apply(
-    client: &HardenClient,
-    profile: &str,
-    dry_run: bool,
-    no_backup: bool,
-) -> Result<()> {
+fn run_apply(client: &HardenClient, profile: &str, dry_run: bool, no_backup: bool) -> Result<()> {
     let profile = profile_for(profile)?;
     let params = profile.params();
 
@@ -185,11 +178,10 @@ fn run_apply(
         return Ok(());
     }
 
-    // `--no-backup` routes through `apply_params`, which still snapshots
-    // internally; the flag is honoured by NOT triggering a second explicit
-    // backup here. The normal path uses `apply_profile`.
+    // `--no-backup` skips the pre-mutation snapshot; otherwise the profile
+    // is applied with an automatic backup (see `apply_profile`).
     let report = if no_backup {
-        client.apply_params(&profile.params())?
+        client.apply_profile_with_options(&profile, true)?
     } else {
         client.apply_profile(&profile)?
     };
@@ -295,7 +287,8 @@ mod tests {
         let client = HardenClient::with_runner(Box::new(runner.clone()));
 
         let cli = parse_args(["toride-harden", "status"]).unwrap();
-        cli.run_with_client(&client).expect("status dispatch failed");
+        cli.run_with_client(&client)
+            .expect("status dispatch failed");
 
         let calls = runner.calls();
         // The dispatch must have invoked the real sysctl binary.
@@ -354,7 +347,8 @@ mod tests {
         let client = HardenClient::with_runner(Box::new(runner.clone()));
 
         let cli = parse_args(["toride-harden", "apply", "--dry-run", "desktop"]).unwrap();
-        cli.run_with_client(&client).expect("dry-run dispatch failed");
+        cli.run_with_client(&client)
+            .expect("dry-run dispatch failed");
 
         let calls = runner.calls();
         assert!(
@@ -369,6 +363,64 @@ mod tests {
                 .iter()
                 .any(|c| c.program == "sysctl" && c.args.contains(&"-w".to_string())),
             "dry-run must not write any sysctl value, got: {calls:?}"
+        );
+    }
+
+    #[test]
+    fn dispatch_apply_no_backup_skips_backup_file() {
+        // `--no-backup` must skip the pre-mutation snapshot: no backup file
+        // should land in the backup directory. Contrast with the default path,
+        // which must create one.
+        use crate::paths::HardenPaths;
+
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = HardenPaths::with_root(dir.path());
+
+        // No-backup path: lenient runner returns empty output for every call.
+        let runner = FakeRunner::new();
+        let client = HardenClient::with_runner_and_paths(Box::new(runner.clone()), paths.clone());
+
+        let cli = parse_args(["toride-harden", "apply", "--no-backup", "desktop"]).unwrap();
+        cli.run_with_client(&client)
+            .expect("--no-backup dispatch failed");
+
+        // No backup directory contents should have been created.
+        if paths.backup_dir.is_dir() {
+            let entries: Vec<_> = std::fs::read_dir(&paths.backup_dir)
+                .expect("backup dir readable")
+                .collect();
+            assert!(
+                entries.is_empty(),
+                "--no-backup should not persist a backup, found: {entries:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn dispatch_apply_default_creates_backup_file() {
+        // Default path (no --no-backup) must persist exactly one backup file.
+        use crate::paths::HardenPaths;
+
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = HardenPaths::with_root(dir.path());
+
+        let runner = FakeRunner::new();
+        let client = HardenClient::with_runner_and_paths(Box::new(runner.clone()), paths.clone());
+
+        let cli = parse_args(["toride-harden", "apply", "desktop"]).unwrap();
+        cli.run_with_client(&client)
+            .expect("default apply dispatch failed");
+
+        assert!(
+            paths.backup_dir.is_dir(),
+            "default apply should create the backup directory"
+        );
+        let count = std::fs::read_dir(&paths.backup_dir)
+            .expect("backup dir readable")
+            .count();
+        assert_eq!(
+            count, 1,
+            "default apply should persist exactly one backup file"
         );
     }
 }

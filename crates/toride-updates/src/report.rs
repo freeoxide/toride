@@ -49,6 +49,35 @@ impl Default for UpdateStatus {
     }
 }
 
+impl std::fmt::Display for UpdateStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let enabled = if self.auto_updates_enabled {
+            "enabled"
+        } else {
+            "disabled"
+        };
+        let active = if self.service_active {
+            "active"
+        } else {
+            "inactive"
+        };
+        match &self.last_run {
+            Some(last_run) => write!(
+                f,
+                "auto-updates {enabled} (service {active}); last run {last_run}; \
+                 {sec} pending security update(s)",
+                sec = self.pending_security,
+            ),
+            None => write!(
+                f,
+                "auto-updates {enabled} (service {active}); no recorded run; \
+                 {sec} pending security update(s)",
+                sec = self.pending_security,
+            ),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // DoctorFinding helpers
 // ---------------------------------------------------------------------------
@@ -59,8 +88,8 @@ impl Default for UpdateStatus {
 /// binary (e.g. `unattended-upgrades`) is not installed.
 pub fn finding_binary_missing(binary: &str) -> toride_diagnostic_types::Finding {
     toride_diagnostic_types::Finding::critical(
-        &format!("binary.{binary}.missing"),
-        &format!("{binary} not found"),
+        format!("binary.{binary}.missing"),
+        format!("{binary} not found"),
     )
     .detail(format!(
         "The {binary} binary could not be located on $PATH. \
@@ -72,13 +101,15 @@ pub fn finding_binary_missing(binary: &str) -> toride_diagnostic_types::Finding 
 /// Create a finding for an inactive service.
 pub fn finding_service_inactive(service: &str) -> toride_diagnostic_types::Finding {
     toride_diagnostic_types::Finding::critical(
-        &format!("service.{service}.inactive"),
-        &format!("{service} service is not running"),
+        format!("service.{service}.inactive"),
+        format!("{service} service is not running"),
     )
     .detail(format!(
         "The {service} service is not active. Automatic updates will not be applied."
     ))
-    .fix_hint(format!("Start and enable the service: systemctl enable --now {service}"))
+    .fix_hint(format!(
+        "Start and enable the service: systemctl enable --now {service}"
+    ))
 }
 
 /// Create a finding for disabled auto-updates.
@@ -91,7 +122,9 @@ pub fn finding_auto_updates_disabled() -> toride_diagnostic_types::Finding {
         "Auto-updates are currently disabled. Security patches will not be \
          applied automatically, leaving the system vulnerable.",
     )
-    .fix_hint("Enable auto-updates via toride configure or edit /etc/apt/apt.conf.d/20auto-upgrades")
+    .fix_hint(
+        "Enable auto-updates via toride configure or edit /etc/apt/apt.conf.d/20auto-upgrades",
+    )
 }
 
 /// Create a finding for a missing schedule configuration.
@@ -100,9 +133,7 @@ pub fn finding_schedule_missing() -> toride_diagnostic_types::Finding {
         "config.schedule.missing",
         "No update schedule configured",
     )
-    .detail(
-        "No systemd timer or cron job is configured to trigger automatic updates.",
-    )
+    .detail("No systemd timer or cron job is configured to trigger automatic updates.")
     .fix_hint("Configure a schedule: toride updates schedule --daily")
 }
 
@@ -201,5 +232,7 @@ pub fn finding_auto_update_timer_absent(timer: &str) -> toride_diagnostic_types:
          systemd is not driving automatic updates. The configuration file may \
          still enable updates, but nothing will trigger them without a timer."
     ))
-    .fix_hint(format!("Install and enable the timer: systemctl enable --now {timer}"))
+    .fix_hint(format!(
+        "Install and enable the timer: systemctl enable --now {timer}"
+    ))
 }

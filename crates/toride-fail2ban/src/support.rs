@@ -89,9 +89,7 @@ pub fn detect_firewall() -> Firewall {
         if which_exists("firewall-cmd") {
             return Firewall::Firewalld;
         }
-    } else if (cfg!(target_os = "macos") || cfg!(target_os = "freebsd"))
-        && which_exists("pfctl")
-    {
+    } else if (cfg!(target_os = "macos") || cfg!(target_os = "freebsd")) && which_exists("pfctl") {
         return Firewall::Pf;
     }
     Firewall::Unknown

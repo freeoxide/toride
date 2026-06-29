@@ -51,7 +51,10 @@ impl Mise {
         #[cfg(feature = "json")]
         {
             let entries: Vec<ConfigLsEntry> = self.run_json(["config", "ls", "--json"]).await?;
-            Ok(entries.into_iter().map(|e| Utf8PathBuf::from(e.path)).collect())
+            Ok(entries
+                .into_iter()
+                .map(|e| Utf8PathBuf::from(e.path))
+                .collect())
         }
 
         #[cfg(not(feature = "json"))]
@@ -133,7 +136,8 @@ impl Mise {
     pub async fn settings(&self) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
         #[cfg(feature = "json")]
         {
-            let rows: Vec<SettingsRow> = self.run_json_vec_safe(["settings", "ls", "--json"]).await?;
+            let rows: Vec<SettingsRow> =
+                self.run_json_vec_safe(["settings", "ls", "--json"]).await?;
             let mut map = std::collections::BTreeMap::new();
             for row in rows {
                 let entry = json_value_to_settings_entry(&row.value);
@@ -171,10 +175,14 @@ impl Mise {
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
-    pub async fn settings_all(&self) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
+    pub async fn settings_all(
+        &self,
+    ) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
         #[cfg(feature = "json")]
         {
-            let rows: Vec<SettingsRow> = self.run_json_vec_safe(["settings", "ls", "--json-extended"]).await?;
+            let rows: Vec<SettingsRow> = self
+                .run_json_vec_safe(["settings", "ls", "--json-extended"])
+                .await?;
             let mut map = std::collections::BTreeMap::new();
             for row in rows {
                 let entry = json_value_to_settings_entry(&row.value);
@@ -185,7 +193,9 @@ impl Mise {
 
         #[cfg(not(feature = "json"))]
         {
-            let output = self.run_checked(["settings", "ls", "--json-extended"]).await?;
+            let output = self
+                .run_checked(["settings", "ls", "--json-extended"])
+                .await?;
             let mut map = std::collections::BTreeMap::new();
             for line in output.stdout_trimmed().lines() {
                 let line = line.trim();
@@ -212,10 +222,13 @@ impl Mise {
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
-    pub async fn settings_local(&self) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
+    pub async fn settings_local(
+        &self,
+    ) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
         #[cfg(feature = "json")]
         {
-            let rows: Vec<SettingsRow> = self.run_json_vec_safe(["settings", "ls", "--json"]).await?;
+            let rows: Vec<SettingsRow> =
+                self.run_json_vec_safe(["settings", "ls", "--json"]).await?;
             let mut map = std::collections::BTreeMap::new();
             for row in rows {
                 let entry = json_value_to_settings_entry(&row.value);
@@ -284,18 +297,14 @@ impl Mise {
 
     /// Parse a TOML string into a [`MiseToml`], associating it with an
     /// optional file path.
-    fn parse_mise_toml(
-        content: &str,
-        path: Option<Utf8PathBuf>,
-    ) -> MiseResult<MiseToml> {
+    fn parse_mise_toml(content: &str, path: Option<Utf8PathBuf>) -> MiseResult<MiseToml> {
         #[cfg(feature = "toml")]
         {
-            let doc: toml::Value = toml::from_str(content).map_err(|e| {
-                crate::error::ConfigError::ParseFailed {
+            let doc: toml::Value =
+                toml::from_str(content).map_err(|e| crate::error::ConfigError::ParseFailed {
                     path: path.as_ref().map_or_else(String::new, ToString::to_string),
                     reason: e.to_string(),
-                }
-            })?;
+                })?;
 
             let mut config = MiseToml::at(path.unwrap_or_default());
 
@@ -366,7 +375,10 @@ fn toml_value_to_settings_entry(value: &toml::Value) -> SettingsEntry {
         toml::Value::Integer(n) => SettingsEntry::Int(*n),
         toml::Value::String(s) => SettingsEntry::String(s.clone()),
         toml::Value::Array(arr) => {
-            let items = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+            let items = arr
+                .iter()
+                .filter_map(|v| v.as_str().map(String::from))
+                .collect();
             SettingsEntry::Array(items)
         }
         other => SettingsEntry::String(other.to_string()),
@@ -378,9 +390,7 @@ fn toml_value_to_settings_entry(value: &toml::Value) -> SettingsEntry {
 fn json_value_to_settings_entry(value: &serde_json::Value) -> SettingsEntry {
     match value {
         serde_json::Value::Bool(b) => SettingsEntry::Bool(*b),
-        serde_json::Value::Number(n) => {
-            SettingsEntry::Int(n.as_i64().unwrap_or_default())
-        }
+        serde_json::Value::Number(n) => SettingsEntry::Int(n.as_i64().unwrap_or_default()),
         serde_json::Value::String(s) => SettingsEntry::String(s.clone()),
         serde_json::Value::Array(arr) => {
             let items = arr
@@ -444,9 +454,20 @@ mod tests {
 
         let settings = mise.settings().await.unwrap();
         assert_eq!(settings.len(), 3);
-        assert_eq!(settings.get("auto_install"), Some(&super::super::model::SettingsEntry::Bool(true)));
-        assert_eq!(settings.get("jobs"), Some(&super::super::model::SettingsEntry::Int(4)));
-        assert_eq!(settings.get("experimental"), Some(&super::super::model::SettingsEntry::String("yes".to_string())));
+        assert_eq!(
+            settings.get("auto_install"),
+            Some(&super::super::model::SettingsEntry::Bool(true))
+        );
+        assert_eq!(
+            settings.get("jobs"),
+            Some(&super::super::model::SettingsEntry::Int(4))
+        );
+        assert_eq!(
+            settings.get("experimental"),
+            Some(&super::super::model::SettingsEntry::String(
+                "yes".to_string()
+            ))
+        );
 
         let calls = fake.calls();
         assert_eq!(calls.len(), 1);

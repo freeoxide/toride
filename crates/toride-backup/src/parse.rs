@@ -49,11 +49,15 @@ pub fn parse_restic_snapshots(output: &str) -> crate::Result<Vec<SnapshotInfo>> 
     if trimmed.starts_with('[') {
         parse_restic_snapshots_json(trimmed)
     } else {
-        parse_restic_snapshots_text(trimmed)
+        Ok(parse_restic_snapshots_text(trimmed))
     }
 }
 
 /// Parse JSON output from `restic snapshots --json`.
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "serde branch propagates JSON parse errors via ?; both cfg branches keep Result for uniformity"
+)]
 fn parse_restic_snapshots_json(json: &str) -> crate::Result<Vec<SnapshotInfo>> {
     // Skeleton: parse via serde when the serde feature is enabled.
     // Without serde, we do a simple best-effort text parse.
@@ -108,12 +112,12 @@ fn parse_restic_snapshots_json(json: &str) -> crate::Result<Vec<SnapshotInfo>> {
     #[cfg(not(feature = "serde"))]
     {
         // Without serde, just do line-based parsing.
-        parse_restic_snapshots_text(json)
+        Ok(parse_restic_snapshots_text(json))
     }
 }
 
 /// Parse text (non-JSON) output from `restic snapshots`.
-fn parse_restic_snapshots_text(output: &str) -> crate::Result<Vec<SnapshotInfo>> {
+fn parse_restic_snapshots_text(output: &str) -> Vec<SnapshotInfo> {
     let mut snapshots = Vec::new();
     for line in output.lines() {
         let line = line.trim();
@@ -136,7 +140,7 @@ fn parse_restic_snapshots_text(output: &str) -> crate::Result<Vec<SnapshotInfo>>
             });
         }
     }
-    Ok(snapshots)
+    snapshots
 }
 
 // ---------------------------------------------------------------------------

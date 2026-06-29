@@ -466,10 +466,22 @@ mod tests {
 
     #[test]
     fn is_forwarding_enabled_line_should_parse_various_formats() {
-        assert!(is_forwarding_enabled_line("net.ipv4.ip_forward = 1", sysctl::IPV4_FORWARD));
-        assert!(is_forwarding_enabled_line("net.ipv4.ip_forward=1", sysctl::IPV4_FORWARD));
-        assert!(!is_forwarding_enabled_line("net.ipv4.ip_forward = 0", sysctl::IPV4_FORWARD));
-        assert!(!is_forwarding_enabled_line("# net.ipv4.ip_forward = 1", sysctl::IPV4_FORWARD));
+        assert!(is_forwarding_enabled_line(
+            "net.ipv4.ip_forward = 1",
+            sysctl::IPV4_FORWARD
+        ));
+        assert!(is_forwarding_enabled_line(
+            "net.ipv4.ip_forward=1",
+            sysctl::IPV4_FORWARD
+        ));
+        assert!(!is_forwarding_enabled_line(
+            "net.ipv4.ip_forward = 0",
+            sysctl::IPV4_FORWARD
+        ));
+        assert!(!is_forwarding_enabled_line(
+            "# net.ipv4.ip_forward = 1",
+            sysctl::IPV4_FORWARD
+        ));
         assert!(!is_forwarding_enabled_line("", sysctl::IPV4_FORWARD));
     }
 }

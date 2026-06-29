@@ -8,10 +8,7 @@
 //! the library to a temporary directory. A global mutex serializes these tests
 //! to avoid cross-contamination.
 
-#![allow(
-    clippy::significant_drop_tightening,
-    clippy::await_holding_lock
-)] // Test code with HOME manipulation
+#![allow(clippy::significant_drop_tightening, clippy::await_holding_lock)] // Test code with HOME manipulation
 
 use std::path::Path;
 use std::sync::{Mutex, PoisonError};
@@ -46,7 +43,11 @@ fn test_config_ast_roundtrip() {
     let ast2 = toride_ssh::config::ast::parse(&output);
 
     // The two ASTs must have the same node count.
-    assert_eq!(ast1.nodes.len(), ast2.nodes.len(), "node count mismatch after roundtrip");
+    assert_eq!(
+        ast1.nodes.len(),
+        ast2.nodes.len(),
+        "node count mismatch after roundtrip"
+    );
 
     // Serialize again -- must be identical to the first serialization.
     let output2 = ast2.to_string_lossless();
@@ -82,13 +83,19 @@ fn test_config_ast_roundtrip_preserves_comments() {
     let output = ast1.to_string_lossless();
     let ast2 = toride_ssh::config::ast::parse(&output);
     let output2 = ast2.to_string_lossless();
-    assert_eq!(output, output2, "conflicts config roundtrip should be idempotent");
+    assert_eq!(
+        output, output2,
+        "conflicts config roundtrip should be idempotent"
+    );
 
     // Verify the comment line survived.
     let has_comment = ast1.nodes.iter().any(|n| {
         matches!(n, toride_ssh::config::ast::ConfigNode::Comment { text, .. } if text.contains("ProxyCommand"))
     });
-    assert!(has_comment, "comment about ProxyCommand should survive roundtrip");
+    assert!(
+        has_comment,
+        "comment about ProxyCommand should survive roundtrip"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -105,15 +112,21 @@ async fn test_config_diagnose_conflicts() {
     std::fs::write(ssh_dir.join("config"), fixture("config_conflicts.txt")).unwrap();
 
     let old_home = std::env::var("HOME").ok();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    unsafe {
+        std::env::set_var("HOME", dir.path());
+    }
 
     let manager = toride_ssh::SshManager::new().expect("SshManager::new");
     let result = manager.config().diagnose().await;
 
     if let Some(ref h) = old_home {
-        unsafe { std::env::set_var("HOME", h.as_str()); }
+        unsafe {
+            std::env::set_var("HOME", h.as_str());
+        }
     } else {
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
     }
 
     let diags = result.expect("diagnose should succeed");
@@ -123,7 +136,11 @@ async fn test_config_diagnose_conflicts() {
         .iter()
         .filter(|d| d.id == "config_proxy_conflict")
         .collect();
-    assert_eq!(proxy_conflicts.len(), 1, "expected one proxy conflict diagnostic");
+    assert_eq!(
+        proxy_conflicts.len(),
+        1,
+        "expected one proxy conflict diagnostic"
+    );
     assert_eq!(proxy_conflicts[0].severity, toride_ssh::Severity::Warning);
     assert!(proxy_conflicts[0].message.contains("bastion"));
     assert!(proxy_conflicts[0].hint.is_some());
@@ -133,7 +150,11 @@ async fn test_config_diagnose_conflicts() {
         .iter()
         .filter(|d| d.id == "config_duplicate_alias")
         .collect();
-    assert_eq!(duplicates.len(), 1, "expected one duplicate alias diagnostic");
+    assert_eq!(
+        duplicates.len(),
+        1,
+        "expected one duplicate alias diagnostic"
+    );
     assert!(duplicates[0].message.contains("'dup'"));
 }
 
@@ -151,7 +172,9 @@ async fn test_config_resolve_tokens() {
     std::fs::write(ssh_dir.join("config"), fixture("config_tokens.txt")).unwrap();
 
     let old_home = std::env::var("HOME").ok();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    unsafe {
+        std::env::set_var("HOME", dir.path());
+    }
 
     let manager = toride_ssh::SshManager::new().expect("SshManager::new");
 
@@ -168,7 +191,10 @@ async fn test_config_resolve_tokens() {
 
     // IdentityFile should have %h expanded to "staging".
     assert!(
-        resolved.identity_files.iter().any(|f| f.contains("staging")),
+        resolved
+            .identity_files
+            .iter()
+            .any(|f| f.contains("staging")),
         "IdentityFile should have %h expanded, got: {:?}",
         resolved.identity_files
     );
@@ -180,9 +206,18 @@ async fn test_config_resolve_tokens() {
         .find(|(k, _)| k.eq_ignore_ascii_case("controlpath"))
         .map(|(_, v)| v.as_str());
     if let Some(cp) = control_path {
-        assert!(!cp.contains("%h"), "ControlPath should have %h expanded: {cp}");
-        assert!(!cp.contains("%r"), "ControlPath should have %r expanded: {cp}");
-        assert!(cp.contains("staging"), "ControlPath should contain host name: {cp}");
+        assert!(
+            !cp.contains("%h"),
+            "ControlPath should have %h expanded: {cp}"
+        );
+        assert!(
+            !cp.contains("%r"),
+            "ControlPath should have %r expanded: {cp}"
+        );
+        assert!(
+            cp.contains("staging"),
+            "ControlPath should contain host name: {cp}"
+        );
     }
 
     // Resolve "production" host.
@@ -202,7 +237,10 @@ async fn test_config_resolve_tokens() {
         .find(|(k, _)| k.eq_ignore_ascii_case("proxycommand"))
         .map(|(_, v)| v.as_str());
     if let Some(pc) = proxy_cmd {
-        assert!(!pc.contains("%h"), "ProxyCommand should have %h expanded: {pc}");
+        assert!(
+            !pc.contains("%h"),
+            "ProxyCommand should have %h expanded: {pc}"
+        );
     }
 
     // UserKnownHostsFile should have %d and %h expanded.
@@ -212,15 +250,28 @@ async fn test_config_resolve_tokens() {
         .find(|(k, _)| k.eq_ignore_ascii_case("userknownhostsfile"))
         .map(|(_, v)| v.as_str());
     if let Some(path) = ukhf {
-        assert!(!path.contains("%d"), "UserKnownHostsFile should have %d expanded: {path}");
-        assert!(!path.contains("%h"), "UserKnownHostsFile should have %h expanded: {path}");
-        assert!(path.contains("production"), "UserKnownHostsFile should contain host: {path}");
+        assert!(
+            !path.contains("%d"),
+            "UserKnownHostsFile should have %d expanded: {path}"
+        );
+        assert!(
+            !path.contains("%h"),
+            "UserKnownHostsFile should have %h expanded: {path}"
+        );
+        assert!(
+            path.contains("production"),
+            "UserKnownHostsFile should contain host: {path}"
+        );
     }
 
     if let Some(ref h) = old_home {
-        unsafe { std::env::set_var("HOME", h.as_str()); }
+        unsafe {
+            std::env::set_var("HOME", h.as_str());
+        }
     } else {
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
     }
 }
 
@@ -243,7 +294,9 @@ async fn test_config_resolve_identity_file_token() {
     .unwrap();
 
     let old_home = std::env::var("HOME").ok();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    unsafe {
+        std::env::set_var("HOME", dir.path());
+    }
 
     let manager = toride_ssh::SshManager::new().expect("SshManager::new");
     let resolved = manager
@@ -253,9 +306,13 @@ async fn test_config_resolve_identity_file_token() {
         .expect("resolve should succeed");
 
     if let Some(ref h) = old_home {
-        unsafe { std::env::set_var("HOME", h.as_str()); }
+        unsafe {
+            std::env::set_var("HOME", h.as_str());
+        }
     } else {
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
     }
 
     // %u should expand to the local username.
@@ -277,7 +334,7 @@ async fn test_config_resolve_identity_file_token() {
         "tilde should have been expanded, got: {id_file}"
     );
     assert!(
-        id_file.ends_with("/work") || !id_file.contains("%"),
+        id_file.ends_with("/work") || !id_file.contains('%'),
         "all tokens should have been expanded, got: {id_file}"
     );
 }
@@ -295,24 +352,39 @@ async fn test_known_hosts_parse_markers() {
     std::fs::create_dir_all(&ssh_dir).unwrap();
     // Write an empty config so SshPaths::new -> ConfigService doesn't complain.
     std::fs::write(ssh_dir.join("config"), "").unwrap();
-    std::fs::write(ssh_dir.join("known_hosts"), fixture("known_hosts_markers.txt")).unwrap();
+    std::fs::write(
+        ssh_dir.join("known_hosts"),
+        fixture("known_hosts_markers.txt"),
+    )
+    .unwrap();
 
     let old_home = std::env::var("HOME").ok();
-    unsafe { std::env::set_var("HOME", dir.path()); }
+    unsafe {
+        std::env::set_var("HOME", dir.path());
+    }
 
     let manager = toride_ssh::SshManager::new().expect("SshManager::new");
     let result = manager.known_hosts().list().await;
 
     if let Some(ref h) = old_home {
-        unsafe { std::env::set_var("HOME", h.as_str()); }
+        unsafe {
+            std::env::set_var("HOME", h.as_str());
+        }
     } else {
-        unsafe { std::env::remove_var("HOME"); }
+        unsafe {
+            std::env::remove_var("HOME");
+        }
     }
 
     let entries = result.expect("list should succeed");
 
     // The fixture has 9 non-comment, non-blank lines.
-    assert_eq!(entries.len(), 9, "expected 9 entries, got {}", entries.len());
+    assert_eq!(
+        entries.len(),
+        9,
+        "expected 9 entries, got {}",
+        entries.len()
+    );
 
     // Verify standard entry.
     let standard = &entries[0];
@@ -344,7 +416,10 @@ async fn test_known_hosts_parse_markers() {
 
     // Verify hashed hostname entry.
     let hashed = &entries[5];
-    assert!(hashed.hosts[0].starts_with("|1|"), "hashed host should start with |1|");
+    assert!(
+        hashed.hosts[0].starts_with("|1|"),
+        "hashed host should start with |1|"
+    );
 
     // Verify bracketed host:port.
     let bracketed = &entries[6];
@@ -352,7 +427,10 @@ async fn test_known_hosts_parse_markers() {
 
     // Verify comma-separated hosts.
     let multi_host = &entries[7];
-    assert_eq!(multi_host.hosts, vec!["host1.example.com", "host2.example.com"]);
+    assert_eq!(
+        multi_host.hosts,
+        vec!["host1.example.com", "host2.example.com"]
+    );
     assert_eq!(multi_host.key_type, "ssh-rsa");
 
     // Verify ECDSA key type.
@@ -361,7 +439,13 @@ async fn test_known_hosts_parse_markers() {
     assert_eq!(ecdsa.key_type, "ecdsa-sha2-nistp256");
 
     // Verify line numbers are tracked correctly.
-    assert_eq!(standard.line_number, 4, "standard entry should be on line 4");
-    assert_eq!(revoked.line_number, 16, "revoked entry should be on line 16");
+    assert_eq!(
+        standard.line_number, 4,
+        "standard entry should be on line 4"
+    );
+    assert_eq!(
+        revoked.line_number, 16,
+        "revoked entry should be on line 16"
+    );
     assert_eq!(ecdsa.line_number, 28, "ecdsa entry should be on line 28");
 }

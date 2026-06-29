@@ -64,10 +64,7 @@ pub(crate) fn compute_key_fingerprint(
 
     let ssh_fp = pk.fingerprint(ssh_key::HashAlg::Sha256);
     let fp_str = ssh_fp.to_string();
-    let hash = fp_str
-        .strip_prefix("SHA256:")
-        .unwrap_or(&fp_str)
-        .to_owned();
+    let hash = fp_str.strip_prefix("SHA256:").unwrap_or(&fp_str).to_owned();
 
     let key_type = parse_key_type_string(key_type_str);
 
@@ -91,7 +88,7 @@ fn parse_key_type_string(s: &str) -> toride_ssh_core::KeyType {
     }
 }
 
-/// Parse a known_hosts file at the given path.
+/// Parse a `known_hosts` file at the given path.
 ///
 /// This reads the file asynchronously and parses each non-empty, non-comment
 /// line into a [`KnownHostEntry`].  Hashed hostnames (`|1|...`) are preserved
@@ -139,12 +136,12 @@ fn parse_known_hosts_sync(path: &Path) -> Result<Vec<KnownHostEntry>> {
         .collect())
 }
 
-/// Parse a single trimmed known_hosts line.
+/// Parse a single trimmed `known_hosts` line.
 ///
 /// Format: `[markers] host-patterns key-type base64-key [comment]`
 ///
 /// The marker is an optional `@cert-authority` or `@revoked` prefixed token.
-/// Only one marker is supported per OpenSSH known_hosts format.
+/// Only one marker is supported per OpenSSH `known_hosts` format.
 pub(crate) fn parse_line(line: &str, line_number: usize) -> Result<KnownHostEntry> {
     // Skip full-line comments — these are filtered at the sync level,
     // but parse_line should handle them gracefully if called directly.
@@ -156,11 +153,11 @@ pub(crate) fn parse_line(line: &str, line_number: usize) -> Result<KnownHostEntr
 
     // 1. Detect optional marker (starts with '@').
     let (markers, rest) = if line.starts_with('@') {
-        let (marker_str, rest) = line
-            .split_once(' ')
-            .ok_or_else(|| Error::KnownHostsParseFailed(format!(
+        let (marker_str, rest) = line.split_once(' ').ok_or_else(|| {
+            Error::KnownHostsParseFailed(format!(
                 "line {line_number}: marker without trailing fields"
-            )))?;
+            ))
+        })?;
         (vec![marker_str.to_owned()], rest)
     } else {
         (vec![], line)

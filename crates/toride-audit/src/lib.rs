@@ -18,26 +18,11 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
-#![expect(clippy::missing_errors_doc, reason = "library is internal")]
-#![cfg_attr(
-    test,
-    expect(
-        unsafe_code,
-        clippy::needless_raw_string_hashes,
-        clippy::uninlined_format_args,
-        clippy::clone_on_copy,
-        clippy::items_after_statements,
-        clippy::redundant_closure_for_method_calls,
-        clippy::needless_pass_by_value,
-        clippy::useless_conversion,
-        clippy::stable_sort_primitive,
-        clippy::write_with_newline,
-        clippy::no_effect_underscore_binding,
-        clippy::op_ref,
-        reason = "test code tolerates stricter lint patterns"
-    )
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
 )]
+#![expect(clippy::missing_errors_doc, reason = "library is internal")]
 
 // ---------------------------------------------------------------------------
 // Module declarations -- always compiled
@@ -90,9 +75,9 @@ pub mod auditd;
 #[cfg(feature = "auditd")]
 pub mod auditd_config;
 #[cfg(feature = "auditd")]
-pub mod auditd_rules;
-#[cfg(feature = "auditd")]
 pub mod auditd_presets;
+#[cfg(feature = "auditd")]
+pub mod auditd_rules;
 
 // ---------------------------------------------------------------------------
 // Module declarations -- feature-gated: integrity
@@ -112,11 +97,11 @@ pub mod integrity_parse;
 #[cfg(feature = "logs")]
 pub mod logs;
 #[cfg(feature = "logs")]
-pub mod logs_rsyslog;
-#[cfg(feature = "logs")]
 pub mod logs_journald;
 #[cfg(feature = "logs")]
 pub mod logs_rotation;
+#[cfg(feature = "logs")]
+pub mod logs_rsyslog;
 
 // ---------------------------------------------------------------------------
 // Module declarations -- feature-gated: ids
@@ -279,6 +264,7 @@ impl Audit {
     /// Set dry-run mode.
     ///
     /// When enabled, commands are logged but not executed.
+    #[must_use]
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
@@ -289,6 +275,7 @@ impl Audit {
     /// Primarily useful in tests to point the facade at a temp directory so
     /// that file-based operations (rule writes, log listings) do not touch
     /// the real `/etc`.
+    #[must_use]
     pub fn with_paths_override(mut self, paths: AuditPaths) -> Self {
         self.paths = paths;
         self

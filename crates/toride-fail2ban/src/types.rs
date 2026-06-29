@@ -111,7 +111,11 @@ pub struct Fail2BanStatus {
 
 impl fmt::Display for Fail2BanStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        writeln!(f, "Fail2Ban Status: {}", if self.running { "running" } else { "stopped" })?;
+        writeln!(
+            f,
+            "Fail2Ban Status: {}",
+            if self.running { "running" } else { "stopped" }
+        )?;
         writeln!(f, "Config: {}", self.config_path.display())?;
         writeln!(f, "Jails: {}", self.jails.len())?;
         for jail in &self.jails {

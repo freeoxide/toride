@@ -83,10 +83,16 @@ impl Store {
             return Ok(StoreData::default());
         }
         let content = fs::read_to_string(&self.path).map_err(|e| {
-            crate::Error::Io(std::io::Error::new(e.kind(), format!("Failed to read '{}': {e}", self.path.display())))
+            crate::Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("Failed to read '{}': {e}", self.path.display()),
+            ))
         })?;
         let data: StoreData = serde_json::from_str(&content).map_err(|e| {
-            crate::Error::InvalidConfig(format!("Corrupt ban database '{}': {e}", self.path.display()))
+            crate::Error::InvalidConfig(format!(
+                "Corrupt ban database '{}': {e}",
+                self.path.display()
+            ))
         })?;
         Ok(data)
     }
@@ -94,7 +100,9 @@ impl Store {
     /// Save store data to disk using atomic write with fsync.
     pub fn save(&self, data: &StoreData) -> crate::Result<()> {
         let content = serde_json::to_string_pretty(data)?;
-        let tmp_path = self.path.with_extension(format!("json.tmp.{}", std::process::id()));
+        let tmp_path = self
+            .path
+            .with_extension(format!("json.tmp.{}", std::process::id()));
 
         // Atomic write: write to temp, fsync, then rename.
         fs::write(&tmp_path, &content)?;
@@ -103,7 +111,10 @@ impl Store {
         drop(file);
         if let Err(e) = fs::rename(&tmp_path, &self.path) {
             let _ = fs::remove_file(&tmp_path);
-            return Err(crate::Error::Io(std::io::Error::new(e.kind(), format!("Failed to atomically update '{}': {e}", self.path.display()))));
+            return Err(crate::Error::Io(std::io::Error::new(
+                e.kind(),
+                format!("Failed to atomically update '{}': {e}", self.path.display()),
+            )));
         }
         Ok(())
     }
@@ -116,7 +127,11 @@ impl Store {
     pub fn add_ban(&self, entry: &BanEntry) -> crate::Result<()> {
         let mut data = self.load()?;
 
-        if data.active_bans.iter().any(|b| b.ip == entry.ip && b.jail_name == entry.jail_name) {
+        if data
+            .active_bans
+            .iter()
+            .any(|b| b.ip == entry.ip && b.jail_name == entry.jail_name)
+        {
             return Err(crate::Error::AlreadyBanned(entry.ip.to_string()));
         }
 
@@ -132,7 +147,10 @@ impl Store {
     pub fn remove_ban(&self, ip: IpAddr, jail_name: &str) -> crate::Result<BanEntry> {
         let mut data = self.load()?;
 
-        let pos = data.active_bans.iter().position(|b| b.ip == ip && b.jail_name == jail_name);
+        let pos = data
+            .active_bans
+            .iter()
+            .position(|b| b.ip == ip && b.jail_name == jail_name);
         let pos = pos.ok_or_else(|| crate::Error::NotBanned(ip.to_string()))?;
 
         let entry = data.active_bans.remove(pos);
@@ -145,7 +163,11 @@ impl Store {
     pub fn get_bans(&self, jail_name: Option<&str>) -> crate::Result<Vec<BanEntry>> {
         let data = self.load()?;
         Ok(match jail_name {
-            Some(name) => data.active_bans.into_iter().filter(|b| b.jail_name == name).collect(),
+            Some(name) => data
+                .active_bans
+                .into_iter()
+                .filter(|b| b.jail_name == name)
+                .collect(),
             None => data.active_bans,
         })
     }
@@ -158,9 +180,9 @@ impl Store {
         // Partition active bans into expired and still-active, consuming the
         // original Vec via into_iter to avoid cloning BanEntry values.
         let active_bans = std::mem::take(&mut data.active_bans);
-        let (expired, active): (Vec<_>, Vec<_>) = active_bans.into_iter().partition(|b| {
-            b.expires_at.is_some_and(|exp| exp <= now)
-        });
+        let (expired, active): (Vec<_>, Vec<_>) = active_bans
+            .into_iter()
+            .partition(|b| b.expires_at.is_some_and(|exp| exp <= now));
 
         data.active_bans = active;
         // Clone each entry into history in one allocation pass, avoiding the
@@ -175,9 +197,11 @@ impl Store {
     pub fn update_journal(&self, entry: JournalEntry) -> crate::Result<()> {
         let mut data = self.load()?;
 
-        if let Some(existing) = data.journals.iter_mut().find(|j| {
-            j.jail_name == entry.jail_name && j.log_path == entry.log_path
-        }) {
+        if let Some(existing) = data
+            .journals
+            .iter_mut()
+            .find(|j| j.jail_name == entry.jail_name && j.log_path == entry.log_path)
+        {
             *existing = entry;
         } else {
             data.journals.push(entry);
@@ -187,11 +211,16 @@ impl Store {
     }
 
     /// Get journal entry for a specific jail.
-    pub fn get_journal(&self, jail_name: &str, log_path: &Path) -> crate::Result<Option<JournalEntry>> {
+    pub fn get_journal(
+        &self,
+        jail_name: &str,
+        log_path: &Path,
+    ) -> crate::Result<Option<JournalEntry>> {
         let data = self.load()?;
-        Ok(data.journals.into_iter().find(|j| {
-            j.jail_name == jail_name && j.log_path == log_path
-        }))
+        Ok(data
+            .journals
+            .into_iter()
+            .find(|j| j.jail_name == jail_name && j.log_path == log_path))
     }
 
     /// Trim history to keep only the most recent entries.
@@ -216,7 +245,11 @@ impl Store {
     /// Returns 0 if the store cannot be loaded (with a logged warning).
     pub fn history_count_for_jail(&self, jail_name: &str) -> u64 {
         match self.load() {
-            Ok(data) => data.history.iter().filter(|b| b.jail_name == jail_name).count() as u64,
+            Ok(data) => data
+                .history
+                .iter()
+                .filter(|b| b.jail_name == jail_name)
+                .count() as u64,
             Err(e) => {
                 tracing::warn!(jail = %jail_name, error = %e, "failed to load history count, returning 0");
                 0

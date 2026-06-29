@@ -13,15 +13,11 @@ use ratatui::{
     widgets::Paragraph,
 };
 
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::Viewport;
 use crate::ui::theme::Palette;
 
-use super::{
-    Dropdown, Modal, TextInput,
-    text_input::InputAction,
-    validate::Validator,
-};
+use super::{Dropdown, Modal, TextInput, text_input::InputAction, validate::Validator};
 
 /// Result of a form interaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,6 +178,7 @@ impl FormModal {
     }
 
     /// Add a text input field with an additional custom validator.
+    #[must_use]
     pub fn text_field_validated(mut self, input: TextInput, validator: Box<dyn Validator>) -> Self {
         let mut field = FormField::text(input);
         field.add_validator(validator);
@@ -206,11 +203,10 @@ impl FormModal {
     /// is not a text field or the index is out of bounds.
     #[must_use]
     pub fn text_value(&self, index: usize) -> Option<&str> {
-        match self.fields.get(index)? {
-            f => match &f.kind {
-                FieldKind::Text(t) => Some(t.get_value()),
-                FieldKind::Select(_) => None,
-            },
+        let f = self.fields.get(index)?;
+        match &f.kind {
+            FieldKind::Text(t) => Some(t.get_value()),
+            FieldKind::Select(_) => None,
         }
     }
 
@@ -218,11 +214,10 @@ impl FormModal {
     /// if the field is not a dropdown or the index is out of bounds.
     #[must_use]
     pub fn select_value(&self, index: usize) -> Option<&'static str> {
-        match self.fields.get(index)? {
-            f => match &f.kind {
-                FieldKind::Text(_) => None,
-                FieldKind::Select(d) => Some(d.value()),
-            },
+        let f = self.fields.get(index)?;
+        match &f.kind {
+            FieldKind::Text(_) => None,
+            FieldKind::Select(d) => Some(d.value()),
         }
     }
 
@@ -314,7 +309,10 @@ impl FormModal {
     fn handle_button_key(&mut self, code: KeyCode) -> FormResult {
         match code {
             KeyCode::Enter => {
-                let result = self.buttons.activate_focused().unwrap_or(FormResult::Cancelled);
+                let result = self
+                    .buttons
+                    .activate_focused()
+                    .unwrap_or(FormResult::Cancelled);
                 if result == FormResult::Submitted {
                     if self.validate_all() {
                         FormResult::Submitted
@@ -415,9 +413,7 @@ impl FormModal {
                 }
                 true
             }
-            InputAction::Cancel => true,
-            InputAction::Submit => true,
-            InputAction::None => true,
+            InputAction::Cancel | InputAction::Submit | InputAction::None => true,
         }
     }
 
@@ -561,10 +557,7 @@ impl FormModal {
                 ])
                 .areas(content_area);
 
-                frame.render_widget(
-                    Paragraph::new(Line::from(hint).centered()),
-                    hint_area,
-                );
+                frame.render_widget(Paragraph::new(Line::from(hint).centered()), hint_area);
 
                 self.render(frame, form_area, p);
             });
@@ -572,6 +565,10 @@ impl FormModal {
 
     /// Calculate the total form height needed (fields + error rows + gaps + buttons).
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "form field counts are small < u16::MAX"
+    )]
     pub fn total_height(&self) -> u16 {
         if self.fields.is_empty() {
             return 0;
@@ -587,6 +584,10 @@ impl FormModal {
 
     /// Calculate the maximum possible form height (all fields with errors).
     #[must_use]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "form field counts are small < u16::MAX"
+    )]
     pub fn max_height(&self) -> u16 {
         if self.fields.is_empty() {
             return 0;
@@ -616,8 +617,8 @@ impl FormModal {
 
 #[cfg(test)]
 mod tests {
+    use super::super::validate::Port;
     use super::*;
-    use super::super::validate::{Required, MinLength, Port};
 
     fn sample_form() -> FormModal {
         FormModal::new(40)
@@ -649,9 +650,7 @@ mod tests {
 
     #[test]
     fn text_value_returns_value() {
-        let mut form = FormModal::new(40).text_field(
-            TextInput::new("Name", 30).value("id_new"),
-        );
+        let form = FormModal::new(40).text_field(TextInput::new("Name", 30).value("id_new"));
         assert_eq!(form.text_value(0), Some("id_new"));
     }
 
@@ -782,10 +781,7 @@ mod tests {
     #[test]
     fn validation_with_custom_validator() {
         let mut form = FormModal::new(40)
-            .text_field_validated(
-                TextInput::new("Port", 10).required(),
-                Box::new(Port),
-            );
+            .text_field_validated(TextInput::new("Port", 10).required(), Box::new(Port));
         // Type an invalid port
         for ch in "abc".chars() {
             form.handle_key(KeyCode::Char(ch));
@@ -799,8 +795,8 @@ mod tests {
 
     #[test]
     fn validation_passes_with_valid_data() {
-        let mut form = FormModal::new(40)
-            .text_field(TextInput::new("Name", 30).required().value("my-key"));
+        let mut form =
+            FormModal::new(40).text_field(TextInput::new("Name", 30).required().value("my-key"));
         form.focus = FocusTarget::Buttons;
         let result = form.handle_key(KeyCode::Enter);
         assert_eq!(result, FormResult::Submitted);
@@ -825,12 +821,14 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut form = FormModal::new(40)
-            .text_field(TextInput::new("Name", 30).required().value("test"));
+        let mut form =
+            FormModal::new(40).text_field(TextInput::new("Name", 30).required().value("test"));
         let mut terminal = Terminal::new(TestBackend::new(60, 12)).unwrap();
-        terminal.draw(|f| {
-            form.render_in_modal(f, CHARM, "Test Form", 50, 10);
-        }).unwrap();
+        terminal
+            .draw(|f| {
+                form.render_in_modal(f, CHARM, "Test Form", 50, 10);
+            })
+            .unwrap();
         let output = terminal.backend().to_string();
         assert!(output.contains("↵"), "add button visible: {output}");
         assert!(output.contains("esc"), "cancel button visible: {output}");

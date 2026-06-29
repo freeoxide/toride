@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{parse as parse_ast, ConfigAst};
+use crate::ast::{ConfigAst, parse as parse_ast};
 
 fn make_ast(input: &str) -> ConfigAst {
     parse_ast(input)
@@ -75,7 +75,10 @@ fn glob_wildcard_excludes_bare_domain() {
 
 #[test]
 fn glob_matches_case_insensitive() {
-    assert!(host_matches_patterns("Example.COM", &["example.com".to_owned()]));
+    assert!(host_matches_patterns(
+        "Example.COM",
+        &["example.com".to_owned()]
+    ));
 }
 
 #[test]
@@ -182,8 +185,14 @@ fn host_matches_patterns_negation_overrides_positive() {
 
 #[test]
 fn host_matches_patterns_case_insensitive() {
-    assert!(host_matches_patterns("EXAMPLE.COM", &["example.com".to_string()]));
-    assert!(host_matches_patterns("example.com", &["EXAMPLE.COM".to_string()]));
+    assert!(host_matches_patterns(
+        "EXAMPLE.COM",
+        &["example.com".to_string()]
+    ));
+    assert!(host_matches_patterns(
+        "example.com",
+        &["EXAMPLE.COM".to_string()]
+    ));
 }
 
 #[test]
@@ -301,19 +310,28 @@ fn glob_matches_mixed_wildcards() {
 #[test]
 fn host_matches_patterns_leading_dot() {
     // Leading dot is a valid hostname pattern in some contexts
-    assert!(host_matches_patterns(".example.com", &[".example.com".to_string()]));
+    assert!(host_matches_patterns(
+        ".example.com",
+        &[".example.com".to_string()]
+    ));
 }
 
 #[test]
 fn host_matches_patterns_trailing_dot() {
     // Trailing dot is valid FQDN notation
-    assert!(host_matches_patterns("example.com.", &["example.com.".to_string()]));
+    assert!(host_matches_patterns(
+        "example.com.",
+        &["example.com.".to_string()]
+    ));
 }
 
 #[test]
 fn host_matches_patterns_consecutive_dots() {
     // Unusual but should not panic
-    assert!(!host_matches_patterns("example.com", &["..example.com".to_string()]));
+    assert!(!host_matches_patterns(
+        "example.com",
+        &["..example.com".to_string()]
+    ));
 }
 
 #[test]
@@ -631,7 +649,11 @@ Host myhost
     );
     let dirs = get_all_directives(&ast, "myhost");
     // First-match-wins: "default" from Host * is seen first and kept.
-    let user_vals: Vec<&str> = dirs.iter().filter(|(k, _)| k == "User").map(|(_, v)| v.as_str()).collect();
+    let user_vals: Vec<&str> = dirs
+        .iter()
+        .filter(|(k, _)| k == "User")
+        .map(|(_, v)| v.as_str())
+        .collect();
     assert_eq!(user_vals, vec!["default"]);
 }
 
@@ -647,8 +669,16 @@ Host myhost
 ",
     );
     let dirs = get_all_directives(&ast, "myhost");
-    let fa_vals: Vec<&str> = dirs.iter().filter(|(k, _)| k == "ForwardAgent").map(|(_, v)| v.as_str()).collect();
-    assert_eq!(fa_vals, vec!["no"], "ForwardAgent should use first-match-wins");
+    let fa_vals: Vec<&str> = dirs
+        .iter()
+        .filter(|(k, _)| k == "ForwardAgent")
+        .map(|(_, v)| v.as_str())
+        .collect();
+    assert_eq!(
+        fa_vals,
+        vec!["no"],
+        "ForwardAgent should use first-match-wins"
+    );
 }
 
 #[test]

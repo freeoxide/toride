@@ -34,21 +34,21 @@
 use tokio::sync::oneshot;
 
 use crate::toride_backup_convert;
-use crate::ui::screens::toride_backup::{FindingEntry};
+use crate::ui::screens::toride_backup::FindingEntry;
 
 /// Aggregated backup data for the read-only section.
 #[derive(Clone, Debug)]
 pub struct BackupDataBundle {
     /// Whether the backup backend was reachable at all. `false` only when the
-    /// collection task panicked (JoinError) — a host missing restic/borg
+    /// collection task panicked (`JoinError`) — a host missing restic/borg
     /// still yields `available == true` so the operator SEES the Critical
     /// doctor finding instead of a blank panel.
     pub available: bool,
     /// Whether dry-run mode is active on the constructed client.
     pub dry_run: bool,
-    /// Resolved config directory (XDG_CONFIG_HOME/toride/backup), if known.
+    /// Resolved config directory (`XDG_CONFIG_HOME/toride/backup`), if known.
     pub config_dir: Option<String>,
-    /// Resolved data directory (XDG_DATA_HOME/toride/backup), if known.
+    /// Resolved data directory (`XDG_DATA_HOME/toride/backup`), if known.
     pub data_dir: Option<String>,
     /// Resolved schedule directory, if known.
     pub schedule_dir: Option<String>,
@@ -74,7 +74,7 @@ pub struct BackupDataBundle {
     /// Doctor findings (cached for 60s between collections).
     pub findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` because a collection task panicked (JoinError).
+    /// `available == false` because a collection task panicked (`JoinError`).
     pub unavailable_reason: Option<String>,
 }
 
@@ -205,6 +205,10 @@ impl Default for BackupCollector {
 ///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
 /// findings were actually taken from the cache on a successful collection.
+#[expect(
+    clippy::too_many_lines,
+    reason = "real-data collection is inherently linear"
+)]
 async fn collect_real_backup(
     use_cache: bool,
     cached_findings: Option<Vec<FindingEntry>>,
@@ -212,25 +216,24 @@ async fn collect_real_backup(
     // Build the BackupClient facade on the blocking pool. system() resolves
     // XDG dirs (no shell-out), so construction succeeds even on macOS where
     // no backup binary is installed.
-    let client = match tokio::task::spawn_blocking(|| {
-        toride_backup::client::BackupClient::system()
-    })
-    .await
-    {
-        Ok(Ok(client)) => client,
-        Ok(Err(e)) => {
-            tracing::warn!("backup backend construction failed: {e}");
-            return (empty_bundle_with_reason(format!(
-                "backup backend construction failed: {e}"
-            )), false);
-        }
-        Err(e) => {
-            tracing::warn!("backup construction task panicked: {e}");
-            return (empty_bundle_with_reason(format!(
-                "backup backend construction panicked: {e}"
-            )), false);
-        }
-    };
+    let client =
+        match tokio::task::spawn_blocking(toride_backup::client::BackupClient::system).await {
+            Ok(Ok(client)) => client,
+            Ok(Err(e)) => {
+                tracing::warn!("backup backend construction failed: {e}");
+                return (
+                    empty_bundle_with_reason(format!("backup backend construction failed: {e}")),
+                    false,
+                );
+            }
+            Err(e) => {
+                tracing::warn!("backup construction task panicked: {e}");
+                return (
+                    empty_bundle_with_reason(format!("backup backend construction panicked: {e}")),
+                    false,
+                );
+            }
+        };
 
     // Run ALL blocking probes in a single spawn_blocking that owns `client`.
     // This keeps every shell-out off the tokio worker and sidesteps the
@@ -243,7 +246,7 @@ async fn collect_real_backup(
         let findings: Vec<FindingEntry> = if use_cache {
             cached_findings.unwrap_or_default()
         } else {
-            match client.doctor(toride_backup::doctor::DoctorScope::All) {
+            match client.doctor(&toride_backup::doctor::DoctorScope::All) {
                 Ok(report) => toride_backup_convert::convert_findings(report.findings),
                 Err(e) => {
                     tracing::warn!("backup doctor: {e}");
@@ -267,9 +270,18 @@ async fn collect_real_backup(
 
         // ── Resolved paths ────────────────────────────────────────────────
         let paths = client.paths();
-        let config_dir = paths.config_dir.to_str().map(std::string::ToString::to_string);
-        let data_dir = paths.data_dir.to_str().map(std::string::ToString::to_string);
-        let schedule_dir = paths.schedule_dir.to_str().map(std::string::ToString::to_string);
+        let config_dir = paths
+            .config_dir
+            .to_str()
+            .map(std::string::ToString::to_string);
+        let data_dir = paths
+            .data_dir
+            .to_str()
+            .map(std::string::ToString::to_string);
+        let schedule_dir = paths
+            .schedule_dir
+            .to_str()
+            .map(std::string::ToString::to_string);
 
         // ── Schedule / timer status (best-effort) ─────────────────────────
         // The backend currently stubs these to Ok(false); they are plumbed
@@ -282,26 +294,26 @@ async fn collect_real_backup(
         // not detected" on macOS / non-systemd hosts), distinguishing "no
         // schedule configured" from "systemd absent". Empty note → None.
         let schedule_mgr = toride_backup::schedule::ScheduleManager::new();
-        let schedule_installed =
-            match schedule_mgr.is_installed(DEFAULT_JOB_NAME) {
-                Ok(b) => Some(b),
-                Err(e) => {
-                    tracing::debug!("backup schedule is_installed: {e}");
-                    None
-                }
-            };
+        let schedule_installed = match schedule_mgr.is_installed(DEFAULT_JOB_NAME) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                tracing::debug!("backup schedule is_installed: {e}");
+                None
+            }
+        };
         let schedule_note = {
             let note = schedule_mgr.schedule_note();
             if note.is_empty() { None } else { Some(note) }
         };
-        let timer_active =
-            match toride_backup::service::BackupServiceManager::new().is_timer_active(DEFAULT_JOB_NAME) {
-                Ok(b) => Some(b),
-                Err(e) => {
-                    tracing::debug!("backup timer is_timer_active: {e}");
-                    None
-                }
-            };
+        let timer_active = match toride_backup::service::BackupServiceManager::new()
+            .is_timer_active(DEFAULT_JOB_NAME)
+        {
+            Ok(b) => Some(b),
+            Err(e) => {
+                tracing::debug!("backup timer is_timer_active: {e}");
+                None
+            }
+        };
 
         // ── Availability heuristic ────────────────────────────────────────
         // The section is "available" if the client constructed AND the doctor
@@ -334,9 +346,7 @@ async fn collect_real_backup(
         Err(e) => {
             tracing::warn!("backup collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "backup data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("backup data collection panicked: {e}")),
                 false,
             )
         }
@@ -364,7 +374,7 @@ fn empty_bundle() -> BackupDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> BackupDataBundle {
     let mut b = empty_bundle();
@@ -432,7 +442,7 @@ mod tests {
         // `available` flag reflects whether the backend was reachable.
         let mut collector = BackupCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -464,7 +474,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = BackupCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).

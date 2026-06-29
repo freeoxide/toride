@@ -11,9 +11,9 @@ mod local;
 mod registry;
 mod remote;
 
+use toride_ssh_core::CliRunner;
 use toride_ssh_core::paths::SshPaths;
 use toride_ssh_core::{Diagnostic, Result};
-use toride_ssh_core::CliRunner;
 
 /// SSH diagnostic operations (local and remote).
 ///

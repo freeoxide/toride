@@ -1,5 +1,6 @@
 ---
 source: crates/toride-mise/tests/snapshots.rs
+assertion_line: 105
 expression: spec
 ---
 CommandSpec {
@@ -16,6 +17,6 @@ CommandSpec {
     clear_env: false,
     cwd: None,
     output_mode: Capture,
-    redact: false,
+    redact: true,
     output_limit: None,
 }

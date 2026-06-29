@@ -194,7 +194,12 @@ fn pct_gauge_spans(label: &str, pct: Option<f64>, p: Palette) -> Vec<Span<'stati
 }
 
 /// Build the spans for a throughput gauge (`disk ▮ 50↓ 20↑ MB/s`).
-fn throughput_gauge_spans(label: &str, value: &str, color: Color, p: Palette) -> Vec<Span<'static>> {
+fn throughput_gauge_spans(
+    label: &str,
+    value: &str,
+    color: Color,
+    p: Palette,
+) -> Vec<Span<'static>> {
     vec![
         Span::styled(format!("{label} "), Style::new().fg(p.text_dim)),
         Span::styled("▮ ", Style::new().fg(color)),
@@ -208,15 +213,23 @@ fn throughput_gauge_spans(label: &str, value: &str, color: Color, p: Palette) ->
 /// still signals "loading" (it only appears when data is pending) without
 /// per-frame cycling.
 fn spinner_gauge_spans(label: &str, elapsed: f32, p: Palette) -> Vec<Span<'static>> {
-    use rattles::presets::braille::WaveRows;
     use rattles::Rattle;
+    use rattles::presets::braille::WaveRows;
 
     let frames = WaveRows::FRAMES;
-    let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
+    let interval_ms = u32::try_from(WaveRows::INTERVAL.as_millis()).unwrap_or(u32::MAX);
     let idx = if p.reduced_motion {
         0
     } else {
-        (elapsed * 1000.0) as u32 / interval_ms.max(1) as u32
+        // Display-only spinner animation index: the elapsed→u32 cast is fine
+        // because negative/oversized values merely wrap through the frame ring.
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "display-only spinner index"
+        )]
+        #[expect(clippy::cast_sign_loss, reason = "elapsed is non-negative")]
+        let elapsed_ms = (elapsed * 1000.0) as u32;
+        elapsed_ms / interval_ms.max(1)
     };
     let frame = frames[idx as usize % frames.len()];
     // Take the first line of the frame for inline display.
@@ -242,7 +255,12 @@ mod tests {
         terminal.backend().to_string()
     }
 
-    fn header_data(cpu: Option<f64>, ram: Option<f64>, disk: Option<&'static str>, clock: &'static str) -> HeaderData<'static> {
+    fn header_data(
+        cpu: Option<f64>,
+        ram: Option<f64>,
+        disk: Option<&'static str>,
+        clock: &'static str,
+    ) -> HeaderData<'static> {
         HeaderData {
             cpu,
             ram,
@@ -255,7 +273,12 @@ mod tests {
 
     #[test]
     fn renders_logo_and_clock() {
-        let out = render(&header_data(Some(35.0), Some(23.0), Some("1.2↓ 0.5↑ MB"), "09:17 PM"));
+        let out = render(&header_data(
+            Some(35.0),
+            Some(23.0),
+            Some("1.2↓ 0.5↑ MB"),
+            "09:17 PM",
+        ));
         assert!(out.contains("toride"), "logo: {out}");
         assert!(out.contains("09:17 PM"), "clock: {out}");
         assert!(out.contains("35%"), "cpu gauge: {out}");
@@ -272,8 +295,8 @@ mod tests {
         // The braille spinner's frame index normally advances with elapsed
         // time; under reduced motion it must pin to frame 0 and be
         // time-invariant (a static "loading" glyph, not cycling).
-        use rattles::presets::braille::WaveRows;
         use rattles::Rattle;
+        use rattles::presets::braille::WaveRows;
 
         let reduced = CHARM.with_reduced_motion(true);
         let first_frame_char = WaveRows::FRAMES[0].first().map_or("·", |s| *s);
@@ -295,7 +318,9 @@ mod tests {
         // Sanity: full motion DOES advance past frame 0 for some elapsed
         // (proves the freeze branch above is actually doing something).
         let full_advances = (1..2000).any(|ms| {
-            let s = spinner_gauge_spans("disk", ms as f32, CHARM);
+            #[expect(clippy::cast_precision_loss, reason = "display-only spinner elapsed")]
+            let elapsed = ms as f32;
+            let s = spinner_gauge_spans("disk", elapsed, CHARM);
             s[2].content.as_ref() != first_frame_char
         });
         assert!(

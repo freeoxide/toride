@@ -9,10 +9,20 @@ fn make_ufw_for_doctor(status_output: &str) -> Ufw {
         .respond_ok(
             "ufw",
             &["status", "verbose"],
-            &format!("{status_output}\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing)\n"),
+            &format!(
+                "{status_output}\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing)\n"
+            ),
         )
-        .respond_ok("ufw", &["app", "list"], "Available applications:\n  OpenSSH\n")
-        .respond_ok("ufw", &["app", "info", "OpenSSH"], "Profile: OpenSSH\nTitle: OpenSSH server\nDescription: OpenSSH\nPort: 22/tcp\n");
+        .respond_ok(
+            "ufw",
+            &["app", "list"],
+            "Available applications:\n  OpenSSH\n",
+        )
+        .respond_ok(
+            "ufw",
+            &["app", "info", "OpenSSH"],
+            "Profile: OpenSSH\nTitle: OpenSSH server\nDescription: OpenSSH\nPort: 22/tcp\n",
+        );
     Ufw::with_runner(runner)
 }
 
@@ -118,7 +128,8 @@ fn check_policy_should_be_ok_on_incoming_deny() {
 
 #[test]
 fn check_policy_should_check_routed_policy() {
-    let output = "Status: active\nDefault: deny (incoming), allow (outgoing), allow (routed)\nLogging: on\n";
+    let output =
+        "Status: active\nDefault: deny (incoming), allow (outgoing), allow (routed)\nLogging: on\n";
     let runner = FakeRunner::new()
         .respond_ok("ufw", &["--version"], "ufw 0.36.1")
         .respond_ok("ufw", &["status"], "Status: active\n")
@@ -313,7 +324,9 @@ fn check_rules_should_warn_on_dangerous_ports_alt() {
 
 #[test]
 fn doctor_should_handle_empty_rules() {
-    let ufw = make_ufw_for_doctor("Status: active\n\nTo                         Action      From\n--                         ------      ----\n");
+    let ufw = make_ufw_for_doctor(
+        "Status: active\n\nTo                         Action      From\n--                         ------      ----\n",
+    );
     let findings = doctor(&ufw, DoctorScope::Rules).unwrap();
     assert!(findings.is_empty() || findings.iter().all(|f| f.severity <= Severity::Info));
 }
@@ -354,7 +367,11 @@ fn check_ipv6_with_tempdir_fixture() {
     // Create a tempdir with a fake /etc/default/ufw that has IPV6=yes
     let tmp = tempfile::tempdir().unwrap();
     let config_path = tmp.path().join("ufw");
-    std::fs::write(&config_path, "IPV6=yes\nENABLED=yes\nDEFAULT_INPUT_POLICY=\"ACCEPT\"\n").unwrap();
+    std::fs::write(
+        &config_path,
+        "IPV6=yes\nENABLED=yes\nDEFAULT_INPUT_POLICY=\"ACCEPT\"\n",
+    )
+    .unwrap();
     let content = std::fs::read_to_string(&config_path).unwrap();
     let config = crate::config::parse_default_ufw(&content);
     assert_eq!(config.ipv6, Some(true));
@@ -521,7 +538,10 @@ fn check_policy_should_use_critical_for_incoming_allow() {
         .respond_ok("ufw", &["app", "list"], "");
     let ufw = Ufw::with_runner(runner);
     let findings = check_policy(&ufw);
-    let incoming = findings.iter().find(|f| f.id == "pol:incoming:allow").unwrap();
+    let incoming = findings
+        .iter()
+        .find(|f| f.id == "pol:incoming:allow")
+        .unwrap();
     assert_eq!(incoming.severity, Severity::Critical);
 }
 
@@ -569,7 +589,11 @@ fn check_permissions_should_detect_secret_in_comment() {
         .respond_ok("ufw", &["app", "info", "OpenSSH"], "Profile: OpenSSH\nTitle: OpenSSH\nDescription: OpenSSH\nPort: 22/tcp\n");
     let ufw = Ufw::with_runner(runner);
     let findings = check_permissions(&ufw);
-    assert!(findings.iter().any(|f| f.id == "perm:rule:secret-in-comment"));
+    assert!(
+        findings
+            .iter()
+            .any(|f| f.id == "perm:rule:secret-in-comment")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -578,8 +602,16 @@ fn check_permissions_should_detect_secret_in_comment() {
 
 #[test]
 fn validate_comment_for_secrets_doctor_should_detect_key_value() {
-    assert!(crate::spec::validate_comment_for_secrets_doctor("password=secret123"));
-    assert!(crate::spec::validate_comment_for_secrets_doctor("api_key=abc123"));
-    assert!(!crate::spec::validate_comment_for_secrets_doctor("managed:https"));
-    assert!(!crate::spec::validate_comment_for_secrets_doctor("allow ssh from office"));
+    assert!(crate::spec::validate_comment_for_secrets_doctor(
+        "password=secret123"
+    ));
+    assert!(crate::spec::validate_comment_for_secrets_doctor(
+        "api_key=abc123"
+    ));
+    assert!(!crate::spec::validate_comment_for_secrets_doctor(
+        "managed:https"
+    ));
+    assert!(!crate::spec::validate_comment_for_secrets_doctor(
+        "allow ssh from office"
+    ));
 }

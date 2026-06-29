@@ -24,9 +24,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 #[cfg(feature = "client")]
 use std::sync::mpsc;
-use std::sync::Mutex;
 use std::time::Duration;
 
 use crate::Error;
@@ -45,8 +45,7 @@ pub use toride_runner::CommandSpec;
 ///
 /// Returns [`Error::NotFound`] if the binary cannot be found.
 pub fn find_binary(name: &str) -> Result<PathBuf> {
-    toride_runner::discovery::find_binary(name)
-        .map_err(|_| Error::NotFound(name.to_string()))
+    toride_runner::discovery::find_binary(name).map_err(|_| Error::NotFound(name.to_string()))
 }
 
 // ---------------------------------------------------------------------------
@@ -161,7 +160,7 @@ impl DuctRunner {
         let (tx, rx) = mpsc::channel();
 
         std::thread::spawn(move || {
-            let result = handle.wait().map(|o| o.clone());
+            let result = handle.wait().cloned();
             let _ = tx.send(result);
         });
 
@@ -290,6 +289,11 @@ impl FakeRunner {
     /// Return a snapshot of all recorded calls in order.
     ///
     /// Each entry is `(program, args)`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal calls mutex is poisoned (i.e. another thread
+    /// panicked while holding the lock).
     pub fn calls(&self) -> Vec<(String, Vec<String>)> {
         self.calls
             .lock()
@@ -300,9 +304,10 @@ impl FakeRunner {
     /// Look up the canned response for a given program/args pair.
     fn lookup(&self, program: &str, args: &[&str]) -> CommandOutput {
         let key = format!("{program} {}", args.join(" "));
-        self.responses.get(&key).cloned().unwrap_or_else(|| {
-            CommandOutput::new(String::new(), String::new(), Some(0))
-        })
+        self.responses
+            .get(&key)
+            .cloned()
+            .unwrap_or_else(|| CommandOutput::new(String::new(), String::new(), Some(0)))
     }
 
     /// Record a call in the internal log.

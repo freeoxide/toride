@@ -1,7 +1,7 @@
-//! Port forwarding management via SSH ControlMaster sessions.
+//! Port forwarding management via SSH `ControlMaster` sessions.
 //!
 //! Provides [`ForwardService`] for listing and closing active port forwards
-//! across ControlMaster sockets. The `control` sub-module handles the
+//! across `ControlMaster` sockets. The `control` sub-module handles the
 //! low-level parsing of `ssh -O forward` / `ssh -O cancel` output and the
 //! [`ControlSession`], [`PortForward`], and [`ForwardType`] types.
 
@@ -15,7 +15,7 @@ use toride_ssh_core::{Error, Result};
 
 pub use control::{ControlSession, ForwardType, PortForward};
 
-/// Port forwarding management via ControlMaster sessions.
+/// Port forwarding management via `ControlMaster` sessions.
 ///
 /// Obtained from [`SshManager::forward()`](crate::SshManager::forward).
 pub struct ForwardService<'a> {
@@ -23,11 +23,12 @@ pub struct ForwardService<'a> {
 }
 
 impl<'a> ForwardService<'a> {
+    #[must_use]
     pub fn new(paths: &'a SshPaths) -> Self {
         Self { paths }
     }
 
-    /// List all active port forwards across all discovered ControlMaster sessions.
+    /// List all active port forwards across all discovered `ControlMaster` sessions.
     ///
     /// Returns a list of `(session, forwards)` pairs.  Sessions whose
     /// forwards cannot be listed are included with an empty forward list
@@ -36,7 +37,7 @@ impl<'a> ForwardService<'a> {
     /// # Errors
     ///
     /// Returns [`Error::TaskFailed`] if the background task for discovering
-    /// ControlMaster sessions panics or is cancelled.
+    /// `ControlMaster` sessions panics or is cancelled.
     pub async fn list(&self) -> Result<Vec<(ControlSession, Vec<PortForward>)>> {
         let sessions = self.list_sessions().await?;
         let mut results = Vec::with_capacity(sessions.len());
@@ -57,7 +58,7 @@ impl<'a> ForwardService<'a> {
         Ok(results)
     }
 
-    /// Discover active ControlMaster sessions.
+    /// Discover active `ControlMaster` sessions.
     ///
     /// Scans `~/.ssh/cm-*`, `~/.ssh/control-*`, `~/.ssh/mux-*`,
     /// `~/.ssh/ctrl-*`, and `/tmp/ssh-*` for control sockets.  Each
@@ -103,7 +104,7 @@ impl<'a> ForwardService<'a> {
         control::cancel_known_forward(control_path, forward).await
     }
 
-    /// Gracefully shut down a ControlMaster session.
+    /// Gracefully shut down a `ControlMaster` session.
     ///
     /// # Errors
     ///
@@ -116,7 +117,7 @@ impl<'a> ForwardService<'a> {
 
     /// Detect duplicate local port bindings across all active sessions.
     ///
-    /// When two different ControlMaster sessions both forward the same
+    /// When two different `ControlMaster` sessions both forward the same
     /// local port, only one can actually be listening.  This method
     /// returns a map from each conflicting port number to the list of
     /// control socket paths that claim it.
@@ -125,9 +126,7 @@ impl<'a> ForwardService<'a> {
     ///
     /// Returns [`Error::TaskFailed`] if listing sessions or forwards
     /// fails due to a background task panic.
-    pub async fn conflicting_local_ports(
-        &self,
-    ) -> Result<HashMap<u16, Vec<std::path::PathBuf>>> {
+    pub async fn conflicting_local_ports(&self) -> Result<HashMap<u16, Vec<std::path::PathBuf>>> {
         let sessions = self.list_sessions().await?;
         let mut port_owners: HashMap<u16, Vec<std::path::PathBuf>> = HashMap::new();
 
@@ -156,8 +155,7 @@ impl<'a> ForwardService<'a> {
     }
 
     /// Default timeout for [`test_connectivity`](Self::test_connectivity).
-    const TEST_CONNECTIVITY_TIMEOUT: std::time::Duration =
-        std::time::Duration::from_secs(2);
+    const TEST_CONNECTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
     /// Test whether the local port is reachable by attempting a TCP connection.
     ///
@@ -190,9 +188,7 @@ impl<'a> ForwardService<'a> {
                     timeout.as_secs()
                 ))
             })?
-            .map_err(|e| {
-                Error::ForwardFailed(format!("cannot connect to {addr}: {e}"))
-            })?;
+            .map_err(|e| Error::ForwardFailed(format!("cannot connect to {addr}: {e}")))?;
 
         tracing::debug!("successfully connected to forwarded port {local_port}");
         Ok(())

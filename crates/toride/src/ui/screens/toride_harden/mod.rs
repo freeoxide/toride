@@ -153,11 +153,15 @@ impl HardenContent {
     /// Live shared-memory mount count for the sidebar badge. `None` when the
     /// backend is unavailable so the badge stays honestly empty. (Sysctl param
     /// counts are profile-dependent and already surfaced via the Managed
-    /// Services grid's findings_count, so the badge uses the distinct mounts
+    /// Services grid's `findings_count`, so the badge uses the distinct mounts
     /// count to avoid redundancy.)
     #[must_use]
     pub fn badge_count(&self) -> Option<usize> {
-        if self.available { Some(self.mounts.len()) } else { None }
+        if self.available {
+            Some(self.mounts.len())
+        } else {
+            None
+        }
     }
 
     // ── Data setters ─────────────────────────────────────────────────────────
@@ -186,8 +190,7 @@ impl HardenContent {
         self.profiles
             .get(self.selected_profile)
             .and_then(|entry| self.sysctl_rows_by_profile.get(&entry.name))
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+            .map_or(&[], Vec::as_slice)
     }
 
     /// Replace the mounts list and clamp scroll.
@@ -299,6 +302,10 @@ impl HardenContent {
 
     /// Generic clamp after a data setter (defensive — the real clamp happens
     /// at render time once the pane height is known).
+    #[expect(
+        clippy::unused_self,
+        reason = "API symmetry with fail2ban/ufw-kit tabs"
+    )]
     fn clamp_scroll(&mut self) {
         // No-op body: scroll is clamped against visible rows during render.
         // Kept for API symmetry with the fail2ban / ufw-kit tabs.
@@ -344,7 +351,7 @@ impl HardenContent {
         let start = self.scroll.min(max_scroll);
 
         for (row, line) in lines.iter().skip(start).take(visible).enumerate() {
-            let y = inner.y + row as u16;
+            let y = inner.y + u16::try_from(row).unwrap_or(u16::MAX);
             if y >= inner.bottom() {
                 break;
             }
@@ -358,7 +365,7 @@ impl HardenContent {
     ///
     /// `available == false` is set when construction failed (`HardenClient::system()`
     /// returns `Err(BinaryNotFound("sysctl"))` on macOS) OR when a collection
-    /// task panicked (JoinError). The profiles selector is still rendered so the
+    /// task panicked (`JoinError`). The profiles selector is still rendered so the
     /// operator can see the DESIRED state even when the live state is unreadable.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " HARDEN ", p.text_dim, false);
@@ -375,13 +382,16 @@ impl HardenContent {
         // Prefer the construction/panic reason from the bundle; otherwise a
         // generic message accurate for both the macOS/sysctl-missing case and
         // the pre-first-poll state.
-        let detail_text = self
-            .unavailable_reason
-            .clone()
-            .unwrap_or_else(|| "sysctl / harden data could not be collected on this host".to_string());
+        let detail_text = self.unavailable_reason.clone().unwrap_or_else(|| {
+            "sysctl / harden data could not be collected on this host".to_string()
+        });
         let detail = Line::from(Span::styled(detail_text, Style::new().fg(p.text_dim)));
-        let centered_msg =
-            Rect::new(inner.x, inner.y + inner.height.saturating_sub(3) / 2, inner.width, 1);
+        let centered_msg = Rect::new(
+            inner.x,
+            inner.y + inner.height.saturating_sub(3) / 2,
+            inner.width,
+            1,
+        );
         let centered_detail = Rect::new(
             inner.x,
             inner.y + inner.height.saturating_sub(3) / 2 + 1,
@@ -424,8 +434,9 @@ impl HardenContent {
         let (name, count) = self
             .profiles
             .get(self.selected_profile)
-            .map(|entry| (entry.label.as_str(), entry.param_count))
-            .unwrap_or(("(none)", 0));
+            .map_or(("(none)", 0), |entry| {
+                (entry.label.as_str(), entry.param_count)
+            });
         lines.push(Line::from(vec![
             Span::styled("  active   ", Style::new().fg(p.text_muted)),
             Span::styled(
@@ -461,12 +472,11 @@ impl HardenContent {
         ]));
     }
 
-    fn push_sysctl_lines(
-        &self,
-        lines: &mut Vec<Line<'static>>,
-        p: Palette,
-        inner_width: u16,
-    ) {
+    fn push_sysctl_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette, inner_width: u16) {
+        // Fixed-width prefix: "  " (2) + key(34) + " "(1) + cur(8) + " "(1) + des(8) + " "(1) = 55.
+        // The description fills the remainder, scaled to the viewport.
+        const PREFIX_WIDTH: usize = 55;
+        const FALLBACK_DESC: usize = 30;
         let sysctl_rows = self.visible_sysctl_rows();
         let header = format!("Sysctl Parameters ({})", sysctl_rows.len());
         lines.push(Line::from(Span::styled(
@@ -482,10 +492,6 @@ impl HardenContent {
             return;
         }
 
-        // Fixed-width prefix: "  " (2) + key(34) + " "(1) + cur(8) + " "(1) + des(8) + " "(1) = 55.
-        // The description fills the remainder, scaled to the viewport.
-        const PREFIX_WIDTH: usize = 55;
-        const FALLBACK_DESC: usize = 30;
         let desc_max = if inner_width as usize >= PREFIX_WIDTH {
             let scaled = inner_width as usize - PREFIX_WIDTH;
             if scaled >= 1 { scaled } else { FALLBACK_DESC }
@@ -506,7 +512,10 @@ impl HardenContent {
             lines.push(Line::from(vec![
                 Span::styled(format!("{icon} "), Style::new().fg(color)),
                 Span::styled(format!("{key:<34}"), Style::new().fg(p.text)),
-                Span::styled(format!(" {current:<8}"), Style::new().fg(if row.pass { p.text_dim } else { p.warn })),
+                Span::styled(
+                    format!(" {current:<8}"),
+                    Style::new().fg(if row.pass { p.text_dim } else { p.warn }),
+                ),
                 Span::styled(format!(" {desired:<8}"), Style::new().fg(p.text_muted)),
                 Span::styled(format!(" {desc}"), Style::new().fg(p.text_dim)),
             ]));
@@ -538,7 +547,10 @@ impl HardenContent {
             let opts = truncate_str(&mount.options, 40);
             lines.push(Line::from(vec![
                 Span::styled(format!("{icon} "), Style::new().fg(color)),
-                Span::styled(format!("{target:<20}"), Style::new().fg(p.text).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{target:<20}"),
+                    Style::new().fg(p.text).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(format!(" {opts}"), Style::new().fg(p.text_muted)),
             ]));
         }
@@ -562,11 +574,8 @@ impl HardenContent {
         // Group by severity: Critical > Important > Warning > Info > Ok.
         let order = ["critical", "important", "warning", "info", "ok"];
         for sev in order {
-            let group: Vec<&FindingEntry> = self
-                .findings
-                .iter()
-                .filter(|f| f.severity == sev)
-                .collect();
+            let group: Vec<&FindingEntry> =
+                self.findings.iter().filter(|f| f.severity == sev).collect();
             if group.is_empty() {
                 continue;
             }
@@ -654,9 +663,21 @@ mod tests {
 
     fn sample_profiles() -> Vec<HardenProfileEntry> {
         vec![
-            HardenProfileEntry { name: "desktop".into(), label: "Desktop".into(), param_count: 15 },
-            HardenProfileEntry { name: "server".into(), label: "Server".into(), param_count: 24 },
-            HardenProfileEntry { name: "router".into(), label: "Router".into(), param_count: 26 },
+            HardenProfileEntry {
+                name: "desktop".into(),
+                label: "Desktop".into(),
+                param_count: 15,
+            },
+            HardenProfileEntry {
+                name: "server".into(),
+                label: "Server".into(),
+                param_count: 24,
+            },
+            HardenProfileEntry {
+                name: "router".into(),
+                label: "Router".into(),
+                param_count: 26,
+            },
         ]
     }
 
@@ -804,12 +825,10 @@ mod tests {
         );
     }
 
-    /// Render a content area to a string (snapshot pattern from fail2ban/ufw_kit).
+    /// Render a content area to a string (snapshot pattern from `fail2ban/ufw_kit`).
     fn render_to_string(content: &mut HardenContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
-        terminal
-            .draw(|f| content.view(f, f.area(), CHARM))
-            .unwrap();
+        terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
         terminal.backend().to_string()
     }
 
@@ -893,7 +912,10 @@ mod tests {
         rows.insert("desktop".into(), sample_sysctl_rows());
         c.set_sysctl_rows_by_profile(rows);
         let out = render_to_string(&mut c, 120, 40);
-        assert!(out.contains("kernel.randomize_va_space"), "pass row key: {out}");
+        assert!(
+            out.contains("kernel.randomize_va_space"),
+            "pass row key: {out}"
+        );
         assert!(out.contains("kernel.kptr_restrict"), "fail row key: {out}");
     }
 
@@ -914,7 +936,10 @@ mod tests {
         c.set_findings(sample_findings());
         let out = render_to_string(&mut c, 110, 40);
         assert!(out.contains("IMPORTANT"), "severity group header: {out}");
-        assert!(out.contains("kptr_restrict is disabled"), "finding title: {out}");
+        assert!(
+            out.contains("kptr_restrict is disabled"),
+            "finding title: {out}"
+        );
         assert!(
             out.contains("sysctl -w kernel.kptr_restrict=1"),
             "fix hint: {out}"
@@ -956,7 +981,7 @@ mod tests {
     /// Regression test for the profile-selector bug: pressing Right must swap
     /// the RENDERED sysctl table to the newly-selected profile, not just
     /// advance the header label while leaving the rows pinned to Desktop.
-    /// Previously the collector built sysctl_rows only for profile 0, so the
+    /// Previously the collector built `sysctl_rows` only for profile 0, so the
     /// header advertised "Server (24 params)" while the table still showed the
     /// 15 Desktop rows. Now rows are keyed per-profile and the render path
     /// re-derives the visible table from `selected_profile`.

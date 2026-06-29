@@ -90,9 +90,7 @@ fn duct_runner_captures_stdout() {
 fn duct_runner_captures_stderr() {
     let runner = DuctRunner::new();
     // `sh -c` writes to stderr via `1>&2`
-    let out = runner
-        .run("sh", &["-c", "echo err-msg >&2"])
-        .unwrap();
+    let out = runner.run("sh", &["-c", "echo err-msg >&2"]).unwrap();
     assert!(out.success);
     assert!(out.stderr.trim().contains("err-msg"));
 }
@@ -454,25 +452,28 @@ mod proptests {
     /// Strategy that produces a string containing one of the sensitive keywords
     /// as a substring (case-insensitive).
     fn sensitive_arg_strategy() -> impl Strategy<Value = String> {
-        let keyword = prop::sample::select(&[
-            "password", "token", "key", "secret",
-            "PASSWORD", "TOKEN", "KEY", "SECRET",
-            "Password", "Token", "Key", "Secret",
-        ][..]);
-        (keyword, "\\PC*", "\\PC*")
-            .prop_map(|(kw, pre, suf)| format!("{pre}{kw}{suf}"))
+        let keyword = prop::sample::select(
+            &[
+                "password", "token", "key", "secret", "PASSWORD", "TOKEN", "KEY", "SECRET",
+                "Password", "Token", "Key", "Secret",
+            ][..],
+        );
+        (keyword, "\\PC*", "\\PC*").prop_map(|(kw, pre, suf)| format!("{pre}{kw}{suf}"))
     }
 
     /// Strategy for a non-sensitive argument (no sensitive keywords).
     fn safe_arg_strategy() -> impl Strategy<Value = String> {
-        "\\PC*".prop_filter("must not contain sensitive keywords or redaction marker", |s| {
-            let lower = s.to_ascii_lowercase();
-            !lower.contains("password")
-                && !lower.contains("token")
-                && !lower.contains("key")
-                && !lower.contains("secret")
-                && !s.contains("***")
-        })
+        "\\PC*".prop_filter(
+            "must not contain sensitive keywords or redaction marker",
+            |s| {
+                let lower = s.to_ascii_lowercase();
+                !lower.contains("password")
+                    && !lower.contains("token")
+                    && !lower.contains("key")
+                    && !lower.contains("secret")
+                    && !s.contains("***")
+            },
+        )
     }
 
     proptest! {

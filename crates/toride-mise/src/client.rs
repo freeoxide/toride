@@ -276,7 +276,10 @@ impl Mise {
     /// Build a [`toride_runner::CommandSpec`] for the given arguments, applying
     /// the global flags (`--no-config`, `--no-env`, `--no-hooks`, `--locked`)
     /// and the configured working directory and environment.
-    pub(crate) fn build_command(&self, args: impl IntoIterator<Item = impl AsRef<str>>) -> toride_runner::CommandSpec {
+    pub(crate) fn build_command(
+        &self,
+        args: impl IntoIterator<Item = impl AsRef<str>>,
+    ) -> toride_runner::CommandSpec {
         let mut spec = toride_runner::CommandSpec::new(self.binary_name());
 
         // Apply global flags based on LoadPolicy and explicit overrides.
@@ -308,6 +311,13 @@ impl Mise {
         for (key, value) in env {
             spec = spec.env(key, value);
         }
+
+        // Declare redaction on the spec itself. mise commands (notably
+        // `env --json` / `--dotenv` / `--shell`) can echo tool-managed secrets
+        // in their arguments or captured output. Marking the spec ensures the
+        // runner scrubs sensitive material from display/logging and any
+        // streamed chunks once redact is honored upstream.
+        spec = spec.redact(true);
 
         spec
     }
@@ -412,7 +422,9 @@ impl Mise {
     ///
     /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
     /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
-    pub async fn version_json(&self) -> MiseResult<crate::serde_utils::json_outputs::MiseVersionJson> {
+    pub async fn version_json(
+        &self,
+    ) -> MiseResult<crate::serde_utils::json_outputs::MiseVersionJson> {
         self.run_json(["version", "--json"]).await
     }
 

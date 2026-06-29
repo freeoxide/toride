@@ -3,7 +3,7 @@
 //! Provides functions to set up and manage TOTP-based two-factor
 //! authentication using the `google-authenticator` PAM module.
 
-use crate::{paths::UserPaths, Error, Result};
+use crate::{Error, Result, paths::UserPaths};
 
 /// Check if TOTP is set up for a user.
 ///
@@ -63,12 +63,12 @@ pub fn enroll_totp(paths: &UserPaths, username: &str) -> Result<String> {
     let output = duct::cmd(
         &ga_bin,
         [
-            "-t",       // time-based
-            "-d",       // disallow reuse
-            "-r", "3",  // rate limit: 3 per 30s
+            "-t", // time-based
+            "-d", // disallow reuse
+            "-r", "3", // rate limit: 3 per 30s
             "-w", "3",  // window size
-            "-s",       // generate scratch codes
-            "-f",       // force (non-interactive)
+            "-s", // generate scratch codes
+            "-f", // force (non-interactive)
         ],
     )
     .stderr_to_stdout()

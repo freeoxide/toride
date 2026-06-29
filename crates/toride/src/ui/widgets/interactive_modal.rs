@@ -221,24 +221,23 @@ impl<A: Copy + PartialEq> InteractiveModal<A> {
     /// 3. Otherwise return `Consumed`.
     pub fn handle_mouse(&mut self, mouse: &MouseEvent) -> ModalEvent<A> {
         // Step 1: button delegation.
-        if let Some(ref mut buttons) = self.buttons {
-            if let Some(action) = buttons.handle_mouse(mouse) {
-                self.close();
-                return ModalEvent::Button(action);
-            }
+        if let Some(ref mut buttons) = self.buttons
+            && let Some(action) = buttons.handle_mouse(mouse)
+        {
+            self.close();
+            return ModalEvent::Button(action);
         }
 
         // Step 2: click-outside detection.
         if self.close_on_click_outside
             && matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
+            && let Some(rect) = self.modal_rect
         {
-            if let Some(rect) = self.modal_rect {
-                let col = mouse.column;
-                let row = mouse.row;
-                if col < rect.x || col >= rect.right() || row < rect.y || row >= rect.bottom() {
-                    self.close();
-                    return ModalEvent::Closed;
-                }
+            let col = mouse.column;
+            let row = mouse.row;
+            if col < rect.x || col >= rect.right() || row < rect.y || row >= rect.bottom() {
+                self.close();
+                return ModalEvent::Closed;
             }
         }
 
@@ -386,7 +385,10 @@ mod tests {
         let mut modal = confirm_modal();
         modal.open();
         // "yes" (index 0) is focused by default → Quit
-        assert_eq!(modal.handle_key(KeyCode::Enter), ModalEvent::Button(Action::Quit));
+        assert_eq!(
+            modal.handle_key(KeyCode::Enter),
+            ModalEvent::Button(Action::Quit)
+        );
         assert!(!modal.is_visible());
     }
 
@@ -475,8 +477,7 @@ mod tests {
         use crate::ui::theme::CHARM;
         use ratatui::{Terminal, backend::TestBackend};
 
-        let mut modal: InteractiveModal<Action> =
-            InteractiveModal::new("Detail").dimensions(40, 8);
+        let mut modal: InteractiveModal<Action> = InteractiveModal::new("Detail").dimensions(40, 8);
         modal.open();
         let mut terminal = Terminal::new(TestBackend::new(60, 16)).unwrap();
         terminal
@@ -494,7 +495,8 @@ mod tests {
     fn render_with_buttons_snapshot() {
         use crate::ui::theme::CHARM;
         use ratatui::{
-            Terminal, backend::TestBackend,
+            Terminal,
+            backend::TestBackend,
             layout::{Constraint, Layout},
             text::Line,
             widgets::Paragraph,
@@ -516,10 +518,8 @@ mod tests {
                         Constraint::Fill(1),
                     ])
                     .areas(area);
-                    frame.render_widget(
-                        Paragraph::new(Line::from("Are you sure?").centered()),
-                        msg,
-                    );
+                    frame
+                        .render_widget(Paragraph::new(Line::from("Are you sure?").centered()), msg);
                     if let Some(ref mut btns) = buttons {
                         let viewport = Viewport::from_area(frame.area());
                         let buf = frame.buffer_mut();

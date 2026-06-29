@@ -3,9 +3,9 @@
 //! Returns `Vec<Finding>` rather than just text. Each finding has an ID,
 //! severity, title, detail, and optional fix suggestion.
 
-use crate::error::Result;
-use crate::spec::{DoctorScope, Finding, Severity};
 use crate::Ufw;
+use crate::error::Result;
+use crate::spec::{DoctorScope, Finding, ParsedRule, Severity};
 
 /// Run doctor checks and return findings.
 pub fn doctor(ufw: &Ufw, scope: DoctorScope) -> Result<Vec<Finding>> {
@@ -65,7 +65,10 @@ fn check_binaries(ufw: &Ufw) -> Vec<Finding> {
             severity: Severity::Critical,
             title: "UFW binary not found".into(),
             detail: "The ufw binary is not installed or not in PATH.".into(),
-            fix: Some("Install ufw: sudo apt install ufw (Debian/Ubuntu) or sudo pacman -S ufw (Arch)".into()),
+            fix: Some(
+                "Install ufw: sudo apt install ufw (Debian/Ubuntu) or sudo pacman -S ufw (Arch)"
+                    .into(),
+            ),
         });
         return findings; // No point checking further
     }
@@ -103,7 +106,8 @@ fn check_binaries(ufw: &Ufw) -> Vec<Finding> {
             id: "bin:iptables:missing",
             severity: Severity::Critical,
             title: "iptables binary not found".into(),
-            detail: "The iptables binary is not installed or not in PATH. UFW depends on iptables.".into(),
+            detail: "The iptables binary is not installed or not in PATH. UFW depends on iptables."
+                .into(),
             fix: Some("Install iptables: sudo apt install iptables (Debian/Ubuntu)".into()),
         });
     }
@@ -122,8 +126,11 @@ fn check_binaries(ufw: &Ufw) -> Vec<Finding> {
             id: "bin:ip6tables:missing",
             severity: Severity::Warning,
             title: "ip6tables binary not found".into(),
-            detail: "The ip6tables binary is not installed. IPv6 firewall rules may not function.".into(),
-            fix: Some("Install iptables for IPv6: sudo apt install iptables (Debian/Ubuntu)".into()),
+            detail: "The ip6tables binary is not installed. IPv6 firewall rules may not function."
+                .into(),
+            fix: Some(
+                "Install iptables for IPv6: sudo apt install iptables (Debian/Ubuntu)".into(),
+            ),
         });
     }
 
@@ -133,7 +140,9 @@ fn check_binaries(ufw: &Ufw) -> Vec<Finding> {
             id: "bin:nft:exists",
             severity: Severity::Info,
             title: "nftables binary found".into(),
-            detail: "The nft binary is available. Not required for UFW but good for modern systems.".into(),
+            detail:
+                "The nft binary is available. Not required for UFW but good for modern systems."
+                    .into(),
             fix: None,
         });
     } else {
@@ -160,7 +169,9 @@ fn check_binaries(ufw: &Ufw) -> Vec<Finding> {
             id: "bin:systemctl:missing",
             severity: Severity::Warning,
             title: "systemctl binary not found".into(),
-            detail: "The systemctl binary is not installed. Service management checks will be limited.".into(),
+            detail:
+                "The systemctl binary is not installed. Service management checks will be limited."
+                    .into(),
             fix: None,
         });
     }
@@ -214,7 +225,9 @@ fn check_service(ufw: &Ufw) -> Vec<Finding> {
                             id: "svc:systemd:inconsistent",
                             severity: Severity::Warning,
                             title: "UFW status inconsistency detected".into(),
-                            detail: "UFW reports inactive but systemctl reports the service is active.".into(),
+                            detail:
+                                "UFW reports inactive but systemctl reports the service is active."
+                                    .into(),
                             fix: Some("Check UFW status: sudo ufw status verbose".into()),
                         });
                     }
@@ -318,7 +331,9 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
                     if default_enabled { "yes" } else { "no" },
                     if conf_enabled { "yes" } else { "no" }
                 ),
-                fix: Some("Align the ENABLED values in /etc/default/ufw and /etc/ufw/ufw.conf.".into()),
+                fix: Some(
+                    "Align the ENABLED values in /etc/default/ufw and /etc/ufw/ufw.conf.".into(),
+                ),
             });
         }
     }
@@ -346,7 +361,9 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
         for path in &ipv6_files {
             if std::path::Path::new(path).exists() {
                 findings.push(Finding {
-                    id: Box::leak(format!("cfg:{}:exists", path.replace('/', ":")).into_boxed_str()),
+                    id: Box::leak(
+                        format!("cfg:{}:exists", path.replace('/', ":")).into_boxed_str(),
+                    ),
                     severity: Severity::Ok,
                     title: format!("{path} exists"),
                     detail: format!("IPv6 framework file {path} is present."),
@@ -354,11 +371,15 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
                 });
             } else {
                 findings.push(Finding {
-                    id: Box::leak(format!("cfg:{}:missing", path.replace('/', ":")).into_boxed_str()),
+                    id: Box::leak(
+                        format!("cfg:{}:missing", path.replace('/', ":")).into_boxed_str(),
+                    ),
                     severity: Severity::Warning,
                     title: format!("{path} missing"),
                     detail: format!("IPv6 is enabled but {path} does not exist."),
-                    fix: Some(format!("Reinstall ufw or create {path} to enable IPv6 rules.")),
+                    fix: Some(format!(
+                        "Reinstall ufw or create {path} to enable IPv6 rules."
+                    )),
                 });
             }
         }
@@ -374,7 +395,9 @@ fn check_config(ufw: &Ufw) -> Vec<Finding> {
                     if let Ok(content) = std::fs::read_to_string(&path) {
                         let name = path.file_name().unwrap_or_default().to_string_lossy();
                         // Check if this looks like a generated profile (has [Section] header)
-                        let has_section = content.lines().any(|l| l.trim().starts_with('[') && l.trim().ends_with(']'));
+                        let has_section = content
+                            .lines()
+                            .any(|l| l.trim().starts_with('[') && l.trim().ends_with(']'));
                         if has_section && !content.contains("Managed by ufw-kit") {
                             findings.push(Finding {
                                 id: Box::leak(format!("cfg:app:{name}:no-managed-header").into_boxed_str()),
@@ -463,9 +486,13 @@ fn check_policy(ufw: &Ufw) -> Vec<Finding> {
                             id: "pol:routed:allow",
                             severity: Severity::Warning,
                             title: "Default routed policy is ALLOW (accept)".into(),
-                            detail: "The default routed/forwarded policy is accept. This can expose \
-                                     internal networks if forwarding is enabled.".into(),
-                            fix: Some("Set default routed to deny: sudo ufw default deny routed".into()),
+                            detail:
+                                "The default routed/forwarded policy is accept. This can expose \
+                                     internal networks if forwarding is enabled."
+                                    .into(),
+                            fix: Some(
+                                "Set default routed to deny: sudo ufw default deny routed".into(),
+                            ),
                         });
                     }
                     crate::spec::Policy::Deny | crate::spec::Policy::Reject => {
@@ -484,7 +511,8 @@ fn check_policy(ufw: &Ufw) -> Vec<Finding> {
                     id: "pol:routed:unset",
                     severity: Severity::Info,
                     title: "Default routed policy not set".into(),
-                    detail: "The default routed/forwarded policy is not explicitly configured.".into(),
+                    detail: "The default routed/forwarded policy is not explicitly configured."
+                        .into(),
                     fix: None,
                 });
             }
@@ -504,11 +532,18 @@ fn check_policy(ufw: &Ufw) -> Vec<Finding> {
 /// Check that essential outgoing rules (DNS, NTP, HTTPS) exist when outgoing policy is deny.
 fn check_essential_outgoing_rules(ufw: &Ufw, findings: &mut Vec<Finding>) {
     if let Ok(status) = ufw.status() {
-        let rules_text: String = status.rules.iter().map(|r| r.raw.to_lowercase()).collect::<Vec<_>>().join("\n");
+        let rules_text: String = status
+            .rules
+            .iter()
+            .map(|r| r.raw.to_lowercase())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         // DNS (53)
         let has_dns = rules_text.contains("53")
-            && (rules_text.contains("udp") || rules_text.contains("53/udp") || rules_text.contains("domain"));
+            && (rules_text.contains("udp")
+                || rules_text.contains("53/udp")
+                || rules_text.contains("domain"));
         if !has_dns {
             findings.push(Finding {
                 id: "pol:outgoing:no-dns",
@@ -521,7 +556,9 @@ fn check_essential_outgoing_rules(ufw: &Ufw, findings: &mut Vec<Finding>) {
 
         // NTP (123)
         let has_ntp = rules_text.contains("123")
-            && (rules_text.contains("udp") || rules_text.contains("123/udp") || rules_text.contains("ntp"));
+            && (rules_text.contains("udp")
+                || rules_text.contains("123/udp")
+                || rules_text.contains("ntp"));
         if !has_ntp {
             findings.push(Finding {
                 id: "pol:outgoing:no-ntp",
@@ -534,7 +571,9 @@ fn check_essential_outgoing_rules(ufw: &Ufw, findings: &mut Vec<Finding>) {
 
         // HTTPS (443)
         let has_https = rules_text.contains("443")
-            && (rules_text.contains("tcp") || rules_text.contains("443/tcp") || rules_text.contains("https"));
+            && (rules_text.contains("tcp")
+                || rules_text.contains("443/tcp")
+                || rules_text.contains("https"));
         if !has_https {
             findings.push(Finding {
                 id: "pol:outgoing:no-https",
@@ -559,16 +598,10 @@ fn check_rules(ufw: &Ufw) -> Vec<Finding> {
                 for &(port, name) in crate::net::DANGEROUS_PORTS {
                     if raw.contains(&port.to_string()) && raw.contains("allow") {
                         findings.push(Finding {
-                            id: Box::leak(
-                                format!("rule:dangerous:{port}")
-                                    .into_boxed_str(),
-                            ),
+                            id: Box::leak(format!("rule:dangerous:{port}").into_boxed_str()),
                             severity: Severity::Warning,
                             title: format!("Port {port} ({name}) is exposed"),
-                            detail: format!(
-                                "Rule exposes port {port} ({name}): {}",
-                                rule.raw
-                            ),
+                            detail: format!("Rule exposes port {port} ({name}): {}", rule.raw),
                             fix: Some(format!(
                                 "Consider restricting access to port {port} from trusted IPs only."
                             )),
@@ -586,13 +619,16 @@ fn check_rules(ufw: &Ufw) -> Vec<Finding> {
                         severity: Severity::Info,
                         title: "Broad allow rule detected".into(),
                         detail: format!("Rule allows traffic from anywhere: {}", rule.raw),
-                        fix: Some("Consider restricting source to specific IPs or CIDR ranges.".into()),
+                        fix: Some(
+                            "Consider restricting source to specific IPs or CIDR ranges.".into(),
+                        ),
                     });
                 }
             }
 
             // Detect duplicate rules (same raw text appearing twice)
-            let mut seen_raw: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+            let mut seen_raw: std::collections::HashMap<&str, usize> =
+                std::collections::HashMap::new();
             for rule in &status.rules {
                 let count = seen_raw.entry(&rule.raw).or_insert(0);
                 *count += 1;
@@ -610,13 +646,17 @@ fn check_rules(ufw: &Ufw) -> Vec<Finding> {
 
             // Check for rules without comments
             for rule in &status.rules {
-                if rule.comment.is_none() || rule.comment.as_deref().is_none_or(|c| c.trim().is_empty()) {
+                if rule.comment.is_none()
+                    || rule.comment.as_deref().is_none_or(|c| c.trim().is_empty())
+                {
                     findings.push(Finding {
                         id: "rule:no-comment",
                         severity: Severity::Info,
                         title: "Rule without comment".into(),
                         detail: format!("Rule has no comment annotation: {}", rule.raw),
-                        fix: Some("Consider adding a comment: ufw ... comment 'description'".into()),
+                        fix: Some(
+                            "Consider adding a comment: ufw ... comment 'description'".into(),
+                        ),
                     });
                 }
             }
@@ -671,16 +711,21 @@ fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
             title: "Active SSH session detected".into(),
             detail: "An active SSH connection was detected (SSH_CONNECTION env var is set). \
                      Be careful when modifying firewall rules — an incorrect change could \
-                     lock you out of this session.".into(),
+                     lock you out of this session."
+                .into(),
             fix: None,
         });
     }
 
     if let Ok(status) = ufw.status() {
-        let ssh_rules: Vec<_> = status.rules.iter().filter(|rule| {
-            let raw = rule.raw.to_lowercase();
-            raw.contains("22") || raw.contains("ssh")
-        }).collect();
+        let ssh_rules: Vec<_> = status
+            .rules
+            .iter()
+            .filter(|rule| {
+                let raw = rule.raw.to_lowercase();
+                raw.contains("22") || raw.contains("ssh")
+            })
+            .collect();
 
         let has_ssh_rule = !ssh_rules.is_empty();
 
@@ -693,76 +738,14 @@ fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
                     detail: "An SSH allow rule exists in the firewall.".into(),
                     fix: None,
                 });
-
-                // Check if SSH rule uses "limit" action (good practice)
-                let uses_limit = ssh_rules.iter().any(|rule| {
-                    let raw = rule.raw.to_lowercase();
-                    raw.contains("limit")
-                });
-                if uses_limit {
-                    findings.push(Finding {
-                        id: "ssh:limit",
-                        severity: Severity::Ok,
-                        title: "SSH uses rate limiting".into(),
-                        detail: "The SSH rule uses the 'limit' action, which provides brute-force protection.".into(),
-                        fix: None,
-                    });
-                }
-
-                // Check if SSH rule is scoped to a specific interface (info)
-                let scoped_to_interface = ssh_rules.iter().any(|rule| {
-                    let raw = rule.raw.to_lowercase();
-                    raw.contains("on ") || raw.contains("in on ") || raw.contains("out on ")
-                });
-                if scoped_to_interface {
-                    findings.push(Finding {
-                        id: "ssh:interface-scoped",
-                        severity: Severity::Info,
-                        title: "SSH rule is interface-scoped".into(),
-                        detail: "At least one SSH rule is scoped to a specific network interface.".into(),
-                        fix: None,
-                    });
-                }
-
-                // Check if SSH rule allows from anywhere (warning)
-                let allows_anywhere = ssh_rules.iter().any(|rule| {
-                    let raw = rule.raw.to_lowercase();
-                    (raw.contains("anywhere") || raw.contains("0.0.0.0") || raw.contains("::/0"))
-                        && raw.contains("allow")
-                });
-                if allows_anywhere {
-                    findings.push(Finding {
-                        id: "ssh:allow-anywhere",
-                        severity: Severity::Warning,
-                        title: "SSH allows from any source".into(),
-                        detail: "An SSH rule allows connections from any source address. \
-                                 This exposes SSH to brute-force attacks from the entire internet.".into(),
-                        fix: Some("Restrict SSH to trusted IPs: sudo ufw allow from <trusted-ip> to any port 22 proto tcp".into()),
-                    });
-                }
-
-                // Check if Tailscale or WireGuard interface is present in SSH rules
-                let vpn_interfaces = ["tailscale", "wg", "wg0", "wg1", "tailscale0"];
-                let has_vpn = ssh_rules.iter().any(|rule| {
-                    let raw = rule.raw.to_lowercase();
-                    vpn_interfaces.iter().any(|iface| raw.contains(iface))
-                });
-                if has_vpn {
-                    findings.push(Finding {
-                        id: "ssh:vpn-interface",
-                        severity: Severity::Info,
-                        title: "SSH rule references VPN interface".into(),
-                        detail: "At least one SSH rule is scoped to a Tailscale or WireGuard interface, \
-                                 which restricts SSH access to VPN peers.".into(),
-                        fix: None,
-                    });
-                }
+                analyze_ssh_rule_details(&ssh_rules, &mut findings);
             } else {
                 findings.push(Finding {
                     id: "ssh:no-rule",
                     severity: Severity::Critical,
                     title: "No SSH allow rule found".into(),
-                    detail: "UFW is active but no SSH allow rule exists. This may lock you out.".into(),
+                    detail: "UFW is active but no SSH allow rule exists. This may lock you out."
+                        .into(),
                     fix: Some("Add SSH allow rule: ufw allow 22/tcp".into()),
                 });
             }
@@ -770,6 +753,79 @@ fn check_ssh(ufw: &Ufw) -> Vec<Finding> {
     }
 
     findings
+}
+
+/// Inspect an SSH allow rule for rate-limiting, interface scoping, source
+/// exposure, and VPN binding — appending one `Finding` per detected property.
+fn analyze_ssh_rule_details(ssh_rules: &[&ParsedRule], findings: &mut Vec<Finding>) {
+    // Check if SSH rule uses "limit" action (good practice)
+    let uses_limit = ssh_rules
+        .iter()
+        .any(|rule| rule.raw.to_lowercase().contains("limit"));
+    if uses_limit {
+        findings.push(Finding {
+            id: "ssh:limit",
+            severity: Severity::Ok,
+            title: "SSH uses rate limiting".into(),
+            detail: "The SSH rule uses the 'limit' action, which provides brute-force protection."
+                .into(),
+            fix: None,
+        });
+    }
+
+    // Check if SSH rule is scoped to a specific interface (info)
+    let scoped_to_interface = ssh_rules.iter().any(|rule| {
+        let raw = rule.raw.to_lowercase();
+        raw.contains("on ") || raw.contains("in on ") || raw.contains("out on ")
+    });
+    if scoped_to_interface {
+        findings.push(Finding {
+            id: "ssh:interface-scoped",
+            severity: Severity::Info,
+            title: "SSH rule is interface-scoped".into(),
+            detail: "At least one SSH rule is scoped to a specific network interface.".into(),
+            fix: None,
+        });
+    }
+
+    // Check if SSH rule allows from anywhere (warning)
+    let allows_anywhere = ssh_rules.iter().any(|rule| {
+        let raw = rule.raw.to_lowercase();
+        (raw.contains("anywhere") || raw.contains("0.0.0.0") || raw.contains("::/0"))
+            && raw.contains("allow")
+    });
+    if allows_anywhere {
+        findings.push(Finding {
+            id: "ssh:allow-anywhere",
+            severity: Severity::Warning,
+            title: "SSH allows from any source".into(),
+            detail: "An SSH rule allows connections from any source address. \
+                     This exposes SSH to brute-force attacks from the entire internet."
+                .into(),
+            fix: Some(
+                "Restrict SSH to trusted IPs: sudo ufw allow from <trusted-ip> to any port 22 proto tcp"
+                    .into(),
+            ),
+        });
+    }
+
+    // Check if Tailscale or WireGuard interface is present in SSH rules
+    let vpn_interfaces = ["tailscale", "wg", "wg0", "wg1", "tailscale0"];
+    let has_vpn = ssh_rules.iter().any(|rule| {
+        let raw = rule.raw.to_lowercase();
+        vpn_interfaces.iter().any(|iface| raw.contains(iface))
+    });
+    if has_vpn {
+        findings.push(Finding {
+            id: "ssh:vpn-interface",
+            severity: Severity::Info,
+            title: "SSH rule references VPN interface".into(),
+            detail: "At least one SSH rule is scoped to a Tailscale or WireGuard interface, \
+                     which restricts SSH access to VPN peers."
+                .into(),
+            fix: None,
+        });
+    }
 }
 
 /// Check IPv6 configuration.
@@ -817,7 +873,8 @@ fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
             // Read the config file to get the configured IPv6 policy
             let config = read_default_ufw_config();
 
-            if let (Some(v4_pol), Some(ipv6_pol_str)) = (&v4_incoming, &config.default_input_policy) {
+            if let (Some(v4_pol), Some(ipv6_pol_str)) = (&v4_incoming, &config.default_input_policy)
+            {
                 let v4_str = v4_pol.to_string().to_lowercase();
                 if v4_str != ipv6_pol_str.to_lowercase() {
                     findings.push(Finding {
@@ -832,7 +889,8 @@ fn check_ipv6(ufw: &Ufw) -> Vec<Finding> {
 
             // Check IPv6 routed/forward policy matches IPv4
             let v4_routed = status.default_routed;
-            if let (Some(v4_pol), Some(ipv6_fwd_str)) = (&v4_routed, &config.default_forward_policy) {
+            if let (Some(v4_pol), Some(ipv6_fwd_str)) = (&v4_routed, &config.default_forward_policy)
+            {
                 let v4_str = v4_pol.to_string().to_lowercase();
                 if v4_str != ipv6_fwd_str.to_lowercase() {
                     findings.push(Finding {
@@ -912,7 +970,9 @@ fn check_logging(ufw: &Ufw) -> Vec<Finding> {
                         id: "log:off",
                         severity: Severity::Warning,
                         title: "Logging is disabled".into(),
-                        detail: "UFW logging is currently off. This makes troubleshooting difficult.".into(),
+                        detail:
+                            "UFW logging is currently off. This makes troubleshooting difficult."
+                                .into(),
                         fix: Some("Enable logging: ufw logging on".into()),
                     });
                 }
@@ -994,7 +1054,8 @@ fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
                         continue;
                     }
                     // Extract profile name (strip leading whitespace/bullets)
-                    let name = trimmed.trim_start_matches(|c: char| c.is_whitespace() || c == '*' || c == '-');
+                    let name = trimmed
+                        .trim_start_matches(|c: char| c.is_whitespace() || c == '*' || c == '-');
 
                     // Check app name validity
                     if let Err(e) = validate_app_name_for_doctor(name) {
@@ -1112,22 +1173,16 @@ fn check_path_permissions(path: &str, findings: &mut Vec<Finding>) {
                             "{path} has permissions {:o}, which is world-writable.",
                             mode & 0o777
                         ),
-                        fix: Some(format!(
-                            "Fix permissions: sudo chmod o-w {path}"
-                        )),
+                        fix: Some(format!("Fix permissions: sudo chmod o-w {path}")),
                     });
                 } else {
                     findings.push(Finding {
                         id: Box::leak(
-                            format!("perm:{}:ok", path.replace('/', ":"))
-                                .into_boxed_str(),
+                            format!("perm:{}:ok", path.replace('/', ":")).into_boxed_str(),
                         ),
                         severity: Severity::Ok,
                         title: format!("{path} permissions OK"),
-                        detail: format!(
-                            "{path} has permissions {:o}.",
-                            mode & 0o777
-                        ),
+                        detail: format!("{path} has permissions {:o}.", mode & 0o777),
                         fix: None,
                     });
                 }
@@ -1135,10 +1190,7 @@ fn check_path_permissions(path: &str, findings: &mut Vec<Finding>) {
             #[cfg(not(unix))]
             {
                 findings.push(Finding {
-                    id: Box::leak(
-                        format!("perm:{}:skip", path.replace('/', ":"))
-                            .into_boxed_str(),
-                    ),
+                    id: Box::leak(format!("perm:{}:skip", path.replace('/', ":")).into_boxed_str()),
                     severity: Severity::Info,
                     title: format!("Cannot check {path} permissions"),
                     detail: "Permission checks require Unix.".into(),
@@ -1148,10 +1200,7 @@ fn check_path_permissions(path: &str, findings: &mut Vec<Finding>) {
         }
         Err(_) => {
             findings.push(Finding {
-                id: Box::leak(
-                    format!("perm:{}:missing", path.replace('/', ":"))
-                        .into_boxed_str(),
-                ),
+                id: Box::leak(format!("perm:{}:missing", path.replace('/', ":")).into_boxed_str()),
                 severity: Severity::Info,
                 title: format!("{path} not found"),
                 detail: format!("{path} does not exist."),
@@ -1189,10 +1238,7 @@ fn check_log_file_size(log_path: &str, nbytes: u64, findings: &mut Vec<Finding>)
         });
     } else {
         findings.push(Finding {
-            id: Box::leak(
-                format!("log:{}:ok", log_path.replace('/', ":"))
-                    .into_boxed_str(),
-            ),
+            id: Box::leak(format!("log:{}:ok", log_path.replace('/', ":")).into_boxed_str()),
             severity: Severity::Ok,
             title: format!("{log_path} exists ({kilobytes:.1} KB)"),
             detail: format!("Log file {log_path} is {kilobytes:.1} KB."),
@@ -1280,7 +1326,10 @@ fn validate_app_name_for_doctor(name: &str) -> std::result::Result<(), String> {
         return Err("contains path traversal".into());
     }
     // Check for valid characters: alphanumeric, hyphens, underscores, spaces
-    if !name.chars().all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' || c == '.') {
+    if !name
+        .chars()
+        .all(|c| c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' || c == '.')
+    {
         return Err("contains special characters".into());
     }
     Ok(())
@@ -1352,7 +1401,8 @@ fn check_boot_integration(findings: &mut Vec<Finding>) {
             severity: Severity::Info,
             title: "No UFW systemd unit file found".into(),
             detail: "No ufw.service unit file was found in standard systemd paths. \
-                     UFW may rely on its own init script instead of systemd.".into(),
+                     UFW may rely on its own init script instead of systemd."
+                .into(),
             fix: None,
         });
     }
@@ -1389,12 +1439,14 @@ fn check_shadowed_rules(rules: &[crate::spec::ParsedRule], findings: &mut Vec<Fi
             continue;
         }
 
-        let is_shadowed = parsed.iter().any(|(earlier_idx, earlier_dir, earlier_port, earlier_is_allow)| {
-            *earlier_idx < *idx
-                && *earlier_is_allow
-                && earlier_port == port
-                && (earlier_dir == dir || earlier_dir.is_none() || dir.is_none())
-        });
+        let is_shadowed = parsed.iter().any(
+            |(earlier_idx, earlier_dir, earlier_port, earlier_is_allow)| {
+                *earlier_idx < *idx
+                    && *earlier_is_allow
+                    && earlier_port == port
+                    && (earlier_dir == dir || earlier_dir.is_none() || dir.is_none())
+            },
+        );
 
         if is_shadowed {
             let rule_text = &rules[*idx].raw;
@@ -1410,7 +1462,8 @@ fn check_shadowed_rules(rules: &[crate::spec::ParsedRule], findings: &mut Vec<Fi
                 ),
                 fix: Some(
                     "Reorder rules so the deny/reject comes before the allow, \
-                     or remove the shadowed rule.".into(),
+                     or remove the shadowed rule."
+                        .into(),
                 ),
             });
         }
@@ -1458,7 +1511,9 @@ fn check_dual_stack_coverage(rules: &[crate::spec::ParsedRule], findings: &mut V
                  consider adding equivalent IPv6 rules for dual-stack coverage.",
                 ipv4_rules.len()
             ),
-            fix: Some("Add IPv6 equivalents of your IPv4 rules, or use UFW's dual-stack support.".into()),
+            fix: Some(
+                "Add IPv6 equivalents of your IPv4 rules, or use UFW's dual-stack support.".into(),
+            ),
         });
     } else if ipv4_rules.is_empty() && !ipv6_rules.is_empty() {
         findings.push(Finding {
@@ -1522,12 +1577,12 @@ fn check_secrets_in_comments(ufw: &Ufw, findings: &mut Vec<Finding>) {
                         detail: format!(
                             "Rule '{}' has a comment that appears to contain a secret: '{}'. \
                              Secrets should not be stored in firewall rule comments.",
-                            rule.raw,
-                            comment
+                            rule.raw, comment
                         ),
                         fix: Some(
                             "Remove the secret from the rule comment and store it in a \
-                             proper secrets manager. Then recreate the rule without the secret.".into(),
+                             proper secrets manager. Then recreate the rule without the secret."
+                                .into(),
                         ),
                     });
                 }
@@ -1543,7 +1598,11 @@ fn check_app_profile_references(ufw: &Ufw, findings: &mut Vec<Finding>) {
         Ok(list) => list
             .lines()
             .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
-            .map(|l| l.trim().trim_start_matches(|c: char| c.is_whitespace() || c == '*').to_string())
+            .map(|l| {
+                l.trim()
+                    .trim_start_matches(|c: char| c.is_whitespace() || c == '*')
+                    .to_string()
+            })
             .filter(|l| !l.is_empty())
             .collect(),
         Err(_) => return,
@@ -1556,7 +1615,11 @@ fn check_app_profile_references(ufw: &Ufw, findings: &mut Vec<Finding>) {
             let raw_lower = rule.raw.to_lowercase();
 
             // Skip rules that clearly have port numbers
-            if raw_lower.split_whitespace().take(2).any(|t| t.parse::<u16>().is_ok()) {
+            if raw_lower
+                .split_whitespace()
+                .take(2)
+                .any(|t| t.parse::<u16>().is_ok())
+            {
                 continue;
             }
 
@@ -1573,7 +1636,9 @@ fn check_app_profile_references(ufw: &Ufw, findings: &mut Vec<Finding>) {
             );
             if !is_keyword
                 && first_token.parse::<u16>().is_err()
-                && !known_profiles.iter().any(|p| p.to_lowercase() == first_token)
+                && !known_profiles
+                    .iter()
+                    .any(|p| p.to_lowercase() == first_token)
             {
                 // Check if the raw text contains a known profile name elsewhere
                 let found_in_raw = known_profiles
@@ -1604,7 +1669,11 @@ fn check_app_profile_port_conflicts(ufw: &Ufw, findings: &mut Vec<Finding>) {
         Ok(list) => list
             .lines()
             .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
-            .map(|l| l.trim().trim_start_matches(|c: char| c.is_whitespace() || c == '*').to_string())
+            .map(|l| {
+                l.trim()
+                    .trim_start_matches(|c: char| c.is_whitespace() || c == '*')
+                    .to_string()
+            })
             .filter(|l| !l.is_empty())
             .collect::<Vec<_>>(),
         Err(_) => return,
@@ -1633,10 +1702,7 @@ fn check_app_profile_port_conflicts(ufw: &Ufw, findings: &mut Vec<Finding>) {
             let (ref name_a, ref ports_a) = profile_ports[i];
             let (ref name_b, ref ports_b) = profile_ports[j];
 
-            let conflicts: Vec<_> = ports_a
-                .iter()
-                .filter(|p| ports_b.contains(p))
-                .collect();
+            let conflicts: Vec<_> = ports_a.iter().filter(|p| ports_b.contains(p)).collect();
 
             if !conflicts.is_empty() {
                 let conflict_list: String = conflicts
@@ -1645,10 +1711,7 @@ fn check_app_profile_port_conflicts(ufw: &Ufw, findings: &mut Vec<Finding>) {
                     .collect::<Vec<_>>()
                     .join(", ");
                 findings.push(Finding {
-                    id: Box::leak(
-                        format!("app:conflict:{name_a}:{name_b}")
-                            .into_boxed_str(),
-                    ),
+                    id: Box::leak(format!("app:conflict:{name_a}:{name_b}").into_boxed_str()),
                     severity: Severity::Info,
                     title: format!("App profiles {name_a} and {name_b} share ports"),
                     detail: format!(
@@ -1657,7 +1720,8 @@ fn check_app_profile_port_conflicts(ufw: &Ufw, findings: &mut Vec<Finding>) {
                     ),
                     fix: Some(
                         "Review the profile definitions and remove duplicate port declarations, \
-                         or avoid using both profiles simultaneously.".into(),
+                         or avoid using both profiles simultaneously."
+                            .into(),
                     ),
                 });
             }
@@ -1755,7 +1819,9 @@ fn check_framework_file(
                 "{name} has a *filter table but no COMMIT line. \
                  This will cause iptables-restore to fail."
             ),
-            fix: Some(format!("Add a COMMIT line at the end of the *filter table in {name}.")),
+            fix: Some(format!(
+                "Add a COMMIT line at the end of the *filter table in {name}."
+            )),
         });
     }
 
@@ -1788,10 +1854,7 @@ fn check_framework_file(
             id: Box::leak(format!("fw:{name}:managed-blocks").into_boxed_str()),
             severity: Severity::Info,
             title: format!("{name} has {} managed block(s)", blocks.len()),
-            detail: format!(
-                "Found managed blocks in {name}: {}",
-                blocks.join(", ")
-            ),
+            detail: format!("Found managed blocks in {name}: {}", blocks.join(", ")),
             fix: None,
         });
 
@@ -1831,9 +1894,8 @@ fn check_framework_file(
     if content.contains("*nat") {
         let lines: Vec<&str> = content.lines().collect();
         let nat_start = lines.iter().position(|l| l.trim() == "*nat");
-        let commit_after_nat = nat_start.is_some_and(|start| {
-            lines[start..].iter().any(|l| l.trim() == "COMMIT")
-        });
+        let commit_after_nat =
+            nat_start.is_some_and(|start| lines[start..].iter().any(|l| l.trim() == "COMMIT"));
 
         if commit_after_nat {
             findings.push(Finding {
@@ -1850,7 +1912,10 @@ fn check_framework_file(
     }
 
     // Log a generic OK if no issues
-    if !findings.iter().any(|f| f.id.starts_with("fw:") && f.severity >= Severity::Warning) {
+    if !findings
+        .iter()
+        .any(|f| f.id.starts_with("fw:") && f.severity >= Severity::Warning)
+    {
         findings.push(Finding {
             id: Box::leak(format!("fw:{name}:ok").into_boxed_str()),
             severity: Severity::Ok,

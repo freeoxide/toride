@@ -105,9 +105,7 @@ impl Default for UpdateSpec {
             security_only: true,
             schedule: Schedule::Daily,
             reboot: RebootPolicy::WhenNeeded,
-            origins: vec![
-                "origin=Debian,codename=${distro_codename},label=Debian-Security".into(),
-            ],
+            origins: vec!["origin=Debian,codename=${distro_codename},label=Debian-Security".into()],
         }
     }
 }

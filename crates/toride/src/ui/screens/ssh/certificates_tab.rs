@@ -15,7 +15,7 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::ssh_data::SshOp;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
@@ -57,7 +57,7 @@ pub struct CertificatesTab {
     action_modal: Option<ActionModal>,
     /// Confirm modal for revoke operations.
     confirm: ConfirmModal,
-    /// Pending write operations to be collected by SshContent.
+    /// Pending write operations to be collected by `SshContent`.
     pending_ops: Vec<SshOp>,
 }
 
@@ -146,11 +146,9 @@ impl CertificatesTab {
                     self.clamp_scroll();
                 }
             }
-            MouseEventKind::ScrollUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.clamp_scroll();
-                }
+            MouseEventKind::ScrollUp if self.selected > 0 => {
+                self.selected -= 1;
+                self.clamp_scroll();
             }
             _ => {}
         }
@@ -185,26 +183,26 @@ impl SshTab for CertificatesTab {
         // If an action modal is open, delegate to it.
         if let Some(action) = self.action_modal {
             match action {
-                ActionModal::Revoke => {
-                    match self.confirm.handle_key(code) {
-                        Some(ConfirmResult::Confirmed) => {
-                            if !self.entries.is_empty() {
-                                let cert = &self.entries[self.selected];
-                                self.pending_ops.push(SshOp::CertificateRevoke { name: cert.name.clone() });
-                                self.entries.remove(self.selected);
-                                if self.selected >= self.entries.len() && !self.entries.is_empty() {
-                                    self.selected = self.entries.len() - 1;
-                                }
-                                self.clamp_scroll();
+                ActionModal::Revoke => match self.confirm.handle_key(code) {
+                    Some(ConfirmResult::Confirmed) => {
+                        if !self.entries.is_empty() {
+                            let cert = &self.entries[self.selected];
+                            self.pending_ops.push(SshOp::CertificateRevoke {
+                                name: cert.name.clone(),
+                            });
+                            self.entries.remove(self.selected);
+                            if self.selected >= self.entries.len() && !self.entries.is_empty() {
+                                self.selected = self.entries.len() - 1;
                             }
-                            self.action_modal = None;
+                            self.clamp_scroll();
                         }
-                        Some(ConfirmResult::Cancelled) => {
-                            self.action_modal = None;
-                        }
-                        None => {}
+                        self.action_modal = None;
                     }
-                }
+                    Some(ConfirmResult::Cancelled) => {
+                        self.action_modal = None;
+                    }
+                    None => {}
+                },
             }
             return None;
         }
@@ -224,15 +222,8 @@ impl SshTab for CertificatesTab {
                 }
                 None
             }
-            KeyCode::Enter => {
-                if !self.entries.is_empty() {
-                    self.detail_entry_idx = Some(self.selected);
-                    self.detail_modal.open();
-                }
-                None
-            }
-            // Inspect shortcut: opens detail modal (same as Enter)
-            KeyCode::Char('i') => {
+            // Enter and Inspect shortcut both open the detail modal.
+            KeyCode::Enter | KeyCode::Char('i') => {
                 if !self.entries.is_empty() {
                     self.detail_entry_idx = Some(self.selected);
                     self.detail_modal.open();
@@ -243,7 +234,7 @@ impl SshTab for CertificatesTab {
             KeyCode::Char('r') => {
                 if !self.entries.is_empty() {
                     let name = self.entries[self.selected].name.clone();
-                    self.confirm = ConfirmModal::new(format!("Revoke certificate \"{}\"?", name));
+                    self.confirm = ConfirmModal::new(format!("Revoke certificate \"{name}\"?"));
                     self.action_modal = Some(ActionModal::Revoke);
                 }
                 None
@@ -259,16 +250,16 @@ impl SshTab for CertificatesTab {
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
         if self.entries.is_empty() {
-            self.render_empty(frame, area, p);
+            Self::render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_entry_idx {
-            if let Some(entry) = self.entries.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &entry);
-            }
+        if let Some(idx) = self.detail_entry_idx
+            && let Some(entry) = self.entries.get(idx).cloned()
+        {
+            self.render_detail_modal(frame, p, &entry);
         }
 
         // Render action modal on top of everything
@@ -298,17 +289,24 @@ impl SshTab for CertificatesTab {
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 impl CertificatesTab {
-    fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_empty(frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " CERTIFICATES ", p.text, false);
         let msg = Line::from(vec![
             Span::styled("No SSH certificates found", Style::new().fg(p.text_dim)),
-            Span::styled("  i", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  i",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" inspect", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_list(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(
             frame,
@@ -363,7 +361,11 @@ impl CertificatesTab {
             // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
-                Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
+                Style::new().fg(if is_selected || is_hovered {
+                    p.accent
+                } else {
+                    p.text_dim
+                }),
             ));
 
             // Certificate name (truncated to 18 chars, bold)
@@ -406,7 +408,10 @@ impl CertificatesTab {
             if let Some(principal) = entry.principals.first() {
                 let prin_w = 12.min(inner.width.saturating_sub(60) as usize);
                 let prin = truncate_str(principal, prin_w);
-                spans.push(Span::styled(format!(" {}", prin), Style::new().fg(p.text_muted)));
+                spans.push(Span::styled(
+                    format!(" {prin}"),
+                    Style::new().fg(p.text_muted),
+                ));
             }
 
             let line = Line::from(spans);
@@ -421,78 +426,88 @@ impl CertificatesTab {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
         let viewport = Viewport::from_area(area);
-        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
+        self.buttons
+            .render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, entry: &CertificateEntry) {
         self.detail_modal.render(frame, p, |frame, content_area| {
-                let principals_str = if entry.principals.is_empty() {
-                    "—".to_string()
-                } else {
-                    entry.principals.join(", ")
-                };
+            let principals_str = if entry.principals.is_empty() {
+                "—".to_string()
+            } else {
+                entry.principals.join(", ")
+            };
 
-                let key_type_display = truncate_str(&entry.key_type, 36);
-                let ca_display = truncate_str(&entry.ca_fingerprint, 36);
+            let key_type_display = truncate_str(&entry.key_type, 36);
+            let ca_display = truncate_str(&entry.ca_fingerprint, 36);
 
-                let lines = vec![
-                    Line::from(vec![
-                        Span::styled("Name:       ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.name, Style::new().fg(p.text).bold()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Type:       ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.cert_type, Style::new().fg(p.info)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Key Type:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(key_type_display, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Serial:     ", Style::new().fg(p.text_dim)),
-                        Span::styled(entry.serial.to_string(), Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Valid From: ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.valid_from, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Valid To:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.valid_to, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Status:     ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if entry.is_valid { "✓ valid" } else { "✗ expired" },
-                            Style::new().fg(if entry.is_valid { p.ok } else { p.err }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("CA:         ", Style::new().fg(p.text_dim)),
-                        Span::styled(ca_display, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Key ID:     ", Style::new().fg(p.text_dim)),
-                        Span::styled(&entry.key_id, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Principals: ", Style::new().fg(p.text_dim)),
-                        Span::styled(principals_str, Style::new().fg(p.text)),
-                    ]),
-                    Line::raw(""),
-                    Line::from(
-                        Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("Name:       ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.name, Style::new().fg(p.text).bold()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Type:       ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.cert_type, Style::new().fg(p.info)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Key Type:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(key_type_display, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Serial:     ", Style::new().fg(p.text_dim)),
+                    Span::styled(entry.serial.to_string(), Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Valid From: ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.valid_from, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Valid To:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.valid_to, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Status:     ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        if entry.is_valid {
+                            "✓ valid"
+                        } else {
+                            "✗ expired"
+                        },
+                        Style::new().fg(if entry.is_valid { p.ok } else { p.err }),
                     ),
-                ];
+                ]),
+                Line::from(vec![
+                    Span::styled("CA:         ", Style::new().fg(p.text_dim)),
+                    Span::styled(ca_display, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Key ID:     ", Style::new().fg(p.text_dim)),
+                    Span::styled(&entry.key_id, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Principals: ", Style::new().fg(p.text_dim)),
+                    Span::styled(principals_str, Style::new().fg(p.text)),
+                ]),
+                Line::raw(""),
+                Line::from(Span::styled(
+                    "Press Esc to close",
+                    Style::new().fg(p.text_muted),
+                )),
+            ];
 
-                for (i, line) in lines.into_iter().enumerate() {
-                    let y = content_area.y + i as u16;
-                    if y < content_area.bottom() {
-                        let row_area = Rect::new(content_area.x, y, content_area.width, 1);
-                        frame.render_widget(Paragraph::new(line), row_area);
-                    }
+            for (i, line) in lines.into_iter().enumerate() {
+                let y = content_area.y + i as u16;
+                if y < content_area.bottom() {
+                    let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+                    frame.render_widget(Paragraph::new(line), row_area);
                 }
-            });
+            }
+        });
     }
 }
 
@@ -610,7 +625,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("No SSH certificates found"), "empty state: {output}");
+        assert!(
+            output.contains("No SSH certificates found"),
+            "empty state: {output}"
+        );
     }
 
     #[test]
@@ -639,7 +657,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("Certificate Detail"), "modal title: {output}");
+        assert!(
+            output.contains("Certificate Detail"),
+            "modal title: {output}"
+        );
         assert!(output.contains("User"), "cert type in modal: {output}");
         assert!(output.contains("42"), "serial in modal: {output}");
     }

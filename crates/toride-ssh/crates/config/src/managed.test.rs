@@ -1,5 +1,5 @@
 use super::*;
-use crate::ast::{parse as parse_ast, ConfigAst};
+use crate::ast::{ConfigAst, parse as parse_ast};
 
 fn make_ast_with_managed() -> ConfigAst {
     parse_ast(
@@ -67,10 +67,7 @@ fn upsert_replaces_existing() {
 
     let block = extract_managed_block(&ast, "test-block").unwrap();
     assert_eq!(block.nodes.len(), 1);
-    assert_eq!(
-        block.nodes[0].as_directive().unwrap().1,
-        "replaced.com"
-    );
+    assert_eq!(block.nodes[0].as_directive().unwrap().1, "replaced.com");
 }
 
 #[test]
@@ -104,10 +101,7 @@ Host foo
     // Should have exactly one managed block with the new content.
     let block = extract_managed_block(&ast, "orphan").unwrap();
     assert_eq!(block.nodes.len(), 1);
-    assert_eq!(
-        block.nodes[0].as_directive().unwrap().1,
-        "new.com"
-    );
+    assert_eq!(block.nodes[0].as_directive().unwrap().1, "new.com");
 
     // The old content should be gone — no duplicate blocks.
     let output = ast.to_string_lossless();

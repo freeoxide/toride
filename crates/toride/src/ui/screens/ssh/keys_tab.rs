@@ -15,12 +15,12 @@ use ratatui::{
 
 use crate::action::Action;
 use crate::ssh_data::SshOp;
-use crate::ui::components::{interactive_button::InteractiveButton, ButtonRow};
+use crate::ui::components::{ButtonRow, interactive_button::InteractiveButton};
 use crate::ui::responsive::{Viewport, truncate_str};
 use crate::ui::theme::Palette;
 use crate::ui::widgets::{
-    ConfirmModal, ConfirmResult, FormModal, FormResult, InteractiveModal, Modal, ModalEvent,
-    TextInput, Dropdown, render_titled_panel,
+    ConfirmModal, ConfirmResult, Dropdown, FormModal, FormResult, InteractiveModal, Modal,
+    ModalEvent, TextInput, render_titled_panel,
 };
 
 use super::{SshKeyEntry, SshTab, char_to_keycode};
@@ -68,9 +68,9 @@ pub struct KeysTab {
     form: FormModal,
     /// Confirm modal for delete operations.
     confirm: ConfirmModal,
-    /// Pending write operations to be forwarded to SshContent.
+    /// Pending write operations to be forwarded to `SshContent`.
     pending_ops: Vec<SshOp>,
-    /// Key name being tested for passphrase (set when TestPassphrase modal opens).
+    /// Key name being tested for passphrase (set when `TestPassphrase` modal opens).
     test_passphrase_key: Option<String>,
     /// Result of the last passphrase test: Ok(label) or Err(msg).
     passphrase_test_result: Option<Result<String, String>>,
@@ -211,11 +211,9 @@ impl KeysTab {
                     self.clamp_scroll();
                 }
             }
-            MouseEventKind::ScrollUp => {
-                if self.selected > 0 {
-                    self.selected -= 1;
-                    self.clamp_scroll();
-                }
+            MouseEventKind::ScrollUp if self.selected > 0 => {
+                self.selected -= 1;
+                self.clamp_scroll();
             }
             _ => {}
         }
@@ -237,6 +235,10 @@ impl Default for KeysTab {
 }
 
 impl SshTab for KeysTab {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "keyboard dispatch table kept whole for clarity"
+    )]
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // If detail modal is open, delegate to InteractiveModal.
         if self.detail_modal.is_visible() {
@@ -259,17 +261,24 @@ impl SshTab for KeysTab {
                 ActionModal::New => {
                     match self.form.handle_key(code) {
                         FormResult::Submitted => {
-                            let name = self.form.text_value(0)
-                                .map(|s| s.to_string())
+                            let name = self
+                                .form
+                                .text_value(0)
+                                .map(std::string::ToString::to_string)
                                 .unwrap_or_default();
-                            let key_type = self.form.select_value(1)
-                                .unwrap_or("Ed25519");
-                            let comment = self.form.text_value(2)
-                                .map(|s| s.to_string())
+                            let key_type = self.form.select_value(1).unwrap_or("Ed25519");
+                            let comment = self
+                                .form
+                                .text_value(2)
+                                .map(std::string::ToString::to_string)
                                 .unwrap_or_default();
-                            let passphrase = self.form.text_value(3)
-                                .map(|s| if s.is_empty() { None } else { Some(s.to_string()) })
-                                .unwrap_or(None);
+                            let passphrase = self.form.text_value(3).and_then(|s| {
+                                if s.is_empty() {
+                                    None
+                                } else {
+                                    Some(s.to_string())
+                                }
+                            });
                             let has_passphrase = passphrase.is_some();
                             let display_name = if name.is_empty() {
                                 "id_new".to_string()
@@ -332,8 +341,10 @@ impl SshTab for KeysTab {
                         FormResult::Submitted => {
                             if let Some(key) = self.keys.get_mut(self.selected) {
                                 let old_name = key.name.clone();
-                                let raw_name = self.form.text_value(0)
-                                    .map(|s| s.to_string())
+                                let raw_name = self
+                                    .form
+                                    .text_value(0)
+                                    .map(std::string::ToString::to_string)
                                     .unwrap_or_default();
                                 let new_name = if raw_name.starts_with("id_") {
                                     raw_name
@@ -361,8 +372,10 @@ impl SshTab for KeysTab {
                 ActionModal::TestPassphrase => {
                     match self.form.handle_key(code) {
                         FormResult::Submitted => {
-                            let passphrase = self.form.text_value(0)
-                                .map(|s| s.to_string())
+                            let passphrase = self
+                                .form
+                                .text_value(0)
+                                .map(std::string::ToString::to_string)
                                 .unwrap_or_default();
                             if let Some(name) = self.test_passphrase_key.take() {
                                 self.pending_ops.push(SshOp::KeyTestPassphrase {
@@ -370,7 +383,8 @@ impl SshTab for KeysTab {
                                     passphrase,
                                 });
                                 // Show a pending result that will be replaced by the async pipeline
-                                self.passphrase_test_result = Some(Ok(format!("testing '{name}'...")));
+                                self.passphrase_test_result =
+                                    Some(Ok(format!("testing '{name}'...")));
                             }
                             self.action_modal = None;
                         }
@@ -381,28 +395,26 @@ impl SshTab for KeysTab {
                         FormResult::Pending => {}
                     }
                 }
-                ActionModal::Install => {
-                    match self.form.handle_key(code) {
-                        FormResult::Submitted => {
-                            let key_name = self.install_key_name.take().unwrap_or_default();
-                            let dest = self.form.text_value(1)
-                                .map(|s| s.to_string())
-                                .unwrap_or_default();
-                            if !key_name.is_empty() && !dest.is_empty() {
-                                self.pending_ops.push(SshOp::KeyInstallToRemote {
-                                    key_name,
-                                    dest,
-                                });
-                            }
-                            self.action_modal = None;
+                ActionModal::Install => match self.form.handle_key(code) {
+                    FormResult::Submitted => {
+                        let key_name = self.install_key_name.take().unwrap_or_default();
+                        let dest = self
+                            .form
+                            .text_value(1)
+                            .map(std::string::ToString::to_string)
+                            .unwrap_or_default();
+                        if !key_name.is_empty() && !dest.is_empty() {
+                            self.pending_ops
+                                .push(SshOp::KeyInstallToRemote { key_name, dest });
                         }
-                        FormResult::Cancelled => {
-                            self.install_key_name = None;
-                            self.action_modal = None;
-                        }
-                        FormResult::Pending => {}
+                        self.action_modal = None;
                     }
-                }
+                    FormResult::Cancelled => {
+                        self.install_key_name = None;
+                        self.action_modal = None;
+                    }
+                    FormResult::Pending => {}
+                },
             }
             return None;
         }
@@ -432,17 +444,29 @@ impl SshTab for KeysTab {
             // CRUD shortcuts
             KeyCode::Char('n') => {
                 self.form = FormModal::new(40)
-                    .text_field(TextInput::new("Name", 30).placeholder("id_ed25519").required())
-                    .select_field(Dropdown::new("Type", vec!["Ed25519", "RSA 4096", "ECDSA P-256"], 16))
+                    .text_field(
+                        TextInput::new("Name", 30)
+                            .placeholder("id_ed25519")
+                            .required(),
+                    )
+                    .select_field(Dropdown::new(
+                        "Type",
+                        vec!["Ed25519", "RSA 4096", "ECDSA P-256"],
+                        16,
+                    ))
                     .text_field(TextInput::new("Comment", 30).placeholder("user@host"))
-                    .text_field(TextInput::new("Passphrase", 30).placeholder("(optional, leave empty for none)").secret(true));
+                    .text_field(
+                        TextInput::new("Passphrase", 30)
+                            .placeholder("(optional, leave empty for none)")
+                            .secret(true),
+                    );
                 self.action_modal = Some(ActionModal::New);
                 None
             }
             KeyCode::Char('d') => {
                 if !self.keys.is_empty() {
                     let name = self.keys[self.selected].name.clone();
-                    self.confirm = ConfirmModal::new(format!("Delete key \"{}\"?", name));
+                    self.confirm = ConfirmModal::new(format!("Delete key \"{name}\"?"));
                     self.action_modal = Some(ActionModal::Delete);
                 }
                 None
@@ -450,8 +474,11 @@ impl SshTab for KeysTab {
             KeyCode::Char('r') => {
                 if !self.keys.is_empty() {
                     let current_name = self.keys[self.selected].name.clone();
-                    self.form = FormModal::new(40)
-                        .text_field(TextInput::new("New Name", 30).value(&current_name).required());
+                    self.form = FormModal::new(40).text_field(
+                        TextInput::new("New Name", 30)
+                            .value(&current_name)
+                            .required(),
+                    );
                     self.action_modal = Some(ActionModal::Rename);
                 }
                 None
@@ -459,26 +486,39 @@ impl SshTab for KeysTab {
             KeyCode::Char('p') => {
                 if !self.keys.is_empty() {
                     let name = self.keys[self.selected].name.clone();
-                    self.form = FormModal::new(40)
-                        .text_field(TextInput::new("Passphrase", 30).placeholder("enter passphrase to test").secret(true));
+                    self.form = FormModal::new(40).text_field(
+                        TextInput::new("Passphrase", 30)
+                            .placeholder("enter passphrase to test")
+                            .secret(true),
+                    );
                     self.test_passphrase_key = Some(name);
                     self.action_modal = Some(ActionModal::TestPassphrase);
                 }
                 None
             }
             KeyCode::Char('i') => {
-                if !self.keys.is_empty() && self.action_modal.is_none() && !self.detail_modal.is_visible() {
+                if !self.keys.is_empty()
+                    && self.action_modal.is_none()
+                    && !self.detail_modal.is_visible()
+                {
                     let key_name = self.keys[self.selected].name.clone();
                     self.form = FormModal::new(40)
                         .text_field(TextInput::new("Key", 40).placeholder("current key name"))
-                        .text_field(TextInput::new("Destination (user@host)", 40).placeholder("user@host").required());
+                        .text_field(
+                            TextInput::new("Destination (user@host)", 40)
+                                .placeholder("user@host")
+                                .required(),
+                        );
                     self.install_key_name = Some(key_name);
                     self.action_modal = Some(ActionModal::Install);
                 }
                 None
             }
             KeyCode::Char('x') => {
-                if !self.keys.is_empty() && self.action_modal.is_none() && !self.detail_modal.is_visible() {
+                if !self.keys.is_empty()
+                    && self.action_modal.is_none()
+                    && !self.detail_modal.is_visible()
+                {
                     let name = self.keys[self.selected].name.clone();
                     self.pending_ops.push(SshOp::KeyChmodFix { name });
                     self.keys[self.selected].permissions = "0600".into();
@@ -492,23 +532,27 @@ impl SshTab for KeysTab {
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.row_hitboxes.clear();
         if self.keys.is_empty() {
-            self.render_empty(frame, area, p);
+            Self::render_empty(frame, area, p);
         } else {
             self.render_list(frame, area, p);
         }
 
         // Render detail modal if open
-        if let Some(idx) = self.detail_key_idx {
-            if let Some(key) = self.keys.get(idx).cloned() {
-                self.render_detail_modal(frame, p, &key);
-            }
+        if let Some(idx) = self.detail_key_idx
+            && let Some(key) = self.keys.get(idx).cloned()
+        {
+            self.render_detail_modal(frame, p, &key);
         }
 
         // Render action modal on top of everything
         match self.action_modal {
             Some(ActionModal::New) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Generate New Key", 52, 22,
+                    frame,
+                    p,
+                    "Generate New Key",
+                    52,
+                    22,
                     "Tab to cycle fields, Enter to submit, Esc to cancel",
                 );
             }
@@ -517,19 +561,31 @@ impl SshTab for KeysTab {
             }
             Some(ActionModal::Rename) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Rename Key", 52, 13,
+                    frame,
+                    p,
+                    "Rename Key",
+                    52,
+                    13,
                     "Enter to confirm, Esc to cancel",
                 );
             }
             Some(ActionModal::TestPassphrase) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Test Passphrase", 48, 11,
+                    frame,
+                    p,
+                    "Test Passphrase",
+                    48,
+                    11,
                     "Enter passphrase and press Enter to verify",
                 );
             }
             Some(ActionModal::Install) => {
                 self.form.render_in_modal_with_hint(
-                    frame, p, "Install Key to Remote", 52, 13,
+                    frame,
+                    p,
+                    "Install Key to Remote",
+                    52,
+                    13,
                     "Enter user@host, Esc to cancel",
                 );
             }
@@ -537,7 +593,7 @@ impl SshTab for KeysTab {
                 // Show passphrase test result as a temporary banner
                 let result_copy = self.passphrase_test_result.clone();
                 if let Some(ref result) = result_copy {
-                    self.render_passphrase_result(frame, area, p, result);
+                    Self::render_passphrase_result(frame, area, p, result);
                 }
             }
         }
@@ -567,17 +623,32 @@ impl SshTab for KeysTab {
 // ── Rendering ────────────────────────────────────────────────────────────────
 
 impl KeysTab {
-    fn render_empty(&self, frame: &mut Frame, area: Rect, p: Palette) {
+    fn render_empty(frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " SSH KEYS ", p.text, false);
         let msg = Line::from(vec![
             Span::styled("No SSH keys found", Style::new().fg(p.text_dim)),
-            Span::styled("  n", Style::new().fg(p.accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                "  n",
+                Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(" generate", Style::new().fg(p.text_muted)),
         ]);
         let centered = Rect::new(inner.x, inner.y + inner.height / 2, inner.width, 1);
         frame.render_widget(Paragraph::new(msg).centered(), centered);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "render routine kept whole for clarity"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX; spinner arithmetic bounded"
+    )]
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "elapsed spinner product is non-negative"
+    )]
     fn render_list(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(
             frame,
@@ -632,7 +703,11 @@ impl KeysTab {
             // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
-                Style::new().fg(if is_selected || is_hovered { p.accent } else { p.text_dim }),
+                Style::new().fg(if is_selected || is_hovered {
+                    p.accent
+                } else {
+                    p.text_dim
+                }),
             ));
 
             // Key name (truncated to fit)
@@ -641,9 +716,7 @@ impl KeysTab {
             let name_chars = name.chars().count();
             spans.push(Span::styled(
                 name,
-                Style::new()
-                    .fg(p.text)
-                    .add_modifier(Modifier::BOLD),
+                Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ));
 
             // Padding
@@ -659,8 +732,8 @@ impl KeysTab {
             // Fingerprint — show braille spinner while generating
             let fp_w = 16.min(inner.width.saturating_sub(40) as usize);
             if key.fingerprint.is_empty() {
-                use rattles::presets::braille::WaveRows;
                 use rattles::Rattle;
+                use rattles::presets::braille::WaveRows;
                 let frames = WaveRows::FRAMES;
                 let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
                 let elapsed = self.anim_start.elapsed().as_secs_f32();
@@ -723,124 +796,143 @@ impl KeysTab {
         let footer_y = area.y + area.height.saturating_sub(1);
         let footer_area = Rect::new(area.x + 1, footer_y, area.width.saturating_sub(2), 1);
         let viewport = Viewport::from_area(area);
-        self.buttons.render(frame.buffer_mut(), footer_area, p, viewport);
+        self.buttons
+            .render(frame.buffer_mut(), footer_area, p, viewport);
     }
 
+    #[expect(
+        clippy::too_many_lines,
+        reason = "render routine kept whole for clarity"
+    )]
+    #[expect(
+        clippy::cast_possible_truncation,
+        reason = "terminal cols/rows are bounded < u16::MAX"
+    )]
     fn render_detail_modal(&mut self, frame: &mut Frame, p: Palette, key: &SshKeyEntry) {
         self.detail_modal.render(frame, p, |frame, content_area| {
-                let mut lines: Vec<Line> = vec![
-                    Line::from(vec![
-                        Span::styled("Name:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.name, Style::new().fg(p.text).bold()),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Type:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.key_type, Style::new().fg(p.info)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("FP:    ", Style::new().fg(p.text_dim)),
-                        if key.fingerprint.is_empty() {
-                            Span::styled("generating…", Style::new().fg(p.accent))
-                        } else {
-                            Span::styled(&key.fingerprint, Style::new().fg(p.text))
-                        },
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Enc:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.encrypted { "encrypted" } else { "unencrypted" },
-                            Style::new().fg(if key.encrypted { p.ok } else { p.warn }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Perms: ", Style::new().fg(p.text_dim)),
-                        Span::styled(&key.permissions, Style::new().fg(p.text)),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Pub:   ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.fingerprint.is_empty() {
-                                "generating…"
-                            } else if key.has_public {
-                                "✓ present"
-                            } else {
-                                "✗ missing"
-                            },
-                            Style::new().fg(if key.fingerprint.is_empty() {
-                                p.accent
-                            } else if key.has_public {
-                                p.ok
-                            } else {
-                                p.err
-                            }),
-                        ),
-                    ]),
-                    Line::from(vec![
-                        Span::styled("Cert:  ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            if key.has_cert { "✓ attached" } else { "— none" },
-                            Style::new().fg(if key.has_cert { p.accent2 } else { p.text_muted }),
-                        ),
-                    ]),
-                ];
-
-                // Host referencing section
-                if key.used_by_hosts.is_empty() {
-                    lines.push(Line::from(vec![
-                        Span::styled("Hosts: ", Style::new().fg(p.text_dim)),
-                        Span::styled(
-                            "Not referenced in any host config",
-                            Style::new().fg(p.text_dim),
-                        ),
-                    ]));
-                } else {
-                    lines.push(Line::from(vec![
-                        Span::styled("◆ Referenced by", p.label_style()),
-                    ]));
-                    if key.used_by_hosts.len() <= 5 {
-                        let hosts_str = format!("  {}", key.used_by_hosts.join(", "));
-                        let hosts_display = truncate_str(&hosts_str, content_area.width as usize);
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                hosts_display,
-                                Style::new().fg(p.text),
-                            ),
-                        ]));
+            let mut lines: Vec<Line> = vec![
+                Line::from(vec![
+                    Span::styled("Name:  ", Style::new().fg(p.text_dim)),
+                    Span::styled(&key.name, Style::new().fg(p.text).bold()),
+                ]),
+                Line::from(vec![
+                    Span::styled("Type:  ", Style::new().fg(p.text_dim)),
+                    Span::styled(&key.key_type, Style::new().fg(p.info)),
+                ]),
+                Line::from(vec![
+                    Span::styled("FP:    ", Style::new().fg(p.text_dim)),
+                    if key.fingerprint.is_empty() {
+                        Span::styled("generating…", Style::new().fg(p.accent))
                     } else {
-                        let display: Vec<&str> =
-                            key.used_by_hosts.iter().take(5).map(|s| s.as_str()).collect();
-                        let remaining = key.used_by_hosts.len() - 5;
-                        let overflow_suffix = format!(" +{remaining} more");
-                        let overflow_w = overflow_suffix.chars().count();
-                        let max_hosts_w = content_area.width.saturating_sub(overflow_w as u16) as usize;
-                        let hosts_str = format!("  {}", display.join(", "));
-                        let hosts_display = truncate_str(&hosts_str, max_hosts_w);
-                        lines.push(Line::from(vec![
-                            Span::styled(
-                                hosts_display,
-                                Style::new().fg(p.text),
-                            ),
-                            Span::styled(
-                                overflow_suffix,
-                                Style::new().fg(p.text_dim),
-                            ),
-                        ]));
-                    }
-                }
+                        Span::styled(&key.fingerprint, Style::new().fg(p.text))
+                    },
+                ]),
+                Line::from(vec![
+                    Span::styled("Enc:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        if key.encrypted {
+                            "encrypted"
+                        } else {
+                            "unencrypted"
+                        },
+                        Style::new().fg(if key.encrypted { p.ok } else { p.warn }),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Perms: ", Style::new().fg(p.text_dim)),
+                    Span::styled(&key.permissions, Style::new().fg(p.text)),
+                ]),
+                Line::from(vec![
+                    Span::styled("Pub:   ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        if key.fingerprint.is_empty() {
+                            "generating…"
+                        } else if key.has_public {
+                            "✓ present"
+                        } else {
+                            "✗ missing"
+                        },
+                        Style::new().fg(if key.fingerprint.is_empty() {
+                            p.accent
+                        } else if key.has_public {
+                            p.ok
+                        } else {
+                            p.err
+                        }),
+                    ),
+                ]),
+                Line::from(vec![
+                    Span::styled("Cert:  ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        if key.has_cert {
+                            "✓ attached"
+                        } else {
+                            "— none"
+                        },
+                        Style::new().fg(if key.has_cert {
+                            p.accent2
+                        } else {
+                            p.text_muted
+                        }),
+                    ),
+                ]),
+            ];
 
-                lines.push(Line::raw(""));
-                lines.push(Line::from(
-                    Span::styled("Press Esc to close", Style::new().fg(p.text_muted)),
-                ));
-
-                for (i, line) in lines.into_iter().enumerate() {
-                    let y = content_area.y + i as u16;
-                    if y < content_area.bottom() {
-                        let row_area = Rect::new(content_area.x, y, content_area.width, 1);
-                        frame.render_widget(Paragraph::new(line), row_area);
-                    }
+            // Host referencing section
+            if key.used_by_hosts.is_empty() {
+                lines.push(Line::from(vec![
+                    Span::styled("Hosts: ", Style::new().fg(p.text_dim)),
+                    Span::styled(
+                        "Not referenced in any host config",
+                        Style::new().fg(p.text_dim),
+                    ),
+                ]));
+            } else {
+                lines.push(Line::from(vec![Span::styled(
+                    "◆ Referenced by",
+                    p.label_style(),
+                )]));
+                if key.used_by_hosts.len() <= 5 {
+                    let hosts_str = format!("  {}", key.used_by_hosts.join(", "));
+                    let hosts_display = truncate_str(&hosts_str, content_area.width as usize);
+                    lines.push(Line::from(vec![Span::styled(
+                        hosts_display,
+                        Style::new().fg(p.text),
+                    )]));
+                } else {
+                    let display: Vec<&str> = key
+                        .used_by_hosts
+                        .iter()
+                        .take(5)
+                        .map(std::string::String::as_str)
+                        .collect();
+                    let remaining = key.used_by_hosts.len() - 5;
+                    let overflow_suffix = format!(" +{remaining} more");
+                    let overflow_w = overflow_suffix.chars().count();
+                    let max_hosts_w = content_area.width.saturating_sub(overflow_w as u16) as usize;
+                    let hosts_str = format!("  {}", display.join(", "));
+                    let hosts_display = truncate_str(&hosts_str, max_hosts_w);
+                    lines.push(Line::from(vec![
+                        Span::styled(hosts_display, Style::new().fg(p.text)),
+                        Span::styled(overflow_suffix, Style::new().fg(p.text_dim)),
+                    ]));
                 }
-            });
+            }
+
+            lines.push(Line::raw(""));
+            lines.push(Line::from(Span::styled(
+                "Press Esc to close",
+                Style::new().fg(p.text_muted),
+            )));
+
+            for (i, line) in lines.into_iter().enumerate() {
+                let y = content_area.y + i as u16;
+                if y < content_area.bottom() {
+                    let row_area = Rect::new(content_area.x, y, content_area.width, 1);
+                    frame.render_widget(Paragraph::new(line), row_area);
+                }
+            }
+        });
     }
 }
 
@@ -850,7 +942,6 @@ impl KeysTab {
 impl KeysTab {
     /// Render the passphrase test result as a small overlay banner.
     fn render_passphrase_result(
-        &mut self,
         frame: &mut Frame,
         _area: Rect,
         p: Palette,
@@ -863,7 +954,10 @@ impl KeysTab {
         let modal = Modal::new("Passphrase Test").dimensions(42, 7);
         modal.render(frame, p, |frame, content_area| {
             let result_line = Line::from(vec![
-                Span::styled(format!("{icon} "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("{icon} "),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(msg, Style::new().fg(color)),
             ]);
             let hint_line = Line::from(Span::styled(
@@ -996,7 +1090,10 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
-        assert!(output.contains("No SSH keys found"), "empty state: {output}");
+        assert!(
+            output.contains("No SSH keys found"),
+            "empty state: {output}"
+        );
     }
 
     #[test]
@@ -1116,8 +1213,12 @@ mod tests {
             has_public: true,
             has_cert: false,
             used_by_hosts: vec![
-                "host1".into(), "host2".into(), "host3".into(),
-                "host4".into(), "host5".into(), "host6".into(),
+                "host1".into(),
+                "host2".into(),
+                "host3".into(),
+                "host4".into(),
+                "host5".into(),
+                "host6".into(),
                 "host7".into(),
             ],
         }];

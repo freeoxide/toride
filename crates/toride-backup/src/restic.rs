@@ -274,9 +274,7 @@ impl ResticClient {
     ///
     /// Returns [`Error::BinaryNotFound`] if `restic` is not on `$PATH`.
     pub fn new(repo: impl AsRef<Path>) -> Result<Self> {
-        let binary = which::which("restic").map_err(|_| {
-            Error::BinaryNotFound("restic".into())
-        })?;
+        let binary = which::which("restic").map_err(|_| Error::BinaryNotFound("restic".into()))?;
         Ok(Self {
             binary,
             repo: repo.as_ref().to_path_buf(),
@@ -355,10 +353,7 @@ impl ResticClient {
     /// Returns [`Error::RepositoryInit`] if the init command fails.
     pub fn init(&self) -> Result<()> {
         tracing::info!(repo = %self.repo.display(), "restic init");
-        let spec = self
-            .spec("init")?
-            .arg("--json")
-            .redact(true);
+        let spec = self.spec("init").arg("--json").redact(true);
         self.runner
             .run_checked(&spec)
             .map_err(|e| Error::RepositoryInit(restic_err(&e)))?;
@@ -377,7 +372,7 @@ impl ResticClient {
     /// Returns [`Error::RepositoryAccess`] if the check command fails.
     pub fn check(&self) -> Result<String> {
         tracing::info!(repo = %self.repo.display(), "restic check");
-        let spec = self.spec("check")?.redact(true);
+        let spec = self.spec("check").redact(true);
         let output = self
             .runner
             .run_checked(&spec)
@@ -398,7 +393,7 @@ impl ResticClient {
     #[cfg(feature = "client")]
     pub fn stats(&self) -> Result<RepoStats> {
         tracing::info!(repo = %self.repo.display(), "restic stats");
-        let spec = self.spec("stats")?.arg("--json").redact(true);
+        let spec = self.spec("stats").arg("--json").redact(true);
         let output = self
             .runner
             .run_checked(&spec)
@@ -434,8 +429,8 @@ impl ResticClient {
             paths = ?paths.iter().map(|p| p.display()).collect::<Vec<_>>(),
             "restic backup"
         );
-        let mut spec = self.spec("backup")?.arg("--json");
-        for tag in &self.tags_scratch() {
+        let mut spec = self.spec("backup").arg("--json");
+        for tag in &Self::tags_scratch() {
             spec = spec.arg("--tag").arg(tag);
         }
         for p in paths {
@@ -508,7 +503,7 @@ impl ResticClient {
     /// Returns [`Error::CommandFailed`] if the command fails.
     pub fn snapshots(&self) -> Result<String> {
         tracing::info!(repo = %self.repo.display(), "restic snapshots");
-        let spec = self.spec("snapshots")?.arg("--json").redact(true);
+        let spec = self.spec("snapshots").arg("--json").redact(true);
         let output = self
             .runner
             .run_checked(&spec)
@@ -531,7 +526,7 @@ impl ResticClient {
     pub fn cat_snapshot(&self, snapshot: &str) -> Result<Snapshot> {
         tracing::info!(repo = %self.repo.display(), snapshot = %snapshot, "restic cat snapshot");
         let spec = self
-            .spec("cat")?
+            .spec("cat")
             .arg("snapshot")
             .arg(snapshot)
             .arg("--json")
@@ -586,7 +581,7 @@ impl ResticClient {
             keep_monthly = ?keep_monthly,
             "restic forget --prune"
         );
-        let mut spec = self.spec("forget")?.arg("--prune");
+        let mut spec = self.spec("forget").arg("--prune");
         if let Some(d) = keep_daily {
             spec = spec.arg("--keep-daily").arg(d.to_string());
         }
@@ -628,7 +623,7 @@ impl ResticClient {
             keep_monthly = ?keep_monthly,
             "restic forget"
         );
-        let mut spec = self.spec("forget")?.arg("--json");
+        let mut spec = self.spec("forget").arg("--json");
         if let Some(d) = keep_daily {
             spec = spec.arg("--keep-daily").arg(d.to_string());
         }
@@ -668,7 +663,7 @@ impl ResticClient {
             "restic restore"
         );
         let spec = self
-            .spec("restore")?
+            .spec("restore")
             .arg(snapshot)
             .arg("--target")
             .arg(path_string(target)?)
@@ -700,7 +695,7 @@ impl ResticClient {
             "restic restore (typed)"
         );
         let spec = self
-            .spec("restore")?
+            .spec("restore")
             .arg(snapshot)
             .arg("--target")
             .arg(path_string(target)?)
@@ -722,7 +717,7 @@ impl ResticClient {
     ///
     /// The repo and (raw) passphrase are never passed as positional args; the
     /// passphrase is attached as `RESTIC_PASSWORD` env by [`Self::apply_secrets`].
-    fn spec(&self, subcommand: &str) -> Result<CommandSpec> {
+    fn spec(&self, subcommand: &str) -> CommandSpec {
         let mut spec = CommandSpec::new(self.binary.to_string_lossy().to_string())
             .arg("--repo")
             .arg(self.repo.to_string_lossy().to_string());
@@ -737,20 +732,20 @@ impl ResticClient {
     /// and any caller-provided extra env. The repo URL is also considered
     /// potentially secret (it can embed credentials for `sftp:`/`b2:` backends),
     /// so every spec built here is marked `redact(true)` at the call sites.
-    fn apply_secrets(&self, mut spec: CommandSpec) -> Result<CommandSpec> {
+    fn apply_secrets(&self, mut spec: CommandSpec) -> CommandSpec {
         if let Some(ref pw) = self.password {
             spec = spec.env("RESTIC_PASSWORD", pw.clone());
         }
         for (k, v) in &self.extra_env {
             spec = spec.env(k.clone(), v.clone());
         }
-        Ok(spec)
+        spec
     }
 
     /// Tags to attach to backups. Currently no per-client tag store is exposed
     /// publicly; this returns an empty list but centralises where future tag
     /// configuration would flow in.
-    fn tags_scratch(&self) -> Vec<String> {
+    fn tags_scratch() -> Vec<String> {
         Vec::new()
     }
 }
@@ -859,10 +854,10 @@ fn parse_restore_summary(stdout: &str) -> std::result::Result<RestoreSummary, St
 #[cfg(all(test, feature = "client"))]
 mod tests {
     use super::*;
-    use toride_runner::fake::FakeRunner;
     use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
 
-    /// Build a client wired to a shared FakeRunner, returning the client plus
+    /// Build a client wired to a shared `FakeRunner`, returning the client plus
     /// a handle on the same runner for post-call assertions.
     ///
     /// `FakeRunner` is not `Clone`, so we wrap it in an `Arc` once and hand
@@ -871,10 +866,7 @@ mod tests {
     /// `FakeRunner`'s inherent assertion methods (`assert_called_with`,
     /// `calls`). Both `Arc`s point at the same allocation, so they observe the
     /// same call log.
-    fn client_and_runner(
-        runner: FakeRunner,
-        repo: &str,
-    ) -> (ResticClient, Arc<FakeRunner>) {
+    fn client_and_runner(runner: FakeRunner, repo: &str) -> (ResticClient, Arc<FakeRunner>) {
         let runner = Arc::new(runner);
         let for_client: Arc<dyn Runner> = runner.clone();
         let client = ResticClient::with_binary(PathBuf::from("/usr/bin/restic"), repo)
@@ -889,7 +881,7 @@ mod tests {
 
     /// `restic init` builds `restic --repo <repo> init --json` and carries the
     /// passphrase via `RESTIC_PASSWORD` env (never as an arg).
-    /// Source: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#init
+    /// Source: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#init>
     #[test]
     fn init_builds_correct_command() {
         // init emits a single JSON-lines "initialized" record.
@@ -916,8 +908,9 @@ mod tests {
     /// enforces redact, so a spec missing `redact(true)` fails an exact match.
     #[test]
     fn redact_is_set_on_secret_bearing_command() {
-        let runner = FakeRunner::new()
-            .push_response(CommandOutput::from_stdout(r#"{"message_type":"initialized"}"#));
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(
+            r#"{"message_type":"initialized"}"#,
+        ));
 
         let (client, runner) = client_and_runner(runner, "/tmp/repo");
         client.init().expect("init should succeed");
@@ -929,7 +922,12 @@ mod tests {
             "every restic command must set redact(true) when it carries the repo passphrase"
         );
         // The passphrase is delivered via env, never via a positional arg.
-        assert!(calls[0].env.iter().any(|(k, v)| k == "RESTIC_PASSWORD" && v == "s3cr3t-passphrase"));
+        assert!(
+            calls[0]
+                .env
+                .iter()
+                .any(|(k, v)| k == "RESTIC_PASSWORD" && v == "s3cr3t-passphrase")
+        );
         assert!(
             !calls[0]
                 .args
@@ -955,7 +953,7 @@ mod tests {
     }
 
     /// `restic check` (no --json; check does not support JSON).
-    /// Source: https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency
+    /// Source: <https://restic.readthedocs.io/en/latest/045_working_with_repos.html#checking-integrity-and-consistency>
     #[test]
     fn check_builds_correct_command_and_returns_stdout() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(
@@ -975,7 +973,7 @@ mod tests {
 
     /// `restic snapshots --json` returns an array parsed into typed Snapshots.
     /// Sample is the exact shape documented at
-    /// https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#snapshots
+    /// <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#snapshots>
     #[test]
     fn snapshots_parses_docs_json_sample() {
         // Verbatim-style sample sourced from the official snapshots schema.
@@ -1002,13 +1000,19 @@ mod tests {
         let snaps = client.snapshots_typed().expect("snapshots should parse");
         assert_eq!(snaps.len(), 1);
         let s = &snaps[0];
-        assert_eq!(s.id, "5111c8ae5a5e3e2e8b6b4f0c5b8e3a2d1c9f0a1b2c3d4e5f6a7b8c9d0e1f2a3");
+        assert_eq!(
+            s.id,
+            "5111c8ae5a5e3e2e8b6b4f0c5b8e3a2d1c9f0a1b2c3d4e5f6a7b8c9d0e1f2a3"
+        );
         assert_eq!(s.short_id, "5111c8ae");
         assert_eq!(s.hostname, "kasa");
         assert_eq!(s.username, "user");
         assert_eq!(s.paths, vec!["/home/user", "/etc"]);
         assert_eq!(s.tags, vec!["home", "auto"]);
-        assert_eq!(s.tree, "fda3c5e8b2a1d4c6e9f0a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2");
+        assert_eq!(
+            s.tree,
+            "fda3c5e8b2a1d4c6e9f0a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2"
+        );
 
         let expected = CommandSpec::new("/usr/bin/restic")
             .args(["--repo", "/srv/backup", "snapshots", "--json"])
@@ -1027,9 +1031,9 @@ mod tests {
         assert_eq!(raw.trim(), "[]");
     }
 
-    /// `restic backup --json` final summary record is parsed into BackupSummary.
+    /// `restic backup --json` final summary record is parsed into `BackupSummary`.
     /// Sample is the exact `message_type:"summary"` shape documented at
-    /// https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#summary
+    /// <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#summary>
     #[test]
     fn backup_parses_docs_summary_sample() {
         // A realistic JSON-lines stream: one status record, then the summary.
@@ -1067,12 +1071,14 @@ mod tests {
         let stream = r#"{"message_type":"summary","files_new":0,"files_changed":0,"files_unmodified":1,"dirs_new":0,"dirs_changed":0,"dirs_unmodified":1,"data_added":0,"total_files_processed":1,"total_bytes_processed":0,"total_duration":0.1}"#;
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(stream));
         let (client, _runner) = client_and_runner(runner, "/srv/backup");
-        let summary = client.backup_typed(&[Path::new("/etc")]).expect("backup ok");
+        let summary = client
+            .backup_typed(&[Path::new("/etc")])
+            .expect("backup ok");
         assert_eq!(summary.snapshot_id, None);
     }
 
     /// `restic cat snapshot <id> --json` returns the single snapshot object.
-    /// Source: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#cat
+    /// Source: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#cat>
     #[test]
     fn cat_snapshot_parses_docs_sample() {
         let sample = r#"{
@@ -1098,7 +1104,12 @@ mod tests {
 
         let expected = CommandSpec::new("/usr/bin/restic")
             .args([
-                "--repo", "/srv/backup", "cat", "snapshot", "5111c8ae", "--json",
+                "--repo",
+                "/srv/backup",
+                "cat",
+                "snapshot",
+                "5111c8ae",
+                "--json",
             ])
             .env("RESTIC_PASSWORD", "s3cr3t-passphrase")
             .redact(true);
@@ -1120,8 +1131,8 @@ mod tests {
         assert!(matches!(err, Error::SnapshotNotFound(ref id) if id == "deadbeef"));
     }
 
-    /// `restic stats --json` parses into RepoStats.
-    /// Source: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#stats
+    /// `restic stats --json` parses into `RepoStats`.
+    /// Source: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#stats>
     #[test]
     fn stats_parses_docs_sample() {
         let sample = r#"{
@@ -1151,7 +1162,7 @@ mod tests {
     }
 
     /// `restic forget --prune --keep-*` retention policy.
-    /// Source: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget
+    /// Source: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget>
     #[test]
     fn prune_builds_forget_prune_command() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("forgotten"));
@@ -1163,8 +1174,16 @@ mod tests {
 
         let expected = CommandSpec::new("/usr/bin/restic")
             .args([
-                "--repo", "/srv/backup", "forget", "--prune",
-                "--keep-daily", "7", "--keep-weekly", "4", "--keep-monthly", "6",
+                "--repo",
+                "/srv/backup",
+                "forget",
+                "--prune",
+                "--keep-daily",
+                "7",
+                "--keep-weekly",
+                "4",
+                "--keep-monthly",
+                "6",
             ])
             .env("RESTIC_PASSWORD", "s3cr3t-passphrase")
             .redact(true);
@@ -1177,12 +1196,19 @@ mod tests {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("[]"));
         let (client, runner) = client_and_runner(runner, "/srv/backup");
 
-        let out = client.forget(None, Some(4), None).expect("forget should succeed");
+        let out = client
+            .forget(None, Some(4), None)
+            .expect("forget should succeed");
         assert_eq!(out.trim(), "[]");
 
         let expected = CommandSpec::new("/usr/bin/restic")
             .args([
-                "--repo", "/srv/backup", "forget", "--json", "--keep-weekly", "4",
+                "--repo",
+                "/srv/backup",
+                "forget",
+                "--json",
+                "--keep-weekly",
+                "4",
             ])
             .env("RESTIC_PASSWORD", "s3cr3t-passphrase")
             .redact(true);
@@ -1190,7 +1216,7 @@ mod tests {
     }
 
     /// `restic restore <snap> --target <dir> --json` parses the summary record.
-    /// Source: https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#restore
+    /// Source: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#restore>
     #[test]
     fn restore_parses_docs_summary_sample() {
         let stream = r#"{"message_type":"status","seconds_elapsed":0,"percent_done":0,"total_files":3,"files_restored":0}
@@ -1207,7 +1233,13 @@ mod tests {
 
         let expected = CommandSpec::new("/usr/bin/restic")
             .args([
-                "--repo", "/srv/backup", "restore", "5111c8ae", "--target", "/tmp/restore", "--json",
+                "--repo",
+                "/srv/backup",
+                "restore",
+                "5111c8ae",
+                "--target",
+                "/tmp/restore",
+                "--json",
             ])
             .env("RESTIC_PASSWORD", "s3cr3t-passphrase")
             .redact(true);
@@ -1224,7 +1256,9 @@ mod tests {
             stderr: "target directory not writable".into(),
         }));
         let (client, _runner) = client_and_runner(runner, "/srv/backup");
-        let err = client.restore("5111c8ae", Path::new("/tmp/restore")).unwrap_err();
+        let err = client
+            .restore("5111c8ae", Path::new("/tmp/restore"))
+            .unwrap_err();
         assert!(matches!(err, Error::RestoreFailed(_)));
     }
 
@@ -1259,10 +1293,9 @@ mod tests {
     /// `--password-command` is plumbed via the flag (not env) when configured.
     #[test]
     fn password_command_uses_flag_not_env() {
-        let runner = Arc::new(
-            FakeRunner::new()
-                .push_response(CommandOutput::from_stdout(r#"{"message_type":"initialized"}"#)),
-        );
+        let runner = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
+            r#"{"message_type":"initialized"}"#,
+        )));
         let for_client: Arc<dyn Runner> = runner.clone();
         let client = ResticClient::with_binary(PathBuf::from("/usr/bin/restic"), "/srv/backup")
             .with_password_command("cat /etc/restic/pw")
@@ -1297,10 +1330,9 @@ mod tests {
     /// Extra env is forwarded onto every spec.
     #[test]
     fn extra_env_is_forwarded() {
-        let runner = Arc::new(
-            FakeRunner::new()
-                .push_response(CommandOutput::from_stdout(r#"{"message_type":"initialized"}"#)),
-        );
+        let runner = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout(
+            r#"{"message_type":"initialized"}"#,
+        )));
         let for_client: Arc<dyn Runner> = runner.clone();
         let client = ResticClient::with_binary(PathBuf::from("/usr/bin/restic"), "/srv/backup")
             .with_password("pw")
@@ -1320,16 +1352,23 @@ mod tests {
             calls[0].env
         );
         // Passphrase still present via env.
-        assert!(calls[0].env.iter().any(|(k, v)| k == "RESTIC_PASSWORD" && v == "pw"));
+        assert!(
+            calls[0]
+                .env
+                .iter()
+                .any(|(k, v)| k == "RESTIC_PASSWORD" && v == "pw")
+        );
     }
 
-    /// is_snapshot_not_found recognises the documented restic stderr phrasing.
+    /// `is_snapshot_not_found` recognises the documented restic stderr phrasing.
     #[test]
     fn snapshot_not_found_heuristic() {
         assert!(is_snapshot_not_found(
             "Ignoring snapshot deadbeef, ID is not a snapshot"
         ));
-        assert!(is_snapshot_not_found("unable to find snapshot with id deadbeef"));
+        assert!(is_snapshot_not_found(
+            "unable to find snapshot with id deadbeef"
+        ));
         assert!(!is_snapshot_not_found("target directory not writable"));
     }
 }

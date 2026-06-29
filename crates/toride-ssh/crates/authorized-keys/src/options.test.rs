@@ -10,10 +10,9 @@ fn parse_options_should_return_defaults_when_input_is_empty() {
 
 #[test]
 fn parse_options_should_recognize_all_boolean_flags() {
-    let opts = parse_options(
-        "no-pty,no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-user-rc",
-    )
-    .unwrap();
+    let opts =
+        parse_options("no-pty,no-port-forwarding,no-X11-forwarding,no-agent-forwarding,no-user-rc")
+            .unwrap();
     assert!(opts.no_pty);
     assert!(opts.no_port_forwarding);
     assert!(opts.no_x11_forwarding);
@@ -314,8 +313,9 @@ fn parse_options_all_options_combined() {
          no-X11-forwarding,no-agent-forwarding,no-user-rc,restrict,\
          permit-open=\"host:22\",environment=\"FOO=bar\",tunnel=\"eth0\",\
          cert-authority,principals=\"admin\",expiry-time=\"20250101T000000\",\
-         perferrp"
-    ).unwrap();
+         perferrp",
+    )
+    .unwrap();
     assert_eq!(opts.command.as_deref(), Some("/bin/bash"));
     assert_eq!(opts.from, vec!["10.0.0.*"]);
     assert!(opts.no_pty);
@@ -325,7 +325,10 @@ fn parse_options_all_options_combined() {
     assert!(opts.no_user_rc);
     assert!(opts.restrict);
     assert_eq!(opts.permit_open, vec!["host:22"]);
-    assert_eq!(opts.environment, vec![("FOO".to_string(), "bar".to_string())]);
+    assert_eq!(
+        opts.environment,
+        vec![("FOO".to_string(), "bar".to_string())]
+    );
     assert_eq!(opts.tunnel.as_deref(), Some("eth0"));
     assert!(opts.cert_authority);
     assert_eq!(opts.principals, vec!["admin"]);
@@ -400,7 +403,10 @@ fn parse_options_environment_with_empty_value() {
 #[test]
 fn parse_options_environment_with_equals_in_value() {
     let opts = parse_options("environment=\"PATH=/usr/bin:/bin\"").unwrap();
-    assert_eq!(opts.environment, vec![("PATH".to_string(), "/usr/bin:/bin".to_string())]);
+    assert_eq!(
+        opts.environment,
+        vec![("PATH".to_string(), "/usr/bin:/bin".to_string())]
+    );
 }
 
 #[test]

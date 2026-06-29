@@ -106,10 +106,7 @@ pub struct IntegrityManager<'a> {
 const AIDE_CONFIG_CANDIDATES: &[&str] = &["/etc/aide.conf", "/etc/aide/aide.conf"];
 
 /// Candidate AIDE database files, searched newest-first.
-const AIDE_DB_CANDIDATES: &[&str] = &[
-    "/var/lib/aide/aide.db.gz",
-    "/var/lib/aide/aide.db.new.gz",
-];
+const AIDE_DB_CANDIDATES: &[&str] = &["/var/lib/aide/aide.db.gz", "/var/lib/aide/aide.db.new.gz"];
 
 impl<'a> IntegrityManager<'a> {
     /// Create a new integrity manager with the given runner and paths.
@@ -187,11 +184,7 @@ impl<'a> IntegrityManager<'a> {
         let db_path = self.find_db();
         let database_initialized = db_path.is_some();
         let last_check = match db_path.as_deref() {
-            Some(p) => p
-                .metadata()
-                .map_err(Error::Io)?
-                .modified()
-                .ok(),
+            Some(p) => p.metadata().map_err(Error::Io)?.modified().ok(),
             None => None,
         };
 
@@ -329,14 +322,14 @@ fn build_status_line(
     if !config_present {
         parts.push("no config".to_owned());
     }
-    if !database_initialized {
-        parts.push("db not initialized".to_owned());
-    } else {
+    if database_initialized {
         match file_count {
             Some(0) => parts.push("0 changes".to_owned()),
             Some(n) => parts.push(format!("{n} changes")),
             None => parts.push("db present".to_owned()),
         }
+    } else {
+        parts.push("db not initialized".to_owned());
     }
 
     if let Some(ts) = last_check.and_then(system_time_to_rfc3339) {
@@ -349,6 +342,12 @@ fn build_status_line(
 /// Render a `SystemTime` as a compact RFC-3339-ish string, or `None` if the
 /// time is before the UNIX epoch (should not happen in practice).
 fn system_time_to_rfc3339(t: SystemTime) -> Option<String> {
+    // `as_secs()` from `duration_since(UNIX_EPOCH)` is a duration in seconds
+    // since 1970; converting to `i64` cannot wrap for any plausible wall-clock.
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "duration secs fit in i64 for any real timestamp"
+    )]
     let secs = t.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs() as i64;
     // Minimal UTC formatter (no chrono dep): YYYY-MM-DDTHH:MM:SSZ.
     let (year, month, day, hour, minute, second) = unix_to_ymdhms(secs);
@@ -359,6 +358,16 @@ fn system_time_to_rfc3339(t: SystemTime) -> Option<String> {
 
 /// Convert a UNIX timestamp (seconds since epoch, UTC) to broken-down
 /// calendar components. Pure, allocation-free, valid for years 1970..2100+.
+///
+/// The casts below are all provably in range per Howard Hinnant's
+/// `civil_from_days` algorithm (the inline `// [lo, hi]` comments document
+/// each value's domain), so the cast_* lints are silenced for this body.
+#[expect(
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_wrap,
+    reason = "civil_from_days invariants bound every value (see inline range comments)"
+)]
 fn unix_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     let days = secs.div_euclid(86_400);
     let rem = secs.rem_euclid(86_400);
@@ -456,10 +465,7 @@ mod tests {
         // "not implemented" downstream.
         assert_eq!(s.file_count, Some(0));
         assert_eq!(s.last_check_passed, Some(false));
-        assert_eq!(
-            s.last_check_output.as_deref(),
-            Some("AIDE not installed")
-        );
+        assert_eq!(s.last_check_output.as_deref(), Some("AIDE not installed"));
     }
 
     // -- status when aide binary is missing ---------------------------------
@@ -627,6 +633,12 @@ mod tests {
 
     #[test]
     fn system_time_to_rfc3339_round_trips_known() {
+        // 946_684_800 s is the exact Y2K epoch (2000-01-01T00:00:00Z); no
+        // larger Duration unit expresses this precise instant.
+        #[expect(
+            clippy::duration_suboptimal_units,
+            reason = "exact Y2K epoch has no larger Duration unit"
+        )]
         let t = SystemTime::UNIX_EPOCH + Duration::from_secs(946_684_800);
         assert_eq!(
             system_time_to_rfc3339(t).as_deref(),

@@ -4,10 +4,10 @@
 //! table via the `conntrack` command and converting raw output into
 //! structured types.
 
-use crate::parse::{parse_conntrack_output, ConntrackEntry};
+use crate::Result;
+use crate::parse::{ConntrackEntry, parse_conntrack_output};
 use crate::paths::MonitorPaths;
 use crate::report::ConnectionInfo;
-use crate::Result;
 
 /// Reads connection tracking data from the kernel via `conntrack`.
 ///
@@ -107,10 +107,9 @@ impl<'a> ConntrackReader<'a> {
 
     /// Run a `conntrack` subcommand with the given arguments.
     fn run_conntrack(&self, args: &[String]) -> Result<toride_runner::CommandOutput> {
-        let spec = toride_runner::CommandSpec::new(
-            self.paths.conntrack.to_string_lossy().into_owned(),
-        )
-        .args(args.iter().cloned());
+        let spec =
+            toride_runner::CommandSpec::new(self.paths.conntrack.to_string_lossy().into_owned())
+                .args(args.iter().cloned());
         let output = self.runner.run(&spec)?;
         if !output.success {
             return Err(crate::Error::ConntrackError(format!(
@@ -141,15 +140,15 @@ mod tests {
         }
     }
 
-    /// End-to-end FakeRunner test for `ConntrackReader::list_all()` against a
+    /// `End-to-end` `FakeRunner` test for `ConntrackReader::list_all()` against a
     /// real `/proc/net/nf_conntrack` sample containing BOTH tcp and udp lines
     /// (plus sctp/dccp/icmp). This is the regression that Wave-2a found: the
     /// parser read `parts[3]` unconditionally and captured the UDP `src=` field
     /// as a bogus "state".
     ///
     /// Source: kernel conntrack textual dump layout, documented at
-    ///   - https://stackoverflow.com/questions/16034698
-    ///   - https://unix.stackexchange.com/questions/400394
+    ///   - <https://stackoverflow.com/questions/16034698>
+    ///   - <https://unix.stackexchange.com/questions/400394>
     ///   - docs.kernel.org/netlink/specs/conntrack.html (protoinfo-tcp/-sctp/
     ///     -dccp are the only protocols that emit a state keyword)
     #[test]
@@ -197,9 +196,7 @@ icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
 
         // The reader was actually invoked with `conntrack -L` (verifies the
         // spec plumbing, not just the parser).
-        runner.assert_called_with(
-            &CommandSpec::new("/usr/sbin/conntrack").args(["-L"]),
-        );
+        runner.assert_called_with(&CommandSpec::new("/usr/sbin/conntrack").args(["-L"]));
 
         // Round-trip through ConnectionInfo: udp state must be empty string
         // (not the leaked src= value).

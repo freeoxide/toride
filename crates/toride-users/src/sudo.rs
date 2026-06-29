@@ -3,9 +3,39 @@
 //! Provides functions to manage sudo access by writing drop-in files to
 //! `/etc/sudoers.d/` and validating sudoers syntax via `visudo -c`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use crate::{paths::UserPaths, render, Error, Result};
+use crate::{Error, Result, paths::UserPaths, render};
+
+/// Resolve and validate a sudoers drop-in path for `username`.
+///
+/// Validates the username first (so a malformed name is rejected before any
+/// filesystem activity), then joins it onto [`UserPaths::sudoers_d`] and
+/// verifies the result stays within that directory. The check uses
+/// [`Path::starts_with`], which compares by component, rather than calling
+/// `canonicalize` -- `canonicalize` fails on the not-yet-existing drop-in file
+/// during `grant_sudo` and requires the base to exist on disk. The component
+/// comparison catches traversal attempts (`../`), embedded absolute paths, and
+/// drive prefixes regardless of whether the paths currently exist.
+///
+/// # Errors
+///
+/// - [`Error::Validation`] if the username is invalid.
+/// - [`Error::SudoError`] if the resolved path escapes `sudoers_d`.
+fn sudoers_dropin_contained(paths: &UserPaths, username: &str) -> Result<PathBuf> {
+    crate::validate::validate_username(username)?;
+    let dropin = paths.sudoers_d.join(username);
+    // `Path::starts_with` compares by component, so a malicious username
+    // containing `..` or an absolute segment is caught even though the file
+    // does not exist yet (canonicalize would fail on a missing path).
+    if !dropin.starts_with(&paths.sudoers_d) {
+        return Err(Error::SudoError(format!(
+            "sudoers drop-in path escapes sudoers.d: {}",
+            dropin.display()
+        )));
+    }
+    Ok(dropin)
+}
 
 /// Grant sudo access to a user by creating a drop-in file.
 ///
@@ -14,11 +44,13 @@ use crate::{paths::UserPaths, render, Error, Result};
 ///
 /// # Errors
 ///
+/// - [`Error::Validation`] if the username is invalid.
 /// - [`Error::UserExists`] if a sudoers drop-in already exists for this user.
-/// - [`Error::SudoError`] if the written file fails `visudo -c` validation.
+/// - [`Error::SudoError`] if the drop-in path escapes `sudoers.d` or the
+///   written file fails `visudo -c` validation.
 /// - [`Error::Io`] if the file cannot be written.
 pub fn grant_sudo(paths: &UserPaths, username: &str, nopasswd: bool) -> Result<()> {
-    let dropin = paths.sudoers_dropin(username);
+    let dropin = sudoers_dropin_contained(paths, username)?;
 
     if dropin.exists() {
         return Err(Error::SudoError(format!(
@@ -47,11 +79,12 @@ pub fn grant_sudo(paths: &UserPaths, username: &str, nopasswd: bool) -> Result<(
 ///
 /// # Errors
 ///
-/// - [`Error::SudoError`] if the file is not managed by toride or does not
-///   exist.
+/// - [`Error::Validation`] if the username is invalid.
+/// - [`Error::SudoError`] if the drop-in path escapes `sudoers.d`, the file is
+///   not managed by toride, or does not exist.
 /// - [`Error::Io`] if the file cannot be removed.
 pub fn revoke_sudo(paths: &UserPaths, username: &str) -> Result<()> {
-    let dropin = paths.sudoers_dropin(username);
+    let dropin = sudoers_dropin_contained(paths, username)?;
 
     if !dropin.exists() {
         return Err(Error::SudoError(format!(

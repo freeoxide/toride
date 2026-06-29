@@ -99,7 +99,11 @@ pub async fn install_key_to_remote(
 /// ```sh
 /// ssh <dest> "mkdir -p ~/.ssh && echo '<key>' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 /// ```
-async fn install_via_manual_ssh(pubkey_path: &Path, dest: &str, runner: &dyn CliRunner) -> Result<()> {
+async fn install_via_manual_ssh(
+    pubkey_path: &Path,
+    dest: &str,
+    runner: &dyn CliRunner,
+) -> Result<()> {
     let pubkey_content = tokio::task::spawn_blocking({
         let path = pubkey_path.to_path_buf();
         move || std::fs::read_to_string(&path).map_err(Error::Io)
@@ -116,9 +120,7 @@ async fn install_via_manual_ssh(pubkey_path: &Path, dest: &str, runner: &dyn Cli
         "mkdir -p ~/.ssh && echo '{escaped_key}' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
     );
 
-    runner
-        .run("ssh", vec![dest.to_owned(), remote_cmd])
-        .await?;
+    runner.run("ssh", vec![dest.to_owned(), remote_cmd]).await?;
 
     Ok(())
 }
@@ -127,7 +129,7 @@ async fn install_via_manual_ssh(pubkey_path: &Path, dest: &str, runner: &dyn Cli
 ///
 /// This function:
 /// 1. Reads the local public key content.
-/// 2. SSHes into the remote host and uses `grep -v` to strip the matching key
+/// 2. `SSHes` into the remote host and uses `grep -v` to strip the matching key
 ///    line from `~/.ssh/authorized_keys`.
 ///
 /// # Arguments
@@ -161,9 +163,7 @@ pub async fn uninstall_key_from_remote(
     };
 
     if !runner.tool_exists("ssh") {
-        return Err(Error::ToolNotFound(
-            "ssh not found in PATH".to_owned(),
-        ));
+        return Err(Error::ToolNotFound("ssh not found in PATH".to_owned()));
     }
 
     uninstall_via_manual_ssh(&pubkey_path, dest, runner).await
@@ -231,17 +231,13 @@ async fn uninstall_via_manual_ssh(
         "grep -qF '{escaped_key}' ~/.ssh/authorized_keys 2>/dev/null && echo FOUND || echo NOTFOUND"
     );
 
-    let check_output = runner
-        .run("ssh", vec![dest.to_owned(), check_cmd])
-        .await?;
+    let check_output = runner.run("ssh", vec![dest.to_owned(), check_cmd]).await?;
 
     if check_output.trim() == "NOTFOUND" {
         return Ok(UninstallOutcome::NotFound);
     }
 
-    runner
-        .run("ssh", vec![dest.to_owned(), remote_cmd])
-        .await?;
+    runner.run("ssh", vec![dest.to_owned(), remote_cmd]).await?;
 
     Ok(UninstallOutcome::Removed)
 }
@@ -326,16 +322,16 @@ mod tests {
         let key_path = dir.path().join("id_ed25519");
         let pub_path = dir.path().join("id_ed25519.pub");
         std::fs::write(&key_path, "private key").unwrap();
-        std::fs::write(&pub_path, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n").unwrap();
+        std::fs::write(
+            &pub_path,
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
+        )
+        .unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let runner = toride_ssh_core::MockCliRunner::new();
         // ssh is not registered as existing.
-        let result = rt.block_on(uninstall_key_from_remote(
-            &key_path,
-            "user@host",
-            &runner,
-        ));
+        let result = rt.block_on(uninstall_key_from_remote(&key_path, "user@host", &runner));
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::ToolNotFound(msg) => assert!(msg.contains("ssh")),
@@ -349,7 +345,11 @@ mod tests {
         let key_path = dir.path().join("id_ed25519");
         let pub_path = dir.path().join("id_ed25519.pub");
         std::fs::write(&key_path, "private key").unwrap();
-        std::fs::write(&pub_path, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n").unwrap();
+        std::fs::write(
+            &pub_path,
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
+        )
+        .unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let runner = toride_ssh_core::MockCliRunner::new();
@@ -357,11 +357,7 @@ mod tests {
         // The check command returns NOTFOUND.
         runner.push_run_response("ssh", Ok("NOTFOUND\n".to_owned()));
 
-        let result = rt.block_on(uninstall_key_from_remote(
-            &key_path,
-            "user@host",
-            &runner,
-        ));
+        let result = rt.block_on(uninstall_key_from_remote(&key_path, "user@host", &runner));
         assert_eq!(result.unwrap(), UninstallOutcome::NotFound);
     }
 
@@ -371,7 +367,11 @@ mod tests {
         let key_path = dir.path().join("id_ed25519");
         let pub_path = dir.path().join("id_ed25519.pub");
         std::fs::write(&key_path, "private key").unwrap();
-        std::fs::write(&pub_path, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n").unwrap();
+        std::fs::write(
+            &pub_path,
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
+        )
+        .unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let runner = toride_ssh_core::MockCliRunner::new();
@@ -381,11 +381,7 @@ mod tests {
         // Second call: removal command succeeds.
         runner.push_run_response("ssh", Ok(String::new()));
 
-        let result = rt.block_on(uninstall_key_from_remote(
-            &key_path,
-            "user@host",
-            &runner,
-        ));
+        let result = rt.block_on(uninstall_key_from_remote(&key_path, "user@host", &runner));
         assert_eq!(result.unwrap(), UninstallOutcome::Removed);
     }
 
@@ -395,7 +391,11 @@ mod tests {
         let key_path = dir.path().join("id_ed25519");
         let pub_path = dir.path().join("id_ed25519.pub");
         std::fs::write(&key_path, "private key").unwrap();
-        std::fs::write(&pub_path, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n").unwrap();
+        std::fs::write(
+            &pub_path,
+            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
+        )
+        .unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let runner = toride_ssh_core::MockCliRunner::new();
@@ -408,11 +408,7 @@ mod tests {
             Err(Error::CommandFailed("connection refused".to_owned())),
         );
 
-        let result = rt.block_on(uninstall_key_from_remote(
-            &key_path,
-            "user@host",
-            &runner,
-        ));
+        let result = rt.block_on(uninstall_key_from_remote(&key_path, "user@host", &runner));
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::CommandFailed(msg) => assert!(msg.contains("connection refused")),
@@ -424,7 +420,11 @@ mod tests {
     fn uninstall_command_uses_key_fingerprint_not_full_line() {
         // The grep -vF command should use only key type + base64, not the comment.
         let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host";
-        let fingerprint: String = key.split_whitespace().take(2).collect::<Vec<&str>>().join(" ");
+        let fingerprint: String = key
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<&str>>()
+            .join(" ");
         assert_eq!(fingerprint, "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI");
         assert!(!fingerprint.contains("user@host"));
     }
@@ -434,8 +434,15 @@ mod tests {
         // Use a key where the base64 portion itself contains a single quote
         // (synthetic test to verify escaping logic on the fingerprint).
         let key = "ssh-ed25519 AAA'A it's a key";
-        let fingerprint: String = key.split_whitespace().take(2).collect::<Vec<&str>>().join(" ");
-        assert!(fingerprint.contains('\''), "fingerprint should contain a quote");
+        let fingerprint: String = key
+            .split_whitespace()
+            .take(2)
+            .collect::<Vec<&str>>()
+            .join(" ");
+        assert!(
+            fingerprint.contains('\''),
+            "fingerprint should contain a quote"
+        );
         let escaped = fingerprint.replace('\'', "'\\''");
         let cmd = format!("grep -vF '{escaped}' ~/.ssh/authorized_keys");
         assert!(cmd.contains("AAA'\\''A"));
@@ -453,11 +460,7 @@ mod tests {
         let runner = toride_ssh_core::MockCliRunner::new();
         runner.set_tool_exists("ssh", true);
 
-        let result = rt.block_on(uninstall_key_from_remote(
-            &key_path,
-            "user@host",
-            &runner,
-        ));
+        let result = rt.block_on(uninstall_key_from_remote(&key_path, "user@host", &runner));
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::CommandFailed(msg) => assert!(msg.contains("empty or malformed")),

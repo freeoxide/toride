@@ -56,11 +56,7 @@ pub enum DoctorSeverity {
 
 impl DoctorFinding {
     /// Create a new finding.
-    pub fn new(
-        id: impl Into<String>,
-        severity: DoctorSeverity,
-        title: impl Into<String>,
-    ) -> Self {
+    pub fn new(id: impl Into<String>, severity: DoctorSeverity, title: impl Into<String>) -> Self {
         Self {
             id: id.into(),
             severity,
@@ -172,9 +168,7 @@ impl<'a> Doctor<'a> {
             Some(true) => report.status = ProxyStatus::Running,
             Some(false) => report.status = ProxyStatus::Stopped,
             None => {
-                let has_errors = findings
-                    .iter()
-                    .any(|f| f.severity >= DoctorSeverity::Error);
+                let has_errors = findings.iter().any(|f| f.severity >= DoctorSeverity::Error);
                 if has_errors {
                     report.status = ProxyStatus::Unknown("errors found".into());
                 }
@@ -409,11 +403,11 @@ impl<'a> Doctor<'a> {
     /// never shells out, so it cannot fail on a missing binary — included for
     /// symmetry with the other resilient wrappers.
     fn check_headers_resilient(&self) -> Vec<DoctorFinding> {
-        self.check_headers().unwrap_or_default()
+        self.check_headers()
     }
 
     /// Check security headers.
-    fn check_headers(&self) -> Result<Vec<DoctorFinding>> {
+    fn check_headers(&self) -> Vec<DoctorFinding> {
         let mut findings = Vec::new();
 
         // Check if security headers snippet exists
@@ -431,29 +425,23 @@ impl<'a> Doctor<'a> {
                     DoctorSeverity::Warning,
                     "Security headers snippet not found",
                 )
-                .detail(format!(
-                    "Expected at {}",
-                    snippet_path.display()
-                ))
+                .detail(format!("Expected at {}", snippet_path.display()))
                 .fix("Create a security headers snippet in nginx/snippets/"),
             );
         }
 
-        Ok(findings)
+        findings
     }
 
     /// Check certificate expiry. Resilient: pure-filesystem, swallows any I/O
     /// error so a permissions failure on one entry cannot blank the report.
     /// Populates `certs_out` with real expiry data so the report's
     /// `certificates` field is no longer dead.
-    fn check_certificates_resilient(&self, certs_out: &mut Vec<crate::report::CertInfo>) -> Vec<DoctorFinding> {
-        match self.check_certificates(certs_out) {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::warn!("doctor: certificate check failed: {e}");
-                Vec::new()
-            }
-        }
+    fn check_certificates_resilient(
+        &self,
+        certs_out: &mut Vec<crate::report::CertInfo>,
+    ) -> Vec<DoctorFinding> {
+        self.check_certificates(certs_out)
     }
 
     /// Check certificate expiry.
@@ -467,7 +455,7 @@ impl<'a> Doctor<'a> {
     fn check_certificates(
         &self,
         certs_out: &mut Vec<crate::report::CertInfo>,
-    ) -> Result<Vec<DoctorFinding>> {
+    ) -> Vec<DoctorFinding> {
         use crate::certs_parse::read_cert_expiry;
         use std::time::SystemTime;
 
@@ -478,10 +466,7 @@ impl<'a> Doctor<'a> {
             let entries = std::fs::read_dir(&self.paths.certbot_live_dir);
             if let Ok(entries) = entries {
                 for entry in entries.flatten() {
-                    let domain = entry
-                        .file_name()
-                        .to_string_lossy()
-                        .to_string();
+                    let domain = entry.file_name().to_string_lossy().to_string();
                     let cert_path = entry.path().join("fullchain.pem");
 
                     if !cert_path.exists() {
@@ -553,7 +538,7 @@ impl<'a> Doctor<'a> {
             ));
         }
 
-        Ok(findings)
+        findings
     }
 
     /// Parse the nginx config into server blocks and populate the report's
@@ -572,11 +557,7 @@ impl<'a> Doctor<'a> {
                     // ServerBlock so the report carries real listen ports and
                     // TLS state.
                     let names = p.server_names();
-                    let server_name = names
-                        .first()
-                        .copied()
-                        .unwrap_or("_")
-                        .to_string();
+                    let server_name = names.first().copied().unwrap_or("_").to_string();
                     let listen_port = p.listen_port().unwrap_or(80);
                     let upstream = p
                         .find("location")
@@ -584,7 +565,10 @@ impl<'a> Doctor<'a> {
                         .and_then(|pp| pp.args.first())
                         .and_then(|s| {
                             // proxy_pass http://host:port; -> host:port
-                            s.trim_start_matches("http://").trim_end_matches(';').to_string().into()
+                            s.trim_start_matches("http://")
+                                .trim_end_matches(';')
+                                .to_string()
+                                .into()
                         })
                         .unwrap_or_else(|| "127.0.0.1:80".to_string());
 
@@ -612,13 +596,9 @@ mod tests {
 
     #[test]
     fn doctor_finding_builder() {
-        let finding = DoctorFinding::new(
-            "test.finding",
-            DoctorSeverity::Warning,
-            "Test finding",
-        )
-        .detail("Some detail")
-        .fix("Some fix");
+        let finding = DoctorFinding::new("test.finding", DoctorSeverity::Warning, "Test finding")
+            .detail("Some detail")
+            .fix("Some fix");
 
         assert_eq!(finding.id, "test.finding");
         assert_eq!(finding.severity, DoctorSeverity::Warning);
@@ -657,11 +637,7 @@ mod tests {
         assert_eq!(report.certificates.len(), 1);
         let cert = &report.certificates[0];
         assert_eq!(cert.domain, "example.com");
-        assert!(
-            cert.days_remaining > 10_000,
-            "got {}",
-            cert.days_remaining
-        );
+        assert!(cert.days_remaining > 10_000, "got {}", cert.days_remaining);
         assert!(cert.is_valid);
         assert!(!report.has_expired_certs());
 
@@ -681,10 +657,9 @@ mod tests {
         std::fs::create_dir_all(&cert_dir).unwrap();
         std::fs::write(cert_dir.join("fullchain.pem"), "fake pem\n").unwrap();
 
-        let fake = toride_runner::FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout(
-                "notAfter=Jan  1 00:00:00 2001 GMT\n",
-            ));
+        let fake = toride_runner::FakeRunner::new().push_response(
+            toride_runner::CommandOutput::from_stdout("notAfter=Jan  1 00:00:00 2001 GMT\n"),
+        );
 
         let doc = Doctor::new(&fake, &paths);
         let report = doc.run(&DoctorScope::Certificates).unwrap();
@@ -692,10 +667,12 @@ mod tests {
         assert_eq!(report.certificates.len(), 1);
         assert!(!report.certificates[0].is_valid);
         assert!(report.has_expired_certs());
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.id == "cert.expired.expired.com"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.id == "cert.expired.expired.com")
+        );
     }
 
     /// With the `config` feature, the All-scope report must populate
@@ -731,9 +708,7 @@ mod tests {
                 "nginx version: nginx/1.24.0\n",
                 0,
             ))
-            .push_response(toride_runner::CommandOutput::from_stdout(
-                "syntax is ok\n",
-            ));
+            .push_response(toride_runner::CommandOutput::from_stdout("syntax is ok\n"));
 
         let doc = Doctor::new(&fake, &paths);
         let report = doc.run(&DoctorScope::All).unwrap();

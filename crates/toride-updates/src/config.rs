@@ -99,9 +99,7 @@ impl ConfigManager {
     /// defaults used by [`UpdatesClient`].
     fn resolved_package_manager(&self) -> crate::detect::PackageManager {
         match self.paths.package_manager {
-            crate::detect::PackageManager::Unknown => {
-                crate::detect::detect_package_manager()
-            }
+            crate::detect::PackageManager::Unknown => crate::detect::detect_package_manager(),
             other => other,
         }
     }
@@ -120,8 +118,9 @@ impl ConfigManager {
         let apt_conf = crate::render::render_apt_conf(spec);
 
         // Atomic write.
-        toride_fs::atomic_write(&self.paths.auto_upgrades_conf, &auto_upgrades)
-            .map_err(|e| Error::ConfigWrite(format!("failed to write 50unattended-upgrades: {e}")))?;
+        toride_fs::atomic_write(&self.paths.auto_upgrades_conf, &auto_upgrades).map_err(|e| {
+            Error::ConfigWrite(format!("failed to write 50unattended-upgrades: {e}"))
+        })?;
 
         toride_fs::atomic_write(&self.paths.auto_upgrades_enabled, &apt_conf)
             .map_err(|e| Error::ConfigWrite(format!("failed to write 20auto-upgrades: {e}")))?;
@@ -168,7 +167,8 @@ impl ConfigManager {
                     if let Some(sched) = schedule_from_apt_interval(val) {
                         spec.schedule = sched;
                     }
-                } else if let Some(val) = apt_directive_value(line, "APT::Periodic::Unattended-Upgrade")
+                } else if let Some(val) =
+                    apt_directive_value(line, "APT::Periodic::Unattended-Upgrade")
                 {
                     unattended = val == "1";
                 }
@@ -391,7 +391,10 @@ mod tests {
     #[test]
     fn apt_directive_value_extracts() {
         assert_eq!(
-            apt_directive_value(r#"APT::Periodic::Unattended-Upgrade "1";"#, "APT::Periodic::Unattended-Upgrade"),
+            apt_directive_value(
+                r#"APT::Periodic::Unattended-Upgrade "1";"#,
+                "APT::Periodic::Unattended-Upgrade"
+            ),
             Some("1")
         );
         assert_eq!(apt_directive_value("not a directive", "X"), None);

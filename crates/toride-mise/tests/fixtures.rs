@@ -23,15 +23,17 @@ fn fixtures_dir() -> &'static Path {
 /// Read a fixture file as a UTF-8 string.
 fn read_fixture(relative: &str) -> String {
     let path = fixtures_dir().join(relative);
-    fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("failed to read fixture {relative}: {e}"))
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read fixture {relative}: {e}"))
 }
 
 /// Parse a fixture JSON file into `T`.
 fn parse_fixture<T: serde::de::DeserializeOwned>(relative: &str) -> T {
     let raw = read_fixture(relative);
     serde_json::from_str(raw.trim()).unwrap_or_else(|e| {
-        panic!("failed to parse fixture {relative} as {}: {e}", std::any::type_name::<T>())
+        panic!(
+            "failed to parse fixture {relative} as {}: {e}",
+            std::any::type_name::<T>()
+        )
     })
 }
 

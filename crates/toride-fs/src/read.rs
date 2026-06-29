@@ -141,7 +141,6 @@ mod tests {
         std::process::Command::new("id")
             .arg("-u")
             .output()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
-            .unwrap_or(false)
+            .is_ok_and(|o| String::from_utf8_lossy(&o.stdout).trim() == "0")
     }
 }

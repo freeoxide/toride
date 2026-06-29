@@ -7,9 +7,9 @@
 
 use std::path::PathBuf;
 
+use crate::CloudProvider;
 use crate::error::{Error, Result};
 use crate::paths::CloudPaths;
-use crate::CloudProvider;
 
 // ---------------------------------------------------------------------------
 // CloudConfig
@@ -41,7 +41,7 @@ impl CloudConfig {
     /// Returns [`Error::ConfigParse`] if the file exists but cannot be parsed.
     /// Returns [`Error::Io`] if the file cannot be read.
     pub fn load() -> Result<Self> {
-        let paths = CloudPaths::default()?;
+        let paths = CloudPaths::discover()?;
         let config_path = paths.config_dir.join("config.json");
 
         if !config_path.exists() {
@@ -82,9 +82,8 @@ impl CloudConfig {
             return Ok(Self::default_config(config_path));
         }
 
-        let root: serde_json::Value = serde_json::from_str(trimmed).map_err(|e| {
-            Error::ConfigParse(format!("cloud config is not valid JSON: {e}"))
-        })?;
+        let root: serde_json::Value = serde_json::from_str(trimmed)
+            .map_err(|e| Error::ConfigParse(format!("cloud config is not valid JSON: {e}")))?;
         let root = root.as_object().ok_or_else(|| {
             Error::ConfigParse("cloud config root must be a JSON object".to_string())
         })?;
@@ -134,6 +133,10 @@ impl CloudConfig {
     /// creating parent directories as needed. Atomic writes prevent torn
     /// reads if the process is interrupted mid-save.
     ///
+    /// The file is written with mode `0600` (owner read/write only): a cloud
+    /// config may carry provider credentials or tokens, so it must not be
+    /// world/group-readable.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Io`] if the parent directory cannot be created or the
@@ -143,8 +146,14 @@ impl CloudConfig {
             std::fs::create_dir_all(parent)?;
         }
         let json = render_json(self)?;
-        toride_fs::atomic::atomic_write(&self.config_path, &json)
-            .map_err(|e| Error::Other(format!("failed to write {}: {e}", self.config_path.display())))?;
+        toride_fs::atomic::atomic_write_with_perms(&self.config_path, &json, 0o600).map_err(
+            |e| {
+                Error::Other(format!(
+                    "failed to write {}: {e}",
+                    self.config_path.display()
+                ))
+            },
+        )?;
         Ok(())
     }
 
@@ -300,11 +309,8 @@ mod tests {
     #[test]
     fn parse_partial_json_uses_defaults() {
         // Only the provider is set; everything else should default.
-        let cfg = CloudConfig::parse(
-            r#"{ "provider": "hetzner" }"#,
-            PathBuf::from("/tmp/x.json"),
-        )
-        .unwrap();
+        let cfg = CloudConfig::parse(r#"{ "provider": "hetzner" }"#, PathBuf::from("/tmp/x.json"))
+            .unwrap();
         assert_eq!(cfg.provider, CloudProvider::Hetzner);
         assert_eq!(cfg.default_region, "");
         assert!(cfg.auto_detect);
@@ -320,31 +326,20 @@ mod tests {
 
     #[test]
     fn parse_unknown_provider_string_is_unknown() {
-        let cfg = CloudConfig::parse(
-            r#"{ "provider": "linode" }"#,
-            PathBuf::from("/tmp/x.json"),
-        )
-        .unwrap();
+        let cfg = CloudConfig::parse(r#"{ "provider": "linode" }"#, PathBuf::from("/tmp/x.json"))
+            .unwrap();
         assert_eq!(cfg.provider, CloudProvider::Unknown);
     }
 
     #[test]
     fn parse_invalid_json_returns_config_parse_error() {
-        let err = CloudConfig::parse(
-            "not json {",
-            PathBuf::from("/tmp/x.json"),
-        )
-        .unwrap_err();
+        let err = CloudConfig::parse("not json {", PathBuf::from("/tmp/x.json")).unwrap_err();
         assert!(matches!(err, Error::ConfigParse(_)), "{err:?}");
     }
 
     #[test]
     fn parse_non_object_root_returns_config_parse_error() {
-        let err = CloudConfig::parse(
-            "[1, 2, 3]",
-            PathBuf::from("/tmp/x.json"),
-        )
-        .unwrap_err();
+        let err = CloudConfig::parse("[1, 2, 3]", PathBuf::from("/tmp/x.json")).unwrap_err();
         assert!(matches!(err, Error::ConfigParse(_)), "{err:?}");
     }
 
@@ -393,6 +388,9 @@ mod tests {
     fn action_name_round_trips() {
         assert_eq!(action_name(RuleAction::Allow), "allow");
         assert_eq!(action_name(RuleAction::Deny), "deny");
-        assert_eq!(parse_action(action_name(RuleAction::Deny)), RuleAction::Deny);
+        assert_eq!(
+            parse_action(action_name(RuleAction::Deny)),
+            RuleAction::Deny
+        );
     }
 }

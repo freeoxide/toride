@@ -30,11 +30,11 @@
 //! ```
 
 use ratatui::{
+    Frame,
     buffer::Buffer,
     layout::{Alignment, Constraint, Layout, Rect},
     style::{Color, Style},
     widgets::{Block, BorderType, Clear},
-    Frame,
 };
 
 use crate::ui::theme::Palette;
@@ -122,7 +122,12 @@ impl Modal {
     /// 2. Clears the modal area so the block background is opaque
     /// 3. Renders the border (depending on [`ModalBorder`] variant)
     /// 4. Calls `content_fn` with the inner content area
-    pub fn render(self, frame: &mut Frame, palette: Palette, content_fn: impl FnOnce(&mut Frame, Rect)) {
+    pub fn render(
+        self,
+        frame: &mut Frame,
+        palette: Palette,
+        content_fn: impl FnOnce(&mut Frame, Rect),
+    ) {
         let area = frame.area();
         let modal_rect = Self::centered_rect(self.width, self.height, area);
 
@@ -234,17 +239,36 @@ fn blend_toward(color: Color, target: Color, t: f32) -> Color {
     let Color::Rgb(tr, tg, tb) = target else {
         return color;
     };
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    #[expect(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "u8→f32 for blending math; f32→u8 rounded value is in 0..=255"
+    )]
     let r = (cr as f32 + (tr as f32 - cr as f32) * t).round() as u8;
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    #[expect(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "u8→f32 for blending math; f32→u8 rounded value is in 0..=255"
+    )]
     let g = (cg as f32 + (tg as f32 - cg as f32) * t).round() as u8;
-    #[expect(clippy::cast_lossless, reason = "u8→f32 for blending math")]
+    #[expect(
+        clippy::cast_lossless,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "u8→f32 for blending math; f32→u8 rounded value is in 0..=255"
+    )]
     let b = (cb as f32 + (tb as f32 - cb as f32) * t).round() as u8;
     Color::Rgb(r, g, b)
 }
 
 /// Dim all cells in `buf` within `area` that fall **outside** `exclude`,
 /// blending their bg/fg toward `target` by the given factors.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "buffer indices are bounded by terminal cols/rows < u16::MAX"
+)]
 fn apply_scrim(
     buf: &mut Buffer,
     area: Rect,
@@ -257,10 +281,7 @@ fn apply_scrim(
     for (i, cell) in buf.content.iter_mut().enumerate() {
         let x = area.x + (i % area_w) as u16;
         let y = area.y + (i / area_w) as u16;
-        if x >= exclude.left()
-            && x < exclude.right()
-            && y >= exclude.top()
-            && y < exclude.bottom()
+        if x >= exclude.left() && x < exclude.right() && y >= exclude.top() && y < exclude.bottom()
         {
             continue;
         }
@@ -376,7 +397,10 @@ mod tests {
         assert!(matches!(modal.border, ModalBorder::Custom(Color::Red)));
 
         let modal = Modal::new("Test").border(ModalBorder::Typed(BorderType::Double));
-        assert!(matches!(modal.border, ModalBorder::Typed(BorderType::Double)));
+        assert!(matches!(
+            modal.border,
+            ModalBorder::Typed(BorderType::Double)
+        ));
 
         let modal = Modal::new("Test").border(ModalBorder::TypedCustom(
             BorderType::HeavyDoubleDashed,
@@ -388,7 +412,10 @@ mod tests {
         ));
 
         let modal = Modal::new("Test").border(ModalBorder::AnimatedCustom(Color::Cyan));
-        assert!(matches!(modal.border, ModalBorder::AnimatedCustom(Color::Cyan)));
+        assert!(matches!(
+            modal.border,
+            ModalBorder::AnimatedCustom(Color::Cyan)
+        ));
     }
 
     #[test]

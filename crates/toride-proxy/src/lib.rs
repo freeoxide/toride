@@ -59,8 +59,8 @@ pub mod diff;
 pub mod error;
 pub mod parse;
 pub mod paths;
-pub mod report;
 pub mod render;
+pub mod report;
 pub mod spec;
 pub mod validate;
 

@@ -128,6 +128,42 @@ impl MiseCapabilities {
 }
 
 // ---------------------------------------------------------------------------
+// Mise client extensions
+// ---------------------------------------------------------------------------
+
+use crate::client::Mise;
+
+impl Mise {
+    /// Query the installed mise version.
+    ///
+    /// Runs `mise --version`, parses the output, and returns a
+    /// [`MiseVersion`].
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MiseError::CommandFailed`](crate::MiseError::CommandFailed)
+    /// if the command exits non-zero.
+    pub async fn version(&self) -> MiseResult<MiseVersion> {
+        let output = self.run_checked(["--version"]).await?;
+        Ok(MiseVersion::parse(output.stdout_trimmed()))
+    }
+
+    /// Detect which capabilities the installed mise binary supports.
+    ///
+    /// Runs `mise --version` to determine the version, then builds a
+    /// [`MiseCapabilities`] from the result.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MiseError::CommandFailed`](crate::MiseError::CommandFailed)
+    /// if the command exits non-zero.
+    pub async fn check_capabilities(&self) -> MiseResult<MiseCapabilities> {
+        let version = self.version().await?;
+        Ok(MiseCapabilities::from_version(&version))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
@@ -190,41 +226,5 @@ mod tests {
         // is_at_least returns false for unparseable versions, so everything
         // stays off.
         assert!(!caps.json_ls);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Mise client extensions
-// ---------------------------------------------------------------------------
-
-use crate::client::Mise;
-
-impl Mise {
-    /// Query the installed mise version.
-    ///
-    /// Runs `mise --version`, parses the output, and returns a
-    /// [`MiseVersion`].
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MiseError::CommandFailed`](crate::MiseError::CommandFailed)
-    /// if the command exits non-zero.
-    pub async fn version(&self) -> MiseResult<MiseVersion> {
-        let output = self.run_checked(["--version"]).await?;
-        Ok(MiseVersion::parse(output.stdout_trimmed()))
-    }
-
-    /// Detect which capabilities the installed mise binary supports.
-    ///
-    /// Runs `mise --version` to determine the version, then builds a
-    /// [`MiseCapabilities`] from the result.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`MiseError::CommandFailed`](crate::MiseError::CommandFailed)
-    /// if the command exits non-zero.
-    pub async fn check_capabilities(&self) -> MiseResult<MiseCapabilities> {
-        let version = self.version().await?;
-        Ok(MiseCapabilities::from_version(&version))
     }
 }

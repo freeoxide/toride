@@ -95,7 +95,10 @@ async fn real_mise_registry() {
     // single entry quickly. The full registry parse logic is covered by
     // the unit tests with fake data.
     let mise = build_real_mise();
-    let results = mise.registry_lookup("node").await.expect("registry lookup node failed");
+    let results = mise
+        .registry_lookup("node")
+        .await
+        .expect("registry lookup node failed");
     assert!(
         !results.is_empty(),
         "search for 'node' should return at least one result",
@@ -119,7 +122,10 @@ async fn real_mise_registry_search() {
         return;
     }
     let mise = build_real_mise();
-    let results = mise.registry_lookup("node").await.expect("registry lookup node failed");
+    let results = mise
+        .registry_lookup("node")
+        .await
+        .expect("registry lookup node failed");
 
     // `mise registry node` should return results containing node.
     assert!(
@@ -148,8 +154,7 @@ async fn real_mise_backends() {
     // "core" should always be present.
     assert!(
         backends.iter().any(|b| b == "core"),
-        "backends should include 'core', got: {:?}",
-        backends,
+        "backends should include 'core', got: {backends:?}",
     );
 }
 
@@ -231,7 +236,10 @@ async fn real_mise_ls_remote_node() {
         return;
     }
     let mise = build_real_mise();
-    let versions = mise.list_remote("node").await.expect("ls-remote node failed");
+    let versions = mise
+        .list_remote("node")
+        .await
+        .expect("ls-remote node failed");
 
     // Should return a large number of node versions.
     assert!(
@@ -261,8 +269,7 @@ async fn real_mise_latest_node() {
     // Should look like a semver (contain at least one dot).
     assert!(
         version.contains('.'),
-        "latest version should look like a semver: got {:?}",
-        version,
+        "latest version should look like a semver: got {version:?}",
     );
 }
 
@@ -275,7 +282,10 @@ async fn real_mise_verify_version() {
 
     // With no minimum_version configured, verify_version is a no-op.
     let result = mise.verify_version().await;
-    assert!(result.is_ok(), "verify_version with no minimum should succeed");
+    assert!(
+        result.is_ok(),
+        "verify_version with no minimum should succeed"
+    );
 
     // With a minimum version of 0.0.1, should pass.
     let mise_low = Mise::builder()
@@ -312,9 +322,7 @@ async fn real_mise_where_node() {
     // Node is likely not installed in this environment, so `mise where node`
     // may fail. We verify that it either succeeds (returning a path) or
     // returns a CommandFailed error (not a panic).
-    let result = mise
-        .where_tool(&toride_mise::ToolSpec::new("node"))
-        .await;
+    let result = mise.where_tool(&toride_mise::ToolSpec::new("node")).await;
     match result {
         Ok(path) => {
             assert!(
@@ -340,10 +348,7 @@ async fn real_mise_bin_paths() {
     // May be empty if no tools are installed — that's ok.
     // We verify each path is a non-empty string.
     for p in &paths {
-        assert!(
-            !p.as_str().is_empty(),
-            "each bin path should be non-empty",
-        );
+        assert!(!p.as_str().is_empty(), "each bin path should be non-empty");
     }
 }
 
@@ -372,7 +377,10 @@ async fn real_node_helper() {
     }
     let mise = build_real_mise();
     let node = mise.node();
-    let versions = node.list_versions().await.expect("node list_versions failed");
+    let versions = node
+        .list_versions()
+        .await
+        .expect("node list_versions failed");
 
     // Should return a non-empty list of available Node.js versions.
     assert!(

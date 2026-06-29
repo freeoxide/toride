@@ -28,14 +28,35 @@ fn parse_algorithm_empty_string_returns_none() {
 
 #[test]
 fn parse_algorithm_all_known_types() {
-    assert_eq!(parse_key_type_from_algorithm("ssh-ed25519"), Some(KeyType::Ed25519));
-    assert_eq!(parse_key_type_from_algorithm("ssh-rsa"), Some(KeyType::Rsa { bits: 0 }));
-    assert_eq!(parse_key_type_from_algorithm("ecdsa-sha2-nistp256"), Some(KeyType::EcdsaP256));
-    assert_eq!(parse_key_type_from_algorithm("ecdsa-sha2-nistp384"), Some(KeyType::EcdsaP384));
-    assert_eq!(parse_key_type_from_algorithm("ecdsa-sha2-nistp521"), Some(KeyType::EcdsaP521));
+    assert_eq!(
+        parse_key_type_from_algorithm("ssh-ed25519"),
+        Some(KeyType::Ed25519)
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("ssh-rsa"),
+        Some(KeyType::Rsa { bits: 0 })
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("ecdsa-sha2-nistp256"),
+        Some(KeyType::EcdsaP256)
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("ecdsa-sha2-nistp384"),
+        Some(KeyType::EcdsaP384)
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("ecdsa-sha2-nistp521"),
+        Some(KeyType::EcdsaP521)
+    );
     assert_eq!(parse_key_type_from_algorithm("ssh-dss"), Some(KeyType::Dsa));
-    assert_eq!(parse_key_type_from_algorithm("sk-ssh-ed25519@openssh.com"), Some(KeyType::SkEd25519));
-    assert_eq!(parse_key_type_from_algorithm("sk-ecdsa-sha2-nistp256@openssh.com"), Some(KeyType::SkEcdsaP256));
+    assert_eq!(
+        parse_key_type_from_algorithm("sk-ssh-ed25519@openssh.com"),
+        Some(KeyType::SkEd25519)
+    );
+    assert_eq!(
+        parse_key_type_from_algorithm("sk-ecdsa-sha2-nistp256@openssh.com"),
+        Some(KeyType::SkEcdsaP256)
+    );
 }
 
 #[test]
@@ -332,27 +353,42 @@ fn parse_ssh_add_line_unknown_type_in_parens() {
 
 #[test]
 fn parse_display_ed25519() {
-    assert_eq!(parse_key_type_from_display("ED25519"), Some(KeyType::Ed25519));
+    assert_eq!(
+        parse_key_type_from_display("ED25519"),
+        Some(KeyType::Ed25519)
+    );
 }
 
 #[test]
 fn parse_display_ed25519_sk() {
-    assert_eq!(parse_key_type_from_display("ED25519-SK"), Some(KeyType::SkEd25519));
+    assert_eq!(
+        parse_key_type_from_display("ED25519-SK"),
+        Some(KeyType::SkEd25519)
+    );
 }
 
 #[test]
 fn parse_display_rsa() {
-    assert_eq!(parse_key_type_from_display("RSA"), Some(KeyType::Rsa { bits: 0 }));
+    assert_eq!(
+        parse_key_type_from_display("RSA"),
+        Some(KeyType::Rsa { bits: 0 })
+    );
 }
 
 #[test]
 fn parse_display_ecdsa() {
-    assert_eq!(parse_key_type_from_display("ECDSA"), Some(KeyType::EcdsaP256));
+    assert_eq!(
+        parse_key_type_from_display("ECDSA"),
+        Some(KeyType::EcdsaP256)
+    );
 }
 
 #[test]
 fn parse_display_ecdsa_sk() {
-    assert_eq!(parse_key_type_from_display("ECDSA-SK"), Some(KeyType::SkEcdsaP256));
+    assert_eq!(
+        parse_key_type_from_display("ECDSA-SK"),
+        Some(KeyType::SkEcdsaP256)
+    );
 }
 
 #[test]
@@ -362,9 +398,18 @@ fn parse_display_dsa() {
 
 #[test]
 fn parse_display_case_insensitive() {
-    assert_eq!(parse_key_type_from_display("ed25519"), Some(KeyType::Ed25519));
-    assert_eq!(parse_key_type_from_display("rsa"), Some(KeyType::Rsa { bits: 0 }));
-    assert_eq!(parse_key_type_from_display("Ed25519-Sk"), Some(KeyType::SkEd25519));
+    assert_eq!(
+        parse_key_type_from_display("ed25519"),
+        Some(KeyType::Ed25519)
+    );
+    assert_eq!(
+        parse_key_type_from_display("rsa"),
+        Some(KeyType::Rsa { bits: 0 })
+    );
+    assert_eq!(
+        parse_key_type_from_display("Ed25519-Sk"),
+        Some(KeyType::SkEd25519)
+    );
 }
 
 #[test]
@@ -428,7 +473,10 @@ fn agent_keys_no_filesystem_path() {
     let line = "256 SHA256:AAAA my-deploy-key (ED25519)";
     let key = parse_ssh_add_line(line).unwrap();
     assert!(key.path.to_str().unwrap().starts_with("agent:"));
-    assert!(!key.path.exists(), "agent key path should not exist on filesystem");
+    assert!(
+        !key.path.exists(),
+        "agent key path should not exist on filesystem"
+    );
 }
 
 #[test]
@@ -460,21 +508,21 @@ fn agent_keys_mixed_types_from_output() {
 #[test]
 fn destination_constrained_host_separator() {
     // Verify the > separator convention used by ssh-add -h.
-    let hosts = vec!["host1", "host2", "host3"];
+    let hosts = ["host1", "host2", "host3"];
     let constraint = hosts.join(">");
     assert_eq!(constraint, "host1>host2>host3");
 }
 
 #[test]
 fn destination_constrained_single_host() {
-    let hosts = vec!["myserver"];
+    let hosts = ["myserver"];
     let constraint = hosts.join(">");
     assert_eq!(constraint, "myserver");
 }
 
 #[test]
 fn destination_constrained_hosts_with_ports() {
-    let hosts = vec!["example.com:2222", "10.0.0.1:22"];
+    let hosts = ["example.com:2222", "10.0.0.1:22"];
     let constraint = hosts.join(">");
     assert_eq!(constraint, "example.com:2222>10.0.0.1:22");
 }

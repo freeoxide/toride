@@ -168,6 +168,10 @@ pub struct SshCapabilities {
 ///
 /// Indicates which GPU metrics are available on the current platform.
 #[derive(Debug, Clone, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "capability flags are independent boolean toggles, not a state machine"
+)]
 pub struct GpuCapabilities {
     /// GPU identity information is available.
     pub identity: bool,
@@ -187,6 +191,10 @@ pub struct GpuCapabilities {
 ///
 /// Indicates which battery metrics are available on the current platform.
 #[derive(Debug, Clone, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "capability flags are independent boolean toggles, not a state machine"
+)]
 pub struct BatteryCapabilities {
     /// Battery is present and queryable.
     pub available: bool,
@@ -204,6 +212,10 @@ pub struct BatteryCapabilities {
 ///
 /// Indicates which process metrics are available on the current platform.
 #[derive(Debug, Clone, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "capability flags are independent boolean toggles, not a state machine"
+)]
 pub struct ProcessCapabilities {
     /// Process listing is available.
     pub list: bool,
@@ -227,6 +239,10 @@ pub struct ProcessCapabilities {
 ///
 /// Indicates which storage metrics are available on the current platform.
 #[derive(Debug, Clone, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "capability flags are independent boolean toggles, not a state machine"
+)]
 pub struct StorageCapabilities {
     /// Disk usage statistics are available.
     pub disk_usage: bool,
@@ -246,6 +262,10 @@ pub struct StorageCapabilities {
 ///
 /// Indicates which network metrics are available on the current platform.
 #[derive(Debug, Clone, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "capability flags are independent boolean toggles, not a state machine"
+)]
 pub struct NetworkCapabilities {
     /// Network interface listing is available.
     pub interfaces: bool,
@@ -265,6 +285,10 @@ pub struct NetworkCapabilities {
 ///
 /// Indicates which sensor metrics are available on the current platform.
 #[derive(Debug, Clone, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "capability flags are independent boolean toggles, not a state machine"
+)]
 pub struct SensorCapabilities {
     /// CPU temperature sensor is available.
     pub cpu_temperature: bool,
@@ -280,6 +304,10 @@ pub struct SensorCapabilities {
 ///
 /// Indicates which OS-level metrics are available on the current platform.
 #[derive(Debug, Clone, Serialize)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "capability flags are independent boolean toggles, not a state machine"
+)]
 pub struct OsCapabilities {
     /// OS information (name, version) is available.
     pub os_info: bool,
@@ -334,7 +362,9 @@ impl SystemCapabilities {
             uptime: true,
             hostname: true,
             os_info: true,
-            sensors: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            sensors: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
             os: os_caps,
             gpu: GpuCapabilities::detect(),
             battery: BatteryCapabilities::detect(),
@@ -373,7 +403,9 @@ impl SshCapabilities {
 impl GpuCapabilities {
     fn detect() -> Self {
         Self {
-            identity: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            identity: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
             nvidia_nvml: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
             utilization: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
             temperature: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
@@ -386,9 +418,15 @@ impl GpuCapabilities {
 impl BatteryCapabilities {
     fn detect() -> Self {
         Self {
-            available: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
-            charge_percent: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
-            time_remaining: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            available: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
+            charge_percent: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
+            time_remaining: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
             cycle_count: cfg!(target_os = "macos"),
             health: cfg!(target_os = "macos"),
         }
@@ -414,9 +452,15 @@ impl StorageCapabilities {
     fn detect() -> Self {
         Self {
             disk_usage: true,
-            disk_io: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
-            disk_type: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
-            model: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            disk_io: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
+            disk_type: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
+            model: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
             smart: cfg!(target_os = "linux"),
             temperature: cfg!(target_os = "linux"),
         }
@@ -431,7 +475,9 @@ impl NetworkCapabilities {
             addresses: true,
             gateway: cfg!(unix) || cfg!(target_os = "windows"),
             dns: cfg!(unix) || cfg!(target_os = "windows"),
-            link_status: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            link_status: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
         }
     }
 }
@@ -439,7 +485,9 @@ impl NetworkCapabilities {
 impl SensorCapabilities {
     fn detect() -> Self {
         Self {
-            cpu_temperature: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            cpu_temperature: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
             gpu_temperature: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
             fan_speed: cfg!(target_os = "linux") || cfg!(target_os = "macos"),
             voltage: cfg!(target_os = "linux"),
@@ -453,7 +501,9 @@ impl OsCapabilities {
             os_info: true,
             hostname: true,
             uptime: true,
-            boot_time: cfg!(target_os = "linux") || cfg!(target_os = "macos") || cfg!(target_os = "windows"),
+            boot_time: cfg!(target_os = "linux")
+                || cfg!(target_os = "macos")
+                || cfg!(target_os = "windows"),
             load_average: cfg!(unix),
             virtualization: cfg!(target_os = "linux"),
         }
@@ -576,7 +626,11 @@ impl fmt::Display for Capabilities {
         writeln!(f, "Daemon:")?;
         writeln!(f, "  PID check: {}", yn(self.daemon.pid_check))?;
         writeln!(f, "  Uptime for PID: {}", yn(self.daemon.uptime_for_pid))?;
-        writeln!(f, "  Stale socket: {}", yn(self.daemon.stale_socket_detection))?;
+        writeln!(
+            f,
+            "  Stale socket: {}",
+            yn(self.daemon.stale_socket_detection)
+        )?;
         writeln!(f)?;
         writeln!(f, "SSH:")?;
         writeln!(f, "  Mux check: {}", yn(self.ssh.mux_check))?;
@@ -586,7 +640,9 @@ impl fmt::Display for Capabilities {
     }
 }
 
-const fn yn(v: bool) -> &'static str { if v { "yes" } else { "no" } }
+const fn yn(v: bool) -> &'static str {
+    if v { "yes" } else { "no" }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1050,9 +1106,10 @@ mod tests {
         assert!(caps.process.list);
         assert!(caps.storage.disk_usage);
         assert!(caps.network_caps.interfaces);
-        assert!(caps.sensor.cpu_temperature || !caps.sensor.cpu_temperature); // always valid
-        assert!(caps.gpu.identity || !caps.gpu.identity); // always valid
-        assert!(caps.battery.available || !caps.battery.available); // always valid
+        // Confirm optional sub-struct fields are accessible (values are platform-dependent).
+        let _: bool = caps.sensor.cpu_temperature;
+        let _: bool = caps.gpu.identity;
+        let _: bool = caps.battery.available;
     }
 
     #[test]

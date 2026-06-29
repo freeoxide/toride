@@ -8,14 +8,14 @@ pub mod parse;
 
 use parse::AuthorizedKeyEntry;
 
-use toride_ssh_core::SshPaths;
 use toride_ssh_core::Error;
 use toride_ssh_core::Result;
+use toride_ssh_core::SshPaths;
 
-/// Re-export the entry type for convenience.
-pub use parse::AuthorizedKeyEntry as Entry;
 /// Re-export the options type for convenience.
 pub use options::AuthorizedKeyOptions as Options;
+/// Re-export the entry type for convenience.
+pub use parse::AuthorizedKeyEntry as Entry;
 
 /// `authorized_keys` file management.
 ///
@@ -24,10 +24,11 @@ pub struct AuthorizedKeysService<'a> {
     paths: &'a SshPaths,
 }
 
-/// File permissions for authorized_keys: owner read/write only (0o600).
+/// File permissions for `authorized_keys`: owner read/write only (0o600).
 const AUTHORIZED_KEYS_MODE: u32 = 0o600;
 
 impl<'a> AuthorizedKeysService<'a> {
+    #[must_use]
     pub fn new(paths: &'a SshPaths) -> Self {
         Self { paths }
     }
@@ -41,7 +42,7 @@ impl<'a> AuthorizedKeysService<'a> {
         parse::parse_authorized_keys(self.paths.authorized_keys_path()).await
     }
 
-    /// Append a new entry to the authorized_keys file.
+    /// Append a new entry to the `authorized_keys` file.
     ///
     /// `public_key` should be a full OpenSSH public key line
     /// (e.g. `ssh-ed25519 AAAAC3Nz... user@host`). If `options` is provided,
@@ -71,17 +72,16 @@ impl<'a> AuthorizedKeysService<'a> {
         let path = self.paths.authorized_keys_path().to_path_buf();
 
         // Parse and validate the key once.
-        let mut pk = ssh_key::PublicKey::from_openssh(public_key.trim()).map_err(|e| {
-            Error::KeyParseFailed(format!("invalid public key: {e}"))
-        })?;
+        let mut pk = ssh_key::PublicKey::from_openssh(public_key.trim())
+            .map_err(|e| Error::KeyParseFailed(format!("invalid public key: {e}")))?;
 
         // Apply comment override if provided.
         if let Some(comment) = comment {
             pk.set_comment(comment);
         }
-        let key_line = pk.to_openssh().map_err(|e| {
-            Error::KeyParseFailed(format!("failed to serialize key: {e}"))
-        })?;
+        let key_line = pk
+            .to_openssh()
+            .map_err(|e| Error::KeyParseFailed(format!("failed to serialize key: {e}")))?;
 
         // Check for duplicate before writing — reuse the parsed key's fingerprint.
         let target_fp = pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();
@@ -185,16 +185,14 @@ impl<'a> AuthorizedKeysService<'a> {
         new_contents.push('\n');
 
         // Write atomically: write to temp file in same directory, then rename
-        tokio::task::spawn_blocking(move || {
-            atomic_write(&path, &new_contents)
-        })
-        .await
-        .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))??;
+        tokio::task::spawn_blocking(move || atomic_write(&path, &new_contents))
+            .await
+            .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))??;
 
         Ok(removed)
     }
 
-    /// Check if a key is already present in authorized_keys.
+    /// Check if a key is already present in `authorized_keys`.
     ///
     /// `public_key` should be a full OpenSSH public key line. Comparison is
     /// done by fingerprint (SHA-256).
@@ -205,21 +203,22 @@ impl<'a> AuthorizedKeysService<'a> {
     /// provided key string is not valid.
     pub async fn contains(&self, public_key: &str) -> Result<bool> {
         // Compute the fingerprint of the key we are looking for
-        let target_pk = ssh_key::PublicKey::from_openssh(public_key.trim()).map_err(|e| {
-            Error::KeyParseFailed(format!("invalid public key: {e}"))
-        })?;
+        let target_pk = ssh_key::PublicKey::from_openssh(public_key.trim())
+            .map_err(|e| Error::KeyParseFailed(format!("invalid public key: {e}")))?;
         let target_fp = target_pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();
 
         self.contains_fingerprint(&target_fp).await
     }
 
-    /// Check if a fingerprint is already present in authorized_keys.
+    /// Check if a fingerprint is already present in `authorized_keys`.
     ///
     /// This is an internal helper that avoids re-parsing the input key when
     /// the caller already has a fingerprint.
     async fn contains_fingerprint(&self, target_fp: &str) -> Result<bool> {
         let entries = self.list().await?;
-        Ok(entries.iter().any(|e| e.fingerprint().as_deref() == Some(target_fp)))
+        Ok(entries
+            .iter()
+            .any(|e| e.fingerprint().as_deref() == Some(target_fp)))
     }
 }
 

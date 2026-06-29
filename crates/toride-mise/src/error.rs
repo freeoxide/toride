@@ -68,10 +68,7 @@ pub fn classify_stderr(stderr: &str) -> FailureKind {
     }
 
     // Checksum / hash mismatches.
-    if lower.contains("checksum")
-        || lower.contains("hash")
-        || lower.contains("mismatch")
-    {
+    if lower.contains("checksum") || lower.contains("hash") || lower.contains("mismatch") {
         return FailureKind::Checksum;
     }
 
@@ -93,9 +90,7 @@ pub fn classify_stderr(stderr: &str) -> FailureKind {
     }
 
     // Invalid / unparseable config.
-    if (lower.contains("invalid") && lower.contains("config"))
-        || lower.contains("parse error")
-    {
+    if (lower.contains("invalid") && lower.contains("config")) || lower.contains("parse error") {
         return FailureKind::ConfigInvalid;
     }
 
@@ -423,10 +418,7 @@ mod failure_kind_tests {
 
     #[test]
     fn network_download() {
-        assert_eq!(
-            classify_stderr("download timed out"),
-            FailureKind::Network
-        );
+        assert_eq!(classify_stderr("download timed out"), FailureKind::Network);
     }
 
     #[test]

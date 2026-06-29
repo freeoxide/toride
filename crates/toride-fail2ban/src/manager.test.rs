@@ -1,7 +1,7 @@
 use super::*;
-use crate::types::ExecutionMode;
-use crate::config::{Fail2BanConfig, JailConfig, DefaultConfig};
+use crate::config::{DefaultConfig, Fail2BanConfig, JailConfig};
 use crate::paths::Fail2BanPaths;
+use crate::types::ExecutionMode;
 use std::collections::HashMap;
 use std::io::Write;
 use tempfile::tempdir;
@@ -368,14 +368,24 @@ fn unban_ip_succeeds_for_banned_ip() {
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
     manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
-    manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun).unwrap();
+    manager
+        .unban_ip(
+            "sshd",
+            "192.168.1.100".parse().unwrap(),
+            ExecutionMode::DryRun,
+        )
+        .unwrap();
 }
 
 #[test]
 fn unban_ip_nonexistent_jail_returns_not_found() {
     let (_dir, mut manager) = setup();
 
-    let result = manager.unban_ip("nonexistent", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun);
+    let result = manager.unban_ip(
+        "nonexistent",
+        "192.168.1.100".parse().unwrap(),
+        ExecutionMode::DryRun,
+    );
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::JailNotFound(name) => assert_eq!(name, "nonexistent"),
@@ -387,7 +397,11 @@ fn unban_ip_nonexistent_jail_returns_not_found() {
 fn unban_ip_not_banned_returns_not_banned() {
     let (_dir, mut manager) = setup();
 
-    let result = manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun);
+    let result = manager.unban_ip(
+        "sshd",
+        "192.168.1.100".parse().unwrap(),
+        ExecutionMode::DryRun,
+    );
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::NotBanned(_) => {}
@@ -453,7 +467,10 @@ fn status_config_path_matches_paths() {
     let manager = Fail2BanManager::new(config, paths).unwrap();
 
     let status = manager.status().unwrap();
-    assert_eq!(status.config_path, dir.path().join("config").join("config.json"));
+    assert_eq!(
+        status.config_path,
+        dir.path().join("config").join("config.json")
+    );
 }
 
 // ---------- jail_status() ----------
@@ -557,7 +574,10 @@ fn purge_expired_removes_expired_bans() {
 
     let expired = manager.purge_expired().unwrap();
     assert_eq!(expired.len(), 1);
-    assert_eq!(expired[0].ip, "10.0.0.99".parse::<std::net::IpAddr>().unwrap());
+    assert_eq!(
+        expired[0].ip,
+        "10.0.0.99".parse::<std::net::IpAddr>().unwrap()
+    );
 }
 
 // ---------- firewall() ----------
@@ -615,7 +635,13 @@ fn ban_then_unban_reflects_in_status() {
     assert_eq!(js.banned_ips.len(), 1);
     assert_eq!(js.banned_ips[0].ip, ip);
 
-    manager.unban_ip("sshd", "192.168.1.100".parse().unwrap(), ExecutionMode::DryRun).unwrap();
+    manager
+        .unban_ip(
+            "sshd",
+            "192.168.1.100".parse().unwrap(),
+            ExecutionMode::DryRun,
+        )
+        .unwrap();
     let js = manager.jail_status("sshd").unwrap();
     assert!(js.banned_ips.is_empty());
 }
@@ -899,7 +925,10 @@ fn test_remove_then_add_same_name_succeeds() {
     // Verify the jail uses the new config.
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.log_path, log_path2);
-    assert_eq!(js.pattern, r"Connection closed by (?P<ip>\d+\.\d+\.\d+\.\d+)");
+    assert_eq!(
+        js.pattern,
+        r"Connection closed by (?P<ip>\d+\.\d+\.\d+\.\d+)"
+    );
 }
 
 #[test]
@@ -907,12 +936,20 @@ fn test_status_shows_correct_total_bans() {
     let (_dir, mut manager) = setup();
 
     // Ban 3 IPs.
-    manager.ban_ip("sshd", "1.1.1.1".parse().unwrap(), ExecutionMode::DryRun).unwrap();
-    manager.ban_ip("sshd", "2.2.2.2".parse().unwrap(), ExecutionMode::DryRun).unwrap();
-    manager.ban_ip("sshd", "3.3.3.3".parse().unwrap(), ExecutionMode::DryRun).unwrap();
+    manager
+        .ban_ip("sshd", "1.1.1.1".parse().unwrap(), ExecutionMode::DryRun)
+        .unwrap();
+    manager
+        .ban_ip("sshd", "2.2.2.2".parse().unwrap(), ExecutionMode::DryRun)
+        .unwrap();
+    manager
+        .ban_ip("sshd", "3.3.3.3".parse().unwrap(), ExecutionMode::DryRun)
+        .unwrap();
 
     // Unban 1 IP -- this moves it to history.
-    manager.unban_ip("sshd", "2.2.2.2".parse().unwrap(), ExecutionMode::DryRun).unwrap();
+    manager
+        .unban_ip("sshd", "2.2.2.2".parse().unwrap(), ExecutionMode::DryRun)
+        .unwrap();
 
     let js = manager.jail_status("sshd").unwrap();
     // 2 active bans remain.
@@ -1090,7 +1127,9 @@ fn test_scan_jail_then_ban_ip_then_unban_ip_full_cycle() {
 
     // Step 2: Manually ban a distinct IP.
     let ban_ip: std::net::IpAddr = "10.0.0.100".parse().unwrap();
-    manager.ban_ip("sshd", ban_ip, ExecutionMode::DryRun).unwrap();
+    manager
+        .ban_ip("sshd", ban_ip, ExecutionMode::DryRun)
+        .unwrap();
 
     // Step 3: Verify both the scan-triggered and manual bans appear in status.
     let js = manager.jail_status("sshd").unwrap();
@@ -1099,7 +1138,9 @@ fn test_scan_jail_then_ban_ip_then_unban_ip_full_cycle() {
     assert!(has_manual, "Manual ban IP should be in banned_ips");
 
     // Step 4: Unban the manual IP.
-    manager.unban_ip("sshd", ban_ip, ExecutionMode::DryRun).unwrap();
+    manager
+        .unban_ip("sshd", ban_ip, ExecutionMode::DryRun)
+        .unwrap();
 
     // Step 5: Verify the manual IP is no longer in active bans.
     let js = manager.jail_status("sshd").unwrap();
@@ -1107,5 +1148,8 @@ fn test_scan_jail_then_ban_ip_then_unban_ip_full_cycle() {
     assert!(!has_manual, "Manual ban IP should have been unbanned");
 
     // Step 6: Verify the unban moved the entry to history.
-    assert!(js.total_bans >= 1, "History should contain at least 1 entry");
+    assert!(
+        js.total_bans >= 1,
+        "History should contain at least 1 entry"
+    );
 }

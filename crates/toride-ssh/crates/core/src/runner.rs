@@ -96,7 +96,11 @@ pub async fn ssh_copy_id(pubkey: &Path, dest: &str) -> Result<String> {
             pubkey.display()
         ))
     })?;
-    run_tool("ssh-copy-id", vec!["-i".into(), pubkey_str.to_owned(), dest.to_owned()]).await
+    run_tool(
+        "ssh-copy-id",
+        vec!["-i".into(), pubkey_str.to_owned(), dest.to_owned()],
+    )
+    .await
 }
 
 /// Check whether a tool exists in `PATH`.
@@ -155,7 +159,10 @@ impl CliRunner for DefaultCliRunner {
     async fn run(&self, cmd: &str, args: Vec<String>) -> Result<String> {
         let spec = CommandSpec::new(cmd).args(args);
         let runner = TokioRunner;
-        let output = runner.run(&spec).await.map_err(|e| Error::CommandFailed(e.to_string()))?;
+        let output = runner
+            .run(&spec)
+            .await
+            .map_err(|e| Error::CommandFailed(e.to_string()))?;
         if !output.success {
             return Err(Error::CommandFailed(format!(
                 "command `{cmd}` failed with exit {:?}: {}",
@@ -174,7 +181,10 @@ impl CliRunner for DefaultCliRunner {
     ) -> Result<String> {
         let spec = CommandSpec::new(cmd).args(args).envs(env);
         let runner = TokioRunner;
-        let output = runner.run(&spec).await.map_err(|e| Error::CommandFailed(e.to_string()))?;
+        let output = runner
+            .run(&spec)
+            .await
+            .map_err(|e| Error::CommandFailed(e.to_string()))?;
         if !output.success {
             return Err(Error::CommandFailed(format!(
                 "command `{cmd}` failed with exit {:?}: {}",
@@ -363,11 +373,13 @@ mod tests {
     #[tokio::test]
     async fn mock_ssh_add_t_key_usable() {
         let mock = MockCliRunner::new();
-        mock.push_run_response("ssh-add", Ok("".into()));
+        mock.push_run_response("ssh-add", Ok(String::new()));
         mock.set_tool_exists("ssh-add", true);
 
         assert!(mock.tool_exists("ssh-add"));
-        let result = mock.run("ssh-add", vec!["-T".into(), "/path/to/key".into()]).await;
+        let result = mock
+            .run("ssh-add", vec!["-T".into(), "/path/to/key".into()])
+            .await;
         assert!(result.is_ok());
     }
 
@@ -379,7 +391,9 @@ mod tests {
             Err(crate::Error::CommandFailed("key not usable".into())),
         );
 
-        let result = mock.run("ssh-add", vec!["-T".into(), "/path/to/key".into()]).await;
+        let result = mock
+            .run("ssh-add", vec!["-T".into(), "/path/to/key".into()])
+            .await;
         assert!(result.is_err());
     }
 
@@ -401,10 +415,7 @@ mod tests {
     #[tokio::test]
     async fn mock_ssh_add_l_no_identities() {
         let mock = MockCliRunner::new();
-        mock.push_run_response(
-            "ssh-add",
-            Ok("The agent has no identities\n".into()),
-        );
+        mock.push_run_response("ssh-add", Ok("The agent has no identities\n".into()));
 
         let result = mock.run("ssh-add", vec!["-l".into()]).await.unwrap();
         assert!(result.contains("no identities"));
@@ -477,7 +488,10 @@ mod tests {
             Err(crate::Error::CommandFailed("permission denied".into())),
         );
 
-        let err = mock.run("ssh-keygen", vec!["-t".into(), "ed25519".into()]).await.unwrap_err();
+        let err = mock
+            .run("ssh-keygen", vec!["-t".into(), "ed25519".into()])
+            .await
+            .unwrap_err();
         match err {
             crate::Error::CommandFailed(msg) => assert!(msg.contains("permission denied")),
             other => panic!("expected CommandFailed, got: {other:?}"),

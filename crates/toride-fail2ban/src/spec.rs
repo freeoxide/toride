@@ -32,7 +32,9 @@ const FORBIDDEN_NAME_CHARS: &[char] = &[
 fn validate_name(s: &str, type_label: &str) -> Result<String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
-        return Err(Error::InvalidConfig(format!("{type_label} must not be empty")));
+        return Err(Error::InvalidConfig(format!(
+            "{type_label} must not be empty"
+        )));
     }
     if trimmed.contains("..") {
         return Err(Error::InvalidConfig(format!(
@@ -97,13 +99,18 @@ macro_rules! define_name_type {
         }
 
         impl Serialize for $name {
-            fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+            fn serialize<S: Serializer>(
+                &self,
+                serializer: S,
+            ) -> std::result::Result<S::Ok, S::Error> {
                 serializer.serialize_str(&self.0)
             }
         }
 
         impl<'de> Deserialize<'de> for $name {
-            fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+            fn deserialize<D: Deserializer<'de>>(
+                deserializer: D,
+            ) -> std::result::Result<Self, D::Error> {
                 let s = String::deserialize(deserializer)?;
                 Self::new(&s).map_err(serde::de::Error::custom)
             }
@@ -235,12 +242,13 @@ impl DurationSpec {
     pub fn new(s: &str) -> Result<Self> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
-            return Err(Error::InvalidConfig("DurationSpec must not be empty".into()));
+            return Err(Error::InvalidConfig(
+                "DurationSpec must not be empty".into(),
+            ));
         }
         if !PERMANENT_MARKERS.contains(&trimmed) {
-            humantime::parse_duration(trimmed).map_err(|e| {
-                Error::InvalidConfig(format!("invalid duration {s:?}: {e}"))
-            })?;
+            humantime::parse_duration(trimmed)
+                .map_err(|e| Error::InvalidConfig(format!("invalid duration {s:?}: {e}")))?;
         }
         Ok(Self(trimmed.to_owned()))
     }
@@ -369,7 +377,8 @@ impl FromStr for IpOrCidr {
         if let Ok(net) = ipnet::IpNet::from_str(s) {
             return Ok(Self(net));
         }
-        let ip: IpAddr = s.parse()
+        let ip: IpAddr = s
+            .parse()
             .map_err(|e| Error::InvalidIp(format!("invalid IP or CIDR {s:?}: {e}")))?;
         let net = match ip {
             IpAddr::V4(v4) => ipnet::IpNet::from(ipnet::Ipv4Net::new(v4, 32).expect("valid /32")),
@@ -390,11 +399,16 @@ mod ipnet_serde {
     use serde::{Deserialize, Deserializer, Serializer};
     use std::str::FromStr;
 
-    pub fn serialize<S: Serializer>(net: &ipnet::IpNet, s: S) -> std::result::Result<S::Ok, S::Error> {
+    pub fn serialize<S: Serializer>(
+        net: &ipnet::IpNet,
+        s: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
         s.serialize_str(&net.to_string())
     }
 
-    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> std::result::Result<ipnet::IpNet, D::Error> {
+    pub fn deserialize<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> std::result::Result<ipnet::IpNet, D::Error> {
         let st = String::deserialize(d)?;
         ipnet::IpNet::from_str(&st).map_err(serde::de::Error::custom)
     }
@@ -415,7 +429,9 @@ impl LogPath {
         let p = path.to_path_buf();
 
         // Path traversal protection: reject any ".." components
-        if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        if p.components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
             return Err(Error::Validation(format!(
                 "log path must not contain \"..\" components: {}",
                 p.display()

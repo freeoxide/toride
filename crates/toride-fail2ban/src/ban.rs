@@ -57,16 +57,23 @@ impl CidrBlock {
                 }
             }
         };
-        Ok(Self { addr: normalized, prefix })
+        Ok(Self {
+            addr: normalized,
+            prefix,
+        })
     }
 
     /// Get the network address.
     #[must_use]
-    pub const fn addr(&self) -> IpAddr { self.addr }
+    pub const fn addr(&self) -> IpAddr {
+        self.addr
+    }
 
     /// Get the prefix length.
     #[must_use]
-    pub const fn prefix(&self) -> u8 { self.prefix }
+    pub const fn prefix(&self) -> u8 {
+        self.prefix
+    }
 
     /// Check if an IP address falls within this CIDR block.
     #[must_use]
@@ -117,9 +124,9 @@ impl std::str::FromStr for CidrBlock {
             })?;
             Self::new(addr, prefix)
         } else {
-            let addr: IpAddr = s.parse().map_err(|_| {
-                crate::Error::InvalidIp(format!("invalid IP address: '{s}'"))
-            })?;
+            let addr: IpAddr = s
+                .parse()
+                .map_err(|_| crate::Error::InvalidIp(format!("invalid IP address: '{s}'")))?;
             let prefix = crate::types::default_prefix(addr);
             Self::new(addr, prefix)
         }
@@ -129,7 +136,7 @@ impl std::str::FromStr for CidrBlock {
 /// A set of CIDR blocks for efficient IP containment checks.
 #[derive(Debug, Clone, Default)]
 pub struct CidrSet {
-    v4: Vec<(u32, u32)>, // (network_bits, mask) for IPv4
+    v4: Vec<(u32, u32)>,   // (network_bits, mask) for IPv4
     v6: Vec<(u128, u128)>, // (network_bits, mask) for IPv6
     singles_v4: HashSet<u32>,
     singles_v6: HashSet<u128>,
@@ -232,7 +239,10 @@ impl CidrSet {
     /// Check if the set is empty.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.v4.is_empty() && self.v6.is_empty() && self.singles_v4.is_empty() && self.singles_v6.is_empty()
+        self.v4.is_empty()
+            && self.v6.is_empty()
+            && self.singles_v4.is_empty()
+            && self.singles_v6.is_empty()
     }
 }
 
@@ -269,10 +279,9 @@ impl BanManager {
         reason: Option<String>,
     ) -> crate::Result<BanEntry> {
         let now = Utc::now();
-        let ban_duration_i64 = i64::try_from(ban_duration_secs)
-            .map_err(|_| crate::Error::InvalidConfig(
-                format!("ban duration {ban_duration_secs} exceeds maximum")
-            ))?;
+        let ban_duration_i64 = i64::try_from(ban_duration_secs).map_err(|_| {
+            crate::Error::InvalidConfig(format!("ban duration {ban_duration_secs} exceeds maximum"))
+        })?;
         let entry = BanEntry {
             ip,
             prefix,

@@ -19,9 +19,12 @@ pub fn diff_configs(old: &str, new: &str) -> String {
 /// Compare current server blocks against desired server blocks and return
 /// the blocks that would change.
 ///
-/// A block is considered changed if its server_name appears in `desired`
+/// A block is considered changed if its `server_name` appears in `desired`
 /// but with different configuration (port, upstream, TLS settings).
-pub fn changed_blocks<'a>(current: &[ServerBlock], desired: &'a [ServerBlock]) -> Vec<&'a ServerBlock> {
+pub fn changed_blocks<'a>(
+    current: &[ServerBlock],
+    desired: &'a [ServerBlock],
+) -> Vec<&'a ServerBlock> {
     desired
         .iter()
         .filter(|d| {
@@ -36,7 +39,10 @@ pub fn changed_blocks<'a>(current: &[ServerBlock], desired: &'a [ServerBlock]) -
 
 /// Return server blocks that exist in `current` but are absent from `desired`
 /// (i.e. they would be removed).
-pub fn removed_blocks<'a>(current: &'a [ServerBlock], desired: &[ServerBlock]) -> Vec<&'a ServerBlock> {
+pub fn removed_blocks<'a>(
+    current: &'a [ServerBlock],
+    desired: &[ServerBlock],
+) -> Vec<&'a ServerBlock> {
     current
         .iter()
         .filter(|c| !desired.iter().any(|d| d.server_name == c.server_name))
@@ -113,8 +119,13 @@ mod tests {
     #[test]
     fn changed_blocks_detects_modification() {
         let current = vec![ServerBlock::new("a.com", 80, "127.0.0.1:3000")];
-        let desired = vec![ServerBlock::new("a.com", 443, "127.0.0.1:3000")
-            .with_tls(TlsConfig::new("a.com", "/cert.pem", "/key.pem"))];
+        let desired = vec![
+            ServerBlock::new("a.com", 443, "127.0.0.1:3000").with_tls(TlsConfig::new(
+                "a.com",
+                "/cert.pem",
+                "/key.pem",
+            )),
+        ];
 
         let changed = changed_blocks(&current, &desired);
         assert_eq!(changed.len(), 1);

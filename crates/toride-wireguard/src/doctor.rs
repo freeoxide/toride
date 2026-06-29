@@ -86,12 +86,11 @@ fn parse_wg_show_verbose(output: &str) -> Result<Vec<ParsedInterface>> {
             peer_active = false;
             let _ = rest; // peer public key, not needed for counts
         } else if trimmed.starts_with("listening port:") {
-            if let Some(port_str) = trimmed.split_whitespace().nth(2) {
-                if let Some(ref mut iface) = current {
-                    if let Ok(port) = port_str.parse::<u16>() {
-                        iface.listen_port = port;
-                    }
-                }
+            if let Some(port_str) = trimmed.split_whitespace().nth(2)
+                && let Some(ref mut iface) = current
+                && let Ok(port) = port_str.parse::<u16>()
+            {
+                iface.listen_port = port;
             }
         } else if trimmed.starts_with("latest handshake:") {
             // This peer has completed at least one handshake.
@@ -100,20 +99,20 @@ fn parse_wg_show_verbose(output: &str) -> Result<Vec<ParsedInterface>> {
             // `wg show` prints: "transfer: <rx> received, <tx> sent"
             // where <rx>/<tx> may be a raw byte count or a humanized value
             // like "1.2 KiB". Parse both forms and accumulate per-interface.
-            if let Some((rx, tx)) = parse_transfer_line(rest) {
-                if let Some(ref mut iface) = current {
-                    iface.bytes_received = iface.bytes_received.saturating_add(rx);
-                    iface.bytes_sent = iface.bytes_sent.saturating_add(tx);
-                }
+            if let Some((rx, tx)) = parse_transfer_line(rest)
+                && let Some(ref mut iface) = current
+            {
+                iface.bytes_received = iface.bytes_received.saturating_add(rx);
+                iface.bytes_sent = iface.bytes_sent.saturating_add(tx);
             }
         }
     }
 
     // Flush the trailing peer's active state for the last interface.
-    if let Some(ref mut iface) = current {
-        if peer_active {
-            iface.active_peers += 1;
-        }
+    if let Some(ref mut iface) = current
+        && peer_active
+    {
+        iface.active_peers += 1;
     }
     if let Some(iface) = current {
         ifaces.push(iface);
@@ -171,7 +170,22 @@ fn parse_byte_value(field: &str, keyword: &str) -> Option<u64> {
             }
         }
     };
-    Some((magnitude * multiplier) as u64)
+    // Byte counts are non-negative. Clamp to a finite non-negative range before
+    // the f64->u64 conversion so we never truncate below zero or overflow; the
+    // explicit `u64::MAX` upper bound keeps the cast in range.
+    let bytes = (magnitude * multiplier).max(0.0);
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss,
+        reason = "bytes is clamped to >= 0 and bounded by u64::MAX; the u64::MAX-as-f64 threshold is only an overflow guard where precision loss is immaterial, and the f64->u64 cast saturates safely"
+    )]
+    let value = if bytes >= u64::MAX as f64 {
+        u64::MAX
+    } else {
+        bytes as u64
+    };
+    Some(value)
 }
 
 /// Extract the permission bits (low 12, including setuid etc.) from a
@@ -198,17 +212,17 @@ fn first_tunnel_dns(report: &WireguardReport) -> Option<Vec<String>> {
             let content = std::fs::read_to_string(&path).ok()?;
             for line in content.lines() {
                 let trimmed = line.trim();
-                if let Some(rest) = trimmed.strip_prefix("DNS") {
-                    if let Some((_, value)) = rest.split_once('=') {
-                        let dns: Vec<String> = value
-                            .trim()
-                            .split(',')
-                            .map(|s| s.trim().to_owned())
-                            .filter(|s| !s.is_empty())
-                            .collect();
-                        if !dns.is_empty() {
-                            return Some(dns);
-                        }
+                if let Some(rest) = trimmed.strip_prefix("DNS")
+                    && let Some((_, value)) = rest.split_once('=')
+                {
+                    let dns: Vec<String> = value
+                        .trim()
+                        .split(',')
+                        .map(|s| s.trim().to_owned())
+                        .filter(|s| !s.is_empty())
+                        .collect();
+                    if !dns.is_empty() {
+                        return Some(dns);
                     }
                 }
             }
@@ -231,11 +245,7 @@ fn read_system_dns() -> Option<Vec<String>> {
         })
         .filter(|s| !s.is_empty())
         .collect();
-    if ns.is_empty() {
-        None
-    } else {
-        Some(ns)
-    }
+    if ns.is_empty() { None } else { Some(ns) }
 }
 
 // ---------------------------------------------------------------------------
@@ -314,21 +324,21 @@ impl<R: Runner + Send + Sync> Doctor<R> {
 
         match scope {
             DoctorScope::All => {
-                self.check_binaries(&mut report)?;
-                self.check_config_dir(&mut report)?;
-                self.check_interfaces(&mut report)?;
-                self.check_key_permissions(&mut report)?;
-                self.check_dns_leak(&mut report)?;
+                Self::check_binaries(&mut report);
+                Self::check_config_dir(&mut report);
+                self.check_interfaces(&mut report);
+                Self::check_key_permissions(&mut report);
+                Self::check_dns_leak(&mut report);
             }
             DoctorScope::Setup => {
-                self.check_binaries(&mut report)?;
-                self.check_config_dir(&mut report)?;
+                Self::check_binaries(&mut report);
+                Self::check_config_dir(&mut report);
             }
             DoctorScope::Connectivity => {
-                self.check_interfaces(&mut report)?;
+                self.check_interfaces(&mut report);
             }
             DoctorScope::Security => {
-                self.check_key_permissions(&mut report)?;
+                Self::check_key_permissions(&mut report);
             }
         }
 
@@ -340,7 +350,7 @@ impl<R: Runner + Send + Sync> Doctor<R> {
     // -----------------------------------------------------------------------
 
     /// Check that `wg` and `wg-quick` binaries are available.
-    fn check_binaries(&self, report: &mut WireguardReport) -> Result<()> {
+    fn check_binaries(report: &mut WireguardReport) {
         tracing::debug!("checking WireGuard binaries");
 
         report.wg_binary_found = which::which("wg").is_ok();
@@ -366,12 +376,10 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                 .with_fix("Install wireguard-tools: apt install wireguard-tools".to_owned()),
             );
         }
-
-        Ok(())
     }
 
     /// Check that the WireGuard config directory exists with proper permissions.
-    fn check_config_dir(&self, report: &mut WireguardReport) -> Result<()> {
+    fn check_config_dir(report: &mut WireguardReport) {
         tracing::debug!("checking WireGuard config directory");
         report.config_dir_exists = report.config_dir.is_dir();
 
@@ -385,8 +393,6 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                 ),
             ));
         }
-
-        Ok(())
     }
 
     /// Check interface status and peer connectivity.
@@ -397,7 +403,7 @@ impl<R: Runner + Send + Sync> Doctor<R> {
     ///
     /// If the `wg` binary is absent this emits a critical finding instead of
     /// failing the whole diagnostic run, so the user still gets a useful report.
-    fn check_interfaces(&self, report: &mut WireguardReport) -> Result<()> {
+    fn check_interfaces(&self, report: &mut WireguardReport) {
         tracing::debug!("checking WireGuard interfaces");
 
         if !report.wg_binary_found {
@@ -411,7 +417,7 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                     "Install wireguard-tools (apt install wireguard-tools) and re-run".to_owned(),
                 ),
             );
-            return Ok(());
+            return;
         }
 
         let output = match self.run_wg_show() {
@@ -428,7 +434,7 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                             .to_owned(),
                     ),
                 );
-                return Ok(());
+                return;
             }
         };
 
@@ -438,7 +444,7 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                 Severity::Info,
                 "no WireGuard interfaces are currently up".to_owned(),
             ));
-            return Ok(());
+            return;
         }
 
         let parsed = match parse_wg_show_verbose(&output) {
@@ -449,7 +455,7 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                     Severity::Warning,
                     format!("failed to parse `wg show` output: {err}"),
                 ));
-                return Ok(());
+                return;
             }
         };
 
@@ -466,8 +472,6 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                 },
             });
         }
-
-        Ok(())
     }
 
     /// Check that WireGuard config files have restrictive permissions.
@@ -477,12 +481,12 @@ impl<R: Runner + Send + Sync> Doctor<R> {
     /// expected mode is `0600`. Permissive modes (any bit set in `0o077`)
     /// produce a warning. If no `.conf` files exist at all, an informational
     /// finding is emitted so the absence is visible rather than silent.
-    fn check_key_permissions(&self, report: &mut WireguardReport) -> Result<()> {
+    fn check_key_permissions(report: &mut WireguardReport) {
         tracing::debug!("checking key file permissions");
 
         if !report.config_dir_exists {
             // The config-dir check already reported the missing directory.
-            return Ok(());
+            return;
         }
 
         let mut confs: Vec<std::path::PathBuf> = match std::fs::read_dir(&report.config_dir) {
@@ -500,7 +504,7 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                         report.config_dir.display()
                     ),
                 ));
-                return Ok(());
+                return;
             }
         };
         confs.sort();
@@ -514,7 +518,7 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                     report.config_dir.display()
                 ),
             ));
-            return Ok(());
+            return;
         }
 
         for conf in &confs {
@@ -566,8 +570,6 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                 ));
             }
         }
-
-        Ok(())
     }
 
     /// Check for DNS leaks when the tunnel is active.
@@ -577,17 +579,14 @@ impl<R: Runner + Send + Sync> Doctor<R> {
     /// from the active system resolver. If either resolver cannot be read, or
     /// they agree, or there is ambiguity, we emit nothing rather than risk a
     /// false positive.
-    fn check_dns_leak(&self, report: &mut WireguardReport) -> Result<()> {
+    fn check_dns_leak(report: &mut WireguardReport) {
         tracing::debug!("checking for DNS leaks");
 
-        let tunnel_dns = match first_tunnel_dns(report) {
-            Some(d) => d,
-            None => return Ok(()),
+        let Some(tunnel_dns) = first_tunnel_dns(report) else {
+            return;
         };
-
-        let system_dns = match read_system_dns() {
-            Some(d) => d,
-            None => return Ok(()),
+        let Some(system_dns) = read_system_dns() else {
+            return;
         };
 
         if !system_dns.is_empty()
@@ -604,8 +603,6 @@ impl<R: Runner + Send + Sync> Doctor<R> {
                 ),
             ));
         }
-
-        Ok(())
     }
 
     /// Run `wg show` through the injected runner and return its stdout.
@@ -728,8 +725,10 @@ peer: X=
     fn parse_transfer_line_handles_humanized_and_raw() {
         // Humanized values with binary units.
         let (rx, tx) = parse_transfer_line(" 1.2 KiB received, 3.4 KiB sent").unwrap();
-        assert_eq!(rx, (1.2 * 1024.0) as u64);
-        assert_eq!(tx, (3.4 * 1024.0) as u64);
+        let one_point_two_kib = kib_bytes(1.2);
+        let three_point_four_kib = kib_bytes(3.4);
+        assert_eq!(rx, one_point_two_kib);
+        assert_eq!(tx, three_point_four_kib);
 
         // Raw byte counts (no unit suffix).
         let (rx, tx) = parse_transfer_line(" 1024 received, 2048 sent").unwrap();
@@ -738,7 +737,28 @@ peer: X=
 
         // Larger units.
         let (rx, _tx) = parse_transfer_line(" 2.5 GiB received, 0 B sent").unwrap();
-        assert_eq!(rx, (2.5 * 1024.0_f64.powi(3)) as u64);
+        let two_point_five_gib = gib_bytes(2.5);
+        assert_eq!(rx, two_point_five_gib);
+    }
+
+    /// Test helper: convert a magnitude in KiB to whole bytes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test fixture with a small positive magnitude; cast is exact"
+    )]
+    fn kib_bytes(magnitude: f64) -> u64 {
+        (magnitude * 1024.0) as u64
+    }
+
+    /// Test helper: convert a magnitude in GiB to whole bytes.
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "test fixture with a small positive magnitude; cast is exact"
+    )]
+    fn gib_bytes(magnitude: f64) -> u64 {
+        (magnitude * 1024.0_f64.powi(3)) as u64
     }
 
     #[test]
@@ -786,13 +806,15 @@ peer: AAA=
   latest handshake: 4 seconds ago
   transfer: 1024 received, 2048 sent
 ";
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stdout(canned));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(canned));
         let doc = Doctor::with_runner(runner);
 
-        let mut report = WireguardReport::default();
-        report.wg_binary_found = true;
-        doc.check_interfaces(&mut report).unwrap();
+        let mut report = WireguardReport {
+            wg_binary_found: true,
+            ..WireguardReport::default()
+        };
+        doc.check_interfaces(&mut report);
 
         assert_eq!(report.interfaces.len(), 1);
         let iface = &report.interfaces[0];
@@ -812,18 +834,24 @@ peer: AAA=
     fn doctor_emits_warning_when_wg_show_fails() {
         use toride_runner::fake::FakeRunner;
 
-        let runner = FakeRunner::new()
-            .push_response(toride_runner::CommandOutput::from_stderr("permission denied", 1));
+        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(
+            "permission denied",
+            1,
+        ));
         let doc = Doctor::with_runner(runner);
 
-        let mut report = WireguardReport::default();
-        report.wg_binary_found = true;
-        doc.check_interfaces(&mut report).unwrap();
+        let mut report = WireguardReport {
+            wg_binary_found: true,
+            ..WireguardReport::default()
+        };
+        doc.check_interfaces(&mut report);
 
-        assert!(report
-            .findings
-            .iter()
-            .any(|f| f.check_id == "wireguard.interface.show"));
+        assert!(
+            report
+                .findings
+                .iter()
+                .any(|f| f.check_id == "wireguard.interface.show")
+        );
     }
 
     #[test]
@@ -834,12 +862,13 @@ peer: AAA=
         std::fs::write(&conf, "[Interface]\nPrivateKey = secret\n").unwrap();
         std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o644)).unwrap();
 
-        let mut report = WireguardReport::default();
-        report.config_dir = dir.path().to_owned();
-        report.config_dir_exists = true;
+        let mut report = WireguardReport {
+            config_dir: dir.path().to_owned(),
+            config_dir_exists: true,
+            ..WireguardReport::default()
+        };
 
-        let doc = Doctor::new();
-        doc.check_key_permissions(&mut report).unwrap();
+        Doctor::<toride_runner::DuctRunner>::check_key_permissions(&mut report);
 
         assert!(
             report
@@ -859,12 +888,13 @@ peer: AAA=
         std::fs::write(&conf, "[Interface]\nPrivateKey = secret\n").unwrap();
         std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o664)).unwrap();
 
-        let mut report = WireguardReport::default();
-        report.config_dir = dir.path().to_owned();
-        report.config_dir_exists = true;
+        let mut report = WireguardReport {
+            config_dir: dir.path().to_owned(),
+            config_dir_exists: true,
+            ..WireguardReport::default()
+        };
 
-        let doc = Doctor::new();
-        doc.check_key_permissions(&mut report).unwrap();
+        Doctor::<toride_runner::DuctRunner>::check_key_permissions(&mut report);
 
         assert!(
             report
@@ -884,12 +914,13 @@ peer: AAA=
         std::fs::write(&conf, "[Interface]\nPrivateKey = secret\n").unwrap();
         std::fs::set_permissions(&conf, std::fs::Permissions::from_mode(0o600)).unwrap();
 
-        let mut report = WireguardReport::default();
-        report.config_dir = dir.path().to_owned();
-        report.config_dir_exists = true;
+        let mut report = WireguardReport {
+            config_dir: dir.path().to_owned(),
+            config_dir_exists: true,
+            ..WireguardReport::default()
+        };
 
-        let doc = Doctor::new();
-        doc.check_key_permissions(&mut report).unwrap();
+        Doctor::<toride_runner::DuctRunner>::check_key_permissions(&mut report);
 
         assert!(
             !report
@@ -903,36 +934,33 @@ peer: AAA=
     #[test]
     fn key_permissions_info_when_no_confs() {
         let dir = tempfile::tempdir().unwrap();
-        let mut report = WireguardReport::default();
-        report.config_dir = dir.path().to_owned();
-        report.config_dir_exists = true;
+        let mut report = WireguardReport {
+            config_dir: dir.path().to_owned(),
+            config_dir_exists: true,
+            ..WireguardReport::default()
+        };
 
-        let doc = Doctor::new();
-        doc.check_key_permissions(&mut report).unwrap();
+        Doctor::<toride_runner::DuctRunner>::check_key_permissions(&mut report);
 
-        assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.check_id == "wireguard.key-permissions.none"
-                    && f.severity == Severity::Info)
-        );
+        assert!(report.findings.iter().any(
+            |f| f.check_id == "wireguard.key-permissions.none" && f.severity == Severity::Info
+        ));
     }
 
     #[test]
     fn check_interfaces_critical_when_no_wg_binary() {
-        let mut report = WireguardReport::default();
-        report.wg_binary_found = false;
+        let mut report = WireguardReport {
+            wg_binary_found: false,
+            ..WireguardReport::default()
+        };
 
         let doc = Doctor::new();
-        doc.check_interfaces(&mut report).unwrap();
+        doc.check_interfaces(&mut report);
 
         assert!(
-            report
-                .findings
-                .iter()
-                .any(|f| f.check_id == "wireguard.interface.binary"
-                    && f.severity == Severity::Error),
+            report.findings.iter().any(
+                |f| f.check_id == "wireguard.interface.binary" && f.severity == Severity::Error
+            ),
             "absent wg binary should produce a critical interface finding"
         );
         assert!(report.interfaces.is_empty());

@@ -45,7 +45,7 @@ pub struct NodeStatusInfo {
     pub ip_addresses: Vec<String>,
     /// The exit node this node is using, if any.
     pub exit_node: Option<String>,
-    /// Whether MagicDNS is enabled.
+    /// Whether `MagicDNS` is enabled.
     pub dns_enabled: bool,
 }
 
@@ -112,6 +112,10 @@ pub fn convert_peers(peers: &[toride_tailscale::report::PeerInfo]) -> Vec<PeerEn
 ///
 /// [`NetcheckReport`]: toride_tailscale::report::NetcheckReport
 #[derive(Clone, Debug)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the backend NetcheckReport capability flags"
+)]
 pub struct NetcheckInfo {
     /// Whether the node can reach the coordination server (backend
     /// `MappingVariesByDestIP` flag). This tracks NAT behavior, NOT whether the daemon
@@ -380,7 +384,10 @@ mod tests {
         assert_eq!(info.derp_latency.len(), 3);
         // Lowest latency (nyc 10ms) must be first after the sort.
         assert_eq!(info.derp_latency[0].region, "nyc");
-        assert_eq!(info.derp_latency[0].latency_ms, 10.0);
+        assert!(
+            (info.derp_latency[0].latency_ms - 10.0).abs() < f64::EPSILON,
+            "expected 10.0"
+        );
         assert_eq!(info.derp_region.as_deref(), Some("DERP-3"));
         assert!(info.udp);
         assert!(info.hairpin);
@@ -416,10 +423,7 @@ mod tests {
         let report = NetcheckReport {
             connectivity: false,
             derp_region: None,
-            derp_latency: vec![
-                ("good".to_string(), 20.0),
-                ("neg".to_string(), -5.0),
-            ],
+            derp_latency: vec![("good".to_string(), 20.0), ("neg".to_string(), -5.0)],
             udp: false,
             ipv6: false,
             hairpin: false,
@@ -428,7 +432,10 @@ mod tests {
         let info = convert_netcheck(report);
         assert_eq!(info.derp_latency.len(), 1);
         assert_eq!(info.derp_latency[0].region, "good");
-        assert_eq!(info.derp_latency[0].latency_ms, 20.0);
+        assert!(
+            (info.derp_latency[0].latency_ms - 20.0).abs() < f64::EPSILON,
+            "expected 20.0"
+        );
     }
 
     #[test]
@@ -457,10 +464,7 @@ mod tests {
         let report = NetcheckReport {
             connectivity: true,
             derp_region: None,
-            derp_latency: vec![
-                (String::new(), 42.0),
-                ("nyc".to_string(), 10.0),
-            ],
+            derp_latency: vec![(String::new(), 42.0), ("nyc".to_string(), 10.0)],
             udp: true,
             ipv6: false,
             hairpin: false,
@@ -471,7 +475,7 @@ mod tests {
         let empty_region = info
             .derp_latency
             .iter()
-            .find(|e| e.latency_ms == 42.0)
+            .find(|e| (e.latency_ms - 42.0).abs() < f64::EPSILON)
             .expect("empty-region entry survived the filter");
         assert_eq!(empty_region.region, "(unknown)");
     }
@@ -487,10 +491,7 @@ mod tests {
             udp: true,
             ipv6: false,
             hairpin: false,
-            port_mapping: vec![
-                (String::new(), true),
-                ("UPnP".to_string(), false),
-            ],
+            port_mapping: vec![(String::new(), true), ("UPnP".to_string(), false)],
         };
         let info = convert_netcheck(report);
         assert_eq!(info.port_mapping.len(), 2);

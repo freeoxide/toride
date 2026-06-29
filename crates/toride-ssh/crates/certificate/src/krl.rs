@@ -51,7 +51,8 @@ pub async fn inspect_krl(path: &Path) -> Result<KrlInfo> {
 
     // -Q queries a KRL, -l causes it to also print the KRL contents.
     // A dummy file argument is required; /dev/null works as a no-op input.
-    let output = toride_ssh_core::runner::ssh_keygen(&["-Q", "-l", "-f", path_str, "/dev/null"]).await?;
+    let output =
+        toride_ssh_core::runner::ssh_keygen(&["-Q", "-l", "-f", path_str, "/dev/null"]).await?;
 
     parse_krl_output(&output, path)
 }
@@ -98,7 +99,10 @@ fn parse_krl_output(output: &str, path: &Path) -> Result<KrlInfo> {
 
         if let Some(rest) = trimmed.strip_prefix("# KRL version") {
             version = rest.trim().parse().map_err(|_| {
-                toride_ssh_core::Error::KrlParseFailed(format!("invalid KRL version: {}", rest.trim()))
+                toride_ssh_core::Error::KrlParseFailed(format!(
+                    "invalid KRL version: {}",
+                    rest.trim()
+                ))
             })?;
         } else if let Some(rest) = trimmed.strip_prefix("# Generated at") {
             let dt_str = rest.trim();
@@ -125,10 +129,7 @@ fn parse_krl_output(output: &str, path: &Path) -> Result<KrlInfo> {
     }
 
     // Validate that we got something or that the KRL is genuinely empty.
-    if revoked_serials.is_empty()
-        && revoked_key_ids.is_empty()
-        && revoked_fingerprints.is_empty()
-    {
+    if revoked_serials.is_empty() && revoked_key_ids.is_empty() && revoked_fingerprints.is_empty() {
         // The KRL might be empty or we failed to parse. Check if the output
         // indicates it's not a KRL at all.
         if output.contains("not a KRL file")

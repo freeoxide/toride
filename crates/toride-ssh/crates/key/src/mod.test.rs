@@ -92,7 +92,10 @@ fn validate_key_name_exactly_255_bytes_accepted() {
     let name = "k".repeat(255);
     assert_eq!(name.len(), 255);
     let result = validate_key_name(&name);
-    assert!(result.is_ok(), "255-byte name should be accepted: {result:?}");
+    assert!(
+        result.is_ok(),
+        "255-byte name should be accepted: {result:?}"
+    );
 }
 
 #[test]

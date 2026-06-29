@@ -30,9 +30,11 @@
 //!   enabling offline analysis of ban chains and jump targets.  **Not yet
 //!   implemented.**
 
+#[cfg(any(feature = "firewall-nft", feature = "firewall-iptables"))]
+use crate::Error;
+use crate::Result;
 use crate::command::Runner;
 use crate::report::{Finding, Severity};
-use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -216,10 +218,9 @@ impl<'a> FirewallChecker<'a> {
                                 "nft fail2ban set not found",
                             )
                             .detail(format!(
-                                "The nft set \"{}\" in table \"inet {}\" does \
+                                "The nft set \"{IPTABLES_CHAIN}\" in table \"inet {NFT_TABLE}\" does \
                                  not exist. It is normally created when a jail \
                                  with a nftables action starts.",
-                                IPTABLES_CHAIN, NFT_TABLE,
                             ))
                             .fix(
                                 "Start (or restart) the jail so Fail2Ban \
@@ -236,8 +237,7 @@ impl<'a> FirewallChecker<'a> {
                                 "Failed to check nft set",
                             )
                             .detail(format!(
-                                "Running `nft list set inet {} {}` failed: {e}",
-                                NFT_TABLE, IPTABLES_CHAIN,
+                                "Running `nft list set inet {NFT_TABLE} {IPTABLES_CHAIN}` failed: {e}",
                             )),
                         );
                     }
@@ -272,6 +272,10 @@ impl<'a> FirewallChecker<'a> {
     }
 
     /// Run iptables-specific diagnostic probes and append findings.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "sequential probe chain, splitting obscures flow"
+    )]
     fn diagnose_iptables(&self, findings: &mut Vec<Finding>) {
         // --- iptables (IPv4) ------------------------------------------------
 
@@ -409,9 +413,7 @@ impl<'a> FirewallChecker<'a> {
     /// Returns an error if the `nft` command fails or the JSON output cannot
     /// be deserialised.
     #[cfg(feature = "firewall-nft")]
-    pub fn inspect_nft_ruleset_json(
-        &self,
-    ) -> Result<serde_json::Value> {
+    pub fn inspect_nft_ruleset_json(&self) -> Result<serde_json::Value> {
         Err(Error::CommandFailed(
             "inspect_nft_ruleset_json not yet implemented: nft/iptables CLI integration pending"
                 .into(),
@@ -437,9 +439,7 @@ impl<'a> FirewallChecker<'a> {
     /// Returns an error if the `iptables-save` command fails or the output
     /// cannot be parsed.
     #[cfg(feature = "firewall-iptables")]
-    pub fn inspect_iptables_rules(
-        &self,
-    ) -> Result<Vec<serde_json::Value>> {
+    pub fn inspect_iptables_rules(&self) -> Result<Vec<serde_json::Value>> {
         Err(Error::CommandFailed(
             "inspect_iptables_rules not yet implemented: nft/iptables CLI integration pending"
                 .into(),

@@ -20,11 +20,12 @@
 //! Source: AWS CLI v2 reference,
 //! <https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-security-groups.html>.
 
+use crate::CloudProvider;
 use crate::error::{Error, Result};
 use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
-use crate::CloudProvider;
 
 use serde::Deserialize;
+use std::fmt::Write as _;
 use std::sync::Arc;
 use toride_runner::spec::CommandSpec;
 use toride_runner::{CommandOutput, DuctRunner, Runner};
@@ -272,10 +273,10 @@ fn map_runner_error(e: toride_runner::Error) -> Error {
             // so callers can string-match sentinels (e.g. duplicate-rule).
             let mut message = format!("args: {args}");
             if let Some(code) = exit_code {
-                message.push_str(&format!("\nexit: {code}"));
+                let _ = write!(message, "\nexit: {code}");
             }
             if !stderr.trim().is_empty() {
-                message.push_str(&format!("\nstderr: {}", stderr.trim()));
+                let _ = write!(message, "\nstderr: {}", stderr.trim());
             }
             Error::CommandFailed { program, message }
         }
@@ -318,9 +319,8 @@ struct RawSecurityGroup {
 
 impl RawSecurityGroup {
     fn into_security_group(self) -> SecurityGroup {
-        let mut rules = Vec::with_capacity(
-            self.ip_permissions.len() + self.ip_permissions_egress.len(),
-        );
+        let mut rules =
+            Vec::with_capacity(self.ip_permissions.len() + self.ip_permissions_egress.len());
         for p in self.ip_permissions {
             rules.extend(p.into_rules(true));
         }
@@ -462,8 +462,7 @@ fn parse_protocol(raw: &str) -> Protocol {
         "" | "-1" => Protocol::All,
         "tcp" => Protocol::Tcp,
         "udp" => Protocol::Udp,
-        "icmp" => Protocol::Icmp,
-        "icmpv6" => Protocol::Icmp,
+        "icmp" | "icmpv6" => Protocol::Icmp,
         other => match other.parse::<u8>() {
             Ok(n) => Protocol::Other(n),
             Err(_) => Protocol::All,
@@ -480,7 +479,9 @@ fn port_range_from(from: Option<i64>, to: Option<i64>, protocol: Protocol) -> Op
         return None;
     }
     let start = from.and_then(|p| u16::try_from(p.max(0)).ok()).unwrap_or(0);
-    let end = to.and_then(|p| u16::try_from(p.max(0)).ok()).unwrap_or(start);
+    let end = to
+        .and_then(|p| u16::try_from(p.max(0)).ok())
+        .unwrap_or(start);
     Some(PortRange {
         start: start.min(end),
         end: start.max(end),
@@ -507,11 +508,11 @@ fn build_ip_permissions(rule: &FirewallRule) -> serde_json::Value {
     };
 
     let mut perm = serde_json::json!({ "IpProtocol": proto });
-    if let Some(range) = rule.port_range {
-        if !matches!(rule.protocol, Protocol::All) {
-            perm["FromPort"] = serde_json::Value::from(i64::from(range.start));
-            perm["ToPort"] = serde_json::Value::from(i64::from(range.end));
-        }
+    if let Some(range) = rule.port_range
+        && !matches!(rule.protocol, Protocol::All)
+    {
+        perm["FromPort"] = serde_json::Value::from(i64::from(range.start));
+        perm["ToPort"] = serde_json::Value::from(i64::from(range.end));
     }
     perm["IpRanges"] = serde_json::Value::Array(vec![cidr_object(rule)]);
     serde_json::Value::Array(vec![perm])
@@ -601,13 +602,20 @@ mod tests {
         // Source: aws ec2 describe-security-groups --region us-east-1 --output json
         // docs: https://docs.aws.amazon.com/cli/latest/reference/ec2/describe-security-groups.html
         let runner = Arc::new(
-            FakeRunner::new().push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
         );
         let client = client_with(runner.clone());
         client.list_security_groups().unwrap();
 
-        let expected = CommandSpec::new("aws")
-            .args(["ec2", "describe-security-groups", "--region", "us-east-1", "--output", "json"]);
+        let expected = CommandSpec::new("aws").args([
+            "ec2",
+            "describe-security-groups",
+            "--region",
+            "us-east-1",
+            "--output",
+            "json",
+        ]);
         assert_one_call(&runner, &expected);
     }
 
@@ -615,7 +623,8 @@ mod tests {
     fn list_command_with_profile_exact() {
         // With a profile the command gains `--profile <p>` before --output.
         let runner = Arc::new(
-            FakeRunner::new().push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
         );
         let client = AwsClient::with_runner("eu-west-1", runner.clone()).with_profile("prod");
         client.list_security_groups().unwrap();
@@ -880,7 +889,8 @@ mod tests {
     #[test]
     fn get_returns_not_found_for_empty_result() {
         let runner = Arc::new(
-            FakeRunner::new().push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
         );
         let client = client_with(runner);
         let err = client.get_security_group("sg-missing").unwrap_err();

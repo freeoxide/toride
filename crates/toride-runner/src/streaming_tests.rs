@@ -211,8 +211,7 @@ mod tests {
 
         let resolved = std::path::Path::new("/tmp")
             .canonicalize()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/tmp".to_owned());
+            .map_or_else(|_| "/tmp".to_owned(), |p| p.to_string_lossy().into_owned());
         assert_eq!(output.stdout_trimmed(), resolved);
     }
 
@@ -414,6 +413,95 @@ mod tests {
                 assert!(!args.contains(&"secret-value".to_owned()));
             }
             other => panic!("expected Started event, got {other:?}"),
+        }
+    }
+
+    /// A redact(true) spec must scrub secret values from streamed stdout
+    /// chunks and lines, and from the returned captured output. The secret is
+    /// carried as a `--token` flag value (so the scrubber collects it) and the
+    /// command echoes it back; none of the chunk bytes, line text, or the
+    /// returned `CommandOutput.stdout` may contain it.
+    #[tokio::test]
+    async fn streaming_redacts_secret_in_stdout_chunks_and_lines() {
+        let runner = TokioRunner;
+        let secret = "stream-secret-value-12345";
+        let spec = CommandSpec::new("bash")
+            .args(["-c", &format!("echo auth={secret}")])
+            .args(["--token", secret])
+            .redact(true);
+        let mut sink = CollectingSink::default();
+
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        // Returned output must be scrubbed.
+        assert!(
+            !output.stdout.contains(secret),
+            "secret leaked into returned stdout: {}",
+            output.stdout
+        );
+
+        // No chunk or line event may carry the secret.
+        for event in &sink.events {
+            match event {
+                CommandEvent::StdoutChunk(bytes) => {
+                    let text = String::from_utf8_lossy(bytes);
+                    assert!(!text.contains(secret), "secret in StdoutChunk: {text}");
+                }
+                CommandEvent::StderrChunk(bytes) => {
+                    let text = String::from_utf8_lossy(bytes);
+                    assert!(!text.contains(secret), "secret in StderrChunk: {text}");
+                }
+                CommandEvent::StdoutLine(line) => {
+                    assert!(!line.contains(secret), "secret in StdoutLine: {line}");
+                }
+                CommandEvent::StderrLine(line) => {
+                    assert!(!line.contains(secret), "secret in StderrLine: {line}");
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// A secret split across an 8 KB chunk boundary must still be scrubbed:
+    /// the per-stream line buffer reassembles the partial secret before
+    /// redaction, so neither the chunk nor the line event leaks it. The secret
+    /// is carried as a `--token` value (so the scrubber collects it).
+    #[tokio::test]
+    async fn streaming_redacts_secret_split_across_chunk_boundary() {
+        let runner = TokioRunner;
+        let secret = "SPLIT-SECRET-ACROSS-BOUNDARY-0123456789";
+        // Pad before the secret so it straddles the 8 KB read boundary. The
+        // exact split point depends on the reader, but the line buffer must
+        // catch it regardless.
+        let padding = "x".repeat(8 * 1024 - 10);
+        let script = format!("printf '%s\\n' '{padding}{secret}'");
+        let spec = CommandSpec::new("bash")
+            .args(["-c", script.as_str()])
+            .args(["--token", secret])
+            .redact(true);
+        let mut sink = CollectingSink::default();
+
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+        assert!(
+            !output.stdout.contains(secret),
+            "split secret leaked into returned stdout"
+        );
+        for event in &sink.events {
+            match event {
+                CommandEvent::StdoutChunk(bytes) | CommandEvent::StderrChunk(bytes) => {
+                    assert!(
+                        !String::from_utf8_lossy(bytes).contains(secret),
+                        "split secret leaked in a chunk event"
+                    );
+                }
+                CommandEvent::StdoutLine(line) | CommandEvent::StderrLine(line) => {
+                    assert!(
+                        !line.contains(secret),
+                        "split secret leaked in a line event"
+                    );
+                }
+                _ => {}
+            }
         }
     }
 

@@ -9,7 +9,7 @@ use crate::spec::{ProxySpec, ServerBlock};
 /// Render a single Nginx server block from a [`ServerBlock`] spec.
 ///
 /// Produces a complete `server { ... }` block including listen directive,
-/// server_name, TLS settings (if configured), and proxy_pass to upstream.
+/// `server_name`, TLS settings (if configured), and `proxy_pass` to upstream.
 ///
 /// # Example
 ///
@@ -48,7 +48,7 @@ pub fn render_nginx_server_block(block: &ServerBlock) -> String {
         lines.push(format!("    ssl_certificate_key {};", tls.key_path));
 
         if let Some(chain) = &tls.chain_path {
-            lines.push(format!("    ssl_trusted_certificate {};", chain));
+            lines.push(format!("    ssl_trusted_certificate {chain};"));
         }
 
         if tls.ocsp_stapling {
@@ -60,7 +60,7 @@ pub fn render_nginx_server_block(block: &ServerBlock) -> String {
     // Proxy pass
     lines.push(String::new());
     lines.push("    # Proxy configuration".into());
-    lines.push(format!("    location / {{"));
+    lines.push("    location / {".to_string());
     lines.push(format!("        proxy_pass http://{};", block.upstream));
     lines.push("        proxy_http_version 1.1;".into());
     lines.push("        proxy_set_header Upgrade $http_upgrade;".into());
@@ -109,7 +109,7 @@ pub fn render_nginx_server_block_with_headers(
     // a single rendering code path rather than duplicating the block layout.
     let mut combined: Vec<String> = directives
         .lines()
-        .map(|l| l.to_string())
+        .map(std::string::ToString::to_string)
         .collect();
     combined.extend(block.extra_directives.iter().cloned());
 
@@ -188,18 +188,10 @@ pub fn render_security_headers(include_hsts: bool, csp_policy: Option<&str>) -> 
         );
     }
 
-    lines.push(
-        "    add_header X-Content-Type-Options \"nosniff\" always;".into(),
-    );
-    lines.push(
-        "    add_header X-Frame-Options \"SAMEORIGIN\" always;".into(),
-    );
-    lines.push(
-        "    add_header X-XSS-Protection \"1; mode=block\" always;".into(),
-    );
-    lines.push(
-        "    add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;".into(),
-    );
+    lines.push("    add_header X-Content-Type-Options \"nosniff\" always;".into());
+    lines.push("    add_header X-Frame-Options \"SAMEORIGIN\" always;".into());
+    lines.push("    add_header X-XSS-Protection \"1; mode=block\" always;".into());
+    lines.push("    add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;".into());
 
     if let Some(csp) = csp_policy {
         lines.push(format!(
@@ -242,8 +234,8 @@ mod tests {
 
     #[test]
     fn render_tls_server_block() {
-        let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000")
-            .with_tls(TlsConfig::new(
+        let block =
+            ServerBlock::new("example.com", 443, "127.0.0.1:3000").with_tls(TlsConfig::new(
                 "example.com",
                 "/etc/letsencrypt/live/example.com/fullchain.pem",
                 "/etc/letsencrypt/live/example.com/privkey.pem",
@@ -251,7 +243,9 @@ mod tests {
         let config = render_nginx_server_block(&block);
 
         assert!(config.contains("listen 443 ssl http2;"));
-        assert!(config.contains("ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;"));
+        assert!(
+            config.contains("ssl_certificate /etc/letsencrypt/live/example.com/fullchain.pem;")
+        );
         assert!(config.contains("ssl_stapling on;"));
     }
 
@@ -286,7 +280,8 @@ mod tests {
     fn render_block_with_headers_injects_directives() {
         use crate::nginx_headers::SecurityHeaders;
         let block = ServerBlock::new("example.com", 443, "127.0.0.1:3000");
-        let rendered = render_nginx_server_block_with_headers(&block, Some(&SecurityHeaders::strict()));
+        let rendered =
+            render_nginx_server_block_with_headers(&block, Some(&SecurityHeaders::strict()));
         assert!(rendered.contains("Strict-Transport-Security"));
         assert!(rendered.contains("preload"));
         assert!(rendered.contains("server_name example.com;"));

@@ -36,13 +36,7 @@ impl std::fmt::Display for PasswdEntry {
         write!(
             f,
             "{}:{}:{}:{}:{}:{}:{}",
-            self.username,
-            self.password,
-            self.uid,
-            self.gid,
-            self.gecos,
-            self.home,
-            self.shell
+            self.username, self.password, self.uid, self.gid, self.gecos, self.home, self.shell
         )
     }
 }
@@ -327,8 +321,7 @@ mod tests {
 
     #[test]
     fn parse_passwd_valid_line_parses_fields() {
-        let entries =
-            parse_passwd("root:x:0:0:root:/root:/bin/bash\n").expect("valid line parses");
+        let entries = parse_passwd("root:x:0:0:root:/root:/bin/bash\n").expect("valid line parses");
         assert_eq!(entries.len(), 1);
         let e = &entries[0];
         assert_eq!(e.username, "root");
@@ -385,8 +378,7 @@ mod tests {
 
     #[test]
     fn parse_passwd_too_many_fields_is_skipped() {
-        let input =
-            "a:b:c:d:e:f:g:extra\nroot:x:0:0:root:/root:/bin/bash\n";
+        let input = "a:b:c:d:e:f:g:extra\nroot:x:0:0:root:/root:/bin/bash\n";
         let entries = parse_passwd(input).expect("long line skipped, not fatal");
         assert_eq!(entries.len(), 1);
     }
@@ -455,7 +447,8 @@ mod tests {
 
     #[test]
     fn parse_sudoers_comment_and_directive_only_is_ok_empty() {
-        let input = "# comment\nDefaults env_reset\n@include /etc/sudoers.d\n@includedir /etc/sudoers.d\n";
+        let input =
+            "# comment\nDefaults env_reset\n@include /etc/sudoers.d\n@includedir /etc/sudoers.d\n";
         assert!(parse_sudoers(input).unwrap().is_empty());
     }
 

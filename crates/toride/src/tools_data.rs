@@ -47,7 +47,7 @@ use crate::ui::screens::tools::{FindingEntry, ToolEntry};
 #[derive(Clone, Debug)]
 pub struct ToolsDataBundle {
     /// Whether the PATH scan ran at all. `false` is reserved for the panic
-    /// case (a `tokio::spawn` JoinError) — a host where every catalogue entry
+    /// case (a `tokio::spawn` `JoinError`) — a host where every catalogue entry
     /// is missing still yields `available == true` so the operator SEES the
     /// findings (every expected tool absent) rather than a blank panel.
     pub available: bool,
@@ -92,6 +92,10 @@ pub struct ToolsCollector {
 }
 
 /// How long to keep cached findings before re-running the catalogue scan.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: Duration = Duration::from_secs(60);
 
 impl ToolsCollector {
@@ -123,7 +127,7 @@ impl ToolsCollector {
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
-                .map_or(false, |t| t.elapsed() < FINDINGS_TTL);
+                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         // The catalogue scan is entirely synchronous (`which` + `Command`),
@@ -136,9 +140,8 @@ impl ToolsCollector {
         // this wrap a panic would drop `tx`, `rx.await` would return `Err`,
         // and poll() would map that to `None`, leaving the dashboard showing
         // stale last-good data indefinitely with no degraded-state signal.
-        let handle = tokio::spawn(async move {
-            collect_real_tools(use_cache, cached_findings).await
-        });
+        let handle =
+            tokio::spawn(async move { collect_real_tools(use_cache, cached_findings).await });
         tokio::spawn(async move {
             let result = handle.await;
             let (bundle, reused_cache) = match result {
@@ -146,9 +149,7 @@ impl ToolsCollector {
                 Err(e) => {
                     tracing::warn!("tools data collection panicked: {e}");
                     (
-                        empty_bundle_with_reason(format!(
-                            "tools data collection panicked: {e}"
-                        )),
+                        empty_bundle_with_reason(format!("tools data collection panicked: {e}")),
                         false,
                     )
                 }
@@ -216,7 +217,7 @@ impl Default for ToolsCollector {
 /// probes are still run (the catalogue is short and `which` is cheap), but
 /// the missing-tool warnings are not re-derived.
 ///
-/// On ANY panic (JoinError from the outer `tokio::spawn`) returns
+/// On ANY panic (`JoinError` from the outer `tokio::spawn`) returns
 /// [`empty_bundle_with_reason`] with `available = false`.
 ///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
@@ -340,10 +341,9 @@ fn probe_version(binary: &str, path: &str) -> Option<String> {
             Ok(Some(line)) if !line.trim().is_empty() => {
                 return Some(line.trim().to_string());
             }
-            Ok(_) => continue,
+            Ok(_) => {}
             Err(e) => {
                 tracing::debug!("tools: version probe '{binary}' {arg}: {e}");
-                continue;
             }
         }
     }
@@ -368,7 +368,10 @@ fn run_version_command(path: &str, arg: &str) -> std::io::Result<Option<String>>
         return Ok(None);
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout.lines().find(|l| !l.trim().is_empty()).map(String::from))
+    Ok(stdout
+        .lines()
+        .find(|l| !l.trim().is_empty())
+        .map(String::from))
 }
 
 /// Per-version-probe timeout. Generous for a fast `--version` (sub-50ms) but
@@ -386,31 +389,29 @@ fn wait_with_timeout(
 ) -> std::io::Result<std::process::Output> {
     let deadline = std::time::Instant::now() + timeout;
     loop {
-        match child.try_wait()? {
-            Some(_status) => return child.wait_with_output(),
-            None => {
-                if std::time::Instant::now() >= deadline {
-                    // Kill + reap so the child does not become a zombie.
-                    let _ = child.kill();
-                    let _ = child.wait();
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::TimedOut,
-                        format!("version probe exceeded {:?}", timeout),
-                    ));
-                }
-                // Short sleep to avoid a tight spin; we are on the blocking
-                // pool so std::thread::sleep is appropriate here.
-                std::thread::sleep(Duration::from_millis(20));
-            }
+        if let Some(_status) = child.try_wait()? {
+            return child.wait_with_output();
         }
+        if std::time::Instant::now() >= deadline {
+            // Kill + reap so the child does not become a zombie.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("version probe exceeded {timeout:?}"),
+            ));
+        }
+        // Short sleep to avoid a tight spin; we are on the blocking
+        // pool so std::thread::sleep is appropriate here.
+        std::thread::sleep(Duration::from_millis(20));
     }
 }
 
 /// Empty bundle used when the collection task panicked (`tokio::spawn`
-/// JoinError) — mirrors [`harden_data::empty_bundle`] and the sibling
+/// `JoinError`) — mirrors [`harden_data::empty_bundle`] and the sibling
 /// collectors. `available = false` signals the UI to render the degraded
 /// panel; no reason is attached because none is known at this point (the
-/// JoinError reason is added by [`empty_bundle_with_reason`]).
+/// `JoinError` reason is added by [`empty_bundle_with_reason`]).
 ///
 /// [`harden_data::empty_bundle`]: crate::toride_harden_data::empty_bundle
 fn empty_bundle() -> ToolsDataBundle {
@@ -425,9 +426,9 @@ fn empty_bundle() -> ToolsDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when the spawned
-/// collection task panicked (JoinError) — the reason string is rendered by the
+/// collection task panicked (`JoinError`) — the reason string is rendered by the
 /// UI's degraded panel so the operator sees what actually went wrong, mirroring
-/// the spawn_blocking JoinError path in harden / fail2ban / cloud / etc.
+/// the `spawn_blocking` `JoinError` path in harden / fail2ban / cloud / etc.
 fn empty_bundle_with_reason(reason: String) -> ToolsDataBundle {
     let mut b = empty_bundle();
     b.unavailable_reason = Some(reason);
@@ -495,7 +496,7 @@ mod tests {
         // true and the catalogue is populated.
         let mut collector = ToolsCollector::new();
         collector.start();
-        tokio::time::sleep(Duration::from_millis(2000)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
         let b = bundle.unwrap();
@@ -505,7 +506,10 @@ mod tests {
             "catalogue must be populated on any host"
         );
         assert_eq!(b.total_count, b.tools.len());
-        assert_eq!(b.installed_count, b.tools.iter().filter(|t| t.installed).count());
+        assert_eq!(
+            b.installed_count,
+            b.tools.iter().filter(|t| t.installed).count()
+        );
     }
 
     #[test]
@@ -536,7 +540,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = ToolsCollector::new();
         collector.start();
-        tokio::time::sleep(Duration::from_millis(2000)).await;
+        tokio::time::sleep(Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where every expected tool is installed).

@@ -16,19 +16,19 @@ use crate::ui::screens::ssh::{
 
 // ── Known Hosts ─────────────────────────────────────────────────────────────
 
-/// Convert library known_hosts entries to UI entries.
+/// Convert library `known_hosts` entries to UI entries.
 ///
 /// Groups multiple key lines for the same host into a single entry.
 /// For example, if `github.com` has ed25519, ecdsa, and rsa keys,
 /// they become one entry with `key_types: ["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"]`.
 pub fn convert_known_hosts(
-    entries: Vec<toride_ssh::known_hosts::KnownHostEntry>,
+    entries: &[toride_ssh::known_hosts::KnownHostEntry],
 ) -> Vec<KnownHostEntry> {
     // Index: sorted comma-joined host string → (key_types, fingerprints, first entry)
     let mut groups: std::collections::BTreeMap<String, GroupAccum> =
         std::collections::BTreeMap::new();
 
-    for e in &entries {
+    for e in entries {
         let is_hashed = e.hosts.iter().any(|h| h.starts_with("|1|"));
         let fingerprint = match e.fingerprint() {
             Ok(fp) => format!("{fp}"),
@@ -81,7 +81,7 @@ pub fn convert_known_hosts(
         .collect()
 }
 
-/// Accumulator for grouping known_hosts lines by host.
+/// Accumulator for grouping `known_hosts` lines by host.
 struct GroupAccum {
     hosts: Vec<String>,
     is_hashed: bool,
@@ -95,14 +95,14 @@ struct GroupAccum {
 
 // ── Authorized Keys ─────────────────────────────────────────────────────────
 
-/// Convert library authorized_keys entries to UI entries.
+/// Convert library `authorized_keys` entries to UI entries.
 pub fn convert_authorized_keys(
     entries: Vec<toride_ssh::authorized_keys::Entry>,
 ) -> Vec<AuthorizedKeyEntry> {
     entries
         .into_iter()
         .map(|e| {
-            let options_str = e.options.as_ref().map(|o| format_options(o));
+            let options_str = e.options.as_ref().map(format_options);
             let fp = e.fingerprint().unwrap_or_else(|| "(unknown)".into());
             AuthorizedKeyEntry {
                 key_type: e.key_type,
@@ -258,9 +258,8 @@ pub fn convert_config_ast(ast: &toride_ssh::config::ast::ConfigAst) -> Vec<Confi
     let mut entries = Vec::new();
 
     for node in &ast.nodes {
-        let hb = match node {
-            toride_ssh::config::ast::ConfigNode::HostBlock(b) => b,
-            _ => continue,
+        let toride_ssh::config::ast::ConfigNode::HostBlock(hb) = node else {
+            continue;
         };
 
         let mut host_name = None;
@@ -319,16 +318,13 @@ pub fn convert_agent_keys(
     let entries: Vec<AgentKeyEntry> = keys
         .into_iter()
         .map(|k| AgentKeyEntry {
-            name: k
-                .comment
-                .clone()
-                .unwrap_or_else(|| {
-                    k.path
-                        .file_name()
-                        .unwrap_or_else(|| OsStr::new("(unknown)"))
-                        .to_string_lossy()
-                        .into_owned()
-                }),
+            name: k.comment.clone().unwrap_or_else(|| {
+                k.path
+                    .file_name()
+                    .unwrap_or_else(|| OsStr::new("(unknown)"))
+                    .to_string_lossy()
+                    .into_owned()
+            }),
             key_type: format_key_type(&k.key_type),
             fingerprint: k
                 .fingerprint
@@ -392,8 +388,7 @@ pub fn convert_certificates(
 ) -> Vec<CertificateEntry> {
     let now_secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |d| d.as_secs());
 
     certs
         .into_iter()
@@ -439,9 +434,8 @@ fn truncate_key(key: &str, max_len: usize) -> String {
 /// Returns `"Xd Xh Xm"` with zero units omitted. Returns an empty string
 /// if the time is `None` or the clock would go backwards.
 fn format_duration_since(t: Option<SystemTime>) -> String {
-    let established = match t {
-        Some(t) => t,
-        None => return String::new(),
+    let Some(established) = t else {
+        return String::new();
     };
     match SystemTime::now().duration_since(established) {
         Ok(dur) => {
@@ -470,9 +464,10 @@ fn format_unix_timestamp(secs: u64) -> String {
     if secs == u64::MAX {
         return "forever".into();
     }
-    chrono::DateTime::from_timestamp(secs as i64, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
-        .unwrap_or_else(|| "(invalid)".into())
+    chrono::DateTime::from_timestamp(i64::try_from(secs).unwrap_or(i64::MAX), 0).map_or_else(
+        || "(invalid)".into(),
+        |dt| dt.format("%Y-%m-%d %H:%M:%S").to_string(),
+    )
 }
 
 #[cfg(test)]
@@ -513,18 +508,22 @@ mod tests {
 
     #[test]
     fn format_options_command_only() {
-        let mut opts = toride_ssh::authorized_keys::Options::default();
-        opts.command = Some("/bin/bash".into());
+        let opts = toride_ssh::authorized_keys::Options {
+            command: Some("/bin/bash".into()),
+            ..Default::default()
+        };
         let result = format_options(&opts);
         assert!(result.contains("command=\"/bin/bash\""), "got: {result}");
     }
 
     #[test]
     fn format_options_multiple_boolean_flags() {
-        let mut opts = toride_ssh::authorized_keys::Options::default();
-        opts.no_pty = true;
-        opts.no_port_forwarding = true;
-        opts.restrict = true;
+        let opts = toride_ssh::authorized_keys::Options {
+            no_pty: true,
+            no_port_forwarding: true,
+            restrict: true,
+            ..Default::default()
+        };
         let result = format_options(&opts);
         assert!(result.contains("no-pty"), "got: {result}");
         assert!(result.contains("no-port-forwarding"), "got: {result}");
@@ -539,6 +538,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::duration_suboptimal_units,
+        reason = "stable std lacks larger-unit constructors"
+    )]
     fn format_duration_since_past_time() {
         let past = std::time::SystemTime::now()
             - std::time::Duration::from_secs(2 * 86400 + 3 * 3600 + 15 * 60);
@@ -549,11 +552,15 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::duration_suboptimal_units,
+        reason = "stable std lacks larger-unit constructors"
+    )]
     fn format_duration_since_sub_hour() {
         let past = std::time::SystemTime::now() - std::time::Duration::from_secs(45 * 60);
         let result = format_duration_since(Some(past));
-        assert!(!result.contains("d"), "should not contain days: {result}");
-        assert!(!result.contains("h"), "should not contain hours: {result}");
+        assert!(!result.contains('d'), "should not contain days: {result}");
+        assert!(!result.contains('h'), "should not contain hours: {result}");
         assert!(result.contains("45m"), "should contain minutes: {result}");
     }
 
@@ -567,14 +574,20 @@ mod tests {
     #[test]
     fn format_unix_timestamp_epoch() {
         let result = format_unix_timestamp(0);
-        assert!(result.starts_with("1970"), "epoch should start with 1970: {result}");
+        assert!(
+            result.starts_with("1970"),
+            "epoch should start with 1970: {result}"
+        );
     }
 
     #[test]
     fn format_unix_timestamp_known_value() {
         // 2024-01-01 00:00:00 UTC = 1704067200
-        let result = format_unix_timestamp(1704067200);
-        assert!(result.starts_with("2024"), "should start with 2024: {result}");
+        let result = format_unix_timestamp(1_704_067_200);
+        assert!(
+            result.starts_with("2024"),
+            "should start with 2024: {result}"
+        );
     }
 
     // ── format_key_type ──────────────────────────────────────────────────────

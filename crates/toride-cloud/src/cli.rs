@@ -8,16 +8,19 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::CloudProvider;
 use crate::client::CloudClient;
 use crate::doctor::{Doctor, DoctorScope};
 use crate::error::Result;
 use crate::render;
 use crate::validate;
-use crate::CloudProvider;
 
 /// Cloud provider security group management CLI for toride.
 #[derive(Parser, Debug)]
-#[command(name = "toride-cloud", about = "Cloud provider security group and firewall management")]
+#[command(
+    name = "toride-cloud",
+    about = "Cloud provider security group and firewall management"
+)]
 pub struct Cli {
     /// Path to configuration file.
     #[arg(short, long, default_value = "~/.config/toride/cloud/config.json")]
@@ -127,42 +130,38 @@ impl Cli {
                 Ok(())
             }
 
-            Commands::Render { name } => {
-                match name {
-                    Some(id) => {
-                        let group = client.get_security_group(id)?;
-                        print!("{}", render::render_security_group(&group));
-                    }
-                    None => {
-                        let groups = client.list_security_groups()?;
-                        for group in &groups {
-                            print!("{}", render::render_security_group(group));
-                        }
-                    }
+            Commands::Render { name: Some(id) } => {
+                let group = client.get_security_group(id)?;
+                print!("{}", render::render_security_group(&group));
+                Ok(())
+            }
+
+            Commands::Render { name: None } => {
+                let groups = client.list_security_groups()?;
+                for group in &groups {
+                    print!("{}", render::render_security_group(group));
                 }
                 Ok(())
             }
 
-            Commands::Validate { name } => {
-                match name {
-                    Some(id) => {
-                        let group = client.get_security_group(id)?;
-                        validate::validate_security_group(&group)?;
-                        println!("ok: {id} is valid");
+            Commands::Validate { name: Some(id) } => {
+                let group = client.get_security_group(id)?;
+                validate::validate_security_group(&group)?;
+                println!("ok: {id} is valid");
+                Ok(())
+            }
+
+            Commands::Validate { name: None } => {
+                let groups = client.list_security_groups()?;
+                let mut failures = 0usize;
+                for group in &groups {
+                    if let Err(e) = validate::validate_security_group(group) {
+                        failures += 1;
+                        eprintln!("invalid: {}: {e}", group.name);
                     }
-                    None => {
-                        let groups = client.list_security_groups()?;
-                        let mut failures = 0usize;
-                        for group in &groups {
-                            if let Err(e) = validate::validate_security_group(group) {
-                                failures += 1;
-                                eprintln!("invalid: {}: {e}", group.name);
-                            }
-                        }
-                        if failures == 0 {
-                            println!("ok: all {} group(s) are valid", groups.len());
-                        }
-                    }
+                }
+                if failures == 0 {
+                    println!("ok: all {} group(s) are valid", groups.len());
                 }
                 Ok(())
             }
@@ -310,7 +309,8 @@ mod tests {
         );
 
         let cli = Cli::parse_from(["toride-cloud", "--provider", "aws", "list"]);
-        cli.run_with_client(&client).expect("list dispatch succeeds");
+        cli.run_with_client(&client)
+            .expect("list dispatch succeeds");
 
         let calls = runner.calls();
         assert_eq!(calls.len(), 1, "expected exactly one aws CLI call");
@@ -343,7 +343,10 @@ mod tests {
             matches!(err, crate::Error::ProviderNotFound(_)),
             "expected ProviderNotFound, got {err:?}"
         );
-        assert!(runner.calls().is_empty(), "must not shell out for unknown provider");
+        assert!(
+            runner.calls().is_empty(),
+            "must not shell out for unknown provider"
+        );
     }
 
     // -- DoctorScope parsing --------------------------------------------------

@@ -29,6 +29,7 @@ pub fn get_directive(ast: &ConfigAst, host: &str, key: &str) -> Option<String> {
 ///
 /// Unlike first-match-wins, accumulative directives collect values from all
 /// matching Host blocks.
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn get_accumulative_directive(ast: &ConfigAst, host: &str, key: &str) -> Vec<String> {
     let key_lower = key.to_lowercase();
     let mut values = Vec::new();
@@ -45,6 +46,7 @@ pub fn get_accumulative_directive(ast: &ConfigAst, host: &str, key: &str) -> Vec
 
 /// Get a directive value from any Host block by exact host name (the first
 /// pattern in the block). This is a simpler lookup than pattern matching.
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Option<String> {
     let key_lower = key.to_lowercase();
 
@@ -88,12 +90,8 @@ pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Vec<(String, String)> 
 ///
 /// Returns [`Error::HostNotFound`] if no `Host` block matches the given
 /// host alias.
-pub fn set_directive(
-    ast: &mut ConfigAst,
-    host: &str,
-    key: &str,
-    value: &str,
-) -> Result<()> {
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
+pub fn set_directive(ast: &mut ConfigAst, host: &str, key: &str, value: &str) -> Result<()> {
     let key_lower = key.to_lowercase();
 
     for node in &mut ast.nodes {
@@ -137,6 +135,10 @@ fn find_directive_in_nodes<'a>(nodes: &'a [ConfigNode], key_lower: &str) -> Opti
 }
 
 /// Collect all values for a directive from a list of nodes.
+#[allow(
+    dead_code,
+    reason = "reachable only via public API not exercised in-workspace"
+)]
 fn collect_directives_in_nodes(nodes: &[ConfigNode], key_lower: &str, out: &mut Vec<String>) {
     for node in nodes {
         if let ConfigNode::Directive(d) = node
@@ -190,6 +192,7 @@ fn collect_all_directives(
 ///
 /// Calling `get_preferred_authentications(&ast, "example.com")` returns
 /// `Some("publickey,password".to_owned())`.
+#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn get_preferred_authentications(ast: &ConfigAst, host: &str) -> Option<String> {
     get_directive(ast, host, "PreferredAuthentications")
 }
@@ -198,7 +201,7 @@ pub fn get_preferred_authentications(ast: &ConfigAst, host: &str) -> Option<Stri
 /// does NOT apply to these).
 ///
 /// `ForwardAgent` is intentionally excluded -- it uses first-match-wins
-/// semantics per OpenSSH ssh_config(5).
+/// semantics per OpenSSH `ssh_config(5)`.
 pub(crate) fn is_accumulative(keyword: &str) -> bool {
     keyword.eq_ignore_ascii_case("identityfile")
         || keyword.eq_ignore_ascii_case("certificatefile")

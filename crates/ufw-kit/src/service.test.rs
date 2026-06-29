@@ -77,16 +77,23 @@ fn reload_should_fail_on_nonzero_exit() {
 
 #[test]
 fn journal_tail_should_return_stdout() {
-    let runner =
-        FakeRunner::new().respond_ok("journalctl", &["-u", "ufw", "--no-pager", "-n", "50"], "log line 1\nlog line 2\n");
+    let runner = FakeRunner::new().respond_ok(
+        "journalctl",
+        &["-u", "ufw", "--no-pager", "-n", "50"],
+        "log line 1\nlog line 2\n",
+    );
     let output = journal_tail(&runner, 50).unwrap();
     assert_eq!(output, "log line 1\nlog line 2\n");
 }
 
 #[test]
 fn journal_tail_should_fail_on_nonzero_exit() {
-    let runner =
-        FakeRunner::new().respond_err("journalctl", &["-u", "ufw", "--no-pager", "-n", "10"], "no journal", 1);
+    let runner = FakeRunner::new().respond_err(
+        "journalctl",
+        &["-u", "ufw", "--no-pager", "-n", "10"],
+        "no journal",
+        1,
+    );
     let err = journal_tail(&runner, 10).unwrap_err();
     assert!(err.to_string().contains("failed to read ufw journal"));
 }

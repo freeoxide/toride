@@ -69,14 +69,8 @@ fn parse_ban_with_ip() {
 
 #[test]
 fn parse_ban_with_jail_flag() {
-    let cli = Cli::try_parse_from([
-        "toride-fail2ban",
-        "ban",
-        "10.0.0.1",
-        "--jail",
-        "sshd",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["toride-fail2ban", "ban", "10.0.0.1", "--jail", "sshd"]).unwrap();
     match cli.command {
         Commands::Ban { ip, jail } => {
             assert_eq!(ip, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
@@ -104,14 +98,8 @@ fn parse_unban_with_ip() {
 
 #[test]
 fn parse_unban_with_jail_flag() {
-    let cli = Cli::try_parse_from([
-        "toride-fail2ban",
-        "unban",
-        "10.0.0.1",
-        "--jail",
-        "nginx",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["toride-fail2ban", "unban", "10.0.0.1", "--jail", "nginx"]).unwrap();
     match cli.command {
         Commands::Unban { ip, jail } => {
             assert_eq!(ip, "10.0.0.1".parse::<std::net::IpAddr>().unwrap());
@@ -127,14 +115,7 @@ fn parse_unban_with_jail_flag() {
 
 #[test]
 fn parse_set_command() {
-    let cli = Cli::try_parse_from([
-        "toride-fail2ban",
-        "set",
-        "sshd",
-        "maxretry",
-        "10",
-    ])
-    .unwrap();
+    let cli = Cli::try_parse_from(["toride-fail2ban", "set", "sshd", "maxretry", "10"]).unwrap();
     match cli.command {
         Commands::Set { jail, param, value } => {
             assert_eq!(jail, "sshd");
@@ -390,8 +371,7 @@ fn parse_addjail_defaults_ban_time() {
 
 #[test]
 fn parse_multiple_global_flags() {
-    let cli =
-        Cli::try_parse_from(["toride-fail2ban", "--verbose", "--dry-run", "status"]).unwrap();
+    let cli = Cli::try_parse_from(["toride-fail2ban", "--verbose", "--dry-run", "status"]).unwrap();
     assert!(cli.verbose);
     assert!(cli.dry_run);
 }
@@ -402,14 +382,8 @@ fn parse_multiple_global_flags() {
 
 #[test]
 fn parse_set_with_special_characters() {
-    let cli = Cli::try_parse_from([
-        "toride-fail2ban",
-        "set",
-        "sshd",
-        "bantime",
-        "hello world",
-    ])
-    .unwrap();
+    let cli =
+        Cli::try_parse_from(["toride-fail2ban", "set", "sshd", "bantime", "hello world"]).unwrap();
     match cli.command {
         Commands::Set { value, .. } => assert_eq!(value, "hello world"),
         _ => panic!("expected Set command"),

@@ -130,7 +130,7 @@ fn check_binaries_with_missing_fail2ban_client() {
     assert!(!findings.is_empty());
 
     // If fail2ban-client is not found, the critical finding should appear.
-    if let Err(_) = find_binary("fail2ban-client") {
+    if find_binary("fail2ban-client").is_err() {
         assert!(has_finding(&findings, "binary.fail2ban-client.missing"));
         assert!(
             findings

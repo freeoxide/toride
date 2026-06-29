@@ -11,10 +11,10 @@ mod tests {
     use std::path::Path;
     use std::str::FromStr;
 
-    use crate::ini::{IniManager, ManagedFile, ManagedFileKind, DEFAULT_NAMESPACE};
+    use crate::Error;
+    use crate::ini::{DEFAULT_NAMESPACE, IniManager, ManagedFile, ManagedFileKind};
     use crate::render;
     use crate::spec::*;
-    use crate::Error;
 
     // -----------------------------------------------------------------------
     // Helpers
@@ -60,7 +60,9 @@ mod tests {
     fn make_filter(name: &str) -> FilterSpec {
         FilterSpec::builder()
             .name(FilterName::new(name).unwrap())
-            .failregex(vec![RegexLine::new("^Authentication failure <HOST>$").unwrap()])
+            .failregex(vec![
+                RegexLine::new("^Authentication failure <HOST>$").unwrap(),
+            ])
             .build()
     }
 
@@ -143,9 +145,10 @@ mod tests {
         let dir = setup_config_dir();
         let mgr = manager(&dir);
         let p = mgr.jail_path("myapp");
-        let expected = dir.path().join("jail.d").join(format!(
-            "{DEFAULT_NAMESPACE}-myapp.local"
-        ));
+        let expected = dir
+            .path()
+            .join("jail.d")
+            .join(format!("{DEFAULT_NAMESPACE}-myapp.local"));
         assert_eq!(p, expected);
     }
 
@@ -154,9 +157,10 @@ mod tests {
         let dir = setup_config_dir();
         let mgr = manager(&dir);
         let p = mgr.filter_path("nginx-auth");
-        let expected = dir.path().join("filter.d").join(format!(
-            "{DEFAULT_NAMESPACE}-nginx-auth.local"
-        ));
+        let expected = dir
+            .path()
+            .join("filter.d")
+            .join(format!("{DEFAULT_NAMESPACE}-nginx-auth.local"));
         assert_eq!(p, expected);
     }
 
@@ -165,9 +169,10 @@ mod tests {
         let dir = setup_config_dir();
         let mgr = manager(&dir);
         let p = mgr.action_path("my-hook");
-        let expected = dir.path().join("action.d").join(format!(
-            "{DEFAULT_NAMESPACE}-my-hook.local"
-        ));
+        let expected = dir
+            .path()
+            .join("action.d")
+            .join(format!("{DEFAULT_NAMESPACE}-my-hook.local"));
         assert_eq!(p, expected);
     }
 
@@ -175,18 +180,9 @@ mod tests {
     fn path_helpers_with_custom_namespace() {
         let dir = setup_config_dir();
         let mgr = manager_ns(&dir, "ns");
-        assert_eq!(
-            mgr.jail_path("x"),
-            dir.path().join("jail.d/ns-x.local")
-        );
-        assert_eq!(
-            mgr.filter_path("y"),
-            dir.path().join("filter.d/ns-y.local")
-        );
-        assert_eq!(
-            mgr.action_path("z"),
-            dir.path().join("action.d/ns-z.local")
-        );
+        assert_eq!(mgr.jail_path("x"), dir.path().join("jail.d/ns-x.local"));
+        assert_eq!(mgr.filter_path("y"), dir.path().join("filter.d/ns-y.local"));
+        assert_eq!(mgr.action_path("z"), dir.path().join("action.d/ns-z.local"));
     }
 
     #[test]
@@ -363,7 +359,10 @@ mod tests {
         let report = mgr.write_jail(&jail).expect("write_jail should create dir");
 
         let path = mgr.jail_path("auto-dir");
-        assert!(path.exists(), "file should be created even if jail.d was missing");
+        assert!(
+            path.exists(),
+            "file should be created even if jail.d was missing"
+        );
         assert_eq!(report.files_written.len(), 1);
     }
 
@@ -464,7 +463,8 @@ mod tests {
 
         // Write a jail and a filter.
         mgr.write_jail(&make_jail("app1")).expect("write jail");
-        mgr.write_filter(&make_filter("auth")).expect("write filter");
+        mgr.write_filter(&make_filter("auth"))
+            .expect("write filter");
 
         let managed = mgr.list_managed().expect("list_managed");
         assert_eq!(managed.len(), 2, "should find exactly 2 managed files");
@@ -525,8 +525,10 @@ mod tests {
         let mgr = manager(&dir);
 
         mgr.write_jail(&make_jail("my-jail")).expect("write");
-        mgr.write_filter(&make_filter("my-filter")).expect("write filter");
-        mgr.write_action(&make_action("my-action")).expect("write action");
+        mgr.write_filter(&make_filter("my-filter"))
+            .expect("write filter");
+        mgr.write_action(&make_action("my-action"))
+            .expect("write action");
 
         let managed = mgr.list_managed().expect("list_managed");
         assert_eq!(managed.len(), 3);
@@ -542,7 +544,8 @@ mod tests {
         let dir = setup_config_dir();
         let mgr = manager(&dir);
 
-        mgr.write_action(&make_action("zzz-last")).expect("write action");
+        mgr.write_action(&make_action("zzz-last"))
+            .expect("write action");
         mgr.write_jail(&make_jail("aaa-first")).expect("write jail");
 
         let managed = mgr.list_managed().expect("list_managed");
@@ -794,7 +797,10 @@ mod tests {
 
         // The original file must be unchanged.
         let current = fs::read_to_string(&path).unwrap();
-        assert_eq!(current, original_content, "unmanaged file must be untouched");
+        assert_eq!(
+            current, original_content,
+            "unmanaged file must be untouched"
+        );
     }
 
     // =======================================================================
@@ -956,8 +962,14 @@ mod tests {
 
         // Backup has v1 content.
         let backup = fs::read_to_string(&r2.backup_paths[0]).unwrap();
-        assert!(backup.contains("bantime = 1m"), "backup should have v1 bantime");
-        assert!(backup.contains("findtime = 1m"), "backup should have v1 findtime");
+        assert!(
+            backup.contains("bantime = 1m"),
+            "backup should have v1 bantime"
+        );
+        assert!(
+            backup.contains("findtime = 1m"),
+            "backup should have v1 findtime"
+        );
 
         // Current file has v2 content.
         let current = mgr.read_jail("versioned").unwrap();

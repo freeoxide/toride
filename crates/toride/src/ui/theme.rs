@@ -27,9 +27,13 @@ pub struct Palette {
     pub accent2: Color,
     /// Tertiary accent
     pub accent3: Color,
+    /// Success / healthy status colour.
     pub ok: Color,
+    /// Warning / caution colour (e.g. 70-89% usage).
     pub warn: Color,
+    /// Error / critical colour (e.g. ≥90% usage).
     pub err: Color,
+    /// Informational accent colour.
     pub info: Color,
     /// Selection / hover background
     pub sel_bg: Color,
@@ -40,14 +44,16 @@ pub struct Palette {
     ///
     /// This is a *behaviour* flag carried on the palette (rather than a
     /// separate threaded parameter) because the palette already flows into
-    /// every render path (screens, shell components, modals). [`App`](crate::app::App)
-    /// owns the source of truth and bakes the resolved value into the palette
-    /// each frame via [`view`](crate::app::App::update). It is deliberately
-    /// excluded from theme identity: built-in palettes always carry `false`.
+    /// every render path (screens, shell components, modals). The app
+    /// orchestrator ([`crate::app::App`]) owns the source of truth and bakes the
+    /// resolved value into the palette each frame before rendering. It is
+    /// deliberately excluded from theme identity: built-in palettes always
+    /// carry `false`.
     pub reduced_motion: bool,
 }
 
 // ── Catppuccin Mocha ─────────────────────────────────────────────────────────
+/// Catppuccin Mocha palette.
 pub const CATPPUCCIN: Palette = Palette {
     bg: Color::Rgb(30, 30, 46),
     bg_alt: Color::Rgb(24, 24, 37),
@@ -70,6 +76,7 @@ pub const CATPPUCCIN: Palette = Palette {
 };
 
 // ── Tokyo Night ───────────────────────────────────────────────────────────────
+/// Tokyo Night palette.
 pub const TOKYO_NIGHT: Palette = Palette {
     bg: Color::Rgb(26, 27, 38),
     bg_alt: Color::Rgb(22, 22, 30),
@@ -92,6 +99,7 @@ pub const TOKYO_NIGHT: Palette = Palette {
 };
 
 // ── Rosé Pine ─────────────────────────────────────────────────────────────────
+/// Rosé Pine palette.
 pub const ROSE_PINE: Palette = Palette {
     bg: Color::Rgb(25, 23, 36),
     bg_alt: Color::Rgb(31, 29, 46),
@@ -114,6 +122,7 @@ pub const ROSE_PINE: Palette = Palette {
 };
 
 // ── Charm ─────────────────────────────────────────────────────────────────────
+/// Charm palette (the default theme).
 pub const CHARM: Palette = Palette {
     bg: Color::Rgb(23, 19, 32),
     bg_alt: Color::Rgb(16, 16, 26),
@@ -136,6 +145,7 @@ pub const CHARM: Palette = Palette {
 };
 
 // ── Nord ──────────────────────────────────────────────────────────────────────
+/// Nord palette.
 pub const NORD: Palette = Palette {
     bg: Color::Rgb(46, 52, 64),
     bg_alt: Color::Rgb(39, 44, 54),
@@ -158,6 +168,7 @@ pub const NORD: Palette = Palette {
 };
 
 // ── Gruvbox Dark ──────────────────────────────────────────────────────────────
+/// Gruvbox Dark palette.
 pub const GRUVBOX: Palette = Palette {
     bg: Color::Rgb(40, 40, 40),
     bg_alt: Color::Rgb(29, 32, 33),
@@ -187,18 +198,26 @@ impl Default for Palette {
     }
 }
 
+/// Identifies one of the built-in themes and maps to its [`Palette`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Theme {
+    /// Catppuccin Mocha.
     Catppuccin,
+    /// Tokyo Night.
     TokyoNight,
+    /// Rosé Pine.
     RosePine,
+    /// Charm (the default theme).
     #[default]
     Charm,
+    /// Nord.
     Nord,
+    /// Gruvbox Dark.
     Gruvbox,
 }
 
 impl Theme {
+    /// Resolve this theme to its [`Palette`].
     #[must_use]
     pub fn palette(self) -> &'static Palette {
         match self {
@@ -211,6 +230,7 @@ impl Theme {
         }
     }
 
+    /// Human-readable display label for this theme.
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
@@ -223,6 +243,7 @@ impl Theme {
         }
     }
 
+    /// All built-in themes in display order.
     #[must_use]
     pub fn all() -> &'static [Theme] {
         &[

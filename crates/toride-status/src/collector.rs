@@ -56,9 +56,9 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 
+use crate::TorideStatus;
 use crate::presets::Preset;
 use crate::system::SystemStatus;
-use crate::TorideStatus;
 
 /// Collector for periodic status snapshots.
 pub struct Collector {
@@ -75,6 +75,10 @@ pub struct Collector {
 /// / emptied in the produced [`SystemStatus`]. Core always-collected fields
 /// (hostname, `os_info`, uptime, load average) are never affected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "per-metric on/off toggles, not a state machine"
+)]
 pub struct MetricToggles {
     /// Whether CPU metrics are collected.
     pub cpu: bool,
@@ -342,9 +346,12 @@ impl Collector {
         status.apply_toggles(self.toggles);
         let now = Instant::now();
         let now_sys = std::time::SystemTime::now();
-        let delta = self.previous.as_ref().map(|(prev_time, (_prev_sys, prev_status))| {
-            compute_delta(prev_status, &status.system, prev_time.elapsed(), now_sys)
-        });
+        let delta = self
+            .previous
+            .as_ref()
+            .map(|(prev_time, (_prev_sys, prev_status))| {
+                compute_delta(prev_status, &status.system, prev_time.elapsed(), now_sys)
+            });
         self.previous = Some((now, (now_sys, status.system.clone())));
         (status, delta)
     }
@@ -420,6 +427,10 @@ impl Collector {
 ///     .gpu(false)
 ///     .build();
 /// ```
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "builder toggles map 1:1 to metric categories, not a state machine"
+)]
 pub struct CollectorBuilder {
     interval: Duration,
     preset: Preset,
@@ -433,48 +444,56 @@ pub struct CollectorBuilder {
 
 impl CollectorBuilder {
     /// Set the collection interval.
+    #[must_use]
     pub fn interval(mut self, interval: Duration) -> Self {
         self.interval = interval;
         self
     }
 
     /// Set the collection preset.
+    #[must_use]
     pub fn preset(mut self, preset: Preset) -> Self {
         self.preset = preset;
         self
     }
 
     /// Enable or disable CPU metric collection.
+    #[must_use]
     pub fn cpu(mut self, enabled: bool) -> Self {
         self.collect_cpu = enabled;
         self
     }
 
     /// Enable or disable memory metric collection.
+    #[must_use]
     pub fn memory(mut self, enabled: bool) -> Self {
         self.collect_memory = enabled;
         self
     }
 
     /// Enable or disable disk metric collection.
+    #[must_use]
     pub fn disks(mut self, enabled: bool) -> Self {
         self.collect_disks = enabled;
         self
     }
 
     /// Enable or disable network metric collection.
+    #[must_use]
     pub fn network(mut self, enabled: bool) -> Self {
         self.collect_network = enabled;
         self
     }
 
     /// Enable or disable process metric collection.
+    #[must_use]
     pub fn processes(mut self, enabled: bool) -> Self {
         self.collect_processes = enabled;
         self
     }
 
     /// Enable or disable GPU metric collection.
+    #[must_use]
     pub fn gpu(mut self, enabled: bool) -> Self {
         self.collect_gpu = enabled;
         self
@@ -557,7 +576,20 @@ impl Collector {
 }
 
 #[allow(clippy::cast_precision_loss)] // u64->f64 for rate calculation display; negligible precision loss
-fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration, to: std::time::SystemTime) -> SystemDelta {
+#[expect(
+    clippy::too_many_lines,
+    reason = "cohesive single-pass delta computation across all metric categories; splitting would obscure the prev/curr pairing"
+)]
+#[expect(
+    clippy::similar_names,
+    reason = "prev/curr and rx/tx packet counters are domain-accurate names for network deltas"
+)]
+fn compute_delta(
+    prev: &SystemStatus,
+    curr: &SystemStatus,
+    elapsed: Duration,
+    to: std::time::SystemTime,
+) -> SystemDelta {
     let elapsed_secs = elapsed.as_secs_f64();
 
     // Network delta
@@ -571,10 +603,26 @@ fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration, to
         .saturating_sub(prev.network.bytes_transmitted);
 
     // Packet deltas: sum across all interfaces
-    let prev_rx_packets: u64 = prev.network_interfaces.iter().map(|i| i.packets_received).sum();
-    let curr_rx_packets: u64 = curr.network_interfaces.iter().map(|i| i.packets_received).sum();
-    let prev_tx_packets: u64 = prev.network_interfaces.iter().map(|i| i.packets_transmitted).sum();
-    let curr_tx_packets: u64 = curr.network_interfaces.iter().map(|i| i.packets_transmitted).sum();
+    let prev_rx_packets: u64 = prev
+        .network_interfaces
+        .iter()
+        .map(|i| i.packets_received)
+        .sum();
+    let curr_rx_packets: u64 = curr
+        .network_interfaces
+        .iter()
+        .map(|i| i.packets_received)
+        .sum();
+    let prev_tx_packets: u64 = prev
+        .network_interfaces
+        .iter()
+        .map(|i| i.packets_transmitted)
+        .sum();
+    let curr_tx_packets: u64 = curr
+        .network_interfaces
+        .iter()
+        .map(|i| i.packets_transmitted)
+        .sum();
 
     let network = NetworkDelta {
         bytes_received_delta,
@@ -594,30 +642,51 @@ fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration, to
     };
 
     // Per-core CPU delta
-    let per_core_cpu_delta = if prev.cpu_cores.len() == curr.cpu_cores.len() && !prev.cpu_cores.is_empty() {
-        prev.cpu_cores
-            .iter()
-            .zip(curr.cpu_cores.iter())
-            .map(|(p, c)| c.usage - p.usage)
-            .collect()
-    } else {
-        Vec::new()
-    };
+    let per_core_cpu_delta =
+        if prev.cpu_cores.len() == curr.cpu_cores.len() && !prev.cpu_cores.is_empty() {
+            prev.cpu_cores
+                .iter()
+                .zip(curr.cpu_cores.iter())
+                .map(|(p, c)| c.usage - p.usage)
+                .collect()
+        } else {
+            Vec::new()
+        };
 
     // Disk I/O delta
     let has_prev_io = prev.disk_io.read_bytes > 0 || prev.disk_io.written_bytes > 0;
     let has_curr_io = curr.disk_io.read_bytes > 0 || curr.disk_io.written_bytes > 0;
     let disk_io = if has_prev_io && has_curr_io {
-        let read_bytes_delta = curr.disk_io.read_bytes.saturating_sub(prev.disk_io.read_bytes);
-        let written_bytes_delta = curr.disk_io.written_bytes.saturating_sub(prev.disk_io.written_bytes);
+        let read_bytes_delta = curr
+            .disk_io
+            .read_bytes
+            .saturating_sub(prev.disk_io.read_bytes);
+        let written_bytes_delta = curr
+            .disk_io
+            .written_bytes
+            .saturating_sub(prev.disk_io.written_bytes);
         Some(DiskIoDelta {
             read_bytes_delta,
             written_bytes_delta,
             read_ops_delta: curr.disk_io.read_ops.saturating_sub(prev.disk_io.read_ops),
-            write_ops_delta: curr.disk_io.write_ops.saturating_sub(prev.disk_io.write_ops),
-            busy_time_ms_delta: curr.disk_io.busy_time_ms.saturating_sub(prev.disk_io.busy_time_ms),
-            read_bytes_rate: if elapsed_secs > 0.0 { read_bytes_delta as f64 / elapsed_secs } else { 0.0 },
-            written_bytes_rate: if elapsed_secs > 0.0 { written_bytes_delta as f64 / elapsed_secs } else { 0.0 },
+            write_ops_delta: curr
+                .disk_io
+                .write_ops
+                .saturating_sub(prev.disk_io.write_ops),
+            busy_time_ms_delta: curr
+                .disk_io
+                .busy_time_ms
+                .saturating_sub(prev.disk_io.busy_time_ms),
+            read_bytes_rate: if elapsed_secs > 0.0 {
+                read_bytes_delta as f64 / elapsed_secs
+            } else {
+                0.0
+            },
+            written_bytes_rate: if elapsed_secs > 0.0 {
+                written_bytes_delta as f64 / elapsed_secs
+            } else {
+                0.0
+            },
         })
     } else {
         None
@@ -629,10 +698,12 @@ fn compute_delta(prev: &SystemStatus, curr: &SystemStatus, elapsed: Duration, to
             prev.processes.processes.iter().map(|p| p.pid).collect();
         let curr_pids: std::collections::HashSet<u32> =
             curr.processes.processes.iter().map(|p| p.pid).collect();
-        let new_count = curr_pids.difference(&prev_pids).count() as u32;
-        let exited_count = prev_pids.difference(&curr_pids).count() as u32;
+        let new_count = u32::try_from(curr_pids.difference(&prev_pids).count()).unwrap_or(u32::MAX);
+        let exited_count =
+            u32::try_from(prev_pids.difference(&curr_pids).count()).unwrap_or(u32::MAX);
         Some(ProcessDelta {
-            count_delta: curr.processes.total_count as i64 - prev.processes.total_count as i64,
+            count_delta: i64::try_from(curr.processes.total_count).unwrap_or(i64::MAX)
+                - i64::try_from(prev.processes.total_count).unwrap_or(i64::MAX),
             new_count,
             exited_count,
         })
@@ -712,7 +783,11 @@ impl std::fmt::Display for SystemDelta {
         if let Some(cpu) = self.cpu_usage_delta {
             writeln!(f, "  CPU delta: {cpu:+.1}%")?;
         }
-        writeln!(f, "  Network RX: {} bytes ({:.1} B/s)", self.network.bytes_received_delta, self.network.bytes_received_rate)?;
+        writeln!(
+            f,
+            "  Network RX: {} bytes ({:.1} B/s)",
+            self.network.bytes_received_delta, self.network.bytes_received_rate
+        )?;
         writeln!(
             f,
             "  Network TX: {} bytes ({:.1} B/s)",
@@ -722,7 +797,10 @@ impl std::fmt::Display for SystemDelta {
             writeln!(
                 f,
                 "  Disk IO: {} read / {} written ({:.1} / {:.1} B/s)",
-                dio.read_bytes_delta, dio.written_bytes_delta, dio.read_bytes_rate, dio.written_bytes_rate
+                dio.read_bytes_delta,
+                dio.written_bytes_delta,
+                dio.read_bytes_rate,
+                dio.written_bytes_rate
             )?;
         }
         if let Some(ref proc) = self.process {
@@ -756,10 +834,22 @@ mod tests {
     };
 
     /// Helper to construct a minimal `SystemStatus` with specific `cpu_usage` and network values.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "test fixture fully populates a wide SystemStatus struct"
+    )]
     fn make_system_status(cpu_usage: Option<f64>, rx: u64, tx: u64) -> SystemStatus {
         SystemStatus {
             cpu_usage,
-            memory: MemoryStatus { used_bytes: 0, total_bytes: 0, percentage: 0.0, free_bytes: 0, available_bytes: 0, cached_bytes: 0, buffers_bytes: 0 },
+            memory: MemoryStatus {
+                used_bytes: 0,
+                total_bytes: 0,
+                percentage: 0.0,
+                free_bytes: 0,
+                available_bytes: 0,
+                cached_bytes: 0,
+                buffers_bytes: 0,
+            },
             disk: DiskStatus {
                 name: String::new(),
                 mount_point: "/".to_string(),
@@ -777,11 +867,32 @@ mod tests {
                 temperature: None,
                 wear_percent: None,
             },
-            network: NetworkStatus { bytes_received: rx, bytes_transmitted: tx },
+            network: NetworkStatus {
+                bytes_received: rx,
+                bytes_transmitted: tx,
+            },
             load_average: None,
             uptime_secs: None,
             hostname: String::new(),
-            os_info: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+            os_info: OsInfo {
+                name: None,
+                version: None,
+                kernel_version: None,
+                arch: String::new(),
+                os_type: None,
+                edition: None,
+                codename: None,
+                bitness: None,
+                timezone: None,
+                locale: None,
+                current_user: None,
+                is_root: false,
+                container_detected: false,
+                vm_detected: false,
+                wsl_detected: false,
+                systemd_detected: false,
+                target_triple: None,
+            },
             cpu_cores: Vec::new(),
             physical_cores: None,
             swap: None,
@@ -789,14 +900,39 @@ mod tests {
             network_interfaces: Vec::new(),
             sensors: Vec::new(),
             boot_time: None,
-            processes: ProcessSnapshot { processes: vec![], total_count: 0 },
+            processes: ProcessSnapshot {
+                processes: vec![],
+                total_count: 0,
+            },
             gpu: vec![],
             battery: None,
             disk_io: DiskIoSnapshot::default(),
             virtualization: VirtualizationSnapshot::default(),
-            sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+            sensor_snapshot: SensorSnapshot {
+                readings: Vec::new(),
+                cpu_temperature: None,
+                gpu_temperature: None,
+            },
             static_info: StaticInfo {
-                os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                os: OsInfo {
+                    name: None,
+                    version: None,
+                    kernel_version: None,
+                    arch: String::new(),
+                    os_type: None,
+                    edition: None,
+                    codename: None,
+                    bitness: None,
+                    timezone: None,
+                    locale: None,
+                    current_user: None,
+                    is_root: false,
+                    container_detected: false,
+                    vm_detected: false,
+                    wsl_detected: false,
+                    systemd_detected: false,
+                    target_triple: None,
+                },
                 kernel_version: None,
                 hostname: String::new(),
                 cpu_brand: String::new(),
@@ -841,7 +977,12 @@ mod tests {
         // Simulate u64 wrap: prev > curr. saturating_sub yields 0.
         let prev = make_system_status(None, u64::MAX - 10, u64::MAX - 5);
         let curr = make_system_status(None, 100, 200);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
+        let delta = compute_delta(
+            &prev,
+            &curr,
+            Duration::from_secs(1),
+            std::time::SystemTime::now(),
+        );
 
         // saturating_sub prevents underflow; returns 0 when curr < prev.
         assert_eq!(delta.network.bytes_received_delta, 0);
@@ -854,7 +995,12 @@ mod tests {
     fn compute_delta_both_cpu_none() {
         let prev = make_system_status(None, 100, 200);
         let curr = make_system_status(None, 300, 600);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(2), std::time::SystemTime::now());
+        let delta = compute_delta(
+            &prev,
+            &curr,
+            Duration::from_secs(2),
+            std::time::SystemTime::now(),
+        );
 
         assert!(delta.cpu_usage_delta.is_none());
         assert_eq!(delta.network.bytes_received_delta, 200);
@@ -868,13 +1014,23 @@ mod tests {
         // prev is None, curr is Some -> should yield None
         let prev = make_system_status(None, 100, 200);
         let curr = make_system_status(Some(75.0), 300, 600);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
+        let delta = compute_delta(
+            &prev,
+            &curr,
+            Duration::from_secs(1),
+            std::time::SystemTime::now(),
+        );
         assert!(delta.cpu_usage_delta.is_none());
 
         // prev is Some, curr is None -> should also yield None
         let prev = make_system_status(Some(75.0), 100, 200);
         let curr = make_system_status(None, 300, 600);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
+        let delta = compute_delta(
+            &prev,
+            &curr,
+            Duration::from_secs(1),
+            std::time::SystemTime::now(),
+        );
         assert!(delta.cpu_usage_delta.is_none());
     }
 
@@ -882,7 +1038,12 @@ mod tests {
     fn compute_delta_very_large_network_deltas() {
         let prev = make_system_status(Some(0.0), 0, 0);
         let curr = make_system_status(Some(100.0), u64::MAX, u64::MAX);
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
+        let delta = compute_delta(
+            &prev,
+            &curr,
+            Duration::from_secs(1),
+            std::time::SystemTime::now(),
+        );
 
         assert_eq!(delta.network.bytes_received_delta, u64::MAX);
         assert_eq!(delta.network.bytes_transmitted_delta, u64::MAX);
@@ -919,7 +1080,11 @@ mod tests {
         // Simulate a long gap by manually computing delta with a large Duration.
         // We test compute_delta directly since we can't actually sleep 24 hours.
         let prev = make_system_status(Some(10.0), 1_000_000, 500_000);
-        let curr = make_system_status(Some(50.0), 1_000_000 + 86_400 * 1000, 500_000 + 86_400 * 500);
+        let curr = make_system_status(
+            Some(50.0),
+            1_000_000 + 86_400 * 1000,
+            500_000 + 86_400 * 500,
+        );
         let long_elapsed = Duration::from_hours(24);
         let delta = compute_delta(&prev, &curr, long_elapsed, std::time::SystemTime::now());
 
@@ -942,7 +1107,10 @@ mod tests {
 
         c.reset();
         let (_, delta) = c.collect();
-        assert!(delta.is_none(), "after reset, first collect should yield no delta");
+        assert!(
+            delta.is_none(),
+            "after reset, first collect should yield no delta"
+        );
     }
 
     // ── SystemDelta Display edge cases ────────────────────────────────
@@ -962,7 +1130,10 @@ mod tests {
         };
         let output = format!("{d}");
         assert!(output.contains("Delta"), "should contain header");
-        assert!(output.contains("-15.3"), "should contain negative CPU delta");
+        assert!(
+            output.contains("-15.3"),
+            "should contain negative CPU delta"
+        );
         assert!(output.contains("Network RX"), "should contain RX line");
         assert!(output.contains("Network TX"), "should contain TX line");
     }
@@ -1008,7 +1179,10 @@ mod tests {
         };
         let output = format!("{d}");
         assert!(output.contains("Delta"), "should contain header");
-        assert!(output.contains("+100.0"), "should contain CPU delta with sign");
+        assert!(
+            output.contains("+100.0"),
+            "should contain CPU delta with sign"
+        );
         // Should not panic on large values.
         assert!(!output.is_empty());
     }
@@ -1035,7 +1209,10 @@ mod tests {
         };
         let output = format!("{d}");
         // CPU line should be absent when cpu_usage_delta is None.
-        assert!(!output.contains("CPU delta"), "should not show CPU line when None");
+        assert!(
+            !output.contains("CPU delta"),
+            "should not show CPU line when None"
+        );
         assert!(output.contains("Network RX"), "should still show RX");
         assert!(output.contains("Network TX"), "should still show TX");
     }
@@ -1044,9 +1221,15 @@ mod tests {
     fn collect_after_interval_returns_delta() {
         let mut c = Collector::default_collector();
         let (_, delta1) = c.collect_after_interval();
-        assert!(delta1.is_none(), "first collect_after_interval should have no delta");
+        assert!(
+            delta1.is_none(),
+            "first collect_after_interval should have no delta"
+        );
         let (_, delta2) = c.collect_after_interval();
-        assert!(delta2.is_some(), "second collect_after_interval should have delta");
+        assert!(
+            delta2.is_some(),
+            "second collect_after_interval should have delta"
+        );
     }
 
     #[test]
@@ -1157,7 +1340,12 @@ mod tests {
         let mut curr = prev.clone();
         curr.network.bytes_received = 50; // Wrapped around
         curr.network.bytes_transmitted = 25;
-        let delta = compute_delta(&prev, &curr, Duration::from_secs(1), std::time::SystemTime::now());
+        let delta = compute_delta(
+            &prev,
+            &curr,
+            Duration::from_secs(1),
+            std::time::SystemTime::now(),
+        );
         // saturating_sub yields 0 when curr < prev (counter wrap detected)
         assert_eq!(delta.network.bytes_received_delta, 0);
         assert_eq!(delta.network.bytes_transmitted_delta, 0);
@@ -1185,9 +1373,7 @@ mod tests {
 
     #[test]
     fn collector_builder_custom_preset() {
-        let collector = Collector::builder()
-            .preset(Preset::Minimal)
-            .build();
+        let collector = Collector::builder().preset(Preset::Minimal).build();
         assert_eq!(collector.interval(), Duration::from_secs(1));
         assert_eq!(collector.preset(), Preset::Minimal);
     }
@@ -1231,8 +1417,14 @@ mod tests {
             .build();
         let (status, _) = collector.collect();
         assert!(status.system.disks.is_empty(), "disks should be cleared");
-        assert_eq!(status.system.disk.total_bytes, 0, "root disk should be zeroed");
-        assert_eq!(status.system.disk_io.read_bytes, 0, "disk_io should be zeroed");
+        assert_eq!(
+            status.system.disk.total_bytes, 0,
+            "root disk should be zeroed"
+        );
+        assert_eq!(
+            status.system.disk_io.read_bytes, 0,
+            "disk_io should be zeroed"
+        );
     }
 
     #[test]
@@ -1299,7 +1491,13 @@ mod tests {
             .build();
         let (status, _) = collector.collect();
         // Disabling disks must not, e.g., wipe memory or processes.
-        assert!(status.system.memory.total_bytes > 0, "memory should remain populated");
-        assert!(!status.system.hostname.is_empty(), "hostname should remain populated");
+        assert!(
+            status.system.memory.total_bytes > 0,
+            "memory should remain populated"
+        );
+        assert!(
+            !status.system.hostname.is_empty(),
+            "hostname should remain populated"
+        );
     }
 }

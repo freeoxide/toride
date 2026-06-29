@@ -102,6 +102,10 @@ pub struct PeerInfo {
 
 /// Report from a network connectivity check.
 #[derive(Debug, Clone, PartialEq)]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "mirrors the tailscale netcheck payload; bools are independent capability flags"
+)]
 pub struct NetcheckReport {
     /// Whether the node can reach the Tailscale coordination server.
     pub connectivity: bool,

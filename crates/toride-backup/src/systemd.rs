@@ -15,9 +15,11 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::spec::{Backend, BackupSpec, Schedule};
 use crate::Error;
+use crate::spec::{Backend, BackupSpec, Schedule};
 use toride_runner::CommandSpec;
+
+use std::fmt::Write as _;
 
 /// Marker returned by [`detect`] describing why systemd is or is not in use.
 ///
@@ -249,24 +251,22 @@ pub fn enumerate_backup_timers() -> Vec<TimerProbe> {
     }
 
     // 2. discover per-job instances via `list-timers`.
-    if let Ok(out) = run_systemctl(&["list-timers", "--all", "--no-pager", "--plain"]) {
-        if out.status.success() || !out.stdout.is_empty() {
-            let text = String::from_utf8_lossy(&out.stdout);
-            for line in text.lines() {
-                if let Some(unit) = extract_timer_unit(line) {
-                    let matches_prefix = BACKUP_TIMER_PREFIXES
-                        .iter()
-                        .any(|p| unit.starts_with(p));
-                    if !matches_prefix {
-                        continue;
-                    }
-                    if seen.iter().any(|u| *u == unit) {
-                        continue;
-                    }
-                    let probe = probe_timer(&unit);
-                    seen.push(probe.unit.clone());
-                    probes.push(probe);
+    if let Ok(out) = run_systemctl(&["list-timers", "--all", "--no-pager", "--plain"])
+        && (out.status.success() || !out.stdout.is_empty())
+    {
+        let text = String::from_utf8_lossy(&out.stdout);
+        for line in text.lines() {
+            if let Some(unit) = extract_timer_unit(line) {
+                let matches_prefix = BACKUP_TIMER_PREFIXES.iter().any(|p| unit.starts_with(p));
+                if !matches_prefix {
+                    continue;
                 }
+                if seen.contains(&unit) {
+                    continue;
+                }
+                let probe = probe_timer(&unit);
+                seen.push(probe.unit.clone());
+                probes.push(probe);
             }
         }
     }
@@ -282,8 +282,12 @@ pub fn enumerate_backup_timers() -> Vec<TimerProbe> {
 /// token ending in `.timer`.
 fn extract_timer_unit(line: &str) -> Option<String> {
     line.split_whitespace()
-        .find(|tok| tok.ends_with(".timer"))
-        .map(|tok| tok.to_owned())
+        .find(|tok| {
+            std::path::Path::new(tok)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("timer"))
+        })
+        .map(std::borrow::ToOwned::to_owned)
 }
 
 /// Report whether any backup-related timer unit exists on this host.
@@ -336,9 +340,36 @@ pub const CRON_MARKER_END: &str = "# toride-backup:END:";
 ///
 /// Returns `(service_unit, timer_unit)` — e.g.
 /// `("toride-backup-myjob.service", "toride-backup-myjob.timer")`.
+///
+/// SECURITY: the job `name` is interpolated into a systemd unit **filename**,
+/// so it is reduced to the safe set `[A-Za-z0-9_-]` (the same allowlist the
+/// cron path uses) before joining. This prevents a malicious or malformed name
+/// (e.g. `"../..."`, `"a b"`, `"a;b"`) from escaping the unit directory or
+/// injecting shell metacharacters into the rendered unit. Path separators,
+/// whitespace, and shell metacharacters are replaced with `_`.
 pub fn unit_names(name: &str) -> (String, String) {
-    let base = format!("toride-backup-{name}");
+    let base = format!("toride-backup-{}", sanitize_unit_name(name));
     (format!("{base}.service"), format!("{base}.timer"))
+}
+
+/// Reduce an arbitrary job name to a systemd-unit-safe name segment.
+///
+/// systemd unit names forbid `/`, whitespace, and most shell metacharacters
+/// (see systemd.unit(5)); we keep ASCII alphanumerics plus `-`/`_` and replace
+/// everything else with `_`. An empty result falls back to `"job"`.
+fn sanitize_unit_name(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push_str("job");
+    }
+    out
 }
 
 /// Convert a 5-field cron expression into a systemd `OnCalendar=` value.
@@ -412,14 +443,12 @@ pub fn cron_to_oncalendar(cron: &str) -> crate::Result<String> {
         // Only accept a single numeric token; lists/ranges are rejected to
         // avoid silently changing semantics.
         let map = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-        let n: u8 = dow
-            .parse()
-            .map_err(|_| {
-                Error::ScheduleError(format!(
-                    "cron->OnCalendar: dow {dow:?} must be a single number 0-7 \
+        let n: u8 = dow.parse().map_err(|_| {
+            Error::ScheduleError(format!(
+                "cron->OnCalendar: dow {dow:?} must be a single number 0-7 \
                      (lists/ranges not supported)"
-                ))
-            })?;
+            ))
+        })?;
         if n > 7 {
             return Err(Error::ScheduleError(format!(
                 "cron->OnCalendar: dow value {n} out of range (0-7)",
@@ -450,17 +479,18 @@ pub fn cron_to_oncalendar(cron: &str) -> crate::Result<String> {
 /// Render a systemd `.service` unit file body for the given backup spec.
 ///
 /// The unit runs the restic/borg backup command with the repository passphrase
-/// sourced from the `RESTIC_PASSWORD_FILE` / `BORG_PASSPHRASE` environment
-/// (never a CLI flag), per the restic "Environment Variables" doc and the Borg
-/// `BORG_PASSPHRASE` convention. The unit is `Type=oneshot` (a backup is a
-/// single run-to-completion task).
+/// sourced from a root:root 0600 file under [`PASSWORD_FILE_DIR`] (materialized
+/// at install time by running the spec's `password_command`), pointed at via
+/// `RESTIC_PASSWORD_FILE` (restic) or `BORG_PASSCOMMAND=cat <file>` (borg) —
+/// never a CLI flag and never a `$(...)` shell form systemd cannot expand. The
+/// unit is `Type=oneshot` (a backup is a single run-to-completion task).
 ///
 /// Source for the unit-file skeleton: systemd.unit(5) / systemd.service(5) on
 /// <https://www.freedesktop.org/software/systemd/man/systemd.unit.html>.
 pub fn render_service_unit(spec: &BackupSpec) -> String {
     let mut s = String::new();
     s.push_str("[Unit]\n");
-    s.push_str(&format!("Description=toride backup job: {}\n", spec.name));
+    let _ = writeln!(s, "Description=toride backup job: {}", spec.name);
     s.push_str("Documentation=https://restic.readthedocs.io\n");
     s.push_str("Wants=network-online.target\n");
     s.push_str("After=network-online.target\n\n");
@@ -472,36 +502,104 @@ pub fn render_service_unit(spec: &BackupSpec) -> String {
     // delivered via env (RESTIC_PASSWORD_FILE for restic, BORG_PASSPHRASE for
     // borg) so it never appears on the command line or in `systemctl show`.
     let exec = exec_start(spec);
-    s.push_str(&format!("ExecStart={exec}\n"));
+    let _ = writeln!(s, "ExecStart={exec}");
 
     // Security hardening (systemd.exec(5)): backups run with no new privileges
     // and a private /tmp unless the source set needs otherwise.
     s.push_str("PrivateTmp=true\n");
 
-    // Passphrase via environment file. restic reads RESTIC_PASSWORD or
-    // RESTIC_PASSWORD_FILE; borg reads BORG_PASSPHRASE.
-    if let Some(pw_cmd) = &spec.password_command {
+    // Passphrase delivery. systemd does NOT expand `$()`/shell substitutions
+    // inside `Environment=` assignments, so an `Environment="RESTIC_PASSWORD=
+    // $(cmd)"` line would set the *literal* string and the unit could never
+    // unlock the repo. Instead we point the backend at a root:root 0600
+    // password file that the install path materializes once by running the
+    // spec's password_command:
+    //   - restic reads RESTIC_PASSWORD_FILE (or `-p <file>`); we use the env.
+    //   - borg has no passphrase-file env; it runs BORG_PASSCOMMAND, so we
+    //     point it at `cat <file>`.
+    // The passphrase therefore never appears in the unit file, on the
+    // ExecStart command line, or in `systemctl show`.
+    if spec.password_command.is_some() {
+        let pw_file = password_file_path(&spec.name);
         match spec.backend {
             Backend::Restic => {
-                // restic: prefer RESTIC_PASSWORD so the password-command runs.
-                s.push_str(&format!(
-                    "Environment=\"RESTIC_PASSWORD=$({pw_cmd})\"\n"
-                ));
+                let _ = writeln!(s, "Environment=RESTIC_PASSWORD_FILE={}", pw_file.display());
             }
             Backend::Borg => {
-                s.push_str(&format!(
-                    "Environment=\"BORG_PASSPHRASE=$({pw_cmd})\"\n"
-                ));
+                let _ = writeln!(s, "Environment=BORG_PASSCOMMAND=cat {}", pw_file.display());
             }
         }
     }
 
     // Extra env from the spec (e.g. RESTIC_REPOSITORY for remote backends).
+    // Each KEY must match the systemd env-var name allowlist and each VALUE is
+    // single-quoted with embedded quotes/newlines escaped so a value can never
+    // inject a second Environment= assignment or break the unit parser.
     for (k, v) in &spec.extra_env {
-        s.push_str(&format!("Environment=\"{k}={v}\"\n"));
+        if !is_valid_env_key(k) {
+            // Refuse rather than emit a malformed/unsafe Environment= line.
+            tracing::warn!(key = %k, "skipping extra_env with invalid name");
+            continue;
+        }
+        let _ = writeln!(s, "Environment={}={}", k, quote_env_value(v));
     }
 
     s
+}
+
+/// Directory under which toride materializes per-job restic/borg password
+/// files for the direct-rendered `.service` unit (root-owned, 0600). The
+/// install path runs the spec's `password_command` once and writes its stdout
+/// here so the unit can unlock without systemd having to expand any shell.
+pub const PASSWORD_FILE_DIR: &str = "/etc/toride-backup";
+
+/// Resolve the on-disk password-file path for a job.
+///
+/// The job name is reduced to the systemd-safe set `[A-Za-z0-9_-]` (reusing
+/// the [`unit_names`] sanitizer) so a pathological name can never write
+/// outside [`PASSWORD_FILE_DIR`].
+pub fn password_file_path(name: &str) -> PathBuf {
+    Path::new(PASSWORD_FILE_DIR).join(format!("{}.pw", sanitize_unit_name(name)))
+}
+
+/// A systemd `Environment=` key must match `[A-Z_][A-Z0-9_]*` (case-insensitive
+/// on the letters). Reject anything else before interpolating into the unit.
+fn is_valid_env_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return false;
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Quote a value for a systemd `Environment=KEY=VALUE` assignment.
+///
+/// systemd (systemd.service(5)) accepts bare values without shell-special
+/// characters, but a value containing spaces, quotes, `=`, backslashes, or
+/// control chars must be single-quoted; embedded single quotes become `\'`.
+/// A newline in a value would terminate the assignment, so it is rejected up
+/// front (returns `"<<"invalid>>"` which systemd treats as a literal token
+/// rather than letting the value escape the line).
+fn quote_env_value(value: &str) -> String {
+    if value.contains('\n') {
+        // A newline cannot be represented in a single Environment= line; emit a
+        // safe placeholder rather than letting the value split the unit.
+        tracing::warn!("extra_env value contains a newline; replaced with placeholder");
+        return "<<invalid-newline>>".to_owned();
+    }
+    let needs_quote = value.is_empty()
+        || value
+            .chars()
+            .any(|c| c.is_whitespace() || matches!(c, '\'' | '"' | '\\' | '='));
+    if needs_quote {
+        let escaped = value.replace('\'', "'\\''");
+        format!("'{escaped}'")
+    } else {
+        value.to_owned()
+    }
 }
 
 /// Build the `ExecStart=` command line (program + args, no password on CLI)
@@ -560,10 +658,10 @@ pub fn render_timer_unit(name: &str, schedule: &Schedule) -> crate::Result<Strin
     let oncal = cron_to_oncalendar(&schedule.cron)?;
     let mut s = String::new();
     s.push_str("[Unit]\n");
-    s.push_str(&format!("Description=toride backup timer: {name}\n\n"));
+    let _ = write!(s, "Description=toride backup timer: {name}\n\n");
 
     s.push_str("[Timer]\n");
-    s.push_str(&format!("OnCalendar={oncal}\n"));
+    let _ = writeln!(s, "OnCalendar={oncal}");
     s.push_str("Persistent=true\n");
     // Coalesce within a 1-minute window (the systemd default) for power
     // efficiency; backups don't need sub-minute precision.
@@ -583,9 +681,8 @@ fn shell_join(tokens: &[String]) -> String {
         .iter()
         .map(|t| {
             let needs_quote = t.is_empty()
-                || t.chars().any(|c| {
-                    c.is_whitespace() || matches!(c, '"' | '\\' | '$' | '`' | '\'')
-                });
+                || t.chars()
+                    .any(|c| c.is_whitespace() || matches!(c, '"' | '\\' | '$' | '`' | '\''));
             if needs_quote {
                 let escaped = t
                     .replace('\\', "\\\\")
@@ -646,14 +743,14 @@ pub fn disable_now_spec(timer_unit: &str) -> CommandSpec {
 pub fn render_cli_service_unit(name: &str, exec_start: &str) -> String {
     let mut s = String::new();
     s.push_str("[Unit]\n");
-    s.push_str(&format!("Description=toride backup job: {name}\n"));
+    let _ = writeln!(s, "Description=toride backup job: {name}");
     s.push_str("Documentation=https://restic.readthedocs.io\n");
     s.push_str("Wants=network-online.target\n");
     s.push_str("After=network-online.target\n\n");
 
     s.push_str("[Service]\n");
     s.push_str("Type=oneshot\n");
-    s.push_str(&format!("ExecStart={exec_start}\n"));
+    let _ = writeln!(s, "ExecStart={exec_start}");
     s.push_str("PrivateTmp=true\n");
     s
 }
@@ -666,8 +763,8 @@ mod tests {
     fn detect_returns_bool_with_note() {
         let d = detect();
         // On the test host (likely macOS / CI) systemd is usually absent, but
-        // the contract we assert is structural, not the specific value.
-        assert!(d.available == true || d.available == false);
+        // the contract we assert is structural, not the specific value: the
+        // detection ran and produced a populated result we can branch on.
         if !d.available {
             assert!(!d.note.is_empty(), "absent detection must carry a note");
         }
@@ -675,7 +772,8 @@ mod tests {
 
     #[test]
     fn extract_timer_unit_finds_suffix_token() {
-        let line = "Sun 2025-01-01 00:00:00 UTC  1h left  -  -  restic-backup.timer restic-backup.service";
+        let line =
+            "Sun 2025-01-01 00:00:00 UTC  1h left  -  -  restic-backup.timer restic-backup.service";
         assert_eq!(
             extract_timer_unit(line).as_deref(),
             Some("restic-backup.timer")
@@ -691,7 +789,11 @@ mod tests {
     #[test]
     fn base_units_are_nonempty() {
         assert!(!BASE_BACKUP_TIMER_UNITS.is_empty());
-        assert!(BASE_BACKUP_TIMER_UNITS.iter().all(|u| u.ends_with(".timer")));
+        assert!(BASE_BACKUP_TIMER_UNITS.iter().all(|u| {
+            std::path::Path::new(u)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("timer"))
+        }));
     }
 
     #[test]
@@ -704,9 +806,7 @@ mod tests {
         // An obviously-absent unit name should report installed=false/active=false
         // without panicking, regardless of host.
         let probe = probe_timer("toride-backup-this-unit-does-not-exist-xyz.timer");
-        if probe.installed {
-            assert!(probe.active == true || probe.active == false);
-        } else {
+        if !probe.installed {
             assert!(!probe.active, "absent unit must not be active");
         }
     }
@@ -720,9 +820,9 @@ mod tests {
 
     use crate::spec::{Backend, BackupSpec, Encryption, RetentionPolicy};
 
-    /// Minimal restic BackupSpec mirroring the documented restic backup example:
+    /// Minimal restic `BackupSpec` mirroring the documented restic backup example:
     ///   restic -r /srv/restic-repo backup ~/work
-    /// (https://restic.readthedocs.io/en/latest/040_backup.html)
+    /// (<https://restic.readthedocs.io/en/latest/040_backup.html>)
     fn sample_restic_spec() -> BackupSpec {
         BackupSpec {
             name: "nightly".into(),
@@ -783,6 +883,29 @@ mod tests {
     }
 
     #[test]
+    fn unit_names_sanitizes_unsafe_input() {
+        // Path separators, whitespace, and shell metacharacters must be
+        // neutralized so the resulting unit filename cannot escape the unit
+        // dir or inject command separators.
+        let (svc, tmr) = unit_names("../etc/passwd; rm -rf /");
+        assert!(
+            !svc.contains('/') && !svc.contains(' ') && !svc.contains(';'),
+            "service unit must be sanitized: {svc}"
+        );
+        assert!(
+            !tmr.contains('/') && !tmr.contains(' ') && !tmr.contains(';'),
+            "timer unit must be sanitized: {tmr}"
+        );
+        assert!(svc.starts_with("toride-backup-") && svc.ends_with(".service"));
+        assert!(
+            tmr.starts_with("toride-backup-")
+                && std::path::Path::new(&tmr)
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("timer"))
+        );
+    }
+
+    #[test]
     fn render_service_unit_has_execstart_without_password_on_cli() {
         // The passphrase must NEVER appear as a CLI arg in ExecStart. The
         // documented restic CLI is `restic -r <repo> backup <src>` with the
@@ -799,17 +922,26 @@ mod tests {
             !unit.contains("--password"),
             "password must not be a CLI flag: {unit}"
         );
-        // Password delivered via environment, sourced from the password-command.
+        // systemd does NOT expand $(), so the password is delivered via a
+        // root-owned file the install path materializes (RESTIC_PASSWORD_FILE),
+        // never a literal $(...) that the unit cannot resolve.
         assert!(
-            unit.contains("RESTIC_PASSWORD=$(cat /etc/restic/password)"),
-            "expected RESTIC_PASSWORD env from password-command: {unit}"
+            unit.contains("RESTIC_PASSWORD_FILE=/etc/toride-backup/nightly.pw"),
+            "expected RESTIC_PASSWORD_FILE pointing at the materialized file: {unit}"
+        );
+        assert!(
+            !unit.contains("RESTIC_PASSWORD=$(cat"),
+            "must not emit the un-expanded $(...) shell form: {unit}"
         );
         assert!(unit.contains("Type=oneshot"));
     }
 
     #[test]
     fn render_service_unit_borg_uses_create_and_passphrase_env() {
-        // borg CLI: `borg create REPO::archive SRC` with BORG_PASSPHRASE env.
+        // borg CLI: `borg create REPO::archive SRC`. borg has no passphrase-file
+        // env var, so the unit runs `cat <file>` via BORG_PASSCOMMAND (a real,
+        // systemd-resolvable assignment) rather than the broken
+        // `BORG_PASSPHRASE=$(...)` form systemd cannot expand.
         // https://borgbackup.readthedocs.io/en/stable/usage/create.html
         let mut spec = sample_restic_spec();
         spec.backend = Backend::Borg;
@@ -817,9 +949,50 @@ mod tests {
         let unit = render_service_unit(&spec);
         assert!(unit.contains("ExecStart=borg create /mnt/borg/repo::{now}"));
         assert!(
-            unit.contains("BORG_PASSPHRASE=$(cat /etc/restic/password)"),
-            "expected BORG_PASSPHRASE env: {unit}"
+            unit.contains("BORG_PASSCOMMAND=cat /etc/toride-backup/nightly.pw"),
+            "expected BORG_PASSCOMMAND pointing at the materialized file: {unit}"
         );
+        assert!(
+            !unit.contains("BORG_PASSPHRASE=$(cat"),
+            "must not emit the un-expanded $(...) shell form: {unit}"
+        );
+    }
+
+    #[test]
+    fn render_service_unit_quotes_and_validates_extra_env() {
+        // A value with spaces/quotes/`=` must be single-quoted; an invalid key
+        // name must be skipped rather than emit a malformed Environment= line.
+        let mut spec = sample_restic_spec();
+        spec.extra_env = std::collections::HashMap::from([
+            (
+                "RESTIC_REPOSITORY".to_owned(),
+                "s3:https://host/bkt".to_owned(),
+            ),
+            ("GOOD_VAR".to_owned(), "has spaces".to_owned()),
+            ("bad name".to_owned(), "rejected".to_owned()),
+        ]);
+        let unit = render_service_unit(&spec);
+        // Plain safe value rendered bare.
+        assert!(unit.contains("Environment=RESTIC_REPOSITORY=s3:https://host/bkt"));
+        // Value with a space is single-quoted.
+        assert!(unit.contains("Environment=GOOD_VAR='has spaces'"));
+        // Invalid key name is skipped (no line emitted for it).
+        assert!(
+            !unit.contains("bad name"),
+            "invalid extra_env key must be skipped: {unit}"
+        );
+    }
+
+    #[test]
+    fn password_file_path_sanitizes_name() {
+        assert_eq!(
+            password_file_path("nightly"),
+            PathBuf::from("/etc/toride-backup/nightly.pw")
+        );
+        // A traversal-style name is neutralized so the file stays inside the dir.
+        let p = password_file_path("../etc/passwd");
+        assert!(p.starts_with("/etc/toride-backup/"));
+        assert!(!p.to_string_lossy().contains("/etc/passwd"));
     }
 
     #[test]
@@ -848,7 +1021,7 @@ mod tests {
     /// (NOT a CLI flag) and `redact(true)` set. This is the canonical secret-
     /// bearing command shape for backup operations.
     ///
-    /// restic reads the password from RESTIC_PASSWORD per its "Environment
+    /// restic reads the password from `RESTIC_PASSWORD` per its "Environment
     /// Variables" documentation:
     /// <https://restic.readthedocs.io/en/latest/040_backup.html>
     fn restic_backup_command_spec(spec: &BackupSpec, passphrase: &str) -> CommandSpec {
@@ -900,7 +1073,9 @@ mod tests {
         );
         // No --password flag on the CLI.
         assert!(
-            !cmd.args.iter().any(|a| a == "--password" || a.starts_with("--password=")),
+            !cmd.args
+                .iter()
+                .any(|a| a == "--password" || a.starts_with("--password=")),
             "--password flag must not appear on the CLI"
         );
     }

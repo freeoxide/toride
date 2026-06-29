@@ -99,7 +99,13 @@ impl SshPaths {
 
     /// Default key file name patterns to scan (without extension).
     pub fn default_key_names() -> &'static [&'static str] {
-        &["id_rsa", "id_ecdsa", "id_ecdsa_sk", "id_ed25519", "id_ed25519_sk"]
+        &[
+            "id_rsa",
+            "id_ecdsa",
+            "id_ecdsa_sk",
+            "id_ed25519",
+            "id_ed25519_sk",
+        ]
     }
 }
 

@@ -21,7 +21,7 @@ fn main() {
     println!("Field-by-field comparison:");
     println!();
 
-    println!("  {:<25} {:<30} {}", "Field", "Safe Mode", "Full Mode");
+    println!("  {:<25} {:<30} Full Mode", "Field", "Safe Mode");
     println!("  {:->25} {:->30} {:->30}", "", "", "");
 
     println!(
@@ -120,7 +120,7 @@ fn main() {
 
 fn format_opt(v: Option<f64>) -> String {
     match v {
-        Some(f) => format!("{:.1}", f),
+        Some(f) => format!("{f:.1}"),
         None => "None".to_string(),
     }
 }

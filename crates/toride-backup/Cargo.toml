@@ -51,6 +51,9 @@ dirs = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
+# tempfile is used by the non-test RestoreManager::test_restore path to obtain
+# an unpredictable, 0700 restore target (avoids a fixed /tmp path).
+tempfile = { workspace = true }
 
 # --- Optional (feature-gated) ---
 toride-service = { path = "../toride-service", optional = true }
@@ -62,7 +65,6 @@ clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
 insta = "1"
-tempfile = "3"
 assert_fs = "1"
 proptest = "1"
 

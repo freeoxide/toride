@@ -429,8 +429,14 @@ mod tests {
 
     #[test]
     fn convert_findings_merges_observed_and_threshold_into_detail() {
-        let f = AnomalyFinding::new("id", AnomalySeverity::Critical, "title", "observed", "thresh")
-            .fix("fix it");
+        let f = AnomalyFinding::new(
+            "id",
+            AnomalySeverity::Critical,
+            "title",
+            "observed",
+            "thresh",
+        )
+        .fix("fix it");
         let entries = convert_findings(vec![f]);
         assert_eq!(entries[0].severity, "critical");
         assert_eq!(entries[0].detail, "observed  ·  threshold: thresh");
@@ -473,7 +479,10 @@ mod tests {
 
     #[test]
     fn format_addr_port_wraps_ipv6() {
-        assert_eq!(format_addr_port(ip("2001:db8::1"), 443), "[2001:db8::1]:443");
+        assert_eq!(
+            format_addr_port(ip("2001:db8::1"), 443),
+            "[2001:db8::1]:443"
+        );
         assert_eq!(format_addr_port(ip("10.0.0.1"), 443), "10.0.0.1:443");
     }
 }

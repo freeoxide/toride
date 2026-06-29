@@ -13,23 +13,8 @@ use std::fmt;
 // ---------------------------------------------------------------------------
 
 const KNOWN_BACKENDS: &[&str] = &[
-    "core",
-    "asdf",
-    "aqua",
-    "cargo",
-    "conda",
-    "dotnet",
-    "forgejo",
-    "gem",
-    "github",
-    "gitlab",
-    "go",
-    "http",
-    "npm",
-    "pipx",
-    "spm",
-    "ubi",
-    "vfox",
+    "core", "asdf", "aqua", "cargo", "conda", "dotnet", "forgejo", "gem", "github", "gitlab", "go",
+    "http", "npm", "pipx", "spm", "ubi", "vfox",
 ];
 
 // ---------------------------------------------------------------------------
@@ -219,7 +204,7 @@ fn split_options(raw: &str) -> (BTreeMap<String, ToolOptionValue>, &str) {
     };
 
     let remainder = &raw[..open];
-    let options_str = &raw[open + 1 .. raw.len() - 1];
+    let options_str = &raw[open + 1..raw.len() - 1];
 
     let options = parse_option_list(options_str);
     (options, remainder)
@@ -283,7 +268,7 @@ fn split_backend(s: &str) -> (Option<String>, &str) {
         return (None, s);
     };
     let candidate = &s[..colon];
-    let remainder = &s[colon + 1 ..];
+    let remainder = &s[colon + 1..];
     if KNOWN_BACKENDS.contains(&candidate) && !remainder.is_empty() {
         (Some(candidate.to_owned()), remainder)
     } else {
@@ -309,7 +294,7 @@ fn split_name_version(s: &str) -> (&str, Option<VersionRequest>) {
     };
 
     let name = &s[..at];
-    let ver_str = &s[at + 1 ..];
+    let ver_str = &s[at + 1..];
 
     // Guard: empty name or empty version means the `@` is not a delimiter.
     if name.is_empty() || ver_str.is_empty() {
@@ -344,9 +329,7 @@ fn classify_version(s: &str) -> VersionRequest {
     // If the version looks like an exact semver (contains at least one dot and
     // starts with a digit or a 'v' followed by a digit) we treat it as exact.
     // This handles common version formats: "1.2.3", "v1.2.3", "V1.2.3".
-    let digits_start = s
-        .strip_prefix('v')
-        .or_else(|| s.strip_prefix('V'));
+    let digits_start = s.strip_prefix('v').or_else(|| s.strip_prefix('V'));
     if s.contains('.')
         && (s.bytes().next().is_some_and(|b| b.is_ascii_digit())
             || digits_start.is_some_and(|rest| {

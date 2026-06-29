@@ -24,21 +24,21 @@
 //! println!("UFW is {}", if status.active { "active" } else { "inactive" });
 //! ```
 
+pub mod backup;
 pub mod command;
+pub mod config;
+pub mod diff;
+pub mod docker;
 pub mod error;
-pub mod spec;
-pub mod rule;
-pub mod status;
+pub mod firewall;
+pub mod nat;
 pub mod net;
 pub mod paths;
-pub mod diff;
-pub mod backup;
-pub mod report;
-pub mod config;
-pub mod firewall;
 pub mod presets;
-pub mod nat;
-pub mod docker;
+pub mod report;
+pub mod rule;
+pub mod spec;
+pub mod status;
 
 #[cfg(feature = "client")]
 pub mod client;

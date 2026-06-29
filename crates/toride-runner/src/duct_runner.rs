@@ -201,10 +201,10 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
                     timeout,
                 });
             }
-            Err(e) => return Err(wait_failed(spec, e)),
+            Err(e) => return Err(wait_failed(spec, &e)),
         }
     } else {
-        handle.wait().map_err(|e| wait_failed(spec, e))?.clone()
+        handle.wait().map_err(|e| wait_failed(spec, &e))?.clone()
     };
 
     let stdout = if spec.output_mode == OutputMode::Capture {
@@ -229,7 +229,13 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
         );
     }
 
-    Ok(CommandOutput::new(stdout, stderr, exit_code))
+    // Honor the redact flag on the *returned* output too: scrub secret values
+    // from captured stdout/stderr so a successful command never hands a caller
+    // a token or passphrase that a failing command's error would have scrubbed.
+    Ok(crate::display::scrub_output(
+        spec,
+        &CommandOutput::new(stdout, stderr, exit_code),
+    ))
 }
 
 /// Build the base `duct::Expression` with cwd, env policy, and stdin applied,
@@ -390,7 +396,7 @@ fn run_duct_command_limited(
             kill_and_reap(&shared_handle, &displayed);
             let _ = recv_reader_bytes(&stdout_rx, READER_DETACH_WAIT);
             let _ = recv_reader_bytes(&stderr_rx, READER_DETACH_WAIT);
-            Err(wait_failed(spec, e))
+            Err(wait_failed(spec, &e))
         }
         (Ok(_), true) => {
             // Cap breached. The breaching reader already killed the handle;
@@ -443,7 +449,10 @@ fn run_duct_command_limited(
                     "command completed"
                 );
             }
-            Ok(CommandOutput::new(stdout, stderr, exit_code))
+            Ok(crate::display::scrub_output(
+                spec,
+                &CommandOutput::new(stdout, stderr, exit_code),
+            ))
         }
     }
 }
@@ -573,7 +582,7 @@ where
     }
 }
 
-fn wait_failed(spec: &CommandSpec, error: std::io::Error) -> Error {
+fn wait_failed(spec: &CommandSpec, error: &std::io::Error) -> Error {
     Error::WaitFailed {
         program: spec.program.clone(),
         detail: error.to_string(),
@@ -734,8 +743,7 @@ mod tests {
         let output = runner.run(&spec).unwrap();
         let resolved = std::path::Path::new("/tmp")
             .canonicalize()
-            .map(|p| p.to_string_lossy().into_owned())
-            .unwrap_or_else(|_| "/tmp".to_owned());
+            .map_or_else(|_| "/tmp".to_owned(), |p| p.to_string_lossy().into_owned());
         assert_eq!(output.stdout_trimmed(), resolved);
     }
 

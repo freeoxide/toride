@@ -80,7 +80,7 @@ fn main() {
                 println!("      Link: {status}");
             }
             if let Some(speed) = iface.speed_bps {
-                println!("      Speed: {} bps", speed);
+                println!("      Speed: {speed} bps");
             }
         }
 

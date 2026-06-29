@@ -159,13 +159,9 @@ pub fn convert_security_groups(
         .into_iter()
         .map(|g| {
             if g.name.is_empty() {
-                tracing::warn!(
-                    "cloud security group with empty name: id={:?}",
-                    g.id
-                );
+                tracing::warn!("cloud security group with empty name: id={:?}", g.id);
             }
-            let rules: Vec<FirewallRuleEntry> =
-                g.rules.into_iter().map(convert_rule).collect();
+            let rules: Vec<FirewallRuleEntry> = g.rules.into_iter().map(convert_rule).collect();
             let ingress_count = rules.iter().filter(|r| r.direction == "ingress").count();
             let egress_count = rules.iter().filter(|r| r.direction == "egress").count();
             SecurityGroupEntry {
@@ -188,11 +184,9 @@ pub fn convert_security_groups(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use toride_cloud::report::{Finding, Severity};
-    use toride_cloud::spec::{
-        FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup,
-    };
     use toride_cloud::CloudProvider;
+    use toride_cloud::report::{Finding, Severity};
+    use toride_cloud::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
 
     // ── format_provider / convert_provider ───────────────────────────────────
 

@@ -27,11 +27,7 @@ impl Screen {
     /// Convert a numeric key back to a [`Screen`].
     ///
     /// Returns [`Screen::Welcome`] for unknown keys.
-    #[expect(
-        clippy::wildcard_in_or_patterns,
-        clippy::match_same_arms,
-        reason = "fallback for unknown screen keys"
-    )]
+    #[expect(clippy::match_same_arms, reason = "fallback for unknown screen keys")]
     pub(crate) fn from_key(key: u8) -> Self {
         match key {
             0 => Screen::Welcome,
@@ -88,9 +84,7 @@ impl Navigator {
         let from = self.screen;
         // Pop the current screen now so the stack is ready when transition completes
         self.nav_stack.pop();
-        let Some(&target) = self.nav_stack.last() else {
-            return None;
-        };
+        let &target = self.nav_stack.last()?;
         Some(TransitionState::new(from.key(), target.key(), cache, true))
     }
 

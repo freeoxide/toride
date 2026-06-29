@@ -45,12 +45,8 @@ impl ConfigManager {
         validate_interface_name(interface)?;
         let path = self.paths.interface_conf(interface);
 
-        let content = fs::read_to_string(&path).map_err(|e| {
-            Error::ConfigParse(format!(
-                "failed to read {}: {e}",
-                path.display()
-            ))
-        })?;
+        let content = fs::read_to_string(&path)
+            .map_err(|e| Error::ConfigParse(format!("failed to read {}: {e}", path.display())))?;
 
         parse_interface_conf(interface, &content)
     }
@@ -82,12 +78,12 @@ impl ConfigManager {
             })?;
         }
 
-        fs::write(&path, &content).map_err(|e| {
-            Error::ConfigWrite(format!(
-                "failed to write {}: {e}",
-                path.display()
-            ))
-        })?;
+        // Write atomically at 0600 so the PrivateKey-bearing config is never
+        // observable in a partial state and never lands world-readable. The
+        // underlying `toride_fs::atomic_write_with_perms` writes to a temp
+        // file, `chmod`s it, then renames over the target.
+        toride_fs::atomic_write_with_perms(&path, &content, 0o600)
+            .map_err(|e| Error::ConfigWrite(format!("failed to write {}: {e}", path.display())))?;
 
         tracing::info!("wrote WireGuard config for {}", spec.name);
         Ok(())

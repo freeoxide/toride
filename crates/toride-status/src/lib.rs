@@ -171,12 +171,23 @@ impl TorideStatus {
         let capabilities = Capabilities::detect();
         let mut warnings = Vec::new();
         if system.hostname.is_empty() {
-            warnings.push(StatusError::DataUnavailable("hostname unavailable".to_string()));
+            warnings.push(StatusError::DataUnavailable(
+                "hostname unavailable".to_string(),
+            ));
         }
         if system.memory.total_bytes == 0 {
-            warnings.push(StatusError::DataUnavailable("memory info unavailable".to_string()));
+            warnings.push(StatusError::DataUnavailable(
+                "memory info unavailable".to_string(),
+            ));
         }
-        Self { system, daemon, ssh, capabilities, warnings, collected_at: std::time::SystemTime::now() }
+        Self {
+            system,
+            daemon,
+            ssh,
+            capabilities,
+            warnings,
+            collected_at: std::time::SystemTime::now(),
+        }
     }
 
     /// Zero out fields excluded by the given preset.
@@ -300,8 +311,7 @@ impl TorideStatus {
 
         // Hardware serial numbers, UUIDs, asset tags
         if let Some(ref serial) = self.system.static_info.hardware.system_serial {
-            self.system.static_info.hardware.system_serial =
-                Some(redactor.redact_serial(serial));
+            self.system.static_info.hardware.system_serial = Some(redactor.redact_serial(serial));
         }
         if let Some(ref uuid) = self.system.static_info.hardware.system_uuid {
             self.system.static_info.hardware.system_uuid = Some(redactor.redact_uuid(uuid));
@@ -367,6 +377,7 @@ impl SysProbe {
     }
 
     /// Create a builder for customizing the probe.
+    #[must_use]
     pub fn builder() -> SysProbeBuilder {
         SysProbeBuilder::default()
     }
@@ -398,6 +409,7 @@ pub struct SysProbeBuilder {
 }
 
 impl SysProbeBuilder {
+    #[must_use]
     pub fn new() -> Self {
         Self {
             preset: Preset::Diagnostics,
@@ -405,16 +417,19 @@ impl SysProbeBuilder {
         }
     }
 
+    #[must_use]
     pub fn preset(mut self, preset: Preset) -> Self {
         self.preset = preset;
         self
     }
 
+    #[must_use]
     pub fn privacy(mut self, mode: PrivacyMode) -> Self {
         self.privacy = mode;
         self
     }
 
+    #[must_use]
     pub fn build(self) -> SysProbe {
         SysProbe {
             preset: self.preset,
@@ -460,10 +475,18 @@ mod tests {
     fn serialize_to_json_succeeds() {
         let status = TorideStatus::collect();
         let json = serde_json::to_string(&status);
-        assert!(json.is_ok(), "serialization should succeed: {:?}", json.err());
+        assert!(
+            json.is_ok(),
+            "serialization should succeed: {:?}",
+            json.err()
+        );
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "insta snapshot test building a full status display"
+    )]
     fn snapshot_toride_status_display() {
         use crate::system::{
             CpuCore, DiskStatus, LoadAverage, MemoryStatus, NetworkInterface, NetworkStatus,
@@ -548,39 +571,35 @@ mod tests {
                     free_bytes: 2 * 1024 * 1024 * 1024 - 512 * 1024 * 1024,
                 }),
                 disks: vec![],
-                network_interfaces: vec![
-                    NetworkInterface {
-                        name: "en0".to_string(),
-                        bytes_received: 60 * 1024 * 1024 * 1024,
-                        bytes_transmitted: 30 * 1024 * 1024 * 1024,
-                        packets_received: 1_000_000,
-                        packets_transmitted: 500_000,
-                        errors_received: 0,
-                        errors_transmitted: 0,
-                        drops_transmitted: 0,
-                        drops_received: 0,
-                        mtu: None,
-                        mac_address: None,
-                        display_name: None,
-                        description: None,
-                        ipv4_addresses: Vec::new(),
-                        ipv6_addresses: Vec::new(),
-                        gateway: None,
-                        dns: None,
-                        link_status: None,
-                        speed_bps: None,
-                        duplex: None,
-                    },
-                ],
-                sensors: vec![
-                    SensorStatus {
-                        label: "CPU".to_string(),
-                        temperature: Some(55.5),
-                        fan_rpm: None,
-                        voltage: None,
-                        thermal_throttling: None,
-                    },
-                ],
+                network_interfaces: vec![NetworkInterface {
+                    name: "en0".to_string(),
+                    bytes_received: 60 * 1024 * 1024 * 1024,
+                    bytes_transmitted: 30 * 1024 * 1024 * 1024,
+                    packets_received: 1_000_000,
+                    packets_transmitted: 500_000,
+                    errors_received: 0,
+                    errors_transmitted: 0,
+                    drops_transmitted: 0,
+                    drops_received: 0,
+                    mtu: None,
+                    mac_address: None,
+                    display_name: None,
+                    description: None,
+                    ipv4_addresses: Vec::new(),
+                    ipv6_addresses: Vec::new(),
+                    gateway: None,
+                    dns: None,
+                    link_status: None,
+                    speed_bps: None,
+                    duplex: None,
+                }],
+                sensors: vec![SensorStatus {
+                    label: "CPU".to_string(),
+                    temperature: Some(55.5),
+                    fan_rpm: None,
+                    voltage: None,
+                    thermal_throttling: None,
+                }],
                 boot_time: Some(1_700_000_000),
                 processes: crate::system::ProcessSnapshot {
                     processes: vec![],
@@ -590,9 +609,31 @@ mod tests {
                 battery: None,
                 disk_io: DiskIoSnapshot::default(),
                 virtualization: VirtualizationSnapshot::default(),
-                sensor_snapshot: SensorSnapshot { readings: Vec::new(), cpu_temperature: None, gpu_temperature: None },
+                sensor_snapshot: SensorSnapshot {
+                    readings: Vec::new(),
+                    cpu_temperature: None,
+                    gpu_temperature: None,
+                },
                 static_info: StaticInfo {
-                    os: OsInfo { name: None, version: None, kernel_version: None, arch: String::new(), os_type: None, edition: None, codename: None, bitness: None, timezone: None, locale: None, current_user: None, is_root: false, container_detected: false, vm_detected: false, wsl_detected: false, systemd_detected: false, target_triple: None },
+                    os: OsInfo {
+                        name: None,
+                        version: None,
+                        kernel_version: None,
+                        arch: String::new(),
+                        os_type: None,
+                        edition: None,
+                        codename: None,
+                        bitness: None,
+                        timezone: None,
+                        locale: None,
+                        current_user: None,
+                        is_root: false,
+                        container_detected: false,
+                        vm_detected: false,
+                        wsl_detected: false,
+                        systemd_detected: false,
+                        target_triple: None,
+                    },
                     kernel_version: None,
                     hostname: String::new(),
                     cpu_brand: String::new(),
@@ -678,33 +719,71 @@ mod tests {
         let status = TorideStatus::collect();
 
         // Verify all subsystems are populated with non-trivial data.
-        assert!(!status.system.hostname.is_empty(), "system hostname must be populated");
-        assert!(status.system.memory.total_bytes > 0, "memory total must be nonzero");
-        assert!(status.system.disk.total_bytes > 0 || !status.system.disk.mount_point.is_empty(),
-            "disk must be populated");
-        assert!(!status.system.os_info.arch.is_empty(), "OS arch must be populated");
-        assert!(status.system.processes.total_count > 0, "process count must be nonzero");
+        assert!(
+            !status.system.hostname.is_empty(),
+            "system hostname must be populated"
+        );
+        assert!(
+            status.system.memory.total_bytes > 0,
+            "memory total must be nonzero"
+        );
+        assert!(
+            status.system.disk.total_bytes > 0 || !status.system.disk.mount_point.is_empty(),
+            "disk must be populated"
+        );
+        assert!(
+            !status.system.os_info.arch.is_empty(),
+            "OS arch must be populated"
+        );
+        assert!(
+            status.system.processes.total_count > 0,
+            "process count must be nonzero"
+        );
         // daemon and ssh fields are always set (even if not alive/running).
         // capabilities always populated via detect().
-        assert!(status.capabilities.system.cpu_usage, "capabilities must report cpu_usage");
+        assert!(
+            status.capabilities.system.cpu_usage,
+            "capabilities must report cpu_usage"
+        );
 
         // Serialize to JSON and verify it parses as valid JSON.
         let json = serde_json::to_string(&status).expect("serialization must succeed");
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("JSON must be valid and parseable");
         assert!(parsed.is_object(), "JSON must be an object");
-        assert!(parsed.get("system").is_some(), "JSON must contain 'system' key");
-        assert!(parsed.get("daemon").is_some(), "JSON must contain 'daemon' key");
+        assert!(
+            parsed.get("system").is_some(),
+            "JSON must contain 'system' key"
+        );
+        assert!(
+            parsed.get("daemon").is_some(),
+            "JSON must contain 'daemon' key"
+        );
         assert!(parsed.get("ssh").is_some(), "JSON must contain 'ssh' key");
-        assert!(parsed.get("capabilities").is_some(), "JSON must contain 'capabilities' key");
+        assert!(
+            parsed.get("capabilities").is_some(),
+            "JSON must contain 'capabilities' key"
+        );
 
         // Display and verify all section headers are present.
         let display = format!("{status}");
-        assert!(display.contains("=== Toride Status ==="), "display must have top header");
-        assert!(display.contains("System:"), "display must have System section");
-        assert!(display.contains("Daemon:"), "display must have Daemon section");
+        assert!(
+            display.contains("=== Toride Status ==="),
+            "display must have top header"
+        );
+        assert!(
+            display.contains("System:"),
+            "display must have System section"
+        );
+        assert!(
+            display.contains("Daemon:"),
+            "display must have Daemon section"
+        );
         assert!(display.contains("SSH:"), "display must have SSH section");
-        assert!(display.contains("Capabilities"), "display must have Capabilities section");
+        assert!(
+            display.contains("Capabilities"),
+            "display must have Capabilities section"
+        );
     }
 
     // ── Integration: Collector ─────────────────────────────────────
@@ -715,7 +794,10 @@ mod tests {
 
         // First collect: status present, delta absent.
         let (status1, delta1) = collector.collect();
-        assert!(!status1.system.hostname.is_empty(), "first collect must return valid status");
+        assert!(
+            !status1.system.hostname.is_empty(),
+            "first collect must return valid status"
+        );
         assert!(delta1.is_none(), "first collect must have no delta");
 
         // Sleep briefly so elapsed > 0 for the delta.
@@ -723,25 +805,46 @@ mod tests {
 
         // Second collect: delta present with reasonable values.
         let (status2, delta2) = collector.collect();
-        assert!(!status2.system.hostname.is_empty(), "second collect must return valid status");
+        assert!(
+            !status2.system.hostname.is_empty(),
+            "second collect must return valid status"
+        );
         let d = delta2.expect("second collect must produce a delta");
 
         // Elapsed must be at least as long as we slept.
-        assert!(d.elapsed >= std::time::Duration::from_millis(80),
-            "delta elapsed ({:?}) must be >= 80ms", d.elapsed);
+        assert!(
+            d.elapsed >= std::time::Duration::from_millis(80),
+            "delta elapsed ({:?}) must be >= 80ms",
+            d.elapsed
+        );
 
         // Rates must be non-negative and finite.
-        assert!(d.network.bytes_received_rate.is_finite(), "RX rate must be finite");
-        assert!(d.network.bytes_received_rate >= 0.0, "RX rate must be non-negative");
-        assert!(d.network.bytes_transmitted_rate.is_finite(), "TX rate must be finite");
-        assert!(d.network.bytes_transmitted_rate >= 0.0, "TX rate must be non-negative");
+        assert!(
+            d.network.bytes_received_rate.is_finite(),
+            "RX rate must be finite"
+        );
+        assert!(
+            d.network.bytes_received_rate >= 0.0,
+            "RX rate must be non-negative"
+        );
+        assert!(
+            d.network.bytes_transmitted_rate.is_finite(),
+            "TX rate must be finite"
+        );
+        assert!(
+            d.network.bytes_transmitted_rate >= 0.0,
+            "TX rate must be non-negative"
+        );
 
         // Deltas must be non-negative (saturating_sub).
         // (They could be 0 if the system had no traffic, which is fine.)
 
         // CPU delta: if both snapshots had CPU data, the delta should be Some.
         if status1.system.cpu_usage.is_some() && status2.system.cpu_usage.is_some() {
-            assert!(d.cpu_usage_delta.is_some(), "CPU delta must be Some when both snapshots have CPU data");
+            assert!(
+                d.cpu_usage_delta.is_some(),
+                "CPU delta must be Some when both snapshots have CPU data"
+            );
         }
     }
 
@@ -751,13 +854,19 @@ mod tests {
     fn integration_privacy_redactor_on_toride_hostname() {
         let status = TorideStatus::collect();
         let hostname = &status.system.hostname;
-        assert!(!hostname.is_empty(), "hostname must be non-empty for this test");
+        assert!(
+            !hostname.is_empty(),
+            "hostname must be non-empty for this test"
+        );
 
         // Safe mode: hostname is fully redacted.
         let safe = Redactor::new(PrivacyMode::Safe);
         let redacted = safe.redact_hostname(hostname);
         assert_eq!(redacted, "[redacted]", "Safe mode must redact hostname");
-        assert_ne!(redacted, *hostname, "redacted value must differ from original");
+        assert_ne!(
+            redacted, *hostname,
+            "redacted value must differ from original"
+        );
 
         // Diagnostics mode: hostname is shown as-is.
         let diag = Redactor::new(PrivacyMode::Diagnostics);
@@ -775,11 +884,17 @@ mod tests {
     #[test]
     fn integration_preset_diagnostics_includes_all_features() {
         let p = Preset::Diagnostics;
-        assert!(p.includes_per_core_cpu(), "Diagnostics must include per-core CPU");
+        assert!(
+            p.includes_per_core_cpu(),
+            "Diagnostics must include per-core CPU"
+        );
         assert!(p.includes_swap(), "Diagnostics must include swap");
         assert!(p.includes_sensors(), "Diagnostics must include sensors");
         assert!(p.includes_processes(), "Diagnostics must include processes");
-        assert!(p.includes_network_interfaces(), "Diagnostics must include network interfaces");
+        assert!(
+            p.includes_network_interfaces(),
+            "Diagnostics must include network interfaces"
+        );
         assert!(p.includes_all_disks(), "Diagnostics must include all disks");
         assert!(p.includes_os_info(), "Diagnostics must include OS info");
     }
@@ -787,11 +902,17 @@ mod tests {
     #[test]
     fn integration_preset_minimal_excludes_features() {
         let p = Preset::Minimal;
-        assert!(!p.includes_per_core_cpu(), "Minimal must exclude per-core CPU");
+        assert!(
+            !p.includes_per_core_cpu(),
+            "Minimal must exclude per-core CPU"
+        );
         assert!(!p.includes_swap(), "Minimal must exclude swap");
         assert!(!p.includes_sensors(), "Minimal must exclude sensors");
         assert!(!p.includes_processes(), "Minimal must exclude processes");
-        assert!(!p.includes_network_interfaces(), "Minimal must exclude network interfaces");
+        assert!(
+            !p.includes_network_interfaces(),
+            "Minimal must exclude network interfaces"
+        );
         assert!(!p.includes_all_disks(), "Minimal must exclude all disks");
         // Minimal always includes OS info.
         assert!(p.includes_os_info(), "Minimal must include OS info");
@@ -901,7 +1022,11 @@ mod tests {
         let variants = vec![
             StatusError::PermissionDenied("p".into()),
             StatusError::CommandNotFound("c".into()),
-            StatusError::CommandFailed { command: "r".into(), code: 1, stderr: "e".into() },
+            StatusError::CommandFailed {
+                command: "r".into(),
+                code: 1,
+                stderr: "e".into(),
+            },
             StatusError::CommandTimeout("t".into()),
             StatusError::ParseError("p".into()),
             StatusError::Io(std::io::Error::other("o")),
@@ -911,9 +1036,15 @@ mod tests {
 
         for variant in &variants {
             let display = variant.to_string();
-            assert!(!display.is_empty(), "Display must produce non-empty string for {variant:?}");
+            assert!(
+                !display.is_empty(),
+                "Display must produce non-empty string for {variant:?}"
+            );
             // Every Display string must be at least as long as the prefix.
-            assert!(display.len() >= 5, "Display string suspiciously short: {display}");
+            assert!(
+                display.len() >= 5,
+                "Display string suspiciously short: {display}"
+            );
         }
     }
 
@@ -924,22 +1055,58 @@ mod tests {
         let status = TorideStatus::collect_with_preset(Preset::Minimal);
 
         // Always-collected fields must still be populated.
-        assert!(status.system.cpu_usage.is_some(), "cpu_usage must be collected");
-        assert!(status.system.memory.total_bytes > 0, "memory must be collected");
-        assert!(!status.system.hostname.is_empty(), "hostname must be collected");
-        assert!(!status.system.os_info.arch.is_empty(), "os_info must be collected");
+        assert!(
+            status.system.cpu_usage.is_some(),
+            "cpu_usage must be collected"
+        );
+        assert!(
+            status.system.memory.total_bytes > 0,
+            "memory must be collected"
+        );
+        assert!(
+            !status.system.hostname.is_empty(),
+            "hostname must be collected"
+        );
+        assert!(
+            !status.system.os_info.arch.is_empty(),
+            "os_info must be collected"
+        );
 
         // Preset-gated fields must be cleared.
-        assert!(status.system.cpu_cores.is_empty(), "Minimal must exclude cpu_cores");
-        assert!(status.system.physical_cores.is_none(), "Minimal must exclude physical_cores");
+        assert!(
+            status.system.cpu_cores.is_empty(),
+            "Minimal must exclude cpu_cores"
+        );
+        assert!(
+            status.system.physical_cores.is_none(),
+            "Minimal must exclude physical_cores"
+        );
         assert!(status.system.swap.is_none(), "Minimal must exclude swap");
-        assert!(status.system.sensors.is_empty(), "Minimal must exclude sensors");
-        assert_eq!(status.system.processes.total_count, 0, "Minimal must exclude processes");
-        assert!(status.system.processes.processes.is_empty(), "Minimal must exclude process list");
-        assert!(status.system.network_interfaces.is_empty(), "Minimal must exclude network interfaces");
-        assert!(status.system.disks.is_empty(), "Minimal must exclude all_disks");
+        assert!(
+            status.system.sensors.is_empty(),
+            "Minimal must exclude sensors"
+        );
+        assert_eq!(
+            status.system.processes.total_count, 0,
+            "Minimal must exclude processes"
+        );
+        assert!(
+            status.system.processes.processes.is_empty(),
+            "Minimal must exclude process list"
+        );
+        assert!(
+            status.system.network_interfaces.is_empty(),
+            "Minimal must exclude network interfaces"
+        );
+        assert!(
+            status.system.disks.is_empty(),
+            "Minimal must exclude all_disks"
+        );
         assert!(status.system.gpu.is_empty(), "Minimal must exclude gpu");
-        assert!(status.system.battery.is_none(), "Minimal must exclude battery");
+        assert!(
+            status.system.battery.is_none(),
+            "Minimal must exclude battery"
+        );
     }
 
     #[test]
@@ -947,15 +1114,33 @@ mod tests {
         let status = TorideStatus::collect_with_preset(Preset::Diagnostics);
 
         // Always-collected fields.
-        assert!(status.system.cpu_usage.is_some(), "cpu_usage must be collected");
-        assert!(status.system.memory.total_bytes > 0, "memory must be collected");
-        assert!(!status.system.hostname.is_empty(), "hostname must be collected");
-        assert!(!status.system.os_info.arch.is_empty(), "os_info must be collected");
+        assert!(
+            status.system.cpu_usage.is_some(),
+            "cpu_usage must be collected"
+        );
+        assert!(
+            status.system.memory.total_bytes > 0,
+            "memory must be collected"
+        );
+        assert!(
+            !status.system.hostname.is_empty(),
+            "hostname must be collected"
+        );
+        assert!(
+            !status.system.os_info.arch.is_empty(),
+            "os_info must be collected"
+        );
 
         // Diagnostics includes everything — nothing should be cleared.
         // cpu_cores and processes are populated on real hardware.
-        assert!(!status.system.cpu_cores.is_empty(), "Diagnostics must include cpu_cores");
-        assert!(status.system.processes.total_count > 0, "Diagnostics must include processes");
+        assert!(
+            !status.system.cpu_cores.is_empty(),
+            "Diagnostics must include cpu_cores"
+        );
+        assert!(
+            status.system.processes.total_count > 0,
+            "Diagnostics must include processes"
+        );
     }
 
     #[test]
@@ -963,14 +1148,29 @@ mod tests {
         let status = TorideStatus::collect_with_preset(Preset::TaskManager);
 
         // TaskManager includes: per_core_cpu, sensors, processes, all_disks.
-        assert!(!status.system.cpu_cores.is_empty(), "TaskManager must include cpu_cores");
-        assert!(status.system.processes.total_count > 0, "TaskManager must include processes");
+        assert!(
+            !status.system.cpu_cores.is_empty(),
+            "TaskManager must include cpu_cores"
+        );
+        assert!(
+            status.system.processes.total_count > 0,
+            "TaskManager must include processes"
+        );
 
         // TaskManager excludes: swap, network_interfaces, gpu, battery.
-        assert!(status.system.swap.is_none(), "TaskManager must exclude swap");
-        assert!(status.system.network_interfaces.is_empty(), "TaskManager must exclude network interfaces");
+        assert!(
+            status.system.swap.is_none(),
+            "TaskManager must exclude swap"
+        );
+        assert!(
+            status.system.network_interfaces.is_empty(),
+            "TaskManager must exclude network interfaces"
+        );
         assert!(status.system.gpu.is_empty(), "TaskManager must exclude gpu");
-        assert!(status.system.battery.is_none(), "TaskManager must exclude battery");
+        assert!(
+            status.system.battery.is_none(),
+            "TaskManager must exclude battery"
+        );
     }
 
     #[test]
@@ -982,12 +1182,30 @@ mod tests {
         //  by verifying that the preset *would* include it)
 
         // ServerMonitoring excludes: per_core_cpu, sensors, processes, all_disks, gpu, battery.
-        assert!(status.system.cpu_cores.is_empty(), "ServerMonitoring must exclude cpu_cores");
-        assert!(status.system.sensors.is_empty(), "ServerMonitoring must exclude sensors");
-        assert_eq!(status.system.processes.total_count, 0, "ServerMonitoring must exclude processes");
-        assert!(status.system.disks.is_empty(), "ServerMonitoring must exclude all_disks");
-        assert!(status.system.gpu.is_empty(), "ServerMonitoring must exclude gpu");
-        assert!(status.system.battery.is_none(), "ServerMonitoring must exclude battery");
+        assert!(
+            status.system.cpu_cores.is_empty(),
+            "ServerMonitoring must exclude cpu_cores"
+        );
+        assert!(
+            status.system.sensors.is_empty(),
+            "ServerMonitoring must exclude sensors"
+        );
+        assert_eq!(
+            status.system.processes.total_count, 0,
+            "ServerMonitoring must exclude processes"
+        );
+        assert!(
+            status.system.disks.is_empty(),
+            "ServerMonitoring must exclude all_disks"
+        );
+        assert!(
+            status.system.gpu.is_empty(),
+            "ServerMonitoring must exclude gpu"
+        );
+        assert!(
+            status.system.battery.is_none(),
+            "ServerMonitoring must exclude battery"
+        );
     }
 
     #[test]
@@ -995,13 +1213,34 @@ mod tests {
         let status = TorideStatus::collect_with_preset(Preset::PrivacySafeBugReport);
 
         // PrivacySafeBugReport excludes most gated fields.
-        assert!(status.system.cpu_cores.is_empty(), "PrivacySafe must exclude cpu_cores");
-        assert!(status.system.swap.is_none(), "PrivacySafe must exclude swap");
-        assert!(status.system.sensors.is_empty(), "PrivacySafe must exclude sensors");
-        assert_eq!(status.system.processes.total_count, 0, "PrivacySafe must exclude processes");
-        assert!(status.system.network_interfaces.is_empty(), "PrivacySafe must exclude network interfaces");
-        assert!(status.system.disks.is_empty(), "PrivacySafe must exclude all_disks");
-        assert!(status.system.battery.is_none(), "PrivacySafe must exclude battery");
+        assert!(
+            status.system.cpu_cores.is_empty(),
+            "PrivacySafe must exclude cpu_cores"
+        );
+        assert!(
+            status.system.swap.is_none(),
+            "PrivacySafe must exclude swap"
+        );
+        assert!(
+            status.system.sensors.is_empty(),
+            "PrivacySafe must exclude sensors"
+        );
+        assert_eq!(
+            status.system.processes.total_count, 0,
+            "PrivacySafe must exclude processes"
+        );
+        assert!(
+            status.system.network_interfaces.is_empty(),
+            "PrivacySafe must exclude network interfaces"
+        );
+        assert!(
+            status.system.disks.is_empty(),
+            "PrivacySafe must exclude all_disks"
+        );
+        assert!(
+            status.system.battery.is_none(),
+            "PrivacySafe must exclude battery"
+        );
 
         // PrivacySafeBugReport includes gpu.
         // (gpu may be empty on some hardware; we just verify it wasn't forcibly cleared
@@ -1021,12 +1260,27 @@ mod tests {
 
         for preset in presets {
             let status = TorideStatus::collect_with_preset(preset);
-            assert!(status.system.cpu_usage.is_some(), "{preset}: cpu_usage must be collected");
-            assert!(status.system.memory.total_bytes > 0, "{preset}: memory must be collected");
-            assert!(!status.system.hostname.is_empty(), "{preset}: hostname must be collected");
-            assert!(!status.system.os_info.arch.is_empty(), "{preset}: os_info must be collected");
+            assert!(
+                status.system.cpu_usage.is_some(),
+                "{preset}: cpu_usage must be collected"
+            );
+            assert!(
+                status.system.memory.total_bytes > 0,
+                "{preset}: memory must be collected"
+            );
+            assert!(
+                !status.system.hostname.is_empty(),
+                "{preset}: hostname must be collected"
+            );
+            assert!(
+                !status.system.os_info.arch.is_empty(),
+                "{preset}: os_info must be collected"
+            );
             // disk (root) is always collected.
-            assert!(!status.system.disk.mount_point.is_empty(), "{preset}: root disk must be collected");
+            assert!(
+                !status.system.disk.mount_point.is_empty(),
+                "{preset}: root disk must be collected"
+            );
             // network aggregate is always collected.
             // (bytes may be 0 on idle systems, but the struct is populated)
             let _ = status.system.network.bytes_received;
@@ -1039,21 +1293,36 @@ mod tests {
     #[test]
     fn collect_with_privacy_safe_redacts_hostname() {
         let status = TorideStatus::collect_with_privacy(PrivacyMode::Safe);
-        assert_eq!(status.system.hostname, "[redacted]", "Safe mode must redact hostname");
+        assert_eq!(
+            status.system.hostname, "[redacted]",
+            "Safe mode must redact hostname"
+        );
     }
 
     #[test]
     fn collect_with_privacy_diagnostics_preserves_hostname() {
         let status = TorideStatus::collect_with_privacy(PrivacyMode::Diagnostics);
-        assert_ne!(status.system.hostname, "[redacted]", "Diagnostics mode must not redact hostname");
-        assert!(!status.system.hostname.is_empty(), "Diagnostics mode hostname must not be empty");
+        assert_ne!(
+            status.system.hostname, "[redacted]",
+            "Diagnostics mode must not redact hostname"
+        );
+        assert!(
+            !status.system.hostname.is_empty(),
+            "Diagnostics mode hostname must not be empty"
+        );
     }
 
     #[test]
     fn collect_with_privacy_full_preserves_hostname() {
         let status = TorideStatus::collect_with_privacy(PrivacyMode::Full);
-        assert_ne!(status.system.hostname, "[redacted]", "Full mode must not redact hostname");
-        assert!(!status.system.hostname.is_empty(), "Full mode hostname must not be empty");
+        assert_ne!(
+            status.system.hostname, "[redacted]",
+            "Full mode must not redact hostname"
+        );
+        assert!(
+            !status.system.hostname.is_empty(),
+            "Full mode hostname must not be empty"
+        );
     }
 
     #[test]
@@ -1079,19 +1348,43 @@ mod tests {
         let status = TorideStatus::collect_with_options(Preset::Minimal, PrivacyMode::Safe);
 
         // Privacy: hostname redacted.
-        assert_eq!(status.system.hostname, "[redacted]", "Safe must redact hostname");
+        assert_eq!(
+            status.system.hostname, "[redacted]",
+            "Safe must redact hostname"
+        );
 
         // Preset: gated fields cleared.
-        assert!(status.system.cpu_cores.is_empty(), "Minimal must exclude cpu_cores");
+        assert!(
+            status.system.cpu_cores.is_empty(),
+            "Minimal must exclude cpu_cores"
+        );
         assert!(status.system.swap.is_none(), "Minimal must exclude swap");
-        assert!(status.system.sensors.is_empty(), "Minimal must exclude sensors");
-        assert_eq!(status.system.processes.total_count, 0, "Minimal must exclude processes");
-        assert!(status.system.network_interfaces.is_empty(), "Minimal must exclude network interfaces");
-        assert!(status.system.disks.is_empty(), "Minimal must exclude all_disks");
+        assert!(
+            status.system.sensors.is_empty(),
+            "Minimal must exclude sensors"
+        );
+        assert_eq!(
+            status.system.processes.total_count, 0,
+            "Minimal must exclude processes"
+        );
+        assert!(
+            status.system.network_interfaces.is_empty(),
+            "Minimal must exclude network interfaces"
+        );
+        assert!(
+            status.system.disks.is_empty(),
+            "Minimal must exclude all_disks"
+        );
 
         // Always-collected fields still present.
-        assert!(status.system.cpu_usage.is_some(), "cpu_usage must be collected");
-        assert!(status.system.memory.total_bytes > 0, "memory must be collected");
+        assert!(
+            status.system.cpu_usage.is_some(),
+            "cpu_usage must be collected"
+        );
+        assert!(
+            status.system.memory.total_bytes > 0,
+            "memory must be collected"
+        );
     }
 
     #[test]
@@ -1099,11 +1392,20 @@ mod tests {
         let status = TorideStatus::collect_with_options(Preset::Diagnostics, PrivacyMode::Full);
 
         // Full privacy: hostname shown.
-        assert_ne!(status.system.hostname, "[redacted]", "Full must not redact hostname");
+        assert_ne!(
+            status.system.hostname, "[redacted]",
+            "Full must not redact hostname"
+        );
 
         // Diagnostics preset: everything included.
-        assert!(!status.system.cpu_cores.is_empty(), "Diagnostics must include cpu_cores");
-        assert!(status.system.processes.total_count > 0, "Diagnostics must include processes");
+        assert!(
+            !status.system.cpu_cores.is_empty(),
+            "Diagnostics must include cpu_cores"
+        );
+        assert!(
+            status.system.processes.total_count > 0,
+            "Diagnostics must include processes"
+        );
     }
 
     #[test]
@@ -1116,7 +1418,11 @@ mod tests {
             Preset::ServerMonitoring,
             Preset::PrivacySafeBugReport,
         ];
-        let modes = [PrivacyMode::Safe, PrivacyMode::Diagnostics, PrivacyMode::Full];
+        let modes = [
+            PrivacyMode::Safe,
+            PrivacyMode::Diagnostics,
+            PrivacyMode::Full,
+        ];
 
         for preset in presets {
             for mode in modes {
@@ -1142,10 +1448,19 @@ mod tests {
         let status = TorideStatus::collect();
 
         // Diagnostics includes everything, so gated fields should be populated.
-        assert!(!status.system.cpu_cores.is_empty(), "collect() must include cpu_cores (Diagnostics default)");
-        assert!(status.system.processes.total_count > 0, "collect() must include processes (Diagnostics default)");
+        assert!(
+            !status.system.cpu_cores.is_empty(),
+            "collect() must include cpu_cores (Diagnostics default)"
+        );
+        assert!(
+            status.system.processes.total_count > 0,
+            "collect() must include processes (Diagnostics default)"
+        );
         // Hostname must not be redacted (no privacy applied).
-        assert_ne!(status.system.hostname, "[redacted]", "collect() must not redact hostname");
+        assert_ne!(
+            status.system.hostname, "[redacted]",
+            "collect() must not redact hostname"
+        );
     }
 
     #[test]
@@ -1157,10 +1472,22 @@ mod tests {
         // structural properties must be identical. Exact counts may
         // differ because system state changes between the two calls.
         assert_eq!(a.system.hostname, b.system.hostname, "hostname must match");
-        assert!(!a.system.cpu_cores.is_empty(), "collect() cpu_cores must be non-empty");
-        assert!(!b.system.cpu_cores.is_empty(), "collect_with_preset cpu_cores must be non-empty");
-        assert!(a.system.processes.total_count > 0, "collect() must have processes");
-        assert!(b.system.processes.total_count > 0, "collect_with_preset must have processes");
+        assert!(
+            !a.system.cpu_cores.is_empty(),
+            "collect() cpu_cores must be non-empty"
+        );
+        assert!(
+            !b.system.cpu_cores.is_empty(),
+            "collect_with_preset cpu_cores must be non-empty"
+        );
+        assert!(
+            a.system.processes.total_count > 0,
+            "collect() must have processes"
+        );
+        assert!(
+            b.system.processes.total_count > 0,
+            "collect_with_preset must have processes"
+        );
     }
 
     // ── Display with preset/privacy ────────────────────────────────
@@ -1171,18 +1498,30 @@ mod tests {
         let output = format!("{status}");
 
         // Always-visible sections.
-        assert!(output.contains("=== Toride Status ==="), "must have top header");
+        assert!(
+            output.contains("=== Toride Status ==="),
+            "must have top header"
+        );
         assert!(output.contains("System:"), "must have System section");
         assert!(output.contains("Hostname:"), "must have Hostname");
         assert!(output.contains("Memory:"), "must have Memory");
 
         // Cleared sections should not appear.
         // Use precise prefixes matching the Display format ("  Swap: ").
-        assert!(status.system.cpu_cores.is_empty(), "cpu_cores must be empty");
+        assert!(
+            status.system.cpu_cores.is_empty(),
+            "cpu_cores must be empty"
+        );
         assert!(status.system.swap.is_none(), "swap must be None");
         assert!(status.system.sensors.is_empty(), "sensors must be empty");
-        assert!(status.system.processes.total_count == 0, "processes must be empty");
-        assert!(status.system.network_interfaces.is_empty(), "network_interfaces must be empty");
+        assert!(
+            status.system.processes.total_count == 0,
+            "processes must be empty"
+        );
+        assert!(
+            status.system.network_interfaces.is_empty(),
+            "network_interfaces must be empty"
+        );
         assert!(status.system.disks.is_empty(), "disks must be empty");
     }
 
@@ -1191,8 +1530,14 @@ mod tests {
         let status = TorideStatus::collect_with_privacy(PrivacyMode::Safe);
         let output = format!("{status}");
 
-        assert!(output.contains("[redacted]"), "display must contain [redacted]");
-        assert!(output.contains("Hostname: [redacted]"), "hostname line must show [redacted]");
+        assert!(
+            output.contains("[redacted]"),
+            "display must contain [redacted]"
+        );
+        assert!(
+            output.contains("Hostname: [redacted]"),
+            "hostname line must show [redacted]"
+        );
     }
 
     // ── Serialization with preset/privacy ──────────────────────────

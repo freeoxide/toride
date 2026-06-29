@@ -47,9 +47,7 @@ pub use toride_diagnostic_types::DoctorReport as SharedDoctorReport;
 /// Ordered from least severe ([`Severity::Ok`]) to most severe
 /// ([`Severity::Critical`]) so that reports can be sorted and filtered by
 /// severity.
-#[derive(
-    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize,
-)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Severity {
     /// No issue detected.
@@ -156,8 +154,7 @@ impl Finding {
             Severity::Error => SharedSeverity::Important,
             Severity::Critical => SharedSeverity::Critical,
         };
-        let mut f = SharedFinding::new(&self.id, shared_severity, &self.title)
-            .domain("fail2ban");
+        let mut f = SharedFinding::new(&self.id, shared_severity, &self.title).domain("fail2ban");
         if !self.detail.is_empty() {
             f = f.detail(&self.detail);
         }
@@ -217,9 +214,7 @@ impl ApplyReport {
     /// has no findings.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.files_written.is_empty()
-            && self.files_removed.is_empty()
-            && self.findings.is_empty()
+        self.files_written.is_empty() && self.files_removed.is_empty() && self.findings.is_empty()
     }
 }
 
@@ -313,9 +308,7 @@ impl DoctorReport {
     /// higher.
     #[must_use]
     pub fn has_errors(&self) -> bool {
-        self.findings
-            .iter()
-            .any(|f| f.severity >= Severity::Error)
+        self.findings.iter().any(|f| f.severity >= Severity::Error)
     }
 
     /// Returns `true` if any finding has severity [`Severity::Critical`].
@@ -331,7 +324,8 @@ impl DoctorReport {
     /// Maps all local findings to shared findings. The `domain` is set to
     /// `"fail2ban"` and `checked_at` is set to a placeholder timestamp.
     pub fn to_shared(&self) -> SharedDoctorReport {
-        let shared_findings: Vec<SharedFinding> = self.findings.iter().map(|f| f.to_shared()).collect();
+        let shared_findings: Vec<SharedFinding> =
+            self.findings.iter().map(Finding::to_shared).collect();
         SharedDoctorReport::new("fail2ban", shared_findings)
     }
 }
@@ -378,7 +372,14 @@ impl RegexTestResult {
         if self.lines_processed == 0 {
             0.0
         } else {
-            (self.lines_matched as f64) / (self.lines_processed as f64)
+            // Line counts are bounded well below 2^52 (f64 mantissa width).
+            #[expect(
+                clippy::cast_precision_loss,
+                reason = "line counts never approach 2^52"
+            )]
+            {
+                (self.lines_matched as f64) / (self.lines_processed as f64)
+            }
         }
     }
 }

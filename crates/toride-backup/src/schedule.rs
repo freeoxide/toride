@@ -24,6 +24,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use std::fmt::Write as _;
+
 use crate::spec::Schedule;
 use crate::systemd;
 use crate::{Error, Result};
@@ -183,8 +185,8 @@ impl ScheduleManager {
     /// Returns [`Error::ScheduleError`] if the check fails.
     pub fn is_installed(&self, name: &str) -> Result<bool> {
         match self.backend {
-            ScheduleBackend::SystemdTimer => self.is_systemd_timer_installed(name),
-            ScheduleBackend::Cron => self.is_cron_installed(name),
+            ScheduleBackend::SystemdTimer => Ok(self.is_systemd_timer_installed(name)),
+            ScheduleBackend::Cron => Ok(self.is_cron_installed(name)),
         }
     }
 
@@ -197,10 +199,10 @@ impl ScheduleManager {
     /// `false` without changing the `is_installed` return type.
     pub fn schedule_note(&self) -> String {
         let detected = crate::systemd::detect();
-        if !detected.available {
-            detected.note
-        } else {
+        if detected.available {
             String::new()
+        } else {
+            detected.note
         }
     }
 
@@ -234,6 +236,11 @@ impl ScheduleManager {
         // error surfaced to the caller.
         let service_path = self.unit_dir.join(&service_unit);
         let timer_path = self.unit_dir.join(&timer_unit);
+        // Defense-in-depth: even though unit_names() sanitizes the job name,
+        // assert both resolved paths stay *inside* the managed unit dir before
+        // writing — refusing rather than emitting if a path escapes it.
+        assert_inside_dir(&service_path, &self.unit_dir)?;
+        assert_inside_dir(&timer_path, &self.unit_dir)?;
         std::fs::create_dir_all(&self.unit_dir).map_err(|e| {
             Error::ScheduleError(format!(
                 "could not create unit dir {}: {e}",
@@ -241,16 +248,10 @@ impl ScheduleManager {
             ))
         })?;
         std::fs::write(&service_path, &service_body).map_err(|e| {
-            Error::ScheduleError(format!(
-                "could not write {}: {e}",
-                service_path.display()
-            ))
+            Error::ScheduleError(format!("could not write {}: {e}", service_path.display()))
         })?;
         std::fs::write(&timer_path, &timer_body).map_err(|e| {
-            Error::ScheduleError(format!(
-                "could not write {}: {e}",
-                timer_path.display()
-            ))
+            Error::ScheduleError(format!("could not write {}: {e}", timer_path.display()))
         })?;
 
         tracing::info!(unit = %timer_unit, "wrote systemd unit files");
@@ -267,19 +268,14 @@ impl ScheduleManager {
         let (service_unit, timer_unit) = systemd::unit_names(name);
 
         // Stop + disable first (best-effort: ignore failure if already gone).
-        let _ = self
-            .runner
-            .run(&systemd::disable_now_spec(&timer_unit));
+        let _ = self.runner.run(&systemd::disable_now_spec(&timer_unit));
 
         // Remove the unit files.
         for unit in [service_unit.as_str(), timer_unit.as_str()] {
             let path = self.unit_dir.join(unit);
             if path.exists() {
                 std::fs::remove_file(&path).map_err(|e| {
-                    Error::ScheduleError(format!(
-                        "could not remove {}: {e}",
-                        path.display()
-                    ))
+                    Error::ScheduleError(format!("could not remove {}: {e}", path.display()))
                 })?;
             }
         }
@@ -290,7 +286,7 @@ impl ScheduleManager {
         Ok(())
     }
 
-    fn is_systemd_timer_installed(&self, name: &str) -> Result<bool> {
+    fn is_systemd_timer_installed(&self, name: &str) -> bool {
         // If the unit file is present on disk in our managed dir, the schedule
         // is installed regardless of the host's init system (this lets the
         // answer be honest on a systemd-absent box where files were written
@@ -298,19 +294,19 @@ impl ScheduleManager {
         let (_, timer_unit) = systemd::unit_names(name);
         let timer_path = self.unit_dir.join(&timer_unit);
         if timer_path.exists() {
-            return Ok(true);
+            return true;
         }
 
         let detected = crate::systemd::detect();
         if !detected.available {
             tracing::debug!(note = %detected.note, "systemd absent; reporting schedule_installed=false");
-            return Ok(false);
+            return false;
         }
         let probe = crate::systemd::probe_timer(&timer_unit);
         if probe.installed {
-            return Ok(true);
+            return true;
         }
-        Ok(crate::systemd::any_backup_timer_installed())
+        crate::systemd::any_backup_timer_installed()
     }
 
     // -----------------------------------------------------------------------
@@ -319,7 +315,7 @@ impl ScheduleManager {
 
     fn install_cron(&self, name: &str, schedule: &Schedule) -> Result<()> {
         schedule.validate()?;
-        let entry = self.render_cron_entry(name, schedule);
+        let entry = self.render_cron_entry(name, schedule)?;
 
         std::fs::create_dir_all(&self.cron_dir).map_err(|e| {
             Error::ScheduleError(format!(
@@ -350,10 +346,10 @@ impl ScheduleManager {
         Ok(())
     }
 
-    fn is_cron_installed(&self, name: &str) -> Result<bool> {
+    fn is_cron_installed(&self, name: &str) -> bool {
         let safe = sanitize_cron_filename(name);
         let path = self.cron_dir.join(format!("toride-backup-{safe}"));
-        Ok(path.exists())
+        path.exists()
     }
 
     // -----------------------------------------------------------------------
@@ -370,20 +366,36 @@ impl ScheduleManager {
     /// <min> <hour> <dom> <month> <dow> <user> toride-backup backup <name>
     /// # toride-backup:END:<name>
     /// ```
-    fn render_cron_entry(&self, name: &str, schedule: &Schedule) -> String {
+    ///
+    /// SECURITY: the job `name` and cron tokens are interpolated raw into a
+    /// `SHELL=/bin/sh` root cron line, so both are defensively validated here
+    /// (in addition to `Schedule::validate` / `BackupSpec::validate`) and the
+    /// entry is refused rather than emitted when either fails the allowlist.
+    fn render_cron_entry(&self, name: &str, schedule: &Schedule) -> Result<String> {
+        if !crate::spec::is_valid_name(name) {
+            return Err(Error::ScheduleError(format!(
+                "cron job name {name:?} must match ^[A-Za-z0-9._-]+$ \
+                 (no spaces, shell, or path separators)"
+            )));
+        }
+        // Validate the cron expression itself (field count + per-field
+        // allowlist) before interpolating any token.
+        schedule.validate()?;
+
         let mut s = String::new();
-        s.push_str(&format!("{}{name}\n", systemd::CRON_MARKER_BEGIN));
+        let _ = writeln!(s, "{}{name}", systemd::CRON_MARKER_BEGIN);
         s.push_str("SHELL=/bin/sh\n");
         s.push_str("PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n");
         // The 5 cron fields, then `root` (system cron.d lines require a user
         // field), then the command.
-        s.push_str(&format!(
-            "{cron} root {bin} backup {name}\n",
+        let _ = writeln!(
+            s,
+            "{cron} root {bin} backup {name}",
             cron = schedule.cron,
-            bin = self.cli_bin,
-        ));
-        s.push_str(&format!("{}{name}\n", systemd::CRON_MARKER_END));
-        s
+            bin = self.cli_bin
+        );
+        let _ = writeln!(s, "{}{name}", systemd::CRON_MARKER_END);
+        Ok(s)
     }
 }
 
@@ -441,6 +453,24 @@ fn sanitize_cron_filename(name: &str) -> String {
     out
 }
 
+/// Assert that `path` resolves to a location inside `dir`.
+///
+/// Defense-in-depth guard for unit-file writes: after joining the (already
+/// sanitized) unit name onto the unit dir, confirm the resolved path still
+/// lives under that dir. Returns [`Error::ScheduleError`] if the path escapes
+/// `dir` rather than writing outside it.
+fn assert_inside_dir(path: &Path, dir: &Path) -> Result<()> {
+    if path.strip_prefix(dir).is_ok() {
+        Ok(())
+    } else {
+        Err(Error::ScheduleError(format!(
+            "refusing to write {}: resolved path escapes unit dir {}",
+            path.display(),
+            dir.display()
+        )))
+    }
+}
+
 // ===========================================================================
 // Tests
 // ===========================================================================
@@ -452,7 +482,7 @@ mod tests {
     use toride_runner::{CommandOutput, FakeRunner};
 
     /// Build a manager that writes into a temp unit/cron dir and routes
-    /// systemctl invocations through a FakeRunner.
+    /// systemctl invocations through a `FakeRunner`.
     fn mgr_with_temp(
         backend: ScheduleBackend,
         runner: FakeRunner,
@@ -522,8 +552,12 @@ mod tests {
         // Source: systemctl(1) — `daemon-reload`, `enable --now UNIT`.
         //   https://www.freedesktop.org/software/systemd/man/systemctl.html
         let expected_reload = CommandSpec::new("systemctl").args(["daemon-reload"]);
-        let expected_enable = CommandSpec::new("systemctl")
-            .args(["enable", "--now", "--", "toride-backup-nightly.timer"]);
+        let expected_enable = CommandSpec::new("systemctl").args([
+            "enable",
+            "--now",
+            "--",
+            "toride-backup-nightly.timer",
+        ]);
 
         let runner = FakeRunner::new()
             .strict()
@@ -539,8 +573,8 @@ mod tests {
     fn install_systemd_fails_if_command_mismatched() {
         // Negative control: register the WRONG enable target; install must
         // fail because strict mode rejects the mismatched call.
-        let wrong_enable = CommandSpec::new("systemctl")
-            .args(["enable", "--now", "--", "WRONG.timer"]);
+        let wrong_enable =
+            CommandSpec::new("systemctl").args(["enable", "--now", "--", "WRONG.timer"]);
         let runner = FakeRunner::new()
             .strict()
             .respond(
@@ -555,10 +589,48 @@ mod tests {
     }
 
     #[test]
+    fn install_systemd_unit_path_stays_inside_unit_dir() {
+        // A traversal-style job name is sanitized by unit_names(), and the
+        // install path additionally asserts strip_prefix(unit_dir) before any
+        // write. The resulting unit file must live inside the unit dir and
+        // never above it.
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("")) // daemon-reload
+            .push_response(CommandOutput::from_stdout("")); // enable --now
+        let (mgr, dir) = mgr_with_temp(ScheduleBackend::SystemdTimer, runner);
+
+        mgr.install("../../../etc/payload", &Schedule::new("0 2 * * *"))
+            .expect("install sanitizes the name and writes inside the dir");
+
+        // No file may exist above the unit dir.
+        let unit_dir = dir.path().join("systemd");
+        let entries = std::fs::read_dir(&unit_dir).unwrap().count();
+        assert!(
+            entries >= 2,
+            "both unit files should be inside the unit dir"
+        );
+        // Nothing escaped upward.
+        assert!(!dir.path().join("payload.service").exists());
+        assert!(!dir.path().join("payload.timer").exists());
+    }
+
+    #[test]
+    fn assert_inside_dir_rejects_escape() {
+        let unit_dir = Path::new("/etc/systemd/system");
+        assert!(assert_inside_dir(&unit_dir.join("toride-backup-x.timer"), unit_dir,).is_ok());
+        // A path that does not share the prefix is rejected.
+        assert!(assert_inside_dir(Path::new("/etc/cron.d/x"), unit_dir,).is_err());
+    }
+
+    #[test]
     fn remove_systemd_disables_and_deletes_units() {
         // STRICT: prove remove dispatches `disable --now` + `daemon-reload`.
-        let expected_disable = CommandSpec::new("systemctl")
-            .args(["disable", "--now", "--", "toride-backup-old.timer"]);
+        let expected_disable = CommandSpec::new("systemctl").args([
+            "disable",
+            "--now",
+            "--",
+            "toride-backup-old.timer",
+        ]);
         let expected_reload = CommandSpec::new("systemctl").args(["daemon-reload"]);
 
         let runner = FakeRunner::new()
@@ -568,7 +640,11 @@ mod tests {
         let (mgr, _dir) = mgr_with_temp(ScheduleBackend::SystemdTimer, runner);
 
         // Pre-create the unit files so remove has something to delete.
-        std::fs::write(mgr.unit_dir.join("toride-backup-old.service"), "[Service]\n").unwrap();
+        std::fs::write(
+            mgr.unit_dir.join("toride-backup-old.service"),
+            "[Service]\n",
+        )
+        .unwrap();
         std::fs::write(mgr.unit_dir.join("toride-backup-old.timer"), "[Timer]\n").unwrap();
 
         mgr.remove("old").expect("remove");
@@ -634,6 +710,65 @@ mod tests {
     }
 
     #[test]
+    fn install_cron_rejects_unsafe_job_name() {
+        // A job name carrying shell metacharacters / path separators must be
+        // refused before any cron line is written, even if the cron expression
+        // itself is valid.
+        let (mgr, dir) = mgr_with_temp(ScheduleBackend::Cron, FakeRunner::new());
+        for evil in ["nightly; rm -rf /", "../etc/passwd", "a b c", "weird`cmd`"] {
+            let err = mgr
+                .install(evil, &Schedule::new("0 2 * * *"))
+                .expect_err("unsafe name must be rejected");
+            assert!(matches!(err, Error::ScheduleError(_)), "name {evil:?}");
+        }
+        // Nothing was written.
+        assert!(
+            std::fs::read_dir(dir.path().join("cron.d")).map_or(true, |mut it| it.next().is_none())
+        );
+    }
+
+    #[test]
+    fn install_cron_rejects_shell_metacharacters_in_cron_field() {
+        // A cron expression smuggling shell metacharacters in a field must be
+        // refused; the lexical per-field allowlist catches injection attempts
+        // that would otherwise survive the 5-field-count check.
+        let (mgr, _dir) = mgr_with_temp(ScheduleBackend::Cron, FakeRunner::new());
+        let err = mgr
+            .install("nightly", &Schedule::new("0 2 * * * ; rm -rf /"))
+            .unwrap_err();
+        assert!(matches!(err, Error::ScheduleError(_)));
+        // Lists/ranges/steps are still allowed by the allowlist.
+        mgr.install("ok", &Schedule::new("*/15 2 1,15 * 1-5"))
+            .expect("valid cron with list/range/step is accepted");
+    }
+
+    #[test]
+    fn render_cron_entry_emits_safe_name_and_cron() {
+        // Positive control: a clean name + valid cron renders the expected
+        // crontab(5) line.
+        let (mgr, _dir) = mgr_with_temp(ScheduleBackend::Cron, FakeRunner::new());
+        let entry = mgr
+            .render_cron_entry("nightly", &Schedule::new("0 2 * * *"))
+            .expect("valid entry");
+        assert!(entry.contains("0 2 * * * root toride-backup backup nightly"));
+    }
+
+    #[test]
+    fn render_cron_entry_refuses_bad_name_or_cron() {
+        let (mgr, _dir) = mgr_with_temp(ScheduleBackend::Cron, FakeRunner::new());
+        // Bad name.
+        assert!(
+            mgr.render_cron_entry("bad name", &Schedule::new("0 2 * * *"))
+                .is_err()
+        );
+        // Bad cron field (shell metachar).
+        assert!(
+            mgr.render_cron_entry("nightly", &Schedule::new("0 2 * * $(touch x)"))
+                .is_err()
+        );
+    }
+
+    #[test]
     fn remove_cron_deletes_dropin() {
         let (mgr, _dir) = mgr_with_temp(ScheduleBackend::Cron, FakeRunner::new());
         mgr.install("db", &Schedule::new("0 4 * * *")).unwrap();
@@ -696,10 +831,12 @@ mod tests {
             !unit.contains("--password"),
             "password must not be a CLI flag: {unit}"
         );
-        // Password delivered via RESTIC_PASSWORD env from the password-command.
+        // systemd does not expand $(), so the password is delivered via a
+        // root-owned file (RESTIC_PASSWORD_FILE) the install path materializes
+        // from the password_command — never the literal $(...) form.
         assert!(
-            unit.contains("RESTIC_PASSWORD=$(cat /etc/restic/password)"),
-            "expected RESTIC_PASSWORD env: {unit}"
+            unit.contains("RESTIC_PASSWORD_FILE=/etc/toride-backup/nightly.pw"),
+            "expected RESTIC_PASSWORD_FILE env: {unit}"
         );
     }
 
@@ -709,8 +846,10 @@ mod tests {
         // /etc/systemd/system.
         // https://www.freedesktop.org/software/systemd/man/systemd.unit.html
         let mgr = ScheduleManager::new();
-        assert_eq!(mgr.unit_dir, std::path::PathBuf::from("/etc/systemd/system"));
+        assert_eq!(
+            mgr.unit_dir,
+            std::path::PathBuf::from("/etc/systemd/system")
+        );
         assert_eq!(mgr.cron_dir, std::path::PathBuf::from("/etc/cron.d"));
     }
 }
-

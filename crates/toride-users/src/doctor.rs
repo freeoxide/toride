@@ -10,9 +10,9 @@
 //! - Insecure shells
 //! - Password policy violations
 
+use crate::Result;
 use crate::paths::UserPaths;
 use crate::report::{Severity, UserFinding, UserReport};
-use crate::Result;
 
 /// Scope for doctor checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,22 +65,22 @@ impl Doctor {
 
         match scope {
             DoctorScope::All => {
-                self.check_accounts(&mut report)?;
-                self.check_sudo(&mut report)?;
-                self.check_pam(&mut report)?;
-                self.check_password_policy(&mut report)?;
+                self.check_accounts(&mut report);
+                self.check_sudo(&mut report);
+                self.check_pam(&mut report);
+                self.check_password_policy(&mut report);
             }
             DoctorScope::Accounts => {
-                self.check_accounts(&mut report)?;
+                self.check_accounts(&mut report);
             }
             DoctorScope::Sudo => {
-                self.check_sudo(&mut report)?;
+                self.check_sudo(&mut report);
             }
             DoctorScope::Pam => {
-                self.check_pam(&mut report)?;
+                self.check_pam(&mut report);
             }
             DoctorScope::PasswordPolicy => {
-                self.check_password_policy(&mut report)?;
+                self.check_password_policy(&mut report);
             }
         }
 
@@ -88,7 +88,7 @@ impl Doctor {
     }
 
     /// Check user account security.
-    fn check_accounts(&self, report: &mut UserReport) -> Result<()> {
+    fn check_accounts(&self, report: &mut UserReport) {
         // Check for root login via SSH. The path is plumbed through
         // `self.paths.sshd_config` (rather than hardcoded `/etc/ssh/sshd_config`)
         // so a `UserPaths::with_base(tmp)` redirects this read for tests and
@@ -119,9 +119,11 @@ impl Doctor {
                     )
                     .detail(format!(
                         "PermitRootLogin is set to 'yes' (effective at global scope) in {}.",
-                        root.global_source
-                            .as_deref()
-                            .unwrap_or_else(|| self.paths.sshd_config.to_str().unwrap_or("?"))
+                        root.global_source.as_deref().unwrap_or_else(|| self
+                            .paths
+                            .sshd_config
+                            .to_str()
+                            .unwrap_or("?"))
                     ))
                     .fix("Set PermitRootLogin to 'prohibit-password' or 'no'."),
                 );
@@ -143,9 +145,11 @@ impl Doctor {
                          `Match {}` block in {}. This only applies when the Match \
                          criteria are met — verify it is intentional.",
                         cond.match_clause,
-                        cond.source
-                            .as_deref()
-                            .unwrap_or_else(|| self.paths.sshd_config.to_str().unwrap_or("?"))
+                        cond.source.as_deref().unwrap_or_else(|| self
+                            .paths
+                            .sshd_config
+                            .to_str()
+                            .unwrap_or("?"))
                     ))
                     .fix(
                         "If unintended, set PermitRootLogin to 'prohibit-password' or 'no' \
@@ -171,7 +175,7 @@ impl Doctor {
                 // The UID-0 and insecure-shell checks both need passwd rows; if
                 // the read failed there is nothing to iterate, so skip straight
                 // past the login-via-SSH finding we may already have pushed.
-                return Ok(());
+                return;
             }
         };
         for entry in &passwd_entries {
@@ -194,34 +198,31 @@ impl Doctor {
         // Check for users with login shells that shouldn't
         let insecure_shells = ["/bin/sh", "/bin/bash", "/usr/bin/bash"];
         let system_users = [
-            "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail",
-            "news", "uucp", "proxy", "www-data", "backup", "list", "irc",
-            "gnats", "nobody",
+            "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news", "uucp", "proxy",
+            "www-data", "backup", "list", "irc", "gnats", "nobody",
         ];
         for entry in &passwd_entries {
-            if system_users.contains(&entry.username.as_str()) {
-                if insecure_shells.contains(&entry.shell.as_str()) {
-                    report.push(
-                        UserFinding::new(
-                            format!("user.system-user.shell.{}", entry.username),
-                            Severity::Warning,
-                            format!("System user '{}' has a login shell", entry.username),
-                        )
-                        .detail(format!(
-                            "System user '{}' has shell '{}' instead of nologin.",
-                            entry.username, entry.shell
-                        ))
-                        .fix("Set the shell to /usr/sbin/nologin."),
-                    );
-                }
+            if system_users.contains(&entry.username.as_str())
+                && insecure_shells.contains(&entry.shell.as_str())
+            {
+                report.push(
+                    UserFinding::new(
+                        format!("user.system-user.shell.{}", entry.username),
+                        Severity::Warning,
+                        format!("System user '{}' has a login shell", entry.username),
+                    )
+                    .detail(format!(
+                        "System user '{}' has shell '{}' instead of nologin.",
+                        entry.username, entry.shell
+                    ))
+                    .fix("Set the shell to /usr/sbin/nologin."),
+                );
             }
         }
-
-        Ok(())
     }
 
     /// Check sudo configuration.
-    fn check_sudo(&self, report: &mut UserReport) -> Result<()> {
+    fn check_sudo(&self, report: &mut UserReport) {
         // Check main sudoers file for NOPASSWD entries. Per-check degrade: an
         // unreadable /etc/sudoers must NOT abort the whole suite. Log and
         // continue to the drop-in scan — one unreadable file costs at most the
@@ -266,40 +267,38 @@ impl Doctor {
                         "doctor check_sudo read_dir {}: {e}",
                         self.paths.sudoers_d.display()
                     );
-                    return Ok(());
+                    return;
                 }
             };
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().is_none() || path.extension().is_some_and(|e| e != "bak") {
-                    if let Ok(sudoers) = crate::parse::read_sudoers(&path) {
-                        for rule in &sudoers {
-                            if rule.nopasswd {
-                                let filename = path.file_name().unwrap_or_default().to_string_lossy();
-                                report.push(
-                                    UserFinding::new(
-                                        format!("sudo.nopasswd.dropin.{filename}"),
-                                        Severity::Warning,
-                                        format!("NOPASSWD sudo entry in /etc/sudoers.d/{filename}"),
-                                    )
-                                    .detail(format!(
-                                        "User/group '{}' has NOPASSWD access via drop-in file.",
-                                        rule.who
-                                    ))
-                                    .fix("Remove NOPASSWD or require password + TOTP."),
-                                );
-                            }
+                if path.extension().is_none_or(|e| e != "bak")
+                    && let Ok(sudoers) = crate::parse::read_sudoers(&path)
+                {
+                    for rule in &sudoers {
+                        if rule.nopasswd {
+                            let filename = path.file_name().unwrap_or_default().to_string_lossy();
+                            report.push(
+                                UserFinding::new(
+                                    format!("sudo.nopasswd.dropin.{filename}"),
+                                    Severity::Warning,
+                                    format!("NOPASSWD sudo entry in /etc/sudoers.d/{filename}"),
+                                )
+                                .detail(format!(
+                                    "User/group '{}' has NOPASSWD access via drop-in file.",
+                                    rule.who
+                                ))
+                                .fix("Remove NOPASSWD or require password + TOTP."),
+                            );
                         }
                     }
                 }
             }
         }
-
-        Ok(())
     }
 
     /// Check PAM/TOTP configuration.
-    fn check_pam(&self, report: &mut UserReport) -> Result<()> {
+    fn check_pam(&self, report: &mut UserReport) {
         // Check if TOTP is configured for SSH. Per-check degrade: an unreadable
         // pam.d/sshd must NOT abort the whole suite. Log and continue to the
         // sudo-without-TOTP check below.
@@ -355,7 +354,7 @@ impl Doctor {
                     "doctor check_pam read_group {}: {e}",
                     self.paths.group.display()
                 );
-                return Ok(());
+                return;
             }
         };
 
@@ -384,12 +383,10 @@ impl Doctor {
                 );
             }
         }
-
-        Ok(())
     }
 
     /// Check password policy compliance.
-    fn check_password_policy(&self, report: &mut UserReport) -> Result<()> {
+    fn check_password_policy(&self, report: &mut UserReport) {
         // Check for users with empty passwords. Per-check degrade: an unreadable
         // /etc/shadow must NOT abort the whole suite. Log and continue to the
         // login.defs policy check below.
@@ -438,7 +435,7 @@ impl Doctor {
                         "doctor check_password_policy read {}: {e}",
                         self.paths.login_defs.display()
                     );
-                    return Ok(());
+                    return;
                 }
             };
             let has_max_days = content.contains("PASS_MAX_DAYS");
@@ -468,8 +465,6 @@ impl Doctor {
                 );
             }
         }
-
-        Ok(())
     }
 }
 
@@ -514,10 +509,10 @@ struct ConditionalRootLogin {
     source: Option<String>,
 }
 
-/// Result of resolving `PermitRootLogin` across a full sshd_config tree.
+/// Result of resolving `PermitRootLogin` across a full `sshd_config` tree.
 #[derive(Debug, Default)]
 struct ResolvedRootLogin {
-    /// `true` if the effective *global-scope* PermitRootLogin is `yes`
+    /// `true` if the effective *global-scope* `PermitRootLogin` is `yes`
     /// (first obtained value wins, after Include expansion in read order).
     global_yes: bool,
     /// File the effective global directive was read from.
@@ -556,7 +551,7 @@ impl ResolvedRootLogin {
 ///
 /// `main_path` is the top-level config file (e.g. `/etc/ssh/sshd_config`). The
 /// directory of the file being parsed is used to resolve relative Include
-/// paths, which per sshd_config(5) default to `/etc/ssh` — and on a stock
+/// paths, which per `sshd_config(5)` default to `/etc/ssh` — and on a stock
 /// system the main file lives in `/etc/ssh`, so the file's parent dir is the
 /// correct base for relative resolution under both the real host and a temp
 /// `UserPaths::with_base` tree.
@@ -576,7 +571,7 @@ fn resolve_sshd_root_login(main_path: &std::path::Path) -> ResolvedRootLogin {
 /// Parse one config file, recursing into `Include` directives.
 ///
 /// `match_scope` is the clause text of the enclosing `Match` block, or `None`
-/// at global scope. Per sshd_config(5), an `Include` inside a Match block is
+/// at global scope. Per `sshd_config(5)`, an `Include` inside a Match block is
 /// *conditional*, so the scope propagates into the included file's directives.
 /// `seen` guards against Include cycles (a file that includes itself directly
 /// or transitively) — sshd itself rejects such loops, but a malformed config
@@ -643,7 +638,9 @@ fn resolve_in_file(
             // file's dir). The file's parent dir is the correct base for both
             // the real host and a temp tree. Each token is a separate pathname,
             // each may glob, and globs expand in lexical order.
-            let base = path.parent().unwrap_or_else(|| std::path::Path::new("/etc/ssh"));
+            let base = path
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("/etc/ssh"));
             for tok in tokens {
                 // Arguments may be double-quoted (per the line-format rule that
                 // arguments containing spaces are quoted). Strip surrounding
@@ -670,8 +667,8 @@ fn resolve_in_file(
     }
 }
 
-/// Strip a single layer of surrounding double quotes from a sshd_config
-/// argument. sshd_config(5): "Arguments may optionally be enclosed in double
+/// Strip a single layer of surrounding double quotes from a `sshd_config`
+/// argument. `sshd_config(5)`: "Arguments may optionally be enclosed in double
 /// quotes (\") in order to represent arguments containing spaces."
 fn strip_quotes(s: &str) -> &str {
     let s = s.strip_prefix('"').unwrap_or(s);
@@ -679,7 +676,7 @@ fn strip_quotes(s: &str) -> &str {
 }
 
 /// Expand a single `Include` pathname against `base`, returning the matched
-/// files in lexical order. Per sshd_config(5) + glob(7), `*` matches any run
+/// files in lexical order. Per `sshd_config(5)` + glob(7), `*` matches any run
 /// of characters within a path segment and `?` matches a single character.
 /// Non-absolute patterns resolve relative to `base` (the config file's dir,
 /// which on a stock system is `/etc/ssh`). Non-matching patterns yield no
@@ -708,7 +705,11 @@ fn expand_include(base: &std::path::Path, pattern: &str) -> Vec<std::path::PathB
 
     // Fast path: no wildcard — return the literal path if it is a file.
     if !pattern_str.contains(['*', '?']) {
-        return if resolved.is_file() { vec![resolved] } else { Vec::new() };
+        return if resolved.is_file() {
+            vec![resolved]
+        } else {
+            Vec::new()
+        };
     }
 
     let Ok(entries) = std::fs::read_dir(search_dir) else {
@@ -785,7 +786,7 @@ mod tests {
     fn check_pam_stale_sudo_member_does_not_abort_suite() {
         let dir = TempDir::new().expect("tempdir");
         let base = dir.path().to_path_buf();
-        let paths = UserPaths::with_base(base);
+        let paths = UserPaths::with_base(&base);
 
         // passwd: only `root` and `alice`. `ghost` is intentionally absent — it
         // simulates a stale sudo-group membership for a deleted account.
@@ -817,18 +818,18 @@ mod tests {
         // yield a `pam.sudo-user.no-totp.<name>` finding.
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            ids.iter().any(|id| *id == "pam.sudo-user.no-totp.alice"),
+            ids.contains(&"pam.sudo-user.no-totp.alice"),
             "alice finding should be present, got: {ids:?}"
         );
         assert!(
-            ids.iter().any(|id| *id == "pam.sudo-user.no-totp.ghost"),
+            ids.contains(&"pam.sudo-user.no-totp.ghost"),
             "ghost finding should be present (degraded, not fatal), got: {ids:?}"
         );
     }
 
     /// Regression for the fail-fast-at-file-level class: a single unreadable
     /// file must NOT abort the whole doctor suite. `run()` chains
-    /// check_accounts / check_sudo / check_pam / check_password_policy; before
+    /// `check_accounts` / `check_sudo` / `check_pam` / `check_password_policy`; before
     /// the fix each propagated the first file-IO error with `?`, so an
     /// unreadable `/etc/passwd` aborted every subsequent check and the TUI
     /// collector blanked the entire findings `Vec` to empty.
@@ -837,13 +838,13 @@ mod tests {
     /// (`read_to_string` on a dir returns an IO error) while keeping
     /// `/etc/login.defs` readable and populated so the password-policy check has
     /// real findings to emit. The suite must survive and still report the
-    /// login.defs findings — proving check_password_policy ran despite
-    /// check_accounts' passwd read failing.
+    /// login.defs findings — proving `check_password_policy` ran despite
+    /// `check_accounts`' passwd read failing.
     #[test]
     fn unreadable_passwd_does_not_abort_whole_suite() {
         let dir = TempDir::new().expect("tempdir");
         let base = dir.path().to_path_buf();
-        let paths = UserPaths::with_base(base);
+        let paths = UserPaths::with_base(&base);
 
         // passwd is a DIRECTORY — read_passwd returns Err(Io), which previously
         // aborted run() via check_accounts(...)?.
@@ -864,24 +865,24 @@ mod tests {
         // proving it ran despite check_accounts failing to read passwd.
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            ids.iter().any(|id| *id == "password-policy.no-max-days"),
+            ids.contains(&"password-policy.no-max-days"),
             "login.defs finding should still be present, got: {ids:?}"
         );
         assert!(
-            ids.iter().any(|id| *id == "password-policy.no-min-days"),
+            ids.contains(&"password-policy.no-min-days"),
             "login.defs finding should still be present, got: {ids:?}"
         );
     }
 
     /// Companion: an unreadable `/etc/shadow` must not abort the
     /// password-policy check — the `/etc/login.defs` half must still run.
-    /// Before the fix, check_password_policy's `read_to_string(&shadow)?` at
+    /// Before the fix, `check_password_policy`'s `read_to_string(&shadow)?` at
     /// the top of the function short-circuited the login.defs check below it.
     #[test]
     fn unreadable_shadow_does_not_abort_password_policy_check() {
         let dir = TempDir::new().expect("tempdir");
         let base = dir.path().to_path_buf();
-        let paths = UserPaths::with_base(base);
+        let paths = UserPaths::with_base(&base);
 
         // shadow exists (so the `.exists()` guard fires) but is a DIRECTORY —
         // read_to_string returns Err(Io).
@@ -900,7 +901,7 @@ mod tests {
         // login.defs findings must still be present.
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            ids.iter().any(|id| *id == "password-policy.no-max-days"),
+            ids.contains(&"password-policy.no-max-days"),
             "login.defs finding should still be present despite unreadable shadow, got: {ids:?}"
         );
         // No empty-password finding was emitted — shadow was unreadable.
@@ -910,11 +911,11 @@ mod tests {
         );
     }
 
-    /// Regression for the sshd_config unwired-backend gap: `check_accounts`
+    /// Regression for the `sshd_config` unwired-backend gap: `check_accounts`
     /// previously hardcoded `Path::new("/etc/ssh/sshd_config")`, so a
     /// `UserPaths::with_base(tmp)` could NOT redirect the root-login check.
     /// With the path now plumbed through `UserPaths::sshd_config`
-    /// (`<base>/ssh/sshd_config`), writing a fake sshd_config with
+    /// (`<base>/ssh/sshd_config`), writing a fake `sshd_config` with
     /// `PermitRootLogin yes` under the temp base must surface the
     /// `user.root-login.ssh-enabled` finding against the temp file, not the
     /// real `/etc/ssh/sshd_config`.
@@ -922,7 +923,7 @@ mod tests {
     fn check_accounts_reads_sshd_config_via_paths() {
         let dir = TempDir::new().expect("tempdir");
         let base = dir.path().to_path_buf();
-        let paths = UserPaths::with_base(base);
+        let paths = UserPaths::with_base(&base);
 
         // sshd_config lives at <base>/ssh/sshd_config under the temp base.
         let sshd_dir = dir.path().join("ssh");
@@ -943,7 +944,7 @@ mod tests {
 
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            ids.iter().any(|id| *id == "user.root-login.ssh-enabled"),
+            ids.contains(&"user.root-login.ssh-enabled"),
             "root-login finding should be read from the temp sshd_config, got: {ids:?}"
         );
     }
@@ -955,7 +956,7 @@ mod tests {
     fn check_accounts_no_root_login_finding_when_disabled() {
         let dir = TempDir::new().expect("tempdir");
         let base = dir.path().to_path_buf();
-        let paths = UserPaths::with_base(base);
+        let paths = UserPaths::with_base(&base);
 
         let sshd_dir = dir.path().join("ssh");
         std::fs::create_dir_all(&sshd_dir).expect("mkdir ssh");
@@ -968,11 +969,13 @@ mod tests {
         std::fs::write(&paths.passwd, "root:x:0:0:root:/root:/bin/bash\n").expect("write passwd");
 
         let doctor = Doctor::with_paths(paths);
-        let report = doctor.run(&DoctorScope::Accounts).expect("doctor accounts scope");
+        let report = doctor
+            .run(&DoctorScope::Accounts)
+            .expect("doctor accounts scope");
 
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            !ids.iter().any(|id| *id == "user.root-login.ssh-enabled"),
+            !ids.contains(&"user.root-login.ssh-enabled"),
             "no root-login finding when PermitRootLogin is not 'yes', got: {ids:?}"
         );
     }
@@ -995,7 +998,7 @@ mod tests {
     #[test]
     fn check_accounts_ignores_commented_permit_root_login() {
         let dir = TempDir::new().expect("tempdir");
-        let paths = UserPaths::with_base(dir.path().to_path_buf());
+        let paths = UserPaths::with_base(dir.path());
 
         let sshd_dir = dir.path().join("ssh");
         std::fs::create_dir_all(&sshd_dir).expect("mkdir ssh");
@@ -1016,11 +1019,13 @@ mod tests {
         std::fs::write(&paths.passwd, "root:x:0:0:root:/root:/bin/bash\n").expect("write passwd");
 
         let doctor = Doctor::with_paths(paths);
-        let report = doctor.run(&DoctorScope::Accounts).expect("doctor accounts scope");
+        let report = doctor
+            .run(&DoctorScope::Accounts)
+            .expect("doctor accounts scope");
 
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            !ids.iter().any(|id| *id == "user.root-login.ssh-enabled"),
+            !ids.contains(&"user.root-login.ssh-enabled"),
             "commented `# PermitRootLogin yes` must NOT be flagged as enabled, got: {ids:?}"
         );
     }
@@ -1031,7 +1036,7 @@ mod tests {
     #[test]
     fn check_accounts_flags_uncommented_permit_root_login() {
         let dir = TempDir::new().expect("tempdir");
-        let paths = UserPaths::with_base(dir.path().to_path_buf());
+        let paths = UserPaths::with_base(dir.path());
 
         let sshd_dir = dir.path().join("ssh");
         std::fs::create_dir_all(&sshd_dir).expect("mkdir ssh");
@@ -1049,11 +1054,13 @@ mod tests {
         std::fs::write(&paths.passwd, "root:x:0:0:root:/root:/bin/bash\n").expect("write passwd");
 
         let doctor = Doctor::with_paths(paths);
-        let report = doctor.run(&DoctorScope::Accounts).expect("doctor accounts scope");
+        let report = doctor
+            .run(&DoctorScope::Accounts)
+            .expect("doctor accounts scope");
 
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            ids.iter().any(|id| *id == "user.root-login.ssh-enabled"),
+            ids.contains(&"user.root-login.ssh-enabled"),
             "uncommented `permitrootlogin yes` (leading ws, lowercase keyword) \
              must be flagged, got: {ids:?}"
         );
@@ -1062,11 +1069,11 @@ mod tests {
     /// `PermitRootLogin` set to a hardening value (`prohibit-password`) while
     /// a separate commented line mentions `yes` must not be flagged.
     /// Also pins the case-sensitivity of the argument: `YES` is NOT `yes`
-    /// per sshd_config(5) and should NOT be flagged.
+    /// per `sshd_config(5)` and should NOT be flagged.
     #[test]
     fn check_accounts_respects_first_value_and_case_sensitive_arg() {
         let dir = TempDir::new().expect("tempdir");
-        let paths = UserPaths::with_base(dir.path().to_path_buf());
+        let paths = UserPaths::with_base(dir.path());
 
         let sshd_dir = dir.path().join("ssh");
         std::fs::create_dir_all(&sshd_dir).expect("mkdir ssh");
@@ -1084,11 +1091,13 @@ mod tests {
         std::fs::write(&paths.passwd, "root:x:0:0:root:/root:/bin/bash\n").expect("write passwd");
 
         let doctor = Doctor::with_paths(paths);
-        let report = doctor.run(&DoctorScope::Accounts).expect("doctor accounts scope");
+        let report = doctor
+            .run(&DoctorScope::Accounts)
+            .expect("doctor accounts scope");
 
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            !ids.iter().any(|id| *id == "user.root-login.ssh-enabled"),
+            !ids.contains(&"user.root-login.ssh-enabled"),
             "first value `prohibit-password` wins; `YES` is not the case-sensitive `yes`; \
              got: {ids:?}"
         );
@@ -1097,7 +1106,7 @@ mod tests {
     // --- sshd_config(5) Include + Match resolution ---
 
     /// Helper: write `sshd_config` text into a temp tree and resolve
-    /// PermitRootLogin through it. Returns the resolved result. The temp sshd
+    /// `PermitRootLogin` through it. Returns the resolved result. The temp sshd
     /// dir lives at `<tmp>/ssh/`, matching `UserPaths::with_base`, so relative
     /// `Include` patterns resolve against that dir exactly as they do on a real
     /// host under `/etc/ssh`.
@@ -1112,7 +1121,7 @@ mod tests {
     }
 
     /// Direct unit test of the resolver against a faithful Debian/Ubuntu-style
-    /// default sshd_config slice (commented directive only).
+    /// default `sshd_config` slice (commented directive only).
     #[test]
     fn sshd_resolver_parses_real_default_config() {
         // Slice drawn from a stock Debian /etc/ssh/sshd_config header where
@@ -1143,7 +1152,10 @@ mod tests {
 
         // An admin who actively enables it (uncommented).
         let (_dir, resolved) = resolve_from_config("# Managed by admin\nPermitRootLogin yes\n");
-        assert!(resolved.global_yes, "uncommented `PermitRootLogin yes` must be flagged");
+        assert!(
+            resolved.global_yes,
+            "uncommented `PermitRootLogin yes` must be flagged"
+        );
         assert!(
             resolved.global_source.is_some(),
             "effective directive should carry its source file"
@@ -1151,13 +1163,13 @@ mod tests {
     }
 
     /// Regression: modern Debian/Ubuntu/Fedora ship the *effective*
-    /// PermitRootLogin in `/etc/ssh/sshd_config.d/*.conf`, pulled in by an
+    /// `PermitRootLogin` in `/etc/ssh/sshd_config.d/*.conf`, pulled in by an
     /// `Include` directive in the main file. The resolver must follow the
     /// Include, glob the `*.conf` files in lexical order, and report the
     /// directive from the drop-in as the effective global value.
     ///
     /// Without Include resolution (the old single-file reader), this config
-    /// would read as "no PermitRootLogin" and miss the drop-in's `yes`,
+    /// would read as "no `PermitRootLogin`" and miss the drop-in's `yes`,
     /// silently passing a root-login-enabled host as clean.
     #[test]
     fn sshd_resolver_follows_include_glob_dropin() {
@@ -1192,7 +1204,8 @@ mod tests {
             "Include'd drop-in PermitRootLogin yes must be the effective global value"
         );
         assert!(
-            resolved.global_source
+            resolved
+                .global_source
                 .as_deref()
                 .is_some_and(|s| s.contains("50-cloudimg.conf")),
             "effective source should name the drop-in file, got: {:?}",
@@ -1205,7 +1218,7 @@ mod tests {
     }
 
     /// Include globs expand in lexical order and the FIRST obtained global
-    /// value wins (sshd_config(5)). With two drop-ins where the lexically-first
+    /// value wins (`sshd_config(5)`). With two drop-ins where the lexically-first
     /// one sets `no` and a later one sets `yes`, the effective value must be
     /// `no` — proving we honour both lexical Include ordering and first-wins.
     #[test]
@@ -1229,7 +1242,8 @@ mod tests {
             "lexically-first Include'd `no` must win over later `yes`"
         );
         assert!(
-            resolved.global_source
+            resolved
+                .global_source
                 .as_deref()
                 .is_some_and(|s| s.contains("00-hardening.conf")),
             "effective source should be the first drop-in, got: {:?}",
@@ -1263,9 +1277,14 @@ mod tests {
             "exactly one Match-block `yes` should be surfaced"
         );
         let cond = &resolved.conditional_yes[0];
-        assert_eq!(cond.match_clause, "User admin", "Match clause text preserved");
+        assert_eq!(
+            cond.match_clause, "User admin",
+            "Match clause text preserved"
+        );
         assert!(
-            cond.source.as_deref().is_some_and(|s| s.contains("sshd_config")),
+            cond.source
+                .as_deref()
+                .is_some_and(|s| s.contains("sshd_config")),
             "conditional should carry its source file, got: {:?}",
             cond.source
         );
@@ -1274,7 +1293,7 @@ mod tests {
     /// `Match all` (OpenSSH 6.5p1+) is itself a Match block whose criteria are
     /// always satisfied — it does NOT reset to global scope (the common
     /// "use `Match all` to close a block" idiom is really "open an
-    /// always-matching block"). Per sshd_config(5), directives following any
+    /// always-matching block"). Per `sshd_config(5)`, directives following any
     /// `Match` line — including `Match all` — are conditional. A
     /// `PermitRootLogin yes` after `Match all` is therefore surfaced as a
     /// conditional directive (clause `all`), NOT folded into the global value.
@@ -1353,7 +1372,7 @@ mod tests {
     }
 
     /// An Include directive inside a Match block performs *conditional*
-    /// inclusion (sshd_config(5)): directives in the included file inherit the
+    /// inclusion (`sshd_config(5)`): directives in the included file inherit the
     /// active Match scope. A drop-in's `PermitRootLogin yes` pulled in this way
     /// must be surfaced as a Match-block (conditional) directive, not global.
     #[test]
@@ -1371,11 +1390,7 @@ mod tests {
              Include sshd_config.d/*.conf\n",
         )
         .expect("write main");
-        std::fs::write(
-            dropin.join("admins.conf"),
-            "PermitRootLogin yes\n",
-        )
-        .expect("write dropin");
+        std::fs::write(dropin.join("admins.conf"), "PermitRootLogin yes\n").expect("write dropin");
 
         let resolved = resolve_sshd_root_login(&main);
         assert!(
@@ -1400,7 +1415,7 @@ mod tests {
     #[test]
     fn check_accounts_flags_match_block_root_login_separately() {
         let dir = TempDir::new().expect("tempdir");
-        let paths = UserPaths::with_base(dir.path().to_path_buf());
+        let paths = UserPaths::with_base(dir.path());
         let sshd_dir = dir.path().join("ssh");
         std::fs::create_dir_all(&sshd_dir).expect("mkdir ssh");
         std::fs::write(
@@ -1413,15 +1428,17 @@ mod tests {
         std::fs::write(&paths.passwd, "root:x:0:0:root:/root:/bin/bash\n").expect("write passwd");
 
         let doctor = Doctor::with_paths(paths);
-        let report = doctor.run(&DoctorScope::Accounts).expect("doctor accounts scope");
+        let report = doctor
+            .run(&DoctorScope::Accounts)
+            .expect("doctor accounts scope");
 
         let ids: Vec<&str> = report.findings.iter().map(|f| f.id.as_str()).collect();
         assert!(
-            !ids.iter().any(|id| *id == "user.root-login.ssh-enabled"),
+            !ids.contains(&"user.root-login.ssh-enabled"),
             "global value is prohibit-password -> no global finding; got: {ids:?}"
         );
         assert!(
-            ids.iter().any(|id| *id == "user.root-login.match-block.ssh-enabled"),
+            ids.contains(&"user.root-login.match-block.ssh-enabled"),
             "Match-block `yes` must surface a conditional finding; got: {ids:?}"
         );
         // And it should be a Warning (conditional, not yet a confirmed exposure).

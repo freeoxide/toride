@@ -4,6 +4,7 @@
 //! formats for display, logging, or configuration file generation.
 
 use crate::spec::{FirewallRule, SecurityGroup};
+use std::fmt::Write as _;
 
 // ---------------------------------------------------------------------------
 // Human-readable rendering
@@ -38,17 +39,17 @@ pub fn render_firewall_rule(rule: &FirewallRule) -> String {
 /// followed by each rule rendered via [`render_firewall_rule`].
 pub fn render_security_group(group: &SecurityGroup) -> String {
     let mut out = String::new();
-    out.push_str(&format!("Security Group: {}\n", group.name));
+    let _ = writeln!(out, "Security Group: {}", group.name);
     if !group.description.is_empty() {
-        out.push_str(&format!("  Description: {}\n", group.description));
+        let _ = writeln!(out, "  Description: {}", group.description);
     }
-    out.push_str(&format!("  Provider: {}\n", group.provider));
-    out.push_str(&format!("  Rules: {}\n", group.rules.len()));
+    let _ = writeln!(out, "  Provider: {}", group.provider);
+    let _ = writeln!(out, "  Rules: {}", group.rules.len());
 
     if !group.rules.is_empty() {
-        out.push_str("\n");
+        out.push('\n');
         for rule in &group.rules {
-            out.push_str(&format!("  {}\n", render_firewall_rule(rule)));
+            let _ = writeln!(out, "  {}", render_firewall_rule(rule));
         }
     }
 

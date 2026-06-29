@@ -4,8 +4,8 @@
 //! Tailscale tailnet. ACLs define which nodes and users can communicate
 //! with each other and on which ports.
 
-use crate::spec::AclRule;
 use crate::Result;
+use crate::spec::AclRule;
 
 // ---------------------------------------------------------------------------
 // AclManager
@@ -45,6 +45,7 @@ impl AclManager {
     }
 
     /// Enable dry-run mode.
+    #[must_use]
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
@@ -198,10 +199,18 @@ fn validate_dst(rule_index: usize, dst: &str) -> Result<()> {
 }
 
 /// Return true if `spec` is a valid port specifier: a number (0-65535), a
-/// comma-separated list of numbers, or a `lo-hi` range.
+/// comma-separated list of numbers and/or `lo-hi` ranges, or a single
+/// `lo-hi` range.
+///
+/// Each comma-separated element is itself a valid port specifier (a single
+/// port or a range), so mixed lists like `80,443,1000-2000` are accepted.
 fn is_valid_port_spec(spec: &str) -> bool {
     if spec.contains(',') {
-        return spec.split(',').all(|p| is_valid_port_atom(p.trim()));
+        // Each element of a list may be a single port or a `lo-hi` range; a
+        // range never contains a comma, so delegating back to
+        // `is_valid_port_spec` (which checks the range case) is bounded and
+        // cannot recurse infinitely.
+        return spec.split(',').all(|p| is_valid_port_spec(p.trim()));
     }
     if let Some((lo, hi)) = spec.split_once('-') {
         return is_valid_port_atom(lo.trim()) && is_valid_port_atom(hi.trim());
@@ -295,6 +304,15 @@ mod tests {
             allow(&["u"], &["*:80,443"]),
             allow(&["u"], &["*:*"]),
         ];
+        assert!(mgr.validate_rules(&rules).is_ok());
+    }
+
+    #[test]
+    fn validate_rules_accepts_port_list_containing_a_range() {
+        // A comma-separated port list may itself contain a range element;
+        // `80,443,1000-2000` is a valid Tailscale port spec.
+        let mgr = AclManager::new();
+        let rules = vec![allow(&["u"], &["*:80,443,1000-2000"])];
         assert!(mgr.validate_rules(&rules).is_ok());
     }
 

@@ -73,7 +73,7 @@ pub struct UpdatesDataBundle {
     pub findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
     /// `available == false` because construction failed or the collection task
-    /// panicked (JoinError). `None` otherwise — notably also `None` for a
+    /// panicked (`JoinError`). `None` otherwise — notably also `None` for a
     /// freshly-constructed empty bundle before any collection has run.
     pub unavailable_reason: Option<String>,
 }
@@ -99,6 +99,10 @@ pub struct UpdatesCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Hard deadline for the entire probe closure. `check_updates` shells out to
@@ -137,24 +141,27 @@ impl UpdatesCollector {
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
-                .map_or(false, |t| t.elapsed() < FINDINGS_TTL);
+                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
             // Race the probe against a deadline so a wedged network cannot hold
             // the task slot. On timeout we surface a degraded bundle carrying
             // the reason; the next eligible refresh re-tries cleanly.
-            let outcome: (UpdatesDataBundle, bool) =
-                match tokio::time::timeout(PROBE_DEADLINE, collect_real_updates(use_cache, cached_findings))
-                    .await
-                {
-                    Ok(tuple) => tuple,
-                    Err(_elapsed) => {
-                        tracing::warn!("updates collection exceeded {:?} deadline", PROBE_DEADLINE);
-                        let reason = format!("updates data collection timed out after {:?}", PROBE_DEADLINE);
-                        (empty_bundle_with_reason(reason), false)
-                    }
-                };
+            let outcome: (UpdatesDataBundle, bool) = match tokio::time::timeout(
+                PROBE_DEADLINE,
+                collect_real_updates(use_cache, cached_findings),
+            )
+            .await
+            {
+                Ok(tuple) => tuple,
+                Err(_elapsed) => {
+                    tracing::warn!("updates collection exceeded {:?} deadline", PROBE_DEADLINE);
+                    let reason =
+                        format!("updates data collection timed out after {PROBE_DEADLINE:?}");
+                    (empty_bundle_with_reason(reason), false)
+                }
+            };
             let _ = tx.send(outcome);
         });
     }
@@ -384,7 +391,7 @@ fn empty_bundle() -> UpdatesDataBundle {
 
 /// Empty bundle carrying the reason collection failed. Used when construction
 /// failed (e.g. `PackageDetection` on macOS), the probe hit the deadline, or a
-/// `spawn_blocking` task panicked (JoinError) — the reason string is rendered
+/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
 /// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> UpdatesDataBundle {
     let mut b = empty_bundle();
@@ -452,7 +459,7 @@ mod tests {
         // `available` flag reflects whether a package manager was found.
         let mut collector = UpdatesCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -488,7 +495,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = UpdatesCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         // After a successful poll the cache is populated ONLY when the backend
         // produced a real (available) bundle. On hosts where the backend is
@@ -538,8 +545,11 @@ mod tests {
         collector.findings_fresh_at = Some(std::time::Instant::now());
 
         let (tx, rx) = oneshot::channel();
-        tx.send((empty_bundle_with_reason("timed out after 30s".into()), false))
-            .unwrap();
+        tx.send((
+            empty_bundle_with_reason("timed out after 30s".into()),
+            false,
+        ))
+        .unwrap();
         collector.rx = Some(rx);
 
         let bundle = collector.poll().await;

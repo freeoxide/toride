@@ -79,15 +79,27 @@ fn extract_tar_entry(
             source: e,
         })?;
 
-        let entry_name = path.file_name().map(std::ffi::OsStr::to_string_lossy).unwrap_or_default().into_owned();
+        let entry_name = path
+            .file_name()
+            .map(std::ffi::OsStr::to_string_lossy)
+            .unwrap_or_default()
+            .into_owned();
 
         if entry_name == wanted_name {
             // Skip directories / non-file entries that happen to share a name.
             if entry.header().entry_type().is_file() {
-                // `entry.size()` is `u64`; cap the allocation at a sensible
-                // usize so we never panic on a pathologically large header.
+                // Do NOT trust the tar-header declared size for the
+                // allocation: a hostile/malformed header could claim an
+                // enormous entry size and force a huge `Vec` reservation
+                // (OOM). We bound the reservation by the same ceiling the
+                // download stage already enforces (`DEFAULT_MAX_BYTES`); an
+                // absent or implausibly large declared size reserves nothing
+                // and `read_to_end` grows the buffer as bytes arrive.
                 let declared = entry.size();
-                let cap = usize::try_from(declared).unwrap_or(usize::MAX);
+                let declared_usize = usize::try_from(declared).unwrap_or(0);
+                let cap = declared_usize.min(
+                    usize::try_from(crate::installer::DEFAULT_MAX_BYTES).unwrap_or(usize::MAX),
+                );
                 let mut buf = Vec::with_capacity(cap);
                 entry.read_to_end(&mut buf).map_err(|e| Error::Archive {
                     kind: compression.extension(),
@@ -230,13 +242,8 @@ mod tests {
     #[test]
     fn tarball_without_bin_path_is_missing_config() {
         let archive = make_targz(&[("mise", b"x")]);
-        let err = extract_executable(
-            &archive,
-            ArtifactKind::Tarball(Tarball::Gz),
-            "mise",
-            None,
-        )
-        .unwrap_err();
+        let err = extract_executable(&archive, ArtifactKind::Tarball(Tarball::Gz), "mise", None)
+            .unwrap_err();
         assert!(matches!(err, Error::MissingConfig { .. }));
     }
 

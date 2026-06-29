@@ -134,13 +134,13 @@ impl Validator for Pattern {
         if value.is_empty() {
             return None; // empty is handled by Required
         }
-        if !(self.check)(value) {
+        if (self.check)(value) {
+            None
+        } else {
             Some(ValidationError::new(format!(
                 "Must be a valid {}",
                 self.label
             )))
-        } else {
-            None
         }
     }
 }

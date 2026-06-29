@@ -77,12 +77,11 @@ pub fn empty_runtime() -> SettingsRuntime {
 /// typed fields in addition to the raw rows; every other `key = value` row is
 /// preserved verbatim so the operator sees the full on-disk state.
 pub fn convert_config() -> SettingsConfig {
-    let path = match dirs::config_dir() {
-        Some(d) => d.join("toride").join("config.toml"),
-        None => {
-            tracing::debug!("settings: dirs::config_dir() returned None");
-            return empty_config_with_path("(no config dir)".to_string());
-        }
+    let path = if let Some(d) = dirs::config_dir() {
+        d.join("toride").join("config.toml")
+    } else {
+        tracing::debug!("settings: dirs::config_dir() returned None");
+        return empty_config_with_path("(no config dir)".to_string());
     };
 
     let path_str = path.display().to_string();
@@ -130,7 +129,8 @@ pub fn convert_runtime() -> SettingsRuntime {
     let rust_log = env("RUST_LOG");
     let data_dir = dirs::data_dir().map(|d| d.join("toride").display().to_string());
     let config_dir = dirs::config_dir().map(|d| d.join("toride").display().to_string());
-    let log_path = dirs::data_dir().map(|d| d.join("toride").join("toride.log").display().to_string());
+    let log_path =
+        dirs::data_dir().map(|d| d.join("toride").join("toride.log").display().to_string());
     let shell = env("SHELL");
     let term = env("TERM");
 
@@ -180,12 +180,18 @@ pub fn parse_kv_rows(contents: &str) -> Vec<(String, String)> {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
-            tracing::debug!("settings: config line {} is not key=value: {raw:?}", lineno + 1);
+            tracing::debug!(
+                "settings: config line {} is not key=value: {raw:?}",
+                lineno + 1
+            );
             continue;
         };
         let key = key.trim();
         if key.is_empty() {
-            tracing::warn!("settings: config line {} has empty key: {raw:?}", lineno + 1);
+            tracing::warn!(
+                "settings: config line {} has empty key: {raw:?}",
+                lineno + 1
+            );
             continue;
         }
         rows.push((key.to_string(), value.trim().to_string()));

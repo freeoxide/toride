@@ -165,7 +165,10 @@ mod tests {
         for preset in all_presets() {
             assert!(!preset.id.is_empty(), "preset id must not be empty");
             assert!(!preset.name.is_empty(), "preset name must not be empty");
-            assert!(!preset.description.is_empty(), "preset description must not be empty");
+            assert!(
+                !preset.description.is_empty(),
+                "preset description must not be empty"
+            );
         }
     }
 }

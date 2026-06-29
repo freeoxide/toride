@@ -14,7 +14,7 @@
 //! Doctor findings are expensive (they shell out to `nginx`, `systemctl`,
 //! `certbot`, …) and change slowly. Unlike fail2ban, the proxy backend has no
 //! cheap status-only probe path — the doctor IS the single probe that produces
-//! status, backend, server_blocks, certificates AND findings, all via those
+//! status, backend, `server_blocks`, certificates AND findings, all via those
 //! same shell-outs. So the WHOLE `ProxyReport` is cached for 60s and reused
 //! wholesale on a cache hit (skipping the doctor entirely), mirroring the
 //! `!use_cache` gating fail2ban applies to `f2b.doctor(...)`. Only the cheap
@@ -89,7 +89,7 @@ pub struct ProxyDataBundle {
     /// `ProxyReport` rather than a fresh doctor run.
     pub findings: Vec<FindingEntry>,
     /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` because a collection task panicked (JoinError) or
+    /// `available == false` because a collection task panicked (`JoinError`) or
     /// construction returned a hard error. `None` otherwise — notably also
     /// `None` for a freshly-constructed empty bundle before any collection has
     /// run.
@@ -103,17 +103,23 @@ pub struct ProxyDataBundle {
 /// Mirrors [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector): a
 /// oneshot channel for the in-flight result, plus a 60s TTL cache. Because the
 /// proxy backend exposes no status-only probe path, the whole `ProxyReport`
-/// (status + backend + server_blocks + certs + findings) is cached and reused
+/// (status + backend + `server_blocks` + certs + findings) is cached and reused
 /// on a cache hit, so the expensive doctor shell-outs are not re-run on every
 /// 2s refresh tick.
 pub struct ProxyCollector {
     /// Carries the bundle AND whether the cached report was reused for this
     /// poll. See [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector)
     /// for the freshness-timestamp rationale.
-    rx: Option<oneshot::Receiver<(ProxyDataBundle, bool, Option<toride_proxy::report::ProxyReport>)>>,
+    rx: Option<
+        oneshot::Receiver<(
+            ProxyDataBundle,
+            bool,
+            Option<toride_proxy::report::ProxyReport>,
+        )>,
+    >,
     /// Cached doctor report from the last collection. Unlike fail2ban, the
     /// proxy backend has NO status-only probe path — the doctor IS the single
-    /// probe that produces status, backend, server_blocks, certificates AND
+    /// probe that produces status, backend, `server_blocks`, certificates AND
     /// findings. To genuinely throttle the expensive shell-outs (nginx -t,
     /// systemctl status nginx, cert checks) the WHOLE report is cached for the
     /// TTL window, not just the findings field.
@@ -177,20 +183,20 @@ impl ProxyCollector {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref _bundle, used_cache, ref fresh_report)) = result {
-                    if !used_cache {
-                        // Cache the freshly-run report verbatim and advance the
-                        // freshness clock. The bundle is lossy (it cannot round-
-                        // trip back into a ProxyReport), so collect_real_proxy
-                        // hands the owning report back alongside the bundle on a
-                        // doctor run. On a cache-hit poll `fresh_report` is None
-                        // and the clock is left untouched so the TTL is not
-                        // re-armed with reused data.
-                        if let Some(report) = fresh_report {
-                            self.cached_report = Some(report.clone());
-                        }
-                        self.report_fresh_at = Some(std::time::Instant::now());
+                if let Some((ref _bundle, used_cache, ref fresh_report)) = result
+                    && !used_cache
+                {
+                    // Cache the freshly-run report verbatim and advance the
+                    // freshness clock. The bundle is lossy (it cannot round-
+                    // trip back into a ProxyReport), so collect_real_proxy
+                    // hands the owning report back alongside the bundle on a
+                    // doctor run. On a cache-hit poll `fresh_report` is None
+                    // and the clock is left untouched so the TTL is not
+                    // re-armed with reused data.
+                    if let Some(report) = fresh_report {
+                        self.cached_report = Some(report.clone());
                     }
+                    self.report_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _, _)| bundle)
@@ -228,26 +234,33 @@ impl Default for ProxyCollector {
 ///   run this poll (so the caller can cache it for next time), or `None` on a
 ///   cache-hit poll. The bundle is lossy — it cannot round-trip back into a
 ///   `ProxyReport` — so the owning report is handed back alongside it.
+#[expect(
+    clippy::too_many_lines,
+    reason = "real-data collection is inherently linear"
+)]
+#[expect(
+    clippy::similar_names,
+    reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
+)]
 async fn collect_real_proxy(
     use_cache: bool,
     cached_report: Option<toride_proxy::report::ProxyReport>,
-) -> (ProxyDataBundle, bool, Option<toride_proxy::report::ProxyReport>) {
+) -> (
+    ProxyDataBundle,
+    bool,
+    Option<toride_proxy::report::ProxyReport>,
+) {
     // Build the ProxyClient facade on the blocking pool. `system()` is the
     // documented construction entry point and returns a hard error only on a
     // genuine I/O / duct failure; a missing nginx binary surfaces as a doctor
     // finding rather than here.
-    let client = match tokio::task::spawn_blocking(|| {
-        toride_proxy::client::ProxyClient::system()
-    })
-    .await
+    let client = match tokio::task::spawn_blocking(toride_proxy::client::ProxyClient::system).await
     {
         Ok(Ok(client)) => client,
         Ok(Err(e)) => {
             tracing::warn!("proxy backend construction failed: {e}");
             return (
-                empty_bundle_with_reason(format!(
-                    "proxy backend construction failed: {e}"
-                )),
+                empty_bundle_with_reason(format!("proxy backend construction failed: {e}")),
                 false,
                 None,
             );
@@ -255,9 +268,7 @@ async fn collect_real_proxy(
         Err(e) => {
             tracing::warn!("proxy construction task panicked: {e}");
             return (
-                empty_bundle_with_reason(format!(
-                    "proxy backend construction panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("proxy backend construction panicked: {e}")),
                 false,
                 None,
             );
@@ -297,14 +308,20 @@ async fn collect_real_proxy(
                         toride_proxy_convert::convert_server_blocks(r.server_blocks.clone());
                     let certificates =
                         toride_proxy_convert::convert_certificates(r.certificates.clone());
-                    let findings =
-                        toride_proxy_convert::convert_findings(r.findings.clone());
+                    let findings = toride_proxy_convert::convert_findings(r.findings.clone());
                     // NOTE: has_expired_certs is intentionally NOT carried here.
                     // It is shadowed/re-derived from the final `certificates` list
                     // (which includes scan-discovered certs) after the certbot-dir
                     // scan below — the report-derived value would be discarded
                     // regardless, so we avoid the wasted `r.has_expired_certs()` call.
-                    (backend, status_str, server_blocks, certificates, findings, Some(r))
+                    (
+                        backend,
+                        status_str,
+                        server_blocks,
+                        certificates,
+                        findings,
+                        Some(r),
+                    )
                 }
                 Err(e) => {
                     tracing::warn!("proxy doctor: {e}");
@@ -341,10 +358,8 @@ async fn collect_real_proxy(
                 // skipped entirely — this is the throttle the cache exists for.
                 backend = r.backend.clone();
                 status_str = r.status.to_string();
-                server_blocks =
-                    toride_proxy_convert::convert_server_blocks(r.server_blocks);
-                certificates =
-                    toride_proxy_convert::convert_certificates(r.certificates);
+                server_blocks = toride_proxy_convert::convert_server_blocks(r.server_blocks);
+                certificates = toride_proxy_convert::convert_certificates(r.certificates);
                 findings = toride_proxy_convert::convert_findings(r.findings);
                 report_owned = None;
                 used_cache = true;
@@ -447,9 +462,7 @@ async fn collect_real_proxy(
         Err(e) => {
             tracing::warn!("proxy collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "proxy data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("proxy data collection panicked: {e}")),
                 false,
                 None,
             )
@@ -485,16 +498,12 @@ fn scan_certbot_live_dir_at(
     runner: &dyn Runner,
     now: SystemTime,
 ) {
-    let entries = match std::fs::read_dir(live_dir) {
-        Ok(e) => e,
-        Err(_) => {
-            // Common on macOS / hosts without certbot; not worth a warning.
-            return;
-        }
+    let Ok(entries) = std::fs::read_dir(live_dir) else {
+        // Common on macOS / hosts without certbot; not worth a warning.
+        return;
     };
 
-    let known: std::collections::HashSet<String> =
-        certs.iter().map(|c| c.domain.clone()).collect();
+    let known: std::collections::HashSet<String> = certs.iter().map(|c| c.domain.clone()).collect();
 
     for entry in entries.flatten() {
         let domain = entry.file_name().to_string_lossy().to_string();
@@ -505,9 +514,7 @@ fn scan_certbot_live_dir_at(
         if !fullchain.exists() {
             // The doctor surfaces `cert.missing-cert` for these; skip here so
             // the certs table only lists domains whose fullchain is present.
-            tracing::debug!(
-                "proxy certbot live dir: {domain} has no fullchain.pem, skipping"
-            );
+            tracing::debug!("proxy certbot live dir: {domain} has no fullchain.pem, skipping");
             continue;
         }
         // Resolve the REAL expiry via openssl. On any failure read_cert_expiry
@@ -560,7 +567,7 @@ fn empty_bundle() -> ProxyDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when construction
-/// returned a hard error or a `spawn_blocking` task panicked (JoinError) — the
+/// returned a hard error or a `spawn_blocking` task panicked (`JoinError`) — the
 /// reason string is rendered by the UI's degraded panel so the operator sees
 /// what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> ProxyDataBundle {
@@ -629,7 +636,7 @@ mod tests {
         // `available` flag reflects whether the proxy backend was found.
         let mut collector = ProxyCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -662,7 +669,7 @@ mod tests {
     async fn report_cache_is_populated_after_poll() {
         let mut collector = ProxyCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // A real doctor run (cache miss) must populate BOTH the cached report
         // and the freshness timestamp so the next poll within the TTL window
@@ -716,19 +723,15 @@ mod tests {
         let _ = stale_at; // unused; the guard lives in poll()
     }
 
-    /// A cache MISS (use_cache == false) must run the doctor, return a fresh
+    /// A cache MISS (`use_cache` == false) must run the doctor, return a fresh
     /// owning report, and report `used_cache == false` so the caller advances
     /// the TTL clock. Even on a host where nginx is missing the doctor must
-    /// not panic — it returns an Err that collect_real_proxy swallows into an
+    /// not panic — it returns an Err that `collect_real_proxy` swallows into an
     /// empty bundle with `status = "unknown"`.
     #[tokio::test]
     async fn cache_miss_runs_doctor_and_returns_fresh_report() {
-        let (bundle, used_cache, fresh_report) =
-            collect_real_proxy(false, None).await;
-        assert!(
-            !used_cache,
-            "cache miss must report used_cache == false"
-        );
+        let (bundle, used_cache, fresh_report) = collect_real_proxy(false, None).await;
+        assert!(!used_cache, "cache miss must report used_cache == false");
         // fresh_report is Some when the doctor succeeded, None when it errored
         // (e.g. missing nginx on macOS/CI). Both are acceptable; the contract
         // is only that used_cache == false so the caller can re-arm the TTL.
@@ -770,9 +773,9 @@ mod tests {
 
     /// Dedup path: a domain already present in `certs` is NOT re-added.
     /// Uses the path-injected core so the test is host-independent (the real
-    /// entry point hard-codes /etc/letsencrypt/live). The strict FakeRunner
+    /// entry point hard-codes /etc/letsencrypt/live). The strict `FakeRunner`
     /// errors on any unmatched call, so the appended `other.com` cert degrades
-    /// to CertExpiry::unknown() (empty not_after, is_valid=false).
+    /// to `CertExpiry::unknown()` (empty `not_after`, `is_valid=false`).
     #[test]
     fn scan_certbot_live_dir_dedups_known_domains() {
         use toride_runner::fake::FakeRunner;
@@ -794,16 +797,14 @@ mod tests {
         scan_certbot_live_dir_at(live, &mut certs, &runner, SystemTime::now());
 
         // example.com is NOT re-added; only other.com is appended.
-        let example: Vec<&CertEntry> =
-            certs.iter().filter(|c| c.domain == "example.com").collect();
+        let example: Vec<&CertEntry> = certs.iter().filter(|c| c.domain == "example.com").collect();
         assert_eq!(example.len(), 1, "example.com must not be duplicated");
         // The pre-existing example.com entry is preserved verbatim (issuer +
         // not_after untouched, not overwritten by the scan defaults).
         assert_eq!(example[0].issuer, "Let's Encrypt");
         assert_eq!(example[0].not_after, "2099-01-01");
 
-        let other: Vec<&CertEntry> =
-            certs.iter().filter(|c| c.domain == "other.com").collect();
+        let other: Vec<&CertEntry> = certs.iter().filter(|c| c.domain == "other.com").collect();
         assert_eq!(other.len(), 1, "other.com must be appended exactly once");
     }
 
@@ -825,18 +826,21 @@ mod tests {
         scan_certbot_live_dir_at(live, &mut certs, &runner, SystemTime::now());
 
         let domains: Vec<&str> = certs.iter().map(|c| c.domain.as_str()).collect();
-        assert!(domains.contains(&"present.com"), "present.com must be listed");
+        assert!(
+            domains.contains(&"present.com"),
+            "present.com must be listed"
+        );
         assert!(
             !domains.contains(&"bare.com"),
             "bare.com (no fullchain.pem) must be skipped"
         );
     }
 
-    /// Appended CertEntry state when expiry cannot be resolved: a strict
-    /// FakeRunner returns Err for the openssl probe (no canned response), so
-    /// read_cert_expiry degrades to CertExpiry::unknown() — empty not_after,
-    /// days_remaining=0, is_valid=false. This is the HONEST degradation: the
-    /// cert is surfaced as unverified, NEVER the misleading is_valid=true
+    /// Appended `CertEntry` state when expiry cannot be resolved: a strict
+    /// `FakeRunner` returns Err for the openssl probe (no canned response), so
+    /// `read_cert_expiry` degrades to `CertExpiry::unknown()` — empty `not_after`,
+    /// `days_remaining=0`, `is_valid=false`. This is the HONEST degradation: the
+    /// cert is surfaced as unverified, NEVER the misleading `is_valid=true`
     /// placeholder that previously rendered as a healthy-looking row.
     #[test]
     fn scan_certbot_live_dir_appended_cert_degrades_to_unknown() {
@@ -861,8 +865,7 @@ mod tests {
         assert!(
             !c.is_valid,
             "degraded cert must be is_valid=false (got days={}, not_after={:?})",
-            c.days_remaining,
-            c.not_after
+            c.days_remaining, c.not_after
         );
         assert_eq!(c.days_remaining, 0, "unknown expiry has 0 days_remaining");
         // not_after is empty when openssl is absent (the which-guard path) or
@@ -872,7 +875,7 @@ mod tests {
     }
 
     /// Real expiry is surfaced when the runner reports a known future expiry.
-    /// Uses an exact-match FakeRunner response so the test is deterministic
+    /// Uses an exact-match `FakeRunner` response so the test is deterministic
     /// and host-independent (canned openssl stdout). When openssl is absent
     /// from the host the which-guard short-circuits and the cert degrades to
     /// unknown — still honest, just unverified.

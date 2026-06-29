@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// Status of a local TrustedUserCAKeys file.
+/// Status of a local `TrustedUserCAKeys` file.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrustedUserCAKeysStatus {
     /// Path to the file.
@@ -37,7 +37,7 @@ use toride_ssh_core::Result;
 /// as well as common ISO-ish formats. Returns `None` if no format matches.
 pub(crate) fn parse_ssh_datetime(s: &str) -> Option<i64> {
     let formats = [
-        "%Y%m%dT%H%M%S",    // compact form used by ssh-keygen KRL output
+        "%Y%m%dT%H%M%S", // compact form used by ssh-keygen KRL output
         "%Y-%m-%dT%H:%M:%S",
         "%Y-%m-%d %H:%M:%S",
         "%Y-%m-%dT%H:%M:%S%:z",
@@ -52,9 +52,7 @@ pub(crate) fn parse_ssh_datetime(s: &str) -> Option<i64> {
 
     // Try date-only.
     if let Ok(d) = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
-        return d
-            .and_hms_opt(0, 0, 0)
-            .map(|dt| dt.and_utc().timestamp());
+        return d.and_hms_opt(0, 0, 0).map(|dt| dt.and_utc().timestamp());
     }
 
     None
@@ -114,9 +112,9 @@ impl CertificateService {
         Ok(info.valid_after <= now && now < info.valid_before)
     }
 
-    /// Check whether a local TrustedUserCAKeys file exists and is readable.
+    /// Check whether a local `TrustedUserCAKeys` file exists and is readable.
     ///
-    /// `TrustedUserCAKeys` is an sshd_config directive that lists the public
+    /// `TrustedUserCAKeys` is an `sshd_config` directive that lists the public
     /// keys of CAs trusted to sign user certificates. This method reads the
     /// file and returns whether it exists, is readable, and how many CA keys
     /// it contains.
@@ -145,22 +143,18 @@ impl CertificateService {
                     key_count,
                 })
             }
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                Ok(TrustedUserCAKeysStatus {
-                    path: path.to_path_buf(),
-                    exists: false,
-                    readable: false,
-                    key_count: 0,
-                })
-            }
-            Err(_) => {
-                Ok(TrustedUserCAKeysStatus {
-                    path: path.to_path_buf(),
-                    exists: true,
-                    readable: false,
-                    key_count: 0,
-                })
-            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(TrustedUserCAKeysStatus {
+                path: path.to_path_buf(),
+                exists: false,
+                readable: false,
+                key_count: 0,
+            }),
+            Err(_) => Ok(TrustedUserCAKeysStatus {
+                path: path.to_path_buf(),
+                exists: true,
+                readable: false,
+                key_count: 0,
+            }),
         }
     }
 

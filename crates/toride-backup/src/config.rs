@@ -122,12 +122,8 @@ impl BackupConfig {
     /// Returns the first validation error encountered.
     pub fn validate(&self) -> Result<()> {
         for (name, spec) in &self.jobs {
-            spec.validate().map_err(|e| {
-                Error::ConfigParse(format!(
-                    "job {:?}: {e}",
-                    name,
-                ))
-            })?;
+            spec.validate()
+                .map_err(|e| Error::ConfigParse(format!("job {:?}: {e}", name,)))?;
         }
         Ok(())
     }
@@ -203,9 +199,7 @@ impl<'de> serde::Deserialize<'de> for BackupConfig {
                     match key {
                         Field::DefaultBackend => {
                             if default_backend.is_some() {
-                                return Err(serde::de::Error::duplicate_field(
-                                    "default_backend",
-                                ));
+                                return Err(serde::de::Error::duplicate_field("default_backend"));
                             }
                             let raw: String = map.next_value()?;
                             default_backend = Some(
@@ -224,17 +218,12 @@ impl<'de> serde::Deserialize<'de> for BackupConfig {
 
                 Ok(BackupConfig {
                     jobs: jobs.unwrap_or_default(),
-                    default_backend: default_backend
-                        .unwrap_or_else(crate::spec::Backend::default),
+                    default_backend: default_backend.unwrap_or_else(crate::spec::Backend::default),
                 })
             }
         }
 
         const FIELDS: &[&str] = &["default_backend", "jobs"];
-        deserializer.deserialize_struct(
-            "BackupConfig",
-            FIELDS,
-            BackupConfigVisitor,
-        )
+        deserializer.deserialize_struct("BackupConfig", FIELDS, BackupConfigVisitor)
     }
 }

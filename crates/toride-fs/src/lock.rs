@@ -37,9 +37,7 @@ where
         .create(true)
         .truncate(false)
         .open(path)
-        .map_err(|e| {
-            Error::LockFailed(format!("cannot open lock file {}: {e}", path.display()))
-        })?;
+        .map_err(|e| Error::LockFailed(format!("cannot open lock file {}: {e}", path.display())))?;
 
     let mut lock = fd_lock::RwLock::new(file);
     let _guard = lock.write().map_err(|e| {
@@ -72,9 +70,7 @@ where
         .create(true)
         .truncate(false)
         .open(path)
-        .map_err(|e| {
-            Error::LockFailed(format!("cannot open lock file {}: {e}", path.display()))
-        })?;
+        .map_err(|e| Error::LockFailed(format!("cannot open lock file {}: {e}", path.display())))?;
 
     let mut lock = fd_lock::RwLock::new(file);
     let _guard = lock.write().map_err(|e| {
@@ -115,10 +111,10 @@ mod tests {
 
     #[test]
     fn with_lock_propagates_closure_error() {
+        use crate::error::Error;
         let dir = TempDir::new().expect("temp dir creation should succeed");
         let lock_path = dir.path().join("error.lock");
 
-        use crate::error::Error;
         let result: Result<()> = with_lock(&lock_path, || {
             Err(Error::PathInvalid("test error".to_string()))
         });

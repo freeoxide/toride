@@ -110,6 +110,7 @@ pub fn detect() -> VirtProbe {
 /// Run the layered probe against `probe`. Public so tests can drive it with a
 /// fixture table (see `FixtureProbe` in the test module).
 #[must_use]
+#[allow(clippy::too_many_lines)]
 pub fn detect_with(probe: &dyn Probe) -> VirtProbe {
     // ── Layer 0: SYSTEMD_VIRTUALIZATION env (skip the fork if systemd set it)
     if let Some(raw) = probe.env("SYSTEMD_VIRTUALIZATION") {
@@ -168,8 +169,7 @@ pub fn detect_with(probe: &dyn Probe) -> VirtProbe {
     // disambiguator.
     let is_aws_metal = probe
         .read("/sys/class/dmi/id/product_name")
-        .map(|s| s.trim().to_ascii_lowercase().contains(".metal"))
-        .unwrap_or(false);
+        .is_some_and(|s| s.trim().to_ascii_lowercase().contains(".metal"));
     if !is_aws_metal {
         for key in &[
             "product_name",
@@ -192,13 +192,13 @@ pub fn detect_with(probe: &dyn Probe) -> VirtProbe {
                 };
             }
         }
-        if let Some(raw) = probe.read("/sys/hypervisor/type") {
-            if raw.trim().eq_ignore_ascii_case("xen") {
-                return VirtProbe {
-                    reduce_motion: true,
-                    label: Some("xen"),
-                };
-            }
+        if let Some(raw) = probe.read("/sys/hypervisor/type")
+            && raw.trim().eq_ignore_ascii_case("xen")
+        {
+            return VirtProbe {
+                reduce_motion: true,
+                label: Some("xen"),
+            };
         }
     }
 
@@ -357,8 +357,7 @@ mod tests {
     fn systemd_detect_virt_kvm_fires() {
         // The user's actual case: a real KVM VPS reports kvm via the binary.
         let mut p = FixtureProbe::new();
-        p.cmds
-            .insert("systemd-detect-virt --vm".to_string(), "kvm");
+        p.cmds.insert("systemd-detect-virt --vm".to_string(), "kvm");
         let r = detect_with(&p);
         assert!(r.reduce_motion);
         assert_eq!(r.label, Some("kvm"));
@@ -381,7 +380,8 @@ mod tests {
     fn systemd_detect_virt_absent_falls_through() {
         // Binary not on PATH (Alpine/musl) → cmd returns None → fall through.
         let mut p = FixtureProbe::new();
-        p.files.insert("/sys/class/dmi/id/product_name", "VirtualBox");
+        p.files
+            .insert("/sys/class/dmi/id/product_name", "VirtualBox");
         let r = detect_with(&p);
         assert!(r.reduce_motion);
     }
@@ -389,8 +389,7 @@ mod tests {
     #[test]
     fn systemd_env_vm_signal_skips_fork() {
         let mut p = FixtureProbe::new();
-        p.envs
-            .insert("SYSTEMD_VIRTUALIZATION", "vm:xen");
+        p.envs.insert("SYSTEMD_VIRTUALIZATION", "vm:xen");
         let r = detect_with(&p);
         assert!(r.reduce_motion);
         assert_eq!(r.label, Some("xen"));
@@ -399,8 +398,7 @@ mod tests {
     #[test]
     fn systemd_env_container_signal_fires() {
         let mut p = FixtureProbe::new();
-        p.envs
-            .insert("SYSTEMD_VIRTUALIZATION", "container:lxc");
+        p.envs.insert("SYSTEMD_VIRTUALIZATION", "container:lxc");
         let r = detect_with(&p);
         assert!(r.reduce_motion);
         assert_eq!(r.label, Some("container"));
@@ -418,8 +416,7 @@ mod tests {
     #[test]
     fn dmi_amazon_ec2_virtualized() {
         let mut p = FixtureProbe::new();
-        p.files
-            .insert("/sys/class/dmi/id/sys_vendor", "Amazon EC2");
+        p.files.insert("/sys/class/dmi/id/sys_vendor", "Amazon EC2");
         p.files
             .insert("/sys/class/dmi/id/product_name", "t3.medium");
         let r = detect_with(&p);
@@ -432,10 +429,8 @@ mod tests {
         // i3.metal shares EC2 vendor strings — the ".metal" guard must keep it
         // as bare metal so a powerful metal instance isn't wrongly frozen.
         let mut p = FixtureProbe::new();
-        p.files
-            .insert("/sys/class/dmi/id/sys_vendor", "Amazon EC2");
-        p.files
-            .insert("/sys/class/dmi/id/product_name", "i3.metal");
+        p.files.insert("/sys/class/dmi/id/sys_vendor", "Amazon EC2");
+        p.files.insert("/sys/class/dmi/id/product_name", "i3.metal");
         let r = detect_with(&p);
         assert!(!r.reduce_motion, "AWS .metal should be bare metal: {r:?}");
     }
@@ -494,7 +489,8 @@ mod tests {
     #[test]
     fn arm_device_tree_xen_fires() {
         let mut p = FixtureProbe::new();
-        p.files.insert("/proc/device-tree/hypervisor/compatible", "xen");
+        p.files
+            .insert("/proc/device-tree/hypervisor/compatible", "xen");
         let r = detect_with(&p);
         assert!(r.reduce_motion);
     }
@@ -515,8 +511,7 @@ mod tests {
     fn layer_precedence_env_wins_over_dmi() {
         // Layer 0 short-circuits; the DMI signal below is never consulted.
         let mut p = FixtureProbe::new();
-        p.envs
-            .insert("SYSTEMD_VIRTUALIZATION", "vm:qemu");
+        p.envs.insert("SYSTEMD_VIRTUALIZATION", "vm:qemu");
         p.files.insert("/sys/class/dmi/id/sys_vendor", "QEMU");
         let r = detect_with(&p);
         assert!(r.reduce_motion);

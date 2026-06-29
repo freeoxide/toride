@@ -49,7 +49,7 @@ impl AuthorizedKeyEntry {
     }
 }
 
-/// Parse an authorized_keys file at the given path.
+/// Parse an `authorized_keys` file at the given path.
 ///
 /// Blank lines and comment lines (starting with `#`) are skipped.
 /// Each valid key line is validated using `ssh_key::PublicKey::from_openssh`.
@@ -76,7 +76,6 @@ pub async fn parse_authorized_keys(path: &Path) -> Result<Vec<AuthorizedKeyEntry
 
 /// Synchronous implementation that parses already-read file contents.
 fn parse_authorized_keys_sync(contents: &str) -> Result<Vec<AuthorizedKeyEntry>> {
-
     let mut entries = Vec::new();
 
     for (line_idx, raw_line) in contents.lines().enumerate() {
@@ -96,7 +95,7 @@ fn parse_authorized_keys_sync(contents: &str) -> Result<Vec<AuthorizedKeyEntry>>
     Ok(entries)
 }
 
-/// Known SSH key type prefixes used in authorized_keys files.
+/// Known SSH key type prefixes used in `authorized_keys` files.
 const KEY_TYPE_PREFIXES: &[&str] = &[
     "ssh-rsa",
     "ssh-dss",
@@ -109,7 +108,7 @@ const KEY_TYPE_PREFIXES: &[&str] = &[
     "sk-ecdsa-sha2-nistp256@openssh.com",
 ];
 
-/// Parse a single non-empty, non-comment line from an authorized_keys file.
+/// Parse a single non-empty, non-comment line from an `authorized_keys` file.
 ///
 /// Format: `[options] key-type base64-key [comment]`
 ///
@@ -166,9 +165,7 @@ fn parse_line(raw_line: &str, line_number: usize, original: &str) -> Result<Auth
         )));
     }
 
-    let options = options_str
-        .map(super::options::parse_options)
-        .transpose()?;
+    let options = options_str.map(super::options::parse_options).transpose()?;
 
     Ok(AuthorizedKeyEntry {
         options,

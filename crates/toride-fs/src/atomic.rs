@@ -9,10 +9,12 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
-use tempfile::NamedTempFile;
 use tracing;
 
 use crate::error::{Error, Result};
+
+/// Default mode for atomically-written files: owner-only read/write.
+const ATOMIC_FILE_MODE: u32 = 0o600;
 
 /// Write a UTF-8 string to `path` atomically.
 ///
@@ -38,34 +40,41 @@ pub fn atomic_write(path: &Path, content: &str) -> Result<()> {
 /// Returns [`Error::AtomicWriteFailed`] if the temp file cannot be created,
 /// written to, or persisted (renamed) to the target path.
 pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> Result<()> {
-    let parent = path.parent().ok_or_else(|| Error::AtomicWriteFailed {
-        path: path.display().to_string(),
-        reason: "path has no parent directory".to_owned(),
-    })?;
-
-    let mut tmp = NamedTempFile::new_in(parent).map_err(|e| Error::AtomicWriteFailed {
-        path: path.display().to_string(),
-        reason: format!("failed to create temp file: {e}"),
-    })?;
-
-    tmp.write_all(content).map_err(|e| Error::AtomicWriteFailed {
-        path: path.display().to_string(),
-        reason: format!("failed to write temp file: {e}"),
-    })?;
-
-    tmp.flush().map_err(|e| Error::AtomicWriteFailed {
-        path: path.display().to_string(),
-        reason: format!("failed to flush temp file: {e}"),
-    })?;
-
-    tmp.persist(path).map_err(|e| Error::AtomicWriteFailed {
-        path: path.display().to_string(),
-        reason: format!("failed to persist temp file: {e}"),
-    })?;
-
+    atomic_write_bytes_with_mode(path, content, ATOMIC_FILE_MODE)?;
     tracing::debug!(path = %path.display(), "atomic write complete");
     Ok(())
 }
+
+/// Best-effort directory fsync used to make atomic renames durable.
+///
+/// Opens the directory read-only and calls `sync_all()` (which maps to
+/// `fsync(2)` on Unix). Any error is traced and swallowed: this is a
+/// durability enhancement, not a correctness requirement.
+#[cfg(unix)]
+fn fsync_dir_best_effort(dir: &Path) {
+    match fs::File::open(dir) {
+        Ok(handle) => {
+            if let Err(e) = handle.sync_all() {
+                tracing::trace!(
+                    dir = %dir.display(),
+                    error = %e,
+                    "best-effort directory fsync failed (non-fatal)",
+                );
+            }
+        }
+        Err(e) => {
+            tracing::trace!(
+                dir = %dir.display(),
+                error = %e,
+                "could not open parent dir for best-effort fsync (non-fatal)",
+            );
+        }
+    }
+}
+
+/// No-op on non-Unix targets where directory fsync is unavailable.
+#[cfg(not(unix))]
+fn fsync_dir_best_effort(_dir: &Path) {}
 
 /// Write a UTF-8 string to `path` atomically, then set file permissions.
 ///
@@ -77,13 +86,76 @@ pub fn atomic_write_bytes(path: &Path, content: &[u8]) -> Result<()> {
 /// Returns [`Error::AtomicWriteFailed`] if the write or persist fails.
 /// Returns [`Error::Io`] if the permission change fails.
 pub fn atomic_write_with_perms(path: &Path, content: &str, perms: u32) -> Result<()> {
-    atomic_write(path, content)?;
-    fs::set_permissions(path, fs::Permissions::from_mode(perms))?;
+    atomic_write_bytes_with_mode(path, content.as_bytes(), perms)?;
+
+    // Safety-net chmod after the rename. The temp file was already created
+    // with `perms`, so rename(2) preserves the mode and this should normally
+    // be a no-op. If it fails for any reason, roll back by removing the final
+    // file so we never leave a file with the wrong mode behind.
+    if let Err(e) = fs::set_permissions(path, fs::Permissions::from_mode(perms)) {
+        let _ = fs::remove_file(path);
+        return Err(Error::Io(e));
+    }
+
     tracing::debug!(
         path = %path.display(),
         mode = format!("{perms:o}"),
         "atomic write with permissions complete"
     );
+    Ok(())
+}
+
+/// Private core: write `content` atomically, creating the temp file with the
+/// explicit `mode` so the final inode lands with the correct permissions via
+/// rename(2) (which preserves mode), fsyncing for durability on both sides of
+/// the rename.
+///
+/// Shared by [`atomic_write_bytes`] (mode 0o600) and
+/// [`atomic_write_with_perms`] (caller-supplied mode).
+fn atomic_write_bytes_with_mode(path: &Path, content: &[u8], mode: u32) -> Result<()> {
+    let parent = path.parent().ok_or_else(|| Error::AtomicWriteFailed {
+        path: path.display().to_string(),
+        reason: "path has no parent directory".to_owned(),
+    })?;
+
+    // Create the temp file with the EXPLICIT requested mode up front so the
+    // final inode -- reachable the instant the rename completes -- already
+    // has the correct permissions, regardless of umask.
+    let mut tmp = tempfile::Builder::new()
+        .permissions(fs::Permissions::from_mode(mode))
+        .tempfile_in(parent)
+        .map_err(|e| Error::AtomicWriteFailed {
+            path: path.display().to_string(),
+            reason: format!("failed to create temp file: {e}"),
+        })?;
+
+    tmp.write_all(content)
+        .map_err(|e| Error::AtomicWriteFailed {
+            path: path.display().to_string(),
+            reason: format!("failed to write temp file: {e}"),
+        })?;
+
+    tmp.flush().map_err(|e| Error::AtomicWriteFailed {
+        path: path.display().to_string(),
+        reason: format!("failed to flush temp file: {e}"),
+    })?;
+
+    // DURABILITY: fsync the temp file before the rename lands.
+    tmp.as_file()
+        .sync_all()
+        .map_err(|e| Error::AtomicWriteFailed {
+            path: path.display().to_string(),
+            reason: format!("failed to fsync temp file: {e}"),
+        })?;
+
+    tmp.persist(path).map_err(|e| Error::AtomicWriteFailed {
+        path: path.display().to_string(),
+        reason: format!("failed to persist temp file: {e}"),
+    })?;
+
+    // Best-effort fsync of the parent directory to make the rename durable.
+    fsync_dir_best_effort(parent);
+
     Ok(())
 }
 
@@ -186,7 +258,8 @@ mod tests {
         let dir = TempDir::new().expect("temp dir creation should succeed");
         let path = dir.path().join("empty.dat");
 
-        atomic_write_bytes(&path, &[]).expect("atomic_write_bytes with empty content should succeed");
+        atomic_write_bytes(&path, &[])
+            .expect("atomic_write_bytes with empty content should succeed");
 
         let read_back = fs::read(&path).expect("file should be readable");
         assert!(read_back.is_empty());

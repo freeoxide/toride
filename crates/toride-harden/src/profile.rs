@@ -62,8 +62,8 @@ impl std::fmt::Display for HardeningProfile {
 /// Desktop profile parameters — balanced for daily workstation use.
 ///
 /// - ASLR enabled (level 2)
-/// - kptr_restrict enabled
-/// - dmesg_restrict enabled
+/// - `kptr_restrict` enabled
+/// - `dmesg_restrict` enabled
 /// - Protected hardlinks/symlinks/fifos/regular files
 /// - ICMP redirects disabled
 /// - Source routing disabled

@@ -1,4 +1,4 @@
-//! Async WireGuard data collection (LIVE READ-ONLY).
+//! Async `WireGuard` data collection (LIVE READ-ONLY).
 //!
 //! [`WireguardCollector`] manages background collection of all toride-wireguard
 //! subsystem data via a tokio oneshot channel, following the same pattern as
@@ -42,14 +42,12 @@
 use tokio::sync::oneshot;
 
 use crate::toride_wireguard_convert;
-use crate::ui::screens::toride_wireguard::{
-    FindingEntry, InterfaceEntry, PeerEntry, ServiceEntry,
-};
+use crate::ui::screens::toride_wireguard::{FindingEntry, InterfaceEntry, PeerEntry, ServiceEntry};
 
-/// Aggregated WireGuard data for the read-only section.
+/// Aggregated `WireGuard` data for the read-only section.
 #[derive(Clone, Debug)]
 pub struct WireguardDataBundle {
-    /// Whether the WireGuard backend was reachable at all. `false` when
+    /// Whether the `WireGuard` backend was reachable at all. `false` when
     /// construction failed entirely or every probe returned no data — the UI
     /// renders a degraded "unavailable" panel.
     pub available: bool,
@@ -77,7 +75,7 @@ pub struct WireguardDataBundle {
 
 // ── Collector ───────────────────────────────────────────────────────────────
 
-/// Manages periodic async collection of WireGuard data.
+/// Manages periodic async collection of `WireGuard` data.
 ///
 /// Mirrors [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector): a
 /// oneshot channel for the in-flight result, plus a 60s TTL cache for the
@@ -96,6 +94,10 @@ pub struct WireguardCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
+#[expect(
+    clippy::duration_suboptimal_units,
+    reason = "stable std lacks from_mins"
+)]
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl WireguardCollector {
@@ -119,6 +121,7 @@ impl WireguardCollector {
     /// If a collection is already in-flight, this is a no-op. The 60s findings
     /// cache is consulted: when fresh, the spawned task reuses the cached
     /// findings instead of re-running the doctor suite.
+    #[allow(clippy::similar_names)]
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
@@ -127,10 +130,14 @@ impl WireguardCollector {
         let use_cache = self.cached_findings.is_some()
             && self
                 .findings_fresh_at
-                .map_or(false, |t| t.elapsed() < FINDINGS_TTL);
+                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
+            #[allow(
+                clippy::similar_names,
+                reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
+            )]
             let (bundle, used_cache) = collect_real_wireguard(use_cache, cached_findings).await;
             let _ = tx.send((bundle, used_cache));
         });
@@ -182,7 +189,7 @@ impl Default for WireguardCollector {
 
 // ── Real data collection ────────────────────────────────────────────────────
 
-/// Collect WireGuard data by shelling out to the real binaries.
+/// Collect `WireGuard` data by shelling out to the real binaries.
 ///
 /// All work runs on the blocking thread pool (`wg` shells out synchronously,
 /// config files are read synchronously). Doctor findings may be reused from the
@@ -223,9 +230,7 @@ async fn collect_real_wireguard(
         Err(e) => {
             tracing::warn!("wireguard construction task panicked: {e}");
             return (
-                empty_bundle_with_reason(format!(
-                    "wireguard backend construction panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("wireguard backend construction panicked: {e}")),
                 false,
             );
         }
@@ -257,9 +262,7 @@ async fn collect_real_wireguard(
             match toride_wireguard::doctor::Doctor::new()
                 .run(&toride_wireguard::doctor::DoctorScope::All)
             {
-                Ok(report) => {
-                    toride_wireguard_convert::convert_findings(report.findings)
-                }
+                Ok(report) => toride_wireguard_convert::convert_findings(report.findings),
                 Err(e) => {
                     tracing::warn!("wireguard doctor: {e}");
                     Vec::new()
@@ -360,9 +363,7 @@ async fn collect_real_wireguard(
         Err(e) => {
             tracing::warn!("wireguard collection task panicked: {e}");
             (
-                empty_bundle_with_reason(format!(
-                    "wireguard data collection panicked: {e}"
-                )),
+                empty_bundle_with_reason(format!("wireguard data collection panicked: {e}")),
                 false,
             )
         }
@@ -373,7 +374,7 @@ async fn collect_real_wireguard(
 ///
 /// `available = false` signals the UI to render the degraded panel. No reason
 /// is attached because none is known at this point; collection-time panics use
-/// [`empty_bundle_with_reason`] to surface the JoinError.
+/// [`empty_bundle_with_reason`] to surface the `JoinError`.
 fn empty_bundle() -> WireguardDataBundle {
     WireguardDataBundle {
         available: false,
@@ -389,7 +390,7 @@ fn empty_bundle() -> WireguardDataBundle {
 }
 
 /// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (JoinError) during construction or
+/// `spawn_blocking` task panicked (`JoinError`) during construction or
 /// collection — `WireguardClient::new()` is lazy and effectively infallible,
 /// so in practice this is reached only on a panic, not on a missing `wg`
 /// binary (which surfaces as a doctor finding / collection error instead).
@@ -461,7 +462,7 @@ mod tests {
         // `available` flag reflects whether wg was found.
         let mut collector = WireguardCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
         assert!(bundle.is_some(), "poll should return Some after completion");
     }
@@ -494,7 +495,7 @@ mod tests {
     async fn findings_cache_is_populated_after_poll() {
         let mut collector = WireguardCollector::new();
         collector.start();
-        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+        tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
         // After a successful poll the cache is populated (even if to an empty
         // Vec on a host where the doctor produced no findings).
@@ -514,8 +515,7 @@ mod tests {
         // Simulate a cache-hit poll: findings are taken from the cache
         // (`use_cache == true`, cached_findings supplied) but the cheap probes
         // must still run and be `Some`.
-        let (bundle, used_cache) =
-            collect_real_wireguard(true, Some(Vec::new())).await;
+        let (bundle, used_cache) = collect_real_wireguard(true, Some(Vec::new())).await;
         assert!(used_cache, "cache-hit poll must report used_cache == true");
         // The probes are re-run regardless of the cache; they are real
         // which::which / is_dir results so they are always Some(_).

@@ -31,41 +31,44 @@
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
-#![expect(clippy::must_use_candidate, reason = "constructors and getters are obvious")]
+#![expect(
+    clippy::must_use_candidate,
+    reason = "constructors and getters are obvious"
+)]
 #![expect(clippy::missing_errors_doc, reason = "library is internal")]
 
 // ---------------------------------------------------------------------------
 // Module declarations -- always compiled
 // ---------------------------------------------------------------------------
 
-/// Error types for the crate.
-pub mod error;
-/// System paths for user configuration files.
-pub mod paths;
-/// Typed specification for user accounts.
-pub mod spec;
-/// Diagnostic report types.
-pub mod report;
-/// Parsing `/etc/passwd`, `/etc/group`, and `/etc/sudoers`.
-pub mod parse;
-/// Rendering sudoers entries and PAM configuration.
-pub mod render;
-/// Validation for usernames, shells, and specs.
-pub mod validate;
 /// Configuration file backup and restore.
 pub mod backup;
-/// User account management (`useradd`, `usermod`, `userdel`).
-pub mod user;
+/// Error types for the crate.
+pub mod error;
 /// Group management (`groupadd`, `groupdel`, etc.).
 pub mod group;
-/// Sudoers configuration management.
-pub mod sudo;
 /// PAM (Pluggable Authentication Modules) configuration.
 pub mod pam;
-/// TOTP/2FA enrollment via `google-authenticator`.
-pub mod totp;
+/// Parsing `/etc/passwd`, `/etc/group`, and `/etc/sudoers`.
+pub mod parse;
 /// Password policy enforcement (`chage`, `passwd`).
 pub mod password;
+/// System paths for user configuration files.
+pub mod paths;
+/// Rendering sudoers entries and PAM configuration.
+pub mod render;
+/// Diagnostic report types.
+pub mod report;
+/// Typed specification for user accounts.
+pub mod spec;
+/// Sudoers configuration management.
+pub mod sudo;
+/// TOTP/2FA enrollment via `google-authenticator`.
+pub mod totp;
+/// User account management (`useradd`, `usermod`, `userdel`).
+pub mod user;
+/// Validation for usernames, shells, and specs.
+pub mod validate;
 
 // ---------------------------------------------------------------------------
 // Module declarations -- feature-gated

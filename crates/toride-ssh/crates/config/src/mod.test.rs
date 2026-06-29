@@ -36,7 +36,11 @@ Host bastion
         .filter(|d| d.id == "config_proxy_conflict")
         .collect();
 
-    assert_eq!(conflicts.len(), 1, "expected exactly one proxy conflict diagnostic");
+    assert_eq!(
+        conflicts.len(),
+        1,
+        "expected exactly one proxy conflict diagnostic"
+    );
     assert_eq!(conflicts[0].severity, Severity::Warning);
     assert!(conflicts[0].message.contains("bastion"));
     assert!(conflicts[0].hint.is_some());
@@ -62,7 +66,11 @@ Host web
         .filter(|d| d.id == "config_duplicate_alias")
         .collect();
 
-    assert_eq!(dupes.len(), 1, "expected exactly one duplicate alias diagnostic");
+    assert_eq!(
+        dupes.len(),
+        1,
+        "expected exactly one duplicate alias diagnostic"
+    );
     assert_eq!(dupes[0].severity, Severity::Warning);
     assert!(dupes[0].message.contains("'web'"));
 
@@ -200,7 +208,10 @@ async fn diagnose_empty_config_returns_empty() {
     let (dir, svc) = setup_config("");
 
     let diags = svc.diagnose().await.unwrap();
-    assert!(diags.is_empty(), "empty config should produce no diagnostics");
+    assert!(
+        diags.is_empty(),
+        "empty config should produce no diagnostics"
+    );
 
     drop(dir);
 }

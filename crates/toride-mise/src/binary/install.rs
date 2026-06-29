@@ -79,7 +79,10 @@ fn platform_asset_keyword() -> Option<String> {
 ///
 /// - [`MiseError::BootstrapHint`] when `method` is [`BootstrapMethod::HintOnly`].
 /// - [`MiseError::BootstrapFailed`] when the chosen method cannot complete.
-pub async fn install_mise(method: BootstrapMethod, opts: BootstrapOptions) -> MiseResult<Utf8PathBuf> {
+pub async fn install_mise(
+    method: BootstrapMethod,
+    opts: BootstrapOptions,
+) -> MiseResult<Utf8PathBuf> {
     match method {
         BootstrapMethod::GithubRelease => install_from_github(&opts).await,
         BootstrapMethod::HintOnly => Err(MiseError::BootstrapHint {
@@ -140,19 +143,25 @@ mod github {
             });
         }
 
-        let release: serde_json::Value = resp.json().await.map_err(|e| MiseError::BootstrapFailed {
-            reason: format!("failed to parse GitHub release JSON: {e}"),
-        })?;
+        let release: serde_json::Value =
+            resp.json().await.map_err(|e| MiseError::BootstrapFailed {
+                reason: format!("failed to parse GitHub release JSON: {e}"),
+            })?;
 
-        let tag = release["tag_name"].as_str().unwrap_or("unknown").to_string();
+        let tag = release["tag_name"]
+            .as_str()
+            .unwrap_or("unknown")
+            .to_string();
 
         let keyword = platform_asset_keyword().ok_or_else(|| MiseError::BootstrapFailed {
             reason: "unsupported platform for GitHub release download".into(),
         })?;
 
-        let assets = release["assets"].as_array().ok_or_else(|| MiseError::BootstrapFailed {
-            reason: "no assets found in GitHub release".into(),
-        })?;
+        let assets = release["assets"]
+            .as_array()
+            .ok_or_else(|| MiseError::BootstrapFailed {
+                reason: "no assets found in GitHub release".into(),
+            })?;
 
         let asset = assets
             .iter()
@@ -197,12 +206,9 @@ mod github {
             });
         }
 
-        let bytes = resp
-            .bytes()
-            .await
-            .map_err(|e| MiseError::BootstrapFailed {
-                reason: format!("failed to read download body: {e}"),
-            })?;
+        let bytes = resp.bytes().await.map_err(|e| MiseError::BootstrapFailed {
+            reason: format!("failed to read download body: {e}"),
+        })?;
 
         // Ensure the target directory exists.
         fs_err::create_dir_all(target_dir).map_err(|e| MiseError::BootstrapFailed {
@@ -225,25 +231,23 @@ mod github {
                 reason: format!("failed to read entry path: {e}"),
             })?;
 
-            let file_name = path
-                .file_name()
-                .unwrap_or_default()
-                .to_string_lossy();
+            let file_name = path.file_name().unwrap_or_default().to_string_lossy();
 
             if file_name == "mise" {
                 let dest = target_dir.join("mise");
-                entry.unpack(&dest).map_err(|e| MiseError::BootstrapFailed {
-                    reason: format!("failed to extract mise binary: {e}"),
-                })?;
+                entry
+                    .unpack(&dest)
+                    .map_err(|e| MiseError::BootstrapFailed {
+                        reason: format!("failed to extract mise binary: {e}"),
+                    })?;
                 found_path = Some(dest);
                 break;
             }
         }
 
-        let bin_path =
-            found_path.ok_or_else(|| MiseError::BootstrapFailed {
-                reason: "archive did not contain a 'mise' binary".into(),
-            })?;
+        let bin_path = found_path.ok_or_else(|| MiseError::BootstrapFailed {
+            reason: "archive did not contain a 'mise' binary".into(),
+        })?;
 
         // Set executable permissions on unix.
         #[cfg(unix)]
@@ -262,8 +266,7 @@ mod github {
     pub async fn install_from_github(opts: &BootstrapOptions) -> MiseResult<Utf8PathBuf> {
         let client = reqwest::Client::new();
 
-        let (download_url, tag) =
-            fetch_release_info(&client, opts.version.as_deref()).await?;
+        let (download_url, tag) = fetch_release_info(&client, opts.version.as_deref()).await?;
 
         let target_dir = match &opts.target_dir {
             Some(d) => d.clone(),
@@ -286,6 +289,10 @@ mod github {
 use github::install_from_github;
 
 #[cfg(not(feature = "bootstrap"))]
+#[expect(
+    clippy::unused_async,
+    reason = "kept async to match the bootstrap-enabled variant's signature at shared `.await` call sites"
+)]
 async fn install_from_github(_opts: &BootstrapOptions) -> MiseResult<Utf8PathBuf> {
     Err(MiseError::BootstrapFailed {
         reason: "GitHub release download requires the 'bootstrap' feature. \

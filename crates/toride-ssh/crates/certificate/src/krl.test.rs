@@ -32,7 +32,11 @@ fn parse_serials_huge_range_capped() {
     let mut out = Vec::new();
     parse_serials("0-999999999", &mut out);
     // Should be capped at MAX_SERIAL_RANGE_EXPANSION (10000)
-    assert!(out.len() <= 10_000, "serial range should be capped, got {}", out.len());
+    assert!(
+        out.len() <= 10_000,
+        "serial range should be capped, got {}",
+        out.len()
+    );
 }
 
 #[test]

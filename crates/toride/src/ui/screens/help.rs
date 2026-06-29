@@ -17,7 +17,14 @@ use crate::ui::theme::Palette;
 /// screen when `App::help_visible` is `true`.
 pub struct HelpScreen;
 
+impl Default for HelpScreen {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl HelpScreen {
+    /// Construct a new help screen renderer.
     #[must_use]
     pub fn new() -> Self {
         Self
@@ -26,7 +33,7 @@ impl HelpScreen {
     /// Handle a key press while the help modal is open.
     pub fn handle_key(code: KeyCode) -> Option<Action> {
         match code {
-            KeyCode::Char('b') | KeyCode::Esc | KeyCode::Char('?') => Some(Action::CloseHelp),
+            KeyCode::Char('b' | '?') | KeyCode::Esc => Some(Action::CloseHelp),
             KeyCode::Char('q') => Some(Action::Quit),
             _ => None,
         }
@@ -35,17 +42,24 @@ impl HelpScreen {
     /// Render help content into the given area (inside the modal border).
     pub fn render(frame: &mut Frame, content_area: Rect, p: Palette, viewport: Viewport) {
         // Vertical layout within content area
-        let [_top, title_area, _g1, bindings_area, _g2, keys_area, _bottom] =
-            Layout::vertical([
-                Constraint::Fill(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(7),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Fill(1),
-            ])
-            .areas(content_area);
+        let [
+            _top,
+            title_area,
+            _g1,
+            bindings_area,
+            _g2,
+            keys_area,
+            _bottom,
+        ] = Layout::vertical([
+            Constraint::Fill(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(7),
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(content_area);
 
         // ── Title ───────────────────────────────────────────────────────
         frame.render_widget(
@@ -115,22 +129,34 @@ mod tests {
 
     #[test]
     fn handle_key_close_help_on_b() {
-        assert_eq!(HelpScreen::handle_key(KeyCode::Char('b')), Some(Action::CloseHelp));
+        assert_eq!(
+            HelpScreen::handle_key(KeyCode::Char('b')),
+            Some(Action::CloseHelp)
+        );
     }
 
     #[test]
     fn handle_key_close_help_on_esc() {
-        assert_eq!(HelpScreen::handle_key(KeyCode::Esc), Some(Action::CloseHelp));
+        assert_eq!(
+            HelpScreen::handle_key(KeyCode::Esc),
+            Some(Action::CloseHelp)
+        );
     }
 
     #[test]
     fn handle_key_close_help_on_question_mark() {
-        assert_eq!(HelpScreen::handle_key(KeyCode::Char('?')), Some(Action::CloseHelp));
+        assert_eq!(
+            HelpScreen::handle_key(KeyCode::Char('?')),
+            Some(Action::CloseHelp)
+        );
     }
 
     #[test]
     fn handle_key_quit_on_q() {
-        assert_eq!(HelpScreen::handle_key(KeyCode::Char('q')), Some(Action::Quit));
+        assert_eq!(
+            HelpScreen::handle_key(KeyCode::Char('q')),
+            Some(Action::Quit)
+        );
     }
 
     #[test]

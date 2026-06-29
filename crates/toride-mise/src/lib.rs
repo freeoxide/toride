@@ -57,20 +57,15 @@ pub mod tool;
 // Re-exports
 // ---------------------------------------------------------------------------
 
-pub use client::{Mise, MiseBuilder, MiseMode, MiseProject, LoadPolicy, RuntimeManager};
+pub use binary::{BootstrapMethod, BootstrapOptions, MiseBinary, MiseVersion};
 pub use capabilities::MiseCapabilities;
-pub use error::{MiseError, MiseResult, ToolInstallError};
+pub use client::{LoadPolicy, Mise, MiseBuilder, MiseMode, MiseProject, RuntimeManager};
 pub use diagnostics::DiagnosticsBuilder;
+pub use error::{MiseError, MiseResult, ToolInstallError};
 pub use security::SecurityPolicy;
 pub use tool::{
-    ToolSpec, VersionRequest, ToolOptionValue, ToolAlias, TaskInfo, TaskRunRequest,
-    InstallRequest, UseRequest, UseScope,
-    UninstallRequest, UnuseRequest,
-    OutdatedTool, UpgradeRequest,
-    PrunePlan, PruneRequest,
-    ListRemoteRequest, RemoteVersion,
-    ListToolsRequest, ToolStatus,
-    ActiveTool, ListActiveRequest,
-    PluginInfo, PluginInstallRequest,
+    ActiveTool, InstallRequest, ListActiveRequest, ListRemoteRequest, ListToolsRequest,
+    OutdatedTool, PluginInfo, PluginInstallRequest, PrunePlan, PruneRequest, RemoteVersion,
+    TaskInfo, TaskRunRequest, ToolAlias, ToolOptionValue, ToolSpec, ToolStatus, UninstallRequest,
+    UnuseRequest, UpgradeRequest, UseRequest, UseScope, VersionRequest,
 };
-pub use binary::{MiseBinary, MiseVersion, BootstrapMethod, BootstrapOptions};

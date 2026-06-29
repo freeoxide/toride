@@ -88,7 +88,9 @@ impl UfwPaths {
             &self.app_profiles_dir,
         ];
 
-        managed.iter().any(|m| path == m.as_path() || path.starts_with(m))
+        managed
+            .iter()
+            .any(|m| path == m.as_path() || path.starts_with(m))
     }
 
     /// Get the app profile path for a given namespace and name.
