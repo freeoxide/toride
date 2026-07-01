@@ -6,6 +6,62 @@
 
 use std::path::{Path, PathBuf};
 
+use crate::{Error, Result};
+
+// ---------------------------------------------------------------------------
+// Safe-name validation for path components built from `&str`
+// ---------------------------------------------------------------------------
+
+/// Validate that `name` is safe to interpolate as a single path component
+/// (e.g. a PAM service name or a sudoers drop-in filename).
+///
+/// Rejects everything that could escape the intended directory or be parsed
+/// as a flag by a downstream tool:
+///
+/// - empty strings
+/// - any path separator (`/`, `\`)
+/// - parent-directory traversal (`..`)
+/// - NUL bytes
+/// - a leading `-` (option injection for argv consumers)
+///
+/// This is a denylist guard, not an allowlist; callers that need stricter
+/// semantics (e.g. POSIX username characters) should layer their own check on
+/// top.
+///
+/// # Errors
+///
+/// Returns [`Error::Validation`] when `name` is not a safe single path
+/// component.
+pub fn validate_path_component(name: &str) -> Result<()> {
+    if name.is_empty() {
+        return Err(Error::Validation("path component must not be empty".into()));
+    }
+    if name.contains('/') || name.contains('\\') {
+        return Err(Error::Validation(format!(
+            "path component must not contain a path separator: {name:?}"
+        )));
+    }
+    if name == ".." {
+        // A bare `..` component would escape the parent directory. (A name
+        // like `..foo` or `foo..bar` is not a traversal and is allowed; the
+        // separator check above already rejects embedded `..`/`/` fragments.)
+        return Err(Error::Validation(format!(
+            "path component must not be a parent-directory reference: {name:?}"
+        )));
+    }
+    if name.contains('\0') {
+        return Err(Error::Validation(format!(
+            "path component must not contain a NUL byte: {name:?}"
+        )));
+    }
+    if name.starts_with('-') {
+        return Err(Error::Validation(format!(
+            "path component must not start with a dash (option injection): {name:?}"
+        )));
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // UserPaths
 // ---------------------------------------------------------------------------
@@ -92,15 +148,29 @@ impl UserPaths {
     }
 
     /// Returns the path for a sudoers drop-in file under `/etc/sudoers.d/`.
-    #[must_use]
-    pub fn sudoers_dropin(&self, name: &str) -> PathBuf {
-        self.sudoers_d.join(name)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Validation`] if `name` is not a safe single path
+    /// component (see [`validate_path_component`]). This prevents a caller
+    /// from joining `../`-traversal, absolute paths, NUL bytes, or leading
+    /// dashes onto `/etc/sudoers.d/`.
+    pub fn sudoers_dropin(&self, name: &str) -> Result<PathBuf> {
+        validate_path_component(name)?;
+        Ok(self.sudoers_d.join(name))
     }
 
     /// Returns the path for a PAM service config under `/etc/pam.d/`.
-    #[must_use]
-    pub fn pam_service(&self, service: &str) -> PathBuf {
-        self.pam_d.join(service)
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Validation`] if `service` is not a safe single path
+    /// component (see [`validate_path_component`]). This prevents a caller
+    /// from joining `../`-traversal, absolute paths, NUL bytes, or leading
+    /// dashes onto `/etc/pam.d/`.
+    pub fn pam_service(&self, service: &str) -> Result<PathBuf> {
+        validate_path_component(service)?;
+        Ok(self.pam_d.join(service))
     }
 
     /// Verify that the critical configuration files exist.
@@ -120,5 +190,99 @@ impl UserPaths {
 impl Default for UserPaths {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pam_service_joins_safe_name() {
+        let p = UserPaths::new();
+        assert_eq!(
+            p.pam_service("sshd").unwrap(),
+            PathBuf::from("/etc/pam.d/sshd")
+        );
+    }
+
+    #[test]
+    fn sudoers_dropin_joins_safe_name() {
+        let p = UserPaths::new();
+        assert_eq!(
+            p.sudoers_dropin("alice").unwrap(),
+            PathBuf::from("/etc/sudoers.d/alice")
+        );
+    }
+
+    #[test]
+    fn validate_rejects_empty() {
+        assert!(matches!(
+            validate_path_component(""),
+            Err(Error::Validation(_))
+        ));
+    }
+
+    #[test]
+    fn validate_rejects_unix_separator_traversal() {
+        // A leading `/` makes an absolute path that escapes /etc/pam.d.
+        assert!(validate_path_component("/etc/shadow").is_err());
+        // An embedded `/` also escapes.
+        assert!(validate_path_component("../shadow").is_err());
+        assert!(validate_path_component("a/b").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_windows_separator() {
+        assert!(validate_path_component("..\\shadow").is_err());
+        assert!(validate_path_component("a\\b").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_parent_dir_token() {
+        assert!(validate_path_component("..").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_nul_byte() {
+        assert!(validate_path_component("ssh\0d").is_err());
+        assert!(validate_path_component("\0").is_err());
+    }
+
+    #[test]
+    fn validate_rejects_leading_dash() {
+        // A leading dash is parsed as an option by argv consumers (chown,
+        // useradd, ...). Reject it.
+        assert!(validate_path_component("-x").is_err());
+        assert!(validate_path_component("--help").is_err());
+    }
+
+    #[test]
+    fn validate_accepts_unsafe_looking_but_safe_names() {
+        // `..foo` and `foo..bar` are NOT traversal: they contain no separator
+        // and are not the bare `..` component.
+        assert!(validate_path_component("..foo").is_ok());
+        assert!(validate_path_component("foo..bar").is_ok());
+        assert!(validate_path_component("sshd").is_ok());
+        assert!(validate_path_component("alice.bob").is_ok());
+        assert!(validate_path_component("a_b-1").is_ok());
+    }
+
+    #[test]
+    fn pam_service_rejects_traversal() {
+        let p = UserPaths::new();
+        // The joined path must NOT escape /etc/pam.d.
+        let bad = p.pam_service("../shadow");
+        assert!(bad.is_err());
+        // And the rejection must be Validation, not a silent escape.
+        assert!(matches!(bad, Err(Error::Validation(_))));
+    }
+
+    #[test]
+    fn sudoers_dropin_rejects_traversal() {
+        let p = UserPaths::new();
+        let bad = p.sudoers_dropin("../sudoers");
+        assert!(bad.is_err());
+        assert!(matches!(bad, Err(Error::Validation(_))));
     }
 }

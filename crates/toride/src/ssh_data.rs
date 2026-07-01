@@ -902,6 +902,45 @@ fn passwd_username_for_uid(uid: u32) -> Option<String> {
 /// whether the optimistic UI update is known-stale and should be reverted
 /// immediately. Both outcomes are also logged via tracing.
 ///
+/// Build the `ssh-keygen` argv used to derive the public key from a private
+/// key (the operation behind passphrase verification).
+///
+/// Deliberately OMITS `-P <passphrase>`: the secret is fed to the child via a
+/// temporary `SSH_ASKPASS` helper (see [`check_key_passphrase`]) so it never
+/// reaches the child argv or `/proc/<pid>/cmdline`, where it would be readable
+/// by every local user for the whole lifetime of the subprocess.
+fn keygen_read_public_argv(key_path: &str) -> Vec<String> {
+    vec!["-y".to_owned(), "-f".to_owned(), key_path.to_owned()]
+}
+
+/// Verify a private-key passphrase WITHOUT leaking it onto the argv.
+///
+/// Spawns `ssh-keygen -y -f <key>` (no `-P`!) and answers the passphrase prompt
+/// via a temporary `SSH_ASKPASS` script (created mode `0o700`, removed on drop),
+/// so the secret is visible only in this task's memory — never in `ps`,
+/// `/proc/<pid>/cmdline`, a child env var, or on disk after the call returns.
+///
+/// Returns `Ok(true)` if the key decrypts with `passphrase` (or is not
+/// passphrase-protected at all), `Ok(false)` if the passphrase is wrong.
+fn check_key_passphrase(key_path: &Path, passphrase: &str) -> std::io::Result<bool> {
+    let askpass = toride_ssh::agent::AskpassHandler::new(passphrase)
+        .map_err(|e| std::io::Error::other(format!("askpass setup failed: {e}")))?;
+    let argv = keygen_read_public_argv(&key_path.to_string_lossy());
+    let status = std::process::Command::new("ssh-keygen")
+        .args(&argv)
+        .env("SSH_ASKPASS", askpass.script_path())
+        .env("SSH_ASKPASS_REQUIRE", "force")
+        .env("DISPLAY", ":0")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()?;
+    // `askpass` is dropped here -> the on-disk script is removed.
+    Ok(status.success())
+}
+
+/// Dispatch a UI SSH action to the backend.
+///
 /// # Errors
 ///
 /// Returns `Err(SshOpError)` when the backend reports a write/validation
@@ -1356,19 +1395,21 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 }
             };
             let key_path = ssh_dir.join(&name);
-            let key_path_str = key_path.to_string_lossy().into_owned();
-            let output = tokio::task::spawn_blocking(move || {
-                std::process::Command::new("ssh-keygen")
-                    .args(["-y", "-f", &key_path_str, "-P", &passphrase])
-                    .output()
-            })
-            .await;
-            match output {
-                Ok(Ok(o)) if o.status.success() => {
+            // SECURITY: the passphrase is fed to ssh-keygen through a temporary
+            // SSH_ASKPASS helper, NOT as `-P <passphrase>` on the argv — see
+            // [`check_key_passphrase`]. This keeps the secret out of
+            // `ps`/`/proc/<pid>/cmdline` for the whole subprocess lifetime.
+            let pw = passphrase;
+            let path_for_task = key_path.clone();
+            let result =
+                tokio::task::spawn_blocking(move || check_key_passphrase(&path_for_task, &pw))
+                    .await;
+            match result {
+                Ok(Ok(true)) => {
                     tracing::info!("keys: passphrase correct for '{name}'");
                     Ok(format!("passphrase correct for '{name}'"))
                 }
-                Ok(Ok(_)) => {
+                Ok(Ok(false)) => {
                     let msg = format!("wrong passphrase for '{name}'");
                     tracing::warn!("keys: {msg}");
                     Err(SshOpError::transient(msg))
@@ -3166,6 +3207,70 @@ mod mock {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An encrypted ed25519 key (passphrase `"toride-test-passphrase"`) generated
+    /// once via `ssh-keygen` and embedded so the test is hermetic — no network.
+    /// Only ever used as a throwaway fixture.
+    const ENCRYPTED_ED25519_PEM: &str = r"-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABCCl+BJeR
+6fh9cjkIDA+Xy9AAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAILgUYeqGhLirfiaY
+jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
+5eyX2qFxQoysBDn8fRRsmqT+9RevfJU+dtl9D31ObAi0ZNMvkFzddgriQLxhb5MJopDN48
+7gYRaguTorV6QQxtv2e/TUluUVUHxMZPe1c3De0Tslxhs1LNvsNWDFNLPw3QAZ5wPYUXEc
+7jKXjoSvb0HXE1ZA==
+-----END OPENSSH PRIVATE KEY-----
+";
+
+    /// The `ssh-keygen` argv for passphrase verification must derive the public
+    /// key ONLY — never `-P`/`-N` with the secret. This is the structural
+    /// guarantee that the passphrase cannot leak via argv/proc.
+    #[test]
+    fn keygen_read_public_argv_omits_passphrase_flag() {
+        let argv = keygen_read_public_argv("/home/u/.ssh/id_ed25519");
+        assert_eq!(argv.len(), 3, "expected [-y, -f, <key>]: {argv:?}");
+        assert_eq!(argv[0], "-y");
+        assert_eq!(argv[1], "-f");
+        assert_eq!(argv[2], "/home/u/.ssh/id_ed25519");
+        assert!(
+            !argv.iter().any(|a| a == "-P" || a == "-N"),
+            "passphrase must never appear on the ssh-keygen argv: {argv:?}"
+        );
+    }
+
+    /// End-to-end: `check_key_passphrase` feeds the secret via `SSH_ASKPASS`
+    /// (never `-P`), so the embedded encrypted fixture decrypts with the right
+    /// passphrase and is rejected with the wrong one. Requires `ssh-keygen` on
+    /// PATH, as the existing `toride-ssh-key` integration tests do.
+    #[test]
+    fn check_key_passphrase_uses_askpass_not_argv() {
+        let probe = std::process::Command::new("ssh-keygen")
+            .arg("--help")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status();
+        if probe.is_err() {
+            eprintln!("ssh-keygen not on PATH; skipping askpass integration test");
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let key = dir.path().join("enc_ed25519");
+        std::fs::write(&key, ENCRYPTED_ED25519_PEM).expect("write fixture");
+        // ssh-keygen refuses world/group-readable private keys.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key, std::fs::Permissions::from_mode(0o600))
+                .expect("chmod 0600");
+        }
+        assert!(
+            check_key_passphrase(&key, "toride-test-passphrase").unwrap(),
+            "correct passphrase should verify"
+        );
+        assert!(
+            !check_key_passphrase(&key, "definitely-wrong").unwrap(),
+            "wrong passphrase should be rejected"
+        );
+    }
 
     /// Numeric score for a [`SecurityGrade`] so tests can assert ordering
     /// (worse grade => lower score) without reaching into the enum's repr.

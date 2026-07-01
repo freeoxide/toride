@@ -191,3 +191,109 @@ fn fake_runner_should_handle_large_stdout() {
     let result = runner.run(&spec).unwrap();
     assert_eq!(result.stdout.len(), 1_000_000);
 }
+
+// ---------------------------------------------------------------------------
+// redact_args — secret masking for command-log output
+// ---------------------------------------------------------------------------
+
+fn redact(args: &[&str]) -> String {
+    redact_args(&args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>())
+}
+
+#[test]
+fn redact_args_should_mask_trailing_value() {
+    // --password <value> (space separator): the next arg is the secret.
+    let out = redact(&["--password", "s3cr3t"]);
+    assert!(out.contains("***"), "expected a redacted marker, got {out:?}");
+    assert!(!out.contains("s3cr3t"), "secret value leaked into output: {out:?}");
+}
+
+#[test]
+fn redact_args_should_mask_inline_equal_value() {
+    // --api-key=value (inline `=`): the value half is redacted.
+    let out = redact(&["--api-key=abc123"]);
+    assert!(out.contains("--api-key=***"), "expected --api-key=***, got {out:?}");
+    assert!(!out.contains("abc123"), "secret value leaked into output: {out:?}");
+}
+
+#[test]
+fn redact_args_should_mask_password_inline_equal() {
+    let out = redact(&["--password=hunter2"]);
+    assert!(out.contains("--password=***"), "got {out:?}");
+    assert!(!out.contains("hunter2"), "got {out:?}");
+}
+
+#[test]
+fn redact_args_should_be_case_insensitive() {
+    // Uppercase/mixed-case flag forms are also masked.
+    let out = redact(&["--PASSWORD", "hunter2"]);
+    assert!(out.contains("***"), "got {out:?}");
+    assert!(!out.contains("hunter2"), "got {out:?}");
+
+    let out_eq = redact(&["--Token=xyz"]);
+    assert!(out_eq.contains("--Token=***"), "got {out_eq:?}");
+    assert!(!out_eq.contains("xyz"), "got {out_eq:?}");
+}
+
+#[test]
+fn redact_args_should_pass_through_non_sensitive_flags() {
+    // A plain flag with a non-sensitive following arg is left intact.
+    let out = redact(&["--verbose", "--host", "example.com", "--port", "443"]);
+    assert!(out.contains("example.com"), "got {out:?}");
+    assert!(out.contains("443"), "got {out:?}");
+    assert!(!out.contains("***"), "non-sensitive arg was masked: {out:?}");
+}
+
+#[test]
+fn redact_args_should_mask_all_sensitive_flags() {
+    // Every entry in REDACT_FLAGS should mask its trailing value.
+    for flag in &[
+        "--password",
+        "--passwd",
+        "--secret",
+        "--token",
+        "--key",
+        "--api-key",
+        "--api_key",
+        "--auth",
+        "--credentials",
+    ] {
+        let out = redact(&[flag, "leak"]);
+        assert!(out.contains("***"), "flag {flag} did not redact: {out:?}");
+        assert!(!out.contains("leak"), "flag {flag} leaked value: {out:?}");
+    }
+}
+
+#[test]
+fn redact_args_exact_match_gap_is_pinned() {
+    // REDACT_FLAGS requires an EXACT lowercased match, so these look-alike
+    // flags are intentionally NOT redacted. This test pins that behavior so a
+    // future loosening (e.g. switching to `starts_with`) is a deliberate,
+    // reviewed change.
+    let out = redact(&["--apikey", "not-redacted"]);
+    assert!(!out.contains("***"), "--apikey was unexpectedly redacted (exact-match gap): {out:?}");
+    assert!(out.contains("not-redacted"), "got {out:?}");
+
+    let out2 = redact(&["--new-password", "x"]);
+    assert!(!out2.contains("***"), "--new-password redacted: {out2:?}");
+
+    let out3 = redact(&["--ssh-key-file", "y"]);
+    assert!(!out3.contains("***"), "--ssh-key-file redacted: {out3:?}");
+}
+
+#[test]
+fn redact_args_should_not_mask_a_lone_flag_with_no_value() {
+    // A redactable flag at the very end (no following arg) just passes
+    // through; nothing to mask.
+    let out = redact(&["--password"]);
+    assert!(out.contains("--password"), "got {out:?}");
+    assert!(!out.contains("***"), "got {out:?}");
+}
+
+#[test]
+fn redact_args_should_mask_two_consecutive_secrets() {
+    let out = redact(&["--password", "pw1", "--token", "tok2"]);
+    assert!(out.matches("***").count() >= 2, "got {out:?}");
+    assert!(!out.contains("pw1"), "got {out:?}");
+    assert!(!out.contains("tok2"), "got {out:?}");
+}

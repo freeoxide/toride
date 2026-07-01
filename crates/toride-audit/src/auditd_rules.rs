@@ -5,6 +5,7 @@
 
 use std::fs;
 
+use crate::paths::{secure_dir_mode, secure_file_mode, validate_name};
 use crate::{AuditPaths, Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -78,6 +79,7 @@ pub fn list_rule_files(paths: &AuditPaths) -> Result<Vec<AuditRuleFile>> {
 ///
 /// Returns [`Error::Io`] if the file cannot be read.
 pub fn read_rule_file(paths: &AuditPaths, name: &str) -> Result<AuditRuleFile> {
+    validate_name(name)?;
     let path = paths.rules_path(name);
     let content = fs::read_to_string(&path)?;
     Ok(AuditRuleFile {
@@ -92,6 +94,7 @@ pub fn read_rule_file(paths: &AuditPaths, name: &str) -> Result<AuditRuleFile> {
 ///
 /// Returns [`Error::ConfigWrite`] if the file cannot be written.
 pub fn write_rule_file(paths: &AuditPaths, name: &str, content: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.rules_path(name);
 
     if path.exists() {
@@ -100,9 +103,13 @@ pub fn write_rule_file(paths: &AuditPaths, name: &str, content: &str) -> Result<
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+        secure_dir_mode(parent)?;
     }
 
     fs::write(&path, content).map_err(|e| Error::ConfigWrite(format!("{e}")))?;
+    // Pin restrictive mode regardless of umask: audit rules drive security
+    // observability and must never be group/other writable.
+    secure_file_mode(&path)?;
     Ok(())
 }
 
@@ -114,6 +121,7 @@ pub fn write_rule_file(paths: &AuditPaths, name: &str, content: &str) -> Result<
 ///
 /// Returns [`Error::Io`] if the file cannot be removed.
 pub fn remove_rule_file(paths: &AuditPaths, name: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.rules_path(name);
 
     if path.exists() {

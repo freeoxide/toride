@@ -51,6 +51,48 @@ pub const DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
 /// security measure.
 pub const DEFAULT_MIN_BYTES: u64 = 1024 * 1024;
 
+/// Overall per-request timeout applied to the installer's HTTP client.
+///
+/// reqwest has no default timeout, so without an explicit cap a stalled or
+/// slow-drip download would hold the download future indefinitely (the size
+/// cap only trips on bytes actually received). 120 s covers large release
+/// artifacts on slow links while still bounding a hang.
+pub const DEFAULT_HTTP_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(2);
+
+/// Connect-only timeout applied to the installer's HTTP client.
+///
+/// Bounded separately from [`DEFAULT_HTTP_TIMEOUT`] so a dead/slow host is
+/// rejected faster than the overall deadline.
+pub const DEFAULT_HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Per-chunk read deadline wrapping the streaming body loop.
+///
+/// Even with an overall request timeout, a server that opens the connection
+/// and then drips ~1 byte/minute never trips the size cap. Racing each
+/// `Response::chunk` against this deadline guarantees a slow-drip body cannot
+/// stall past the read window.
+pub const DEFAULT_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// Build the shared HTTP client used for release downloads.
+///
+/// Centralized (rather than inlined in [`Installer::new`]) so the timeout
+/// policy is applied consistently and is unit-testable. The client follows
+/// redirects (GitHub release downloads redirect to a CDN), sets a
+/// `User-Agent` so hosts that require one accept the request, and carries an
+/// overall request timeout plus a connect-only timeout — reqwest applies no
+/// timeout by default, so omitting either lets a stalled connection hang the
+/// download future indefinitely.
+fn build_http_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .user_agent(concat!("toride-installer/", env!("CARGO_PKG_VERSION")))
+        // GitHub release downloads redirect to objects.githubusercontent.com.
+        .redirect(reqwest::redirect::Policy::limited(10))
+        .timeout(DEFAULT_HTTP_TIMEOUT)
+        .connect_timeout(DEFAULT_HTTP_CONNECT_TIMEOUT)
+        .build()
+        .unwrap_or_else(|_| reqwest::Client::new())
+}
+
 /// Verification strictness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Verifier {
@@ -101,12 +143,7 @@ impl Installer {
     /// (e.g. api.github.com) accept the request.
     #[must_use]
     pub fn new() -> Self {
-        let client = reqwest::Client::builder()
-            .user_agent(concat!("toride-installer/", env!("CARGO_PKG_VERSION")))
-            // GitHub release downloads redirect to objects.githubusercontent.com.
-            .redirect(reqwest::redirect::Policy::limited(10))
-            .build()
-            .unwrap_or_else(|_| reqwest::Client::new());
+        let client = build_http_client();
         Self {
             client,
             max_bytes: DEFAULT_MAX_BYTES,
@@ -186,7 +223,7 @@ impl Installer {
         let bytes = self.download(&url).await?;
 
         // 3. verify.
-        self.verify(tool, &concrete_version, &bytes, &url)?;
+        self.verify(tool, &concrete_version, &bytes, &url).await?;
 
         // 4. extract the executable bytes.
         let exec_bytes =
@@ -252,10 +289,26 @@ impl Installer {
             .map_or(0, |len| usize::try_from(len).unwrap_or(0));
         let mut buf: Vec<u8> = Vec::with_capacity(reserve);
         let mut total: u64 = 0;
-        while let Some(chunk) = resp.chunk().await.map_err(|source| Error::Download {
-            url: url.to_owned(),
-            source,
-        })? {
+        loop {
+            // Race each chunk read against a deadline: a server that opens
+            // the connection and then never sends (or drips ~1 byte/minute)
+            // never trips the size cap, so without this guard the loop would
+            // stall indefinitely even though the overall client timeout has
+            // not yet elapsed on a slow link.
+            let chunk = match tokio::time::timeout(DEFAULT_CHUNK_TIMEOUT, resp.chunk()).await {
+                Ok(inner) => inner.map_err(|source| Error::Download {
+                    url: url.to_owned(),
+                    source,
+                })?,
+                Err(_elapsed) => {
+                    return Err(Error::DownloadStalled {
+                        url: url.to_owned(),
+                        timeout: DEFAULT_CHUNK_TIMEOUT,
+                    });
+                }
+            };
+            let Some(chunk) = chunk else { break };
+
             // Saturating add guards against overflow on a pathologically
             // large stream — saturating to `u64::MAX` then trips the cap.
             total = total.saturating_add(chunk.len() as u64);
@@ -274,7 +327,7 @@ impl Installer {
     }
 
     /// Verify the downloaded bytes against the tool's checksum policy.
-    fn verify(&self, tool: &Tool, version: &str, bytes: &[u8], url: &str) -> Result<()> {
+    async fn verify(&self, tool: &Tool, version: &str, bytes: &[u8], url: &str) -> Result<()> {
         let actual = hex_sha256(bytes);
 
         match &tool.checksum {
@@ -308,22 +361,101 @@ impl Installer {
                 }
             }
 
-            // `Url` checksums are resolved by the tool's resolver ahead of
-            // download (the resolver returns the concrete digest via its
-            // own plumbing). Here we only see a `Digest` once resolved; a
-            // raw `Url` variant therefore means "the resolver did not
-            // resolve it" — treat as lenient size check.
-            Checksum::Url { .. } => {
-                if (bytes.len() as u64) < self.min_bytes {
-                    return Err(Error::TooSmall {
-                        url: url.to_owned(),
-                        size: bytes.len() as u64,
-                        min: self.min_bytes,
-                    });
+            // Fetch the published checksum file and verify the artifact's
+            // sha256 against the matching line. This mirrors `Checksum::Digest`
+            // — the only difference is that the expected digest is sourced
+            // from the URL rather than pinned in config. The size-floor sanity
+            // check does NOT apply here: a published checksum is the strict
+            // integrity control, so it is verified unconditionally.
+            Checksum::Url { url: sum_url, asset_name } => {
+                let body = self.fetch_text(sum_url).await?;
+                let expected = extract_digest_from_checksum_body(&body, asset_name).ok_or(
+                    Error::NoChecksumEntry {
+                        url: sum_url.clone(),
+                        asset: asset_name.clone(),
+                    },
+                )?;
+                if actual.eq_ignore_ascii_case(&expected) {
+                    Ok(())
+                } else {
+                    Err(Error::ChecksumMismatch {
+                        tool: tool.name.clone(),
+                        version: version.to_owned(),
+                        expected,
+                        actual,
+                    })
                 }
-                Ok(())
             }
         }
+    }
+
+    /// Fetch `url` as UTF-8 text (a checksum file is small and textual).
+    ///
+    /// Uses the same client/timeout policy as artifact downloads but caps the
+    /// body well below `max_bytes`: a checksum file is a few KiB at most, so a
+    /// multi-MiB response is itself suspicious.
+    async fn fetch_text(&self, url: &str) -> Result<String> {
+        // Checksum files are tiny; cap far below the artifact size limit.
+        const MAX_CHECKSUM_BYTES: u64 = 1024 * 1024;
+        let resp = self
+            .client
+            .get(url)
+            .send()
+            .await
+            .map_err(|source| Error::Download {
+                url: url.to_owned(),
+                source,
+            })?;
+
+        if !resp.status().is_success() {
+            return Err(Error::HttpStatus {
+                url: url.to_owned(),
+                status: resp.status().as_u16(),
+            });
+        }
+
+        if let Some(len) = resp.content_length()
+            && len > MAX_CHECKSUM_BYTES
+        {
+            return Err(Error::TooLarge {
+                url: url.to_owned(),
+                size: len,
+                max: MAX_CHECKSUM_BYTES,
+            });
+        }
+
+        let mut resp = resp;
+        let mut buf: Vec<u8> = Vec::new();
+        let mut total: u64 = 0;
+        loop {
+            let chunk = match tokio::time::timeout(DEFAULT_CHUNK_TIMEOUT, resp.chunk()).await {
+                Ok(inner) => inner.map_err(|source| Error::Download {
+                    url: url.to_owned(),
+                    source,
+                })?,
+                Err(_elapsed) => {
+                    return Err(Error::DownloadStalled {
+                        url: url.to_owned(),
+                        timeout: DEFAULT_CHUNK_TIMEOUT,
+                    });
+                }
+            };
+            let Some(chunk) = chunk else { break };
+            total = total.saturating_add(chunk.len() as u64);
+            if total > MAX_CHECKSUM_BYTES {
+                return Err(Error::TooLarge {
+                    url: url.to_owned(),
+                    size: total,
+                    max: MAX_CHECKSUM_BYTES,
+                });
+            }
+            buf.extend_from_slice(&chunk);
+        }
+
+        String::from_utf8(buf).map_err(|_| Error::NoChecksumEntry {
+            url: url.to_owned(),
+            asset: String::new(),
+        })
     }
 }
 
@@ -435,6 +567,50 @@ fn hex_sha256(bytes: &[u8]) -> String {
         let _ = write!(out, "{b:02x}");
     }
     out
+}
+
+/// Pull the expected sha256 digest for `asset_name` out of a published
+/// checksum-file body.
+///
+/// Accepts both coreutils `sha256sum` output (`<hex>  <filename>`, separated
+/// by two spaces; the filename is optional and may be prefixed with `*` to
+/// mark a binary-mode digest) and a bare `<hex>` line. The first matching
+/// line wins. Lines whose leading token is not a 64-character lowercase or
+/// uppercase hex digest are skipped, so banners/blanks/comments in the file
+/// cannot be mistaken for a digest.
+///
+/// Returns `None` when no line carries a digest for `asset_name` (or, when
+/// `asset_name` is empty, any bare digest).
+fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<String> {
+    /// True iff `s` is exactly 64 hex digits (case-insensitive).
+    fn is_hex64(s: &str) -> bool {
+        s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        // Bare `<hex>` line (no filename component): matches when the caller
+        // did not pin a specific asset name.
+        if is_hex64(line) && asset_name.is_empty() {
+            return Some(line.to_ascii_lowercase());
+        }
+        let Some((digest, rest)) = line.split_once(char::is_whitespace) else {
+            continue;
+        };
+        if !is_hex64(digest) {
+            continue;
+        }
+        let filename = rest.trim_start();
+        // coreutils `sha256sum` prefixes binary-mode filenames with `*`.
+        let filename = filename.trim_start_matches('*').trim();
+        if asset_name.is_empty() || filename == asset_name {
+            return Some(digest.to_ascii_lowercase());
+        }
+    }
+    None
 }
 
 /// Builder for [`Installer`].
@@ -621,8 +797,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn verifier_lenient_accepts_no_checksum_above_floor() {
+    #[tokio::test]
+    async fn verifier_lenient_accepts_no_checksum_above_floor() {
         let installer = Installer::new().with_min_bytes(4);
         let tool = Tool {
             name: "demo".into(),
@@ -632,11 +808,12 @@ mod tests {
         // 5 bytes >= 4-byte floor.
         installer
             .verify(&tool, "1.0", b"enough", "https://x")
+            .await
             .unwrap();
     }
 
-    #[test]
-    fn verifier_lenient_rejects_below_floor() {
+    #[tokio::test]
+    async fn verifier_lenient_rejects_below_floor() {
         let installer = Installer::new().with_min_bytes(1024);
         let tool = Tool {
             name: "demo".into(),
@@ -645,12 +822,13 @@ mod tests {
         };
         let err = installer
             .verify(&tool, "1.0", b"tiny", "https://x")
+            .await
             .unwrap_err();
         assert!(matches!(err, Error::TooSmall { .. }));
     }
 
-    #[test]
-    fn verifier_strict_rejects_missing_checksum() {
+    #[tokio::test]
+    async fn verifier_strict_rejects_missing_checksum() {
         let installer = Installer::new().with_verifier(Verifier::Strict);
         let tool = Tool {
             name: "demo".into(),
@@ -659,12 +837,13 @@ mod tests {
         };
         let err = installer
             .verify(&tool, "1.0", b"plenty-of-bytes-here", "https://x")
+            .await
             .unwrap_err();
         assert!(matches!(err, Error::NoChecksum { .. }));
     }
 
-    #[test]
-    fn verifier_digest_matches() {
+    #[tokio::test]
+    async fn verifier_digest_matches() {
         let installer = Installer::new();
         let digest = hex_sha256(b"MATCH");
         let tool = Tool {
@@ -674,11 +853,12 @@ mod tests {
         };
         installer
             .verify(&tool, "1.0", b"MATCH", "https://x")
+            .await
             .unwrap();
     }
 
-    #[test]
-    fn verifier_digest_mismatch_is_error() {
+    #[tokio::test]
+    async fn verifier_digest_mismatch_is_error() {
         let installer = Installer::new();
         let tool = Tool {
             name: "demo".into(),
@@ -689,6 +869,7 @@ mod tests {
         };
         let err = installer
             .verify(&tool, "1.0", b"MISMATCH", "https://x")
+            .await
             .unwrap_err();
         assert!(matches!(err, Error::ChecksumMismatch { .. }));
     }
@@ -712,6 +893,7 @@ mod tests {
         let installer = Installer::new().with_min_bytes(1);
         installer
             .verify(&tool, "latest", bytes, "https://x")
+            .await
             .unwrap();
         let exec = extract_executable(bytes, tool.artifact, &tool.name, None).unwrap();
         write_executable(&dest, &exec).unwrap();
@@ -783,5 +965,215 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::HttpStatus { status, .. } if status == 404));
+    }
+
+    // ---- Finding (1): HTTP client must carry timeouts ----------------------
+
+    /// The installer's HTTP policy pins three non-zero deadlines. reqwest
+    /// applies no timeout by default, so if any of these collapse to
+    /// `Duration::ZERO` (e.g. someone drops a `.timeout(...)` from the
+    /// builder) a stalled download would hang the install future
+    /// indefinitely. Pinning the constants keeps that policy honest.
+    #[test]
+    fn http_timeout_policy_is_non_zero() {
+        assert!(
+            DEFAULT_HTTP_TIMEOUT > std::time::Duration::ZERO,
+            "overall request timeout must be set"
+        );
+        assert!(
+            DEFAULT_HTTP_CONNECT_TIMEOUT > std::time::Duration::ZERO,
+            "connect timeout must be set"
+        );
+        assert!(
+            DEFAULT_CHUNK_TIMEOUT > std::time::Duration::ZERO,
+            "per-chunk read timeout must be set"
+        );
+        // Connect deadline must be no looser than the overall deadline.
+        assert!(DEFAULT_HTTP_CONNECT_TIMEOUT <= DEFAULT_HTTP_TIMEOUT);
+    }
+
+    /// `build_http_client` must succeed (i.e. the builder is valid with the
+    /// timeout policy applied). A regression that feeds an invalid
+    /// combination to the builder would surface here.
+    #[test]
+    fn build_http_client_succeeds() {
+        let _client = build_http_client();
+        // `reqwest::Client` exposes no timeout introspection, but building it
+        // exercises the exact `.timeout()`/`.connect_timeout()` calls wired
+        // against the pinned constants above.
+    }
+
+    // ---- Finding (2): Checksum::Url sha256 verification --------------------
+
+    #[test]
+    fn checksum_body_parses_coreutils_two_space_format() {
+        let digest = hex_sha256(b"artifact-bytes");
+        let body = format!("{digest}  mise-1.0-linux-x64\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
+            Some(digest)
+        );
+    }
+
+    #[test]
+    fn checksum_body_parses_binary_mode_star_prefix() {
+        let digest = hex_sha256(b"x");
+        // `sha256sum -b` emits `*<filename>`.
+        let body = format!("{digest} *mise-1.0-linux-x64\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
+            Some(digest)
+        );
+    }
+
+    #[test]
+    fn checksum_body_parses_bare_hex_line() {
+        let digest = hex_sha256(b"lonely");
+        assert_eq!(
+            extract_digest_from_checksum_body(&digest, ""),
+            Some(digest)
+        );
+    }
+
+    #[test]
+    fn checksum_body_picks_matching_asset_among_many() {
+        let other = hex_sha256(b"other-asset");
+        let want = hex_sha256(b"wanted-asset");
+        let body = format!(
+            "{other}  other-file\n{want}  mise-1.0-linux-x64\nfifth-line-not-a-digest\n"
+        );
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
+            Some(want)
+        );
+    }
+
+    #[test]
+    fn checksum_body_rejects_non_hex_leading_token() {
+        // A banner line that happens to be followed by a filename must not be
+        // mistaken for a digest.
+        let body = "This is mise 1.0  mise-1.0-linux-x64\n";
+        assert_eq!(extract_digest_from_checksum_body(body, "mise-1.0-linux-x64"), None);
+    }
+
+    #[test]
+    fn checksum_body_returns_none_when_asset_absent() {
+        let digest = hex_sha256(b"x");
+        let body = format!("{digest}  some-other-asset\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
+            None
+        );
+    }
+
+    #[test]
+    fn checksum_body_is_case_insensitive_on_digest() {
+        let digest = hex_sha256(b"caps");
+        let upper = digest.to_uppercase();
+        let body = format!("{upper}  mise\n");
+        // Normalized to lowercase so the later eq_ignore_ascii_case compare is
+        // robust regardless of the published casing.
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise"),
+            Some(digest)
+        );
+    }
+
+    /// A tiny single-shot HTTP/1.0 server: serves `body` for the next GET,
+    /// then stops accepting. Used to drive `Installer::verify` for the
+    /// `Checksum::Url` arm without an external dep or the public network.
+    async fn serve_once(body: String) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/checksums.txt");
+
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain the request line/headers (we don't care about them).
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let response = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                let _ = sock.write_all(response.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        url
+    }
+
+    #[tokio::test]
+    async fn checksum_url_verify_accepts_matching_download() {
+        let artifact = b"REAL-ARTIFACT-BYTES";
+        let digest = hex_sha256(artifact);
+        let body = format!("{digest}  mise-1.0-linux-x64\n");
+        let url = serve_once(body).await;
+
+        let installer = Installer::new();
+        let tool = Tool {
+            name: "mise".into(),
+            checksum: Checksum::Url {
+                url: url.clone(),
+                asset_name: "mise-1.0-linux-x64".into(),
+            },
+            ..Default::default()
+        };
+        // A genuine, untampered download verifies.
+        installer.verify(&tool, "1.0", artifact, "https://x").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn checksum_url_verify_rejects_tampered_download() {
+        // The checksum file describes the *real* artifact, but the bytes we
+        // "downloaded" were tampered with — verification MUST fail.
+        let real = b"REAL-ARTIFACT-BYTES";
+        let digest = hex_sha256(real);
+        let body = format!("{digest}  mise-1.0-linux-x64\n");
+        let url = serve_once(body).await;
+
+        let installer = Installer::new();
+        let tool = Tool {
+            name: "mise".into(),
+            checksum: Checksum::Url {
+                url,
+                asset_name: "mise-1.0-linux-x64".into(),
+            },
+            ..Default::default()
+        };
+        let err = installer
+            .verify(&tool, "1.0", b"TAMPERED-DIFFERENT-BYTES", "https://x")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::ChecksumMismatch { ref expected, .. } if expected == &digest),
+            "tampered download must be rejected as a checksum mismatch, got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn checksum_url_verify_rejects_when_asset_missing_from_file() {
+        let digest = hex_sha256(b"x");
+        // File publishes a digest for a DIFFERENT asset name.
+        let body = format!("{digest}  some-other-asset\n");
+        let url = serve_once(body).await;
+
+        let installer = Installer::new();
+        let tool = Tool {
+            name: "mise".into(),
+            checksum: Checksum::Url {
+                url,
+                asset_name: "mise-1.0-linux-x64".into(),
+            },
+            ..Default::default()
+        };
+        let err = installer
+            .verify(&tool, "1.0", b"any", "https://x")
+            .await
+            .unwrap_err();
+        assert!(matches!(err, Error::NoChecksumEntry { .. }));
     }
 }

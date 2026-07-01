@@ -130,8 +130,14 @@ fn enable_should_pass_when_ssh_rule_exists() {
 
 #[test]
 fn force_enable_should_succeed_when_inactive() {
+    // force_enable() must STILL perform the SSH lockout safety check, so we
+    // provide an incoming SSH allow rule in the status output.
     let runner = FakeRunner::new()
-        .respond_ok("ufw", &["status"], "Status: inactive\n")
+        .respond_ok(
+            "ufw",
+            &["status"],
+            "Status: inactive\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW       Anywhere\n",
+        )
         .respond_ok(
             "ufw",
             &["--force", "enable"],
@@ -146,6 +152,22 @@ fn force_enable_should_succeed_when_already_active() {
     let runner = FakeRunner::new().respond_ok("ufw", &["status"], "Status: active\n");
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.force_enable().is_ok());
+}
+
+#[test]
+fn force_enable_should_still_trigger_lockout_check() {
+    // Regression: force_enable() must NOT bypass the SSH lockout check.
+    // With no incoming SSH allow rule, it must fail with SshLockoutRisk even
+    // though allow_force is true (the --force flag only skips UFW's
+    // interactive prompt, not this library's lockout protection).
+    let runner = FakeRunner::new().respond_ok("ufw", &["status"], "Status: inactive\n");
+    let ufw = Ufw::with_runner(runner);
+    let result = ufw.force_enable();
+    assert!(result.is_err());
+    assert!(
+        matches!(result.unwrap_err(), Error::SshLockoutRisk(_)),
+        "force_enable() must still perform the SSH lockout check"
+    );
 }
 
 // ---------------------------------------------------------------------------

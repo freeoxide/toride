@@ -54,6 +54,19 @@ pub enum Error {
         source: reqwest::Error,
     },
 
+    /// The download body stalled: no chunk was received within the per-read
+    /// deadline. A server that opens the connection and then never sends
+    /// (or drips ~1 byte/minute) never trips the size cap, so the chunk loop
+    /// races each read against [`crate::DEFAULT_CHUNK_TIMEOUT`] and surfaces
+    /// this error when the deadline elapses.
+    #[error("download of {url} stalled: no data within {timeout:?}")]
+    DownloadStalled {
+        /// The URL being fetched.
+        url: String,
+        /// The per-read deadline that elapsed.
+        timeout: std::time::Duration,
+    },
+
     /// The server returned a non-success HTTP status.
     #[error("download of {url} failed with HTTP {status}")]
     HttpStatus {
@@ -105,6 +118,18 @@ pub enum Error {
         expected: String,
         /// Actual hex digest.
         actual: String,
+    },
+
+    /// The tool's checksum file was fetched but did not contain a line whose
+    /// filename component matched the configured asset name (or any parseable
+    /// `<hex>` digest). The artifact is therefore treated as unverified and
+    /// rejected rather than silently installed.
+    #[error("checksum file at {url} had no matching entry for `{asset}`")]
+    NoChecksumEntry {
+        /// The checksum-file URL that was fetched.
+        url: String,
+        /// The asset name that was being looked up.
+        asset: String,
     },
 
     /// The tool publishes no checksum; verification fell back to the size

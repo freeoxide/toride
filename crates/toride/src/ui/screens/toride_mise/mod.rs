@@ -495,54 +495,16 @@ impl MiseContent {
     }
 
     fn push_findings_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
-        let header = format!("Doctor Findings ({})", self.findings.len());
-        lines.push(Line::from(Span::styled(
-            header,
-            Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
-        )));
-
-        if self.findings.is_empty() {
-            lines.push(Line::from(Span::styled(
-                "  no findings",
-                Style::new().fg(p.text_dim),
-            )));
-            return;
-        }
-
         // Group by severity: Error > Warning > Info > Ok.
-        let order = ["error", "warning", "info", "ok"];
-        for sev in order {
-            let group: Vec<&MiseFindingEntry> =
-                self.findings.iter().filter(|f| f.severity == sev).collect();
-            if group.is_empty() {
-                continue;
-            }
-            let (icon, color) = severity_style(sev, p);
-            lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{icon} "),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("{} ({})", sev.to_uppercase(), group.len()),
-                    Style::new().fg(color).add_modifier(Modifier::BOLD),
-                ),
-            ]));
-            for f in group {
-                let message = truncate_str(&f.message, 70);
-                lines.push(Line::from(vec![
-                    Span::styled("    · ", Style::new().fg(p.text_dim)),
-                    Span::styled(message, Style::new().fg(p.text)),
-                ]));
-                if let Some(ref detail) = f.detail {
-                    let detail = truncate_str(detail, 70);
-                    lines.push(Line::from(vec![
-                        Span::styled("      → ", Style::new().fg(p.accent2)),
-                        Span::styled(detail, Style::new().fg(p.accent2)),
-                    ]));
-                }
-            }
-        }
+        const ORDER: &[&str] = &["error", "warning", "info", "ok"];
+        crate::ui::screens::findings::push_findings_grouped(
+            lines,
+            p,
+            &self.findings,
+            ORDER,
+            crate::ui::screens::findings::severity_style_full,
+            crate::ui::screens::findings::FindingWidths::TITLE_70,
+        );
     }
 }
 
@@ -574,14 +536,19 @@ impl crate::ui::screens::section_overview::SectionOverview for MiseContent {
     }
 }
 
-/// Map a lowercase severity string to an (icon, color) pair.
-fn severity_style(sev: &str, p: Palette) -> (&'static str, ratatui::style::Color) {
-    match sev {
-        "error" => ("✗", p.err),
-        "warning" => ("!", p.warn),
-        "info" => ("i", p.info),
-        "ok" => ("✓", p.ok),
-        _ => ("·", p.text_dim),
+impl crate::ui::screens::findings::Finding for MiseFindingEntry {
+    fn severity(&self) -> &str {
+        &self.severity
+    }
+    fn title(&self) -> &str {
+        &self.message
+    }
+    fn detail(&self) -> Option<&str> {
+        None
+    }
+    fn fix(&self) -> Option<&str> {
+        // Mise's optional `detail` is rendered in the accent `→ fix` slot.
+        self.detail.as_deref()
     }
 }
 

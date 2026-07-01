@@ -186,14 +186,17 @@ pub fn validate_password_complexity(password: &str, complexity: Complexity) -> R
     match complexity {
         Complexity::None => {}
         Complexity::Standard => {
-            if password.len() < 8 {
+            // Count characters, not bytes: a short password padded with
+            // multi-byte UTF-8 (e.g. 4 emoji) would otherwise satisfy a
+            // 12-byte minimum while having a trivially small keyspace.
+            if password.chars().count() < 8 {
                 return Err(Error::PasswordPolicy(
                     "password must be at least 8 characters".into(),
                 ));
             }
         }
         Complexity::Strong => {
-            if password.len() < 12 {
+            if password.chars().count() < 12 {
                 return Err(Error::PasswordPolicy(
                     "password must be at least 12 characters".into(),
                 ));
@@ -226,4 +229,156 @@ pub fn validate_password_complexity(password: &str, complexity: Complexity) -> R
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::spec::Complexity;
+
+    // ---- validate_password_complexity length boundaries ----
+
+    #[test]
+    fn standard_rejects_seven_chars() {
+        // 7 ASCII chars -> under the 8-char minimum.
+        assert!(validate_password_complexity("aaaaaaa", Complexity::Standard).is_err());
+    }
+
+    #[test]
+    fn standard_accepts_eight_chars() {
+        assert!(validate_password_complexity("aaaaaaaa", Complexity::Standard).is_ok());
+    }
+
+    #[test]
+    fn strong_rejects_eleven_chars() {
+        // Meets all class requirements but is only 11 chars -> rejected.
+        let pw = "Aa1!aaaaaaa"; // 11 chars: upper, lower, digit, special
+        assert_eq!(pw.chars().count(), 11);
+        assert!(validate_password_complexity(pw, Complexity::Strong).is_err());
+    }
+
+    #[test]
+    fn strong_accepts_twelve_chars() {
+        let pw = "Aa1!aaaaaaaa"; // 12 chars: upper, lower, digit, special
+        assert_eq!(pw.chars().count(), 12);
+        assert!(validate_password_complexity(pw, Complexity::Strong).is_ok());
+    }
+
+    #[test]
+    fn strong_rejects_missing_uppercase() {
+        let pw = "aa1!aaaaaaaa"; // no uppercase
+        assert!(validate_password_complexity(pw, Complexity::Strong).is_err());
+    }
+
+    #[test]
+    fn strong_rejects_missing_lowercase() {
+        let pw = "AA1!AAAAAAAA"; // no lowercase
+        assert!(validate_password_complexity(pw, Complexity::Strong).is_err());
+    }
+
+    #[test]
+    fn strong_rejects_missing_digit() {
+        let pw = "Aa!?aaaaaaaa"; // no digit
+        assert!(validate_password_complexity(pw, Complexity::Strong).is_err());
+    }
+
+    #[test]
+    fn strong_rejects_missing_special() {
+        let pw = "Aa1aaaaaaaaa"; // no special
+        assert!(validate_password_complexity(pw, Complexity::Strong).is_err());
+    }
+
+    // ---- the multi-byte bypass the byte-count bug allowed ----
+
+    #[test]
+    fn strong_rejects_multibyte_padding() {
+        // Four emoji are 4 *chars* but 16 BYTES. The old `password.len() < 12`
+        // byte check saw 16 and accepted this as a 12+ char password even
+        // though it is only 4 code points with a trivially small keyspace.
+        let pw = "\u{1F600}\u{1F601}\u{1F602}\u{1F923}";
+        assert_eq!(pw.len(), 16); // bytes
+        assert_eq!(pw.chars().count(), 4); // chars -- the real length
+        // After the fix, char-count is used, so this MUST be rejected.
+        assert!(
+            validate_password_complexity(pw, Complexity::Strong).is_err(),
+            "4-char emoji password must not satisfy the 12-char Strong minimum"
+        );
+    }
+
+    #[test]
+    fn standard_rejects_multibyte_padding() {
+        // Two emoji = 8 bytes but only 2 chars. Old byte check passed it for
+        // the 8-char Standard minimum; char-count correctly rejects it.
+        let pw = "\u{1F600}\u{1F601}";
+        assert_eq!(pw.len(), 8);
+        assert_eq!(pw.chars().count(), 2);
+        assert!(validate_password_complexity(pw, Complexity::Standard).is_err());
+    }
+
+    // ---- is_account_locked / has_empty_password against fixture shadow ----
+
+    fn write_shadow(content: &str) -> std::path::PathBuf {
+        // Keep the tempdir alive for the whole test by leaking it; the OS
+        // reclaims the filesystem space on process exit. This keeps the tests
+        // hermetic (no real /etc/shadow read).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shadow");
+        std::fs::write(&path, content).unwrap();
+        std::mem::forget(dir);
+        path
+    }
+
+    #[test]
+    fn is_account_locked_detects_single_bang() {
+        // Locked by usermod -L: single '!' prefix.
+        let shadow = write_shadow("bob:!$6$hash:19000:0:99999:7:::\n");
+        assert!(is_account_locked(&shadow, "bob").unwrap());
+    }
+
+    #[test]
+    fn is_account_locked_detects_double_bang() {
+        // A freshly created account with no password set: '!!'.
+        let shadow = write_shadow("carol:!!:19000:0:99999:7:::\n");
+        assert!(is_account_locked(&shadow, "carol").unwrap());
+    }
+
+    #[test]
+    fn is_account_locked_false_for_valid_hash() {
+        let shadow = write_shadow("alice:$6$validhash:19000:0:99999:7:::\n");
+        assert!(!is_account_locked(&shadow, "alice").unwrap());
+    }
+
+    #[test]
+    fn is_account_locked_user_not_found() {
+        let shadow = write_shadow("alice:$6$hash:19000:0:99999:7:::\n");
+        assert!(matches!(
+            is_account_locked(&shadow, "nobody"),
+            Err(Error::UserNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn has_empty_password_detects_blank_field() {
+        let shadow = write_shadow("dave::19000:0:99999:7:::\n");
+        assert!(has_empty_password(&shadow, "dave").unwrap());
+    }
+
+    #[test]
+    fn has_empty_password_false_for_hash_or_lock() {
+        let shadow = write_shadow(
+            "alice:$6$hash:19000:0:99999:7:::\n\
+             bob:!:19000:0:99999:7:::\n",
+        );
+        assert!(!has_empty_password(&shadow, "alice").unwrap());
+        assert!(!has_empty_password(&shadow, "bob").unwrap());
+    }
+
+    #[test]
+    fn has_empty_password_user_not_found() {
+        let shadow = write_shadow("alice:$6$hash:19000:0:99999:7:::\n");
+        assert!(matches!(
+            has_empty_password(&shadow, "ghost"),
+            Err(Error::UserNotFound(_))
+        ));
+    }
 }

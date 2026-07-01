@@ -523,10 +523,23 @@ pub fn render_service_unit(spec: &BackupSpec) -> String {
         let pw_file = password_file_path(&spec.name);
         match spec.backend {
             Backend::Restic => {
-                let _ = writeln!(s, "Environment=RESTIC_PASSWORD_FILE={}", pw_file.display());
+                // The password-file path is reduced to `[A-Za-z0-9_-]` (see
+                // [`sanitize_unit_name`]) so it contains no spaces or special
+                // chars, but we still route it through [`quote_env_value`] so a
+                // value that ever gains a space cannot be split by systemd's
+                // Environment= parser.
+                let val = quote_env_value(&pw_file.display().to_string());
+                let _ = writeln!(s, "Environment=RESTIC_PASSWORD_FILE={val}");
             }
             Backend::Borg => {
-                let _ = writeln!(s, "Environment=BORG_PASSCOMMAND=cat {}", pw_file.display());
+                // BORG_PASSCOMMAND's value is `cat <file>` — it contains a
+                // space, so systemd's Environment= parser would split an
+                // UNQUOTED value into the tokens `cat` and `<file>` (dropping
+                // the path). Single-quote the whole assignment value so the
+                // parser yields the full `cat <file>` string intact.
+                // See systemd.syntax(7) / systemd.service(5).
+                let val = quote_env_value(&format!("cat {}", pw_file.display()));
+                let _ = writeln!(s, "Environment=BORG_PASSCOMMAND={val}");
             }
         }
     }
@@ -953,13 +966,115 @@ mod tests {
         spec.repository = PathBuf::from("/mnt/borg/repo");
         let unit = render_service_unit(&spec);
         assert!(unit.contains("ExecStart=borg create /mnt/borg/repo::{now}"));
+        // BORG_PASSCOMMAND's value (`cat <file>`) contains a space, so it MUST
+        // be single-quoted: an unquoted value would be split by systemd's
+        // Environment= parser into `cat` + `<file>` and the path lost.
         assert!(
-            unit.contains("BORG_PASSCOMMAND=cat /etc/toride-backup/nightly.pw"),
-            "expected BORG_PASSCOMMAND pointing at the materialized file: {unit}"
+            unit.contains("BORG_PASSCOMMAND='cat /etc/toride-backup/nightly.pw'"),
+            "expected quoted BORG_PASSCOMMAND pointing at the materialized file: {unit}"
+        );
+        // Sanity: the unquoted form must NOT appear.
+        assert!(
+            !unit.contains("BORG_PASSCOMMAND=cat /etc/toride-backup/nightly.pw"),
+            "BORG_PASSCOMMAND value must be quoted, not bare: {unit}"
         );
         assert!(
             !unit.contains("BORG_PASSPHRASE=$(cat"),
             "must not emit the un-expanded $(...) shell form: {unit}"
+        );
+    }
+
+    /// Parse the VALUE out of a rendered `Environment=KEY=VALUE` line the way
+    /// systemd's Environment= parser (systemd.syntax(7)) would: honour single
+    /// quotes (with `\'` and `\\` escapes) and split an UNQUOTED value on the
+    /// first whitespace run, taking only the leading token.
+    ///
+    /// This mirrors systemd's own tokenisation closely enough to verify that a
+    /// value we render round-trips to the full intended string.
+    fn parse_systemd_env_value(line: &str) -> Option<String> {
+        let rest = line.strip_prefix("Environment=")?;
+        // Drop the KEY= prefix: the key runs up to the first `=`.
+        let eq = rest.find('=')?;
+        let mut value = &rest[eq + 1..];
+
+        // If the value is wrapped in a single pair of single quotes, systemd
+        // takes the quoted span verbatim (after C-style unescaping).
+        if value.starts_with('\'') {
+            // find the closing quote (honouring `\'` and `\\` escapes)
+            let mut out = String::new();
+            let bytes = value.as_bytes();
+            let mut i = 1; // skip opening quote
+            let mut closed = false;
+            while i < bytes.len() {
+                let c = bytes[i];
+                if c == b'\\' && i + 1 < bytes.len() {
+                    out.push(bytes[i + 1] as char);
+                    i += 2;
+                    continue;
+                }
+                if c == b'\'' {
+                    closed = true;
+                    break;
+                }
+                out.push(c as char);
+                i += 1;
+            }
+            return if closed { Some(out) } else { None };
+        }
+
+        // Unquoted: systemd splits on whitespace and yields only the FIRST
+        // token — the rest of the line is dropped (this is exactly the bug).
+        let trimmed = value.trim_start();
+        let end = trimmed
+            .find(|c: char| c.is_whitespace())
+            .unwrap_or(trimmed.len());
+        value = &trimmed[..end];
+        Some(value.to_owned())
+    }
+
+    #[test]
+    fn borg_passcommand_value_is_quoted_and_round_trips() {
+        // Regression: the rendered BORG_PASSCOMMAND value (`cat <file>`)
+        // contains a space. UNQUOTED, systemd's Environment= parser yields only
+        // the leading token `cat` and silently drops the password-file path,
+        // so borg could never read the passphrase and the unit fails at run
+        // time. The value MUST be quoted so the full `cat <file>` survives.
+        let mut spec = sample_restic_spec();
+        spec.backend = Backend::Borg;
+        spec.repository = PathBuf::from("/mnt/borg/repo");
+        let unit = render_service_unit(&spec);
+
+        let line = unit
+            .lines()
+            .find(|l| l.starts_with("Environment=BORG_PASSCOMMAND="))
+            .expect("rendered unit must contain a BORG_PASSCOMMAND Environment= line");
+
+        let expected_value = format!(
+            "cat {}",
+            password_file_path(&spec.name).display()
+        );
+        let parsed = parse_systemd_env_value(line)
+            .expect("BORG_PASSCOMMAND line must be parseable as Environment=KEY=VALUE");
+
+        assert_eq!(
+            parsed, expected_value,
+            "BORG_PASSCOMMAND value must round-trip to the full `cat <pwfile>`; \
+             got {parsed:?} from line {line:?}. \
+             An unquoted value would have been split to just `cat`.",
+        );
+    }
+
+    #[test]
+    fn unquoted_passcommand_would_be_split_by_systemd_parser() {
+        // Negative control pinning the parser model: an UNQUOTED value with a
+        // space yields only the leading token. This documents why the quoting
+        // fix is necessary and ensures our parser test above is not vacuous.
+        let parsed =
+            parse_systemd_env_value("Environment=BORG_PASSCOMMAND=cat /etc/toride-backup/x.pw")
+                .unwrap();
+        assert_eq!(
+            parsed, "cat",
+            "an unquoted space-bearing value must collapse to its first token"
         );
     }
 

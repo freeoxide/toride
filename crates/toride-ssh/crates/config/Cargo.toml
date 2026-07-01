@@ -6,7 +6,13 @@ edition = "2024"
 [dependencies]
 toride-ssh-core = { path = "../core" }
 toride-fs = { path = "../../../toride-fs" }
-tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
+# Used directly only by sshd::edit()'s cross-process edit lock, which must hold
+# an exclusive flock guard across an async (load → mutate → save) critical
+# section. toride_fs::with_lock exposes a sync closure only (no guard), so it
+# cannot span the .await points; we acquire the same advisory lock primitive
+# (fd_lock) directly and drop the guard at function exit.
+fd-lock = "4"
+tokio = { workspace = true, features = ["process", "fs", "rt", "rt-multi-thread", "sync"] }
 thiserror = { workspace = true }
 serde = { workspace = true }
 tracing = { workspace = true }

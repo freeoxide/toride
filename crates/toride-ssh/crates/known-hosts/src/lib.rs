@@ -375,6 +375,13 @@ impl<'a> KnownHostsService<'a> {
     ///
     /// Runs `ssh-keygen -F <host> -f <file>` and parses the output.  A
     /// missing file returns an empty vec (not an error).
+    ///
+    /// A genuine "host not present" result (ssh-keygen exits with code 1 and
+    /// no matches) also returns an empty vec.  Any *other* failure — the
+    /// `ssh-keygen` binary missing from `PATH`, a permission error, a panic
+    /// in the runner task, or an unexpected non-unit exit code — is
+    /// propagated as `Err` so callers can distinguish "absent" from
+    /// "something went wrong".
     async fn find_in_file(&self, host: &str, path: &Path) -> Result<Vec<KnownHostEntry>> {
         if !path.exists() {
             return Ok(Vec::new());
@@ -389,10 +396,14 @@ impl<'a> KnownHostsService<'a> {
         let args = vec!["-F".to_owned(), host_owned, "-f".to_owned(), path_str];
 
         // ssh-keygen -F returns exit code 1 when the host is not found —
-        // that is a normal result, not an error.
+        // that is a normal result, not an error.  Any other failure
+        // (binary missing, permission denied, runner task panic, …) must be
+        // surfaced so the caller can tell an absent host apart from a
+        // broken lookup.
         match self.runner.run("ssh-keygen", args).await {
             Ok(raw) => Ok(parse_ssh_keygen_f_output(host, &raw)),
-            Err(_) => Ok(Vec::new()),
+            Err(e) if is_host_not_found(&e) => Ok(Vec::new()),
+            Err(e) => Err(e),
         }
     }
 
@@ -499,6 +510,29 @@ impl<'a> KnownHostsService<'a> {
 
         Ok(self.paths.known_hosts_path().to_path_buf())
     }
+}
+
+/// Classify an [`Error`] from `ssh-keygen -F` as a genuine "host not found".
+///
+/// `ssh-keygen -F <host>` exits with code 1 (and prints nothing to stdout)
+/// when the host is absent from the file.  This is a *normal* outcome and
+/// must be reported as an empty result rather than an error.
+///
+/// The [`CliRunner`](toride_ssh_core::CliRunner) trait abstracts away the raw
+/// exit code, so the only signal available is the [`Error::CommandFailed`]
+/// message, which the production runner formats as
+/// `` `command `ssh-keygen` failed with exit Some(1): … ``.  We therefore
+/// match exit code 1 inside that message.  Everything else — a missing
+/// binary (also surfaced as `CommandFailed`), a `TaskFailed`, a
+/// `PermissionDenied`, or a non-unit exit code — is treated as a real error
+/// and propagated.
+fn is_host_not_found(error: &Error) -> bool {
+    let Error::CommandFailed(msg) = error else {
+        return false;
+    };
+    // The production runner formats the exit code as `exit Some(N)` /
+    // `exit None` (Debug of Option<i32>).  Exit code 1 = host not found.
+    msg.contains("exit Some(1)") || msg.contains("exit status: 1")
 }
 
 /// Parse `ssh-keygen -F` output into [`KnownHostEntry`] values.
@@ -1380,10 +1414,10 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
 
         let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
         let runner = toride_ssh_core::MockCliRunner::new();
-        // First call: user known_hosts (empty).
+        // First call: user known_hosts — host absent (ssh-keygen exit code 1).
         runner.push_run_response(
             "ssh-keygen",
-            Err(crate::Error::CommandFailed("not found".into())),
+            Err(crate::Error::CommandFailed("exit Some(1)".into())),
         );
         // Second call: global known_hosts.
         runner.push_run_response(
@@ -1396,6 +1430,139 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
         let entries = svc.find("global-host").await.unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].hosts, vec!["global-host"]);
+    }
+
+    // find_in_file distinguishes a genuine "host not found" (ssh-keygen exit
+    // code 1) from real errors (missing binary, task panic, permission, …).
+    #[tokio::test]
+    async fn find_returns_empty_for_genuine_not_found() {
+        let dir = tempfile::tempdir().unwrap();
+        let kh_path = dir.path().join("known_hosts");
+        std::fs::write(&kh_path, "").unwrap();
+
+        let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::MockCliRunner::new();
+        // ssh-keygen -F returns exit code 1 when the host is absent — both
+        // the production Debug formatting (`exit Some(1)`) and the
+        // conventional shorthand (`exit status: 1`) must be recognised.
+        runner.push_run_response(
+            "ssh-keygen",
+            Err(crate::Error::CommandFailed(
+                "command `ssh-keygen` failed with exit Some(1): ".into(),
+            )),
+        );
+        let svc = KnownHostsService::new(&paths, &runner);
+        let entries = svc.find("unknown.host").await.unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_returns_empty_for_not_found_status_shorthand() {
+        let dir = tempfile::tempdir().unwrap();
+        let kh_path = dir.path().join("known_hosts");
+        std::fs::write(&kh_path, "").unwrap();
+
+        let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.push_run_response(
+            "ssh-keygen",
+            Err(crate::Error::CommandFailed("exit status: 1".into())),
+        );
+        let svc = KnownHostsService::new(&paths, &runner);
+        let entries = svc.find("unknown.host").await.unwrap();
+        assert!(entries.is_empty());
+    }
+
+    #[tokio::test]
+    async fn find_propagates_real_error_missing_binary() {
+        let dir = tempfile::tempdir().unwrap();
+        let kh_path = dir.path().join("known_hosts");
+        std::fs::write(&kh_path, "").unwrap();
+
+        let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::MockCliRunner::new();
+        // The ssh-keygen binary is missing from PATH — a `CommandFailed`
+        // whose message does NOT carry exit code 1.  This must NOT be
+        // silently swallowed as an empty result.
+        runner.push_run_response(
+            "ssh-keygen",
+            Err(crate::Error::ToolNotFound("ssh-keygen".into())),
+        );
+        let svc = KnownHostsService::new(&paths, &runner);
+        let result = svc.find("example.com").await;
+        assert!(
+            result.is_err(),
+            "missing-binary error must be propagated, not swallowed as empty"
+        );
+        assert!(matches!(
+            result.unwrap_err(),
+            crate::Error::ToolNotFound(_)
+        ));
+    }
+
+    #[tokio::test]
+    async fn find_propagates_unexpected_exit_code() {
+        let dir = tempfile::tempdir().unwrap();
+        let kh_path = dir.path().join("known_hosts");
+        std::fs::write(&kh_path, "").unwrap();
+
+        let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::MockCliRunner::new();
+        // An exit code other than 1 (e.g. permission denied reading the
+        // file surfaces as exit 2) is a real failure, not "host absent".
+        runner.push_run_response(
+            "ssh-keygen",
+            Err(crate::Error::CommandFailed(
+                "command `ssh-keygen` failed with exit Some(2): permission denied".into(),
+            )),
+        );
+        let svc = KnownHostsService::new(&paths, &runner);
+        let result = svc.find("example.com").await;
+        assert!(
+            result.is_err(),
+            "non-unit exit code must be propagated, not swallowed as empty"
+        );
+    }
+
+    #[tokio::test]
+    async fn find_propagates_task_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let kh_path = dir.path().join("known_hosts");
+        std::fs::write(&kh_path, "").unwrap();
+
+        let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::MockCliRunner::new();
+        // A panic in the runner task is a real error, not "host absent".
+        runner.push_run_response(
+            "ssh-keygen",
+            Err(crate::Error::TaskFailed("background task panicked".into())),
+        );
+        let svc = KnownHostsService::new(&paths, &runner);
+        let result = svc.find("example.com").await;
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), crate::Error::TaskFailed(_)));
+    }
+
+    #[test]
+    fn is_host_not_found_classifier() {
+        // Exit code 1 (Debug formatting) and the status shorthand are not-found.
+        assert!(is_host_not_found(&Error::CommandFailed(
+            "command `ssh-keygen` failed with exit Some(1): ".into()
+        )));
+        assert!(is_host_not_found(&Error::CommandFailed(
+            "exit status: 1".into()
+        )));
+        // Other exit codes are real errors.
+        assert!(!is_host_not_found(&Error::CommandFailed(
+            "command `ssh-keygen` failed with exit Some(2): perm denied".into()
+        )));
+        assert!(!is_host_not_found(&Error::CommandFailed(
+            "command `ssh-keygen` failed with exit None: ".into()
+        )));
+        // Non-CommandFailed variants are real errors.
+        assert!(!is_host_not_found(&Error::ToolNotFound("ssh-keygen".into())));
+        assert!(!is_host_not_found(&Error::TaskFailed("panic".into())));
+        assert!(!is_host_not_found(&Error::PermissionDenied("/x".into())));
     }
 
     // -----------------------------------------------------------------------

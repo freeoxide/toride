@@ -302,7 +302,15 @@ impl Doctor {
         // Check if TOTP is configured for SSH. Per-check degrade: an unreadable
         // pam.d/sshd must NOT abort the whole suite. Log and continue to the
         // sudo-without-TOTP check below.
-        let sshd_pam = self.paths.pam_service("sshd");
+        let sshd_pam = match self.paths.pam_service("sshd") {
+            Ok(p) => p,
+            // "sshd" is a constant safe name, so this only fails on a broken
+            // base dir; degrade like the read below rather than aborting.
+            Err(e) => {
+                tracing::warn!("could not resolve sshd PAM path: {e}");
+                return;
+            }
+        };
         if sshd_pam.exists() {
             let rules = match crate::pam::read_pam_config(&sshd_pam) {
                 Ok(r) => r,

@@ -277,6 +277,17 @@ mod tests {
     };
     use std::time::{Duration, SystemTime};
 
+    /// Process-global env vars are mutated by several tests below. Acquire this
+    /// lock at the top of every env-mutating test so they cannot run
+    /// concurrently and race each other (cargo runs `#[test]`s in parallel
+    /// threads within the binary). Mirrors the `HOME_LOCK` pattern in
+    /// `ssh_data.rs`. Poisoning is tolerated: a prior panic still releases the
+    /// mutex, and we take the guard regardless so the suite doesn't deadlock.
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Build a minimal-but-populated [`TorideStatus`] for the convert tests.
     #[expect(
         clippy::too_many_lines,
@@ -595,10 +606,9 @@ mod tests {
 
     #[test]
     fn convert_runtime_log_path_respects_env_override() {
-        // Set the override, convert, then restore. This is a process-global
-        // mutation so it must not run concurrently with other env-touching
-        // tests — the default test harness runs tests in parallel within a
-        // binary, but the override + restore is deterministic enough here.
+        // Process-global env mutation: hold ENV_LOCK so this cannot run
+        // concurrently with the other env-touching tests below.
+        let _env = env_test_lock();
         unsafe {
             std::env::set_var("TORIDE_LOG_FILE", "/tmp/toride-convert-test.log");
         }
@@ -620,6 +630,7 @@ mod tests {
 
     #[test]
     fn env_or_prefers_primary() {
+        let _env = env_test_lock();
         unsafe {
             std::env::set_var("TORIDE_ABOUT_PRIMARY", "primary-val");
             std::env::set_var("TORIDE_ABOUT_FALLBACK", "fallback-val");
@@ -634,6 +645,7 @@ mod tests {
 
     #[test]
     fn env_or_falls_back_when_primary_unset() {
+        let _env = env_test_lock();
         unsafe {
             std::env::set_var("TORIDE_ABOUT_FALLBACK2", "fallback-val");
         }
@@ -646,6 +658,7 @@ mod tests {
 
     #[test]
     fn log_file_path_prefers_env_override() {
+        let _env = env_test_lock();
         unsafe {
             std::env::set_var("TORIDE_LOG_FILE", "/custom/path.log");
         }

@@ -1,5 +1,6 @@
 ---
 source: crates/ufw-kit/src/snapshots.test.rs
+assertion_line: 168
 expression: "format!(\"{status:#?}\")"
 ---
 UfwStatus {
@@ -15,8 +16,12 @@ UfwStatus {
                 1,
             ),
             raw: "22/tcp                     ALLOW IN    Anywhere",
-            action: None,
-            direction: None,
+            action: Some(
+                Allow,
+            ),
+            direction: Some(
+                In,
+            ),
             protocol: None,
             from: None,
             to: None,
@@ -29,8 +34,12 @@ UfwStatus {
                 2,
             ),
             raw: "443/tcp                    ALLOW IN    Anywhere",
-            action: None,
-            direction: None,
+            action: Some(
+                Allow,
+            ),
+            direction: Some(
+                In,
+            ),
             protocol: None,
             from: None,
             to: None,
@@ -43,8 +52,12 @@ UfwStatus {
                 3,
             ),
             raw: "22/tcp                     ALLOW IN    Anywhere (v6)",
-            action: None,
-            direction: None,
+            action: Some(
+                Allow,
+            ),
+            direction: Some(
+                In,
+            ),
             protocol: None,
             from: None,
             to: None,

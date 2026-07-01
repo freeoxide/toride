@@ -1419,6 +1419,82 @@ fn check_log_paths_public_ips_no_warning() {
     assert!(!has_finding(&findings, "logpath.proxy_ips_only"));
 }
 
+/// `check_single_log_path` must inspect only the first `PROXY_IP_SAMPLE_LINES`
+/// lines of a log file (not the whole file), and it must do so without slurping
+/// the entire file into memory.
+///
+/// This calls the private associated function directly via `super::*`, which is
+/// the unit that performs the proxy-IP detection.
+#[test]
+fn check_single_log_path_streams_only_first_lines_and_private_ips_warn() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("auth.log");
+
+    // First PROXY_IP_SAMPLE_LINES lines: only private IPs.
+    let mut content = String::new();
+    for _ in 0..PROXY_IP_SAMPLE_LINES {
+        content.push_str("Failed password from 192.168.1.50 port 22 ssh2\n");
+    }
+    // After the sample window: a PUBLIC IP. If the implementation read the
+    // whole file (or more than PROXY_IP_SAMPLE_LINES lines), this public IP
+    // would flip `all_private = false` and suppress the proxy finding.
+    content.push_str("Failed password from 203.0.113.99 port 22 ssh2\n");
+
+    std::fs::write(&log, content).unwrap();
+    let log_path = log.to_str().unwrap();
+
+    let mut findings = Vec::new();
+    Doctor::check_single_log_path(log_path, "sshd", &mut findings);
+
+    // Only the first N lines were inspected, so the trailing public IP is
+    // never seen and the proxy-only warning is still emitted.
+    assert!(
+        has_finding(&findings, "logpath.proxy_ips_only"),
+        "expected proxy_ips_only warning when only the first {PROXY_IP_SAMPLE_LINES} \
+         (private-IP) lines are inspected, got: {findings:?}"
+    );
+}
+
+/// `check_single_log_path` must not read the entire file via
+/// `read_to_string`. If it did, an invalid-UTF-8 byte anywhere in the file
+/// (here, *after* the sampled window) would make the whole read fail and
+/// silently drop the proxy-only detection. Streaming the first lines via a
+/// `BufReader` bounds memory and still surfaces the finding.
+///
+/// This test FAILS on the pre-fix `read_to_string` implementation (the whole
+/// read errors out, so no `logpath.proxy_ips_only` finding is produced) and
+/// PASSES once the function streams only the leading lines.
+#[test]
+fn check_single_log_path_does_not_slurp_invalid_utf8_past_sample_window() {
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("auth.log");
+
+    // First PROXY_IP_SAMPLE_LINES lines are valid UTF-8 with private IPs.
+    let mut content = String::new();
+    for _ in 0..PROXY_IP_SAMPLE_LINES {
+        content.push_str("Failed password from 10.0.0.5 port 22 ssh2\n");
+    }
+    // Append a block of invalid UTF-8 (lone continuation bytes) AFTER the
+    // sampled window. `read_to_string` of the whole file would fail here.
+    // Build the on-disk bytes directly so the file is genuinely invalid UTF-8.
+    let mut bytes = content.into_bytes();
+    bytes.push(b'\n');
+    bytes.push(0xFF);
+    bytes.push(0xFF);
+
+    std::fs::write(&log, bytes).unwrap();
+    let log_path = log.to_str().unwrap();
+
+    let mut findings = Vec::new();
+    Doctor::check_single_log_path(log_path, "sshd", &mut findings);
+
+    assert!(
+        has_finding(&findings, "logpath.proxy_ips_only"),
+        "streaming implementation must still detect private-only IPs even when \
+         bytes past the sample window are invalid UTF-8; got: {findings:?}"
+    );
+}
+
 // ===========================================================================
 // Docker path warning
 // ===========================================================================

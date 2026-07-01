@@ -262,6 +262,66 @@ fn parse_status_verbose_should_parse_accept_as_allow() {
 }
 
 // ---------------------------------------------------------------------------
+// Realistic UFW output (action token mid-line, not at line start)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn parse_rule_line_should_parse_action_after_target_column() {
+    // Real `ufw status` output is column-oriented: the port/target ("22/tcp")
+    // appears first, then the action token. The parser must locate the action
+    // token regardless of leading column width.
+    let rule = parse_rule_line("22/tcp                     ALLOW       Anywhere", false).unwrap();
+    assert_eq!(rule.action, Some(Action::Allow));
+    assert_eq!(rule.direction, None); // non-numbered output has no IN/OUT
+    assert!(rule.raw.contains("22/tcp"));
+}
+
+#[test]
+fn parse_rule_line_should_parse_direction_after_action() {
+    // Numbered/verbose output like "22/tcp ALLOW IN Anywhere".
+    let rule = parse_rule_line("22/tcp ALLOW IN    Anywhere", false).unwrap();
+    assert_eq!(rule.action, Some(Action::Allow));
+    assert_eq!(rule.direction, Some(Direction::In));
+}
+
+#[test]
+fn parse_status_numbered_should_parse_realistic_numbered_output() {
+    // Regression: realistic `ufw status numbered` output. The action token
+    // follows the destination port, not the leading "[ N ]" marker.
+    let output = "\
+Status: active
+
+     To                         Action      From
+     --                         ------      ----
+[ 1] 22/tcp                     ALLOW IN    Anywhere
+[ 2] 443/tcp                    ALLOW IN    Anywhere
+[ 3] 80/tcp                     DENY        Anywhere
+";
+    let status = parse_status_numbered(output).unwrap();
+    assert_eq!(status.rules.len(), 3);
+    assert_eq!(status.rules[0].number, Some(1));
+    assert_eq!(status.rules[0].action, Some(Action::Allow));
+    assert_eq!(status.rules[0].direction, Some(Direction::In));
+    assert_eq!(status.rules[2].action, Some(Action::Deny));
+}
+
+#[test]
+fn parse_status_should_extract_action_from_realistic_columns() {
+    let output = "\
+Status: active
+
+To                         Action      From
+--                         ------      ----
+22/tcp                     ALLOW       Anywhere
+53/udp                     DENY        Anywhere
+";
+    let status = parse_status(output).unwrap();
+    assert_eq!(status.rules.len(), 2);
+    assert_eq!(status.rules[0].action, Some(Action::Allow));
+    assert_eq!(status.rules[1].action, Some(Action::Deny));
+}
+
+// ---------------------------------------------------------------------------
 // parse_show_listening
 // ---------------------------------------------------------------------------
 

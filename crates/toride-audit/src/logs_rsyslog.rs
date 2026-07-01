@@ -5,6 +5,7 @@
 
 use std::fs;
 
+use crate::paths::{secure_dir_mode, secure_file_mode, validate_name};
 use crate::{AuditPaths, Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -62,6 +63,7 @@ pub fn read_config(paths: &AuditPaths) -> Result<String> {
 ///
 /// Returns [`Error::ConfigWrite`] if the file cannot be written.
 pub fn write_dropin(paths: &AuditPaths, name: &str, content: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.rsyslog_d.join(format!("{name}.conf"));
 
     if path.exists() {
@@ -69,7 +71,9 @@ pub fn write_dropin(paths: &AuditPaths, name: &str, content: &str) -> Result<()>
     }
 
     fs::create_dir_all(&paths.rsyslog_d)?;
+    secure_dir_mode(&paths.rsyslog_d)?;
     fs::write(&path, content).map_err(|e| Error::ConfigWrite(format!("{e}")))?;
+    secure_file_mode(&path)?;
     Ok(())
 }
 
@@ -81,6 +85,7 @@ pub fn write_dropin(paths: &AuditPaths, name: &str, content: &str) -> Result<()>
 ///
 /// Returns [`Error::Io`] if the file cannot be removed.
 pub fn remove_dropin(paths: &AuditPaths, name: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.rsyslog_d.join(format!("{name}.conf"));
 
     if path.exists() {

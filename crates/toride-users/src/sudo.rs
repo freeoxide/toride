@@ -116,7 +116,7 @@ pub fn revoke_sudo(paths: &UserPaths, username: &str) -> Result<()> {
 /// Checks for the existence of a drop-in file in `/etc/sudoers.d/` or
 /// entries in the main sudoers file.
 pub fn has_sudo(paths: &UserPaths, username: &str) -> Result<bool> {
-    let dropin = paths.sudoers_dropin(username);
+    let dropin = paths.sudoers_dropin(username)?;
     if dropin.exists() {
         return Ok(true);
     }

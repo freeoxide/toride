@@ -73,11 +73,15 @@ pub enum Checksum {
     /// A fixed hex digest known ahead of time (e.g. pinned in config).
     Digest(String),
 
-    /// A URL whose body is the checksum file. The installer fetches it and
-    /// looks for a line whose filename component matches `asset_name`.
+    /// A URL whose body is the checksum file. The installer fetches it (after
+    /// the artifact download) and looks for a line whose filename component
+    /// matches `asset_name`, then verifies the artifact's sha256 against the
+    /// digest on that line.
     ///
     /// The body may be either `<hex>  <filename>` (coreutils `sha256sum`
-    /// format) or a bare `<hex>` line.
+    /// format, two-space separated, filename optional) or a bare `<hex>`
+    /// line. Lines whose leading token is not a 64-char hex digest are
+    /// skipped.
     Url { url: String, asset_name: String },
 }
 

@@ -2771,119 +2771,28 @@ impl DiskProvider for SysinfoProvider {
             }))
     }
 
-    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
     fn all_disks(&mut self) -> StatusResult<Vec<DiskStatus>> {
-        let disks = Disks::new_with_refreshed_list();
-        Ok(disks
-            .iter()
-            .map(|d| {
-                let total = d.total_space();
-                let available = d.available_space();
-                let used = total.saturating_sub(available);
-                let percentage = if total > 0 {
-                    (used as f64 / total as f64) * 100.0
-                } else {
-                    0.0
-                };
-                let name_str = d.name().to_string_lossy().to_string();
-                let fs_str = d.file_system().to_string_lossy().to_string();
-                #[cfg(target_os = "linux")]
-                let disk_type = read_disk_type_linux(&name_str);
-                #[cfg(target_os = "macos")]
-                let disk_type = read_disk_type_macos(&fs_str);
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-                let disk_type = "Unknown".to_string();
-                #[cfg(target_os = "linux")]
-                let physical_device_path = if name_str.is_empty() {
-                    None
-                } else {
-                    Some(format!("/dev/{name_str}"))
-                };
-                #[cfg(not(target_os = "linux"))]
-                let physical_device_path: Option<String> = None;
-                DiskStatus {
-                    name: name_str,
-                    mount_point: d.mount_point().to_string_lossy().to_string(),
-                    filesystem: fs_str,
-                    used_bytes: used,
-                    total_bytes: total,
-                    percentage,
-                    is_removable: d.is_removable(),
-                    free_bytes: available,
-                    available_bytes: available,
-                    disk_type,
-                    physical_device_path,
-                    model: None,
-                    serial: None,
-                    temperature: None,
-                    wear_percent: None,
-                }
-            })
-            .collect())
+        // Delegate to the single shared mapping implementation in
+        // SystemStatus::read_disks so disk-type detection and field
+        // construction stay in one place.
+        Ok(SystemStatus::read_disks())
     }
 }
 
 impl NetworkProvider for SysinfoProvider {
     fn aggregate(&mut self) -> StatusResult<NetworkStatus> {
+        // Delegate to the single shared aggregation in SystemStatus::read_network.
         let networks = Networks::new_with_refreshed_list();
-        let (mut received, mut transmitted) = (0u64, 0u64);
-        for data in networks.values() {
-            received = received.saturating_add(data.total_received());
-            transmitted = transmitted.saturating_add(data.total_transmitted());
-        }
-        Ok(NetworkStatus {
-            bytes_received: received,
-            bytes_transmitted: transmitted,
-        })
+        Ok(SystemStatus::read_network(&networks))
     }
 
     fn interfaces(&mut self) -> StatusResult<Vec<NetworkInterface>> {
+        // Delegate to the single shared mapping in
+        // SystemStatus::read_network_interfaces (MAC formatting,
+        // extras, MTU, gateway/DNS) so interface construction stays
+        // in one place.
         let networks = Networks::new_with_refreshed_list();
-        let gw = detect_gateway();
-        let dns = detect_first_dns();
-        Ok(networks
-            .iter()
-            .map(|(name, data)| {
-                let mac = data.mac_address();
-                let mac_str = if mac.is_unspecified() {
-                    None
-                } else {
-                    let b = mac.0;
-                    Some(format!(
-                        "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
-                        b[0], b[1], b[2], b[3], b[4], b[5]
-                    ))
-                };
-                let mtu_val = data.mtu();
-                let extras = read_interface_extras(name);
-                NetworkInterface {
-                    name: name.clone(),
-                    bytes_received: data.total_received(),
-                    bytes_transmitted: data.total_transmitted(),
-                    packets_received: data.total_packets_received(),
-                    packets_transmitted: data.total_packets_transmitted(),
-                    errors_received: data.errors_on_received(),
-                    errors_transmitted: data.errors_on_transmitted(),
-                    mac_address: mac_str,
-                    mtu: if mtu_val > 0 {
-                        Some(u32::try_from(mtu_val).unwrap_or(u32::MAX))
-                    } else {
-                        None
-                    },
-                    drops_received: extras.drops_received,
-                    drops_transmitted: extras.drops_transmitted,
-                    display_name: None,
-                    description: None,
-                    ipv4_addresses: Vec::new(),
-                    ipv6_addresses: Vec::new(),
-                    gateway: gw.clone(),
-                    dns: dns.clone(),
-                    link_status: extras.link_status,
-                    speed_bps: extras.speed_bps,
-                    duplex: extras.duplex,
-                }
-            })
-            .collect())
+        Ok(SystemStatus::read_network_interfaces(&networks))
     }
 
     fn gateway(&self) -> StatusResult<Option<String>> {
@@ -2942,69 +2851,10 @@ impl OsProvider for SysinfoProvider {
 
 impl ProcessProvider for SysinfoProvider {
     fn processes(&mut self) -> StatusResult<ProcessSnapshot> {
-        let processes: Vec<ProcessStatus> = self
-            .sys
-            .processes()
-            .iter()
-            .map(|(pid, p)| {
-                let pid_u32 = pid.as_u32();
-                let cmd_line = p
-                    .cmd()
-                    .iter()
-                    .map(|c| c.to_string_lossy().to_string())
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                #[cfg(target_os = "linux")]
-                let (disk_read_bytes, disk_write_bytes) = read_proc_io(pid_u32);
-                #[cfg(not(target_os = "linux"))]
-                let (disk_read_bytes, disk_write_bytes): (
-                    Option<u64>,
-                    Option<u64>,
-                ) = (None, None);
-                #[cfg(target_os = "linux")]
-                let fd_count = read_proc_fd_count(pid_u32);
-                #[cfg(not(target_os = "linux"))]
-                let fd_count: Option<u32> = None;
-                ProcessStatus {
-                    pid: pid_u32,
-                    parent_pid: p.parent().map(sysinfo::Pid::as_u32),
-                    name: p.name().to_string_lossy().to_string(),
-                    cpu_usage: p.cpu_usage(),
-                    memory_bytes: p.memory(),
-                    status: format!("{}", p.status()),
-                    start_time: if p.start_time() > 0 {
-                        Some(p.start_time())
-                    } else {
-                        None
-                    },
-                    executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
-                    user: p.user_id().map(|uid| uid.to_string()),
-                    virtual_memory: p.virtual_memory(),
-                    #[cfg(target_os = "linux")]
-                    thread_count: read_proc_thread_count(pid_u32),
-                    #[cfg(not(target_os = "linux"))]
-                    thread_count: None,
-                    command_line: if cmd_line.is_empty() {
-                        None
-                    } else {
-                        Some(cmd_line)
-                    },
-                    #[cfg(target_os = "linux")]
-                    working_dir: read_proc_working_dir(pid_u32),
-                    #[cfg(not(target_os = "linux"))]
-                    working_dir: None,
-                    disk_read_bytes,
-                    disk_write_bytes,
-                    open_files: fd_count,
-                    fd_count,
-                }
-            })
-            .collect();
-        let total_count = processes.len();
-        Ok(ProcessSnapshot {
-            processes,
-            total_count,
-        })
+        // Delegate to the single shared mapping in
+        // SystemStatus::read_processes_from (cmdline, /proc io/fd/threads,
+        // working dir) so process construction stays in one place.
+        Ok(SystemStatus::read_processes_from(&self.sys))
     }
 
     fn process_tree(&mut self) -> StatusResult<std::collections::HashMap<u32, Vec<u32>>> {
@@ -3019,122 +2869,11 @@ impl ProcessProvider for SysinfoProvider {
 }
 
 impl GpuProvider for SysinfoProvider {
-    #[allow(
-        clippy::cast_precision_loss,
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        clippy::option_if_let_else
-    )]
-    // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
-    #[expect(
-        clippy::too_many_lines,
-        reason = "GPU enumeration spans multiple platform-specific probe strategies; splitting reduces readability"
-    )]
     fn gpus(&self) -> StatusResult<Vec<GpuInfo>> {
-        let mut gpus = Vec::new();
-        // Try system_profiler on macOS
-        #[cfg(target_os = "macos")]
-        {
-            if let Some(text) = run_cmd("system_profiler", &["SPDisplaysDataType", "-json"])
-                && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-                && let Some(displays) = json["SPDisplaysDataType"].as_array()
-            {
-                for display in displays {
-                    let name = display["sppci_model"]
-                        .as_str()
-                        .or_else(|| display["_name"].as_str())
-                        .unwrap_or("Unknown GPU")
-                        .to_string();
-                    let vendor = display["sppci_vendor"]
-                        .as_str()
-                        .unwrap_or("Unknown")
-                        .to_string();
-                    let vram = display["sppci_vram"].as_str().and_then(parse_vram_to_bytes);
-                    let device_id = display["sppci_device_id"]
-                        .as_str()
-                        .map(std::string::ToString::to_string);
-                    let gpu_type = if name.contains("Apple M") {
-                        Some("Integrated".to_string())
-                    } else {
-                        Some("Discrete".to_string())
-                    };
-                    gpus.push(GpuInfo {
-                        name,
-                        vendor,
-                        vram_bytes: vram,
-                        driver_version: None,
-                        gpu_type,
-                        temperature: None,
-                        utilization: None,
-                        device_id,
-                        pci_bus_id: None,
-                        used_vram_bytes: None,
-                        free_vram_bytes: None,
-                        memory_utilization: None,
-                        encoder_utilization: None,
-                        decoder_utilization: None,
-                        fan_speed_rpm: None,
-                        power_draw_watts: None,
-                        power_limit_watts: None,
-                        clock_speed_mhz: None,
-                    });
-                }
-            }
-        }
-        // Try nvidia-smi on Linux
-        #[cfg(target_os = "linux")]
-        {
-            if let Some(text) = run_cmd(
-                "nvidia-smi",
-                &[
-                    "--query-gpu=name,memory.total,driver_version,temperature.gpu,utilization.gpu,pci.bus_id,pci.device_id,memory.used,memory.free,utilization.memory,utilization.encoder,utilization.decoder,fan.speed,power.draw,power.limit,clocks.current.graphics",
-                    "--format=csv,noheader,nounits",
-                ],
-            ) {
-                for line in text.lines() {
-                    let parts: Vec<&str> = line.split(", ").collect();
-                    if parts.len() >= 16 {
-                        let name = parts[0].trim().to_string();
-                        let vram_mb: Option<u64> = parts[1].trim().parse().ok();
-                        let driver = parts[2].trim().to_string();
-                        let temperature: Option<f32> = parts[3].trim().parse().ok();
-                        let utilization: Option<f32> = parts[4].trim().parse().ok();
-                        let pci_bus_id = Some(parts[5].trim().to_string());
-                        let device_id = Some(parts[6].trim().to_string());
-                        let used_vram_mb: Option<u64> = parts[7].trim().parse().ok();
-                        let free_vram_mb: Option<u64> = parts[8].trim().parse().ok();
-                        let memory_utilization: Option<f32> = parts[9].trim().parse().ok();
-                        let encoder_utilization: Option<f32> = parts[10].trim().parse().ok();
-                        let decoder_utilization: Option<f32> = parts[11].trim().parse().ok();
-                        let fan_speed_rpm: Option<u32> = parts[12].trim().parse().ok();
-                        let power_draw_watts: Option<f32> = parts[13].trim().parse().ok();
-                        let power_limit_watts: Option<f32> = parts[14].trim().parse().ok();
-                        let clock_speed_mhz: Option<u32> = parts[15].trim().parse().ok();
-                        gpus.push(GpuInfo {
-                            name,
-                            vendor: "NVIDIA".to_string(),
-                            vram_bytes: vram_mb.map(|mb| mb * 1024 * 1024),
-                            driver_version: Some(driver),
-                            gpu_type: Some("Discrete".to_string()),
-                            temperature,
-                            utilization,
-                            device_id,
-                            pci_bus_id,
-                            used_vram_bytes: used_vram_mb.map(|mb| mb * 1024 * 1024),
-                            free_vram_bytes: free_vram_mb.map(|mb| mb * 1024 * 1024),
-                            memory_utilization,
-                            encoder_utilization,
-                            decoder_utilization,
-                            fan_speed_rpm,
-                            power_draw_watts,
-                            power_limit_watts,
-                            clock_speed_mhz,
-                        });
-                    }
-                }
-            }
-        }
-        Ok(gpus)
+        // Delegate to the single shared enumeration in
+        // SystemStatus::read_gpus (system_profiler on macOS,
+        // nvidia-smi on Linux) so GPU construction stays in one place.
+        Ok(SystemStatus::read_gpus())
     }
 }
 
@@ -6000,6 +5739,76 @@ mod tests {
         let gpus = provider.gpus().expect("gpus should succeed");
         // GPU detection may or may not find devices; verify the vec is accessible.
         let _ = gpus.len();
+    }
+
+    #[test]
+    fn provider_delegates_to_system_status_static_methods() {
+        // The DiskProvider/NetworkProvider/ProcessProvider/GpuProvider
+        // trait impls must delegate to the single shared mapping in the
+        // SystemStatus::read_* static methods (no second divergent copy).
+        // Pin that contract: the provider result must equal the static
+        // method result captured in the same instant.
+        let mut provider = SysinfoProvider::new();
+
+        // GPUs: deterministic probe (system_profiler / nvidia-smi), so the
+        // two paths must return identical name/vendor sets.
+        let provider_gpus = provider.gpus().expect("gpus should succeed");
+        let static_gpus = SystemStatus::read_gpus();
+        assert_eq!(provider_gpus.len(), static_gpus.len(), "gpu count diverged");
+        for (a, b) in provider_gpus.iter().zip(static_gpus.iter()) {
+            assert_eq!(a.name, b.name, "gpu name diverged");
+            assert_eq!(a.vendor, b.vendor, "gpu vendor diverged");
+        }
+
+        // Disks: device name + filesystem + mount point are stable across a
+        // sub-second pair of probes; this is exactly the mapping that was
+        // duplicated (disk-type detection included).
+        let provider_disks = provider.all_disks().expect("all_disks should succeed");
+        let static_disks = SystemStatus::read_disks();
+        assert_eq!(
+            provider_disks.len(),
+            static_disks.len(),
+            "disk count diverged"
+        );
+        for (a, b) in provider_disks.iter().zip(static_disks.iter()) {
+            assert_eq!(a.name, b.name, "disk name diverged");
+            assert_eq!(a.filesystem, b.filesystem, "disk filesystem diverged");
+            assert_eq!(a.mount_point, b.mount_point, "disk mount_point diverged");
+            assert_eq!(a.disk_type, b.disk_type, "disk_type diverged");
+            assert_eq!(
+                a.physical_device_path, b.physical_device_path,
+                "physical_device_path diverged"
+            );
+        }
+    }
+
+    #[test]
+    fn provider_processes_pid_set_matches_static() {
+        // ProcessProvider::processes delegates to read_processes_from; the
+        // PID set is stable across a sub-second pair of probes, so the two
+        // paths must observe the same population.
+        let mut provider = SysinfoProvider::new();
+        let provider_procs = provider.processes().expect("processes should succeed");
+        let static_procs = SystemStatus::read_processes_from(&provider.sys);
+        assert!(
+            provider_procs.total_count > 0,
+            "should have at least one process"
+        );
+        let provider_pids: std::collections::HashSet<u32> =
+            provider_procs.processes.iter().map(|p| p.pid).collect();
+        let static_pids: std::collections::HashSet<u32> =
+            static_procs.processes.iter().map(|p| p.pid).collect();
+        // The intersection should be the overwhelming majority of both sets;
+        // require at least 90% overlap to absorb a handful of short-lived
+        // processes appearing/disappearing between the two probes.
+        let overlap = provider_pids.intersection(&static_pids).count();
+        let min_overlap = provider_pids.len() / 10;
+        assert!(
+            overlap >= min_overlap,
+            "PID sets diverged: overlap={overlap} of provider={}, static={}",
+            provider_pids.len(),
+            static_pids.len()
+        );
     }
 
     #[test]

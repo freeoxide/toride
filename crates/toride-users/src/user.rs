@@ -196,3 +196,58 @@ pub fn get_shell(passwd: &Path, username: &str) -> Result<String> {
         .map(|e| e.shell.clone())
         .ok_or_else(|| Error::UserNotFound(username.to_owned()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_passwd(content: &str) -> std::path::PathBuf {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("passwd");
+        std::fs::write(&path, content).unwrap();
+        std::mem::forget(dir); // keep the temp alive for the test
+        path
+    }
+
+    const FIXTURE: &str = "\
+root:x:0:0:root:/root:/bin/bash
+alice:x:1000:1000:Alice:/home/alice:/bin/bash
+bob:x:1001:1001::/home/bob:/usr/sbin/nologin
+svc:x:1002:1002::/opt/svc:/bin/false
+";
+
+    #[test]
+    fn user_exists_true_and_false() {
+        let passwd = write_passwd(FIXTURE);
+        assert!(user_exists(&passwd, "alice").unwrap());
+        assert!(!user_exists(&passwd, "ghost").unwrap());
+    }
+
+    #[test]
+    fn user_exists_missing_file_is_io_error() {
+        // A missing passwd should surface as an IO error, not UserNotFound.
+        let missing = std::path::PathBuf::from("/nonexistent/passwd-toride-test");
+        assert!(user_exists(&missing, "alice").is_err());
+    }
+
+    #[test]
+    fn get_uid_resolves_and_errors() {
+        let passwd = write_passwd(FIXTURE);
+        assert_eq!(get_uid(&passwd, "alice").unwrap(), 1000);
+        assert!(matches!(
+            get_uid(&passwd, "ghost"),
+            Err(Error::UserNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn get_shell_resolves_and_errors() {
+        let passwd = write_passwd(FIXTURE);
+        assert_eq!(get_shell(&passwd, "alice").unwrap(), "/bin/bash");
+        assert_eq!(get_shell(&passwd, "bob").unwrap(), "/usr/sbin/nologin");
+        assert!(matches!(
+            get_shell(&passwd, "ghost"),
+            Err(Error::UserNotFound(_))
+        ));
+    }
+}

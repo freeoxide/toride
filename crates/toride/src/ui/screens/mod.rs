@@ -2,6 +2,8 @@ pub mod about;
 pub mod base;
 pub mod dashboard;
 pub mod fail2ban;
+/// Shared severity styling + findings-grouping helpers.
+pub mod findings;
 /// Help modal overlay content renderer.
 pub mod help;
 pub mod logs;

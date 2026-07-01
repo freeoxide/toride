@@ -4,8 +4,8 @@
 //! files including auditd.conf, AIDE configuration, and rsyslog settings.
 
 use std::fs;
-use std::path::Path;
 
+use crate::paths::{secure_dir_mode, secure_file_mode};
 use crate::{AuditPaths, Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -50,9 +50,12 @@ impl<'a> ConfigManager<'a> {
 
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
+            secure_dir_mode(parent)?;
         }
 
         fs::write(&path, content).map_err(|e| Error::ConfigWrite(format!("{e}")))?;
+        // Pin restrictive mode regardless of umask.
+        secure_file_mode(&path)?;
         Ok(())
     }
 
@@ -75,8 +78,14 @@ impl<'a> ConfigManager<'a> {
             crate::backup::create_backup(&self.paths.aide_conf)?;
         }
 
+        if let Some(parent) = self.paths.aide_conf.parent() {
+            fs::create_dir_all(parent)?;
+            secure_dir_mode(parent)?;
+        }
+
         fs::write(&self.paths.aide_conf, content)
             .map_err(|e| Error::ConfigWrite(format!("{e}")))?;
+        secure_file_mode(&self.paths.aide_conf)?;
         Ok(())
     }
 

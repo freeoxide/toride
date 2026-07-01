@@ -180,11 +180,19 @@ fn expected_values(key: &str) -> Option<Vec<&'static str>> {
 }
 
 /// Return numeric range for known numeric sysctl keys.
+///
+/// These ranges must stay aligned with [`expected_values`]: every value in the
+/// allowlist for a key must fall within its numeric range, otherwise the two
+/// checks in [`validate_sysctl_value`] contradict each other (the allowlist
+/// accepts a value that the range check then rejects).
 fn numeric_range(key: &str) -> Option<(i64, i64)> {
     match key {
-        "kernel.kptr_restrict" | "kernel.dmesg_restrict" => Some((0, 1)),
+        // expected_values lists ["0","1","2","3"] for each of these; the cap
+        // must cover the same set so the allowlist and range checks agree.
+        "kernel.kptr_restrict" | "kernel.dmesg_restrict" | "kernel.yama.ptrace_scope" => {
+            Some((0, 3))
+        }
         "kernel.randomize_va_space" => Some((0, 2)),
-        "kernel.yama.ptrace_scope" => Some((0, 3)),
         "vm.swappiness" => Some((0, 100)),
         "net.core.somaxconn" => Some((1, 4_294_967_295)),
         _ => None,
@@ -220,6 +228,31 @@ mod tests {
     fn invalid_values_rejected() {
         assert!(validate_sysctl_value("kernel.kptr_restrict", "5").is_err());
         assert!(validate_sysctl_value("kernel.kptr_restrict", "").is_err());
+    }
+
+    #[test]
+    fn kptr_restrict_accepts_hardened_high_values() {
+        // Regression: expected_values lists ["0","1","2","3"] for
+        // kernel.kptr_restrict, but numeric_range previously capped it at (0,1),
+        // so the allowlist accepted values 2/3 and the range check immediately
+        // rejected them. A hardened host with kptr_restrict=2 (or 3) must
+        // validate cleanly.
+        for v in ["0", "1", "2", "3"] {
+            assert!(
+                validate_sysctl_value("kernel.kptr_restrict", v).is_ok(),
+                "kptr_restrict={v} should be accepted (matches expected_values + numeric_range)"
+            );
+        }
+        // Sibling key with the same mismatch (expected 0..=3, was capped 0..=1).
+        for v in ["0", "1", "2", "3"] {
+            assert!(
+                validate_sysctl_value("kernel.dmesg_restrict", v).is_ok(),
+                "dmesg_restrict={v} should be accepted (matches expected_values + numeric_range)"
+            );
+        }
+        // Out-of-range must still be rejected (range upper bound is real).
+        assert!(validate_sysctl_value("kernel.kptr_restrict", "4").is_err());
+        assert!(validate_sysctl_value("kernel.dmesg_restrict", "4").is_err());
     }
 
     #[test]

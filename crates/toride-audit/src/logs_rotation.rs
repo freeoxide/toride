@@ -6,6 +6,7 @@
 use std::fmt::Write as _;
 use std::fs;
 
+use crate::paths::{secure_dir_mode, secure_file_mode, validate_name};
 use crate::{AuditPaths, Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ pub fn write_logrotate_config(
     name: &str,
     config: &LogrotateConfig,
 ) -> Result<()> {
+    validate_name(name)?;
     let path = paths.logrotate_d.join(name);
 
     if path.exists() {
@@ -77,9 +79,14 @@ pub fn write_logrotate_config(
     }
 
     fs::create_dir_all(&paths.logrotate_d)?;
+    // Pin the parent directory mode regardless of umask.
+    secure_dir_mode(&paths.logrotate_d)?;
 
     let content = render_logrotate_config(config);
     fs::write(&path, content).map_err(|e| Error::ConfigWrite(format!("{e}")))?;
+    // Pin the file mode regardless of umask: the config embeds a root-run
+    // postrotate snippet and must never be group/other writable.
+    secure_file_mode(&path)?;
     Ok(())
 }
 
@@ -91,6 +98,7 @@ pub fn write_logrotate_config(
 ///
 /// Returns [`Error::Io`] if the file cannot be removed.
 pub fn remove_logrotate_config(paths: &AuditPaths, name: &str) -> Result<()> {
+    validate_name(name)?;
     let path = paths.logrotate_d.join(name);
 
     if path.exists() {
@@ -284,5 +292,70 @@ mod tests {
     #[test]
     fn logrotate_frequency_default_is_daily() {
         assert_eq!(LogrotateFrequency::default(), LogrotateFrequency::Daily);
+    }
+
+    /// Build an `AuditPaths` rooted at a temp dir so writes don't touch `/etc`.
+    fn paths_for(dir: &std::path::Path) -> AuditPaths {
+        AuditPaths {
+            audit_dir: dir.join("audit"),
+            rules_d: dir.join("audit/rules.d"),
+            aide_conf: dir.join("aide.conf"),
+            aide_db_dir: dir.join("aide"),
+            rsyslog_conf: dir.join("rsyslog.conf"),
+            rsyslog_d: dir.join("rsyslog.d"),
+            logrotate_d: dir.join("logrotate.d"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_logrotate_config_pins_restrictive_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        // Force a permissive umask for the duration of the write so we prove
+        // the explicit chmod overrides it.
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_for(dir.path());
+        let config = default_audit_logrotate();
+
+        write_logrotate_config(&paths, "audit", &config).unwrap();
+
+        let path = paths.logrotate_d.join("audit");
+        assert!(path.exists(), "config file should be created");
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        // No group/other write bits, and overall 0o644.
+        assert_eq!(mode & 0o022, 0, "no group/other write bits allowed");
+        assert_eq!(mode & 0o777, 0o644);
+
+        // Parent directory must be 0o755.
+        let dmode = std::fs::metadata(&paths.logrotate_d)
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dmode & 0o777, 0o755);
+    }
+
+    #[test]
+    fn write_logrotate_config_rejects_traversal_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_for(dir.path());
+        let config = default_audit_logrotate();
+
+        // A `..` name must be rejected before any file is written.
+        assert!(
+            write_logrotate_config(&paths, "..", &config).is_err(),
+            "`..` must be rejected as a traversal name"
+        );
+        // Empty and absolute names are rejected too.
+        assert!(write_logrotate_config(&paths, "", &config).is_err());
+        // A name with a path separator is rejected.
+        assert!(write_logrotate_config(&paths, "evil/escape", &config).is_err());
+    }
+
+    #[test]
+    fn write_logrotate_config_rejects_leading_dash() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = paths_for(dir.path());
+        let config = default_audit_logrotate();
+        assert!(write_logrotate_config(&paths, "--flag", &config).is_err());
     }
 }

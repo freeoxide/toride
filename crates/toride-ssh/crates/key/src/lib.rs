@@ -345,9 +345,14 @@ impl<'a> KeyService<'a> {
     ///
     /// # Security
     ///
-    /// Passphrases are passed as command-line arguments to `ssh-keygen`, which
-    /// makes them briefly visible to other processes via `/proc/<pid>/cmdline`
-    /// or `ps`. This is an inherent limitation of the `ssh-keygen` interface.
+    /// Neither the old nor the new passphrase is ever placed on the
+    /// `ssh-keygen` argv. `ssh-keygen -p` is invoked WITHOUT `-P`/`-N` so it
+    /// prompts for the passphrases, and they are fed through a temporary
+    /// `SSH_ASKPASS` helper script — the same approach used by
+    /// [`Self::create`](Self::create)/[`generate_key`](crate::generate). The
+    /// passphrase therefore never appears in `argv` or `/proc/<pid>/cmdline`,
+    /// unlike the old `-P <old> -N <new>` approach which exposed it to every
+    /// local user via `ps` for the lifetime of the `ssh-keygen` process.
     ///
     /// # Errors
     ///
@@ -372,20 +377,15 @@ impl<'a> KeyService<'a> {
         let old_pass = old_passphrase.unwrap_or("").to_owned();
         let new_pass = new_passphrase.unwrap_or("").to_owned();
 
-        self.runner
-            .run(
-                "ssh-keygen",
-                vec![
-                    "-p".to_owned(),
-                    "-f".to_owned(),
-                    path_str,
-                    "-P".to_owned(),
-                    old_pass,
-                    "-N".to_owned(),
-                    new_pass,
-                ],
-            )
-            .await?;
+        // `ssh-keygen -p` (with no `-P`/`-N`) prompts THREE times when run via
+        // SSH_ASKPASS: "Enter old passphrase", "Enter new passphrase", then
+        // "Enter same passphrase again" (confirmation). The askpass helper is
+        // invoked once per prompt, so it must answer old, new, new in order.
+        // A single-value askpass (like the one used for key generation) is not
+        // sufficient here.
+        let askpass = MultiAskpassHandler::new(&[&old_pass, &new_pass, &new_pass])?;
+        let args = vec!["-p".to_owned(), "-f".to_owned(), path_str];
+        run_with_askpass(self.runner, "ssh-keygen", args, &askpass).await?;
 
         Ok(())
     }
@@ -393,6 +393,13 @@ impl<'a> KeyService<'a> {
     /// Change the comment on an existing key (`ssh-keygen -c`).
     ///
     /// Updates both the private and public key files.
+    ///
+    /// # Security
+    ///
+    /// When a passphrase is supplied it is fed to `ssh-keygen` through a
+    /// temporary `SSH_ASKPASS` helper script (the same mechanism used by
+    /// [`Self::create`](Self::create)) rather than as `-P <passphrase>` on the
+    /// argv, so it never appears in `/proc/<pid>/cmdline` or `ps`.
     ///
     /// # Errors
     ///
@@ -413,20 +420,24 @@ impl<'a> KeyService<'a> {
             .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
             .to_owned();
 
-        let pass = passphrase.unwrap_or("").to_owned();
+        let pass = passphrase.unwrap_or("");
 
-        let mut args = vec![
+        let args = vec![
             "-c".to_owned(),
             "-f".to_owned(),
             path_str,
             "-C".to_owned(),
             new_comment.to_owned(),
         ];
-        if !pass.is_empty() {
-            args.extend(["-P".to_owned(), pass]);
-        }
 
-        self.runner.run("ssh-keygen", args).await?;
+        // `ssh-keygen -c` prompts once for the passphrase when the key is
+        // encrypted; a single-value askpass handler suffices.
+        if pass.is_empty() {
+            self.runner.run("ssh-keygen", args).await?;
+        } else {
+            let askpass = toride_ssh_agent::AskpassHandler::new(pass)?;
+            run_with_askpass(self.runner, "ssh-keygen", args, &askpass).await?;
+        }
         Ok(())
     }
 
@@ -518,6 +529,202 @@ impl<'a> KeyService<'a> {
     }
 }
 
+/// An `SSH_ASKPASS` helper whose lifecycle is owned by the caller.
+///
+/// Implementors write a temporary executable script to disk that `ssh-keygen`
+/// (or another SSH tool) reads passphrases from via `SSH_ASKPASS`, and remove
+/// it again on drop. The passphrase(s) are thus kept out of the child process
+/// `argv` and `/proc/<pid>/cmdline`.
+pub(crate) trait Askpass {
+    /// Path to the on-disk askpass script.
+    fn script_path(&self) -> &std::path::Path;
+}
+
+impl Askpass for toride_ssh_agent::AskpassHandler {
+    fn script_path(&self) -> &std::path::Path {
+        toride_ssh_agent::AskpassHandler::script_path(self)
+    }
+}
+
+/// Run `cmd` with `args` and the askpass environment wired so that passphrase
+/// prompts are answered by `askpass` instead of appearing on the argv.
+///
+/// Centralizes the `SSH_ASKPASS`/`SSH_ASKPASS_REQUIRE`/`DISPLAY` env wiring
+/// shared by [`KeyService::change_passphrase`], [`KeyService::change_comment`],
+/// and [`repair::repair_public_key`].
+pub(crate) async fn run_with_askpass(
+    runner: &dyn toride_ssh_core::CliRunner,
+    cmd: &str,
+    args: Vec<String>,
+    askpass: &dyn Askpass,
+) -> Result<String> {
+    let env = vec![
+        (
+            "SSH_ASKPASS".to_owned(),
+            askpass.script_path().to_string_lossy().into_owned(),
+        ),
+        ("SSH_ASKPASS_REQUIRE".to_owned(), "force".to_owned()),
+        ("DISPLAY".to_owned(), ":0".to_owned()),
+    ];
+    runner.run_with_env(cmd, args, env).await
+}
+
+/// A multi-response `SSH_ASKPASS` handler.
+///
+/// [`toride_ssh_agent::AskpassHandler`] always echoes the same passphrase on
+/// every invocation, which is correct for tools that prompt once (key
+/// generation, `ssh-keygen -c`/`-y`). `ssh-keygen -p`, however, prompts three
+/// times when driven via `SSH_ASKPASS` — old, new, new (confirmation) — so the
+/// helper must answer a different value per invocation. This handler writes a
+/// script that returns `responses[i]` on the `i`-th call (and the last value
+/// for any subsequent call, so extra confirmation prompts are still answered).
+///
+/// The script is created with mode `0o700` and removed on drop, mirroring
+/// [`toride_ssh_agent::AskpassHandler`].
+struct MultiAskpassHandler {
+    script_path: std::path::PathBuf,
+}
+
+impl MultiAskpassHandler {
+    /// Create a handler that answers the `i`-th askpass invocation with
+    /// `responses[i]` (clamped to the last entry).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CommandFailed`] if the temporary script cannot be
+    /// written or made executable.
+    fn new(responses: &[&str]) -> Result<Self> {
+        use std::io::Write;
+        #[cfg(unix)]
+        use std::os::unix::fs::OpenOptionsExt;
+
+        // Build the script body. Each response is emitted by a dedicated
+        // `case` arm keyed on the invocation counter; the fallthrough arm
+        // repeats the final response so a confirmation prompt (or any future
+        // extra prompt) is still answered with the new passphrase.
+        //
+        // The invocation counter is persisted in a sibling `.cnt` file (its
+        // path is baked into the script, so no extra env wiring is needed).
+        use std::fmt::Write as _;
+        let mut arms = String::new();
+        for (i, resp) in responses.iter().enumerate() {
+            // The script increments its counter BEFORE the `case`, so the
+            // first invocation is `n=1` — arm indices must be 1-based.
+            let arm = i + 1;
+            let escaped = resp.replace('\'', "'\\''");
+            let _ = writeln!(arms, "    {arm}) echo '{escaped}';;");
+        }
+        let last_escaped = responses
+            .last()
+            .map(|r| r.replace('\'', "'\\''"))
+            .unwrap_or_default();
+
+        let dir = std::env::temp_dir();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos();
+        let pid = std::process::id();
+        let tid = format!("{:?}", std::thread::current().id())
+            .replace("ThreadId(", "")
+            .replace(')', "");
+        let filename = format!("toride-askpass-multi-{pid}-{tid}-{ts}");
+
+        // Write via a hidden sibling + atomic rename so the published script
+        // is never observed half-written or open-for-writing (avoids
+        // ETXTBSY). The temp file is created with its final 0o700 mode via a
+        // single O_CREAT|O_EXCL open, so there is no window in which the
+        // script exists but is world-readable or non-executable.
+        let tmp_path = dir.join(format!("{filename}.tmp"));
+        let script_path = dir.join(&filename);
+        // Sibling counter file; its path is baked into the script so no extra
+        // env wiring is needed. Cleaned up alongside the script on drop.
+        let count_path = dir.join(format!("{filename}.cnt"));
+
+        let count_path_str = count_path.to_string_lossy().replace('\'', "'\\''");
+        let script = format!(
+            "#!/bin/sh\n\
+             # Generated by toride-ssh-key: answers SSH_ASKPASS prompts in order.\n\
+             n=$(cat '{count_path_str}' 2>/dev/null || echo 0)\n\
+             n=$((n+1))\n\
+             printf '%s' \"$n\" >'{count_path_str}'\n\
+             case \"$n\" in\n\
+             {arms}\
+             *) echo '{last_escaped}';;\n\
+             esac\n"
+        );
+
+        #[cfg(unix)]
+        {
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o700)
+                .open(&tmp_path)
+                .map_err(|e| {
+                    Error::CommandFailed(format!(
+                        "failed to create multi-askpass script {}: {e}",
+                        tmp_path.display()
+                    ))
+                })?;
+            file.write_all(script.as_bytes()).map_err(|e| {
+                Error::CommandFailed(format!(
+                    "failed to write multi-askpass script {}: {e}",
+                    tmp_path.display()
+                ))
+            })?;
+            let _ = file.sync_all();
+            drop(file);
+            std::fs::rename(&tmp_path, &script_path).map_err(|e| {
+                let _ = std::fs::remove_file(&tmp_path);
+                Error::CommandFailed(format!(
+                    "failed to publish multi-askpass script {}: {e}",
+                    script_path.display()
+                ))
+            })?;
+        }
+
+        // Non-Unix: best-effort plain write (no exec bit needed for the
+        // shape of the test, and SSH_ASKPASS is Unix-only in practice).
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&script_path, script.as_bytes()).map_err(|e| {
+                Error::CommandFailed(format!(
+                    "failed to write multi-askpass script {}: {e}",
+                    script_path.display()
+                ))
+            })?;
+        }
+
+        Ok(Self { script_path })
+    }
+
+    /// Path to the on-disk askpass script.
+    fn script_path(&self) -> &std::path::Path {
+        &self.script_path
+    }
+}
+
+impl Askpass for MultiAskpassHandler {
+    fn script_path(&self) -> &std::path::Path {
+        self.script_path()
+    }
+}
+
+impl Drop for MultiAskpassHandler {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_file(&self.script_path) {
+            tracing::warn!(
+                "failed to remove multi-askpass script {}: {e}",
+                self.script_path.display()
+            );
+        }
+        // Best-effort cleanup of the sibling counter file.
+        let count_path = self.script_path.with_extension("cnt");
+        let _ = std::fs::remove_file(&count_path);
+    }
+}
+
 /// Remove a key from the SSH agent.
 ///
 /// This is intentionally non-fatal: the key may not be loaded in the agent,
@@ -533,6 +740,81 @@ async fn remove_key_from_agent(
 
     if let Err(e) = runner.run("ssh-add", vec!["-d".to_owned(), path_str]).await {
         tracing::warn!("ssh-add -d failed (key may not be in agent): {e}");
+    }
+}
+
+/// Filter `IdentityFile`/`CertificateFile` references to `key_name` out of an
+/// SSH config body.
+///
+/// Pure helper extracted from [`remove_from_config`] so the quote/tilde/CRLF
+/// matching logic is unit-testable without a filesystem round-trip. A line is
+/// dropped when its leading keyword (matched case-insensitively) is
+/// `IdentityFile` (or `CertificateFile`) AND its value — after stripping one
+/// layer of surrounding `"` or `'` quotes — equals one of:
+///
+/// - `~/.ssh/<key_name>` (tilde form) / `~/.ssh/<key_name>-cert.pub`
+/// - `<ssh_dir>/<key_name>` (absolute form) / `<ssh_dir>/<key_name>-cert.pub`
+/// - the bare `<key_name>` / `<key_name>-cert.pub`
+///
+/// The original line-ending style (`\r\n` vs `\n`) and any trailing newline
+/// are preserved. Lines that merely *contain* the name as a substring, or are
+/// comments, are left untouched.
+fn filter_config_lines(content: &str, ssh_dir_str: &str, key_name: &str) -> String {
+    let key_pattern_tilde = format!("~/.ssh/{key_name}");
+    let key_pattern_abs = format!("{ssh_dir_str}/{key_name}");
+
+    // Also match CertificateFile directives for the companion cert.
+    let cert_name = format!("{key_name}-cert.pub");
+    let cert_pattern_tilde = format!("~/.ssh/{cert_name}");
+    let cert_pattern_abs = format!("{ssh_dir_str}/{cert_name}");
+
+    let trailing_newline = content.ends_with('\n');
+    // Preserve the original line ending style (\r\n vs \n).
+    let line_ending = if content.contains("\r\n") {
+        "\r\n"
+    } else {
+        "\n"
+    };
+
+    let new_content: String = content
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim();
+            // Extract the keyword (first whitespace-delimited token) and
+            // compare case-insensitively.  This avoids matching directives
+            // like "IdentityFileSomething" or comments containing the word.
+            let keyword = trimmed.split_whitespace().next().unwrap_or("");
+
+            if keyword.eq_ignore_ascii_case("IdentityFile") {
+                // Extract the value (everything after the keyword).
+                let value = trimmed[keyword.len()..].trim();
+                // Remove quotes if present
+                let value = value.trim_matches('"').trim_matches('\'');
+                return value != key_pattern_tilde
+                    && value != key_pattern_abs
+                    && value != key_name;
+            }
+
+            if keyword.eq_ignore_ascii_case("CertificateFile") {
+                // Extract the value (everything after the keyword).
+                let value = trimmed[keyword.len()..].trim();
+                // Remove quotes if present
+                let value = value.trim_matches('"').trim_matches('\'');
+                return value != cert_pattern_tilde
+                    && value != cert_pattern_abs
+                    && value != cert_name;
+            }
+
+            true
+        })
+        .collect::<Vec<&str>>()
+        .join(line_ending);
+
+    // Preserve trailing newline from the original file
+    if trailing_newline && !new_content.is_empty() {
+        format!("{new_content}{line_ending}")
+    } else {
+        new_content
     }
 }
 
@@ -572,64 +854,7 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
             }
         };
 
-        // Remove lines that reference this key as an IdentityFile.
-        // Match lines like: IdentityFile ~/.ssh/<key_name> or IdentityFile <full_path>
-        let key_pattern_tilde = format!("~/.ssh/{key_name_owned}");
-        let key_pattern_abs = format!("{ssh_dir_str}/{key_name_owned}");
-
-        // Also match CertificateFile directives for the companion cert.
-        let cert_name = format!("{key_name_owned}-cert.pub");
-        let cert_pattern_tilde = format!("~/.ssh/{cert_name}");
-        let cert_pattern_abs = format!("{ssh_dir_str}/{cert_name}");
-
-        let trailing_newline = content.ends_with('\n');
-        // Preserve the original line ending style (\r\n vs \n).
-        let line_ending = if content.contains("\r\n") {
-            "\r\n"
-        } else {
-            "\n"
-        };
-
-        let new_content: String = content
-            .lines()
-            .filter(|line| {
-                let trimmed = line.trim();
-                // Extract the keyword (first whitespace-delimited token) and
-                // compare case-insensitively.  This avoids matching directives
-                // like "IdentityFileSomething" or comments containing the word.
-                let keyword = trimmed.split_whitespace().next().unwrap_or("");
-
-                if keyword.eq_ignore_ascii_case("IdentityFile") {
-                    // Extract the value (everything after the keyword).
-                    let value = trimmed[keyword.len()..].trim();
-                    // Remove quotes if present
-                    let value = value.trim_matches('"').trim_matches('\'');
-                    return value != key_pattern_tilde
-                        && value != key_pattern_abs
-                        && value != key_name_owned;
-                }
-
-                if keyword.eq_ignore_ascii_case("CertificateFile") {
-                    // Extract the value (everything after the keyword).
-                    let value = trimmed[keyword.len()..].trim();
-                    // Remove quotes if present
-                    let value = value.trim_matches('"').trim_matches('\'');
-                    return value != cert_pattern_tilde
-                        && value != cert_pattern_abs
-                        && value != cert_name;
-                }
-
-                true
-            })
-            .collect::<Vec<&str>>()
-            .join(line_ending);
-
-        // Preserve trailing newline from the original file
-        let final_content = if trailing_newline && !new_content.is_empty() {
-            format!("{new_content}{line_ending}")
-        } else {
-            new_content
-        };
+        let final_content = filter_config_lines(&content, &ssh_dir_str, &key_name_owned);
 
         if final_content != content {
             // Atomic write: temp file + rename to prevent corruption on crash.

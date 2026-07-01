@@ -127,12 +127,15 @@ pub fn render_totp_sudoers(username: &str) -> String {
 /// Render PAM rules for TOTP/2FA integration with `pam_google_authenticator.so`.
 ///
 /// Returns the rules to insert into `/etc/pam.d/sshd` or `/etc/pam.d/sudo`.
+///
+/// No `nullok`: TOTP is mandatory once enabled. `nullok` lets users without a
+/// secret file skip the module, which defeats 2FA for the existing user base.
 #[must_use]
 pub fn render_totp_pam_rules() -> Vec<PamRule> {
     vec![PamRule {
         management_group: "auth".to_owned(),
         control: "required".to_owned(),
         module: "pam_google_authenticator.so".to_owned(),
-        arguments: vec!["nullok".to_owned()],
+        arguments: Vec::new(),
     }]
 }

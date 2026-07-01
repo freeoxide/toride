@@ -1527,8 +1527,20 @@ impl<'a> Doctor<'a> {
                     break;
                 }
             }
-            if !already_flagged && let Ok(content) = std::fs::read_to_string(path) {
-                let lines: Vec<&str> = content.lines().take(10).collect();
+            // Stream only the first few lines instead of reading the whole file
+            // into memory. `read_to_string` would slurp a multi-hundred-MB
+            // auth.log on every diagnostic run; BufReader bounds memory to the
+            // first `PROXY_IP_SAMPLE_LINES` lines regardless of file size.
+            if !already_flagged
+                && let Ok(file) = std::fs::File::open(path)
+            {
+                use std::io::BufRead;
+                let reader = std::io::BufReader::new(file);
+                let lines: Vec<String> = reader
+                    .lines()
+                    .take(PROXY_IP_SAMPLE_LINES)
+                    .filter_map(std::result::Result::ok)
+                    .collect();
                 if !lines.is_empty() {
                     let mut all_private = true;
                     let mut any_ip_found = false;
@@ -3564,6 +3576,15 @@ fn permission_mode(_permissions: &std::fs::Permissions) -> u32 {
 // ---------------------------------------------------------------------------
 // IP address helpers (for log path checks)
 // ---------------------------------------------------------------------------
+
+/// Number of leading log lines inspected when detecting a reverse-proxy /
+/// private-IP situation in [`Doctor::check_single_log_path`].
+///
+/// Kept small on purpose: we only ever need a representative sample of the
+/// newest entries, and streaming this many lines bounds the memory of the
+/// diagnostic regardless of the underlying log file size (e.g. a multi-hundred
+/// MB `auth.log`).
+const PROXY_IP_SAMPLE_LINES: usize = 10;
 
 /// Extract IP address strings from a single log line.
 ///

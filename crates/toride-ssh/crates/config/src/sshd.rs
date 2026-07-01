@@ -133,6 +133,7 @@ pub async fn save(ast: &ConfigAst, running_as_root: bool) -> Result<()> {
 /// file is openable by every contending user. Exposed (module-private) so the
 /// serialization guarantee can be unit-tested without driving a full privileged
 /// `sshd_config` write.
+#[cfg(test)]
 fn with_edit_lock<T>(path: &std::path::Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
     ensure_lock_file(path);
     // `toride_fs::with_lock` requires a closure returning `toride_fs::Result`,
@@ -169,42 +170,59 @@ fn with_edit_lock<T>(path: &std::path::Path, f: impl FnOnce() -> Result<T>) -> R
 /// the same original config, applying their edit, and the second install
 /// clobbering the first.
 ///
-/// Implementation note: the sync [`with_edit_lock`] closure must span the
-/// async load/save, so the critical section runs under
-/// [`tokio::task::block_in_place`] + [`tokio::runtime::Handle::block_on`].
-/// `block_in_place` moves the current worker into a blocking-friendly state on
-/// the *same* thread (no thread hop, so the caller's closure `f` need not be
-/// `Send`/`'static`), and `Handle::block_on` is then legal to call. The
-/// closure-based lock releases on every return path — error, panic, or success.
+/// Implementation note: the lock guard is held across the awaited load/save so
+/// the critical section stays non-blocking from the runtime's perspective at
+/// the `.await` points (the file I/O and the privileged `sshd -t`/install run
+/// on blocking threads inside `load`/`save`). This avoids
+/// [`tokio::task::block_in_place`] + a nested `Handle::block_on`, which would
+/// panic with "can call blocking only when running on the multi-threaded
+/// runtime" when `edit()` is driven from a current-thread runtime (the default
+/// for `#[tokio::test]` and many embedded runtimes). The caller's closure `f`
+/// stays `FnOnce` (no `Send`/`'static` bound) because the guard, lock, and
+/// backing file are all plain locals dropped in declaration order at scope end.
 ///
 /// # Errors
 ///
 /// Propagates any error from locking, loading, the closure, or saving.
-#[allow(
-    clippy::unused_async,
-    reason = "public async API; callers .await it; await lives in an inner async block driven via handle.block_on to stay non-Send"
-)]
 pub async fn edit<F>(running_as_root: bool, f: F) -> Result<()>
 where
     F: FnOnce(&mut ConfigAst) -> Result<()>,
 {
     let lock_path = edit_lock_path();
-    // Capture the current runtime handle BEFORE entering block_in_place so the
-    // sync lock closure can drive the async load/mutate/save via block_on.
-    let handle = tokio::runtime::Handle::current();
+    ensure_lock_file(&lock_path);
 
-    // block_in_place runs the flock + the block_on that drives the async
-    // critical section on the current worker thread without a thread hop. This
-    // keeps the caller's closure `f` non-Send/non-'static.
-    tokio::task::block_in_place(|| -> Result<()> {
-        with_edit_lock(&lock_path, || {
-            handle.block_on(async {
-                let mut ast = load().await?;
-                f(&mut ast)?;
-                save(&ast, running_as_root).await
-            })
-        })
-    })
+    // Acquire the cross-process advisory lock. The lock, the backing file, and
+    // the write guard are all locals here; declaration order guarantees the
+    // guard (borrowing `lock`) is dropped before `lock` (and the file it owns)
+    // at scope end, releasing the flock on every return path — error, panic,
+    // or success. The lock-acquire itself is a `flock(2)` syscall (cheap; only
+    // contends with other toride instances editing sshd_config, a brief and
+    // rare contention), so it does not need to run on a blocking thread.
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| {
+            toride_ssh_core::Error::Io(std::io::Error::other(format!(
+                "sshd_config edit lock failed: cannot open lock file {}: {e}",
+                lock_path.display()
+            )))
+        })?;
+    let mut lock = fd_lock::RwLock::new(file);
+    let _guard = lock.write().map_err(|e| {
+        toride_ssh_core::Error::Io(std::io::Error::other(format!(
+            "sshd_config edit lock failed: cannot acquire lock on {}: {e}",
+            lock_path.display()
+        )))
+    })?;
+    tracing::debug!(path = %lock_path.display(), "sshd_config edit lock acquired");
+
+    // Genuine async critical section: no nested runtime, no block_in_place.
+    let mut ast = load().await?;
+    f(&mut ast)?;
+    save(&ast, running_as_root).await
 }
 
 // ---------------------------------------------------------------------------
@@ -1123,5 +1141,90 @@ mod tests {
             result.expect("second call must succeed after error-path release"),
             42
         );
+    }
+
+    // --- async runtime safety: edit() must not nest a runtime -------------
+    //
+    // edit() used to wrap its critical section in
+    // `tokio::task::block_in_place(|| handle.block_on(...))`. block_in_place
+    // PANICS ("can call blocking only when running on the multi-threaded
+    // runtime") when edit() is awaited from a current-thread runtime — which
+    // is the default for `#[tokio::test]` and many embedded/host runtimes.
+    // The fix makes edit() a genuine async fn (no nested runtime). These tests
+    // drive edit() on both runtime flavors and assert it completes without
+    // panicking. The privileged save() step will report an error on a host
+    // without sshd or root (that is expected and fine); the invariant under
+    // test is "no panic, and the mutation closure ran".
+    //
+    // We point TORIDE_SSHD_EDIT_LOCK at a temp file so edit() acquires a
+    // real flock we clean up, exercising the actual lock path.
+
+    fn drive_edit_on_runtime(rt: &tokio::runtime::Runtime) {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let lock = dir.path().join("sshd-edit-async.lock");
+        // SAFETY: tests are single-threaded by convention here; the env var is
+        // process-global but scoped to this test's lifetime and restored on
+        // exit. edition-2024 makes set_var unsafe.
+        unsafe {
+            std::env::set_var(SSHD_EDIT_LOCK_ENV, &lock);
+        }
+
+        // The closure records that it actually ran (proving edit() reached and
+        // executed the critical section, not just the lock acquire).
+        let ran = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let ran_clone = ran.clone();
+        let result = rt.block_on(async {
+            edit(false, |ast| {
+                // Harmless mutation on whatever load() returned (empty AST if
+                // /etc/ssh/sshd_config is absent on the host). This exercises
+                // the synchronous closure inside the lock.
+                add_user_to_allow(ast, "toride-edit-async-test-user")?;
+                ran_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                Ok(())
+            })
+            .await
+        });
+
+        // SAFETY: restore env (best-effort) on the way out.
+        unsafe {
+            std::env::remove_var(SSHD_EDIT_LOCK_ENV);
+        }
+
+        // The save() step is expected to fail on a host without sshd/root
+        // (SshdNotFound / SudoFailed / Io). That is NOT the bug. The bug was a
+        // panic; assert we did not panic by reaching here and that the closure
+        // executed (so edit() genuinely drove load → mutate before save).
+        assert!(
+            ran.load(std::sync::atomic::Ordering::SeqCst),
+            "edit()'s mutation closure must have executed"
+        );
+        // Result may be Ok (if sshd + root happen to be available and accept an
+        // AllowUsers-only config) or Err (typical CI host). Either is fine; the
+        // point is we got here at all instead of panicking.
+        drop(result);
+    }
+
+    #[test]
+    fn edit_does_not_panic_on_current_thread_runtime() {
+        // This is the exact runtime flavor that panicked under the old
+        // block_in_place implementation.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("current-thread runtime");
+        drive_edit_on_runtime(&rt);
+    }
+
+    #[test]
+    fn edit_does_not_panic_on_multi_thread_runtime() {
+        // Sanity: the multi-thread path (used by the production app) must also
+        // remain panic-free; the old code happened to work there but relied on
+        // a nested block_on that the fix removes.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("multi-thread runtime");
+        drive_edit_on_runtime(&rt);
     }
 }

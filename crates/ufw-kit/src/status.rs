@@ -240,6 +240,20 @@ pub fn parse_show_added(raw: &str) -> Vec<AddedRule> {
 }
 
 /// Parse a single rule line from non-numbered status.
+///
+/// Real `ufw status` / `ufw status numbered` output is column-oriented:
+///
+/// ```text
+/// To                         Action      From
+/// --                         ------      ----
+/// 22/tcp                     ALLOW IN    Anywhere
+/// [ 1] 22/tcp                ALLOW IN    Anywhere
+/// ```
+///
+/// So the action token (ALLOW/DENY/REJECT/LIMIT) is NOT necessarily at the
+/// start of the line — it typically follows the destination port/target. We
+/// locate the action token by scanning whitespace-delimited tokens, which
+/// keeps the parser correct regardless of column width or leading `[N]`.
 fn parse_rule_line(line: &str, _is_numbered: bool) -> Option<ParsedRule> {
     let trimmed = line.trim();
     if trimmed.is_empty() {
@@ -252,51 +266,38 @@ fn parse_rule_line(line: &str, _is_numbered: bool) -> Option<ParsedRule> {
     // Determine if this is a route rule
     let is_route = trimmed.contains("ROUTE") || trimmed.contains("route");
 
-    // Try to parse action
-    let (action, rest) = if trimmed.starts_with("ALLOW") {
-        (
-            Some(Action::Allow),
-            trimmed.strip_prefix("ALLOW").unwrap().trim(),
-        )
-    } else if trimmed.starts_with("DENY") {
-        (
-            Some(Action::Deny),
-            trimmed.strip_prefix("DENY").unwrap().trim(),
-        )
-    } else if trimmed.starts_with("REJECT") {
-        (
-            Some(Action::Reject),
-            trimmed.strip_prefix("REJECT").unwrap().trim(),
-        )
-    } else if trimmed.starts_with("LIMIT") {
-        (
-            Some(Action::Limit),
-            trimmed.strip_prefix("LIMIT").unwrap().trim(),
-        )
+    // Find the action token (ALLOW/DENY/REJECT/LIMIT) by scanning
+    // whitespace-delimited tokens. UFW uppercases these keywords in status
+    // output; we match case-insensitively to be tolerant.
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let (action, action_idx) = tokens
+        .iter()
+        .enumerate()
+        .find_map(|(i, tok)| match tok.to_ascii_lowercase().as_str() {
+            "allow" => Some((Some(Action::Allow), i)),
+            "deny" => Some((Some(Action::Deny), i)),
+            "reject" => Some((Some(Action::Reject), i)),
+            "limit" => Some((Some(Action::Limit), i)),
+            _ => None,
+        })
+        .unwrap_or((None, 0));
+
+    // Direction (IN/OUT/FWD) immediately follows the action token, if present.
+    let direction = if action.is_some() && action_idx + 1 < tokens.len() {
+        match tokens[action_idx + 1] {
+            "IN" | "in" => Some(Direction::In),
+            "OUT" | "out" => Some(Direction::Out),
+            "FWD" | "fwd" => Some(Direction::Routed),
+            _ => None,
+        }
     } else {
-        (None, trimmed)
+        None
     };
 
-    // Try to parse direction from remainder
-    let (direction, rest) = if rest.starts_with("IN") {
-        (Some(Direction::In), rest.strip_prefix("IN").unwrap().trim())
-    } else if rest.starts_with("OUT") {
-        (
-            Some(Direction::Out),
-            rest.strip_prefix("OUT").unwrap().trim(),
-        )
-    } else {
-        (None, rest)
-    };
-
-    // Extract comment if present
-    let (_main_part, comment) = if let Some(idx) = rest.find("comment") {
-        let main = rest[..idx].trim();
-        let comment_text = rest[idx + "comment".len()..].trim();
-        (main, Some(comment_text.to_string()))
-    } else {
-        (rest, None)
-    };
+    // Extract comment if present (UFW appends "comment <text>").
+    let comment = trimmed
+        .find("comment")
+        .map(|idx| trimmed[idx + "comment".len()..].trim().to_string());
 
     Some(ParsedRule {
         number: None,

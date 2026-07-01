@@ -162,3 +162,67 @@ pub fn get_user_groups(group: &Path, username: &str) -> Result<Vec<String>> {
         .collect();
     Ok(groups)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn write_group(content: &str) -> std::path::PathBuf {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("group");
+        std::fs::write(&path, content).unwrap();
+        std::mem::forget(dir);
+        path
+    }
+
+    // /etc/group: name:password:gid:comma-separated-members
+    const FIXTURE: &str = "\
+root:x:0:
+sudo:x:27:alice,bob
+docker:x:998:alice
+alice:x:1000:
+bob:x:1001:
+";
+
+    #[test]
+    fn group_exists_true_and_false() {
+        let group = write_group(FIXTURE);
+        assert!(group_exists(&group, "sudo").unwrap());
+        assert!(!group_exists(&group, "wheel").unwrap());
+    }
+
+    #[test]
+    fn get_gid_resolves_and_errors() {
+        let group = write_group(FIXTURE);
+        assert_eq!(get_gid(&group, "sudo").unwrap(), 27);
+        assert!(matches!(
+            get_gid(&group, "wheel"),
+            Err(Error::GroupNotFound(_))
+        ));
+    }
+
+    #[test]
+    fn get_user_groups_lists_memberships() {
+        let group = write_group(FIXTURE);
+        // get_user_groups scans the *members* column only (it does not infer
+        // primary-group membership from the GID). alice is a member of sudo
+        // and docker.
+        let alice_groups = get_user_groups(&group, "alice").unwrap();
+        assert!(alice_groups.contains(&"sudo".to_owned()));
+        assert!(alice_groups.contains(&"docker".to_owned()));
+
+        // bob is a member of sudo.
+        let bob_groups = get_user_groups(&group, "bob").unwrap();
+        assert!(bob_groups.contains(&"sudo".to_owned()));
+
+        // A user with no supplementary-group memberships resolves to empty.
+        let nobody_groups = get_user_groups(&group, "nobody").unwrap();
+        assert!(nobody_groups.is_empty());
+    }
+
+    #[test]
+    fn missing_group_file_is_err() {
+        let missing = std::path::PathBuf::from("/nonexistent/group-toride-test");
+        assert!(group_exists(&missing, "sudo").is_err());
+    }
+}

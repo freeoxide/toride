@@ -404,15 +404,25 @@ fn extract_json_number(json: &str, key: &str) -> Option<i64> {
 
 /// Extract a simplified expression summary from a rule object.
 fn extract_expr_summary(json: &str) -> String {
+    const MAX_CHARS: usize = 200;
     // Try to extract the "expr" array and summarize it
     if let Some(expr_pos) = json.find("\"expr\"") {
         let after = &json[expr_pos..];
-        // Just grab a reasonable substring
-        let end = after.len().min(500);
-        let summary = after[..end].replace('\n', " ").replace('\\', "");
-        // Truncate to a reasonable size
-        if summary.len() > 200 {
-            format!("{}...", &summary[..200])
+        // Cap at 500 CHARACTERS, not bytes: a raw `&after[..500]` would panic
+        // if byte 500 lands inside a multibyte codepoint (e.g. a non-ASCII nft
+        // comment), exactly the class of bug this function must avoid.
+        let summary = after
+            .chars()
+            .take(500)
+            .collect::<String>()
+            .replace('\n', " ")
+            .replace('\\', "");
+        // Truncate to a reasonable size, on a UTF-8 char boundary, by character
+        // count (never by raw byte offset).
+        let char_count = summary.chars().count();
+        if char_count > MAX_CHARS {
+            let truncated: String = summary.chars().take(MAX_CHARS).collect();
+            format!("{truncated}...")
         } else {
             summary
         }
@@ -658,5 +668,38 @@ mod tests {
         let json = r#"{"priority": 100, "handle": 42}"#;
         assert_eq!(extract_json_number(json, "\"priority\""), Some(100));
         assert_eq!(extract_json_number(json, "\"handle\""), Some(42));
+    }
+
+    #[test]
+    fn extract_expr_summary_truncates_multibyte_without_panic() {
+        // Build an expr block longer than the 200-CHAR cap where byte index
+        // 200 also falls inside a multibyte (non-ASCII) codepoint. A naive
+        // `&summary[..200]` byte slice would panic at that boundary; the
+        // char-bounded truncation must not.
+        //
+        // Each "é" is 2 UTF-8 bytes; 300 of them = 600 bytes, so byte index 200
+        // is mid-codepoint, and the summary's 9 + 300 + 2 = 311 chars exceed the
+        // 200-char cap so the truncation path actually runs.
+        let multibyte = "é".repeat(300);
+        let json = format!("{{\"expr\": [{multibyte}]}}");
+        // Must not panic and must be truncated to at most 200 chars + "...".
+        let summary = extract_expr_summary(&json);
+        assert!(
+            summary.chars().count() <= 200 + "...".chars().count(),
+            "summary should be char-bounded, got {} chars",
+            summary.chars().count()
+        );
+        assert!(
+            summary.ends_with("..."),
+            "truncated summary should end with ..., got: {summary:?}"
+        );
+    }
+
+    #[test]
+    fn extract_expr_summary_keeps_short_summary_intact() {
+        let json = r#"{"expr": ["drop"]}"#;
+        let summary = extract_expr_summary(json);
+        // Short summaries are not truncated (no trailing "...").
+        assert!(!summary.ends_with("..."));
     }
 }

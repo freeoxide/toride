@@ -94,9 +94,41 @@ impl UfwPaths {
     }
 
     /// Get the app profile path for a given namespace and name.
+    ///
+    /// Both `namespace` and `name` are sanitized to a safe path component: any
+    /// path separators (`/`, `\`), NUL bytes, or `..` traversal segments are
+    /// rejected by collapsing the component to a safe placeholder. This
+    /// guarantees the resulting path stays inside `app_profiles_dir` even when
+    /// a caller forwards untrusted input, preventing `../` escape.
     #[must_use]
     pub fn app_profile_path(&self, namespace: &str, name: &str) -> PathBuf {
+        let namespace = sanitize_profile_component(namespace);
+        let name = sanitize_profile_component(name);
         self.app_profiles_dir.join(format!("{namespace}-{name}"))
+    }
+}
+
+/// Reduce a caller-supplied namespace/profile component to a safe path
+/// component.
+///
+/// Returns the original value if it is safe (non-empty, no path separators,
+/// no NUL, no `..` segment), otherwise a safe placeholder. This prevents a
+/// `namespace` like `../..` from escaping `app_profiles_dir` when joined.
+fn sanitize_profile_component(component: &str) -> String {
+    let is_safe = !component.is_empty()
+        && !component.contains('/')
+        && !component.contains('\\')
+        && !component.contains('\0')
+        && component != ".."
+        && component != "."
+        && !component.split('/').any(|seg| seg == "..");
+    if is_safe {
+        component.to_string()
+    } else {
+        // Replace unsafe input with a benign placeholder rather than dropping
+        // the profile silently; the file is written under a clearly-named key
+        // that cannot escape the managed directory.
+        "_unsafe".to_string()
     }
 }
 

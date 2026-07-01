@@ -84,8 +84,13 @@ impl Ufw {
             return Ok(());
         }
 
-        // SSH lockout check
-        if opts.require_ssh_allow_rule && !opts.allow_force {
+        // SSH lockout check.
+        //
+        // This safety check runs whenever `require_ssh_allow_rule` is true,
+        // independent of `allow_force`. `allow_force` only controls whether we
+        // pass `--force` to UFW to skip its interactive confirmation prompt; it
+        // must NOT bypass this library's own lockout protection (see force_enable).
+        if opts.require_ssh_allow_rule {
             self.check_ssh_lockout(opts)?;
         }
 

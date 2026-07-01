@@ -283,7 +283,12 @@ async fn collect_real_users(
         }
 
         // ── PAM: probe the sshd service (TOTP presence) ───────────────────
-        let sshd_pam = paths.pam_service("sshd");
+        // "sshd" is a constant safe name, so pam_service only fails on a
+        // broken base dir; degrade to "no PAM read" rather than aborting.
+        let sshd_pam = paths.pam_service("sshd").unwrap_or_else(|e| {
+            tracing::warn!("could not resolve sshd PAM path: {e}");
+            paths.pam_d.join("sshd")
+        });
         let pam_read = sshd_pam.exists();
         let _ = pam_read; // surfaced to the UI; not parsed further here.
 
@@ -383,7 +388,11 @@ async fn collect_real_users(
             // sudo: drop-in existence (per-user stat) OR membership in the main
             // sudoers `who` set (pre-read once above). This mirrors
             // `sudo::has_sudo`'s dropin-first ordering exactly.
-            let dropin_exists = paths.sudoers_dropin(&user.username).exists();
+            // Degrade: a username that fails the safe-component check
+            // (e.g. a corrupted entry) yields no drop-in rather than panicking.
+            let dropin_exists = paths
+                .sudoers_dropin(&user.username)
+                .is_ok_and(|p| p.exists());
             let in_main = sudo_who_set
                 .as_ref()
                 .is_some_and(|set| set.contains(&user.username));

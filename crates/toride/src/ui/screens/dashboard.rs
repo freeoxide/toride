@@ -179,6 +179,74 @@ impl DashboardFocus {
     }
 }
 
+/// Shared dispatch surface for every read-only content section panel.
+///
+/// All 18 non-`Dashboard` content structs ([`SshContent`], [`Fail2banContent`],
+/// [`FirewallContent`], [`HardenContent`], [`WireguardContent`],
+/// [`UpdatesContent`], [`UsersContent`], [`AuditContent`], [`MonitorContent`],
+/// [`BackupContent`], [`ProxyContent`], [`CloudContent`], [`TailscaleContent`],
+/// [`MiseContent`], [`ToolsContent`], [`TemplatesContent`], [`LogsContent`],
+/// [`AboutContent`], [`SettingsContent`]) expose the exact same
+/// `handle_key` / `handle_mouse` / `view` trio with identical signatures.
+/// Modeling it as a trait lets the dashboard collapse what used to be five
+/// near-identical 19-arm `match self.active_section()` blocks (key Tab/BackTab,
+/// generic content key, render, mouse hover/click/scroll/up) into a single
+/// [`DashboardScreen::active_panel_mut`] lookup plus one match arm for the
+/// bespoke [`Section::Dashboard`] behavior.
+///
+/// [`Section::Dashboard`] is intentionally NOT a `ContentPanel`: it has
+/// bespoke key handling ([`DashboardScreen::handle_dashboard_content_key`]),
+/// bespoke rendering ([`DashboardScreen::render_dashboard_content`]), and
+/// bespoke wheel scrolling ([`DashboardScreen::scroll_focused`]).
+pub trait ContentPanel {
+    /// Forward a keypress to the active content panel.
+    fn handle_key(&mut self, code: KeyCode) -> Option<Action>;
+    /// Forward a mouse event to the active content panel.
+    fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action>;
+    /// Render the active content panel into its content area.
+    fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette);
+}
+
+macro_rules! impl_content_panel {
+    ($($t:ty),+ $(,)?) => {
+        $(
+            impl ContentPanel for $t {
+                fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
+                    Self::handle_key(self, code)
+                }
+                fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
+                    Self::handle_mouse(self, mouse)
+                }
+                fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
+                    Self::view(self, frame, area, p);
+                }
+            }
+        )+
+    };
+}
+
+impl_content_panel!(
+    SshContent,
+    Fail2banContent,
+    FirewallContent,
+    HardenContent,
+    WireguardContent,
+    UpdatesContent,
+    UsersContent,
+    AuditContent,
+    MonitorContent,
+    BackupContent,
+    ProxyContent,
+    CloudContent,
+    TailscaleContent,
+    MiseContent,
+    ToolsContent,
+    TemplatesContent,
+    LogsContent,
+    AboutContent,
+    SettingsContent,
+);
+
 /// The dashboard screen state.
 pub struct DashboardScreen {
     data: DashboardData,
@@ -1073,6 +1141,38 @@ impl DashboardScreen {
         self.data.sidebar[self.active].section
     }
 
+    /// Resolve the active section to its content panel, or `None` when
+    /// [`Section::Dashboard`] is active (it has bespoke key/render/scroll
+    /// handling and is not a [`ContentPanel`]).
+    ///
+    /// This single 19-arm match replaces the five former triplicated
+    /// `match self.active_section()` dispatch blocks in `handle_key`/`render`/
+    /// `handle_mouse`.
+    fn active_panel_mut(&mut self) -> Option<&mut dyn ContentPanel> {
+        match self.active_section() {
+            Section::Dashboard => None,
+            Section::Ssh => Some(&mut self.ssh_content),
+            Section::Fail2ban => Some(&mut self.fail2ban_content),
+            Section::Firewall => Some(&mut self.ufw_kit_content),
+            Section::Harden => Some(&mut self.toride_harden_content),
+            Section::WireGuard => Some(&mut self.toride_wireguard_content),
+            Section::Updates => Some(&mut self.toride_updates_content),
+            Section::Users => Some(&mut self.toride_users_content),
+            Section::Audit => Some(&mut self.toride_audit_content),
+            Section::Monitor => Some(&mut self.toride_monitor_content),
+            Section::Backup => Some(&mut self.toride_backup_content),
+            Section::Proxy => Some(&mut self.toride_proxy_content),
+            Section::Cloud => Some(&mut self.toride_cloud_content),
+            Section::Tailscale => Some(&mut self.toride_tailscale_content),
+            Section::Mise => Some(&mut self.toride_mise_content),
+            Section::Tools => Some(&mut self.tools_content),
+            Section::Templates => Some(&mut self.templates_content),
+            Section::Logs => Some(&mut self.logs_content),
+            Section::About => Some(&mut self.about_content),
+            Section::Settings => Some(&mut self.settings_content),
+        }
+    }
+
     // ── Input ────────────────────────────────────────────────────────────────
 
     fn module_left(&mut self) {
@@ -1239,27 +1339,10 @@ impl DashboardScreen {
         // branch that was unreachable today but would have silently rendered
         // "<section> — coming soon" for any future unwired variant.)
         let content = shell.content;
-        match self.active_section() {
-            Section::Dashboard => self.render_dashboard_content(frame, content, p),
-            Section::Ssh => self.ssh_content.view(frame, content, p),
-            Section::Fail2ban => self.fail2ban_content.view(frame, content, p),
-            Section::Firewall => self.ufw_kit_content.view(frame, content, p),
-            Section::Harden => self.toride_harden_content.view(frame, content, p),
-            Section::WireGuard => self.toride_wireguard_content.view(frame, content, p),
-            Section::Updates => self.toride_updates_content.view(frame, content, p),
-            Section::Users => self.toride_users_content.view(frame, content, p),
-            Section::Audit => self.toride_audit_content.view(frame, content, p),
-            Section::Monitor => self.toride_monitor_content.view(frame, content, p),
-            Section::Backup => self.toride_backup_content.view(frame, content, p),
-            Section::Proxy => self.toride_proxy_content.view(frame, content, p),
-            Section::Cloud => self.toride_cloud_content.view(frame, content, p),
-            Section::Tailscale => self.toride_tailscale_content.view(frame, content, p),
-            Section::Mise => self.toride_mise_content.view(frame, content, p),
-            Section::Tools => self.tools_content.view(frame, content, p),
-            Section::Templates => self.templates_content.view(frame, content, p),
-            Section::Logs => self.logs_content.view(frame, content, p),
-            Section::About => self.about_content.view(frame, content, p),
-            Section::Settings => self.settings_content.view(frame, content, p),
+        if let Some(panel) = self.active_panel_mut() {
+            panel.view(frame, content, p);
+        } else {
+            self.render_dashboard_content(frame, content, p);
         }
 
         // ── Module detail modal ───────────────────────────────────────────────
@@ -1810,6 +1893,18 @@ impl DashboardScreen {
         }
     }
 
+    /// Forward a keypress to the active content panel, or — when
+    /// [`Section::Dashboard`] is active — to the bespoke dashboard key handler.
+    /// Collapses the three former triplicated `match self.active_section()`
+    /// blocks in [`Self::handle_key`] (Tab, `BackTab`, generic content-focused).
+    fn content_handle_key(&mut self, code: KeyCode) -> Option<Action> {
+        if let Some(panel) = self.active_panel_mut() {
+            panel.handle_key(code)
+        } else {
+            self.handle_dashboard_content_key(code)
+        }
+    }
+
     /// Handle a key press while the Dashboard section's content is focused.
     fn handle_dashboard_content_key(&mut self, code: KeyCode) -> Option<Action> {
         // Tab/BackTab cycle between internal panels.
@@ -1860,10 +1955,6 @@ impl DashboardScreen {
 }
 
 impl AppScreen for DashboardScreen {
-    #[expect(
-        clippy::too_many_lines,
-        reason = "dispatches to every section's key handler"
-    )]
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
         // Module detail modal intercepts input while open.
         if self.module_modal.is_visible() {
@@ -1891,56 +1982,14 @@ impl AppScreen for DashboardScreen {
             // Tab/BackTab on Sidebar: cycle shell focus. On Content: forward to section.
             KeyCode::Tab => {
                 if self.focus.is_focused(&ShellFocus::Content) {
-                    return match self.active_section() {
-                        Section::Dashboard => self.handle_dashboard_content_key(code),
-                        Section::Ssh => self.ssh_content.handle_key(code),
-                        Section::Fail2ban => self.fail2ban_content.handle_key(code),
-                        Section::Firewall => self.ufw_kit_content.handle_key(code),
-                        Section::Harden => self.toride_harden_content.handle_key(code),
-                        Section::WireGuard => self.toride_wireguard_content.handle_key(code),
-                        Section::Updates => self.toride_updates_content.handle_key(code),
-                        Section::Users => self.toride_users_content.handle_key(code),
-                        Section::Audit => self.toride_audit_content.handle_key(code),
-                        Section::Monitor => self.toride_monitor_content.handle_key(code),
-                        Section::Backup => self.toride_backup_content.handle_key(code),
-                        Section::Proxy => self.toride_proxy_content.handle_key(code),
-                        Section::Cloud => self.toride_cloud_content.handle_key(code),
-                        Section::Tailscale => self.toride_tailscale_content.handle_key(code),
-                        Section::Mise => self.toride_mise_content.handle_key(code),
-                        Section::Tools => self.tools_content.handle_key(code),
-                        Section::Templates => self.templates_content.handle_key(code),
-                        Section::Logs => self.logs_content.handle_key(code),
-                        Section::About => self.about_content.handle_key(code),
-                        Section::Settings => self.settings_content.handle_key(code),
-                    };
+                    return self.content_handle_key(code);
                 }
                 self.focus.next();
                 return None;
             }
             KeyCode::BackTab => {
                 if self.focus.is_focused(&ShellFocus::Content) {
-                    return match self.active_section() {
-                        Section::Dashboard => self.handle_dashboard_content_key(code),
-                        Section::Ssh => self.ssh_content.handle_key(code),
-                        Section::Fail2ban => self.fail2ban_content.handle_key(code),
-                        Section::Firewall => self.ufw_kit_content.handle_key(code),
-                        Section::Harden => self.toride_harden_content.handle_key(code),
-                        Section::WireGuard => self.toride_wireguard_content.handle_key(code),
-                        Section::Updates => self.toride_updates_content.handle_key(code),
-                        Section::Users => self.toride_users_content.handle_key(code),
-                        Section::Audit => self.toride_audit_content.handle_key(code),
-                        Section::Monitor => self.toride_monitor_content.handle_key(code),
-                        Section::Backup => self.toride_backup_content.handle_key(code),
-                        Section::Proxy => self.toride_proxy_content.handle_key(code),
-                        Section::Cloud => self.toride_cloud_content.handle_key(code),
-                        Section::Tailscale => self.toride_tailscale_content.handle_key(code),
-                        Section::Mise => self.toride_mise_content.handle_key(code),
-                        Section::Tools => self.tools_content.handle_key(code),
-                        Section::Templates => self.templates_content.handle_key(code),
-                        Section::Logs => self.logs_content.handle_key(code),
-                        Section::About => self.about_content.handle_key(code),
-                        Section::Settings => self.settings_content.handle_key(code),
-                    };
+                    return self.content_handle_key(code);
                 }
                 self.focus.prev();
                 return None;
@@ -1970,28 +2019,7 @@ impl AppScreen for DashboardScreen {
 
         // ── Content-focused: delegate to active section ────────────────
         if self.focus.is_focused(&ShellFocus::Content) {
-            return match self.active_section() {
-                Section::Dashboard => self.handle_dashboard_content_key(code),
-                Section::Ssh => self.ssh_content.handle_key(code),
-                Section::Fail2ban => self.fail2ban_content.handle_key(code),
-                Section::Firewall => self.ufw_kit_content.handle_key(code),
-                Section::Harden => self.toride_harden_content.handle_key(code),
-                Section::WireGuard => self.toride_wireguard_content.handle_key(code),
-                Section::Updates => self.toride_updates_content.handle_key(code),
-                Section::Users => self.toride_users_content.handle_key(code),
-                Section::Audit => self.toride_audit_content.handle_key(code),
-                Section::Monitor => self.toride_monitor_content.handle_key(code),
-                Section::Backup => self.toride_backup_content.handle_key(code),
-                Section::Proxy => self.toride_proxy_content.handle_key(code),
-                Section::Cloud => self.toride_cloud_content.handle_key(code),
-                Section::Tailscale => self.toride_tailscale_content.handle_key(code),
-                Section::Mise => self.toride_mise_content.handle_key(code),
-                Section::Tools => self.tools_content.handle_key(code),
-                Section::Templates => self.templates_content.handle_key(code),
-                Section::Logs => self.logs_content.handle_key(code),
-                Section::About => self.about_content.handle_key(code),
-                Section::Settings => self.settings_content.handle_key(code),
-            };
+            return self.content_handle_key(code);
         }
 
         // ── Sidebar-focused ─────────────────────────────────────────────
@@ -2004,10 +2032,6 @@ impl AppScreen for DashboardScreen {
         None
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "dispatches hit-testing across the whole shell"
-    )]
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         use crossterm::event::MouseButton;
 
@@ -2033,66 +2057,10 @@ impl AppScreen for DashboardScreen {
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 let idx = self.sidebar.item_at(mouse.column, mouse.row);
                 self.sidebar.set_hovered(idx);
-                // Delegate hover to content sections that track it.
-                match self.active_section() {
-                    Section::Ssh => {
-                        self.ssh_content.handle_mouse(mouse);
-                    }
-                    Section::Fail2ban => {
-                        self.fail2ban_content.handle_mouse(mouse);
-                    }
-                    Section::Firewall => {
-                        self.ufw_kit_content.handle_mouse(mouse);
-                    }
-                    Section::Harden => {
-                        self.toride_harden_content.handle_mouse(mouse);
-                    }
-                    Section::WireGuard => {
-                        self.toride_wireguard_content.handle_mouse(mouse);
-                    }
-                    Section::Updates => {
-                        self.toride_updates_content.handle_mouse(mouse);
-                    }
-                    Section::Users => {
-                        self.toride_users_content.handle_mouse(mouse);
-                    }
-                    Section::Audit => {
-                        self.toride_audit_content.handle_mouse(mouse);
-                    }
-                    Section::Monitor => {
-                        self.toride_monitor_content.handle_mouse(mouse);
-                    }
-                    Section::Backup => {
-                        self.toride_backup_content.handle_mouse(mouse);
-                    }
-                    Section::Proxy => {
-                        self.toride_proxy_content.handle_mouse(mouse);
-                    }
-                    Section::Cloud => {
-                        self.toride_cloud_content.handle_mouse(mouse);
-                    }
-                    Section::Tailscale => {
-                        self.toride_tailscale_content.handle_mouse(mouse);
-                    }
-                    Section::Mise => {
-                        self.toride_mise_content.handle_mouse(mouse);
-                    }
-                    Section::Tools => {
-                        self.tools_content.handle_mouse(mouse);
-                    }
-                    Section::Templates => {
-                        self.templates_content.handle_mouse(mouse);
-                    }
-                    Section::Logs => {
-                        self.logs_content.handle_mouse(mouse);
-                    }
-                    Section::About => {
-                        self.about_content.handle_mouse(mouse);
-                    }
-                    Section::Settings => {
-                        self.settings_content.handle_mouse(mouse);
-                    }
-                    Section::Dashboard => {}
+                // Delegate hover to content sections that track it. The
+                // Dashboard section has nothing to hover (no-op).
+                if let Some(panel) = self.active_panel_mut() {
+                    panel.handle_mouse(mouse);
                 }
             }
             // Click: select + activate the clicked element.
@@ -2109,63 +2077,13 @@ impl AppScreen for DashboardScreen {
                         self.open_module_idx = Some(idx);
                         self.module_modal.open();
                     }
-                } else if self.active_section() == Section::Ssh {
+                } else {
+                    // A read-only content panel owns this click: focus content
+                    // and forward the mouse event to the active panel.
                     self.focus.set(ShellFocus::Content);
-                    return self.ssh_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Fail2ban {
-                    self.focus.set(ShellFocus::Content);
-                    return self.fail2ban_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Firewall {
-                    self.focus.set(ShellFocus::Content);
-                    return self.ufw_kit_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Harden {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_harden_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::WireGuard {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_wireguard_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Updates {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_updates_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Users {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_users_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Audit {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_audit_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Monitor {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_monitor_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Backup {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_backup_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Proxy {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_proxy_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Cloud {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_cloud_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Tailscale {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_tailscale_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Mise {
-                    self.focus.set(ShellFocus::Content);
-                    return self.toride_mise_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Tools {
-                    self.focus.set(ShellFocus::Content);
-                    return self.tools_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Templates {
-                    self.focus.set(ShellFocus::Content);
-                    return self.templates_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Logs {
-                    self.focus.set(ShellFocus::Content);
-                    return self.logs_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::About {
-                    self.focus.set(ShellFocus::Content);
-                    return self.about_content.handle_mouse(mouse);
-                } else if self.active_section() == Section::Settings {
-                    self.focus.set(ShellFocus::Content);
-                    return self.settings_content.handle_mouse(mouse);
+                    if let Some(panel) = self.active_panel_mut() {
+                        return panel.handle_mouse(mouse);
+                    }
                 }
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
@@ -2185,51 +2103,19 @@ impl AppScreen for DashboardScreen {
                     self.sidebar.scroll(if down { 1 } else { -1 });
                     return None;
                 }
-                match self.active_section() {
-                    Section::Ssh => return self.ssh_content.handle_mouse(mouse),
-                    Section::Fail2ban => return self.fail2ban_content.handle_mouse(mouse),
-                    Section::Firewall => return self.ufw_kit_content.handle_mouse(mouse),
-                    Section::Harden => return self.toride_harden_content.handle_mouse(mouse),
-                    Section::WireGuard => return self.toride_wireguard_content.handle_mouse(mouse),
-                    Section::Updates => return self.toride_updates_content.handle_mouse(mouse),
-                    Section::Users => return self.toride_users_content.handle_mouse(mouse),
-                    Section::Audit => return self.toride_audit_content.handle_mouse(mouse),
-                    Section::Monitor => return self.toride_monitor_content.handle_mouse(mouse),
-                    Section::Backup => return self.toride_backup_content.handle_mouse(mouse),
-                    Section::Proxy => return self.toride_proxy_content.handle_mouse(mouse),
-                    Section::Cloud => return self.toride_cloud_content.handle_mouse(mouse),
-                    Section::Tailscale => return self.toride_tailscale_content.handle_mouse(mouse),
-                    Section::Mise => return self.toride_mise_content.handle_mouse(mouse),
-                    Section::Tools => return self.tools_content.handle_mouse(mouse),
-                    Section::Templates => return self.templates_content.handle_mouse(mouse),
-                    Section::Logs => return self.logs_content.handle_mouse(mouse),
-                    Section::About => return self.about_content.handle_mouse(mouse),
-                    Section::Settings => return self.settings_content.handle_mouse(mouse),
-                    Section::Dashboard => self.scroll_focused(down),
+                if let Some(panel) = self.active_panel_mut() {
+                    return panel.handle_mouse(mouse);
+                }
+                // Section::Dashboard: wheel the focused dashboard region.
+                self.scroll_focused(down);
+            }
+            MouseEventKind::Up(_) => {
+                // Forward to the active content panel; the Dashboard section
+                // has nothing to do on mouse-up (no-op).
+                if let Some(panel) = self.active_panel_mut() {
+                    return panel.handle_mouse(mouse);
                 }
             }
-            MouseEventKind::Up(_) => match self.active_section() {
-                Section::Ssh => return self.ssh_content.handle_mouse(mouse),
-                Section::Fail2ban => return self.fail2ban_content.handle_mouse(mouse),
-                Section::Firewall => return self.ufw_kit_content.handle_mouse(mouse),
-                Section::Harden => return self.toride_harden_content.handle_mouse(mouse),
-                Section::WireGuard => return self.toride_wireguard_content.handle_mouse(mouse),
-                Section::Updates => return self.toride_updates_content.handle_mouse(mouse),
-                Section::Users => return self.toride_users_content.handle_mouse(mouse),
-                Section::Audit => return self.toride_audit_content.handle_mouse(mouse),
-                Section::Monitor => return self.toride_monitor_content.handle_mouse(mouse),
-                Section::Backup => return self.toride_backup_content.handle_mouse(mouse),
-                Section::Proxy => return self.toride_proxy_content.handle_mouse(mouse),
-                Section::Cloud => return self.toride_cloud_content.handle_mouse(mouse),
-                Section::Tailscale => return self.toride_tailscale_content.handle_mouse(mouse),
-                Section::Mise => return self.toride_mise_content.handle_mouse(mouse),
-                Section::Tools => return self.tools_content.handle_mouse(mouse),
-                Section::Templates => return self.templates_content.handle_mouse(mouse),
-                Section::Logs => return self.logs_content.handle_mouse(mouse),
-                Section::About => return self.about_content.handle_mouse(mouse),
-                Section::Settings => return self.settings_content.handle_mouse(mouse),
-                Section::Dashboard => {}
-            },
             _ => {}
         }
         None
