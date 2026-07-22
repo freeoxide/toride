@@ -57,7 +57,7 @@ pub enum Error {
     /// The download body stalled: no chunk was received within the per-read
     /// deadline. A server that opens the connection and then never sends
     /// (or drips ~1 byte/minute) never trips the size cap, so the chunk loop
-    /// races each read against [`crate::DEFAULT_CHUNK_TIMEOUT`] and surfaces
+    /// races each read against [`crate::installer::DEFAULT_CHUNK_TIMEOUT`] and surfaces
     /// this error when the deadline elapses.
     #[error("download of {url} stalled: no data within {timeout:?}")]
     DownloadStalled {
@@ -163,10 +163,6 @@ pub enum Error {
     /// A filesystem I/O error occurred while writing the installed binary.
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-
-    /// An error from the [`toride-fs`] atomic-write helper.
-    #[error(transparent)]
-    Atomic(#[from] toride_fs::Error),
 
     /// The user's home directory could not be determined, so the default
     /// install directory (`~/.local/bin`) is unavailable.

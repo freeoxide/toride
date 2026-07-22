@@ -7,7 +7,7 @@
 //! binary so the framework's `Binary` artifact path is exercised end-to-end.
 //!
 //! mise publishes **no sha256 checksum** for its release artifacts, so the
-//! tool is configured with [`Checksum::None`](crate::tool::Checksum::None)
+//! tool is configured with [`Checksum::None`]
 //! and relies on the engine's documented size-floor sanity check. (A future
 //! mise release adding a checksum would only require swapping the variant.)
 //!

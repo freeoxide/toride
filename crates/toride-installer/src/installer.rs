@@ -1,7 +1,7 @@
 //! The generic installation engine.
 //!
-//! [`Installer`] is tool-agnostic: given a [`Tool`](crate::Tool) (or a
-//! custom [`ReleaseResolver`]), a [`Target`](crate::target::Target), and a
+//! [`Installer`] is tool-agnostic: given a [`Tool`] (or a
+//! custom [`ReleaseResolver`]), a [`Target`], and a
 //! version, it runs the full pipeline:
 //!
 //! 1. **resolve** the artifact URL (and the concrete version, when the
@@ -12,8 +12,8 @@
 //!    non-zero size floor (documented below);
 //! 4. **extract** — a `Binary` is placed directly, a `Tarball` is
 //!    decompressed (gzip or xz) and the configured entry is read out;
-//! 5. **install** — written atomically (temp + rename, via `toride-fs`)
-//!    into the install directory and `chmod 0o755` on Unix.
+//! 5. **install** — written atomically (temp + rename) into the install
+//!    directory and `chmod 0o755` on Unix.
 //!
 //! ## Verification policy
 //!
@@ -23,7 +23,7 @@
 //! (a 404 HTML page, an empty response, a redirect to a login screen, …).
 //! This is NOT a security guarantee — it is a sanity check. Tools that DO
 //! publish checksums are verified strictly. Pass
-//! [`Verifier::Strict`](crate::Verifier::Strict) to refuse tools that have
+//! [`Verifier::Strict`] to refuse tools that have
 //! no checksum at all.
 
 use std::path::Path;
@@ -38,6 +38,7 @@ use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
 use crate::extract::extract_executable;
+use crate::progress::Progress;
 use crate::target::Target;
 use crate::tool::{Checksum, ReleaseResolver, Tool};
 
@@ -72,6 +73,15 @@ pub const DEFAULT_HTTP_CONNECT_TIMEOUT: std::time::Duration = std::time::Duratio
 /// `Response::chunk` against this deadline guarantees a slow-drip body cannot
 /// stall past the read window.
 pub const DEFAULT_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from_mins(1);
+
+/// Minimum number of new bytes that must arrive between two progress
+/// callbacks during a download.
+///
+/// Throttling keeps a multi-MiB download from firing one callback per chunk
+/// (which would flood a UI render loop). A final completion callback is
+/// always emitted regardless of this step — see
+/// [`Installer::with_progress`](Installer::with_progress).
+const PROGRESS_EMIT_STEP: u64 = 256 * 1024;
 
 /// Build the shared HTTP client used for release downloads.
 ///
@@ -117,6 +127,13 @@ pub struct Installer {
     max_bytes: u64,
     min_bytes: u64,
     verifier: Verifier,
+    /// Optional progress callback invoked from the streaming download loop.
+    ///
+    /// `Arc<dyn Fn>` so a cloned [`Installer`] shares the same callback
+    /// (matching the shared HTTP client). `None` by default — the
+    /// no-callback path is byte-for-byte identical to the pre-progress
+    /// behavior.
+    progress: Option<Arc<dyn Fn(Progress) + Send + Sync>>,
 }
 
 impl std::fmt::Debug for Installer {
@@ -149,6 +166,7 @@ impl Installer {
             max_bytes: DEFAULT_MAX_BYTES,
             min_bytes: DEFAULT_MIN_BYTES,
             verifier: Verifier::Lenient,
+            progress: None,
         }
     }
 
@@ -172,6 +190,45 @@ impl Installer {
     pub const fn with_verifier(mut self, v: Verifier) -> Self {
         self.verifier = v;
         self
+    }
+
+    /// Install a callback invoked as bytes stream in during download.
+    ///
+    /// The callback receives a [`Progress`] snapshot carrying the bytes
+    /// downloaded so far and, when the server sent `Content-Length`, the
+    /// total. Callbacks are throttled (roughly one per 256 KiB of new data)
+    /// and a final callback is always fired on completion — see the
+    /// [`progress`](crate::progress) module docs for details and the
+    /// percent-computation recipe.
+    ///
+    /// Leaving this unset (the default) keeps download behavior
+    /// byte-for-byte unchanged: progress reporting is purely observational
+    /// and the streaming loop does no extra work when no callback is wired.
+    ///
+    /// The callback runs synchronously on the installing task, inside the
+    /// download loop. A panicking callback unwinds through the install and
+    /// aborts it (surfaced as the panic, not an [`Error`]); keep it cheap and
+    /// panic-free — e.g. feed a channel rather than doing UI work inline.
+    ///
+    /// Not `const` because closures cannot be constructed in a const context.
+    #[must_use]
+    pub fn with_progress<F>(mut self, callback: F) -> Self
+    where
+        F: Fn(Progress) + Send + Sync + 'static,
+    {
+        self.progress = Some(Arc::new(callback));
+        self
+    }
+
+    /// Forward a progress snapshot to the installed callback, if any.
+    ///
+    /// Centralizing the `Option` check keeps the download loop readable and
+    /// guarantees the no-callback path is a single branch with no allocation
+    /// or `Progress` construction.
+    fn emit_progress(&self, downloaded: u64, total: Option<u64>) {
+        if let Some(cb) = &self.progress {
+            cb(Progress { downloaded, total });
+        }
     }
 
     /// Install `tool` at `version` for the host [`Target`], using the
@@ -289,6 +346,15 @@ impl Installer {
             .map_or(0, |len| usize::try_from(len).unwrap_or(0));
         let mut buf: Vec<u8> = Vec::with_capacity(reserve);
         let mut total: u64 = 0;
+
+        // Progress reporting: throttle so a multi-MiB download does not fire a
+        // callback per chunk. The initial emit lets a UI render "0 / total"
+        // before the first byte arrives; the loop emits every PROGRESS_EMIT_STEP
+        // bytes of new data; the post-loop emit guarantees a final completion
+        // snapshot. All three are no-ops when no callback is wired.
+        self.emit_progress(0, declared_len);
+        let mut last_emitted: u64 = 0;
+
         loop {
             // Race each chunk read against a deadline: a server that opens
             // the connection and then never sends (or drips ~1 byte/minute)
@@ -321,7 +387,22 @@ impl Installer {
             }
 
             buf.extend_from_slice(&chunk);
+
+            // Throttled progress emit: only when at least PROGRESS_EMIT_STEP
+            // new bytes have arrived since the last emit. Subtraction is safe:
+            // `total` only ever increases, so `total >= last_emitted` always
+            // holds.
+            if total - last_emitted >= PROGRESS_EMIT_STEP {
+                self.emit_progress(total, declared_len);
+                last_emitted = total;
+            }
         }
+
+        // Final completion snapshot: always emit so consumers see the exact
+        // final byte count (which may be below the next EMIT_STEP threshold)
+        // and can mark the download done. `buf.len()` is authoritative — it
+        // reflects bytes actually buffered, not the running counter.
+        self.emit_progress(buf.len() as u64, declared_len);
 
         Ok(buf)
     }
@@ -517,39 +598,32 @@ fn write_executable(dest: &Path, bytes: &[u8]) -> Result<()> {
 
         // Create the temp file in the SAME directory as the destination so
         // the rename stays atomic on the same filesystem. `tempfile`'s
-        // `.permissions(...)` sets the mode at creation (overriding umask,
-        // matching the pattern used by toride-fs' atomic-write core), so the
-        // renamed inode is already `0o755` the instant it becomes reachable.
+        // `.permissions(...)` sets the mode at creation (overriding umask), so
+        // the renamed inode is already `0o755` the instant it becomes
+        // reachable.
         let mut tmp = tempfile::Builder::new()
             .permissions(std::fs::Permissions::from_mode(0o755))
             .tempfile_in(dest.parent().unwrap_or(Path::new(".")))
-            .map_err(|source| {
-                Error::Atomic(toride_fs::Error::AtomicWriteFailed {
-                    path: dest.display().to_string(),
-                    reason: format!("failed to create temp file: {source}"),
-                })
-            })?;
+            .map_err(Error::Io)?;
 
         tmp.write_all(bytes)?;
         tmp.flush()?;
-        tmp.as_file().sync_all().map_err(|source| {
-            Error::Atomic(toride_fs::Error::AtomicWriteFailed {
-                path: dest.display().to_string(),
-                reason: format!("failed to fsync temp file: {source}"),
-            })
-        })?;
+        tmp.as_file().sync_all().map_err(Error::Io)?;
 
-        tmp.persist(dest).map_err(|source| {
-            Error::Atomic(toride_fs::Error::AtomicWriteFailed {
-                path: dest.display().to_string(),
-                reason: format!("failed to persist temp file: {source}"),
-            })
-        })?;
+        tmp.persist(dest).map_err(|e| Error::Io(e.error))?;
     }
     #[cfg(not(unix))]
     {
-        // No executable-bit concept off Unix; a plain atomic write suffices.
-        toride_fs::atomic_write_bytes(dest, bytes)?;
+        // No executable-bit concept off Unix; create a temp file in the same
+        // directory, write + flush, then rename (persist) for atomicity — the
+        // same shape as the Unix branch minus the permissions step.
+        let mut tmp = tempfile::Builder::new()
+            .tempfile_in(dest.parent().unwrap_or(Path::new(".")))
+            .map_err(Error::Io)?;
+
+        tmp.write_all(bytes)?;
+        tmp.flush()?;
+        tmp.persist(dest).map_err(|e| Error::Io(e.error))?;
     }
 
     Ok(())
@@ -702,6 +776,7 @@ mod tests {
     use crate::ArtifactKind;
     use crate::target::{Arch, Os};
     use std::fs;
+    use std::sync::Mutex;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
     use tempfile::TempDir;
@@ -1175,5 +1250,141 @@ mod tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::NoChecksumEntry { .. }));
+    }
+
+    // ---- Progress reporting ------------------------------------------------
+
+    /// A tiny single-shot HTTP/1.0 server that serves raw `body` bytes for the
+    /// next GET with a correct `Content-Length`, then stops accepting.
+    ///
+    /// Mirrors [`serve_once`](Self::serve_once) but carries an arbitrary
+    /// binary body (rather than a textual checksum file) so we can drive a
+    /// real `Installer::download` — and therefore the progress callback —
+    /// against a local listener with no external network.
+    async fn serve_body_once(body: Vec<u8>) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/artifact");
+
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain the request line/headers (we don't care about them).
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(header.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        url
+    }
+
+    /// A resolver that returns a constant URL — used to point the install
+    /// pipeline at the local single-shot server.
+    struct LocalResolver {
+        url: String,
+        version: String,
+    }
+
+    #[async_trait]
+    impl ReleaseResolver for LocalResolver {
+        async fn resolve(&self, _target: Target, _version: &str) -> Result<(String, String)> {
+            Ok((self.version.clone(), self.url.clone()))
+        }
+    }
+
+    /// Drives a real download through the public install path against a local
+    /// server and asserts the progress callback fires with non-decreasing
+    /// byte counts whose final snapshot reports completion.
+    ///
+    /// The body (8192 bytes) is well below the 256 KiB throttle step, so the
+    /// loop-internal emit never fires — the callback sequence we assert is
+    /// the initial `0 / total` emit followed by the final completion emit,
+    /// which is the minimal shape any UI can rely on regardless of body size.
+    #[tokio::test]
+    async fn download_progress_reports_non_decreasing_bytes_and_completion() {
+        let body_len: usize = 8192;
+        let body = vec![0xA5u8; body_len];
+        let url = serve_body_once(body.clone()).await;
+
+        // Record every snapshot the installer reports. Arc<Mutex<_>> is the
+        // standard way to capture into a 'static Send + Sync closure.
+        let recorded: Arc<Mutex<Vec<Progress>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured = Arc::clone(&recorded);
+
+        let installer = Installer::new()
+            .with_min_bytes(1)
+            .with_progress(move |p| captured.lock().unwrap().push(p));
+
+        // Drive a real install through the public entry point. The tool is a
+        // no-checksum Binary so verify accepts the floor (set to 1 byte) and
+        // extraction is a passthrough — the load-bearing path is `download`.
+        let tmp = TempDir::new().unwrap();
+        let dest_dir = Utf8PathBuf::from_path_buf(tmp.path().to_owned()).unwrap();
+        let tool = Tool {
+            name: "demo".into(),
+            artifact: ArtifactKind::Binary,
+            bin_name: "demo".into(),
+            checksum: Checksum::None,
+            ..Default::default()
+        };
+        let resolver = LocalResolver {
+            url,
+            version: "1.0.0".into(),
+        };
+        installer
+            .install_with_resolver(&tool, host_target(), "1.0.0", Some(&dest_dir), &resolver)
+            .await
+            .unwrap();
+
+        let snapshots = recorded.lock().unwrap().clone();
+
+        // 1. The callback fired at all (initial emit + final emit >= 2).
+        assert!(
+            snapshots.len() >= 2,
+            "expected at least initial + final progress emits, got {snapshots:?}"
+        );
+
+        // 2. `downloaded` is non-decreasing across the sequence.
+        for w in snapshots.windows(2) {
+            assert!(
+                w[1].downloaded >= w[0].downloaded,
+                "progress went backwards: {snapshots:?}"
+            );
+        }
+
+        // 3. Every snapshot carries the declared total (the server sent a
+        //    correct Content-Length).
+        assert!(
+            snapshots.iter().all(|p| p.total == Some(body_len as u64)),
+            "total must be Some({body_len}) throughout, got {snapshots:?}"
+        );
+
+        // 4. The first emit reports zero bytes downloaded (the pre-loop
+        //    snapshot) and the last reports the full body.
+        assert_eq!(
+            snapshots.first().unwrap().downloaded,
+            0,
+            "first emit must report 0 bytes, got {snapshots:?}"
+        );
+        let last = *snapshots.last().unwrap();
+        assert_eq!(
+            last.downloaded,
+            body_len as u64,
+            "final emit must report the full body length, got {snapshots:?}"
+        );
+        assert_eq!(last.total, Some(body_len as u64));
+
+        // 5. The installed file matches the served body — sanity check that
+        //    progress reporting did not perturb the byte stream.
+        let dest_path = dest_dir.join("demo");
+        assert_eq!(fs::read(&dest_path).unwrap(), body);
     }
 }

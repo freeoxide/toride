@@ -1,7 +1,7 @@
 //! Artifact extraction.
 //!
 //! A [`Tool`](crate::Tool) publishes either a single [`Binary`](crate::ArtifactKind::Binary)
-//! file (placed verbatim) or a compressed [`Tarball`](crate::ArtifactKind::ArtifactKind::Tarball)
+//! file (placed verbatim) or a compressed [`Tarball`]
 //! (decompressed with gzip or xz, then the target entry is located and
 //! copied out). Both kinds are implemented here so the framework is
 //! genuinely general, even though the only wired tool (mise) currently
