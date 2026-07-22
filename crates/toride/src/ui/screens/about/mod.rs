@@ -504,8 +504,8 @@ mod tests {
             name: "toride".into(),
             version: "0.1.0".into(),
             profile: "release".into(),
-            homepage: "https://github.com/hmziq/toride".into(),
-            authors: "hmziqrs".into(),
+            homepage: "https://github.com/freeoxide/toride".into(),
+            authors: "freeoxide".into(),
         }
     }
 
@@ -605,7 +605,7 @@ mod tests {
         assert!(out.contains("toride"), "app name: {out}");
         assert!(out.contains("0.1.0"), "app version: {out}");
         assert!(out.contains("release"), "profile: {out}");
-        assert!(out.contains("hmziqrs"), "authors: {out}");
+        assert!(out.contains("freeoxide"), "authors: {out}");
     }
 
     #[test]

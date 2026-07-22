@@ -1,11 +1,11 @@
 #!/bin/sh
 # toride install script
 # Usage: curl -fsSL https://toride.dev/install.sh | sh
-# Or:   curl -fsSL https://github.com/hmziqrs/toride/releases/latest/download/install.sh | sh
+# Or:   curl -fsSL https://github.com/freeoxide/toride/releases/latest/download/install.sh | sh
 
 set -e
 
-REPO="hmziqrs/toride"
+REPO="freeoxide/toride"
 INSTALL_DIR="${TORIDE_INSTALL:-/usr/local/bin}"
 TMPDIR="${TMPDIR:-/tmp}"
 
