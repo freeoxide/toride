@@ -31,8 +31,8 @@
 //!    [`Tarball`][ArtifactKind::Tarball] decompressed (gzip **or** xz) and
 //!    the configured entry located. Both kinds are implemented so the
 //!    framework is genuinely general.
-//! 5. **Install** — written atomically (temp + rename via [`toride_fs`])
-//!    into the install dir and `chmod 0o755` on Unix.
+//! 5. **Install** — written atomically (temp file in the same dir, then
+//!    rename) into the install dir and `chmod 0o755` on Unix.
 //!
 //! ## Quick start (mise)
 //!
@@ -94,6 +94,7 @@
 pub mod error;
 pub mod extract;
 pub mod installer;
+pub mod progress;
 pub mod target;
 pub mod tool;
 pub mod tools;
@@ -104,5 +105,6 @@ pub use installer::{
     DEFAULT_MAX_BYTES, DEFAULT_MIN_BYTES, Installer, InstallerBuilder, TemplateResolver, Verifier,
     install_tool,
 };
+pub use progress::Progress;
 pub use target::{Arch, Os, Target};
 pub use tool::{ArtifactKind, Checksum, ReleaseResolver, Tarball, Tool, ToolBuilder};

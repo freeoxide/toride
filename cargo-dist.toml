@@ -7,7 +7,7 @@ targets = [
     "aarch64-unknown-linux-musl",
 ]
 # Release repository
-repository = "hmziqrs/toride"
+repository = "freeoxide/toride"
 # CI
 ci = ["github"]
 # Don't build on every push, only on release
