@@ -7,6 +7,7 @@ use crate::error::{Error, Result};
 use crate::parse::parse_certbot_certs;
 use crate::paths::ProxyPaths;
 use crate::report::CertInfo;
+use crate::validate::validate_site_domain;
 use toride_runner::{CommandSpec, Runner};
 
 /// Certificate management facade.
@@ -124,8 +125,15 @@ impl<'a> CertManager<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CertRenewal`] if the revocation command fails.
+    /// Returns [`Error::Validation`] if `domain` is not a safe single path
+    /// segment (path-traversal guard), or [`Error::CertRenewal`] if the
+    /// revocation command fails.
     pub fn revoke_certificate(&self, domain: &str) -> Result<()> {
+        // Validate before joining: `domain` is interpolated into
+        // `cert_live_path(domain)` and a traversal-shaped value
+        // (`../etc/passwd`, `..`) would escape the certbot live directory.
+        validate_site_domain(domain)?;
+
         let cert_path = self.paths.cert_live_path(domain).join("cert.pem");
         let spec = CommandSpec::new("certbot")
             .args(["revoke", "--cert-path"])
@@ -141,7 +149,16 @@ impl<'a> CertManager<'a> {
     }
 
     /// Check if a certificate exists for a domain.
+    ///
+    /// Returns `false` for a traversal-shaped `domain` rather than probing a
+    /// path that escapes the certbot live directory.
     pub fn certificate_exists(&self, domain: &str) -> bool {
+        // A traversal-shaped domain cannot name a real managed certificate, so
+        // refuse to even probe it rather than resolving a path outside the
+        // certs directory.
+        if validate_site_domain(domain).is_err() {
+            return false;
+        }
         self.paths
             .cert_live_path(domain)
             .join("fullchain.pem")
@@ -149,13 +166,27 @@ impl<'a> CertManager<'a> {
     }
 
     /// Get the path to the full certificate chain for a domain.
-    pub fn fullchain_path(&self, domain: &str) -> std::path::PathBuf {
-        self.paths.cert_live_path(domain).join("fullchain.pem")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Validation`] if `domain` is not a safe single path
+    /// segment, refusing to build a path that escapes the certbot live
+    /// directory.
+    pub fn fullchain_path(&self, domain: &str) -> Result<std::path::PathBuf> {
+        validate_site_domain(domain)?;
+        Ok(self.paths.cert_live_path(domain).join("fullchain.pem"))
     }
 
     /// Get the path to the private key for a domain.
-    pub fn privkey_path(&self, domain: &str) -> std::path::PathBuf {
-        self.paths.cert_live_path(domain).join("privkey.pem")
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::Validation`] if `domain` is not a safe single path
+    /// segment, refusing to build a path that escapes the certbot live
+    /// directory.
+    pub fn privkey_path(&self, domain: &str) -> Result<std::path::PathBuf> {
+        validate_site_domain(domain)?;
+        Ok(self.paths.cert_live_path(domain).join("privkey.pem"))
     }
 }
 
@@ -185,7 +216,7 @@ mod tests {
     /// because `--email` carries a registration/recovery contact address (PII).
     ///
     /// The exact arg shape comes from the certbot(1) man page
-    /// (https://man.archlinux.org/man/certbot.1): `-m EMAIL, --email EMAIL` —
+    /// (<https://man.archlinux.org/man/certbot.1>): `-m EMAIL, --email EMAIL` —
     /// "Email used for registration and recovery contact." Non-interactive
     /// certificate issuance requires `--agree-tos` + `--non-interactive`
     /// alongside the webroot authenticator (`--webroot -w PATH -d DOMAIN`),
@@ -399,5 +430,142 @@ mod tests {
 
         assert!(mgr.renew_all().is_ok());
         assert!(mgr.revoke_certificate("example.com").is_ok());
+    }
+
+    /// Path-traversal guard: `revoke_certificate` must reject a traversal-shaped
+    /// `domain` BEFORE it is joined into `cert_live_path`, so a hostile value
+    /// (`../etc/passwd`, `..`, `/etc/passwd`) cannot escape the certbot live
+    /// directory or reach certbot as a crafted `--cert-path`.
+    ///
+    /// Each input must surface [`Error::Validation`] and must NOT consume a
+    /// queued runner response (the traversal is caught before any command is
+    /// built), so we assert `fake.calls()` stays empty after each call.
+    #[test]
+    fn revoke_certificate_rejects_traversal_domains() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+
+        // Queue a success that should never be consumed: validation runs first.
+        let fake = toride_runner::fake::FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stdout("revoked"));
+        let mgr = CertManager::new(&fake, &paths);
+
+        for traversal in [
+            "..",
+            "../etc/passwd",
+            "../../root",
+            "/etc/passwd",
+            "foo/../../../bar",
+            "a/b",
+            "a\\b",
+            "foo\0bar",
+        ] {
+            let err = mgr
+                .revoke_certificate(traversal)
+                .expect_err("traversal domain must be rejected before joining");
+            assert!(
+                matches!(err, Error::Validation(_)),
+                "expected Error::Validation for {traversal:?}, got {err:?}"
+            );
+        }
+
+        // No certbot call should have been issued for any traversal input.
+        assert!(
+            fake.calls().is_empty(),
+            "validation must short-circuit before invoking certbot"
+        );
+    }
+
+    /// Path-traversal guard for `certificate_exists`: a traversal-shaped domain
+    /// must return `false` (no cert can exist) WITHOUT probing a path outside
+    /// the certs directory. We also confirm the happy path still detects a real
+    /// cert, so the guard does not over-reject valid domains.
+    #[test]
+    fn certificate_exists_rejects_traversal_domains() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = CertManager::new(&fake, &paths);
+
+        // A traversal-shaped domain is not a real managed certificate and must
+        // never probe outside the live directory.
+        for traversal in [
+            "..",
+            "../etc/passwd",
+            "/etc/passwd",
+            "foo/../../../bar",
+            "a/b",
+            "a\\b",
+            "foo\0bar",
+        ] {
+            assert!(
+                !mgr.certificate_exists(traversal),
+                "traversal domain {traversal:?} must report no cert"
+            );
+        }
+
+        // Sanity: a valid domain still resolves and detects a real cert file.
+        assert!(!mgr.certificate_exists("example.com"));
+        let cert_dir = paths.cert_live_path("example.com");
+        std::fs::create_dir_all(&cert_dir).unwrap();
+        std::fs::write(cert_dir.join("fullchain.pem"), "fake cert").unwrap();
+        assert!(mgr.certificate_exists("example.com"));
+    }
+
+    /// Path-traversal guard for the path getters: `fullchain_path` and
+    /// `privkey_path` must refuse to build a path that escapes the certbot live
+    /// directory, returning [`Error::Validation`] for traversal-shaped inputs.
+    /// A valid domain must still resolve to `<live>/<domain>/<file>`.
+    #[test]
+    fn path_getters_reject_traversal_domains() {
+        let dir = assert_fs::TempDir::new().unwrap();
+        let paths = ProxyPaths::with_root(dir.path());
+
+        let fake = toride_runner::fake::FakeRunner::new();
+        let mgr = CertManager::new(&fake, &paths);
+
+        for traversal in [
+            "..",
+            "../etc/passwd",
+            "/etc/passwd",
+            "foo/../../../bar",
+            "a/b",
+            "a\\b",
+            "foo\0bar",
+        ] {
+            let err = mgr
+                .fullchain_path(traversal)
+                .expect_err("fullchain_path must reject traversal domain");
+            assert!(
+                matches!(err, Error::Validation(_)),
+                "expected Error::Validation for fullchain_path({traversal:?}), got {err:?}"
+            );
+            let err = mgr
+                .privkey_path(traversal)
+                .expect_err("privkey_path must reject traversal domain");
+            assert!(
+                matches!(err, Error::Validation(_)),
+                "expected Error::Validation for privkey_path({traversal:?}), got {err:?}"
+            );
+        }
+
+        // Happy path: valid domains resolve under the live directory.
+        let full = mgr
+            .fullchain_path("example.com")
+            .expect("valid domain must resolve");
+        assert!(
+            full.ends_with("example.com/fullchain.pem"),
+            "unexpected fullchain path: {}",
+            full.display()
+        );
+        let key = mgr
+            .privkey_path("example.com")
+            .expect("valid domain must resolve");
+        assert!(
+            key.ends_with("example.com/privkey.pem"),
+            "unexpected privkey path: {}",
+            key.display()
+        );
     }
 }
