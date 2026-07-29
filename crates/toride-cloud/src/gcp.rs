@@ -98,9 +98,7 @@ impl GcpClient {
     /// Run a spec through the injected runner, mapping the runner error type
     /// into the crate's [`Error`].
     fn run_checked(&self, spec: &CommandSpec) -> Result<CommandOutput> {
-        self.runner
-            .run_checked(spec)
-            .map_err(|e| map_runner_error(&e, &spec.program))
+        self.runner.run_checked(spec).map_err(Error::from)
     }
 
     /// List all firewall rules in the project.
@@ -138,7 +136,7 @@ impl GcpClient {
             {
                 Error::ProviderNotFound(format!("firewall rule {name} not found"))
             }
-            _ => map_runner_error(&e, &spec.program),
+            _ => Error::from(e),
         })?;
         let mut group = parse_one_firewall_rule(&output.stdout)?;
         group.name = name.to_string();
@@ -291,20 +289,6 @@ fn build_mutation_spec(
 // ---------------------------------------------------------------------------
 // CLI -> domain mapping helpers (file-local to avoid parse.rs conflicts)
 // ---------------------------------------------------------------------------
-
-/// Map a runner error into the crate's error type.
-///
-/// `BinaryNotFound` is preserved semantically; everything else becomes a
-/// [`Error::CommandFailed`] keyed on `program`.
-fn map_runner_error(e: &toride_runner::Error, program: &str) -> Error {
-    match e {
-        toride_runner::Error::BinaryNotFound(bin) => Error::BinaryNotFound(bin.clone()),
-        other => Error::CommandFailed {
-            program: program.to_string(),
-            message: other.to_string(),
-        },
-    }
-}
 
 /// Return the first non-empty description among `rules`, or `""`.
 fn first_description(rules: &[FirewallRule]) -> String {
