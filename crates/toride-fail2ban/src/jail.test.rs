@@ -1,6 +1,8 @@
 use super::*;
-use crate::command::DuctRunner;
-use crate::types::ExecutionMode;
+use crate::command::{CommandOutput, DuctRunner, FakeRunner};
+use crate::config::ActionConfig;
+use crate::types::{ExecutionMode, PlatformCommands};
+use std::collections::HashMap;
 use std::io::Write;
 use tempfile::{NamedTempFile, tempdir};
 
@@ -1125,4 +1127,103 @@ fn test_ignore_ips_with_invalid_entry_skipped() {
         scan_result.new_bans[0].ip,
         "10.0.0.5".parse::<std::net::IpAddr>().unwrap()
     );
+}
+
+// ---------------------------------------------------------------------------
+// scan() -- ban-action exec error still persists the detector journal
+// ---------------------------------------------------------------------------
+
+/// Regression for the jail.rs:211 finding: when a ban-action exec fails
+/// mid-loop, `scan()` must still persist the detector journal before returning
+/// `Err`, otherwise the next run re-scans from the old offset and re-bans the
+/// already-processed IP.
+///
+/// This wires a custom `"failing-ban"` action whose command is the literal
+/// `false`, registers a failing `FakeRunner` response for `sh -c false`, runs
+/// `scan()` in `Execute` mode, then rebuilds a fresh jail over the same store,
+/// restores its journal, and asserts the already-scanned line is NOT re-read.
+#[test]
+fn scan_ban_action_error_still_persists_journal() {
+    let tmpdir = tempdir().expect("failed to create temp dir");
+    let log_path = tmpdir.path().join("auth.log");
+    std::fs::write(&log_path, "Failed login from 198.51.100.7\n").unwrap();
+    let store = make_store(tmpdir.path());
+
+    // Custom action whose ban command is the literal `false` -- guaranteed to
+    // expand to itself (no placeholders) and to fail when executed.
+    let mut actions = HashMap::new();
+    actions.insert(
+        "failing-ban".to_string(),
+        ActionConfig {
+            commands: PlatformCommands::new(
+                vec!["false".to_string()],
+                vec!["false".to_string()],
+                vec!["false".to_string()],
+            ),
+            validation_commands: Vec::new(),
+        },
+    );
+
+    let config = crate::config::ResolvedJail {
+        name: "journal-jail".to_string(),
+        enabled: true,
+        log_path: log_path.clone(),
+        pattern: r"Failed login from (?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
+        find_time: 600,
+        ban_time: 3600,
+        max_retry: 1,
+        ban_action: "failing-ban".to_string(),
+        unban_action: "unban".to_string(),
+        ignore_ips: Vec::new(),
+    };
+
+    // FakeRunner that fails every `sh -c false` invocation.
+    let mut runner = FakeRunner::new();
+    runner.with_response(
+        "sh",
+        &["-c", "false"],
+        CommandOutput::new(String::new(), "boom".to_string(), Some(1)),
+    );
+
+    let mut jail =
+        Jail::new(config, store, Some(&actions), Box::new(runner)).expect("failed to create jail");
+
+    // First scan: one match -> ban attempted -> action exec fails -> scan Err.
+    let result = jail.scan(ExecutionMode::Execute);
+    assert!(result.is_err(), "scan should return Err on ban-action failure");
+
+    // Re-open the same store so we observe what was persisted to disk.
+    let store2 = make_store(tmpdir.path());
+
+    // Rebuild a fresh jail sharing the persisted store and restore its journal.
+    let config2 = crate::config::ResolvedJail {
+        name: "journal-jail".to_string(),
+        enabled: true,
+        log_path: log_path.clone(),
+        pattern: r"Failed login from (?P<ip>\d+\.\d+\.\d+\.\d+)".to_string(),
+        find_time: 600,
+        ban_time: 3600,
+        max_retry: 1,
+        ban_action: "failing-ban".to_string(),
+        unban_action: "unban".to_string(),
+        ignore_ips: Vec::new(),
+    };
+    let mut jail2 = Jail::new(
+        config2,
+        store2,
+        Some(&actions),
+        Box::new(FakeRunner::new()),
+    )
+    .expect("failed to create second jail");
+    jail2.restore_journal().expect("restore_journal should succeed");
+
+    // Second scan: the journal was persisted, so the already-processed line is
+    // NOT re-scanned. lines_scanned == 0 proves the offset advanced.
+    let r2 = jail2.scan(ExecutionMode::DryRun).expect("second scan should succeed");
+    assert_eq!(
+        r2.lines_scanned, 0,
+        "journal must have been persisted so the line is not re-scanned"
+    );
+    assert_eq!(r2.matches_found, 0);
+    assert!(r2.new_bans.is_empty());
 }

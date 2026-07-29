@@ -150,6 +150,11 @@ impl Jail {
     /// failed at least `max_retry` times within the `find_time` window.
     ///
     /// Persists bans to the store and executes firewall commands (unless dry-run).
+    ///
+    /// The detector journal (scan offset / line number) is always persisted --
+    /// including on the error paths -- so that a subsequent run resumes from the
+    /// end of the already-processed region instead of re-scanning and re-banning
+    /// IPs whose ban action failed midway through this scan.
     pub fn scan(&mut self, mode: ExecutionMode) -> crate::Result<ScanResult> {
         let mut result = self.detector.scan()?;
 
@@ -215,6 +220,10 @@ impl Jail {
                                 tracing::error!(jail = %self.config.name, ip = %ip, error = %e,
                                     "rollback unban failed after ban action error");
                             }
+                            // Persist the journal before propagating so the next
+                            // run resumes past the already-processed lines
+                            // instead of re-scanning/re-banning them.
+                            self.persist_journal();
                             return Err(e);
                         }
                     }
@@ -223,19 +232,31 @@ impl Jail {
                 Err(crate::Error::AlreadyBanned(_)) => {
                     // Already banned, skip.
                 }
-                Err(e) => return Err(e),
+                Err(e) => {
+                    // Persist the journal before propagating so the next run
+                    // resumes past the already-processed lines.
+                    self.persist_journal();
+                    return Err(e);
+                }
             }
         }
 
-        // Update journal position for scan resume.
+        // Persist the journal on the success path too. The error paths above
+        // each call `persist_journal()` before returning `Err`.
+        self.persist_journal();
+        Ok(result)
+    }
+
+    /// Best-effort persistence of the detector journal (scan offset / line
+    /// number) so the next run resumes from where this one stopped.
+    ///
+    /// Failures are logged at `warn` level but never propagated: a journal write
+    /// error must not mask the real scan/ban result the caller is returning.
+    fn persist_journal(&self) {
         let journal = self.detector.journal();
-        // Store journal if we have a store reference (we do via ban_manager).
-        // This is a best-effort operation.
         if let Err(e) = self.ban_manager.store().update_journal(journal) {
             tracing::warn!(jail = %self.config.name, error = %e, "failed to persist journal");
         }
-
-        Ok(result)
     }
 
     /// Ban a specific IP address.
