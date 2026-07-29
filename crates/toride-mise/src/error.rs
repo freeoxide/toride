@@ -204,6 +204,21 @@ pub enum MiseError {
         reason: String,
     },
 
+    /// The downloaded `mise` tarball failed its sha256 integrity check.
+    ///
+    /// Bootstrap fails closed when the published checksum does not match the
+    /// bytes actually downloaded — the binary is never extracted.
+    #[error(
+        "checksum mismatch for mise tarball: expected sha256 {expected}, got {actual}"
+    )]
+    ChecksumMismatch {
+        /// Expected sha256 (lowercase hex) sourced from the release's
+        /// published checksum file.
+        expected: String,
+        /// Actual sha256 (lowercase hex) of the downloaded bytes.
+        actual: String,
+    },
+
     /// A tool installation error occurred.
     #[error(transparent)]
     Install(Box<ToolInstallError>),

@@ -11,7 +11,7 @@ json = ["dep:serde", "dep:serde_json"]
 toml = ["dep:toml", "dep:toml_edit"]
 diagnostics = []
 tracing = ["dep:tracing"]
-bootstrap = ["dep:reqwest", "dep:flate2", "dep:tar"]
+bootstrap = ["dep:reqwest", "dep:flate2", "dep:tar", "dep:sha2"]
 miette = ["dep:miette"]
 blocking = []
 
@@ -31,6 +31,7 @@ toml_edit = { workspace = true, optional = true }
 reqwest = { workspace = true, optional = true }
 flate2 = { version = "1", optional = true }
 tar = { version = "0.4", optional = true }
+sha2 = { version = "0.10", optional = true }
 miette = { version = "7", optional = true }
 
 [dev-dependencies]
