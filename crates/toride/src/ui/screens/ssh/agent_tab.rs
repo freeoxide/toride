@@ -67,6 +67,12 @@ pub struct AgentTab {
     confirm: ConfirmModal,
     /// Pending write operations to be forwarded to `SshContent`.
     pending_ops: Vec<SshOp>,
+    /// Pre-resolved on-disk path for the key pending removal, captured when
+    /// the Remove confirm modal opens (NOT at click time). Resolving $HOME
+    /// once up front avoids re-reading the process environment on every key
+    /// press while the modal is open, and lets us validate the candidate
+    /// filename before queuing the op.
+    remove_key_path: Option<String>,
 }
 
 impl AgentTab {
@@ -100,6 +106,7 @@ impl AgentTab {
             form: FormModal::new(40),
             confirm: ConfirmModal::new(""),
             pending_ops: Vec::new(),
+            remove_key_path: None,
         }
     }
 
@@ -134,6 +141,9 @@ impl AgentTab {
     /// Close the detail modal (if open).
     pub fn close_modal(&mut self) {
         self.detail_open = None;
+        self.detail_modal_rect = None;
+        self.action_modal = None;
+        self.remove_key_path = None;
     }
 
     /// Handle a mouse event for the agent key list.
@@ -289,11 +299,15 @@ impl SshTab for AgentTab {
                     match self.confirm.handle_key(code) {
                         Some(ConfirmResult::Confirmed) => {
                             if !self.keys.is_empty() {
-                                let name = self.keys[self.selected].name.clone();
-                                // Persist to disk — derive absolute key path
-                                let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".into());
-                                let path = format!("{home}/.ssh/{name}");
-                                self.pending_ops.push(SshOp::AgentRemoveKey { path });
+                                // Use the path captured when the confirm modal
+                                // opened (resolve_agent_key_path), NOT a
+                                // freshly-derived one — the display name is
+                                // the key comment, not a reliable filename, so
+                                // we only proceed when we could build a safe
+                                // path. $HOME is NOT read here at click time.
+                                if let Some(path) = self.remove_key_path.take() {
+                                    self.pending_ops.push(SshOp::AgentRemoveKey { path });
+                                }
                                 // Optimistic in-memory update
                                 self.keys.remove(self.selected);
                                 if self.selected >= self.keys.len() && !self.keys.is_empty() {
@@ -303,7 +317,10 @@ impl SshTab for AgentTab {
                             }
                             self.action_modal = None;
                         }
-                        Some(ConfirmResult::Cancelled) => self.action_modal = None,
+                        Some(ConfirmResult::Cancelled) => {
+                            self.remove_key_path = None;
+                            self.action_modal = None;
+                        }
                         None => {}
                     }
                 }
@@ -358,6 +375,12 @@ impl SshTab for AgentTab {
                 KeyCode::Char('d') => {
                     if !self.keys.is_empty() {
                         let name = self.keys[self.selected].name.clone();
+                        // Resolve the on-disk path NOW (when the modal opens),
+                        // not at confirm-click time. The agent key's display
+                        // name is the comment, which is NOT a reliable
+                        // filename — only build a path when `name` is a bare
+                        // filename (no separators, no parent traversal).
+                        self.remove_key_path = resolve_agent_key_path(&name);
                         self.confirm =
                             ConfirmModal::new(format!("Remove key \"{name}\" from agent?"));
                         self.action_modal = Some(ActionModal::Remove);
@@ -427,6 +450,7 @@ impl SshTab for AgentTab {
         self.detail_open = None;
         self.detail_modal_rect = None;
         self.action_modal = None;
+        self.remove_key_path = None;
     }
 
     fn drain_ops(&mut self) -> Vec<SshOp> {
@@ -689,6 +713,36 @@ impl AgentTab {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 // (truncate_str is imported from crate::ui::responsive)
 
+/// Resolve an agent key's display name to an on-disk private-key path, when
+/// the name is a safe bare filename.
+///
+/// The agent key list shows the key **comment** (or, failing that, the key
+/// file's basename) — never a full path. Treating that display string as a
+/// filename and joining it onto `$HOME/.ssh/` is only safe when it contains no
+/// path separators and no parent-directory traversal, otherwise we could end
+/// up pointing `ssh-add -d` at an unintended file. Returns `None` for anything
+/// that is not a plain filename so the Remove handler can refuse to guess.
+///
+/// `$HOME` is read here (when the confirm modal opens), not at click time, so
+/// the environment is consulted once per removal rather than on every key
+/// press while the modal is open.
+fn resolve_agent_key_path(name: &str) -> Option<String> {
+    // Reject anything that is not a plain basename: empty, contains a path
+    // separator, is a parent-reference, or contains a NUL byte.
+    if name.is_empty()
+        || name.contains('/')
+        || name.contains('\\')
+        || name == ".."
+        || name == "."
+        || name.contains('\0')
+        || name.contains("..")
+    {
+        return None;
+    }
+    let home = std::env::var("HOME").ok().filter(|h| !h.is_empty())?;
+    Some(format!("{home}/.ssh/{name}"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -878,5 +932,173 @@ mod tests {
         tab.selected = 5;
         tab.set_data(sample_status(), sample_keys()); // 2 items
         assert!(tab.selected < 2);
+    }
+
+    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
+
+    /// Process-global HOME is mutated by several tests below. Acquire this lock
+    /// at the top of every env-mutating test so they cannot run concurrently
+    /// and race each other (cargo runs `#[test]`s in parallel threads within
+    /// the binary). Mirrors the `HOME_LOCK` pattern in `ssh_data.rs`.
+    fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
+        static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Drive a `FormModal` whose first field is a required text input to
+    /// Submitted: type the value, Tab to the button row, Enter on Add.
+    fn submit_form_with_value(tab: &mut AgentTab, value: &str) {
+        // Type each char into the (focused) first field.
+        for ch in value.chars() {
+            tab.handle_key(KeyCode::Char(ch));
+        }
+        // Move focus to the buttons (Tab from the last field), then submit.
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Enter);
+    }
+
+    #[test]
+    fn add_key_submit_pushes_agent_add_key_op() {
+        let mut tab = AgentTab::new();
+        tab.set_data(sample_status(), sample_keys());
+
+        // Open the Add form.
+        tab.handle_key(KeyCode::Char('a'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Add));
+
+        // Submit a key path.
+        submit_form_with_value(&mut tab, "/home/alice/.ssh/id_ed25519");
+
+        assert!(tab.action_modal.is_none(), "modal closed on submit");
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1, "Add should queue exactly one op");
+        match &ops[0] {
+            SshOp::AgentAddKey { path } => {
+                assert_eq!(path, "/home/alice/.ssh/id_ed25519");
+            }
+            other => panic!("expected AgentAddKey, got {other:?}"),
+        }
+        // Optimistic in-memory update: a new key was appended and selected.
+        assert_eq!(tab.keys.len(), 3, "optimistic push should add a key");
+        assert_eq!(tab.selected, 2);
+        // Display name is derived from the path basename.
+        assert_eq!(tab.keys[2].name, "id_ed25519");
+    }
+
+    #[test]
+    fn remove_key_submit_pushes_agent_remove_key_op_with_resolved_path() {
+        let _lock = env_test_lock();
+        // SAFETY: test-only; env_test_lock ensures serial execution.
+        unsafe {
+            std::env::set_var("HOME", "/home/alice");
+        }
+        let mut tab = AgentTab::new();
+        tab.set_data(sample_status(), sample_keys()); // [id_ed25519, id_rsa]
+        tab.selected = 0;
+
+        // Open the Remove confirm modal.
+        tab.handle_key(KeyCode::Char('d'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Remove));
+        // The path must have been pre-resolved when the modal opened.
+        assert_eq!(
+            tab.remove_key_path.as_deref(),
+            Some("/home/alice/.ssh/id_ed25519"),
+            "path resolved at modal-open time, not click time"
+        );
+
+        // Confirming pushes the op using the pre-resolved path.
+        tab.handle_key(KeyCode::Enter);
+        assert!(tab.action_modal.is_none());
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::AgentRemoveKey { path } => {
+                assert_eq!(path, "/home/alice/.ssh/id_ed25519");
+            }
+            other => panic!("expected AgentRemoveKey, got {other:?}"),
+        }
+        // Optimistic in-memory update: the selected key was removed and the
+        // selection clamped.
+        assert_eq!(tab.keys.len(), 1, "remove should drop the selected key");
+        assert_eq!(tab.selected, 0);
+    }
+
+    #[test]
+    fn remove_key_cancel_does_not_push_op() {
+        let _lock = env_test_lock();
+        // SAFETY: test-only; env_test_lock ensures serial execution.
+        unsafe {
+            std::env::set_var("HOME", "/home/alice");
+        }
+        let mut tab = AgentTab::new();
+        tab.set_data(sample_status(), sample_keys());
+        tab.handle_key(KeyCode::Char('d'));
+        assert!(tab.remove_key_path.is_some());
+
+        // Cancel with Esc.
+        tab.handle_key(KeyCode::Esc);
+        assert!(tab.action_modal.is_none());
+        assert!(tab.drain_ops().is_empty(), "cancel must not queue an op");
+        assert!(
+            tab.remove_key_path.is_none(),
+            "cancel must clear the captured path"
+        );
+        assert_eq!(tab.keys.len(), 2, "list unchanged on cancel");
+    }
+
+    #[test]
+    fn resolve_agent_key_path_rejects_traversal_and_separators() {
+        let _lock = env_test_lock();
+        // SAFETY: test-only; env_test_lock ensures serial execution.
+        unsafe {
+            std::env::set_var("HOME", "/home/alice");
+        }
+        // Happy path: bare filename resolves to $HOME/.ssh/<name>.
+        assert_eq!(
+            resolve_agent_key_path("id_ed25519").as_deref(),
+            Some("/home/alice/.ssh/id_ed25519")
+        );
+        // A comment-style name with no separator is still a legal basename.
+        assert_eq!(
+            resolve_agent_key_path("alice@workstation")
+                .as_deref()
+                .unwrap(),
+            "/home/alice/.ssh/alice@workstation"
+        );
+        // Refusal cases: anything that could escape ~/.ssh/ or is empty.
+        for bad in ["", "..", ".", "../secret", "foo/bar", "foo\\bar", "a\0b"] {
+            assert!(
+                resolve_agent_key_path(bad).is_none(),
+                "should reject {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_agent_key_path_returns_none_when_home_unset() {
+        let _lock = env_test_lock();
+        // SAFETY: test-only; env_test_lock ensures serial execution.
+        unsafe {
+            std::env::remove_var("HOME");
+        }
+        assert!(
+            resolve_agent_key_path("id_ed25519").is_none(),
+            "no HOME → no guessed path"
+        );
+    }
+
+    #[test]
+    fn remove_all_submit_pushes_agent_remove_all_op() {
+        let mut tab = AgentTab::new();
+        tab.set_data(sample_status(), sample_keys());
+        tab.handle_key(KeyCode::Char('D'));
+        assert_eq!(tab.action_modal, Some(ActionModal::RemoveAll));
+        tab.handle_key(KeyCode::Enter);
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], SshOp::AgentRemoveAll));
+        assert!(tab.keys.is_empty(), "optimistic clear removes all keys");
     }
 }

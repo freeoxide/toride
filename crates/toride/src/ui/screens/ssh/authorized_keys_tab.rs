@@ -780,4 +780,115 @@ mod tests {
         tab.set_entries(sample_entries()); // 2 items
         assert!(tab.selected < 2);
     }
+
+    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
+
+    /// A real, parseable OpenSSH ed25519 public key (test fixture). The Add
+    /// submit handler runs `ssh_key::PublicKey::from_openssh` on the pasted
+    /// line to compute the fingerprint, so the key must round-trip.
+    const VALID_ED25519_PUB: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHo2ygeSeFQhQ/XAImKVAPvqlhg2iAa6ImY6NhYh7I7S \
+         test@fixture";
+
+    /// Drive a single-field required `FormModal` to Submitted.
+    fn submit_form_with_value(tab: &mut AuthorizedKeysTab, value: &str) {
+        for ch in value.chars() {
+            tab.handle_key(KeyCode::Char(ch));
+        }
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Enter);
+    }
+
+    #[test]
+    fn add_submit_pushes_authorized_key_add_op_for_valid_key() {
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
+
+        tab.handle_key(KeyCode::Char('a'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Add));
+
+        submit_form_with_value(&mut tab, VALID_ED25519_PUB);
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1, "Add should queue exactly one op");
+        match &ops[0] {
+            SshOp::AuthorizedKeyAdd {
+                public_key,
+                comment,
+                options,
+            } => {
+                assert_eq!(public_key, VALID_ED25519_PUB);
+                assert_eq!(comment.as_deref(), Some("test@fixture"));
+                assert!(options.is_none());
+            }
+            other => panic!("expected AuthorizedKeyAdd, got {other:?}"),
+        }
+        // Optimistic in-memory update: parsed fingerprint is non-empty (the
+        // from_openssh path succeeded) and the entry was appended + selected.
+        assert_eq!(tab.entries.len(), 3);
+        assert_eq!(tab.selected, 2);
+        assert!(!tab.entries[2].fingerprint.is_empty());
+        assert_eq!(tab.entries[2].key_type, "ssh-ed25519");
+        assert_eq!(tab.entries[2].comment.as_deref(), Some("test@fixture"));
+    }
+
+    #[test]
+    fn add_submit_with_malformed_key_still_pushes_op_with_empty_fingerprint() {
+        // A garbage paste does not crash the from_openssh path; the op is
+        // still queued (the disk write will reject it) and the optimistic
+        // entry is added with an empty fingerprint.
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
+        tab.handle_key(KeyCode::Char('a'));
+        submit_form_with_value(&mut tab, "not-a-real-key single-field");
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], SshOp::AuthorizedKeyAdd { .. }));
+        assert!(
+            tab.entries[2].fingerprint.is_empty(),
+            "malformed key → empty fingerprint"
+        );
+    }
+
+    #[test]
+    fn add_submit_empty_string_pushes_no_op() {
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries());
+        tab.handle_key(KeyCode::Char('a'));
+        // Submit the empty required field; even if validation lets it
+        // through, the empty-string guard must skip the op.
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Enter);
+        let ops = tab.drain_ops();
+        assert!(ops.is_empty(), "empty paste must not queue an op");
+    }
+
+    #[test]
+    fn remove_submit_pushes_authorized_key_remove_op() {
+        let mut tab = AuthorizedKeysTab::new();
+        tab.set_entries(sample_entries()); // [fp=SHA256:abc123def456, fp=SHA256:xyz789]
+        tab.selected = 0;
+
+        tab.handle_key(KeyCode::Char('d'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Remove));
+        assert!(tab.drain_ops().is_empty(), "no op before confirm");
+
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::AuthorizedKeyRemove { fingerprint } => {
+                assert_eq!(fingerprint, "SHA256:abc123def456");
+            }
+            other => panic!("expected AuthorizedKeyRemove, got {other:?}"),
+        }
+        // Optimistic in-memory update.
+        assert_eq!(tab.entries.len(), 1);
+        assert_eq!(tab.selected, 0);
+    }
 }

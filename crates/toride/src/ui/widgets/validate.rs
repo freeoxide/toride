@@ -52,7 +52,9 @@ pub struct MinLength(pub usize);
 
 impl Validator for MinLength {
     fn validate(&self, value: &str) -> Option<ValidationError> {
-        if value.len() < self.0 {
+        // Count characters (not bytes) so multi-byte input (emoji, CJK) is
+        // measured consistently with the "characters" the message promises.
+        if value.chars().count() < self.0 {
             Some(ValidationError::new(format!(
                 "Must be at least {} characters",
                 self.0
@@ -69,7 +71,9 @@ pub struct MaxLength(pub usize);
 
 impl Validator for MaxLength {
     fn validate(&self, value: &str) -> Option<ValidationError> {
-        if value.len() > self.0 {
+        // Count characters (not bytes) so multi-byte input is measured
+        // consistently with the "characters" the message promises.
+        if value.chars().count() > self.0 {
             Some(ValidationError::new(format!(
                 "Must be at most {} characters",
                 self.0
@@ -178,6 +182,28 @@ mod tests {
     #[test]
     fn max_length_allows_short_enough() {
         assert!(MaxLength(5).validate("abc").is_none());
+    }
+
+    #[test]
+    fn min_length_counts_chars_not_bytes() {
+        // 4 emoji = 16 bytes but only 4 chars; MinLength(8) must reject.
+        assert!(MinLength(8).validate("😀😁😂🤣").is_some());
+        // 8 CJK chars (24 bytes) must satisfy MinLength(8).
+        assert!(MinLength(8).validate("你好世界你好世界").is_none());
+        // boundary: exactly N chars passes
+        assert!(MinLength(3).validate("你好世").is_none());
+        // one short: 2 chars fail MinLength(3)
+        assert!(MinLength(3).validate("你好").is_some());
+    }
+
+    #[test]
+    fn max_length_counts_chars_not_bytes() {
+        // 5 emoji = 20 bytes but only 5 chars; MaxLength(3) must reject (5 > 3).
+        assert!(MaxLength(3).validate("😀😁😂🤣😀").is_some());
+        // 3 CJK chars (9 bytes) satisfies MaxLength(3) even though bytes > 3.
+        assert!(MaxLength(3).validate("你好世").is_none());
+        // 4 chars exceeds MaxLength(3)
+        assert!(MaxLength(3).validate("你好世界").is_some());
     }
 
     #[test]

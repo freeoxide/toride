@@ -1249,4 +1249,125 @@ mod tests {
             "should show host count badge ->2 for first key: {output}"
         );
     }
+
+    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
+
+    /// Drive the New Key form (4 fields: Name, Type, Comment, Passphrase) to
+    /// Submitted. Tabs through Name, Type (left default), Comment, Passphrase
+    /// and the button row, then submits. Optionally types into the name and
+    /// passphrase fields first.
+    fn submit_new_key_form(tab: &mut KeysTab, name: &str, passphrase: &str) {
+        // Field 0: Name
+        for ch in name.chars() {
+            tab.handle_key(KeyCode::Char(ch));
+        }
+        tab.handle_key(KeyCode::Tab); // → Type
+        tab.handle_key(KeyCode::Tab); // → Comment
+        tab.handle_key(KeyCode::Tab); // → Passphrase
+        for ch in passphrase.chars() {
+            tab.handle_key(KeyCode::Char(ch));
+        }
+        tab.handle_key(KeyCode::Tab); // → buttons
+        tab.handle_key(KeyCode::Enter); // submit
+    }
+
+    #[test]
+    fn create_key_submit_pushes_key_create_op_with_passphrase() {
+        let mut tab = KeysTab::new();
+        tab.set_keys(sample_keys()); // 2 keys
+
+        tab.handle_key(KeyCode::Char('n'));
+        assert_eq!(tab.action_modal, Some(ActionModal::New));
+
+        submit_new_key_form(&mut tab, "deploy", "s3cr3t");
+        assert!(tab.action_modal.is_none(), "modal closed on submit");
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1, "create should queue exactly one op");
+        match &ops[0] {
+            SshOp::KeyCreate {
+                name,
+                key_type,
+                comment,
+                passphrase,
+            } => {
+                // Bare name is prefixed with "id_".
+                assert_eq!(name, "id_deploy");
+                assert_eq!(key_type, "Ed25519");
+                assert!(comment.is_empty());
+                assert_eq!(passphrase.as_deref(), Some("s3cr3t"));
+            }
+            other => panic!("expected KeyCreate, got {other:?}"),
+        }
+        // Optimistic in-memory update: a new encrypted key was appended and
+        // selected.
+        assert_eq!(tab.keys.len(), 3);
+        assert_eq!(tab.selected, 2);
+        assert_eq!(tab.keys[2].name, "id_deploy");
+        assert!(tab.keys[2].encrypted, "passphrase → encrypted flag");
+    }
+
+    #[test]
+    fn create_key_submit_without_passphrase_is_unencrypted() {
+        let mut tab = KeysTab::new();
+        tab.set_keys(sample_keys());
+        tab.handle_key(KeyCode::Char('n'));
+        submit_new_key_form(&mut tab, "ci_bot", "");
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::KeyCreate {
+                name,
+                passphrase,
+                ..
+            } => {
+                assert_eq!(name, "id_ci_bot");
+                assert!(passphrase.is_none(), "empty passphrase → None");
+            }
+            other => panic!("expected KeyCreate, got {other:?}"),
+        }
+        assert!(!tab.keys[2].encrypted, "no passphrase → unencrypted");
+    }
+
+    #[test]
+    fn delete_key_submit_pushes_key_delete_op() {
+        let mut tab = KeysTab::new();
+        tab.set_keys(sample_keys()); // [id_ed25519, id_rsa]
+        tab.selected = 1; // id_rsa
+
+        // 'd' opens the delete confirm modal.
+        tab.handle_key(KeyCode::Char('d'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Delete));
+        assert!(tab.drain_ops().is_empty(), "no op before confirm");
+
+        // 'y' confirms.
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::KeyDelete { name } => assert_eq!(name, "id_rsa"),
+            other => panic!("expected KeyDelete, got {other:?}"),
+        }
+        // Optimistic in-memory update: removed + selection clamped.
+        assert_eq!(tab.keys.len(), 1);
+        assert_eq!(tab.selected, 0);
+        assert_eq!(tab.keys[0].name, "id_ed25519");
+    }
+
+    #[test]
+    fn delete_key_cancel_does_not_push_op() {
+        let mut tab = KeysTab::new();
+        tab.set_keys(sample_keys());
+        tab.selected = 0;
+        tab.handle_key(KeyCode::Char('d'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Delete));
+
+        // Cancel with Esc.
+        tab.handle_key(KeyCode::Esc);
+        assert!(tab.action_modal.is_none());
+        assert!(tab.drain_ops().is_empty(), "cancel must not queue an op");
+        assert_eq!(tab.keys.len(), 2, "list unchanged on cancel");
+    }
 }

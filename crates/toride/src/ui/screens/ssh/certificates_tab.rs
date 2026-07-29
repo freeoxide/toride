@@ -693,4 +693,43 @@ mod tests {
         tab.set_entries(sample_entries()); // 2 items
         assert!(tab.selected < 2);
     }
+
+    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
+
+    #[test]
+    fn revoke_submit_pushes_certificate_revoke_op() {
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
+        tab.selected = 0;
+        let revoked_name = tab.entries[0].name.clone();
+
+        // 'r' opens the revoke confirm modal.
+        tab.handle_key(KeyCode::Char('r'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Revoke));
+        assert!(tab.drain_ops().is_empty(), "no op before confirm");
+
+        // 'y' confirms.
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::CertificateRevoke { name } => assert_eq!(name, &revoked_name),
+            other => panic!("expected CertificateRevoke, got {other:?}"),
+        }
+        // Optimistic in-memory update.
+        assert_eq!(tab.entries.len(), 1, "revoked cert removed from list");
+    }
+
+    #[test]
+    fn revoke_cancel_does_not_push_op() {
+        let mut tab = CertificatesTab::new();
+        tab.set_entries(sample_entries());
+        tab.handle_key(KeyCode::Char('r'));
+        tab.handle_key(KeyCode::Esc);
+        assert!(tab.action_modal.is_none());
+        assert!(tab.drain_ops().is_empty());
+        assert_eq!(tab.entries.len(), 2, "list unchanged on cancel");
+    }
 }

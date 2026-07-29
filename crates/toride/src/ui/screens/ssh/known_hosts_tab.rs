@@ -880,4 +880,93 @@ mod tests {
         tab.set_hosts(sample_hosts()); // 3 items
         assert!(tab.selected < 3);
     }
+
+    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
+
+    /// Drive a single-field required `FormModal` to Submitted.
+    fn submit_form_with_value(tab: &mut KnownHostsTab, value: &str) {
+        for ch in value.chars() {
+            tab.handle_key(KeyCode::Char(ch));
+        }
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Enter);
+    }
+
+    #[test]
+    fn hash_all_submit_pushes_known_host_hash_all_op() {
+        // HashAll is irreversible (overwrites known_hosts with hashed
+        // hostnames) and is gated behind a ConfirmModal. Verify the
+        // confirm→apply path pushes exactly the KnownHostHashAll op and
+        // marks every entry hashed.
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts()); // 3 hosts, mix of hashed/unhashed
+        assert!(tab.hosts.iter().any(|h| !h.is_hashed));
+
+        // 'h' opens the confirm modal; nothing applied yet.
+        tab.handle_key(KeyCode::Char('h'));
+        assert_eq!(tab.action_modal, Some(ActionModal::HashAll));
+        assert!(tab.drain_ops().is_empty(), "no op before confirm");
+
+        // 'y' confirms.
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.action_modal.is_none(), "confirm closes the modal");
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1, "HashAll should queue exactly one op");
+        assert!(
+            matches!(ops[0], SshOp::KnownHostHashAll),
+            "expected KnownHostHashAll, got {:?}",
+            ops[0]
+        );
+        // Optimistic in-memory update: every host is now hashed.
+        assert!(
+            tab.hosts.iter().all(|h| h.is_hashed),
+            "HashAll should mark all hosts hashed optimistically"
+        );
+    }
+
+    #[test]
+    fn hash_all_cancel_does_not_push_op() {
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
+        let count_before = tab.hosts.len();
+        // Capture the hashed-state of each host; cancel must leave it intact.
+        let hashed_before: Vec<bool> = tab.hosts.iter().map(|h| h.is_hashed).collect();
+
+        tab.handle_key(KeyCode::Char('h'));
+        assert_eq!(tab.action_modal, Some(ActionModal::HashAll));
+        // Cancel with 'n'.
+        tab.handle_key(KeyCode::Char('n'));
+        assert!(tab.action_modal.is_none());
+        assert!(tab.drain_ops().is_empty(), "cancel must not queue an op");
+        assert_eq!(tab.hosts.len(), count_before, "cancel must not change count");
+        let hashed_after: Vec<bool> = tab.hosts.iter().map(|h| h.is_hashed).collect();
+        assert_eq!(
+            hashed_after, hashed_before,
+            "cancel must not mutate the host list"
+        );
+    }
+
+    #[test]
+    fn add_host_submit_pushes_known_host_add_op() {
+        let mut tab = KnownHostsTab::new();
+        tab.set_hosts(sample_hosts());
+
+        tab.handle_key(KeyCode::Char('a'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Add));
+
+        submit_form_with_value(&mut tab, "newhost.example.com");
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::KnownHostAdd { host } => assert_eq!(host, "newhost.example.com"),
+            other => panic!("expected KnownHostAdd, got {other:?}"),
+        }
+        // Optimistic in-memory update.
+        assert_eq!(tab.hosts.len(), 4, "add should append a host");
+        assert_eq!(tab.selected, 3);
+        assert_eq!(tab.hosts[3].primary_host(), "newhost.example.com");
+    }
 }
