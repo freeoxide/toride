@@ -279,17 +279,50 @@ impl Installer {
         // 2. download (with size cap).
         let bytes = self.download(&url).await?;
 
-        // 3. verify.
-        self.verify(tool, &concrete_version, &bytes, &url).await?;
+        // 3. resolve any *network-sourced* checksum (the `Checksum::Url` arm
+        //    does an HTTP fetch that MUST run on the async runtime). Everything
+        //    below this point is pure CPU/IO and gets handed to a blocking
+        //    thread so it does not pin an async worker.
+        let expected_digest = self.resolve_expected_digest(tool).await?;
 
-        // 4. extract the executable bytes.
-        let exec_bytes =
-            extract_executable(&bytes, tool.artifact, &tool.name, tool.bin_path.as_deref())?;
-
-        // 5. compute install path + write atomically.
+        // 4. compute install path (cheap, can stay on the async task — but the
+        //    file write below is blocking, so resolve here and move the path in).
         let dir = resolve_install_dir(tool, install_dir)?;
         let dest = dir.join(&tool.bin_name);
-        write_executable(dest.as_std_path(), &exec_bytes)?;
+
+        // 5. verify + extract + write on a blocking thread.
+        //
+        // These three steps are CPU/IO-bound: verify hashes up to 256 MiB of
+        // downloaded bytes (sha256), extract decompresses a gzip/xz tarball
+        // and walks it, and write does a full write + fsync. Running them
+        // inline on the async task would block a runtime worker for the entire
+        // duration; move the owned bytes onto a blocking thread so the public
+        // behavior is identical but the worker is freed.
+        let min_bytes = self.min_bytes;
+        let verifier = self.verifier;
+        let artifact = tool.artifact;
+        let tool_name = tool.name.clone();
+        let bin_path = tool.bin_path.clone();
+        let dest_str = dest.as_str().to_owned();
+        let join = tokio::task::spawn_blocking(move || -> Result<()> {
+            verify_blocking(
+                &bytes,
+                expected_digest.as_deref(),
+                min_bytes,
+                verifier,
+                &tool_name,
+                &concrete_version,
+                &url,
+            )?;
+
+            let exec_bytes =
+                extract_executable(&bytes, artifact, &tool_name, bin_path.as_deref())?;
+
+            write_executable(std::path::Path::new(&dest_str), &exec_bytes)?;
+            Ok(())
+        });
+        join.await
+            .map_err(|source| Error::BlockingJoin { source })??;
 
         Ok(dest)
     }
@@ -407,47 +440,23 @@ impl Installer {
         Ok(buf)
     }
 
-    /// Verify the downloaded bytes against the tool's checksum policy.
-    async fn verify(&self, tool: &Tool, version: &str, bytes: &[u8], url: &str) -> Result<()> {
-        let actual = hex_sha256(bytes);
-
+    /// Resolve the expected sha256 digest for `tool`, performing any network
+    /// I/O required to obtain it.
+    ///
+    /// This is the only step of verification that needs to run on the async
+    /// runtime (the `Checksum::Url` arm fetches the checksum file). Once it
+    /// returns, all remaining verification work is pure CPU and can be handed
+    /// to [`tokio::task::spawn_blocking`].
+    ///
+    /// - `Checksum::None` -> `Ok(None)` (the policy/size-floor logic runs in
+    ///   the blocking step).
+    /// - `Checksum::Digest(d)` -> `Ok(Some(d))`.
+    /// - `Checksum::Url { .. }` -> fetches the file, extracts the matching
+    ///   digest, and returns it (or a `NoChecksumEntry` error).
+    async fn resolve_expected_digest(&self, tool: &Tool) -> Result<Option<String>> {
         match &tool.checksum {
-            Checksum::None => {
-                if matches!(self.verifier, Verifier::Strict) {
-                    return Err(Error::NoChecksum {
-                        tool: tool.name.clone(),
-                    });
-                }
-                // Lenient: enforce the sanity floor only.
-                if (bytes.len() as u64) < self.min_bytes {
-                    return Err(Error::TooSmall {
-                        url: url.to_owned(),
-                        size: bytes.len() as u64,
-                        min: self.min_bytes,
-                    });
-                }
-                Ok(())
-            }
-
-            Checksum::Digest(expected) => {
-                if actual.eq_ignore_ascii_case(expected) {
-                    Ok(())
-                } else {
-                    Err(Error::ChecksumMismatch {
-                        tool: tool.name.clone(),
-                        version: version.to_owned(),
-                        expected: expected.clone(),
-                        actual,
-                    })
-                }
-            }
-
-            // Fetch the published checksum file and verify the artifact's
-            // sha256 against the matching line. This mirrors `Checksum::Digest`
-            // — the only difference is that the expected digest is sourced
-            // from the URL rather than pinned in config. The size-floor sanity
-            // check does NOT apply here: a published checksum is the strict
-            // integrity control, so it is verified unconditionally.
+            Checksum::None => Ok(None),
+            Checksum::Digest(expected) => Ok(Some(expected.clone())),
             Checksum::Url { url: sum_url, asset_name } => {
                 let body = self.fetch_text(sum_url).await?;
                 let expected = extract_digest_from_checksum_body(&body, asset_name).ok_or(
@@ -456,18 +465,30 @@ impl Installer {
                         asset: asset_name.clone(),
                     },
                 )?;
-                if actual.eq_ignore_ascii_case(&expected) {
-                    Ok(())
-                } else {
-                    Err(Error::ChecksumMismatch {
-                        tool: tool.name.clone(),
-                        version: version.to_owned(),
-                        expected,
-                        actual,
-                    })
-                }
+                Ok(Some(expected))
             }
         }
+    }
+
+    /// Verify the downloaded bytes against the tool's checksum policy.
+    ///
+    /// Kept as a thin async wrapper over [`Installer::resolve_expected_digest`]
+    /// followed by [`verify_blocking`] so the existing unit tests (which drive
+    /// the policy arms directly) continue to exercise the same behavior. The
+    /// production install path calls those two pieces itself so the CPU work
+    /// lands on a blocking thread.
+    #[cfg(test)]
+    async fn verify(&self, tool: &Tool, version: &str, bytes: &[u8], url: &str) -> Result<()> {
+        let expected = self.resolve_expected_digest(tool).await?;
+        verify_blocking(
+            bytes,
+            expected.as_deref(),
+            self.min_bytes,
+            self.verifier,
+            &tool.name,
+            version,
+            url,
+        )
     }
 
     /// Fetch `url` as UTF-8 text (a checksum file is small and textual).
@@ -627,6 +648,67 @@ fn write_executable(dest: &Path, bytes: &[u8]) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Pure-CPU verification step run on a blocking thread.
+///
+/// Given the downloaded `bytes` and the (optional) expected sha256 `digest`
+/// resolved up front by [`Installer::resolve_expected_digest`], apply the
+/// verification policy:
+///
+/// - No expected digest + [`Verifier::Strict`] -> [`Error::NoChecksum`].
+/// - No expected digest + [`Verifier::Lenient`] -> enforce the size floor only.
+/// - An expected digest -> hash the bytes (sha256) and compare
+///   case-insensitively, returning [`Error::ChecksumMismatch`] on divergence.
+///
+/// This is split out of the async `verify` path so the heavy hashing (up to
+/// 256 MiB) can run on a [`tokio::task::spawn_blocking`] thread without
+/// blocking an async runtime worker.
+fn verify_blocking(
+    bytes: &[u8],
+    digest: Option<&str>,
+    min_bytes: u64,
+    verifier: Verifier,
+    tool: &str,
+    version: &str,
+    url: &str,
+) -> Result<()> {
+    match digest {
+        None => {
+            if matches!(verifier, Verifier::Strict) {
+                return Err(Error::NoChecksum {
+                    tool: tool.to_owned(),
+                });
+            }
+            // Lenient: enforce the sanity floor only.
+            if (bytes.len() as u64) < min_bytes {
+                return Err(Error::TooSmall {
+                    url: url.to_owned(),
+                    size: bytes.len() as u64,
+                    min: min_bytes,
+                });
+            }
+            Ok(())
+        }
+
+        // A known digest (pinned in config OR resolved from a published
+        // checksum file) is the strict integrity control: the size-floor
+        // sanity check does NOT apply. The hash is computed here so it stays
+        // off the async runtime.
+        Some(expected) => {
+            let actual = hex_sha256(bytes);
+            if actual.eq_ignore_ascii_case(expected) {
+                Ok(())
+            } else {
+                Err(Error::ChecksumMismatch {
+                    tool: tool.to_owned(),
+                    version: version.to_owned(),
+                    expected: expected.to_owned(),
+                    actual,
+                })
+            }
+        }
+    }
 }
 
 /// Hex-encode the sha256 of `bytes`.
@@ -1386,5 +1468,112 @@ mod tests {
         //    progress reporting did not perturb the byte stream.
         let dest_path = dest_dir.join("demo");
         assert_eq!(fs::read(&dest_path).unwrap(), body);
+    }
+
+    // ---- Finding: TooLarge size-cap security control -----------------------
+
+    /// A tiny single-shot HTTP/1.0 server that serves raw `body` bytes for the
+    /// next GET but declares `declared_len` as the `Content-Length` (which may
+    /// honestly match `body.len()` or lie).
+    ///
+    /// This lets the `TooLarge` tests exercise both rejection paths in
+    /// [`Installer::download`]: the `Content-Length` pre-check (when the
+    /// declared length exceeds the cap) and the incremental stream abort
+    /// (when the header lies/under-reports and the running byte count crosses
+    /// the cap).
+    async fn serve_body_with_declared_len(body: Vec<u8>, declared_len: u64) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/artifact");
+
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain the request line/headers (we don't care about them).
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let header = format!(
+                    "HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\nContent-Length: {declared_len}\r\nConnection: close\r\n\r\n",
+                );
+                let _ = sock.write_all(header.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        url
+    }
+
+    /// `Content-Length` pre-check path: the server honestly declares a body
+    /// larger than the cap, so `download` must reject it before reading any of
+    /// the body.
+    #[tokio::test]
+    async fn download_rejects_body_exceeding_cap_via_content_length() {
+        // Cap is 8 bytes; body is 16 bytes and the header says so honestly.
+        let cap: u64 = 8;
+        let body = vec![0x42u8; 16];
+        let url = serve_body_with_declared_len(body.clone(), body.len() as u64).await;
+
+        let installer = Installer::new().with_max_bytes(cap);
+        let err = installer.download(&url).await.unwrap_err();
+        assert!(
+            matches!(err, Error::TooLarge { size, max, .. } if size == 16 && max == cap),
+            "honest oversized Content-Length must trip the pre-check, got {err:?}"
+        );
+    }
+
+    /// Incremental stream-abort path: the server sends NO `Content-Length`,
+    /// so the pre-check cannot fire — the only bound is the running byte
+    /// counter inside the chunk loop. The body (32 bytes) crosses the cap
+    /// (8 bytes), so the loop must abort the download the instant it crosses
+    /// the cap. This is the slow-drip / header-less-server scenario the
+    /// streaming size guard exists for.
+    #[tokio::test]
+    async fn download_rejects_oversized_stream_with_no_content_length() {
+        // Cap is 8 bytes; body is 32 bytes with NO Content-Length declared.
+        let cap: u64 = 8;
+        let body = vec![0x43u8; 32];
+        let url = serve_body_no_content_length(body).await;
+
+        let installer = Installer::new().with_max_bytes(cap);
+        let err = installer.download(&url).await.unwrap_err();
+        // `size` is the running byte count at the moment the cap was crossed:
+        // it must be > cap (the loop aborts once total exceeds max). The
+        // absence of a Content-Length means `declared_len` was None, so this
+        // exercises the pure stream-abort branch.
+        assert!(
+            matches!(err, Error::TooLarge { size, max, .. } if size > cap && max == cap),
+            "header-less oversized stream must trip the stream abort, got {err:?}"
+        );
+    }
+
+    /// Like [`serve_body_with_declared_len`](Self::serve_body_with_declared_len)
+    /// but omits the `Content-Length` header entirely (close-delimited body),
+    /// forcing the client to read until EOF. This is the shape under which the
+    /// streaming byte-counter is the only size guard.
+    async fn serve_body_no_content_length(body: Vec<u8>) -> String {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let url = format!("http://{addr}/artifact");
+
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                // Drain the request line/headers (we don't care about them).
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                // No Content-Length: HTTP/1.0 + Connection: close makes the
+                // body close-delimited, so the client must stream to EOF.
+                let header =
+                    "HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n";
+                let _ = sock.write_all(header.as_bytes()).await;
+                let _ = sock.write_all(&body).await;
+                let _ = sock.flush().await;
+            }
+        });
+
+        url
     }
 }

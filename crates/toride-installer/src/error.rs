@@ -168,4 +168,16 @@ pub enum Error {
     /// install directory (`~/.local/bin`) is unavailable.
     #[error("cannot determine home directory for default install path")]
     NoHomeDir,
+
+    /// The blocking task that performs verify + extract + write did not
+    /// complete: it panicked or was cancelled. The CPU/IO-bound install work
+    /// runs on [`tokio::task::spawn_blocking`] to keep the async runtime
+    /// responsive; a panic there surfaces here rather than being silently
+    /// swallowed.
+    #[error("install blocking task failed: {source}")]
+    BlockingJoin {
+        /// The underlying join error (panic or cancellation).
+        #[source]
+        source: tokio::task::JoinError,
+    },
 }
