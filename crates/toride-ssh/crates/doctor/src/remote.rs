@@ -87,6 +87,85 @@ fn known_hosts_host(host: &str, port: Option<u16>) -> String {
     port.map_or_else(|| host.to_string(), |p| format!("[{host}]:{p}"))
 }
 
+/// Outcome of running an external command through the [`CliRunner`].
+///
+/// Mirrors the fields of `tokio::process::Command::output()` that the remote
+/// checks actually consume (`status.success()`, `stdout`, `stderr`) so the
+/// checks can be routed through the fakeable `CliRunner` abstraction without
+/// losing their success/failure branching.
+struct RemoteCmdOutput {
+    success: bool,
+    stdout: String,
+    /// stderr-equivalent text. On success this is empty; on failure it carries
+    /// the stderr captured by the runner (extracted from the runner's error
+    /// message, since `CliRunner::run` returns only stdout on success).
+    stderr: String,
+}
+
+/// Run `cmd args...` through `runner`, translating the runner's
+/// `Result<String>` into a [`RemoteCmdOutput`] that mirrors
+/// `tokio::process::Command::output`.
+///
+/// The runner returns stdout on success and an `Err` for both spawn failures
+/// and non-zero exits (see `DefaultCliRunner`). To preserve the checks'
+/// "non-zero exit is a soft failure, not a hard error" semantics, every runner
+/// error is mapped to `RemoteCmdOutput { success: false, ... }` rather than
+/// propagated. The captured stderr is recovered from the runner's error
+/// message (`DefaultCliRunner` formats it as
+/// `` `command `<cmd>` failed with exit N: <stderr>` ``).
+async fn run_via_runner(
+    runner: &dyn toride_ssh_core::CliRunner,
+    cmd: &str,
+    args: Vec<String>,
+) -> Result<RemoteCmdOutput> {
+    match runner.run(cmd, args).await {
+        Ok(stdout) => Ok(RemoteCmdOutput {
+            success: true,
+            stdout,
+            stderr: String::new(),
+        }),
+        Err(e) => {
+            let msg = e.to_string();
+            // Recover the trailing stderr portion from the runner error so
+            // diagnostic messages stay close to the original wording. Fall
+            // back to the full message if the format is unexpected.
+            let stderr = msg
+                .rsplit_once(": ")
+                .map(|(_, tail)| tail.to_owned())
+                .unwrap_or(msg);
+            Ok(RemoteCmdOutput {
+                success: false,
+                stdout: String::new(),
+                stderr,
+            })
+        }
+    }
+}
+
+/// Shell-quote an arbitrary string so it is safe to interpolate into a POSIX
+/// shell command as a single token.
+///
+/// Wraps the value in single quotes and escapes any embedded single quote via
+/// the standard `'\''` idiom. This neutralizes shell metacharacters
+/// (`;`, `&`, `$`, backticks, spaces, …) and embedded single quotes, making
+/// the result safe for `test -f <value>` and similar remote commands
+/// regardless of what the remote `sshd -T` returned.
+fn shell_quote(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('\'');
+    for ch in value.chars() {
+        if ch == '\'' {
+            // Close the single-quoted string, insert an escaped literal
+            // single quote, then reopen the single-quoted string.
+            out.push_str("'\\''");
+        } else {
+            out.push(ch);
+        }
+    }
+    out.push('\'');
+    out
+}
+
 /// Check whether the host can be resolved via DNS.
 struct HostReachabilityCheck<'a> {
     host: &'a str,
@@ -118,6 +197,7 @@ struct HostKeyVerificationCheck<'a> {
     paths: &'a SshPaths,
     host: &'a str,
     port: Option<u16>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Check whether agent forwarding works to the remote host.
@@ -125,6 +205,7 @@ struct AgentForwarding<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Check that remote `~/.ssh` has restrictive permissions (should be 700).
@@ -132,6 +213,7 @@ struct RemotePermissionsCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Check that remote `~/.ssh/authorized_keys` exists.
@@ -139,6 +221,7 @@ struct RemoteAuthorizedKeysCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Verify that public-key authentication works to the remote host.
@@ -146,6 +229,7 @@ struct RemotePubkeyAuthCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Check remote sshd configuration for common misconfigurations.
@@ -153,6 +237,7 @@ struct RemoteSshdConfigCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Verify the remote home directory is accessible and exists.
@@ -160,15 +245,18 @@ struct RemoteHomeCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Detect and report `ProxyJump` configuration for the target host.
 ///
-/// Resolves the SSH config for the host and reports whether `ProxyJump` is
-/// set, including the jump host(s) specified.
+/// Reports whether `ProxyJump` is set, including the jump host(s) specified.
+/// The proxy-jump value is resolved once by the caller (see [`run_all`]) and
+/// shared with the extraction logic so the SSH config is not loaded and
+/// glob-expanded twice.
 struct ProxyJumpDetectionCheck<'a> {
-    paths: &'a SshPaths,
     host: &'a str,
+    proxy_jump: Option<&'a str>,
 }
 
 /// Check whether the jump host specified by `ProxyJump` is reachable.
@@ -243,16 +331,12 @@ impl HostReachable<'_> {
             }]);
         }
 
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "true"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("true".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if output.status.success() {
+        if output.success {
             Ok(vec![Diagnostic {
                 id: "host_reachable",
                 severity: Severity::Ok,
@@ -261,11 +345,10 @@ impl HostReachable<'_> {
                 module: "remote",
             }])
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             Ok(vec![Diagnostic {
                 id: "host_reachable",
                 severity: Severity::Error,
-                message: format!("Cannot connect to {}: {}", self.host, stderr.trim()),
+                message: format!("Cannot connect to {}: {}", self.host, output.stderr.trim()),
                 hint: Some(
                     "Verify the hostname, network connectivity, and that SSH is running on the remote".into(),
                 ),
@@ -537,20 +620,21 @@ impl HostKeyVerificationCheck<'_> {
         let mut all_keys = Vec::new();
 
         for path in [kh_path, global_kh] {
-            let Ok(output) = tokio::process::Command::new("ssh-keygen")
-                .args(["-F", &lookup_host, "-f", path.to_str().unwrap_or_default()])
-                .output()
-                .await
-            else {
+            let args = vec![
+                "-F".to_owned(),
+                lookup_host.clone(),
+                "-f".to_owned(),
+                path.to_string_lossy().to_string(),
+            ];
+            let Ok(output) = run_via_runner(self.runner, "ssh-keygen", args).await else {
                 continue;
             };
 
-            if !output.status.success() {
+            if !output.success {
                 continue;
             }
 
-            let stdout = String::from_utf8_lossy(&output.stdout);
-            for line in stdout.lines() {
+            for line in output.stdout.lines() {
                 // ssh-keygen -F outputs matching lines prefixed with "# Host <host> found:"
                 // or blank lines as separators; skip those.
                 if line.starts_with('#') || line.is_empty() {
@@ -564,28 +648,56 @@ impl HostKeyVerificationCheck<'_> {
     }
 
     /// Use `ssh-keyscan` to query the live host for its current keys.
+    ///
+    /// The scan is bounded both by an `ssh-keyscan -T` connect timeout (so an
+    /// unresponsive host is abandoned at the tool level) and by a wrapping
+    /// `tokio::time::timeout` (so a wedged `ssh-keyscan` process cannot hang
+    /// the diagnostic run indefinitely).
     async fn scan_live_keys(&self) -> Result<Vec<String>> {
-        let mut cmd = tokio::process::Command::new("ssh-keyscan");
-        cmd.args(["-t", "rsa,ecdsa,ed25519"]);
-        if let Some(p) = self.port {
-            cmd.args(["-p", &p.to_string()]);
-        }
-        cmd.arg(self.host);
-        let output = cmd.output().await.map_err(|e| {
-            toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh-keyscan: {e}"))
-        })?;
+        const KEYSCAN_CONNECT_TIMEOUT_SECS: u32 = 5;
+        /// Wall-clock cap on the whole `ssh-keyscan` invocation, on top of the
+        /// tool-level `-T` connect timeout. Kept comfortably above `-T` so the
+        /// tool's own timeout normally fires first.
+        const KEYSCAN_HARD_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        let mut args = vec![
+            "-T".to_owned(),
+            KEYSCAN_CONNECT_TIMEOUT_SECS.to_string(),
+            "-t".to_owned(),
+            "rsa,ecdsa,ed25519".to_owned(),
+        ];
+        if let Some(p) = self.port {
+            args.push("-p".to_owned());
+            args.push(p.to_string());
+        }
+        args.push(self.host.to_owned());
+
+        let output = match tokio::time::timeout(
+            KEYSCAN_HARD_TIMEOUT,
+            run_via_runner(self.runner, "ssh-keyscan", args),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_elapsed) => {
+                return Err(toride_ssh_core::Error::CommandFailed(format!(
+                    "ssh-keyscan timed out after {}s for {}",
+                    KEYSCAN_HARD_TIMEOUT.as_secs(),
+                    self.host
+                )));
+            }
+        };
+
+        if !output.success {
             return Err(toride_ssh_core::Error::CommandFailed(format!(
                 "ssh-keyscan failed for {}: {}",
                 self.host,
-                stderr.trim()
+                output.stderr.trim()
             )));
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        Ok(stdout
+        Ok(output
+            .stdout
             .lines()
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .map(str::to_owned)
@@ -638,17 +750,13 @@ impl AgentForwarding<'_> {
             }]);
         }
 
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .arg("-A")
-            .args([self.host, "ssh-add -l"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push("-A".into());
+        args.push(self.host.into());
+        args.push("ssh-add -l".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if output.status.success() {
+        if output.success {
             Ok(vec![Diagnostic {
                 id: "agent_forwarding",
                 severity: Severity::Ok,
@@ -657,14 +765,13 @@ impl AgentForwarding<'_> {
                 module: "remote",
             }])
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             Ok(vec![Diagnostic {
                 id: "agent_forwarding",
                 severity: Severity::Warning,
                 message: format!(
                     "Agent forwarding may not work to {}: {}",
                     self.host,
-                    stderr.trim()
+                    output.stderr.trim()
                 ),
                 hint: Some(
                     "Ensure `AllowAgentForwarding yes` is set in the remote sshd_config".into(),
@@ -681,37 +788,28 @@ impl AgentForwarding<'_> {
 
 impl RemotePermissionsCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([
-                self.host,
-                // Use `stat -c %a` for GNU/Linux and fall back to `stat -f %Lp` for BSD/macOS.
-                // The portable idiom `$(stat -c %a . 2>/dev/null || stat -f %Lp .)` covers both.
-                "stat -c '%a' ~/.ssh 2>/dev/null || stat -f '%Lp' ~/.ssh 2>/dev/null",
-            ])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        // Use `stat -c %a` for GNU/Linux and fall back to `stat -f %Lp` for BSD/macOS.
+        // The portable idiom `$(stat -c %a . 2>/dev/null || stat -f %Lp .)` covers both.
+        args.push("stat -c '%a' ~/.ssh 2>/dev/null || stat -f '%Lp' ~/.ssh 2>/dev/null".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_permissions",
                 severity: Severity::Warning,
                 message: format!(
                     "Could not stat remote ~/.ssh on {}: {}",
                     self.host,
-                    stderr.trim()
+                    output.stderr.trim()
                 ),
                 hint: Some("Ensure ~/.ssh exists on the remote host".into()),
                 module: "remote",
             }]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let mode = stdout.trim().trim_matches('\'');
+        let mode = output.stdout.trim().trim_matches('\'');
 
         if mode == "700" {
             Ok(vec![Diagnostic {
@@ -742,16 +840,12 @@ impl RemotePermissionsCheck<'_> {
 
 impl RemoteAuthorizedKeysCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "test -f ~/.ssh/authorized_keys"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("test -f ~/.ssh/authorized_keys".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if output.status.success() {
+        if output.success {
             Ok(vec![Diagnostic {
                 id: "remote_authorized_keys",
                 severity: Severity::Ok,
@@ -780,17 +874,14 @@ impl RemoteAuthorizedKeysCheck<'_> {
 
 impl RemotePubkeyAuthCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args(["-o", "PreferredAuthentications=publickey"])
-            .args([self.host, "true"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push("-o".into());
+        args.push("PreferredAuthentications=publickey".into());
+        args.push(self.host.into());
+        args.push("true".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if output.status.success() {
+        if output.success {
             Ok(vec![Diagnostic {
                 id: "remote_pubkey_auth",
                 severity: Severity::Ok,
@@ -799,14 +890,13 @@ impl RemotePubkeyAuthCheck<'_> {
                 module: "remote",
             }])
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             Ok(vec![Diagnostic {
                 id: "remote_pubkey_auth",
                 severity: Severity::Error,
                 message: format!(
                     "Public-key authentication failed to {}: {}",
                     self.host,
-                    stderr.trim()
+                    output.stderr.trim()
                 ),
                 hint: Some(
                     "Ensure your public key is in the remote ~/.ssh/authorized_keys and the key is loaded in the agent".into(),
@@ -823,16 +913,12 @@ impl RemotePubkeyAuthCheck<'_> {
 
 impl RemoteSshdConfigCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "sshd -T 2>/dev/null"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("sshd -T 2>/dev/null".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_sshd_config",
                 severity: Severity::Info,
@@ -847,7 +933,7 @@ impl RemoteSshdConfigCheck<'_> {
             }]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
         check_sshd_bool_setting(
@@ -928,24 +1014,19 @@ fn find_sshd_setting(config: &str, key: &str) -> Option<String> {
 
 impl RemoteHomeCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "echo $HOME"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("echo $HOME".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_home",
                 severity: Severity::Error,
                 message: format!(
                     "Could not determine remote home directory on {}: {}",
                     self.host,
-                    stderr.trim()
+                    output.stderr.trim()
                 ),
                 hint: Some(
                     "Verify the remote host is accessible and the shell is configured".into(),
@@ -954,7 +1035,7 @@ impl RemoteHomeCheck<'_> {
             }]);
         }
 
-        let home = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        let home = output.stdout.trim().to_string();
 
         if home.is_empty() {
             Ok(vec![Diagnostic {
@@ -989,6 +1070,7 @@ struct RemoteAuthorizedKeysContentCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 impl RemoteAuthorizedKeysContentCheck<'_> {
@@ -1038,24 +1120,19 @@ impl RemoteAuthorizedKeysContentCheck<'_> {
         }
 
         // Read remote authorized_keys.
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "cat ~/.ssh/authorized_keys 2>/dev/null"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("cat ~/.ssh/authorized_keys 2>/dev/null".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_authorized_keys_content",
                 severity: Severity::Warning,
                 message: format!(
                     "Could not read remote authorized_keys on {}: {}",
                     self.host,
-                    stderr.trim()
+                    output.stderr.trim()
                 ),
                 hint: Some(
                     "Ensure ~/.ssh/authorized_keys exists and is readable on the remote host"
@@ -1065,7 +1142,7 @@ impl RemoteAuthorizedKeysContentCheck<'_> {
             }]);
         }
 
-        let remote_content = String::from_utf8_lossy(&output.stdout);
+        let remote_content = output.stdout;
         let remote_keys: Vec<&str> = remote_content
             .lines()
             .filter(|l| {
@@ -1138,21 +1215,18 @@ struct RemoteSshdAuthMethodsCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 impl RemoteSshdAuthMethodsCheck<'_> {
     #[allow(clippy::too_many_lines)]
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "sshd -T 2>/dev/null"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("sshd -T 2>/dev/null".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_sshd_auth_methods",
                 severity: Severity::Info,
@@ -1167,7 +1241,7 @@ impl RemoteSshdAuthMethodsCheck<'_> {
             }]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
         // These are the key authentication methods. If PasswordAuthentication
@@ -1260,21 +1334,18 @@ struct RemoteAuthorizedKeysCommandCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 impl RemoteAuthorizedKeysCommandCheck<'_> {
     #[allow(clippy::too_many_lines)]
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "sshd -T 2>/dev/null"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("sshd -T 2>/dev/null".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_authorized_keys_command",
                 severity: Severity::Info,
@@ -1289,7 +1360,7 @@ impl RemoteAuthorizedKeysCommandCheck<'_> {
             }]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
         // AuthorizedKeysCommand
@@ -1408,6 +1479,7 @@ struct RemoteLogsHintCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 /// Check the remote sshd `StrictModes` setting. When `StrictModes` is enabled
@@ -1418,6 +1490,7 @@ struct RemoteStrictModesCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 // ---------------------------------------------------------------------------
@@ -1434,24 +1507,19 @@ impl RemoteLogsHintCheck<'_> {
             echo secure_log=$(test -f /var/log/secure && echo yes || echo no); \
             echo journalctl=$(command -v journalctl >/dev/null 2>&1 && journalctl -u sshd --no-pager -n 1 >/dev/null 2>&1 && echo yes || echo no)";
 
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, cmd])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push(cmd.into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_logs_hint",
                 severity: Severity::Info,
                 message: format!(
                     "Could not determine remote log locations on {}: {}",
                     self.host,
-                    stderr.trim()
+                    output.stderr.trim()
                 ),
                 hint: Some(
                     "Check /var/log/auth.log (Debian/Ubuntu), /var/log/secure (RHEL/CentOS), or `journalctl -u sshd`".into(),
@@ -1460,7 +1528,7 @@ impl RemoteLogsHintCheck<'_> {
             }]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout;
         let mut log_sources = Vec::new();
 
         for line in stdout.lines() {
@@ -1516,16 +1584,12 @@ impl RemoteLogsHintCheck<'_> {
 
 impl RemoteStrictModesCheck<'_> {
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "sshd -T 2>/dev/null"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("sshd -T 2>/dev/null".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_strict_modes",
                 severity: Severity::Info,
@@ -1540,7 +1604,7 @@ impl RemoteStrictModesCheck<'_> {
             }]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout;
 
         match find_sshd_setting(&stdout, "strictmodes").as_deref() {
             Some("yes") => Ok(vec![Diagnostic {
@@ -1601,21 +1665,18 @@ struct RemoteSshdFullConfigCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 impl RemoteSshdFullConfigCheck<'_> {
     #[allow(clippy::too_many_lines)]
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "sshd -T 2>/dev/null"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("sshd -T 2>/dev/null".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_sshd_full_config",
                 severity: Severity::Info,
@@ -1630,7 +1691,7 @@ impl RemoteSshdFullConfigCheck<'_> {
             }]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
         // AuthorizedKeysFile — where sshd looks for authorized keys.
@@ -1938,21 +1999,18 @@ struct RemoteAuthorizedPrincipalsFileCheck<'a> {
     host: &'a str,
     port: Option<u16>,
     proxy_jump: Option<&'a str>,
+    runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
 impl RemoteAuthorizedPrincipalsFileCheck<'_> {
     #[allow(clippy::too_many_lines)]
     async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(self.port, self.proxy_jump))
-            .args([self.host, "sshd -T 2>/dev/null"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(self.port, self.proxy_jump);
+        args.push(self.host.into());
+        args.push("sshd -T 2>/dev/null".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if !output.status.success() {
+        if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_authorized_principals_file",
                 severity: Severity::Info,
@@ -1968,7 +2026,7 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
             }]);
         }
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout = output.stdout;
         let mut diagnostics = Vec::new();
 
         // Only check if TrustedUserCAKeys is configured — without it,
@@ -1993,18 +2051,20 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
         // TrustedUserCAKeys is set — check the principals file.
         match find_sshd_setting(&stdout, "authorizedprincipalsfile") {
             Some(value) if value != "none" && !value.is_empty() => {
-                // Verify the file exists on the remote host.
-                let test_cmd = format!("test -f {value}");
-                let test_output = tokio::process::Command::new("ssh")
-                    .args(ssh_connect_args(self.port, self.proxy_jump))
-                    .args([self.host, test_cmd.as_str()])
-                    .output()
-                    .await
-                    .map_err(|e| {
-                        toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-                    })?;
+                // Verify the file exists on the remote host. The value comes
+                // from remote `sshd -T` output, so it is attacker-controlled
+                // (a malicious or compromised remote could return shell
+                // metacharacters). Shell-quote it via single-quote escaping
+                // before interpolation so it is treated as a literal path
+                // token and cannot inject commands into the remote shell.
+                let quoted = shell_quote(&value);
+                let test_cmd = format!("test -f {quoted}");
+                let mut test_args = ssh_connect_args(self.port, self.proxy_jump);
+                test_args.push(self.host.into());
+                test_args.push(test_cmd);
+                let test_output = run_via_runner(self.runner, "ssh", test_args).await?;
 
-                if test_output.status.success() {
+                if test_output.success {
                     diagnostics.push(Diagnostic {
                         id: "remote_authorized_principals_file",
                         severity: Severity::Ok,
@@ -2072,26 +2132,9 @@ impl RemoteAuthorizedPrincipalsFileCheck<'_> {
 // ---------------------------------------------------------------------------
 
 impl ProxyJumpDetectionCheck<'_> {
-    async fn run_check(&self) -> Result<Vec<Diagnostic>> {
-        let resolved = match resolve(self.paths.ssh_dir(), self.host, None).await {
-            Ok(r) => r,
-            Err(e) => {
-                return Ok(vec![Diagnostic {
-                    id: "proxy_jump_config",
-                    severity: Severity::Info,
-                    message: format!("Could not resolve SSH config for {}: {}", self.host, e),
-                    hint: Some(
-                        "ProxyJump detection requires a valid SSH config. \
-                         Check ~/.ssh/config for syntax errors"
-                            .into(),
-                    ),
-                    module: "remote",
-                }]);
-            }
-        };
-
-        match resolved.proxy_jump {
-            Some(ref jump) if jump != "none" && !jump.is_empty() => Ok(vec![Diagnostic {
+    fn run_check(&self) -> Vec<Diagnostic> {
+        match self.proxy_jump {
+            Some(jump) if jump != "none" && !jump.is_empty() => vec![Diagnostic {
                 id: "proxy_jump_config",
                 severity: Severity::Ok,
                 message: format!("Host {} uses ProxyJump: {}", self.host, jump),
@@ -2101,21 +2144,21 @@ impl ProxyJumpDetectionCheck<'_> {
                         .into(),
                 ),
                 module: "remote",
-            }]),
-            Some(_) => Ok(vec![Diagnostic {
+            }],
+            Some(_) => vec![Diagnostic {
                 id: "proxy_jump_config",
                 severity: Severity::Ok,
                 message: format!("ProxyJump is explicitly disabled for {}", self.host),
                 hint: None,
                 module: "remote",
-            }]),
-            None => Ok(vec![Diagnostic {
+            }],
+            None => vec![Diagnostic {
                 id: "proxy_jump_config",
                 severity: Severity::Ok,
                 message: format!("No ProxyJump configured for {}", self.host),
                 hint: None,
                 module: "remote",
-            }]),
+            }],
         }
     }
 }
@@ -2144,16 +2187,12 @@ impl JumpHostReachableCheck<'_> {
         // Parse the jump host for optional port specification.
         let (jump_host, jump_port) = parse_host_port(self.jump_host);
 
-        let output = tokio::process::Command::new("ssh")
-            .args(ssh_connect_args(jump_port, None))
-            .args([jump_host, "true"])
-            .output()
-            .await
-            .map_err(|e| {
-                toride_ssh_core::Error::CommandFailed(format!("failed to execute ssh: {e}"))
-            })?;
+        let mut args = ssh_connect_args(jump_port, None);
+        args.push(jump_host.into());
+        args.push("true".into());
+        let output = run_via_runner(self.runner, "ssh", args).await?;
 
-        if output.status.success() {
+        if output.success {
             Ok(vec![Diagnostic {
                 id: "jump_host_reachable",
                 severity: Severity::Ok,
@@ -2162,14 +2201,13 @@ impl JumpHostReachableCheck<'_> {
                 module: "remote",
             }])
         } else {
-            let stderr = String::from_utf8_lossy(&output.stderr);
             Ok(vec![Diagnostic {
                 id: "jump_host_reachable",
                 severity: Severity::Warning,
                 message: format!(
                     "Jump host {} is not reachable: {}",
                     self.jump_host,
-                    stderr.trim()
+                    output.stderr.trim()
                 ),
                 hint: Some(
                     "Verify the jump host is accessible and SSH is running. \
@@ -2204,17 +2242,11 @@ pub async fn run_all(
 
     let mut all_diagnostics = Vec::new();
 
-    // ProxyJump detection — resolve SSH config to check for ProxyJump.
-    // This runs early so that subsequent SSH-dependent checks can use the
-    // jump host for connections.
-    let proxy_jump_check = ProxyJumpDetectionCheck { paths, host };
-    match proxy_jump_check.run_check().await {
-        Ok(d) => all_diagnostics.extend(d),
-        Err(e) => all_diagnostics.push(err_diagnostic("proxy_jump_config", &e)),
-    }
-
-    // Resolve the SSH config to extract the ProxyJump value for use by
-    // all subsequent SSH-based checks.
+    // Resolve the SSH config once and reuse the result for both ProxyJump
+    // detection and the proxy_jump value consumed by every subsequent
+    // SSH-based check. `resolve` performs a disk read plus a recursive glob
+    // walk (`load_and_flatten`), so resolving twice — as the detection check
+    // and the extraction previously did independently — is wasteful.
     let proxy_jump_value: Option<String> = match resolve(paths.ssh_dir(), host, None).await {
         Ok(resolved) => resolved
             .proxy_jump
@@ -2222,6 +2254,11 @@ pub async fn run_all(
         Err(_) => None,
     };
     let proxy_jump: Option<&str> = proxy_jump_value.as_deref();
+
+    // ProxyJump detection — report the resolved ProxyJump value. Runs early
+    // so that subsequent SSH-dependent checks can use the jump host.
+    let proxy_jump_check = ProxyJumpDetectionCheck { host, proxy_jump };
+    all_diagnostics.extend(proxy_jump_check.run_check());
 
     // If ProxyJump is configured, verify the jump host is reachable.
     if let Some(jump) = proxy_jump {
@@ -2292,7 +2329,12 @@ pub async fn run_all(
     }
 
     // Host key verification — compare stored vs live keys (local + network).
-    let check = HostKeyVerificationCheck { paths, host, port };
+    let check = HostKeyVerificationCheck {
+        paths,
+        host,
+        port,
+        runner,
+    };
     match check.run_check().await {
         Ok(d) => all_diagnostics.extend(d),
         Err(e) => all_diagnostics.push(err_diagnostic("host_key_verification", &e)),
@@ -2304,6 +2346,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2315,6 +2358,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2326,6 +2370,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2337,6 +2382,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2348,6 +2394,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2359,6 +2406,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2371,6 +2419,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2382,6 +2431,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2393,6 +2443,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2404,6 +2455,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2415,6 +2467,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2426,6 +2479,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2437,6 +2491,7 @@ pub async fn run_all(
             host,
             port,
             proxy_jump,
+            runner,
         };
         match check.run_check().await {
             Ok(d) => all_diagnostics.extend(d),
@@ -2954,5 +3009,56 @@ trustedusercakeys /etc/ssh/ca.pub
         assert_eq!(args.len(), 8);
         assert_eq!(args[6], "-J");
         assert_eq!(args[7], "admin@jump.example.com");
+    }
+
+    // -----------------------------------------------------------------------
+    // shell_quote tests (security: neutralizes shell metacharacters in the
+    // remote AuthorizedPrincipalsFile value before interpolation)
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn shell_quote_plain_path_is_single_quoted() {
+        // A benign path is wrapped in single quotes; `test -f '<path>'` still
+        // resolves correctly on the remote shell.
+        assert_eq!(shell_quote("/etc/ssh/auth_principals"), "'/etc/ssh/auth_principals'");
+    }
+
+    #[test]
+    fn shell_quote_empty_value() {
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn shell_quote_neutralizes_command_injection() {
+        // A malicious AuthorizedPrincipalsFile value must not be able to
+        // break out of the `test -f <value>` token. Every metacharacter is
+        // trapped inside single quotes.
+        let malicious = "/tmp/x; rm -rf ~";
+        let quoted = shell_quote(malicious);
+        assert!(quoted.starts_with('\''));
+        assert!(quoted.ends_with('\''));
+        // The whole value sits inside the single-quoted region — the literal
+        // `;` is quoted and therefore inert.
+        assert_eq!(quoted, "'/tmp/x; rm -rf ~'");
+    }
+
+    #[test]
+    fn shell_quote_escapes_embedded_single_quote() {
+        // The only character that cannot appear verbatim inside a
+        // single-quoted string is `'` itself; it must be escaped via `'\''`.
+        let value = "a'b";
+        let quoted = shell_quote(value);
+        assert_eq!(quoted, "'a'\\''b'");
+        // The escaped form must re-parse as the original token under a POSIX
+        // shell: close-quote, escaped-quote, reopen-quote yields a literal `'`.
+        assert!(quoted.contains("'\\''"));
+    }
+
+    #[test]
+    fn shell_quote_neutralizes_backticks_and_dollar() {
+        // Command substitution (`...`) and parameter expansion ($...) are
+        // both inert inside single quotes.
+        let value = "$(reboot)`whoami`$HOME";
+        assert_eq!(shell_quote(value), "'$(reboot)`whoami`$HOME'");
     }
 }
