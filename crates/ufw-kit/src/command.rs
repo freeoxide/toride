@@ -39,7 +39,9 @@ pub trait CommandRunner: Send + Sync {
 /// Convert a local [`CommandSpec`] into a [`toride_runner::CommandSpec`].
 ///
 /// The `force_c_locale` field is honoured by injecting `LC_ALL=C` and
-/// `LANG=C` environment variables into the shared spec.
+/// `LANG=C` environment variables into the shared spec. The `redact_logs`
+/// field is forwarded to the shared spec's `redact` flag so the executing
+/// runner (and the tracing it emits) masks sensitive arguments.
 fn to_shared_spec(spec: &CommandSpec) -> toride_runner::CommandSpec {
     let mut s = toride_runner::CommandSpec::new(&spec.program);
     for arg in &spec.args {
@@ -50,6 +52,9 @@ fn to_shared_spec(spec: &CommandSpec) -> toride_runner::CommandSpec {
     }
     if spec.force_c_locale {
         s = s.env("LC_ALL", "C").env("LANG", "C");
+    }
+    if spec.redact_logs {
+        s = s.redact(true);
     }
     s
 }
@@ -86,13 +91,20 @@ impl Default for DuctRunner {
 
 impl CommandRunner for DuctRunner {
     fn run(&self, spec: &CommandSpec) -> Result<CommandResult> {
-        // Redact sensitive args if requested
+        // Build the display form of the arguments up front so any trace/log
+        // emission in this function — including the failure branch — uses the
+        // redacted form when the caller opted into it. The executing runner
+        // additionally honours `redact_logs` via `to_shared_spec`.
         let display_args = if spec.redact_logs {
             redact_args(&spec.args)
         } else {
             spec.args.join(" ")
         };
-        let _ = display_args; // Used by tracing if enabled
+        tracing::debug!(
+            program = %spec.program,
+            args = %display_args,
+            "executing command"
+        );
 
         let shared = to_shared_spec(spec);
         let timeout = spec.timeout.unwrap_or(Duration::from_secs(30));
@@ -101,6 +113,12 @@ impl CommandRunner for DuctRunner {
         let output = runner.run(&shared).map_err(|e| {
             // Distinguish timeout from other errors by inspecting the error variant.
             let err_str = e.to_string();
+            tracing::warn!(
+                program = %spec.program,
+                args = %display_args,
+                error = %err_str,
+                "command execution failed"
+            );
             if err_str.contains("timeout") {
                 Error::CommandTimeout {
                     program: spec.program.clone(),

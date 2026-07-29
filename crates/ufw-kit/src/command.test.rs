@@ -297,3 +297,50 @@ fn redact_args_should_mask_two_consecutive_secrets() {
     assert!(!out.contains("pw1"), "got {out:?}");
     assert!(!out.contains("tok2"), "got {out:?}");
 }
+
+// ---------------------------------------------------------------------------
+// to_shared_spec — redact_logs forwarding
+// ---------------------------------------------------------------------------
+
+#[test]
+fn to_shared_spec_should_forward_redact_logs_when_set() {
+    // Regression: previously to_shared_spec dropped the local redact_logs
+    // flag, so the executing runner (and its tracing) never redacted. The
+    // shared spec must carry the redact flag when the caller opted in.
+    let mut spec = CommandSpec::ufw(vec!["--password".into(), "s3cr3t".into()]);
+    spec.redact_logs = true;
+
+    let shared = to_shared_spec(&spec);
+    assert!(
+        shared.redact,
+        "to_shared_spec must forward redact_logs=true to the shared spec"
+    );
+}
+
+#[test]
+fn to_shared_spec_should_leave_redact_off_by_default() {
+    let spec = CommandSpec::ufw(vec!["status".into()]);
+    let shared = to_shared_spec(&spec);
+    assert!(
+        !shared.redact,
+        "redact must be off when redact_logs is false (avoids over-redaction)"
+    );
+}
+
+#[test]
+fn to_shared_spec_should_preserve_force_c_locale_and_args() {
+    // The redact-forwarding change must not disturb the other forwarded fields.
+    let spec = CommandSpec::ufw(vec!["--version".into()]);
+    let shared = to_shared_spec(&spec);
+    assert_eq!(shared.program, "ufw");
+    assert_eq!(shared.args, vec!["--version".to_string()]);
+    assert!(
+        shared
+            .env
+            .iter()
+            .any(|(k, v)| k == "LC_ALL" && v == "C"),
+        "force_c_locale env must be forwarded, got env: {:?}",
+        shared.env
+    );
+}
+
