@@ -869,9 +869,59 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
                     .unwrap_or_default()
                     .as_nanos()
             ));
-            std::fs::write(&tmp_path, &final_content).map_err(|e| {
-                Error::ConfigWriteFailed(format!("failed to write temp config: {e}"))
-            })?;
+            // Create the temp file with O_EXCL (`create_new`). A plain
+            // `std::fs::write` opens with O_CREAT|O_TRUNC and no O_EXCL, so a
+            // local attacker who can predict the PID+nanos-derived name can
+            // pre-place a symlink at the temp path and trick us into writing
+            // the rewritten config through it (symlink race). `create_new`
+            // fails with `AlreadyExists` if the path already exists — whether
+            // as a regular file or a symlink — closing the race. This mirrors
+            // the askpass script write path below (~line 661).
+            #[cfg(unix)]
+            {
+                use std::io::Write;
+                use std::os::unix::fs::OpenOptionsExt;
+                // Match the typical ~/.ssh/config permissions (0o600). The
+                // previous plain `fs::write` produced a umask-default mode, so
+                // 0o600 is at least as strict.
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .mode(0o600)
+                    .open(&tmp_path)
+                    .map_err(|e| {
+                        Error::ConfigWriteFailed(format!(
+                            "failed to create temp config {}: {e}",
+                            tmp_path.display()
+                        ))
+                    })?;
+                file.write_all(final_content.as_bytes()).map_err(|e| {
+                    Error::ConfigWriteFailed(format!("failed to write temp config: {e}"))
+                })?;
+                let _ = file.sync_all();
+                drop(file);
+            }
+            #[cfg(not(unix))]
+            {
+                // Non-Unix: best-effort create_new without mode (no O_EXCL
+                // race on platforms without symlink-following open).
+                use std::io::Write;
+                let mut file = std::fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&tmp_path)
+                    .map_err(|e| {
+                        Error::ConfigWriteFailed(format!(
+                            "failed to create temp config {}: {e}",
+                            tmp_path.display()
+                        ))
+                    })?;
+                file.write_all(final_content.as_bytes()).map_err(|e| {
+                    Error::ConfigWriteFailed(format!("failed to write temp config: {e}"))
+                })?;
+                let _ = file.sync_all();
+                drop(file);
+            }
             if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
                 let _ = std::fs::remove_file(&tmp_path);
                 return Err(Error::ConfigWriteFailed(format!(

@@ -1,5 +1,81 @@
 use super::*;
 
+// ── Env-var mutation serialization ─────────────────────────────────────────
+//
+// Several tests below mutate process-global environment variables. Rust's
+// default test harness runs tests within a binary in parallel, so concurrent
+// set_var/remove_var calls can flakily poison each other (one test reads a
+// var another test is mid-flight on, or two tests collide on a shared name).
+//
+// We do NOT have `serial_test`, and there is no `.cargo/config.toml` setting
+// `--test-threads=1` (a previous comment here incorrectly claimed that). The
+// fix is the same pattern used in toride/src/ssh_data.rs (`HOME_LOCK`): a
+// static `Mutex` acquired at the top of every env-mutating test to serialize
+// them, plus a `TempEnv` RAII guard that restores the prior value on Drop so
+// a panic mid-test cannot leak the mutation.
+
+use std::sync::Mutex;
+
+/// Process-global lock held for the duration of every env-mutating test.
+///
+/// `std::sync::Mutex` (not `tokio::sync::Mutex`) because the tests using this
+/// lock are synchronous (`#[test]`, no `.await`).
+static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+/// Acquire the env-mutation lock, serializing env-mutating tests.
+///
+/// The returned guard must be held for the whole test body.
+fn acquire_env_lock() -> std::sync::MutexGuard<'static, ()> {
+    // `std::sync::Mutex` can be poisoned; ignore poisoning so a panicking
+    // test does not cascade-fail every other env test.
+    ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// RAII guard that restores a single env var to its prior value on Drop.
+///
+/// Created via [`TempEnv::set`]. On Drop the original `OsString` is restored
+/// (or the var is removed if it was previously unset), so a panic between
+/// set and drop cannot leak the mutation into other tests.
+struct TempEnv {
+    key: String,
+    original: Option<std::ffi::OsString>,
+}
+
+impl TempEnv {
+    /// Set `key` to `value`, capturing the prior value for restoration.
+    ///
+    /// # Safety
+    ///
+    /// Env-var mutation is `unsafe` since Rust 2024. The caller must hold the
+    /// [`ENV_LOCK`] (acquired via [`acquire_env_lock`]) for the entire lifetime
+    /// of the returned guard so concurrent env-mutating tests are serialized.
+    unsafe fn set(key: &str, value: &str) -> Self {
+        let original = std::env::var_os(key);
+        // SAFETY: caller holds ENV_LOCK for the whole test body, serializing
+        // env mutation across the process.
+        unsafe {
+            std::env::set_var(key, value);
+        }
+        Self {
+            key: key.to_owned(),
+            original,
+        }
+    }
+}
+
+impl Drop for TempEnv {
+    fn drop(&mut self) {
+        // SAFETY: the TempEnv guard is only ever constructed while ENV_LOCK is
+        // held by the owning test, so Drop also runs under that lock.
+        unsafe {
+            match &self.original {
+                Some(val) => std::env::set_var(&self.key, val),
+                None => std::env::remove_var(&self.key),
+            }
+        }
+    }
+}
+
 /// Like [`expand_tokens`] but leaves `%i` sequences untouched.
 ///
 /// Test-only helper, inlined here because the production code no longer
@@ -81,15 +157,11 @@ fn expand_env_vars_no_vars() {
 
 #[test]
 fn expand_env_vars_simple_var() {
-    // SAFETY: tests run with `--test-threads=1` by default in this crate,
-    // and we use unique var names to avoid cross-test interference.
-    unsafe {
-        std::env::set_var("TORIDE_TEST_VAR", "world");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK is held for the whole test body and TempEnv restores
+    // the prior value on Drop (even on panic).
+    let _g = unsafe { TempEnv::set("TORIDE_TEST_VAR", "world") };
     assert_eq!(expand_env_vars("${TORIDE_TEST_VAR}"), "world");
-    unsafe {
-        std::env::remove_var("TORIDE_TEST_VAR");
-    }
 }
 
 #[test]
@@ -105,29 +177,22 @@ fn expand_env_vars_unclosed_brace() {
 
 #[test]
 fn expand_env_vars_mixed_text() {
-    unsafe {
-        std::env::set_var("TORIDE_TEST_HOST", "example.com");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_TEST_HOST", "example.com") };
     assert_eq!(
         expand_env_vars("Host: ${TORIDE_TEST_HOST}, Port: 22"),
         "Host: example.com, Port: 22"
     );
-    unsafe {
-        std::env::remove_var("TORIDE_TEST_HOST");
-    }
 }
 
 #[test]
 fn expand_env_vars_multiple_vars() {
-    unsafe {
-        std::env::set_var("TORIDE_A", "alpha");
-        std::env::set_var("TORIDE_B", "beta");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv guards restore on Drop.
+    let _g0 = unsafe { TempEnv::set("TORIDE_A", "alpha") };
+    let _g1 = unsafe { TempEnv::set("TORIDE_B", "beta") };
     assert_eq!(expand_env_vars("${TORIDE_A}-${TORIDE_B}"), "alpha-beta");
-    unsafe {
-        std::env::remove_var("TORIDE_A");
-        std::env::remove_var("TORIDE_B");
-    }
 }
 
 #[test]
@@ -142,25 +207,19 @@ fn expand_env_vars_only_dollar() {
 
 #[test]
 fn expand_env_vars_no_braces() {
-    unsafe {
-        std::env::set_var("TORIDE_NO_BRACE", "nobrace");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_NO_BRACE", "nobrace") };
     assert_eq!(expand_env_vars("$TORIDE_NO_BRACE"), "nobrace");
-    unsafe {
-        std::env::remove_var("TORIDE_NO_BRACE");
-    }
 }
 
 #[test]
 fn expand_env_vars_no_braces_with_suffix() {
-    unsafe {
-        std::env::set_var("TORIDE_VAR_SUF", "value");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_VAR_SUF", "value") };
     assert_eq!(expand_env_vars("${TORIDE_VAR_SUF}_extra"), "value_extra");
     assert_eq!(expand_env_vars("$TORIDE_VAR_SUF.extra"), "value.extra");
-    unsafe {
-        std::env::remove_var("TORIDE_VAR_SUF");
-    }
 }
 
 #[test]
@@ -616,37 +675,27 @@ fn expand_tilde_path_with_spaces() {
 
 #[test]
 fn expand_env_vars_var_at_start() {
-    unsafe {
-        std::env::set_var("TORIDE_TEST_START", "hello");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_TEST_START", "hello") };
     assert_eq!(expand_env_vars("${TORIDE_TEST_START}world"), "helloworld");
-    unsafe {
-        std::env::remove_var("TORIDE_TEST_START");
-    }
 }
 
 #[test]
 fn expand_env_vars_var_at_end() {
-    unsafe {
-        std::env::set_var("TORIDE_TEST_END", "world");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_TEST_END", "world") };
     assert_eq!(expand_env_vars("hello${TORIDE_TEST_END}"), "helloworld");
-    unsafe {
-        std::env::remove_var("TORIDE_TEST_END");
-    }
 }
 
 #[test]
 fn expand_env_vars_adjacent_vars() {
-    unsafe {
-        std::env::set_var("TORIDE_X", "X");
-        std::env::set_var("TORIDE_Y", "Y");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv guards restore on Drop.
+    let _g0 = unsafe { TempEnv::set("TORIDE_X", "X") };
+    let _g1 = unsafe { TempEnv::set("TORIDE_Y", "Y") };
     assert_eq!(expand_env_vars("${TORIDE_X}${TORIDE_Y}"), "XY");
-    unsafe {
-        std::env::remove_var("TORIDE_X");
-        std::env::remove_var("TORIDE_Y");
-    }
 }
 
 #[test]
@@ -727,35 +776,26 @@ fn collapse_double_percent_triple() {
 
 #[test]
 fn expand_env_vars_with_spaces_in_value() {
-    unsafe {
-        std::env::set_var("TORIDE_SPACED", "hello world");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_SPACED", "hello world") };
     assert_eq!(expand_env_vars("${TORIDE_SPACED}"), "hello world");
-    unsafe {
-        std::env::remove_var("TORIDE_SPACED");
-    }
 }
 
 #[test]
 fn expand_env_vars_with_equals_in_value() {
-    unsafe {
-        std::env::set_var("TORIDE_EQUALS", "a=b");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_EQUALS", "a=b") };
     assert_eq!(expand_env_vars("${TORIDE_EQUALS}"), "a=b");
-    unsafe {
-        std::env::remove_var("TORIDE_EQUALS");
-    }
 }
 
 #[test]
 fn expand_env_vars_with_special_chars() {
-    unsafe {
-        std::env::set_var("TORIDE_SPECIAL", "hello@world.com");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_SPECIAL", "hello@world.com") };
     assert_eq!(expand_env_vars("${TORIDE_SPECIAL}"), "hello@world.com");
-    unsafe {
-        std::env::remove_var("TORIDE_SPECIAL");
-    }
 }
 
 #[test]
@@ -767,13 +807,10 @@ fn expand_env_vars_undefined_returns_empty() {
 #[test]
 fn expand_env_vars_with_dollar_sign_in_value() {
     // Dollar sign in env var value should not be re-expanded
-    unsafe {
-        std::env::set_var("TORIDE_DOLLAR", "$NOT_A_VAR");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_DOLLAR", "$NOT_A_VAR") };
     assert_eq!(expand_env_vars("${TORIDE_DOLLAR}"), "$NOT_A_VAR");
-    unsafe {
-        std::env::remove_var("TORIDE_DOLLAR");
-    }
 }
 
 #[test]
@@ -1102,13 +1139,10 @@ fn expand_env_vars_trailing_dollar() {
 
 #[test]
 fn expand_env_vars_no_braces_in_path() {
-    unsafe {
-        std::env::set_var("TORIDE_PVAR", "/usr/local");
-    }
+    let _lock = acquire_env_lock();
+    // SAFETY: ENV_LOCK held; TempEnv restores on Drop.
+    let _g = unsafe { TempEnv::set("TORIDE_PVAR", "/usr/local") };
     assert_eq!(expand_env_vars("$TORIDE_PVAR/bin"), "/usr/local/bin");
-    unsafe {
-        std::env::remove_var("TORIDE_PVAR");
-    }
 }
 
 // ---------------------------------------------------------------------------
