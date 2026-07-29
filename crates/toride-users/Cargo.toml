@@ -16,7 +16,11 @@ default = ["client", "doctor"]
 # === Capability features ===
 
 ## `useradd`/`usermod`/`userdel` wrapper, group management, command runner.
-client = ["dep:duct"]
+##
+## Pulls in `zeroize` so the captured TOTP enrollment secret (returned by
+## `totp::enroll_totp`, which is gated on `client`) can be wrapped in a
+## zeroizing, Debug-redacting newtype.
+client = ["dep:duct", "zeroize"]
 
 ## Service management for user-related daemons.
 service = ["client", "dep:toride-service"]
@@ -62,6 +66,7 @@ serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }
 regex = { version = "1", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
+zeroize = { workspace = true, optional = true }
 
 [dev-dependencies]
 insta = "1"
