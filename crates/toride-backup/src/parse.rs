@@ -162,27 +162,42 @@ pub struct CheckResult {
 ///
 /// Looks for error indicators in the output and reports whether the
 /// integrity check passed.
+///
+/// `passed` is derived honestly from the accumulated `error_count` plus the
+/// summary phrase "no errors were found": the check passes only when there
+/// are no detected error lines **and** the summary phrase is present (or the
+/// output is empty). A genuine error line is never hidden by the presence of
+/// the summary phrase, so a mixed output (real errors + the phrase) is
+/// reported as failed with the correct non-zero error count.
 pub fn parse_restic_check(output: &str) -> CheckResult {
+    // The restic check success summary itself contains the substring "error"
+    // ("no errors were found"), so it must be excluded from error counting to
+    // avoid double-counting a clean run as a failure.
+    const CLEAN_SUMMARY: &str = "no errors were found";
+
     let mut error_count = 0u64;
-    let mut passed = true;
     let output_lines: Vec<String> = output.lines().map(String::from).collect();
+
+    let has_clean_summary = output_lines
+        .iter()
+        .any(|l| l.to_ascii_lowercase().contains(CLEAN_SUMMARY));
 
     for line in &output_lines {
         let lower = line.to_ascii_lowercase();
+        if lower.contains(CLEAN_SUMMARY) {
+            continue;
+        }
         if lower.contains("error") || lower.contains("fatal") || lower.contains("failed") {
             error_count += 1;
-            passed = false;
         }
     }
 
-    // If the output contains "no errors were found", it passed.
-    if output_lines
-        .iter()
-        .any(|l| l.to_ascii_lowercase().contains("no errors were found"))
-    {
-        passed = true;
-        error_count = 0;
-    }
+    // `passed` is true iff no genuine error indicators were detected. The
+    // clean summary phrase corroborates a pass but cannot mask a real error,
+    // nor does it reset the error count, so a mixed output (real error line
+    // plus the success summary) is reported as failed with the correct
+    // non-zero error count.
+    let passed = error_count == 0 && (has_clean_summary || output_lines.is_empty());
 
     CheckResult {
         passed,
@@ -222,4 +237,115 @@ pub fn parse_borg_list(output: &str) -> crate::Result<Vec<SnapshotInfo>> {
         }
     }
     Ok(snapshots)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restic_check_clean_summary_passes_with_zero_errors() {
+        let output = "pack 1234 files\nno errors were found\n";
+        let result = parse_restic_check(output);
+        assert!(result.passed);
+        assert_eq!(result.error_count, 0);
+    }
+
+    #[test]
+    fn restic_check_empty_output_passes() {
+        let result = parse_restic_check("");
+        assert!(result.passed);
+        assert_eq!(result.error_count, 0);
+        assert!(result.output_lines.is_empty());
+    }
+
+    #[test]
+    fn restic_check_error_lines_fail_without_clean_summary() {
+        let output = "error: pack file is damaged\nfatal: repository is corrupt\n";
+        let result = parse_restic_check(output);
+        assert!(!result.passed);
+        assert_eq!(result.error_count, 2);
+    }
+
+    #[test]
+    fn restic_check_failed_keyword_is_an_error() {
+        let output = "load <snapshot/abc>: failed to read data\n";
+        let result = parse_restic_check(output);
+        assert!(!result.passed);
+        assert_eq!(result.error_count, 1);
+    }
+
+    #[test]
+    fn restic_check_mixed_real_errors_and_clean_phrase_stays_failed() {
+        // A restic run that prints both genuine error lines and the
+        // trailing "no errors were found" summary (e.g. a non-fatal error
+        // earlier in the output) must not have its error count reset to 0
+        // or be reported as passed.
+        let output = "error reading pack 1234: i/o timeout\n\
+                      no errors were found\n";
+        let result = parse_restic_check(output);
+        assert!(
+            !result.passed,
+            "mixed output with a real error must not pass"
+        );
+        assert_eq!(
+            result.error_count, 1,
+            "real error must not be zeroed by the summary phrase"
+        );
+    }
+
+    #[test]
+    fn restic_check_mixed_fatal_and_phrase_stays_failed() {
+        let output = "check: reading repository data\n\
+                      fatal: could not read index\n\
+                      no errors were found\n";
+        let result = parse_restic_check(output);
+        assert!(!result.passed);
+        assert_eq!(result.error_count, 1);
+    }
+
+    #[test]
+    fn restic_check_case_insensitive_error_and_summary() {
+        let output = "ERROR: something broke\nNo Errors Were Found\n";
+        let result = parse_restic_check(output);
+        assert!(!result.passed);
+        assert_eq!(result.error_count, 1);
+    }
+
+    #[test]
+    fn restic_check_records_output_lines() {
+        let output = "line one\nno errors were found\n";
+        let result = parse_restic_check(output);
+        assert_eq!(result.output_lines, vec!["line one", "no errors were found"]);
+    }
+
+    #[test]
+    fn restic_snapshots_empty_returns_empty_vec() {
+        let result = parse_restic_snapshots("   ").unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn restic_snapshots_text_parses_rows() {
+        // Single-space separated; the text parser splits on individual
+        // whitespace characters, so column alignment with runs of spaces
+        // would yield empty parts.
+        let output = "ID Time Host Tags Paths\n\
+                      ---\n\
+                      a1b2c3d4 2024-01-02 host1 /home";
+        let result = parse_restic_snapshots(output).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "a1b2c3d4");
+        assert_eq!(result[0].full_id, "a1b2c3d4");
+        assert_eq!(result[0].timestamp, "2024-01-02");
+    }
+
+    #[test]
+    fn borg_list_parses_rows() {
+        let output = "a1b2c3d4e5 2024-01-02T03:04:05 host1 /home";
+        let result = parse_borg_list(output).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].id, "a1b2c3d4");
+        assert_eq!(result[0].timestamp, "2024-01-02T03:04:05");
+    }
 }
