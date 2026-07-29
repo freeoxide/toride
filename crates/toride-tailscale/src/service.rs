@@ -367,35 +367,35 @@ mod tests {
             progs[0],
             (
                 &"systemctl".to_owned(),
-                vec!["start".to_owned(), "tailscaled".to_owned()]
+                vec!["start".to_owned(), "--".to_owned(), "tailscaled".to_owned()]
             )
         );
         assert_eq!(
             progs[1],
             (
                 &"systemctl".to_owned(),
-                vec!["stop".to_owned(), "tailscaled".to_owned()]
+                vec!["stop".to_owned(), "--".to_owned(), "tailscaled".to_owned()]
             )
         );
         assert_eq!(
             progs[2],
             (
                 &"systemctl".to_owned(),
-                vec!["restart".to_owned(), "tailscaled".to_owned()]
+                vec!["restart".to_owned(), "--".to_owned(), "tailscaled".to_owned()]
             )
         );
         assert_eq!(
             progs[3],
             (
                 &"systemctl".to_owned(),
-                vec!["enable".to_owned(), "tailscaled".to_owned()]
+                vec!["enable".to_owned(), "--".to_owned(), "tailscaled".to_owned()]
             )
         );
         assert_eq!(
             progs[4],
             (
                 &"systemctl".to_owned(),
-                vec!["disable".to_owned(), "tailscaled".to_owned()]
+                vec!["disable".to_owned(), "--".to_owned(), "tailscaled".to_owned()]
             )
         );
     }
@@ -403,18 +403,18 @@ mod tests {
     #[test]
     fn is_active_returns_true_when_systemctl_succeeds() {
         let runner = Arc::new(FakeRunner::new().respond(
-            spec_for("systemctl", &["is-active", "tailscaled"]),
+            spec_for("systemctl", &["is-active", "--", "tailscaled"]),
             CommandOutput::from_stdout("active"),
         ));
         let svc = TailscaleService::with_runner(runner.clone());
         assert!(svc.is_active().unwrap());
-        runner.assert_called_with(&spec_for("systemctl", &["is-active", "tailscaled"]));
+        runner.assert_called_with(&spec_for("systemctl", &["is-active", "--", "tailscaled"]));
     }
 
     #[test]
     fn is_active_returns_false_when_systemctl_fails() {
         let runner = Arc::new(FakeRunner::new().respond(
-            spec_for("systemctl", &["is-active", "tailscaled"]),
+            spec_for("systemctl", &["is-active", "--", "tailscaled"]),
             CommandOutput::from_stderr("inactive", 3),
         ));
         let svc = TailscaleService::with_runner(runner);

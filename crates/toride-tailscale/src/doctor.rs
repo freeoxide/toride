@@ -467,7 +467,7 @@ mod tests {
     /// does.
     #[test]
     fn check_service_probes_systemctl_when_runner_attached() {
-        let active_spec = CommandSpec::new("systemctl").args(["is-active", "tailscaled"]);
+        let active_spec = CommandSpec::new("systemctl").args(["is-active", "--", "tailscaled"]);
 
         // Active service -> ok finding.
         let runner: std::sync::Arc<dyn Runner> = std::sync::Arc::new(FakeRunner::new().respond(
