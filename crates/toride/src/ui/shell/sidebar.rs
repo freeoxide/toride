@@ -510,4 +510,149 @@ mod tests {
         assert_eq!(s.selected(), 8);
         assert_eq!(s.scroll_offset(), 6);
     }
+
+    // ── render-driven coverage of visible-window + hitbox computation ───────
+
+    fn sidebar_items(n: usize) -> Vec<SidebarItem> {
+        use crate::data::Section;
+        let sections = [
+            Section::Dashboard,
+            Section::Tools,
+            Section::Templates,
+            Section::Ssh,
+            Section::Firewall,
+            Section::Tailscale,
+            Section::Harden,
+            Section::WireGuard,
+            Section::Updates,
+            Section::Users,
+            Section::Audit,
+            Section::Monitor,
+        ];
+        (0..n)
+            .map(|i| SidebarItem {
+                icon: "◆",
+                section: sections[i % sections.len()],
+                badge: None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn render_computes_visible_window_and_hitboxes() {
+        // Drive render() through a TestBackend instead of assigning state by
+        // hand, exercising the visible = list_rows/step computation and the
+        // per-item hitbox push.
+        use ratatui::{Terminal, backend::TestBackend};
+
+        use crate::ui::theme::CHARM;
+
+        let items = sidebar_items(20);
+        let mut s = Sidebar::new(items.len());
+
+        // Tall enough to show several items; sidebar is SIDEBAR_W wide.
+        let area = Rect::new(0, 0, SIDEBAR_W, 20);
+        let mut terminal = Terminal::new(TestBackend::new(SIDEBAR_W, 20)).unwrap();
+        terminal
+            .draw(|f| {
+                s.render(f, area, CHARM, &items, 0, true, false);
+            })
+            .unwrap();
+
+        // The block consumes the right border; the "MODULES" header + blank
+        // row push list_top (inner.y + 2) down, and list_bottom is
+        // inner.bottom() - 1, so visible = (list_bottom - list_top) / 2.
+        let block = Block::default().borders(Borders::RIGHT);
+        let inner = block.inner(area);
+        let list_top = inner.y + 2;
+        let list_bottom = inner.bottom().saturating_sub(1);
+        let expected_visible = usize::from(list_bottom.saturating_sub(list_top)) / 2;
+        assert_eq!(s.last_visible, expected_visible);
+
+        // Every pushed hitbox must lie inside inner, be 1 row tall, and sit
+        // on an even step from list_top.
+        assert!(!s.hitboxes.is_empty(), "render should push hitboxes");
+        for (i, r) in s.hitboxes.iter().enumerate() {
+            assert_eq!(r.height, 1, "hitbox[{i}] height");
+            assert!(r.x == inner.x, "hitbox[{i}] x inside inner");
+            assert!(
+                r.y >= inner.y && r.y < inner.bottom(),
+                "hitbox[{i}] y {r:?} outside inner {inner:?}"
+            );
+        }
+
+        // item_at should resolve the first hitbox to scroll_offset (0 here).
+        let first = s.hitboxes[0];
+        assert_eq!(s.item_at(first.x, first.y), Some(0));
+    }
+
+    #[test]
+    fn render_collapsed_uses_step_one() {
+        // In collapsed mode each item occupies a single row (step == 1), so
+        // visible should be roughly double the expanded count and hitboxes
+        // should be packed one row apart.
+        use ratatui::{Terminal, backend::TestBackend};
+
+        use crate::ui::theme::CHARM;
+
+        let items = sidebar_items(20);
+        let mut s = Sidebar::new(items.len());
+
+        let area = Rect::new(0, 0, SIDEBAR_W_COLLAPSED, 20);
+        let mut terminal = Terminal::new(TestBackend::new(SIDEBAR_W_COLLAPSED, 20)).unwrap();
+        terminal
+            .draw(|f| {
+                s.render(f, area, CHARM, &items, 0, true, true);
+            })
+            .unwrap();
+
+        let block = Block::default().borders(Borders::RIGHT);
+        let inner = block.inner(area);
+        // Collapsed: no "MODULES" header, step == 1; list_bottom is
+        // inner.bottom() - 1, so visible = list_bottom - list_top (= inner.y).
+        let list_top = inner.y;
+        let list_bottom = inner.bottom().saturating_sub(1);
+        let expected_visible = usize::from(list_bottom.saturating_sub(list_top));
+        assert_eq!(s.last_visible, expected_visible);
+        assert!(s.hitboxes.len() >= 2);
+        // Consecutive hitboxes are exactly 1 row apart.
+        for w in s.hitboxes.windows(2) {
+            assert_eq!(w[1].y - w[0].y, 1, "collapsed hitboxes must be 1 row apart");
+        }
+    }
+
+    #[test]
+    fn render_scroll_offset_skips_top_items() {
+        // After scrolling, render() must skip items above scroll_offset and
+        // the first hitbox must map back to the scrolled-to item.
+        use ratatui::{Terminal, backend::TestBackend};
+
+        use crate::ui::theme::CHARM;
+
+        let items = sidebar_items(20);
+        let mut s = Sidebar::new(items.len());
+
+        let area = Rect::new(0, 0, SIDEBAR_W, 14);
+        let mut terminal = Terminal::new(TestBackend::new(SIDEBAR_W, 14)).unwrap();
+        // First render to populate last_visible.
+        terminal
+            .draw(|f| {
+                s.render(f, area, CHARM, &items, 0, true, false);
+            })
+            .unwrap();
+        let visible = s.last_visible;
+        assert!(visible > 0);
+        s.scroll(3);
+        assert_eq!(s.scroll_offset(), 3);
+
+        terminal
+            .draw(|f| {
+                s.render(f, area, CHARM, &items, 0, true, false);
+            })
+            .unwrap();
+
+        // First hitbox maps to scroll_offset (item 3).
+        let first = s.hitboxes[0];
+        assert_eq!(s.item_at(first.x, first.y), Some(3));
+    }
 }

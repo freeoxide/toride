@@ -657,3 +657,81 @@ fn round_trip_preserves_deeply_nested_indent() {
     let output = ast.to_string_lossless();
     assert_eq!(output, input);
 }
+
+// ---------------------------------------------------------------------------
+// Property-based round-trip test
+// ---------------------------------------------------------------------------
+//
+// The lossless AST parser's central invariant is that for any config it
+// faithfully round-trips, `parse(x).to_string_lossless() == x`. The hand-picked
+// cases above only exercise the shapes the author thought of; this proptest
+// generates a wide variety of config texts (drawn from the subset the parser
+// is *documented* to preserve byte-for-byte) and asserts the invariant holds.
+//
+// We generate inputs by *construction* rather than from arbitrary `String`s:
+// the parser has known, intentional non-lossless behaviours for inputs outside
+// its contract (keyword-only directives gain a trailing space, CRLF is
+// normalized to LF, whitespace-only lines collapse to blank lines, runs of
+// spaces inside a header collapse). Those edge cases are covered by the
+// dedicated tests above; the property test stays inside the lossless contract
+// so a failure unambiguously means a real regression.
+
+use proptest::prelude::*;
+
+/// A safe alphabet for keyword tokens, host patterns, and comment text.
+///
+/// Excludes `\r`, `#`, `=`, `"`, `'`, and whitespace so the generated token
+/// cannot accidentally introduce a separator, an inline comment, a quoting
+/// boundary, or a line break.
+fn safe_token() -> impl Strategy<Value = String> {
+    "[A-Za-z0-9._\\-*/?]{1,12}"
+}
+
+/// A safe directive value: no `#` (would start a comment), no `=`, no quotes,
+/// no whitespace, no control chars. Non-empty so the directive is never
+/// rendered keyword-only (keyword-only directives are an intentional
+/// non-lossless edge case).
+fn safe_value() -> impl Strategy<Value = String> {
+    "[A-Za-z0-9._\\-/:+]{1,16}"
+}
+
+/// Leading indentation: a run of spaces or a single tab (no mixing). Empty
+/// for top-level lines; non-empty for lines inside a block.
+fn indent_str() -> impl Strategy<Value = String> {
+    prop_oneof![Just(String::new()), "[ ]{1,8}", Just("\t".to_owned())]
+}
+
+/// One top-level config line that the parser is contracted to preserve.
+fn top_level_line() -> impl Strategy<Value = String> {
+    prop_oneof![
+        // Blank line (exactly empty — whitespace-only would collapse).
+        Just("\n".to_owned()),
+        // Comment line: `#` + safe text, no trailing whitespace.
+        safe_token().prop_map(|t| format!("#{t}\n")),
+        // Standalone directive: `Keyword Value\n`.
+        (safe_token(), safe_value()).prop_map(|(k, v)| format!("{k} {v}\n")),
+        // Host block with one indented directive body.
+        (safe_token(), indent_str(), safe_token(), safe_value())
+            .prop_map(|(pat, ind, dk, dval)| {
+                format!("Host {pat}\n{ind}{dk} {dval}\n")
+            }),
+        // Match block with one indented directive body.
+        (safe_token(), indent_str(), safe_token(), safe_value())
+            .prop_map(|(crit, ind, dk, dval)| {
+                format!("Match host {crit}\n{ind}{dk} {dval}\n")
+            }),
+    ]
+}
+
+proptest! {
+    #![proptest_config(ProptestConfig::with_cases(512))]
+
+    /// `parse` followed by `to_string_lossless` is the identity on every
+    /// generated config inside the parser's lossless contract.
+    #[test]
+    fn prop_parse_to_string_lossless_roundtrip(lines in prop::collection::vec(top_level_line(), 0..16)) {
+        let input: String = lines.concat();
+        let rendered = parse(&input).to_string_lossless();
+        prop_assert_eq!(rendered, input);
+    }
+}

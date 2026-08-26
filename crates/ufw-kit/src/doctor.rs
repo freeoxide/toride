@@ -1825,8 +1825,10 @@ fn check_framework_file(
         });
     }
 
-    if content.contains("*nat") && !content.matches("COMMIT").count() >= 2 {
-        // *nat table should have its own COMMIT
+    if content.contains("*nat") && content.matches("COMMIT").count() < 2 {
+        // *nat table should have its own COMMIT. A well-formed rules file with
+        // both a *filter and a *nat table carries at least two COMMIT lines
+        // (one per table); fewer means the NAT table is unterminated.
         let has_nat_commit = content
             .split("*nat")
             .nth(1)

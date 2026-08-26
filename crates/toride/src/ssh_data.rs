@@ -939,6 +939,35 @@ fn check_key_passphrase(key_path: &Path, passphrase: &str) -> std::io::Result<bo
     Ok(status.success())
 }
 
+/// Map a backend `Result` into the standard `execute_op` outcome.
+///
+/// Nearly every arm of [`execute_op`] finishes with the same shape: on `Ok`
+/// log an `info!` line and return a human-readable success message; on `Err`
+/// build a `failed to ... : <error>` message, log it at `error!`, and wrap it
+/// in a non-reverting [`SshOpError::transient`]. This helper centralizes that
+/// boilerplate so each arm only describes WHAT it did (`success`) and HOW to
+/// phrase its failure (`fail_prefix`), keeping the tracing + error mapping in
+/// one place. Behavior — log levels, message text, the transient (non-reverting)
+/// verdict — is byte-identical to the per-arm hand-written version it replaces.
+fn finish_outcome<T, E: std::fmt::Display>(
+    section: &str,
+    success: String,
+    fail_prefix: &str,
+    result: Result<T, E>,
+) -> Result<String, SshOpError> {
+    match result {
+        Ok(_) => {
+            tracing::info!("{section}: {success}");
+            Ok(success)
+        }
+        Err(e) => {
+            let msg = format!("{fail_prefix}: {e}");
+            tracing::error!("{section}: {msg}");
+            Err(SshOpError::transient(msg))
+        }
+    }
+}
+
 /// Dispatch a UI SSH action to the backend.
 ///
 /// # Errors
@@ -979,37 +1008,27 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             if let Some(p) = port {
                 directives.push(("Port".to_string(), p.to_string()));
             }
-            match svc
-                .edit(|ast| toride_ssh::config::ConfigService::add_host(ast, &name, directives))
-                .await
-            {
-                Ok(()) => {
-                    tracing::info!("config: added host '{name}'");
-                    Ok(format!("added host '{name}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to add host '{name}': {e}");
-                    tracing::error!("config: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "config",
+                format!("added host '{name}'"),
+                &format!("failed to add host '{name}'"),
+                svc.edit(|ast| {
+                    toride_ssh::config::ConfigService::add_host(ast, &name, directives)
+                })
+                .await,
+            )
         }
         SshOp::ConfigRemoveHost { name } => {
             let svc = mgr.config();
-            match svc
-                .edit(|ast| toride_ssh::config::ConfigService::remove_host(ast, &name))
-                .await
-            {
-                Ok(()) => {
-                    tracing::info!("config: removed host '{name}'");
-                    Ok(format!("removed host '{name}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to remove host '{name}': {e}");
-                    tracing::error!("config: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "config",
+                format!("removed host '{name}'"),
+                &format!("failed to remove host '{name}'"),
+                svc.edit(|ast| {
+                    toride_ssh::config::ConfigService::remove_host(ast, &name)
+                })
+                .await,
+            )
         }
         SshOp::ConfigEditHost {
             old_name,
@@ -1019,8 +1038,11 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             port,
         } => {
             let svc = mgr.config();
-            match svc
-                .edit(|ast| {
+            finish_outcome(
+                "config",
+                format!("edited host '{old_name}' → '{new_name}'"),
+                &format!("failed to edit host '{old_name}'"),
+                svc.edit(|ast| {
                     // Remove old block, add new one
                     let _ = toride_ssh::config::ConfigService::remove_host(ast, &old_name);
                     let mut directives = Vec::new();
@@ -1035,18 +1057,8 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                     }
                     toride_ssh::config::ConfigService::add_host(ast, &new_name, directives)
                 })
-                .await
-            {
-                Ok(()) => {
-                    tracing::info!("config: edited host '{old_name}' → '{new_name}'");
-                    Ok(format!("edited host '{old_name}' → '{new_name}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to edit host '{old_name}': {e}");
-                    tracing::error!("config: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+                .await,
+            )
         }
         SshOp::KeyCreate {
             name,
@@ -1072,17 +1084,12 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             {
                 params.passphrase = Some(pw.clone());
             }
-            match svc.create(params).await {
-                Ok(_) => {
-                    tracing::info!("keys: created '{name}'");
-                    Ok(format!("created key '{name}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to create key '{name}': {e}");
-                    tracing::error!("keys: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "keys",
+                format!("created key '{name}'"),
+                &format!("failed to create key '{name}'"),
+                svc.create(params).await,
+            )
         }
         SshOp::KeyDelete { name } => {
             let svc = mgr.keys();
@@ -1094,89 +1101,59 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 remove_from_config: true,
                 backup: false,
             };
-            match svc.delete(params).await {
-                Ok(()) => {
-                    tracing::info!("keys: deleted '{name}'");
-                    Ok(format!("deleted key '{name}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to delete key '{name}': {e}");
-                    tracing::error!("keys: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "keys",
+                format!("deleted key '{name}'"),
+                &format!("failed to delete key '{name}'"),
+                svc.delete(params).await,
+            )
         }
         SshOp::KeyRename { old_name, new_name } => {
             let svc = mgr.keys();
-            match svc.rename(&old_name, &new_name).await {
-                Ok(()) => {
-                    tracing::info!("keys: renamed '{old_name}' → '{new_name}'");
-                    Ok(format!("renamed '{old_name}' → '{new_name}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to rename '{old_name}': {e}");
-                    tracing::error!("keys: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "keys",
+                format!("renamed '{old_name}' → '{new_name}'"),
+                &format!("failed to rename '{old_name}'"),
+                svc.rename(&old_name, &new_name).await,
+            )
         }
         SshOp::KnownHostAdd { host } => {
             let svc = mgr.known_hosts();
-            match svc.add(&host).await {
-                Ok(()) => {
-                    tracing::info!("known_hosts: added '{host}'");
-                    Ok(format!("added known host '{host}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to add known host '{host}': {e}");
-                    tracing::error!("known_hosts: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "known_hosts",
+                format!("added known host '{host}'"),
+                &format!("failed to add known host '{host}'"),
+                svc.add(&host).await,
+            )
         }
         SshOp::KnownHostRemove { host } => {
             let svc = mgr.known_hosts();
-            match svc.remove(&host).await {
-                Ok(()) => {
-                    tracing::info!("known_hosts: removed '{host}'");
-                    Ok(format!("removed known host '{host}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to remove known host '{host}': {e}");
-                    tracing::error!("known_hosts: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "known_hosts",
+                format!("removed known host '{host}'"),
+                &format!("failed to remove known host '{host}'"),
+                svc.remove(&host).await,
+            )
         }
         SshOp::AgentAddKey { path } => {
             let svc = mgr.agent();
             let path_ref = std::path::Path::new(&path);
-            match svc.add_key(path_ref).await {
-                Ok(()) => {
-                    tracing::info!("agent: added key '{path}'");
-                    Ok(format!("added key to agent: '{path}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to add key '{path}' to agent: {e}");
-                    tracing::error!("agent: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "agent",
+                format!("added key to agent: '{path}'"),
+                &format!("failed to add key '{path}' to agent"),
+                svc.add_key(path_ref).await,
+            )
         }
         SshOp::AgentRemoveKey { path } => {
             let svc = mgr.agent();
             let path_ref = std::path::Path::new(&path);
-            match svc.remove_key(path_ref).await {
-                Ok(()) => {
-                    tracing::info!("agent: removed key '{path}'");
-                    Ok(format!("removed key from agent: '{path}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to remove key '{path}' from agent: {e}");
-                    tracing::error!("agent: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "agent",
+                format!("removed key from agent: '{path}'"),
+                &format!("failed to remove key '{path}' from agent"),
+                svc.remove_key(path_ref).await,
+            )
         }
         SshOp::AuthorizedKeyAdd {
             public_key,
@@ -1184,20 +1161,13 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             options,
         } => {
             let svc = mgr.authorized_keys();
-            match svc
-                .add(&public_key, comment.as_deref(), options.as_deref())
-                .await
-            {
-                Ok(()) => {
-                    tracing::info!("authorized_keys: added key");
-                    Ok("added authorized key".to_string())
-                }
-                Err(e) => {
-                    let msg = format!("failed to add authorized key: {e}");
-                    tracing::error!("authorized_keys: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "authorized_keys",
+                "added authorized key".to_string(),
+                "failed to add authorized key",
+                svc.add(&public_key, comment.as_deref(), options.as_deref())
+                    .await,
+            )
         }
         SshOp::AuthorizedKeyRemove { fingerprint } => {
             let svc = mgr.authorized_keys();
@@ -1229,17 +1199,12 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
         }
         SshOp::KeyChmodFix { name } => {
             let svc = mgr.keys();
-            match svc.chmod_fix(&name).await {
-                Ok(()) => {
-                    tracing::info!("keys: fixed permissions on '{name}'");
-                    Ok(format!("fixed permissions on '{name}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to fix permissions on '{name}': {e}");
-                    tracing::error!("keys: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "keys",
+                format!("fixed permissions on '{name}'"),
+                &format!("failed to fix permissions on '{name}'"),
+                svc.chmod_fix(&name).await,
+            )
         }
         SshOp::KnownHostScan { host } => {
             let svc = mgr.known_hosts();
@@ -1257,31 +1222,21 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
         }
         SshOp::KnownHostHashAll => {
             let svc = mgr.known_hosts();
-            match svc.hash_all().await {
-                Ok(()) => {
-                    tracing::info!("known_hosts: hashed all hostnames");
-                    Ok("hashed all known hostnames".to_string())
-                }
-                Err(e) => {
-                    let msg = format!("failed to hash all known hostnames: {e}");
-                    tracing::error!("known_hosts: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "known_hosts",
+                "hashed all known hostnames".to_string(),
+                "failed to hash all known hostnames",
+                svc.hash_all().await,
+            )
         }
         SshOp::AgentRemoveAll => {
             let svc = mgr.agent();
-            match svc.remove_all().await {
-                Ok(()) => {
-                    tracing::info!("agent: removed all keys");
-                    Ok("removed all keys from agent".to_string())
-                }
-                Err(e) => {
-                    let msg = format!("failed to remove all keys from agent: {e}");
-                    tracing::error!("agent: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "agent",
+                "removed all keys from agent".to_string(),
+                "failed to remove all keys from agent",
+                svc.remove_all().await,
+            )
         }
         SshOp::ForwardCancel {
             control_path,
@@ -1289,32 +1244,22 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
         } => {
             let svc = mgr.forward();
             let path = std::path::Path::new(&control_path);
-            match svc.cancel(path, local_port).await {
-                Ok(()) => {
-                    tracing::info!("forward: cancelled port {local_port} on '{control_path}'");
-                    Ok(format!("cancelled forward on port {local_port}"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to cancel forward on port {local_port}: {e}");
-                    tracing::error!("forward: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "forward",
+                format!("cancelled forward on port {local_port}"),
+                &format!("failed to cancel forward on port {local_port}"),
+                svc.cancel(path, local_port).await,
+            )
         }
         SshOp::ForwardExitSession { control_path } => {
             let svc = mgr.forward();
             let path = std::path::Path::new(&control_path);
-            match svc.exit_session(path).await {
-                Ok(()) => {
-                    tracing::info!("forward: exited session '{control_path}'");
-                    Ok(format!("exited session '{control_path}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to exit session '{control_path}': {e}");
-                    tracing::error!("forward: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "forward",
+                format!("exited session '{control_path}'"),
+                &format!("failed to exit session '{control_path}'"),
+                svc.exit_session(path).await,
+            )
         }
         SshOp::CertificateRevoke { name } => {
             let svc = mgr.certificate();
@@ -1333,17 +1278,12 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 },
             );
             let krl_path = std::path::Path::new(&krl_str);
-            match svc.revoke_key(krl_path, &name).await {
-                Ok(()) => {
-                    tracing::info!("certificates: revoked key '{name}'");
-                    Ok(format!("revoked key '{name}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to revoke key '{name}': {e}");
-                    tracing::error!("certificates: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "certificates",
+                format!("revoked key '{name}'"),
+                &format!("failed to revoke key '{name}'"),
+                svc.revoke_key(krl_path, &name).await,
+            )
         }
         SshOp::DoctorRunChecks => {
             let svc = mgr.doctor();
@@ -1373,17 +1313,12 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 }
             };
             let key_path = ssh_dir.join(&key_name);
-            match svc.install_key_to_remote(&key_path, &dest).await {
-                Ok(_) => {
-                    tracing::info!("keys: installed '{key_name}' to '{dest}'");
-                    Ok(format!("installed '{key_name}' to '{dest}'"))
-                }
-                Err(e) => {
-                    let msg = format!("failed to install '{key_name}' to '{dest}': {e}");
-                    tracing::error!("keys: {msg}");
-                    Err(SshOpError::transient(msg))
-                }
-            }
+            finish_outcome(
+                "keys",
+                format!("installed '{key_name}' to '{dest}'"),
+                &format!("failed to install '{key_name}' to '{dest}'"),
+                svc.install_key_to_remote(&key_path, &dest).await,
+            )
         }
         SshOp::KeyTestPassphrase { name, passphrase } => {
             let ssh_dir = match toride_ssh::SshPaths::new() {
@@ -2483,6 +2418,13 @@ fn parse_system_users_macos() -> Vec<SystemUserInfo> {
         _ => return vec![],
     };
 
+    // Batch the per-user shell lookup: one `dscl . -list /Users UserShell`
+    // fork builds a name→shell map instead of spawning a fresh
+    // `dscl . -read /Users/<name> UserShell` per candidate (O(N) forks → O(1)).
+    // Falls back to /bin/zsh per-entry when the batch is unavailable or a name
+    // is missing, matching the prior single-query fallback behavior.
+    let shells = dscl_user_shell_map();
+
     let stdout = String::from_utf8_lossy(&output.stdout);
     let mut users = Vec::new();
 
@@ -2515,18 +2457,11 @@ fn parse_system_users_macos() -> Vec<SystemUserInfo> {
             continue;
         }
 
-        // Look up the user's shell.
-        let shell = std::process::Command::new("dscl")
-            .args([".", "-read", &format!("/Users/{username}"), "UserShell"])
-            .output()
-            .ok()
-            .and_then(|o| String::from_utf8(o.stdout).ok())
-            .and_then(|s| {
-                s.lines()
-                    .find(|l| l.starts_with("UserShell:"))
-                    .and_then(|l| l.strip_prefix("UserShell:"))
-                    .map(|v| v.trim().to_string())
-            })
+        // Look up the user's shell from the batched map (one fork total, not
+        // one per candidate). Missing entry → /bin/zsh, the prior default.
+        let shell = shells
+            .get(username)
+            .cloned()
             .unwrap_or_else(|| "/bin/zsh".to_string());
 
         let (ssh_key_count, authorized_key_count) = count_ssh_keys(&ssh_dir);
@@ -2544,6 +2479,34 @@ fn parse_system_users_macos() -> Vec<SystemUserInfo> {
 
     users.sort_by(|a, b| a.username.cmp(&b.username));
     users
+}
+
+/// Build a `username → login shell` map from a single batched `dscl` query.
+///
+/// `dscl . -list /Users UserShell` emits one `<name> <shell>` line per account
+/// (e.g. `alice /bin/zsh`), so one fork resolves every candidate's shell. Used
+/// by [`parse_system_users_macos`] to avoid an O(N) `dscl . -read` fork per
+/// user. Returns an empty map when `dscl` is unavailable (macOS only); callers
+/// fall back to the documented per-user default.
+fn dscl_user_shell_map() -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    let output = match std::process::Command::new("dscl")
+        .args([".", "-list", "/Users", "UserShell"])
+        .output()
+    {
+        Ok(o) if o.status.success() => o,
+        _ => return map,
+    };
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        // Each line is `<username> <shell>` (whitespace-separated). The shell
+        // path contains no spaces on macOS, so split_whitespace is safe.
+        let mut parts = line.split_whitespace();
+        if let (Some(name), Some(shell)) = (parts.next(), parts.next()) {
+            map.insert(name.to_string(), shell.to_string());
+        }
+    }
+    map
 }
 
 /// Linux: read /etc/passwd for real users with SSH configured.
@@ -5180,6 +5143,144 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         assert!(
             async_some,
             "async must refuse denying the current user '{current}'"
+        );
+    }
+
+    // ── collect_authorized_keys_preview: direct unit coverage of the
+    // authorized_keys parser (options-vs-key-type heuristic, comment capture,
+    // 1-based line numbering, fingerprint best-effort, cap enforcement). The
+    // audit noted this security-relevant parser was only exercised indirectly
+    // via the system_users happy path; these tests pin each branch directly.
+
+    /// A valid OpenSSH ed25519 public key whose fingerprint `ssh_key` can
+    /// actually compute (matches the fixture used elsewhere in this module).
+    const PREVIEW_PUB_KEY: &str =
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI \
+         alice@toride";
+
+    /// Write `contents` to `<dir>/.ssh/authorized_keys` and return that path.
+    fn write_authorized_keys(dir: &std::path::Path, contents: &str) -> std::path::PathBuf {
+        let ssh_dir = dir.join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).expect("create .ssh");
+        let path = ssh_dir.join("authorized_keys");
+        std::fs::write(&path, contents).expect("write authorized_keys");
+        path
+    }
+
+    #[test]
+    fn collect_authorized_keys_preview_parses_valid_key_with_comment() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir_path = dir.path().to_path_buf();
+        write_authorized_keys(&dir_path, PREVIEW_PUB_KEY);
+        let ssh_dir = dir_path.join(".ssh");
+        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        assert_eq!(previews.len(), 1, "one valid key → one preview");
+        let p = &previews[0];
+        assert_eq!(p.key_type, "ssh-ed25519", "key type from first token");
+        assert_eq!(
+            p.comment.as_deref(),
+            Some("alice@toride"),
+            "trailing comment captured"
+        );
+        assert_eq!(p.line, 1, "1-based line number");
+        assert!(
+            p.fingerprint.starts_with("SHA256:"),
+            "fingerprint computed for a parseable key: {}",
+            p.fingerprint
+        );
+        assert!(
+            !p.fingerprint.contains("(unknown)"),
+            "a valid key must not fall back to the unknown fingerprint"
+        );
+    }
+
+    #[test]
+    fn collect_authorized_keys_preview_handles_options_prefixed_key() {
+        // options field first, then the key. The heuristic must skip the
+        // leading options token and still identify the key type + comment.
+        let line = format!("no-port-forwarding,no-agent-forwarding {PREVIEW_PUB_KEY}");
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir_path = dir.path().to_path_buf();
+        write_authorized_keys(&dir_path, &line);
+        let ssh_dir = dir_path.join(".ssh");
+        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        assert_eq!(previews.len(), 1, "options-prefixed key parses to one entry");
+        let p = &previews[0];
+        assert_eq!(
+            p.key_type, "ssh-ed25519",
+            "options token skipped → key type is the second token"
+        );
+        // The comment is the token AFTER the base64 blob (4th token here).
+        assert_eq!(p.comment.as_deref(), Some("alice@toride"));
+        assert_eq!(p.line, 1);
+    }
+
+    #[test]
+    fn collect_authorized_keys_preview_skips_malformed_and_single_field_lines() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir_path = dir.path().to_path_buf();
+        // Mix: a comment, a blank line, a single-token line, and two valid keys.
+        let contents = format!(
+            "# a comment line\n\n\
+             not-a-key\n\
+             {PREVIEW_PUB_KEY}\n\
+             just-one-token\n\
+             {PREVIEW_PUB_KEY}\n"
+        );
+        write_authorized_keys(&dir_path, &contents);
+        let ssh_dir = dir_path.join(".ssh");
+        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        // Only the two full valid keys survive (comment, blank, and the
+        // single-token `not-a-key` / `just-one-token` lines are filtered).
+        assert_eq!(
+            previews.len(),
+            2,
+            "only full key lines parse: {previews:?}"
+        );
+        // 1-based line numbers reflect the ORIGINAL file position: the first
+        // valid key is on line 4, the second on line 6.
+        assert_eq!(previews[0].line, 4, "first valid key is on file line 4");
+        assert_eq!(previews[1].line, 6, "second valid key is on file line 6");
+    }
+
+    #[test]
+    fn collect_authorized_keys_preview_enforces_cap() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir_path = dir.path().to_path_buf();
+        // Three valid keys; cap at 2.
+        let contents = format!("{PREVIEW_PUB_KEY}\n{PREVIEW_PUB_KEY}\n{PREVIEW_PUB_KEY}\n");
+        write_authorized_keys(&dir_path, &contents);
+        let ssh_dir = dir_path.join(".ssh");
+        let previews = collect_authorized_keys_preview(&ssh_dir, 2);
+        assert_eq!(
+            previews.len(),
+            2,
+            "cap must truncate the preview list to the requested maximum"
+        );
+    }
+
+    #[test]
+    fn collect_authorized_keys_preview_missing_file_is_empty() {
+        // No authorized_keys at all → empty preview list, no panic.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ssh_dir = dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).expect("create .ssh");
+        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        assert!(previews.is_empty(), "missing authorized_keys → empty vec");
+    }
+
+    #[test]
+    fn collect_authorized_keys_preview_single_field_key_type_falls_back_gracefully() {
+        // A line whose ONLY token is a known key type (no base64 blob): the
+        // tokens.len() < 2 guard drops it entirely (it cannot be a real key).
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dir_path = dir.path().to_path_buf();
+        write_authorized_keys(&dir_path, "ssh-ed25519\n");
+        let ssh_dir = dir_path.join(".ssh");
+        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        assert!(
+            previews.is_empty(),
+            "a lone key-type token with no blob must be dropped, not panic"
         );
     }
 }

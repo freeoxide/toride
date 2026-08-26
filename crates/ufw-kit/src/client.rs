@@ -101,11 +101,26 @@ impl Ufw {
         };
 
         let result = self.run_ufw_root(&args)?;
-        if !result.stdout.contains("active") && !result.stdout.contains("enabled") {
-            // Check stderr for errors
-            if !result.stderr.is_empty() {
-                return Err(Error::EnableFailed(result.stderr));
-            }
+        // A successful `ufw enable` always prints one of the activation markers
+        // ("active" / "enabled") on stdout. Treat anything else as a failure:
+        //   * a non-zero exit code, or
+        //   * stdout lacking the success marker (even with empty stderr — UFW
+        //     occasionally no-ops or fails silently, e.g. when already enabled
+        //     at the iptables layer but inactive in its own state).
+        let has_marker = result.stdout.contains("active") || result.stdout.contains("enabled");
+        let exit_ok = matches!(result.exit_code, Some(0) | None);
+        if !has_marker || !exit_ok {
+            // Prefer the stderr message when UFW wrote one; otherwise describe
+            // the silent failure so a no-op is never masked as success.
+            let message = if result.stderr.is_empty() {
+                format!(
+                    "ufw enable did not report success (exit: {:?}, stdout: {:?})",
+                    result.exit_code, result.stdout
+                )
+            } else {
+                result.stderr
+            };
+            return Err(Error::EnableFailed(message));
         }
 
         Ok(())

@@ -134,7 +134,7 @@ impl HetznerClient {
 
     /// Run a checked command, mapping runner errors into the cloud [`Error`].
     fn run(&self, cmd: &CommandSpec) -> Result<CommandOutput> {
-        self.runner.run_checked(cmd).map_err(map_runner_error)
+        self.runner.run_checked(cmd).map_err(Error::from)
     }
 
     /// List all firewalls in the project.
@@ -297,26 +297,6 @@ fn parse_json<T: for<'de> serde::Deserialize<'de>>(
             cmd.program
         ))
     })
-}
-
-/// Map a [`toride_runner::Error`] into the cloud [`Error`] enum.
-///
-/// Preserves the most informative variants (binary-missing, command failure,
-/// timeout); falls back to [`Error::Other`] for the rest.
-fn map_runner_error(err: toride_runner::Error) -> Error {
-    match err {
-        toride_runner::Error::BinaryNotFound(bin) => Error::BinaryNotFound(bin),
-        toride_runner::Error::CommandFailed {
-            program,
-            stderr,
-            exit_code,
-            ..
-        } => Error::CommandFailed {
-            program,
-            message: format!("exit {exit_code:?}: {stderr}"),
-        },
-        other => Error::Other(other.to_string()),
-    }
 }
 
 /// Convert a provider [`HcloudFirewall`] into a [`SecurityGroup`].

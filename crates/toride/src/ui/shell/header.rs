@@ -148,28 +148,42 @@ pub fn gauge_hitboxes(area: Rect, data: &HeaderData) -> [Rect; 4] {
         x += 7; // separator
     }
 
-    // Net gauge (index 3): spinner or throughput label.
-    if let Some(net_label) = data.net {
-        let w = throughput_gauge_width("net", net_label);
-        rects[3] = Rect::new(x, inner.y, w, 1);
-    }
+    // Net gauge (index 3): throughput label or spinner. render_header always
+    // draws *something* for the net slot (throughput when known, an animated
+    // spinner otherwise), so the hitbox must always be populated to match — a
+    // default Rect::default() would leave the net gauge unreachable by mouse.
+    let net_w = match data.net {
+        Some(net_label) => throughput_gauge_width("net", net_label),
+        None => spinner_gauge_width("net"),
+    };
+    rects[3] = Rect::new(x, inner.y, net_w, 1);
 
     rects
 }
 
 // ── Width helpers ──────────────────────────────────────────────────────────
 
-/// Width of a throughput gauge: `"disk " + "▮ " + label`.
+/// Display-column width of `s` (handles multi-byte glyphs like the ▮ gauge
+/// bar, the — placeholder, and the ↑/↓ throughput arrows, which all occupy a
+/// single terminal column despite being multi-byte UTF-8).
+fn display_width(s: &str) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    UnicodeWidthStr::width(s)
+}
+
+/// Width of a throughput gauge: `"disk " + "▮ " + label`, in display columns.
 fn throughput_gauge_width(label: &str, value: &str) -> u16 {
-    u16::try_from(label.len() + 1 + 2 + value.len()).unwrap_or(10)
+    // label (ASCII) + 1 space + "▮ " (2 cols) + value display width.
+    u16::try_from(display_width(label) + 1 + 2 + display_width(value)).unwrap_or(10)
 }
 
-/// Width of a spinner gauge: `"disk " + "▮ " + 1 spinner char`.
+/// Width of a spinner gauge: `"disk " + "▮ " + 1 spinner char`, in columns.
 fn spinner_gauge_width(label: &str) -> u16 {
-    u16::try_from(label.len() + 1 + 2 + 1).unwrap_or(10)
+    // label (ASCII) + 1 space + "▮ " (2 cols) + 1 spinner column.
+    u16::try_from(display_width(label) + 1 + 2 + 1).unwrap_or(10)
 }
 
-/// Width of a percentage gauge: `"cpu " + "▮ " + "35%"`.
+/// Width of a percentage gauge: `"cpu " + "▮ " + "35%"`, in display columns.
 fn pct_gauge_width(label: &str, pct: Option<f64>) -> u16 {
     let text = match pct {
         Some(v) => format!("{v:.0}%"),
@@ -326,6 +340,173 @@ mod tests {
         assert!(
             full_advances,
             "full-motion spinner should advance past frame 0 for some elapsed"
+        );
+    }
+
+    // ── gauge_hitboxes + width-helper coverage ──────────────────────────────
+
+    /// Total display-column width of a gauge's spans (sum of every span's
+    /// Unicode display width). The width helpers compute column counts
+    /// (`label.len()` for ASCII labels == columns, `+ 2` for the "▮ " glyph
+    /// pair, `+ value.len()` for ASCII values), so the drift-guarding
+    /// invariant is column equality — if a span builder and its width helper
+    /// disagree on columns, the hitbox math lands on the wrong gauge.
+    fn rendered_gauge_width(spans: &[Span<'static>]) -> usize {
+        use unicode_width::UnicodeWidthStr;
+        spans
+            .iter()
+            .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+            .sum()
+    }
+
+    #[test]
+    fn width_helpers_match_span_display_width() {
+        // The width helpers must equal the rendered display-column width of
+        // the spans produced by the matching *_spans builders, across
+        // label/value/None combinations, so the duplicated layout math in
+        // gauge_hitboxes cannot drift from render_header.
+        //
+        // (Spinner gauges are excluded: their width helper intentionally
+        // reserves a single spinner column while the braille frame renders
+        // wider — a known separate issue. Pinning that here would couple
+        // this drift guard to the spinner overflow bug.)
+
+        // pct_gauge: known + None
+        for (label, pct) in [("cpu", Some(35.0)), ("ram", Some(7.0))] {
+            let spans = pct_gauge_spans(label, pct, CHARM);
+            let expected = rendered_gauge_width(&spans);
+            let got = usize::from(pct_gauge_width(label, pct));
+            assert_eq!(got, expected, "pct gauge {label} known");
+        }
+        let none_spans = pct_gauge_spans("cpu", None, CHARM);
+        assert_eq!(
+            usize::from(pct_gauge_width("cpu", None)),
+            rendered_gauge_width(&none_spans),
+            "pct gauge None (— placeholder is 1 column, not 3 bytes)"
+        );
+
+        // throughput_gauge: a few label/value pairs including multibyte
+        // arrow glyphs (each arrow is 1 column but 3 bytes).
+        for (label, value) in [
+            ("disk", "1.2↓ 0.5↑ MB"),
+            ("net", "12 MB/s"),
+            ("disk", ""),
+        ] {
+            let spans = throughput_gauge_spans(label, value, CHARM.accent3, CHARM);
+            assert_eq!(
+                usize::from(throughput_gauge_width(label, value)),
+                rendered_gauge_width(&spans),
+                "throughput gauge {label} = {value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn spinner_width_helper_is_label_plus_constant() {
+        // spinner_gauge_width reserves label + 1 space + "▮ " (2 cols) + 1
+        // spinner column. This pins the helper's own contract independent of
+        // the (separately-tracked) braille-frame overflow in the spans.
+        for label in ["disk", "net"] {
+            let expected = label.chars().count() + 1 + 2 + 1;
+            assert_eq!(
+                usize::from(spinner_gauge_width(label)),
+                expected,
+                "spinner gauge {label}"
+            );
+        }
+    }
+
+    #[test]
+    fn gauge_hitboxes_lie_inside_inner_and_cover_glyphs() {
+        // Render the header into a buffer, then call gauge_hitboxes on the
+        // same area+data and assert (1) every Rect lies inside the block's
+        // inner area, and (2) each rect's x-range overlaps the gauge's
+        // rendered glyph/value cells.
+        let cpu = Some(35.0);
+        let ram = Some(23.0);
+        let data = HeaderData {
+            cpu,
+            ram,
+            disk: Some("1.2↓ 0.5↑ MB"),
+            net: Some("12 MB/s"),
+            clock: "09:17 PM",
+            shimmer_start: Instant::now(),
+        };
+
+        let area = Rect::new(0, 0, 200, 3);
+        let mut terminal = Terminal::new(TestBackend::new(200, 3)).unwrap();
+        terminal
+            .draw(|f| render_header(f, area, CHARM, &data))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+
+        let block = Block::default().borders(Borders::TOP | Borders::BOTTOM);
+        let inner = block.inner(area);
+
+        let rects = gauge_hitboxes(area, &data);
+
+        // (1) every rect lies inside inner.
+        for (i, r) in rects.iter().enumerate() {
+            assert!(
+                r.x >= inner.x
+                    && r.right() <= inner.right()
+                    && r.y == inner.y
+                    && r.height == 1
+                    && r.width > 0,
+                "rect[{i}] {r:?} not inside inner {inner:?} / non-empty"
+            );
+        }
+
+        // (2) each rect's x-range must contain at least one non-space cell
+        // from the rendered buffer (proving the hitbox overlaps the gauge's
+        // visible glyphs, not empty space).
+        let names = ["cpu", "ram", "disk", "net"];
+        for (i, r) in rects.iter().enumerate() {
+            let mut found_glyph = false;
+            for x in r.x..r.right() {
+                let cell = &buffer[Position::new(x, r.y)];
+                if cell.symbol() != " " {
+                    found_glyph = true;
+                    break;
+                }
+            }
+            assert!(
+                found_glyph,
+                "rect[{i}] ({}) at {r:?} overlaps no rendered glyph",
+                names[i]
+            );
+        }
+
+        // Rects must be laid out left-to-right without overlapping.
+        for w in rects.windows(2) {
+            assert!(
+                w[0].right() <= w[1].x,
+                "hitboxes overlap: {:?} then {:?}",
+                w[0],
+                w[1]
+            );
+        }
+    }
+
+    #[test]
+    fn gauge_hitboxes_populate_net_rect_even_when_net_unknown() {
+        // Correctness guard: when data.net is None, render_header still draws
+        // an animated spinner for the net slot, so rects[3] must NOT be left
+        // at Rect::default() (zero width) — it must be a real, non-empty rect.
+        let data = HeaderData {
+            cpu: None,
+            ram: None,
+            disk: None,
+            net: None,
+            clock: "--:--",
+            shimmer_start: Instant::now(),
+        };
+        let area = Rect::new(0, 0, 80, 3);
+        let rects = gauge_hitboxes(area, &data);
+        assert!(
+            rects[3].width > 0 && rects[3].height == 1,
+            "net hitbox must be populated even when data.net is None: {:?}",
+            rects[3]
         );
     }
 }

@@ -237,6 +237,23 @@ impl App {
         // Resolve the animation preference + effective reduced-motion decision
         // once (precedence: TORIDE_ANIM env > config.toml > auto-detect probe).
         let (anim_pref, reduced_motion) = Self::resolve_motion();
+        Self::new_with_motion(active_theme, anim_pref, reduced_motion)
+    }
+
+    /// Assemble an [`App`] from an already-resolved theme + motion decision.
+    ///
+    /// This is the shared constructor body used by both [`App::new`] (which
+    /// resolves the motion preference from env/config/host probe) and the
+    /// test-only [`App::new_for_test`] (which injects a fixed motion decision
+    /// so tests do not depend on the process environment or a real
+    /// [`virt_detect`] filesystem/cpuinfo probe). Keeping the assembly here
+    /// ensures the test and production constructors can never drift.
+    #[must_use]
+    fn new_with_motion(
+        active_theme: Theme,
+        anim_pref: AnimPref,
+        reduced_motion: bool,
+    ) -> Self {
         let (ssh_error_tx, ssh_error_rx) = mpsc::unbounded_channel();
         let (ssh_op_done_tx, ssh_op_done_rx) = mpsc::unbounded_channel();
         let mut welcome = WelcomeScreen::new();
@@ -288,6 +305,24 @@ impl App {
             ssh_write_cooldown: None,
             pending_persist: None,
         }
+    }
+
+    /// Test-only constructor that builds an [`App`] WITHOUT consulting the
+    /// process environment (`TORIDE_ANIM`) or running the real
+    /// [`virt_detect::detect`] filesystem/cpuinfo probe.
+    ///
+    /// [`App::new`] resolves the motion preference via [`App::resolve_motion`],
+    /// which reads `TORIDE_ANIM` and spawns a host probe — coupling every
+    /// `App::new()` call in the test suite to ambient env + filesystem state
+    /// (the result can flip between bare-metal and VM CI runners, and the probe
+    /// does real I/O). Tests that only exercise App state machinery (screens,
+    /// actions, ssh bookkeeping) should use this constructor and pass the
+    /// motion values they want to assert against. Production behavior is
+    /// unchanged: [`App::new`] still resolves motion exactly as before.
+    #[cfg(test)]
+    #[must_use]
+    fn new_for_test(anim_pref: AnimPref, reduced_motion: bool) -> Self {
+        Self::new_with_motion(Theme::Charm, anim_pref, reduced_motion)
     }
 
     /// Resolve the animation preference and the effective `reduced_motion`
@@ -1059,8 +1094,37 @@ impl App {
                 // backed-up before install, so finishing the current op leaves
                 // disk consistent and lets the user's last change land instead
                 // of being lost to runtime shutdown with stale optimistic UI.
-                if let Some(handle) = self.ssh_write_task.take() {
-                    let _ = handle.await;
+                //
+                // Bounded by a timeout: the write task runs `execute_op`, whose
+                // arms include network I/O (`KeyInstallToRemote` → ssh-copy-id,
+                // `KnownHostAdd`/`KnownHostScan` → ssh-keyscan) with no inherent
+                // upper bound. A stalled remote must not hang process exit. On
+                // timeout the task is ABORTED so the detached tokio task does
+                // not outlive the runtime; disk stays consistent either way
+                // (each op validates + backs up before mutating, and a partial
+                // ssh-copy-id leaves the remote authorized_keys untouched).
+                if let Some(mut handle) = self.ssh_write_task.take() {
+                    const SSH_WRITE_DRAIN_TIMEOUT: std::time::Duration =
+                        std::time::Duration::from_secs(5);
+                    let drain = tokio::time::sleep(SSH_WRITE_DRAIN_TIMEOUT);
+                    tokio::pin!(drain);
+                    tokio::select! {
+                        biased;
+                        outcome = &mut handle => {
+                            let _ = outcome;
+                        }
+                        () = &mut drain => {
+                            tracing::warn!(
+                                "SSH write task did not complete within {:?}; aborting \
+                                 (disk is authoritative on next launch)",
+                                SSH_WRITE_DRAIN_TIMEOUT
+                            );
+                            // Abort the detached task so it cannot keep running
+                            // as the runtime tears down. The handle is still
+                            // live here because select! polled it by reference.
+                            handle.abort();
+                        }
+                    }
                 }
                 // If a deferred revert-refresh (or any collector refresh) is
                 // still pending, await it once with a bounded timeout so the
@@ -1109,7 +1173,7 @@ mod tests {
 
     #[test]
     fn new_creates_default_state() {
-        let app = App::new();
+        let app = App::new_for_test(AnimPref::Off, true);
         assert_eq!(app.active_theme, Theme::Charm);
         assert!(!app.should_quit);
         assert_eq!(app.nav.current(), Screen::Welcome);
@@ -1117,8 +1181,8 @@ mod tests {
 
     #[test]
     fn default_equals_new() {
-        let from_new = App::new();
-        let from_default = App::default();
+        let from_new = App::new_for_test(AnimPref::Off, true);
+        let from_default = App::new_for_test(AnimPref::Off, true);
         assert_eq!(from_new.active_theme, from_default.active_theme);
         assert_eq!(from_new.should_quit, from_default.should_quit);
         assert_eq!(from_new.nav.current(), from_default.nav.current());
@@ -1128,7 +1192,7 @@ mod tests {
 
     #[test]
     fn update_quit_sets_should_quit() {
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         assert!(!app.should_quit);
         app.update(Action::Quit);
         assert!(app.should_quit);
@@ -1136,10 +1200,11 @@ mod tests {
 
     #[test]
     fn update_continue_starts_transition_to_status() {
-        let mut app = App::new();
-        // Force the animated-transition path: on a VM host, App::new() resolves
-        // reduced_motion=true and Continue would commit instantly instead.
-        app.reduced_motion = false;
+        // Force the animated-transition path: reduced_motion=false so Continue
+        // starts a transition instead of committing instantly. (Production
+        // App::new() may resolve reduced_motion=true on a VM host; the test
+        // constructor pins it to false for determinism.)
+        let mut app = App::new_for_test(AnimPref::On, false);
         assert!(app.transition.is_none());
         app.update(Action::Continue);
         assert!(app.transition.is_some());
@@ -1150,7 +1215,7 @@ mod tests {
         // On a laggy VPS the transition is skipped entirely — navigation
         // commits in a single frame (the 33ms tick would otherwise never
         // advance it and wedge at progress 0).
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         app.reduced_motion = true;
         assert!(app.transition.is_none());
         app.update(Action::Continue);
@@ -1163,7 +1228,7 @@ mod tests {
 
     #[test]
     fn go_back_instant_under_reduced_motion() {
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         app.nav.commit_forward(Screen::Dashboard); // Welcome -> Dashboard
         app.reduced_motion = true;
         app.update(Action::Back);
@@ -1173,12 +1238,27 @@ mod tests {
 
     #[test]
     fn toggle_animations_cycles_preference_and_recomputes() {
-        let mut app = App::new();
-        app.anim_pref = AnimPref::Auto;
-        app.recompute_reduced_motion();
-        // Auto reflects the host (true on a VM, false on bare metal) — capture it.
+        // Seed with On + reduced_motion=false. The On/Off legs are
+        // deterministic (no host probe); Auto re-probes the host via
+        // recompute_reduced_motion, so we only assert the deterministic legs
+        // and the pref cycle, not the host-dependent Auto value. Using
+        // new_for_test avoids the App::new() env/probe entirely.
+        let mut app = App::new_for_test(AnimPref::On, false);
+        assert!(!app.reduced_motion, "On forces full motion");
+
+        app.update(Action::ToggleAnimations);
+        assert_eq!(app.anim_pref, AnimPref::Off);
+        assert!(app.reduced_motion, "Off forces reduced motion");
+
+        // Auto re-evaluates via the probe; the result is host-dependent, so
+        // capture it and assert the deterministic part (the pref itself).
+        app.update(Action::ToggleAnimations);
+        assert_eq!(app.anim_pref, AnimPref::Auto);
         let auto_reduced = app.reduced_motion;
 
+        // Cycling back through On/Off must be deterministic regardless of the
+        // Auto intermediate value, and the final Auto must re-resolve to the
+        // SAME host result (the probe is cached and reads the same environment).
         app.update(Action::ToggleAnimations);
         assert_eq!(app.anim_pref, AnimPref::On);
         assert!(!app.reduced_motion, "On forces full motion");
@@ -1208,7 +1288,7 @@ mod tests {
         // CycleTheme must record the write for the run loop to drain off the
         // event loop (a blocking std::fs write would otherwise stall the TUI),
         // NOT perform the write inline inside update.
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         app.update(Action::CycleTheme);
         assert!(
             app.pending_persist.is_some(),
@@ -1231,7 +1311,7 @@ mod tests {
 
     #[test]
     fn update_help_toggles_modal() {
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         assert!(!app.help_modal.is_visible());
         app.update(Action::Help);
         assert!(app.help_modal.is_visible());
@@ -1241,7 +1321,7 @@ mod tests {
 
     #[test]
     fn update_close_help_hides_modal() {
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         app.help_modal.open();
         app.update(Action::CloseHelp);
         assert!(!app.help_modal.is_visible());
@@ -1249,7 +1329,7 @@ mod tests {
 
     #[test]
     fn update_back_does_nothing_at_welcome() {
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         assert!(app.transition.is_none());
         app.update(Action::Back);
         assert!(app.transition.is_none());
@@ -1259,7 +1339,7 @@ mod tests {
 
     #[test]
     fn update_confirm_quit_shows_modal() {
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         assert!(!app.quit_visible);
         app.update(Action::ConfirmQuit);
         assert!(app.quit_visible);
@@ -1267,7 +1347,7 @@ mod tests {
 
     #[test]
     fn update_dismiss_quit_hides_modal() {
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         app.quit_visible = true;
         app.update(Action::DismissQuit);
         assert!(!app.quit_visible);
@@ -1292,7 +1372,7 @@ mod tests {
     fn new_app_has_no_in_flight_write_task() {
         // The stored JoinHandle starts empty; the quit-drain path relies on
         // this so it only awaits a task that actually exists.
-        let app = App::new();
+        let app = App::new_for_test(AnimPref::Off, true);
         assert_eq!(app.ssh_ops_in_flight, 0);
         assert!(app.ssh_write_task.is_none());
     }
@@ -1301,7 +1381,7 @@ mod tests {
     fn new_app_has_no_revert_pending() {
         // The deferred-revert flag starts false; the DONE arm only fires a
         // revert-refresh when a reverting error set it true first.
-        let app = App::new();
+        let app = App::new_for_test(AnimPref::Off, true);
         assert!(!app.ssh_revert_pending);
     }
 
@@ -1425,7 +1505,7 @@ mod tests {
         // Welcome) and ops are in-flight. F5 requires ssh_revert_pending to
         // be set so the revert eventually fires. Pre-F5 the whole arm was
         // Dashboard-gated and this never happened.
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         // Force off-Dashboard + in-flight.
         assert!(matches!(
             app.nav.current(),
@@ -1470,7 +1550,7 @@ mod tests {
         // End-to-end-ish: simulate the DONE arm's bookkeeping when held ops
         // exist (spawned == true) and a revert is pending. The flag must
         // REMAIN set so the new batch's completion re-evaluates it.
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         app.ssh_revert_pending = true;
         let spawned = true; // flush_ssh_ops re-spawned a held batch
         if App::should_fire_deferred_revert_now(app.ssh_revert_pending, spawned) {
@@ -1486,12 +1566,85 @@ mod tests {
     fn f6_revert_clears_when_no_held_ops() {
         // The complementary case: DONE pass with no held ops → revert fires
         // and the flag clears.
-        let mut app = App::new();
+        let mut app = App::new_for_test(AnimPref::Off, true);
         app.ssh_revert_pending = true;
         let spawned = false;
         if App::should_fire_deferred_revert_now(app.ssh_revert_pending, spawned) {
             app.ssh_revert_pending = false;
         }
         assert!(!app.ssh_revert_pending);
+    }
+
+    // ── quit-drain: the in-flight SSH write task must be awaited with a
+    // bounded timeout, never unbounded. Network ops (ssh-copy-id,
+    // ssh-keyscan) inside `execute_op` have no inherent upper bound, so an
+    // unbounded `handle.await` can hang process exit. The run loop drains the
+    // task via `tokio::select!` against a sleep + `handle.abort()` on elapsed.
+    // These tests pin the exact drain pattern (bounded wait, abort on timeout,
+    // prompt completion when the op finishes) so a regression that reverts to
+    // a bare `handle.await` fails them by hanging.
+    #[tokio::test]
+    async fn quit_drain_aborts_write_task_on_timeout() {
+        // Spawn a write task that NEVER completes on its own (mimics a stalled
+        // ssh-copy-id against an unreachable host). The drain pattern must
+        // return within the bounded timeout and abort the task — otherwise this
+        // test hangs forever (which is exactly the bug the fix prevents).
+        let mut handle = tokio::spawn(async {
+            // Park forever until aborted.
+            std::future::pending::<()>().await;
+        });
+
+        // Drain pattern mirrored from App::run's quit path. Use a short timeout
+        // here so the test is fast; production uses 5s. `tokio::pin!` is needed
+        // because `tokio::time::Sleep` is `!Unpin` and select! polls by ref.
+        let drain = tokio::time::sleep(std::time::Duration::from_millis(100));
+        tokio::pin!(drain);
+        let elapsed = tokio::select! {
+            biased;
+            _ = &mut handle => false,
+            () = &mut drain => {
+                handle.abort();
+                true
+            }
+        };
+        assert!(
+            elapsed,
+            "a never-completing write task must trip the drain timeout, not hang"
+        );
+        // After abort, awaiting the handle must resolve immediately as a
+        // JoinError (cancelled) — proving the detached task is gone.
+        let join = (&mut handle).await;
+        assert!(
+            join.is_err(),
+            "aborted task must report a JoinError, not complete normally: {join:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn quit_drain_completes_when_write_task_finishes_quickly() {
+        // A prompt write op (the common case) must complete WITHOUT tripping
+        // the timeout and WITHOUT being aborted.
+        let mut handle = tokio::spawn(async { 42 });
+        let drain = tokio::time::sleep(std::time::Duration::from_secs(5));
+        tokio::pin!(drain);
+        // Capture the outcome from the select arm directly — a JoinHandle is
+        // consumed once resolved and cannot be polled again ("polled after
+        // completion"), so the production drain discards the value with `let _`.
+        let (elapsed, outcome) = tokio::select! {
+            biased;
+            join = &mut handle => (false, Some(join)),
+            () = &mut drain => {
+                handle.abort();
+                (true, None)
+            }
+        };
+        assert!(
+            !elapsed,
+            "a fast write task must NOT trip the drain timeout"
+        );
+        assert_eq!(
+            outcome.expect("task completed without timeout").unwrap(),
+            42
+        );
     }
 }

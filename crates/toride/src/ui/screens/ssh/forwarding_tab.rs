@@ -881,4 +881,63 @@ mod tests {
         assert_eq!(tab.session_at_row(4), Some(1)); // forward 0 of session 1
         assert_eq!(tab.session_at_row(5), None); // past end
     }
+
+    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
+
+    #[test]
+    fn cancel_submit_pushes_forward_cancel_ops() {
+        let mut tab = ForwardingTab::new();
+        tab.set_sessions(sample_sessions()); // session 0 has 2 forwards
+        tab.selected = 0;
+
+        // 'x' opens the cancel confirm modal.
+        tab.handle_key(KeyCode::Char('x'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Cancel));
+        assert!(tab.drain_ops().is_empty(), "no op before confirm");
+
+        // 'y' confirms — one ForwardCancel op per forward on the session.
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 2, "one ForwardCancel per forward");
+        for op in &ops {
+            match op {
+                SshOp::ForwardCancel { control_path, .. } => {
+                    assert_eq!(control_path, "/tmp/ssh-prod-web");
+                }
+                other => panic!("expected ForwardCancel, got {other:?}"),
+            }
+        }
+        // Optimistic in-memory update: the session's forwards were cleared.
+        assert_eq!(
+            tab.sessions[0].forward_count, 0,
+            "forwards cleared optimistically"
+        );
+    }
+
+    #[test]
+    fn exit_submit_pushes_forward_exit_session_op() {
+        let mut tab = ForwardingTab::new();
+        tab.set_sessions(sample_sessions());
+        tab.selected = 1; // bastion session
+
+        // 'X' opens the exit confirm modal.
+        tab.handle_key(KeyCode::Char('X'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Exit));
+
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::ForwardExitSession { control_path } => {
+                assert_eq!(control_path, "/tmp/ssh-bastion");
+            }
+            other => panic!("expected ForwardExitSession, got {other:?}"),
+        }
+        // Optimistic in-memory update: session removed.
+        assert_eq!(tab.sessions.len(), 1);
+    }
 }

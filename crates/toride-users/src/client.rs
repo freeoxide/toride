@@ -241,7 +241,12 @@ impl TotpOps<'_> {
     }
 
     /// Enroll a user in TOTP.
-    pub fn enroll(&self, username: &str) -> Result<String> {
+    ///
+    /// Returns the `google-authenticator` output (TOTP seed + scratch codes)
+    /// wrapped in a [`crate::totp::TotpSecret`], which redacts on `Debug` and
+    /// zeroizes on drop. Callers surface it to the operator once via `Display`
+    /// or [`crate::totp::TotpSecret::expose_secret`]; never log it raw.
+    pub fn enroll(&self, username: &str) -> Result<crate::totp::TotpSecret> {
         crate::totp::enroll_totp(self.paths, username)
     }
 

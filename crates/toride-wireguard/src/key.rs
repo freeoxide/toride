@@ -88,15 +88,12 @@ impl PrivateKey {
 
 impl Zeroize for PrivateKey {
     fn zeroize(&mut self) {
-        // Overwrite the string's bytes safely. Replace every character with
-        // '\0' (valid UTF-8) and then truncate, ensuring sensitive material
-        // is cleared from the underlying buffer.
-        let len = self.inner.len();
-        self.inner.clear();
-        for _ in 0..len {
-            self.inner.push('\0');
-        }
-        self.inner.clear();
+        // Delegate to the `zeroize` crate's `String` impl, which overwrites
+        // the buffer (and spare capacity) with zeroes via volatile writes that
+        // a release optimizer cannot elide -- unlike a hand-rolled
+        // clear/push-NUL/clear whose stores the compiler is free to drop on a
+        // buffer that is about to be freed.
+        self.inner.zeroize();
     }
 }
 

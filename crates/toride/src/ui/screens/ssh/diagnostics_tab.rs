@@ -691,4 +691,48 @@ mod tests {
         tab.set_entries(sample_entries()); // 3 items
         assert!(tab.selected < 3);
     }
+
+    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
+
+    #[test]
+    fn run_checks_submit_pushes_doctor_run_checks_op() {
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
+
+        // 'r' opens the run form (Filter + Scope). No field is required, so
+        // submitting immediately is valid.
+        tab.handle_key(KeyCode::Char('r'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Run));
+
+        // Tab past both fields to the buttons, then submit.
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Enter);
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        assert!(
+            matches!(ops[0], SshOp::DoctorRunChecks),
+            "expected DoctorRunChecks, got {:?}",
+            ops[0]
+        );
+    }
+
+    #[test]
+    fn fix_all_submit_pushes_doctor_run_checks_op() {
+        let mut tab = DiagnosticsTab::new();
+        tab.set_entries(sample_entries());
+
+        tab.handle_key(KeyCode::Char('f'));
+        assert_eq!(tab.action_modal, Some(ActionModal::FixAll));
+        assert!(tab.drain_ops().is_empty(), "no op before confirm");
+
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        assert!(matches!(ops[0], SshOp::DoctorRunChecks));
+    }
 }

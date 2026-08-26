@@ -25,7 +25,6 @@ use crate::error::{Error, Result};
 use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
 
 use serde::Deserialize;
-use std::fmt::Write as _;
 use std::sync::Arc;
 use toride_runner::spec::CommandSpec;
 use toride_runner::{CommandOutput, DuctRunner, Runner};
@@ -95,7 +94,7 @@ impl AwsClient {
     /// error type. Equivalent to `Runner::run_checked` but returns our
     /// `crate::Result`.
     fn run_checked(&self, spec: &CommandSpec) -> Result<CommandOutput> {
-        Runner::run_checked(self.runner.as_ref(), spec).map_err(map_runner_error)
+        Runner::run_checked(self.runner.as_ref(), spec).map_err(Error::from)
     }
 
     /// List all security groups in the current region.
@@ -253,34 +252,6 @@ impl AwsClient {
             .arg(permissions.to_string());
         self.run_checked(&spec)?;
         Ok(())
-    }
-}
-
-/// Map a runner error into our crate error.
-///
-/// `toride_runner` errors are not `From`-convertible (they live in a separate
-/// crate), so we translate the variants we care about.
-fn map_runner_error(e: toride_runner::Error) -> Error {
-    match e {
-        toride_runner::Error::BinaryNotFound(prog) => Error::BinaryNotFound(prog),
-        toride_runner::Error::CommandFailed {
-            program,
-            args,
-            exit_code,
-            stderr,
-        } => {
-            // Fold the structured fields into a single human-readable message
-            // so callers can string-match sentinels (e.g. duplicate-rule).
-            let mut message = format!("args: {args}");
-            if let Some(code) = exit_code {
-                let _ = write!(message, "\nexit: {code}");
-            }
-            if !stderr.trim().is_empty() {
-                let _ = write!(message, "\nstderr: {}", stderr.trim());
-            }
-            Error::CommandFailed { program, message }
-        }
-        other => Error::Other(other.to_string()),
     }
 }
 

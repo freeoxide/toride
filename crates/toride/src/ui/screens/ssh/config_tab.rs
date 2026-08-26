@@ -923,4 +923,80 @@ mod tests {
         tab.set_hosts(sample_hosts()); // 2 items
         assert!(tab.selected < 2);
     }
+
+    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
+
+    /// Drive the Add Host form (4 fields: Host, `HostName`, User, Port) to
+    /// Submitted, typing only the Host and Port values.
+    fn submit_add_host_form(tab: &mut ConfigTab, host: &str, port: &str) {
+        // Field 0: Host
+        for ch in host.chars() {
+            tab.handle_key(KeyCode::Char(ch));
+        }
+        tab.handle_key(KeyCode::Tab); // → HostName
+        tab.handle_key(KeyCode::Tab); // → User
+        tab.handle_key(KeyCode::Tab); // → Port
+        for ch in port.chars() {
+            tab.handle_key(KeyCode::Char(ch));
+        }
+        tab.handle_key(KeyCode::Tab); // → buttons
+        tab.handle_key(KeyCode::Enter);
+    }
+
+    #[test]
+    fn add_host_submit_pushes_config_add_host_op() {
+        let mut tab = ConfigTab::new();
+        tab.set_hosts(sample_hosts());
+
+        tab.handle_key(KeyCode::Char('a'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Add));
+
+        submit_add_host_form(&mut tab, "web-1", "2222");
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::ConfigAddHost {
+                name,
+                host_name,
+                user,
+                port,
+            } => {
+                assert_eq!(name, "web-1");
+                assert!(host_name.is_none());
+                assert!(user.is_none());
+                assert_eq!(*port, Some(2222));
+            }
+            other => panic!("expected ConfigAddHost, got {other:?}"),
+        }
+        // Optimistic in-memory update.
+        assert_eq!(tab.hosts.len(), 3);
+        assert_eq!(tab.selected, 2);
+        assert_eq!(tab.hosts[2].name, "web-1");
+        assert_eq!(tab.hosts[2].port, Some(2222));
+    }
+
+    #[test]
+    fn remove_host_submit_pushes_config_remove_host_op() {
+        let mut tab = ConfigTab::new();
+        tab.set_hosts(sample_hosts());
+        tab.selected = 0;
+        let removed_name = tab.hosts[0].name.clone();
+
+        tab.handle_key(KeyCode::Char('d'));
+        assert_eq!(tab.action_modal, Some(ActionModal::Remove));
+        assert!(tab.drain_ops().is_empty(), "no op before confirm");
+
+        tab.handle_key(KeyCode::Char('y'));
+        assert!(tab.action_modal.is_none());
+
+        let ops = tab.drain_ops();
+        assert_eq!(ops.len(), 1);
+        match &ops[0] {
+            SshOp::ConfigRemoveHost { name } => assert_eq!(name, &removed_name),
+            other => panic!("expected ConfigRemoveHost, got {other:?}"),
+        }
+        assert_eq!(tab.hosts.len(), 1, "host removed optimistically");
+    }
 }

@@ -23,33 +23,6 @@ use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
 use std::fmt::Write as _;
 use toride_runner::{CommandSpec, DuctRunner, Runner};
 
-/// Map a [`toride_runner::Error`] into the crate's [`Error`] type.
-///
-/// Kept file-local (rather than a blanket `From` impl on `error::Error`) so
-/// the conversion stays opt-in and does not collide with sibling provider
-/// modules. `CommandFailed` carrying a "conflict" message is promoted to
-/// [`Error::FirewallRuleConflict`] by the callers that care.
-fn map_runner_err(err: toride_runner::Error) -> Error {
-    match err {
-        toride_runner::Error::BinaryNotFound(name) => Error::BinaryNotFound(name),
-        toride_runner::Error::Io(msg) => Error::Other(msg),
-        toride_runner::Error::CommandFailed {
-            program, stderr, ..
-        } => Error::CommandFailed {
-            program,
-            message: stderr,
-        },
-        toride_runner::Error::CommandTimeout { program, .. } => Error::CommandFailed {
-            program,
-            message: "command timed out".to_string(),
-        },
-        toride_runner::Error::SpawnFailed { program, detail } => {
-            Error::BinaryNotFound(format!("{program}: {detail}"))
-        }
-        other => Error::Other(other.to_string()),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // JSON helpers (file-local to avoid collisions with parse.rs)
 // ---------------------------------------------------------------------------
@@ -283,7 +256,7 @@ impl<R: Runner> DigitalOceanClient<R> {
         let output = self
             .runner
             .run_checked(&self.list_command())
-            .map_err(map_runner_err)?;
+            .map_err(Error::from)?;
         parse_firewalls(&output.stdout)
     }
 
@@ -296,7 +269,7 @@ impl<R: Runner> DigitalOceanClient<R> {
         let output = self
             .runner
             .run_checked(&self.get_command(firewall_id))
-            .map_err(map_runner_err)?;
+            .map_err(Error::from)?;
         let groups = parse_firewalls(&output.stdout)?;
         groups
             .into_iter()
@@ -318,7 +291,7 @@ impl<R: Runner> DigitalOceanClient<R> {
         outbound_rules: &[FirewallRule],
     ) -> Result<SecurityGroup> {
         let cmd = self.create_command(name, inbound_rules, outbound_rules)?;
-        let output = self.runner.run_checked(&cmd).map_err(map_runner_err)?;
+        let output = self.runner.run_checked(&cmd).map_err(Error::from)?;
         let groups = parse_firewalls(&output.stdout)?;
         groups
             .into_iter()
@@ -338,7 +311,7 @@ impl<R: Runner> DigitalOceanClient<R> {
         let _ = self
             .runner
             .run_checked(&self.delete_command(firewall_id))
-            .map_err(map_runner_err)?;
+            .map_err(Error::from)?;
         Ok(())
     }
 
@@ -358,7 +331,7 @@ impl<R: Runner> DigitalOceanClient<R> {
                     "rule conflict while adding rules to firewall {firewall_id}"
                 )))
             }
-            Err(e) => Err(map_runner_err(e)),
+            Err(e) => Err(Error::from(e)),
         }
     }
 
@@ -369,7 +342,7 @@ impl<R: Runner> DigitalOceanClient<R> {
     /// Returns [`Error::CommandFailed`] if removal fails.
     pub fn remove_rules(&self, firewall_id: &str, rules: &[FirewallRule]) -> Result<()> {
         let cmd = self.rules_command("remove-rules", firewall_id, rules)?;
-        let _ = self.runner.run_checked(&cmd).map_err(map_runner_err)?;
+        let _ = self.runner.run_checked(&cmd).map_err(Error::from)?;
         Ok(())
     }
 }

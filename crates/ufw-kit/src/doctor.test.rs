@@ -615,3 +615,88 @@ fn validate_comment_for_secrets_doctor_should_detect_key_value() {
         "allow ssh from office"
     ));
 }
+
+// ---------------------------------------------------------------------------
+// Framework: NAT-table COMMIT detection (regression for operator-precedence bug)
+// ---------------------------------------------------------------------------
+
+/// Write `content` to a temp file and run `check_framework_file` against it,
+/// returning the produced findings.
+#[cfg(feature = "framework")]
+fn framework_findings(content: &str) -> Vec<Finding> {
+    use std::io::Write as _;
+    let mut tmp = tempfile::NamedTempFile::new().expect("create temp file");
+    write!(tmp, "{content}").expect("write temp file");
+    let mut findings = Vec::new();
+    check_framework_file(tmp.path(), "test.rules", false, &mut findings);
+    findings
+}
+
+#[cfg(feature = "framework")]
+#[test]
+fn framework_should_flag_nat_table_missing_commit() {
+    // A *nat table present but only a single COMMIT line (the filter table's)
+    // must be flagged — the NAT table needs its own COMMIT. Previously this was
+    // masked by `!content.matches("COMMIT").count() >= 2`, where the `!` bound
+    // to the usize count (bitwise NOT) before `>=`, making the guard always
+    // true whenever a *nat table existed.
+    let content = "\
+*filter
+:INPUT ACCEPT [0:0]
+COMMIT
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -i eth0 -p tcp --dport 80 -j DNAT --to-destination 1.2.3.4:80
+";
+    let findings = framework_findings(content);
+    assert!(
+        findings.iter().any(|f| f.id == "fw:test.rules:no-commit-nat"),
+        "expected NAT-missing-COMMIT finding, got {findings:?}"
+    );
+}
+
+#[cfg(feature = "framework")]
+#[test]
+fn framework_should_not_flag_nat_table_with_both_commits() {
+    // Both tables have their own COMMIT line — no NAT finding should appear.
+    let content = "\
+*filter
+:INPUT ACCEPT [0:0]
+COMMIT
+*nat
+:PREROUTING ACCEPT [0:0]
+-A PREROUTING -i eth0 -p tcp --dport 80 -j DNAT --to-destination 1.2.3.4:80
+COMMIT
+";
+    let findings = framework_findings(content);
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.id == "fw:test.rules:no-commit-nat"),
+        "did not expect NAT-missing-COMMIT finding, got {findings:?}"
+    );
+}
+
+#[cfg(feature = "framework")]
+#[test]
+fn framework_commit_count_guard_should_actually_evaluate_count() {
+    // Pinning the corrected comparison: with two COMMIT lines and a *nat
+    // table, the outer guard (`count() < 2` is false) must NOT enter the NAT
+    // branch at all, so the inner "COMMIT after *nat" sub-check is what would
+    // fire only if a COMMIT is genuinely missing after *nat.
+    let content = "\
+*filter
+:INPUT ACCEPT [0:0]
+COMMIT
+*nat
+COMMIT
+";
+    let findings = framework_findings(content);
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f.id == "fw:test.rules:no-commit-nat"),
+        "two COMMITs must satisfy the count guard: {findings:?}"
+    );
+}
+

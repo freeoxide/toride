@@ -170,6 +170,69 @@ fn force_enable_should_still_trigger_lockout_check() {
     );
 }
 
+#[test]
+fn enable_should_fail_when_stdout_lacks_marker_and_stderr_empty() {
+    // Regression: an empty stderr used to be reported as Ok even when the
+    // command clearly did nothing (no "active"/"enabled" marker). The fix
+    // treats the missing success marker as a failure so a silent no-op is
+    // surfaced to the caller.
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: inactive\n")
+        .respond_ok("ufw", &["enable"], ""); // empty stdout, empty stderr, exit 0
+    let ufw = Ufw::with_runner(runner);
+    let opts = EnableOptions {
+        require_ssh_allow_rule: false,
+        ..Default::default()
+    };
+    let result = ufw.enable(&opts);
+    assert!(
+        result.is_err(),
+        "enable() must fail when stdout lacks the activation marker"
+    );
+    assert!(
+        matches!(result.unwrap_err(), Error::EnableFailed(_)),
+        "expected EnableFailed when the marker is absent"
+    );
+}
+
+#[test]
+fn enable_should_fail_on_nonzero_exit_with_stderr() {
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: inactive\n")
+        .respond_err("ufw", &["enable"], "ERROR: problem", 1);
+    let ufw = Ufw::with_runner(runner);
+    let opts = EnableOptions {
+        require_ssh_allow_rule: false,
+        ..Default::default()
+    };
+    let result = ufw.enable(&opts);
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        Error::EnableFailed(msg) => assert!(msg.contains("ERROR: problem")),
+        other => panic!("expected EnableFailed, got {other:?}"),
+    }
+}
+
+#[test]
+fn enable_should_fail_on_nonzero_exit_even_with_empty_stderr() {
+    // A non-zero exit is a failure regardless of stderr; previously it would
+    // have been masked as Ok because stderr was empty.
+    let runner = FakeRunner::new()
+        .respond_ok("ufw", &["status"], "Status: inactive\n")
+        .respond_err("ufw", &["enable"], "", 1);
+    let ufw = Ufw::with_runner(runner);
+    let opts = EnableOptions {
+        require_ssh_allow_rule: false,
+        ..Default::default()
+    };
+    let result = ufw.enable(&opts);
+    assert!(
+        result.is_err(),
+        "enable() must fail on non-zero exit even with empty stderr"
+    );
+    assert!(matches!(result.unwrap_err(), Error::EnableFailed(_)));
+}
+
 // ---------------------------------------------------------------------------
 // Disable
 // ---------------------------------------------------------------------------

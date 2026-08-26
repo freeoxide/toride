@@ -53,14 +53,27 @@ fn parse_pam_lines(content: &str) -> Vec<PamRule> {
     rules
 }
 
+/// Mode for PAM service files.
+///
+/// `/etc/pam.d/<service>` files are conventionally `0o644` (world-readable) so
+/// the PAM stack -- which may run as any user -- can parse them. Writing them
+/// `0o600` would silently break authentication for unprivileged services.
+const PAM_FILE_MODE: u32 = 0o644;
+
 /// Write PAM rules to a service configuration file.
 ///
-/// Creates a backup before writing. The file is written atomically via
-/// a temp file rename.
+/// Creates a backup before writing. The file is written **atomically** via a
+/// temp file in the same directory (created with the final `0o644` mode),
+/// fsynced on both sides of the rename, and renamed into place -- so a crash
+/// or signal mid-write can never leave a truncated PAM file that would lock
+/// users out of the system. The temp file lives in the same directory as the
+/// target so `rename(2)` is a same-filesystem atomic operation.
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the file cannot be written.
+/// Returns [`Error::Io`] if the backup or permission step fails, or an
+/// [`Error`](crate::Error) wrapping a `toride_fs` atomic-write failure if the
+/// temp file cannot be created, written, fsynced, or persisted.
 pub fn write_pam_config(path: &Path, rules: &[PamRule], comment: Option<&str>) -> Result<()> {
     let mut content = String::new();
 
@@ -75,7 +88,12 @@ pub fn write_pam_config(path: &Path, rules: &[PamRule], comment: Option<&str>) -
         crate::backup::backup_file(path, None)?;
     }
 
-    std::fs::write(path, content)?;
+    // Atomic write: temp file in the same dir (created at 0o644 so the final
+    // inode is correct the instant the rename lands), fsync + rename + best-
+    // effort dir fsync. A crash at any point leaves either the old file or the
+    // complete new file -- never a truncated one.
+    toride_fs::atomic_write_with_perms(path, &content, PAM_FILE_MODE)
+        .map_err(|e| Error::PamError(format!("atomic write of {} failed: {e}", path.display())))?;
     Ok(())
 }
 
@@ -324,6 +342,88 @@ mod tests {
         let reread = read_pam_config(&path).unwrap();
         assert_eq!(reread.len(), rules.len());
         assert_eq!(reread[0].module, "pam_unix.so");
+    }
+
+    #[test]
+    fn write_pam_config_leaves_no_temp_file_behind() {
+        // The atomic write must not leak its temp file into the target dir.
+        // After a successful write the directory should contain exactly the
+        // target file (plus the service files created by `make_service`).
+        let dir = tempfile::tempdir().unwrap();
+        let paths = make_service(dir.path(), "sshd", "auth required pam_unix.so\n");
+
+        let backup_dir = tempfile::tempdir().unwrap();
+        let _guard = crate::backup::set_test_backup_dir(backup_dir.path());
+        enable_totp_for_service(&paths, "sshd").unwrap();
+
+        let pam_d = std::fs::read_dir(&paths.pam_d).unwrap();
+        for entry in pam_d {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            // No leftover `.tmpXXXX`/tempfile scratch files: only the real
+            // service config ("sshd") should be present.
+            assert_eq!(
+                name.to_string_lossy(),
+                "sshd",
+                "atomic write must not leave a temp file behind: {}",
+                name.to_string_lossy()
+            );
+        }
+    }
+
+    #[test]
+    fn write_pam_config_is_atomic_overwrites_completely() {
+        // Simulate the crash-safety guarantee: a prior file is fully replaced
+        // by the new content, never partially overwritten. After the write the
+        // file must contain exactly the rendered rules (no truncation, no
+        // mix of old+new bytes).
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("custom");
+        // A long pre-existing body so a partial overwrite would be detectable.
+        let original = "auth required pam_unix.so\n".repeat(50);
+        std::fs::write(&path, &original).unwrap();
+
+        let rules = vec![PamRule {
+            management_group: "auth".to_owned(),
+            control: "required".to_owned(),
+            module: "pam_google_authenticator.so".to_owned(),
+            arguments: Vec::new(),
+        }];
+        let backup_dir = tempfile::tempdir().unwrap();
+        let _guard = crate::backup::set_test_backup_dir(backup_dir.path());
+        write_pam_config(&path, &rules, None).unwrap();
+
+        let written = std::fs::read_to_string(&path).unwrap();
+        // The new file is short (one rule); a non-atomic overwrite that crashed
+        // mid-write could leave a prefix of the old long content followed by
+        // the new bytes. Assert the file is exactly the rendered new rules.
+        assert!(
+            written.contains("pam_google_authenticator.so"),
+            "new rule present"
+        );
+        assert!(
+            !written.contains("pam_unix.so"),
+            "no stale bytes from the previous (longer) file -- write was atomic"
+        );
+    }
+
+    #[test]
+    fn write_pam_config_sets_world_readable_mode() {
+        // PAM service files must be 0o644 so the PAM stack (which may run as
+        // any user) can read them. An atomic write that defaulted to 0o600
+        // would silently break authentication.
+        use std::os::unix::fs::MetadataExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("modecheck");
+        std::fs::write(&path, "auth required pam_unix.so\n").unwrap();
+
+        let rules = read_pam_config(&path).unwrap();
+        let backup_dir = tempfile::tempdir().unwrap();
+        let _guard = crate::backup::set_test_backup_dir(backup_dir.path());
+        write_pam_config(&path, &rules, None).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().mode() & 0o777;
+        assert_eq!(mode, 0o644, "PAM files must remain world-readable (0o644)");
     }
 
     #[test]

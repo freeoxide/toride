@@ -3,7 +3,125 @@
 //! Provides functions to set up and manage TOTP-based two-factor
 //! authentication using the `google-authenticator` PAM module.
 
+#[cfg(feature = "client")]
+use std::fmt;
+
 use crate::{Error, Result, paths::UserPaths};
+
+/// A redacting wrapper around the sensitive output of `google-authenticator`
+/// (the TOTP seed plus the one-time scratch codes).
+///
+/// The captured stdout is highly sensitive: anyone who reads it can generate
+/// valid 2FA codes for the account. [`TotpSecret`] makes accidental disclosure
+/// through logging hard:
+///
+/// - [`Debug`](fmt::Debug) renders as `TotpSecret { **REDACTED** }`, so a stray
+///   `{:?}` (or a struct deriving `Debug` over a field of this type, or a
+///   `tracing` macro that captures the value by debug) never prints the seed.
+/// - The buffer is [`zeroize`](::zeroize)d on drop, so the secret is not left
+///   in freed heap memory longer than necessary.
+/// - [`Display`](fmt::Display) intentionally renders the underlying value, and
+///   [`expose_secret`](Self::expose_secret) hands out a `&str`, because the
+///   *whole purpose* of enrollment is to surface the seed/scratch codes to the
+///   operator exactly once (so they can enroll an authenticator app and store
+///   the scratch codes). Use these only on a deliberate, user-facing sink --
+///   never in a log line.
+///
+/// Construct it via [`TotpSecret::new`], which takes ownership of the input
+/// bytes so the caller's copy is dropped.
+#[cfg(feature = "client")]
+pub struct TotpSecret {
+    inner: String,
+}
+
+#[cfg(feature = "client")]
+impl TotpSecret {
+    /// Wrap a captured enrollment output, taking ownership so the caller's
+    /// copy goes out of scope.
+    ///
+    /// The argument is moved (not copied); the caller should drop any other
+    /// reference to the same bytes.
+    #[must_use]
+    pub fn new(value: String) -> Self {
+        Self { inner: value }
+    }
+
+    /// Deliberately expose the underlying secret as a `&str`.
+    ///
+    /// Reserve this for a user-facing sink (e.g. writing the seed to stdout so
+    /// the operator can enroll an authenticator app). Never feed the result
+    /// into a `tracing`/`log` call or store it in a long-lived structure.
+    #[must_use]
+    pub fn expose_secret(&self) -> &str {
+        &self.inner
+    }
+
+    /// Consume the wrapper and return the raw secret `String`.
+    ///
+    /// Use when ownership of the bytes is required (e.g. handing the value to
+    /// an API that takes `String`). The returned `String` is **not** zeroized
+    /// on drop, so prefer [`expose_secret`](Self::expose_secret) where a
+    /// borrow suffices.
+    #[must_use]
+    pub fn into_inner(mut self) -> String {
+        // The wrapper implements `Drop` (to zeroize), so we cannot move the
+        // field out directly. Swap the secret out for an empty `String` (which
+        // the subsequent `Drop` zeroizes as a harmless no-op) and return the
+        // original bytes -- no `unsafe` required (this crate is
+        // `#![deny(unsafe_code)]`).
+        std::mem::take(&mut self.inner)
+    }
+}
+
+#[cfg(feature = "client")]
+impl fmt::Display for TotpSecret {
+    /// Renders the underlying secret. This is deliberate: the caller is
+    /// surfacing the seed/scratch codes to the operator on a user-facing sink.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.inner)
+    }
+}
+
+#[cfg(feature = "client")]
+impl fmt::Debug for TotpSecret {
+    /// Always redacts. Prevents accidental leakage via `{:?}`, derived
+    /// `Debug` on containing structs, and `tracing` debug captures.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TotpSecret")
+            .field("inner", &"**REDACTED**")
+            .finish()
+    }
+}
+
+#[cfg(feature = "client")]
+impl zeroize::ZeroizeOnDrop for TotpSecret {}
+
+#[cfg(feature = "client")]
+impl Drop for TotpSecret {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.inner.zeroize();
+    }
+}
+
+#[cfg(feature = "client")]
+impl AsRef<str> for TotpSecret {
+    fn as_ref(&self) -> &str {
+        &self.inner
+    }
+}
+
+#[cfg(feature = "client")]
+impl std::ops::Deref for TotpSecret {
+    type Target = str;
+
+    /// Allows `&secret` call sites (`.chars()`, slicing, etc.) without
+    /// spelling out `expose_secret()`. Does not redact -- this is a deliberate
+    /// read by the holding code.
+    fn deref(&self) -> &Self::Target {
+        &self.inner
+    }
+}
 
 /// Check if TOTP is set up for a user.
 ///
@@ -135,9 +253,12 @@ fn enforce_totp_file_owner_mode(
 /// silently bypassed 2FA. After creation we explicitly enforce mode 0600 and
 /// owner = target `uid:gid`.
 ///
-/// The generated secret key and scratch codes are sensitive. In production,
-/// this function should be called interactively so the user can scan the QR
-/// code and store their scratch codes securely.
+/// The generated secret key and scratch codes are sensitive, so the captured
+/// `google-authenticator` stdout is returned wrapped in a [`TotpSecret`] whose
+/// [`Debug`](std::fmt::Debug) impl redacts and whose buffer is zeroized on
+/// drop. Callers surface it to the operator exactly once via
+/// [`Display`](std::fmt::Display) or [`TotpSecret::expose_secret`]; it is never
+/// logged raw by this function.
 ///
 /// # Errors
 ///
@@ -145,7 +266,7 @@ fn enforce_totp_file_owner_mode(
 /// - [`Error::TotpError`] if TOTP is already configured for this user.
 /// - [`Error::CommandFailed`] if the command fails.
 #[cfg(feature = "client")]
-pub fn enroll_totp(paths: &UserPaths, username: &str) -> Result<String> {
+pub fn enroll_totp(paths: &UserPaths, username: &str) -> Result<TotpSecret> {
     // Check if already enrolled
     if is_totp_configured(paths, username)? {
         return Err(Error::TotpError(format!(
@@ -163,6 +284,9 @@ pub fn enroll_totp(paths: &UserPaths, username: &str) -> Result<String> {
         .map_err(|e| Error::CommandFailed {
             program: "runuser".to_owned(),
             code: None,
+            // The duct error itself does not carry the secret (it is a spawn /
+            // wait error); only the *successful* stdout is sensitive, and that
+            // is wrapped below.
             stderr: e.to_string(),
         })?;
 
@@ -183,7 +307,9 @@ pub fn enroll_totp(paths: &UserPaths, username: &str) -> Result<String> {
     }
 
     tracing::info!("enrolled TOTP for user {username}");
-    Ok(output)
+    // Wrap the sensitive stdout so it cannot be logged raw via Debug and is
+    // scrubbed from memory when the caller is done with it.
+    Ok(TotpSecret::new(output))
 }
 
 /// Remove TOTP configuration for a user.
@@ -220,11 +346,14 @@ pub fn remove_totp(paths: &UserPaths, username: &str) -> Result<()> {
 /// 1. TOTP enrollment via [`enroll_totp`]
 /// 2. PAM configuration update for the `sshd` service
 ///
+/// The returned [`TotpSecret`] wraps the sensitive `google-authenticator`
+/// output; see [`enroll_totp`] for the redaction/zeroize contract.
+///
 /// # Errors
 ///
 /// Returns any error from enrollment or PAM configuration.
 #[cfg(feature = "client")]
-pub fn enable_totp_ssh(paths: &UserPaths, username: &str) -> Result<String> {
+pub fn enable_totp_ssh(paths: &UserPaths, username: &str) -> Result<TotpSecret> {
     let output = enroll_totp(paths, username)?;
     crate::pam::enable_totp_for_service(paths, "sshd")?;
     tracing::info!("enabled TOTP for SSH login for user {username}");
@@ -372,5 +501,73 @@ mod tests {
             enforce_totp_file_owner_mode(&paths, "ghost", &file),
             Err(Error::UserNotFound(_))
         ));
+    }
+
+    #[test]
+    fn totp_secret_debug_redacts() {
+        // Debug must never reveal the seed/scratch codes -- this is the format
+        // tracing/derived-Debug/accidental {:?} would use.
+        let secret = TotpSecret::new("JBSWY3DPEHPK3PXP 12345678".to_owned());
+        let debugged = format!("{secret:?}");
+        assert!(
+            !debugged.contains("JBSWY3DPEHPK3PXP"),
+            "Debug leaked the TOTP seed: {debugged}"
+        );
+        assert!(
+            !debugged.contains("12345678"),
+            "Debug leaked a scratch code: {debugged}"
+        );
+        assert!(
+            debugged.contains("REDACTED"),
+            "Debug should advertise it is redacted: {debugged}"
+        );
+    }
+
+    #[test]
+    fn totp_secret_display_surfaces_value_for_deliberate_sink() {
+        // The caller's whole purpose is to show the seed/scratch codes to the
+        // operator exactly once. Display (used by writeln! to the user-facing
+        // sink) must therefore render the real value.
+        let secret = TotpSecret::new("JBSWY3DPEHPK3PXP 12345678".to_owned());
+        let displayed = format!("{secret}");
+        assert_eq!(displayed, "JBSWY3DPEHPK3PXP 12345678");
+    }
+
+    #[test]
+    fn totp_secret_expose_secret_and_deref_match_inner() {
+        let secret = TotpSecret::new("seed 11111111 22222222".to_owned());
+        assert_eq!(secret.expose_secret(), "seed 11111111 22222222");
+        assert_eq!(&*secret, "seed 11111111 22222222");
+        assert_eq!(secret.as_ref(), "seed 11111111 22222222");
+    }
+
+    #[test]
+    fn totp_secret_into_inner_returns_value() {
+        let secret = TotpSecret::new("seed 99999999".to_owned());
+        let raw = secret.into_inner();
+        assert_eq!(raw, "seed 99999999");
+    }
+
+    #[test]
+    fn totp_secret_in_derived_debug_struct_does_not_leak() {
+        // A common leak path is a struct deriving Debug with a TotpSecret
+        // field. Because TotpSecret's own Debug redacts, the containing
+        // struct's Debug must not leak either.
+        #[derive(Debug)]
+        #[expect(dead_code, reason = "fields are read only via the derived Debug")]
+        struct Envelope {
+            user: &'static str,
+            secret: TotpSecret,
+        }
+        let env = Envelope {
+            user: "alice",
+            secret: TotpSecret::new("TOPSECRETSEED 00000000".to_owned()),
+        };
+        let rendered = format!("{env:?}");
+        assert!(
+            !rendered.contains("TOPSECRETSEED") && !rendered.contains("00000000"),
+            "derived Debug leaked the secret through a containing struct: {rendered}"
+        );
+        assert!(rendered.contains("REDACTED"));
     }
 }
