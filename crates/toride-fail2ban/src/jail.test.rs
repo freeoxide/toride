@@ -1190,7 +1190,10 @@ fn scan_ban_action_error_still_persists_journal() {
 
     // First scan: one match -> ban attempted -> action exec fails -> scan Err.
     let result = jail.scan(ExecutionMode::Execute);
-    assert!(result.is_err(), "scan should return Err on ban-action failure");
+    assert!(
+        result.is_err(),
+        "scan should return Err on ban-action failure"
+    );
 
     // Re-open the same store so we observe what was persisted to disk.
     let store2 = make_store(tmpdir.path());
@@ -1208,18 +1211,17 @@ fn scan_ban_action_error_still_persists_journal() {
         unban_action: "unban".to_string(),
         ignore_ips: Vec::new(),
     };
-    let mut jail2 = Jail::new(
-        config2,
-        store2,
-        Some(&actions),
-        Box::new(FakeRunner::new()),
-    )
-    .expect("failed to create second jail");
-    jail2.restore_journal().expect("restore_journal should succeed");
+    let mut jail2 = Jail::new(config2, store2, Some(&actions), Box::new(FakeRunner::new()))
+        .expect("failed to create second jail");
+    jail2
+        .restore_journal()
+        .expect("restore_journal should succeed");
 
     // Second scan: the journal was persisted, so the already-processed line is
     // NOT re-scanned. lines_scanned == 0 proves the offset advanced.
-    let r2 = jail2.scan(ExecutionMode::DryRun).expect("second scan should succeed");
+    let r2 = jail2
+        .scan(ExecutionMode::DryRun)
+        .expect("second scan should succeed");
     assert_eq!(
         r2.lines_scanned, 0,
         "journal must have been persisted so the line is not re-scanned"

@@ -1046,21 +1046,20 @@ async fn run_max_auth_tries_check() -> Vec<toride_ssh_core::Diagnostic> {
     MaxAuthTriesExhaustionCheck.run().await.unwrap()
 }
 
+/// Run `MaxAuthTriesExhaustionCheck` against a fixed agent socket
+/// (`None` = no agent) without touching the process-global environment,
+/// which races with tests running in parallel.
+async fn run_max_auth_tries_check_with_sock(
+    sock: Option<&str>,
+) -> Vec<toride_ssh_core::Diagnostic> {
+    MaxAuthTriesExhaustionCheck::classify_agent_keys(sock)
+        .await
+        .unwrap()
+}
+
 #[tokio::test]
 async fn max_auth_tries_skips_when_auth_sock_unset() {
-    let orig = std::env::var("SSH_AUTH_SOCK").ok();
-    // SAFETY: save/restore pattern; window is limited to this test scope.
-    unsafe {
-        std::env::remove_var("SSH_AUTH_SOCK");
-    }
-
-    let diags = run_max_auth_tries_check().await;
-
-    if let Some(ref val) = orig {
-        unsafe {
-            std::env::set_var("SSH_AUTH_SOCK", val);
-        }
-    }
+    let diags = run_max_auth_tries_check_with_sock(None).await;
 
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].id, "max_auth_tries_exhaustion");
@@ -1075,23 +1074,9 @@ async fn max_auth_tries_skips_when_auth_sock_unset() {
 
 #[tokio::test]
 async fn max_auth_tries_info_when_ssh_add_fails() {
-    let orig_sock = std::env::var("SSH_AUTH_SOCK").ok();
     // Point to a non-existent socket — ssh-add -l will fail.
-    unsafe {
-        std::env::set_var("SSH_AUTH_SOCK", "/tmp/toride_test_nonexistent_agent_socket");
-    }
-
-    let diags = run_max_auth_tries_check().await;
-
-    if let Some(ref val) = orig_sock {
-        unsafe {
-            std::env::set_var("SSH_AUTH_SOCK", val);
-        }
-    } else {
-        unsafe {
-            std::env::remove_var("SSH_AUTH_SOCK");
-        }
-    }
+    let diags =
+        run_max_auth_tries_check_with_sock(Some("/tmp/toride_test_nonexistent_agent_socket")).await;
 
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].id, "max_auth_tries_exhaustion");

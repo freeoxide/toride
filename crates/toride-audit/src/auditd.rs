@@ -158,8 +158,8 @@ impl<'a> AuditdManager<'a> {
 mod tests {
     use super::*;
     use std::sync::Mutex;
-    use toride_runner::output::CommandOutput;
     use toride_runner::Runner;
+    use toride_runner::output::CommandOutput;
 
     /// Test runner that records every spec it sees and returns queued outputs.
     /// Each entry corresponds positionally to a `run`/`run_checked` call.

@@ -12,6 +12,21 @@
 //! let data = read_optional("/etc/toride/optional.json")?;
 //! let resolved = expand_path("~/config");
 //! ```
+//!
+//! # Platform support
+//!
+//! - [`atomic_write`] / [`atomic_write_bytes`] / [`atomic_write_with_perms`]
+//!   are cross-platform. On Unix the files are created with explicit POSIX
+//!   mode bits (default `0o600`) that survive the rename; on non-Unix
+//!   platforms no mode is forced and the `perms` argument is accepted
+//!   best-effort (no-op).
+//! - The POSIX permission helpers ([`set_permissions`],
+//!   [`permissions::check_not_world_writable`],
+//!   [`permissions::check_owner_is_root`]) are Unix-only: they are compiled
+//!   (and re-exported at the crate root) only on Unix targets.
+//! - File locking ([`with_lock`], [`with_lock_path`]), optional reads
+//!   ([`read_optional`], [`read_optional_bytes`]), and path expansion
+//!   ([`expand_tilde`], [`expand_path`]) are cross-platform.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -47,5 +62,6 @@ pub use atomic::{atomic_write, atomic_write_bytes, atomic_write_with_perms};
 pub use error::{Error, Result};
 pub use expand::{expand_path, expand_tilde};
 pub use lock::{with_lock, with_lock_path};
+#[cfg(unix)]
 pub use permissions::set_permissions;
 pub use read::{read_optional, read_optional_bytes};

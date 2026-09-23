@@ -230,7 +230,10 @@ mod tests {
         ];
         let result = redact_args(&args, REDACT_FLAGS);
         assert_eq!(result[1], "--token=");
-        assert_eq!(result[2], "***", "secret after empty `--token=` must be redacted");
+        assert_eq!(
+            result[2], "***",
+            "secret after empty `--token=` must be redacted"
+        );
         assert_eq!(result[3], "ok");
     }
 }

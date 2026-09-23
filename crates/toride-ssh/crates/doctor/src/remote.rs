@@ -3020,7 +3020,10 @@ trustedusercakeys /etc/ssh/ca.pub
     fn shell_quote_plain_path_is_single_quoted() {
         // A benign path is wrapped in single quotes; `test -f '<path>'` still
         // resolves correctly on the remote shell.
-        assert_eq!(shell_quote("/etc/ssh/auth_principals"), "'/etc/ssh/auth_principals'");
+        assert_eq!(
+            shell_quote("/etc/ssh/auth_principals"),
+            "'/etc/ssh/auth_principals'"
+        );
     }
 
     #[test]

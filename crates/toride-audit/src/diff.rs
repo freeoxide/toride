@@ -146,7 +146,10 @@ mod tests {
             .filter(|e| e.tag == DiffTag::Added)
             .map(|e| e.line.as_str())
             .collect();
-        assert_eq!(added, vec!["-D always -F arch=b64 -S chmod -f a1 -k perm\n"]);
+        assert_eq!(
+            added,
+            vec!["-D always -F arch=b64 -S chmod -f a1 -k perm\n"]
+        );
 
         // The removed line is the openat watch.
         let removed: Vec<&str> = entries

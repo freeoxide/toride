@@ -185,10 +185,25 @@ impl<'a> NginxManager<'a> {
             std::fs::create_dir_all(parent)?;
         }
 
-        std::os::unix::fs::symlink(&source, &link)?;
-
-        tracing::info!("nginx: enabled site {}", domain);
-        Ok(())
+        // `sites-enabled` symlinking is a Unix web-server deployment
+        // convention; other targets have no equivalent deployment layout, so
+        // the operation fails with a clear error instead of pretending to
+        // succeed (and the Windows symlink API needs privileges anyway).
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&source, &link)?;
+            tracing::info!("nginx: enabled site {}", domain);
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "cannot enable site {domain}: sites-enabled symlinks are only supported on Unix"
+                ),
+            )))
+        }
     }
 
     /// Disable a site by removing the symlink from sites-enabled.

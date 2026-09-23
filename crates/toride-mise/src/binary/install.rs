@@ -111,7 +111,7 @@ pub async fn install_mise(
 
 #[cfg(feature = "bootstrap")]
 mod github {
-    use super::{platform_asset_keyword, BootstrapOptions};
+    use super::{BootstrapOptions, platform_asset_keyword};
     use crate::error::{MiseError, MiseResult};
     use camino::Utf8PathBuf;
 
@@ -123,8 +123,7 @@ mod github {
     ///
     /// mise publishes `SHASUMS256.txt`; the broader alternatives keep this
     /// robust against minor upstream naming changes.
-    const CHECKSUM_FILE_KEYWORDS: [&str; 3] =
-        ["shasums256", "sha256sums", "checksums"];
+    const CHECKSUM_FILE_KEYWORDS: [&str; 3] = ["shasums256", "sha256sums", "checksums"];
 
     /// Fetch the download URL, asset name, checksum-file URL, and tag for the
     /// latest (or specific) mise release.
@@ -218,8 +217,8 @@ mod github {
                 || std::path::Path::new(&lower)
                     .extension()
                     .is_some_and(|ext| ext == "txt");
-            let is_checksum =
-                has_checksum_extension && CHECKSUM_FILE_KEYWORDS.iter().any(|kw| lower.contains(kw));
+            let is_checksum = has_checksum_extension
+                && CHECKSUM_FILE_KEYWORDS.iter().any(|kw| lower.contains(kw));
             if is_checksum {
                 a["browser_download_url"].as_str().map(str::to_owned)
             } else {
@@ -306,11 +305,13 @@ mod github {
             });
         };
 
-        let resp = client.get(url).send().await.map_err(|e| {
-            MiseError::BootstrapFailed {
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| MiseError::BootstrapFailed {
                 reason: format!("failed to download checksum file: {e}"),
-            }
-        })?;
+            })?;
 
         if !resp.status().is_success() {
             return Err(MiseError::BootstrapFailed {
@@ -325,10 +326,12 @@ mod github {
             reason: format!("failed to read checksum file body: {e}"),
         })?;
 
-        extract_digest_from_checksum_body(&body, asset_name).ok_or_else(|| MiseError::BootstrapFailed {
-            reason: format!(
-                "checksum file did not contain a sha256 entry for asset `{asset_name}`"
-            ),
+        extract_digest_from_checksum_body(&body, asset_name).ok_or_else(|| {
+            MiseError::BootstrapFailed {
+                reason: format!(
+                    "checksum file did not contain a sha256 entry for asset `{asset_name}`"
+                ),
+            }
         })
     }
 
@@ -491,9 +494,7 @@ mod github {
             let digest = extract_digest_from_checksum_body(body, "mise-linux-x64.tar.gz");
             assert_eq!(
                 digest.as_deref(),
-                Some(
-                    "1111111111111111111111111111111111111111111111111111111111111111"
-                )
+                Some("1111111111111111111111111111111111111111111111111111111111111111")
             );
         }
 
@@ -581,7 +582,14 @@ impl MiseBinary {
     ///
     /// For automated bootstrapping, match on [`MiseError::BootstrapHint`]
     /// and call [`install_mise`] with the desired [`BootstrapMethod`].
+    // The `async` keyword is part of the public signature — callers `.await`
+    // this function — so removing it (as the lint suggests) would be a
+    // breaking API change. Suppress rather than rewrite.
     #[allow(clippy::unused_async)]
+    #[expect(
+        clippy::unused_async_trait_impl,
+        reason = "signature stability: callers .await this fn; dropping `async` would break them"
+    )]
     pub async fn ensure_installed() -> MiseResult<Self> {
         match Self::discover() {
             Ok(bin) => Ok(bin),

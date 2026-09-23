@@ -1049,10 +1049,7 @@ mod tests {
             .find(|l| l.starts_with("Environment=BORG_PASSCOMMAND="))
             .expect("rendered unit must contain a BORG_PASSCOMMAND Environment= line");
 
-        let expected_value = format!(
-            "cat {}",
-            password_file_path(&spec.name).display()
-        );
+        let expected_value = format!("cat {}", password_file_path(&spec.name).display());
         let parsed = parse_systemd_env_value(line)
             .expect("BORG_PASSCOMMAND line must be parseable as Environment=KEY=VALUE");
 

@@ -111,7 +111,9 @@ impl<'a> AuthorizedKeysService<'a> {
             use std::fs::OpenOptions;
             use std::io::Write;
 
-            // If the file exists, we append. If not, we create and set permissions.
+            // If the file exists, we append. If not, we create and set permissions
+            // (Unix-only; see the chmod below).
+            #[cfg(unix)]
             let is_new = !path.exists();
 
             let mut file = OpenOptions::new()
@@ -126,7 +128,10 @@ impl<'a> AuthorizedKeysService<'a> {
             file.sync_all()
                 .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;
 
-            // Set restrictive permissions on new files
+            // Set restrictive permissions on new files (POSIX modes are
+            // Unix-only; `toride_fs::set_permissions` only exists on Unix, and
+            // other targets keep the platform-default permissions).
+            #[cfg(unix)]
             if is_new {
                 toride_fs::set_permissions(&path, AUTHORIZED_KEYS_MODE)
                     .map_err(|e| Error::AuthorizedKeysWriteFailed(e.to_string()))?;

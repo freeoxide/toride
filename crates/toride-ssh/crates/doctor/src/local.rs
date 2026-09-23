@@ -2120,62 +2120,65 @@ impl Check for HomeDirPermissionsCheck {
 /// the server rejects the excess offers.
 struct MaxAuthTriesExhaustionCheck;
 
-impl Check for MaxAuthTriesExhaustionCheck {
-    fn id(&self) -> &'static str {
-        "max_auth_tries_exhaustion"
-    }
-    fn module(&self) -> &'static str {
-        "local"
-    }
-    fn run(&self) -> CheckFuture<'_> {
-        Box::pin(async move {
-            // Default MaxAuthTries on most sshd installations.
-            const DEFAULT_MAX_AUTH_TRIES: usize = 6;
+impl MaxAuthTriesExhaustionCheck {
+    /// Classify agent keys against `MaxAuthTries` for the given agent socket
+    /// (`None` = no agent). Split from [`Check::run`] so tests can exercise
+    /// each branch without mutating the process-global `SSH_AUTH_SOCK`, which
+    /// races with parallel tests. The spawned `ssh-add` pins its own
+    /// `SSH_AUTH_SOCK` so its result matches `sock` even if the ambient
+    /// environment changes mid-run.
+    async fn classify_agent_keys(sock: Option<&str>) -> Result<Vec<Diagnostic>> {
+        // Default MaxAuthTries on most sshd installations.
+        const DEFAULT_MAX_AUTH_TRIES: usize = 6;
 
-            if std::env::var("SSH_AUTH_SOCK").map_or(true, |v| v.is_empty()) {
-                return Ok(vec![Diagnostic {
-                    id: "max_auth_tries_exhaustion",
-                    severity: Severity::Info,
-                    message: "SSH agent is not running — cannot count loaded keys".into(),
-                    hint: None,
-                    module: "local",
-                }]);
-            }
+        let Some(sock) = sock else {
+            return Ok(vec![Diagnostic {
+                id: "max_auth_tries_exhaustion",
+                severity: Severity::Info,
+                message: "SSH agent is not running — cannot count loaded keys".into(),
+                hint: None,
+                module: "local",
+            }]);
+        };
 
-            let output = tokio::task::spawn_blocking(|| {
-                duct::cmd("ssh-add", ["-l"]).stderr_null().read().ok()
-            })
-            .await
-            .ok()
-            .flatten();
+        let sock = sock.to_owned();
+        let output = tokio::task::spawn_blocking(move || {
+            duct::cmd("ssh-add", ["-l"])
+                .env("SSH_AUTH_SOCK", sock)
+                .stderr_null()
+                .read()
+                .ok()
+        })
+        .await
+        .ok()
+        .flatten();
 
-            let Some(output) = output else {
-                return Ok(vec![Diagnostic {
-                    id: "max_auth_tries_exhaustion",
-                    severity: Severity::Info,
-                    message: "Could not list agent keys via `ssh-add -l`".into(),
-                    hint: None,
-                    module: "local",
-                }]);
-            };
+        let Some(output) = output else {
+            return Ok(vec![Diagnostic {
+                id: "max_auth_tries_exhaustion",
+                severity: Severity::Info,
+                message: "Could not list agent keys via `ssh-add -l`".into(),
+                hint: None,
+                module: "local",
+            }]);
+        };
 
-            // `ssh-add -l` exits 1 with "The agent has no identities." when
-            // empty, and 2 on error. When successful it prints one key per line.
-            let key_count = output.lines().filter(|l| !l.is_empty()).count();
+        // `ssh-add -l` exits 1 with "The agent has no identities." when
+        // empty, and 2 on error. When successful it prints one key per line.
+        let key_count = output.lines().filter(|l| !l.is_empty()).count();
 
-            if key_count == 0 {
-                return Ok(vec![Diagnostic {
-                    id: "max_auth_tries_exhaustion",
-                    severity: Severity::Ok,
-                    message: "No keys loaded in agent — MaxAuthTries exhaustion not a concern"
-                        .into(),
-                    hint: None,
-                    module: "local",
-                }]);
-            }
+        if key_count == 0 {
+            return Ok(vec![Diagnostic {
+                id: "max_auth_tries_exhaustion",
+                severity: Severity::Ok,
+                message: "No keys loaded in agent — MaxAuthTries exhaustion not a concern".into(),
+                hint: None,
+                module: "local",
+            }]);
+        }
 
-            if key_count >= DEFAULT_MAX_AUTH_TRIES {
-                Ok(vec![Diagnostic {
+        if key_count >= DEFAULT_MAX_AUTH_TRIES {
+            Ok(vec![Diagnostic {
                     id: "max_auth_tries_exhaustion",
                     severity: Severity::Warning,
                     message: format!(
@@ -2189,8 +2192,8 @@ impl Check for MaxAuthTriesExhaustionCheck {
                     ),
                     module: "local",
                 }])
-            } else if key_count >= DEFAULT_MAX_AUTH_TRIES - 1 {
-                Ok(vec![Diagnostic {
+        } else if key_count >= DEFAULT_MAX_AUTH_TRIES - 1 {
+            Ok(vec![Diagnostic {
                     id: "max_auth_tries_exhaustion",
                     severity: Severity::Info,
                     message: format!(
@@ -2201,17 +2204,33 @@ impl Check for MaxAuthTriesExhaustionCheck {
                     ),
                     module: "local",
                 }])
-            } else {
-                Ok(vec![Diagnostic {
-                    id: "max_auth_tries_exhaustion",
-                    severity: Severity::Ok,
-                    message: format!(
-                        "SSH agent has {key_count} keys loaded (within MaxAuthTries limit of {DEFAULT_MAX_AUTH_TRIES})"
-                    ),
-                    hint: None,
-                    module: "local",
-                }])
-            }
+        } else {
+            Ok(vec![Diagnostic {
+                id: "max_auth_tries_exhaustion",
+                severity: Severity::Ok,
+                message: format!(
+                    "SSH agent has {key_count} keys loaded (within MaxAuthTries limit of {DEFAULT_MAX_AUTH_TRIES})"
+                ),
+                hint: None,
+                module: "local",
+            }])
+        }
+    }
+}
+
+impl Check for MaxAuthTriesExhaustionCheck {
+    fn id(&self) -> &'static str {
+        "max_auth_tries_exhaustion"
+    }
+    fn module(&self) -> &'static str {
+        "local"
+    }
+    fn run(&self) -> CheckFuture<'_> {
+        Box::pin(async move {
+            let sock = std::env::var("SSH_AUTH_SOCK")
+                .ok()
+                .filter(|v| !v.is_empty());
+            Self::classify_agent_keys(sock.as_deref()).await
         })
     }
 }

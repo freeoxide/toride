@@ -265,14 +265,11 @@ mod tests {
         std::fs::create_dir_all(dir.path().join("logrotate.d")).expect("mkdir logrotate.d");
         let paths = paths_under(dir.path());
 
-        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
-            "active",
-        ));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout("active"));
         let doctor = Doctor::new(&runner, &paths);
 
-        let report = doctor
-            .run(&DoctorScope::Auditd)
-            .expect("run succeeds");
+        let report = doctor.run(&DoctorScope::Auditd).expect("run succeeds");
         // The path-based checks pass; the only remaining findings would be
         // from missing auditd binaries on the host. Filter those out so the
         // assertion is host-independent.
@@ -290,9 +287,8 @@ mod tests {
     fn auditd_scope_reports_inactive_service() {
         let dir = TempDir::new().expect("tempdir");
         let paths = paths_under(dir.path());
-        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(
-            "inactive", 3,
-        ));
+        let runner = FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stderr("inactive", 3));
         let doctor = Doctor::new(&runner, &paths);
 
         let report = doctor.run(&DoctorScope::Auditd).expect("run succeeds");
@@ -307,9 +303,8 @@ mod tests {
     fn auditd_scope_runs_systemctl_check() {
         let dir = TempDir::new().expect("tempdir");
         let paths = paths_under(dir.path());
-        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
-            "active",
-        ));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout("active"));
         let doctor = Doctor::new(&runner, &paths);
 
         let _ = doctor.run(&DoctorScope::Auditd).expect("run succeeds");
@@ -356,10 +351,7 @@ mod tests {
         );
         // Logs scope must not check the auditd service.
         assert!(
-            !runner
-                .calls()
-                .iter()
-                .any(|c| c.program == "systemctl"),
+            !runner.calls().iter().any(|c| c.program == "systemctl"),
             "Logs scope should not invoke systemctl"
         );
     }
@@ -379,10 +371,7 @@ mod tests {
         );
         // Config scope must not check the auditd service either.
         assert!(
-            !runner
-                .calls()
-                .iter()
-                .any(|c| c.program == "systemctl"),
+            !runner.calls().iter().any(|c| c.program == "systemctl"),
             "Config scope should not invoke systemctl"
         );
     }
@@ -393,9 +382,8 @@ mod tests {
         // checks for rules.d and logrotate.d.
         let dir = TempDir::new().expect("tempdir");
         let paths = paths_under(dir.path());
-        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stderr(
-            "inactive", 3,
-        ));
+        let runner = FakeRunner::new()
+            .push_response(toride_runner::CommandOutput::from_stderr("inactive", 3));
         let doctor = Doctor::new(&runner, &paths);
 
         let report = doctor.run(&DoctorScope::All).expect("run succeeds");
@@ -421,12 +409,10 @@ mod tests {
         // rather than propagating an error.
         let dir = TempDir::new().expect("tempdir");
         let paths = paths_under(dir.path());
-        let runner = FakeRunner::new()
-            .strict()
-            .respond_err(
-                systemctl_auditd_spec(),
-                toride_runner::Error::Other("spawn failed".to_owned()),
-            );
+        let runner = FakeRunner::new().strict().respond_err(
+            systemctl_auditd_spec(),
+            toride_runner::Error::Other("spawn failed".to_owned()),
+        );
         let doctor = Doctor::new(&runner, &paths);
 
         let report = doctor
@@ -445,9 +431,8 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let custom = PathBuf::from(dir.path());
         let paths = paths_under(&custom);
-        let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(
-            "active",
-        ));
+        let runner =
+            FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout("active"));
         let doctor = Doctor::new(&runner, &paths);
 
         let report = doctor.run(&DoctorScope::Auditd).expect("run succeeds");

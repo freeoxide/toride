@@ -449,8 +449,11 @@ mod tests {
     #[test]
     fn status_inactive_when_exit_zero_and_inactive_stdout() {
         // A cleanly stopped unit exits 0 with "inactive" on stdout.
-        let (mgr, _runner) =
-            manager_with_output(CommandOutput::new("inactive\n".to_owned(), String::new(), Some(0)));
+        let (mgr, _runner) = manager_with_output(CommandOutput::new(
+            "inactive\n".to_owned(),
+            String::new(),
+            Some(0),
+        ));
         let status = mgr.status("sshd").unwrap();
         assert_eq!(status, ServiceStatus::Inactive);
     }
@@ -474,8 +477,11 @@ mod tests {
 
     #[test]
     fn status_failed_when_nonzero_exit_with_failed_stdout() {
-        let (mgr, _runner) =
-            manager_with_output(CommandOutput::new("failed\n".to_owned(), String::new(), Some(3)));
+        let (mgr, _runner) = manager_with_output(CommandOutput::new(
+            "failed\n".to_owned(),
+            String::new(),
+            Some(3),
+        ));
         let status = mgr.status("broken").unwrap();
         assert_eq!(status, ServiceStatus::Failed);
     }
@@ -543,10 +549,19 @@ mod tests {
     fn run_systemctl_accepts_typical_unit_names() {
         // Sanity: the validator must not reject legitimate names, including
         // names that contain dots, at-signs, or template instances.
-        for name in ["sshd", "nginx.service", "user@1000", "sysstat-collect.timer"] {
+        for name in [
+            "sshd",
+            "nginx.service",
+            "user@1000",
+            "sysstat-collect.timer",
+        ] {
             let (mgr, _runner) = manager_with_output(CommandOutput::from_stdout("active\n"));
             let status = mgr.status(name).unwrap();
-            assert_eq!(status, ServiceStatus::Active, "name {name:?} should be accepted");
+            assert_eq!(
+                status,
+                ServiceStatus::Active,
+                "name {name:?} should be accepted"
+            );
         }
     }
 

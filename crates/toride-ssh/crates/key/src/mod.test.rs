@@ -354,7 +354,8 @@ async fn change_passphrase_omits_p_and_n_from_argv() {
         .expect("SSH_ASKPASS env must be set");
     assert!(!askpass.is_empty());
     assert!(
-        env.iter().any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"),
+        env.iter()
+            .any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"),
         "SSH_ASKPASS_REQUIRE=force must be set: {env:?}"
     );
 }
@@ -430,16 +431,15 @@ async fn repair_public_routes_passphrase_through_askpass_not_argv() {
     let svc = KeyService::new(&paths, &runner);
     // The repair fallback runs `ssh-keygen -y -f <path>`; with the capturing
     // runner it returns Ok("") so the write step proceeds.
-    let _ = svc
-        .repair_public(&key_path, Some("repair-secret"))
-        .await;
+    let _ = svc.repair_public(&key_path, Some("repair-secret")).await;
     // repair writes the .pub; ignore outcome, inspect captured calls.
 
     let calls = runner.calls();
     // Find the ssh-keygen -y call.
-    let Some((_cmd, args, env)) = calls.iter().find(|(cmd, args, _)| {
-        cmd == "ssh-keygen" && args.first() == Some(&"-y".to_owned())
-    }) else {
+    let Some((_cmd, args, env)) = calls
+        .iter()
+        .find(|(cmd, args, _)| cmd == "ssh-keygen" && args.first() == Some(&"-y".to_owned()))
+    else {
         // The in-process path may have succeeded on some ssh_key versions
         // for arbitrary bytes; in that case assert no -P leaked anywhere.
         for (cmd, args, _env) in &calls {
@@ -470,23 +470,47 @@ async fn repair_public_routes_passphrase_through_askpass_not_argv() {
 /// invocations (the order `ssh-keygen -p` prompts in). This is the load-bearing
 /// invariant for `change_passphrase` not silently re-using the old passphrase
 /// as the new one.
+/// Run the multi-askpass script, retrying on `ETXTBSY` ("Text file busy").
+///
+/// On Linux, `execve(2)` returns `ETXTBSY` (errno 26) when the file being
+/// executed has an open writer. Even after an atomic write+rename (so no
+/// userspace process holds the file open) the kernel's `i_writecount`
+/// accounting can transiently report a write reference while the binfmt
+/// layer sets up the text segment, **under concurrent fork/exec load** —
+/// e.g. when cargo runs the askpass tests in parallel. This is a known,
+/// purely-transient kernel race; the script is always executable a few
+/// microseconds later. We retry a handful of times with a short backoff so
+/// the tests are deterministic without weakening their assertions. Mirrors
+/// `run_script_retrying_busy` in the `toride-ssh-agent` askpass tests.
+#[cfg(unix)]
+fn run_script_retrying_busy(path: &std::path::Path) -> std::process::Output {
+    let mut backoff = std::time::Duration::from_micros(100);
+    for attempt in 0..50 {
+        match std::process::Command::new(path).output() {
+            Ok(o) => return o,
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && attempt < 49 => {
+                std::thread::sleep(backoff);
+                backoff = (backoff * 2).min(std::time::Duration::from_millis(5));
+            }
+            Err(e) => panic!("failed to run multi-askpass script: {e}"),
+        }
+    }
+    unreachable!("retry loop exhausted without returning or panicking");
+}
+
 #[cfg(unix)]
 #[test]
 fn multi_askpass_answers_in_order() {
     use std::os::unix::fs::PermissionsExt;
-    let handler = MultiAskpassHandler::new(&["old-pass", "new-pass", "new-pass"])
-        .expect("handler creation");
+    let handler =
+        MultiAskpassHandler::new(&["old-pass", "new-pass", "new-pass"]).expect("handler creation");
     let script = handler.script_path().to_path_buf();
     // The script needs execute permission.
     let mode = std::fs::metadata(&script).unwrap().permissions().mode();
     assert_ne!(mode & 0o100, 0, "multi-askpass script must be executable");
     assert_eq!(mode & 0o777, 0o700, "multi-askpass script must be 0o700");
 
-    let run = || {
-        std::process::Command::new(&script)
-            .output()
-            .expect("run script")
-    };
+    let run = || run_script_retrying_busy(&script);
     let o1 = String::from_utf8(run().stdout).unwrap();
     let o2 = String::from_utf8(run().stdout).unwrap();
     let o3 = String::from_utf8(run().stdout).unwrap();
@@ -507,12 +531,9 @@ fn multi_askpass_answers_in_order() {
 #[cfg(unix)]
 #[test]
 fn multi_askpass_escapes_single_quotes() {
-    let handler =
-        MultiAskpassHandler::new(&["it's a 'secret'"]).expect("handler creation");
+    let handler = MultiAskpassHandler::new(&["it's a 'secret'"]).expect("handler creation");
     let script = handler.script_path().to_path_buf();
-    let out = std::process::Command::new(&script)
-        .output()
-        .expect("run script");
+    let out = run_script_retrying_busy(&script);
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert_eq!(
         stdout.trim(),
@@ -619,8 +640,7 @@ fn filter_removes_identityfile_tilde_form() {
 
 #[test]
 fn filter_removes_identityfile_absolute_form() {
-    let input =
-        "Host example\n    IdentityFile /home/u/.ssh/id_ed25519\n    User foo\n";
+    let input = "Host example\n    IdentityFile /home/u/.ssh/id_ed25519\n    User foo\n";
     let out = filtered(input, "/home/u/.ssh", "id_ed25519");
     assert!(
         !out.contains("IdentityFile"),
@@ -632,14 +652,20 @@ fn filter_removes_identityfile_absolute_form() {
 fn filter_removes_identityfile_single_quoted() {
     let input = "IdentityFile '~/.ssh/id_ed25519'\n";
     let out = filtered(input, "/home/u/.ssh", "id_ed25519");
-    assert!(out.trim().is_empty(), "single-quoted tilde value removed: {out}");
+    assert!(
+        out.trim().is_empty(),
+        "single-quoted tilde value removed: {out}"
+    );
 }
 
 #[test]
 fn filter_removes_identityfile_double_quoted() {
     let input = "IdentityFile \"/home/u/.ssh/id_ed25519\"\n";
     let out = filtered(input, "/home/u/.ssh", "id_ed25519");
-    assert!(out.trim().is_empty(), "double-quoted absolute value removed: {out}");
+    assert!(
+        out.trim().is_empty(),
+        "double-quoted absolute value removed: {out}"
+    );
 }
 
 #[test]
@@ -726,7 +752,10 @@ fn filter_removes_bare_name_identityfile() {
     // Some configs reference just the bare key name (resolved against ssh_dir).
     let input = "IdentityFile id_ed25519\n";
     let out = filtered(input, "/home/u/.ssh", "id_ed25519");
-    assert!(out.trim().is_empty(), "bare-name IdentityFile should be removed: {out}");
+    assert!(
+        out.trim().is_empty(),
+        "bare-name IdentityFile should be removed: {out}"
+    );
 }
 
 #[tokio::test]
@@ -762,7 +791,8 @@ async fn remove_from_config_noop_leaves_file_byte_identical() {
 
     let after = std::fs::read(&config).unwrap();
     assert_eq!(
-        after, original.as_bytes(),
+        after,
+        original.as_bytes(),
         "config must be byte-identical when key is not referenced"
     );
 }
@@ -773,8 +803,7 @@ async fn remove_from_config_strips_referenced_line_and_writes_atomically() {
     let ssh_dir = dir.path().join(".ssh");
     std::fs::create_dir_all(&ssh_dir).unwrap();
     let config = ssh_dir.join("config");
-    let original =
-        "Host a\n    IdentityFile ~/.ssh/id_ed25519\n    User foo\n";
+    let original = "Host a\n    IdentityFile ~/.ssh/id_ed25519\n    User foo\n";
     std::fs::write(&config, original.as_bytes()).unwrap();
 
     let paths = toride_ssh_core::SshPaths::with_dir(&ssh_dir);
@@ -794,17 +823,16 @@ async fn remove_from_config_strips_referenced_line_and_writes_atomically() {
     svc.delete(params).await.expect("delete should succeed");
 
     let after = std::fs::read_to_string(&config).unwrap();
-    assert!(!after.contains("IdentityFile"), "IdentityFile removed: {after}");
+    assert!(
+        !after.contains("IdentityFile"),
+        "IdentityFile removed: {after}"
+    );
     assert!(after.contains("User foo"), "other lines preserved: {after}");
     // No leftover temp file in the ssh dir.
     let leftovers = std::fs::read_dir(&ssh_dir)
         .unwrap()
         .filter_map(std::result::Result::<_, std::io::Error>::ok)
-        .filter(|e| {
-            e.file_name()
-                .to_string_lossy()
-                .starts_with(".config.tmp.")
-        })
+        .filter(|e| e.file_name().to_string_lossy().starts_with(".config.tmp."))
         .count();
     assert_eq!(leftovers, 0, "temp config file must be cleaned up");
 }

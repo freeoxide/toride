@@ -1163,7 +1163,7 @@ mod tests {
         let mut tab = KeysTab::new();
         // Open the "New Key" form by pressing 'n'
         tab.handle_key(KeyCode::Char('n'));
-        assert!(tab.action_modal == Some(ActionModal::New));
+        assert_eq!(tab.action_modal, Some(ActionModal::New));
 
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
@@ -1317,9 +1317,7 @@ mod tests {
         assert_eq!(ops.len(), 1);
         match &ops[0] {
             SshOp::KeyCreate {
-                name,
-                passphrase,
-                ..
+                name, passphrase, ..
             } => {
                 assert_eq!(name, "id_ci_bot");
                 assert!(passphrase.is_none(), "empty passphrase → None");

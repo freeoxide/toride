@@ -392,7 +392,11 @@ mod tests {
         let active = svc.is_active().unwrap();
         assert!(active);
         svc.runner()
-            .assert_called_with(&CommandSpec::new("systemctl").args(["is-active", "--", "wg-quick@wg0"]));
+            .assert_called_with(&CommandSpec::new("systemctl").args([
+                "is-active",
+                "--",
+                "wg-quick@wg0",
+            ]));
     }
 
     #[test]
@@ -411,7 +415,11 @@ mod tests {
         let svc = WireguardService::with_runner("wg0", runner);
         svc.enable().unwrap();
         svc.runner()
-            .assert_called_with(&CommandSpec::new("systemctl").args(["enable", "--", "wg-quick@wg0"]));
+            .assert_called_with(&CommandSpec::new("systemctl").args([
+                "enable",
+                "--",
+                "wg-quick@wg0",
+            ]));
     }
 
     #[test]
@@ -420,6 +428,10 @@ mod tests {
         let svc = WireguardService::with_runner("wg0", runner);
         svc.disable().unwrap();
         svc.runner()
-            .assert_called_with(&CommandSpec::new("systemctl").args(["disable", "--", "wg-quick@wg0"]));
+            .assert_called_with(&CommandSpec::new("systemctl").args([
+                "disable",
+                "--",
+                "wg-quick@wg0",
+            ]));
     }
 }

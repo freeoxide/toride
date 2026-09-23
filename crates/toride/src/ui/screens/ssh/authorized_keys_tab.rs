@@ -786,8 +786,7 @@ mod tests {
     /// A real, parseable OpenSSH ed25519 public key (test fixture). The Add
     /// submit handler runs `ssh_key::PublicKey::from_openssh` on the pasted
     /// line to compute the fingerprint, so the key must round-trip.
-    const VALID_ED25519_PUB: &str =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHo2ygeSeFQhQ/XAImKVAPvqlhg2iAa6ImY6NhYh7I7S \
+    const VALID_ED25519_PUB: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHo2ygeSeFQhQ/XAImKVAPvqlhg2iAa6ImY6NhYh7I7S \
          test@fixture";
 
     /// Drive a single-field required `FormModal` to Submitted.

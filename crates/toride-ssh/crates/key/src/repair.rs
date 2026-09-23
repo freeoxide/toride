@@ -119,6 +119,9 @@ pub async fn repair_public_key(
 
     // Derive the public key path and write the output.
     let public_path = private_key_path.with_extension("pub");
+    // Only the Unix branch restores private-key permissions (no POSIX modes
+    // elsewhere), so the binding exists solely on Unix.
+    #[cfg(unix)]
     let private_path = private_key_path.to_path_buf();
 
     tokio::task::spawn_blocking(move || {

@@ -204,16 +204,28 @@ fn redact(args: &[&str]) -> String {
 fn redact_args_should_mask_trailing_value() {
     // --password <value> (space separator): the next arg is the secret.
     let out = redact(&["--password", "s3cr3t"]);
-    assert!(out.contains("***"), "expected a redacted marker, got {out:?}");
-    assert!(!out.contains("s3cr3t"), "secret value leaked into output: {out:?}");
+    assert!(
+        out.contains("***"),
+        "expected a redacted marker, got {out:?}"
+    );
+    assert!(
+        !out.contains("s3cr3t"),
+        "secret value leaked into output: {out:?}"
+    );
 }
 
 #[test]
 fn redact_args_should_mask_inline_equal_value() {
     // --api-key=value (inline `=`): the value half is redacted.
     let out = redact(&["--api-key=abc123"]);
-    assert!(out.contains("--api-key=***"), "expected --api-key=***, got {out:?}");
-    assert!(!out.contains("abc123"), "secret value leaked into output: {out:?}");
+    assert!(
+        out.contains("--api-key=***"),
+        "expected --api-key=***, got {out:?}"
+    );
+    assert!(
+        !out.contains("abc123"),
+        "secret value leaked into output: {out:?}"
+    );
 }
 
 #[test]
@@ -241,7 +253,10 @@ fn redact_args_should_pass_through_non_sensitive_flags() {
     let out = redact(&["--verbose", "--host", "example.com", "--port", "443"]);
     assert!(out.contains("example.com"), "got {out:?}");
     assert!(out.contains("443"), "got {out:?}");
-    assert!(!out.contains("***"), "non-sensitive arg was masked: {out:?}");
+    assert!(
+        !out.contains("***"),
+        "non-sensitive arg was masked: {out:?}"
+    );
 }
 
 #[test]
@@ -271,7 +286,10 @@ fn redact_args_exact_match_gap_is_pinned() {
     // future loosening (e.g. switching to `starts_with`) is a deliberate,
     // reviewed change.
     let out = redact(&["--apikey", "not-redacted"]);
-    assert!(!out.contains("***"), "--apikey was unexpectedly redacted (exact-match gap): {out:?}");
+    assert!(
+        !out.contains("***"),
+        "--apikey was unexpectedly redacted (exact-match gap): {out:?}"
+    );
     assert!(out.contains("not-redacted"), "got {out:?}");
 
     let out2 = redact(&["--new-password", "x"]);
@@ -335,12 +353,8 @@ fn to_shared_spec_should_preserve_force_c_locale_and_args() {
     assert_eq!(shared.program, "ufw");
     assert_eq!(shared.args, vec!["--version".to_string()]);
     assert!(
-        shared
-            .env
-            .iter()
-            .any(|(k, v)| k == "LC_ALL" && v == "C"),
+        shared.env.iter().any(|(k, v)| k == "LC_ALL" && v == "C"),
         "force_c_locale env must be forwarded, got env: {:?}",
         shared.env
     );
 }
-

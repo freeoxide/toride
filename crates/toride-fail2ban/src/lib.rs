@@ -31,7 +31,6 @@
     expect(
         clippy::uninlined_format_args,
         clippy::redundant_closure_for_method_calls,
-        clippy::duration_suboptimal_units,
         clippy::unnecessary_literal_unwrap,
         clippy::unnecessary_wraps,
         clippy::io_other_error,

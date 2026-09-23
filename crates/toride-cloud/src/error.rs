@@ -120,10 +120,7 @@ impl From<toride_runner::Error> for Error {
                 timeout,
                 args,
             } => {
-                let mut message = format!(
-                    "command timed out after {}s",
-                    timeout.as_secs().max(1)
-                );
+                let mut message = format!("command timed out after {}s", timeout.as_secs().max(1));
                 if !args.is_empty() {
                     let _ = write!(message, "\nargs: {}", args.join(" "));
                 }
@@ -135,8 +132,7 @@ impl From<toride_runner::Error> for Error {
                 observed,
                 args,
             } => {
-                let mut message =
-                    format!("output limit exceeded ({limit} bytes, saw {observed})");
+                let mut message = format!("output limit exceeded ({limit} bytes, saw {observed})");
                 if !args.is_empty() {
                     let _ = write!(message, "\nargs: {args}");
                 }

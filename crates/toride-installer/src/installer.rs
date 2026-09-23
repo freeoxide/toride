@@ -315,8 +315,7 @@ impl Installer {
                 &url,
             )?;
 
-            let exec_bytes =
-                extract_executable(&bytes, artifact, &tool_name, bin_path.as_deref())?;
+            let exec_bytes = extract_executable(&bytes, artifact, &tool_name, bin_path.as_deref())?;
 
             write_executable(std::path::Path::new(&dest_str), &exec_bytes)?;
             Ok(())
@@ -457,7 +456,10 @@ impl Installer {
         match &tool.checksum {
             Checksum::None => Ok(None),
             Checksum::Digest(expected) => Ok(Some(expected.clone())),
-            Checksum::Url { url: sum_url, asset_name } => {
+            Checksum::Url {
+                url: sum_url,
+                asset_name,
+            } => {
                 let body = self.fetch_text(sum_url).await?;
                 let expected = extract_digest_from_checksum_body(&body, asset_name).ok_or(
                     Error::NoChecksumEntry {
@@ -858,9 +860,9 @@ mod tests {
     use crate::ArtifactKind;
     use crate::target::{Arch, Os};
     use std::fs;
-    use std::sync::Mutex;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
+    use std::sync::Mutex;
     use tempfile::TempDir;
 
     fn host_target() -> Target {
@@ -1186,19 +1188,15 @@ mod tests {
     #[test]
     fn checksum_body_parses_bare_hex_line() {
         let digest = hex_sha256(b"lonely");
-        assert_eq!(
-            extract_digest_from_checksum_body(&digest, ""),
-            Some(digest)
-        );
+        assert_eq!(extract_digest_from_checksum_body(&digest, ""), Some(digest));
     }
 
     #[test]
     fn checksum_body_picks_matching_asset_among_many() {
         let other = hex_sha256(b"other-asset");
         let want = hex_sha256(b"wanted-asset");
-        let body = format!(
-            "{other}  other-file\n{want}  mise-1.0-linux-x64\nfifth-line-not-a-digest\n"
-        );
+        let body =
+            format!("{other}  other-file\n{want}  mise-1.0-linux-x64\nfifth-line-not-a-digest\n");
         assert_eq!(
             extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
             Some(want)
@@ -1210,7 +1208,10 @@ mod tests {
         // A banner line that happens to be followed by a filename must not be
         // mistaken for a digest.
         let body = "This is mise 1.0  mise-1.0-linux-x64\n";
-        assert_eq!(extract_digest_from_checksum_body(body, "mise-1.0-linux-x64"), None);
+        assert_eq!(
+            extract_digest_from_checksum_body(body, "mise-1.0-linux-x64"),
+            None
+        );
     }
 
     #[test]
@@ -1280,7 +1281,10 @@ mod tests {
             ..Default::default()
         };
         // A genuine, untampered download verifies.
-        installer.verify(&tool, "1.0", artifact, "https://x").await.unwrap();
+        installer
+            .verify(&tool, "1.0", artifact, "https://x")
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
@@ -1458,8 +1462,7 @@ mod tests {
         );
         let last = *snapshots.last().unwrap();
         assert_eq!(
-            last.downloaded,
-            body_len as u64,
+            last.downloaded, body_len as u64,
             "final emit must report the full body length, got {snapshots:?}"
         );
         assert_eq!(last.total, Some(body_len as u64));
@@ -1566,8 +1569,7 @@ mod tests {
                 let _ = sock.read(&mut buf).await;
                 // No Content-Length: HTTP/1.0 + Connection: close makes the
                 // body close-delimited, so the client must stream to EOF.
-                let header =
-                    "HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n";
+                let header = "HTTP/1.0 200 OK\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\n";
                 let _ = sock.write_all(header.as_bytes()).await;
                 let _ = sock.write_all(&body).await;
                 let _ = sock.flush().await;

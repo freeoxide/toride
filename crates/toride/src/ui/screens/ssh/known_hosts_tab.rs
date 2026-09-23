@@ -939,7 +939,11 @@ mod tests {
         tab.handle_key(KeyCode::Char('n'));
         assert!(tab.action_modal.is_none());
         assert!(tab.drain_ops().is_empty(), "cancel must not queue an op");
-        assert_eq!(tab.hosts.len(), count_before, "cancel must not change count");
+        assert_eq!(
+            tab.hosts.len(),
+            count_before,
+            "cancel must not change count"
+        );
         let hashed_after: Vec<bool> = tab.hosts.iter().map(|h| h.is_hashed).collect();
         assert_eq!(
             hashed_after, hashed_before,

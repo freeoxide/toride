@@ -65,10 +65,6 @@ pub struct SshDataCollector {
 }
 
 /// How long to keep cached diagnostics before re-running the full suite.
-#[expect(
-    clippy::duration_suboptimal_units,
-    reason = "stable std lacks larger-unit constructors"
-)]
 const DIAGNOSTICS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl SshDataCollector {
@@ -457,7 +453,7 @@ fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
     // The forward lookup is bound ONCE and reused for the UID-0 check below —
     // uid_for_username spawns `dscl` (macOS) / reads /etc/passwd (Linux)
     // synchronously, so the redundant second spawn was pure waste.
-    let euid = unsafe { libc::geteuid() };
+    let euid = current_euid();
     let resolved_uid = uid_for_username(username);
     would_lock_out_with_uid(verb, username, euid, resolved_uid)
 }
@@ -511,7 +507,7 @@ async fn would_lock_out_async(verb: &str, username: &str) -> Option<SshOpError> 
                 "refusing to {verb} '{username}': would lock out root / your own account"
             )));
         }
-        let euid = unsafe { libc::geteuid() };
+        let euid = current_euid();
         let resolved_uid = uid_for_username(&username);
         would_lock_out_with_uid(&verb, &username, euid, resolved_uid)
     })
@@ -580,10 +576,39 @@ fn would_lock_out_with_uid(
 }
 
 /// Best-effort name of the account running this process.
+///
+/// Resolves the effective UID through the same lookup chain as
+/// [`uid_to_username`]. On targets without POSIX UIDs there is no identity to
+/// resolve, so this returns `None` (and the lockout guards degrade to their
+/// refuse-by-default posture).
+#[cfg(unix)]
 fn current_username() -> Option<String> {
     // SAFETY: geteuid is a trivial read with no preconditions.
     let euid = unsafe { libc::geteuid() };
     uid_to_username(euid)
+}
+
+/// Non-Unix fallback: no effective UID, so no account name to resolve.
+#[cfg(not(unix))]
+fn current_username() -> Option<String> {
+    None
+}
+
+/// Process effective UID.
+///
+/// `(uid_t)-1` is not a valid UID on any target, so the non-Unix sentinel can
+/// never equal a resolved account UID — the lockout guards simply skip the
+/// euid-equality branch there.
+#[cfg(unix)]
+fn current_euid() -> u32 {
+    // SAFETY: geteuid is a trivial read with no preconditions.
+    unsafe { libc::geteuid() }
+}
+
+/// Non-Unix fallback sentinel: see [`current_euid`].
+#[cfg(not(unix))]
+fn current_euid() -> u32 {
+    u32::MAX
 }
 
 /// F11: self-lockout guard for per-key `authorized_keys` removal.
@@ -712,6 +737,7 @@ fn uid_to_username(uid: u32) -> Option<String> {
 /// `libc` crate supports; consults whatever NSS is configured with (files,
 /// ldap, sss, compat, …). Returns `None` if the user is unknown or the call
 /// fails. Empty usernames short-circuit (`getpwnam_r("")` is unspecified).
+#[cfg(unix)]
 fn nss_uid_for_username(username: &str) -> Option<u32> {
     // SAFETY: getpwnam_r is thread-safe and reads `name` as a NUL-terminated
     // C string. We pass a freshly-allocated CString; the resulting `passwd`
@@ -755,10 +781,17 @@ fn nss_uid_for_username(username: &str) -> Option<u32> {
     }
 }
 
+/// Non-Unix fallback: there is no NSS/passwd database to consult.
+#[cfg(not(unix))]
+fn nss_uid_for_username(_username: &str) -> Option<u32> {
+    None
+}
+
 /// NSS reverse lookup via `getpwuid_r`. Returns `None` if the UID is unknown
 /// or the call fails. The name is copied into an owned `String` before the C
 /// buffer is dropped. Retries with a larger buffer on ERANGE (long LDAP
 /// entries), capped at 64 KiB.
+#[cfg(unix)]
 fn nss_username_for_uid(uid: u32) -> Option<String> {
     use std::ffi::CStr;
     use std::ptr;
@@ -799,6 +832,12 @@ fn nss_username_for_uid(uid: u32) -> Option<String> {
         }
         return Some(name.to_owned());
     }
+}
+
+/// Non-Unix fallback: there is no NSS/passwd database to consult.
+#[cfg(not(unix))]
+fn nss_username_for_uid(_uid: u32) -> Option<String> {
+    None
 }
 
 /// macOS Directory Service forward lookup against a specific node (e.g.
@@ -1012,10 +1051,8 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 "config",
                 format!("added host '{name}'"),
                 &format!("failed to add host '{name}'"),
-                svc.edit(|ast| {
-                    toride_ssh::config::ConfigService::add_host(ast, &name, directives)
-                })
-                .await,
+                svc.edit(|ast| toride_ssh::config::ConfigService::add_host(ast, &name, directives))
+                    .await,
             )
         }
         SshOp::ConfigRemoveHost { name } => {
@@ -1024,10 +1061,8 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 "config",
                 format!("removed host '{name}'"),
                 &format!("failed to remove host '{name}'"),
-                svc.edit(|ast| {
-                    toride_ssh::config::ConfigService::remove_host(ast, &name)
-                })
-                .await,
+                svc.edit(|ast| toride_ssh::config::ConfigService::remove_host(ast, &name))
+                    .await,
             )
         }
         SshOp::ConfigEditHost {
@@ -5154,8 +5189,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     /// A valid OpenSSH ed25519 public key whose fingerprint `ssh_key` can
     /// actually compute (matches the fixture used elsewhere in this module).
-    const PREVIEW_PUB_KEY: &str =
-        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI \
+    const PREVIEW_PUB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI \
          alice@toride";
 
     /// Write `contents` to `<dir>/.ssh/authorized_keys` and return that path.
@@ -5204,7 +5238,11 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         write_authorized_keys(&dir_path, &line);
         let ssh_dir = dir_path.join(".ssh");
         let previews = collect_authorized_keys_preview(&ssh_dir, 10);
-        assert_eq!(previews.len(), 1, "options-prefixed key parses to one entry");
+        assert_eq!(
+            previews.len(),
+            1,
+            "options-prefixed key parses to one entry"
+        );
         let p = &previews[0];
         assert_eq!(
             p.key_type, "ssh-ed25519",
@@ -5232,11 +5270,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let previews = collect_authorized_keys_preview(&ssh_dir, 10);
         // Only the two full valid keys survive (comment, blank, and the
         // single-token `not-a-key` / `just-one-token` lines are filtered).
-        assert_eq!(
-            previews.len(),
-            2,
-            "only full key lines parse: {previews:?}"
-        );
+        assert_eq!(previews.len(), 2, "only full key lines parse: {previews:?}");
         // 1-based line numbers reflect the ORIGINAL file position: the first
         // valid key is on line 4, the second on line 6.
         assert_eq!(previews[0].line, 4, "first valid key is on file line 4");

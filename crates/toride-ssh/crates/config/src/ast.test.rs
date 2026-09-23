@@ -712,14 +712,10 @@ fn top_level_line() -> impl Strategy<Value = String> {
         (safe_token(), safe_value()).prop_map(|(k, v)| format!("{k} {v}\n")),
         // Host block with one indented directive body.
         (safe_token(), indent_str(), safe_token(), safe_value())
-            .prop_map(|(pat, ind, dk, dval)| {
-                format!("Host {pat}\n{ind}{dk} {dval}\n")
-            }),
+            .prop_map(|(pat, ind, dk, dval)| { format!("Host {pat}\n{ind}{dk} {dval}\n") }),
         // Match block with one indented directive body.
         (safe_token(), indent_str(), safe_token(), safe_value())
-            .prop_map(|(crit, ind, dk, dval)| {
-                format!("Match host {crit}\n{ind}{dk} {dval}\n")
-            }),
+            .prop_map(|(crit, ind, dk, dval)| { format!("Match host {crit}\n{ind}{dk} {dval}\n") }),
     ]
 }
 

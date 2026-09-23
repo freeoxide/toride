@@ -161,7 +161,10 @@ mod tests {
         let missing = dir.path().join("never-existed.conf");
 
         let backup = create_backup(&missing).expect("no error for missing source");
-        assert!(!backup.exists(), "no file should be written for missing source");
+        assert!(
+            !backup.exists(),
+            "no file should be written for missing source"
+        );
         let name = backup.file_name().unwrap().to_string_lossy().into_owned();
         assert!(name.starts_with("never-existed.conf.bak."));
     }

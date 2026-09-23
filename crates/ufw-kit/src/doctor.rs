@@ -1156,47 +1156,44 @@ fn check_permissions(ufw: &Ufw) -> Vec<Finding> {
 /// Check permissions on a single path and push findings.
 fn check_path_permissions(path: &str, findings: &mut Vec<Finding>) {
     match std::fs::metadata(path) {
+        // POSIX permission bits only exist on Unix, so the metadata is only
+        // consulted there; other targets report the check as skipped.
+        #[cfg(unix)]
         Ok(meta) => {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mode = meta.permissions().mode();
-                if mode & 0o002 != 0 {
-                    findings.push(Finding {
-                        id: Box::leak(
-                            format!("perm:{}:world-writable", path.replace('/', ":"))
-                                .into_boxed_str(),
-                        ),
-                        severity: Severity::Warning,
-                        title: format!("{path} is world-writable"),
-                        detail: format!(
-                            "{path} has permissions {:o}, which is world-writable.",
-                            mode & 0o777
-                        ),
-                        fix: Some(format!("Fix permissions: sudo chmod o-w {path}")),
-                    });
-                } else {
-                    findings.push(Finding {
-                        id: Box::leak(
-                            format!("perm:{}:ok", path.replace('/', ":")).into_boxed_str(),
-                        ),
-                        severity: Severity::Ok,
-                        title: format!("{path} permissions OK"),
-                        detail: format!("{path} has permissions {:o}.", mode & 0o777),
-                        fix: None,
-                    });
-                }
-            }
-            #[cfg(not(unix))]
-            {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = meta.permissions().mode();
+            if mode & 0o002 != 0 {
                 findings.push(Finding {
-                    id: Box::leak(format!("perm:{}:skip", path.replace('/', ":")).into_boxed_str()),
-                    severity: Severity::Info,
-                    title: format!("Cannot check {path} permissions"),
-                    detail: "Permission checks require Unix.".into(),
+                    id: Box::leak(
+                        format!("perm:{}:world-writable", path.replace('/', ":")).into_boxed_str(),
+                    ),
+                    severity: Severity::Warning,
+                    title: format!("{path} is world-writable"),
+                    detail: format!(
+                        "{path} has permissions {:o}, which is world-writable.",
+                        mode & 0o777
+                    ),
+                    fix: Some(format!("Fix permissions: sudo chmod o-w {path}")),
+                });
+            } else {
+                findings.push(Finding {
+                    id: Box::leak(format!("perm:{}:ok", path.replace('/', ":")).into_boxed_str()),
+                    severity: Severity::Ok,
+                    title: format!("{path} permissions OK"),
+                    detail: format!("{path} has permissions {:o}.", mode & 0o777),
                     fix: None,
                 });
             }
+        }
+        #[cfg(not(unix))]
+        Ok(_) => {
+            findings.push(Finding {
+                id: Box::leak(format!("perm:{}:skip", path.replace('/', ":")).into_boxed_str()),
+                severity: Severity::Info,
+                title: format!("Cannot check {path} permissions"),
+                detail: "Permission checks require Unix.".into(),
+                fix: None,
+            });
         }
         Err(_) => {
             findings.push(Finding {

@@ -1494,10 +1494,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
             result.is_err(),
             "missing-binary error must be propagated, not swallowed as empty"
         );
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::Error::ToolNotFound(_)
-        ));
+        assert!(matches!(result.unwrap_err(), crate::Error::ToolNotFound(_)));
     }
 
     #[tokio::test]
@@ -1560,7 +1557,9 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
             "command `ssh-keygen` failed with exit None: ".into()
         )));
         // Non-CommandFailed variants are real errors.
-        assert!(!is_host_not_found(&Error::ToolNotFound("ssh-keygen".into())));
+        assert!(!is_host_not_found(&Error::ToolNotFound(
+            "ssh-keygen".into()
+        )));
         assert!(!is_host_not_found(&Error::TaskFailed("panic".into())));
         assert!(!is_host_not_found(&Error::PermissionDenied("/x".into())));
     }

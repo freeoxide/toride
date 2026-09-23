@@ -278,28 +278,45 @@ impl<'a> ConfigManager<'a> {
         // never sees sites-enabled without the link. Using the target's
         // directory with a distinctive suffix keeps the temp name on the same
         // filesystem as the final rename (a requirement for atomic rename).
-        let link_parent = link.parent().unwrap_or(std::path::Path::new("."));
-        let tmp_link = link_parent.join(format!(
-            ".{}.toride-tmp",
-            link.file_name()
-                .map(|f| f.to_string_lossy().into_owned())
-                .unwrap_or_else(|| domain.to_string())
-        ));
-        // Clean up any stale temp link from a previous crashed attempt, then
-        // ignore the (likely) not-found error.
-        let _ = std::fs::remove_file(&tmp_link);
-
-        std::os::unix::fs::symlink(&source, &tmp_link)?;
-        // Atomic publish. Overwrites an existing link on Unix.
-        std::fs::rename(&tmp_link, &link).map_err(|e| {
-            // Best-effort cleanup of the temp link if the rename failed, so we
-            // don't leave an orphaned symlink behind.
+        //
+        // `sites-enabled` symlinking is a Unix web-server deployment
+        // convention; other targets have no equivalent deployment layout, so
+        // the operation fails with a clear error instead of pretending to
+        // succeed (and the Windows symlink API needs privileges anyway).
+        #[cfg(unix)]
+        {
+            let link_parent = link.parent().unwrap_or(std::path::Path::new("."));
+            let tmp_link = link_parent.join(format!(
+                ".{}.toride-tmp",
+                link.file_name()
+                    .map(|f| f.to_string_lossy().into_owned())
+                    .unwrap_or_else(|| domain.to_string())
+            ));
+            // Clean up any stale temp link from a previous crashed attempt, then
+            // ignore the (likely) not-found error.
             let _ = std::fs::remove_file(&tmp_link);
-            e
-        })?;
 
-        tracing::info!("config: enabled site {domain}");
-        Ok(())
+            std::os::unix::fs::symlink(&source, &tmp_link)?;
+            // Atomic publish. Overwrites an existing link on Unix.
+            std::fs::rename(&tmp_link, &link).map_err(|e| {
+                // Best-effort cleanup of the temp link if the rename failed, so we
+                // don't leave an orphaned symlink behind.
+                let _ = std::fs::remove_file(&tmp_link);
+                e
+            })?;
+
+            tracing::info!("config: enabled site {domain}");
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                format!(
+                    "cannot enable site {domain}: sites-enabled symlinks are only supported on Unix"
+                ),
+            )))
+        }
     }
 
     /// Disable a site by removing its `sites-enabled` symlink.

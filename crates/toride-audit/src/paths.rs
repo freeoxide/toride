@@ -44,7 +44,9 @@ pub fn validate_name(name: &str) -> Result<&str> {
     // but a standalone `..` or `..something` starting the name is suspicious
     // only when it is exactly `..`).
     if name == ".." || name == "." {
-        return Err(Error::Other(format!("name must not be '.' or '..': {name:?}")));
+        return Err(Error::Other(format!(
+            "name must not be '.' or '..': {name:?}"
+        )));
     }
     if name.starts_with('-') {
         return Err(Error::Other(format!(
