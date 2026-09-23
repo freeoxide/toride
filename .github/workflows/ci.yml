@@ -5,14 +5,62 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # Crates verified to compile per OS by the portability audits and local
+  # cross-target checks (x86_64-pc-windows-msvc / aarch64-apple-darwin). Linux
+  # runs the whole workspace. The macOS/Windows check+clippy lists exclude only
+  # crates whose dependency graphs pull C build scripts (ring, lzma-sys) that
+  # cannot be cross-verified on a Linux host; widen toward --workspace as
+  # native runner evidence comes in. Space-separated; expanded to -p flags.
+  PORTABLE_CRATES_MACOS: >-
+    toride-audit toride-backup toride-cloud toride-diagnostic-types
+    toride-fail2ban toride-fs toride-harden toride-mise toride-proxy
+    toride-runner toride-service toride-ssh toride-ssh-agent
+    toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
+    toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
+    toride-ssh-known-hosts toride-status toride-updates toride-users
+    toride-wireguard ufw-kit ufw-kit-test-support
+  PORTABLE_CRATES_WINDOWS: >-
+    toride-audit toride-backup toride-cloud toride-diagnostic-types
+    toride-fail2ban toride-fs toride-harden toride-mise toride-monitor
+    toride-proxy toride-runner toride-service toride-ssh toride-ssh-agent
+    toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
+    toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
+    toride-ssh-known-hosts toride-status toride-updates toride-users
+    toride-wireguard ufw-kit ufw-kit-test-support
+  # Test execution is narrower than compilation on Windows: several test
+  # suites assume Unix (bash, POSIX paths) and are unproven on Windows
+  # runners. Grow this list only with green runner evidence.
+  PORTABLE_TESTS_WINDOWS: >-
+    toride-diagnostic-types toride-mise toride-runner toride-service
+  # Every publishable workspace member (no manifest sets publish = false),
+  # topologically sorted dependencies-first via cargo metadata --no-deps.
+  PUBLISH_ORDER: >-
+    toride-diagnostic-types toride-fs toride-installer toride-runner
+    toride-mise toride-service toride-ssh-core toride-status toride-audit
+    toride-backup toride-cloud toride-fail2ban toride-harden toride-monitor
+    toride-proxy toride-ssh-agent toride-ssh-authorized-keys
+    toride-ssh-certificate toride-ssh-config toride-ssh-forward
+    toride-ssh-known-hosts toride-tailscale toride-updates toride-users
+    toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
+    ufw-kit-test-support toride-ssh toride
 
 jobs:
   fmt:
     name: Format
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -23,7 +71,9 @@ jobs:
   clippy:
     name: Clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
@@ -32,28 +82,113 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --all-targets -- -D warnings
+        with:
+          key: ${{ matrix.os }}
+      - name: Lint (workspace on Linux, portable set on macOS/Windows)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            packages=(--workspace)
+          else
+            packages=()
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              list="$PORTABLE_CRATES_WINDOWS"
+            else
+              list="$PORTABLE_CRATES_MACOS"
+            fi
+            for crate in $list; do
+              packages+=(-p "$crate")
+            done
+          fi
+          cargo clippy "${packages[@]}" --all-targets -- -D warnings
 
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --all-targets
+        with:
+          key: ${{ matrix.os }}
+      - name: Test (workspace on Linux, portable set on macOS/Windows)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            packages=(--workspace)
+          else
+            packages=()
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              list="$PORTABLE_TESTS_WINDOWS"
+            else
+              list="$PORTABLE_CRATES_MACOS"
+            fi
+            for crate in $list; do
+              packages+=(-p "$crate")
+            done
+          fi
+          cargo test "${packages[@]}" --all-targets
 
   check:
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo check --all-targets
+        with:
+          key: ${{ matrix.os }}
+      - name: Check (workspace on Linux, portable set on macOS/Windows)
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$RUNNER_OS" == "Linux" ]]; then
+            packages=(--workspace)
+          else
+            packages=()
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              list="$PORTABLE_CRATES_WINDOWS"
+            else
+              list="$PORTABLE_CRATES_MACOS"
+            fi
+            for crate in $list; do
+              packages+=(-p "$crate")
+            done
+          fi
+          cargo check "${packages[@]}" --all-targets
+
+  publish-readiness:
+    name: Publish readiness
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Informational until the workspace first lands on crates.io: `cargo
+    # publish --dry-run` resolves intra-workspace deps against the live
+    # registry, so every crate with unpublished siblings fails with
+    # "no matching package" (order-blocked, not a manifest defect). Flip
+    # this to false after running scripts/publish-crates.sh once.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish --dry-run (every publishable crate, dependency order)
+        shell: bash
+        run: |
+          set -euo pipefail
+          for crate in $PUBLISH_ORDER; do
+            echo "::group::cargo publish --dry-run -p $crate"
+            cargo publish --dry-run -p "$crate"
+            echo "::endgroup::"
+          done
