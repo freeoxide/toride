@@ -183,19 +183,14 @@ jobs:
         # Informational until the workspace first lands on crates.io: `cargo
         # publish --dry-run` resolves intra-workspace deps against the live
         # registry, so every crate with unpublished siblings fails with
-        # "no matching package" (order-blocked, not a manifest defect). Remove
-        # this continue-on-error after running scripts/publish-crates.sh once.
-        continue-on-error: true
+        # "no matching package" (order-blocked, not a manifest defect). Each
+        # such failure is downgraded to a warning annotation; tighten this to
+        # a hard gate after running scripts/publish-crates.sh once.
         run: |
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: cargo publish --dry-run (every publishable crate, dependency order)
-        shell: bash
-        run: |
-          set -euo pipefail
           for crate in $PUBLISH_ORDER; do
             echo "::group::cargo publish --dry-run -p $crate"
-            cargo publish --dry-run -p "$crate"
+            if ! cargo publish --dry-run -p "$crate"; then
+              echo "::warning::publish dry-run failed for $crate (expected: order-blocked until the first real publish)"
+            fi
             echo "::endgroup::"
           done
