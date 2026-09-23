@@ -1,9 +1,10 @@
 [package]
 name = "toride-mise"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Typed mise integration: query tool versions, config files, and environment state"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["json", "toml", "diagnostics"]
@@ -16,7 +17,7 @@ miette = ["dep:miette"]
 blocking = []
 
 [dependencies]
-toride-runner = { path = "../toride-runner", features = ["tokio-runner", "stream", "fake"] }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner", "stream", "fake"] }
 thiserror = { workspace = true }
 camino = { workspace = true }
 fs-err = { workspace = true }
@@ -38,7 +39,7 @@ miette = { version = "7", optional = true }
 tempfile = { workspace = true }
 insta = { workspace = true }
 tokio = { workspace = true }
-toride-runner = { path = "../toride-runner", features = ["tokio-runner", "stream", "fake", "duct-runner"] }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner", "stream", "fake", "duct-runner"] }
 
 [lints]
 workspace = true

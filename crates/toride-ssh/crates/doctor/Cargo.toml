@@ -1,11 +1,14 @@
 [package]
 name = "toride-ssh-doctor"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "SSH environment diagnostics: local and remote doctor checks for permissions, keys, agent, config, and connectivity"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-toride-ssh-core = { path = "../core" }
-toride-ssh-config = { path = "../config" }
+toride-ssh-core = { path = "../core", version = "0.1.0" }
+toride-ssh-config = { path = "../config", version = "0.1.0" }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 thiserror = { workspace = true }
 serde = { workspace = true }

@@ -1,9 +1,10 @@
 [package]
 name = "toride-runner"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Shared command runner trait, implementations, and utilities"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["duct-runner"]

@@ -1,9 +1,10 @@
 [package]
 name = "toride-service"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Shared systemd service management utilities"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["client"]
@@ -13,7 +14,7 @@ serde = ["dep:serde", "dep:serde_json"]
 [dependencies]
 thiserror = { workspace = true }
 tracing = { workspace = true }
-toride-runner = { path = "../toride-runner" }
+toride-runner = { path = "../toride-runner", version = "0.1.0" }
 duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }

@@ -1,7 +1,10 @@
 [package]
 name = "toride-ssh-key"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "SSH key lifecycle management: generation, inventory, installation, and repair"
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = []
@@ -11,9 +14,9 @@ default = []
 agent-integration = []
 
 [dependencies]
-toride-ssh-core = { path = "../core" }
-toride-ssh-config = { path = "../config" }
-toride-ssh-agent = { path = "../agent" }
+toride-ssh-core = { path = "../core", version = "0.1.0" }
+toride-ssh-config = { path = "../config", version = "0.1.0" }
+toride-ssh-agent = { path = "../agent", version = "0.1.0" }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 thiserror = { workspace = true }
 serde = { workspace = true }

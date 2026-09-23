@@ -1,7 +1,10 @@
 [package]
 name = "toride-ssh-core"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "Shared types, errors, path resolution, CLI runner abstraction, and undo mechanism for the toride-ssh sub-crates"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
@@ -13,9 +16,9 @@ tracing = { workspace = true }
 dirs = { workspace = true }
 which = { workspace = true }
 async-trait = { workspace = true }
-toride-fs = { path = "../../../toride-fs" }
-toride-runner = { path = "../../../toride-runner", features = ["tokio-runner", "fake"] }
-toride-diagnostic-types = { path = "../../../toride-diagnostic-types" }
+toride-fs = { path = "../../../toride-fs", version = "0.1.0" }
+toride-runner = { path = "../../../toride-runner", version = "0.1.0", features = ["tokio-runner", "fake"] }
+toride-diagnostic-types = { path = "../../../toride-diagnostic-types", version = "0.1.0" }
 duct = "1"
 libc = "0.2"
 base64 = "0.22"

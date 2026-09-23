@@ -1,10 +1,13 @@
 [package]
 name = "toride-ssh-forward"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "Port forwarding management via SSH ControlMaster sessions"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-toride-ssh-core = { path = "../core" }
+toride-ssh-core = { path = "../core", version = "0.1.0" }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }

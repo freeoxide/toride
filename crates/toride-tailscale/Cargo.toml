@@ -1,9 +1,10 @@
 [package]
 name = "toride-tailscale"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Tailscale mesh VPN management via HTTP API"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 # A library crate can also ship a binary target. `cargo run -p toride-tailscale
 # --features cli` builds this entry point, which parses the CLI and dispatches
@@ -29,10 +30,10 @@ serde = ["dep:serde"]
 cli = ["dep:clap", "client", "doctor", "service"]
 
 [dependencies]
-toride-runner = { path = "../toride-runner" }
-toride-fs = { path = "../toride-fs" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types" }
-toride-service = { path = "../toride-service", optional = true }
+toride-runner = { path = "../toride-runner", version = "0.1.0" }
+toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0" }
+toride-service = { path = "../toride-service", version = "0.1.0", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
@@ -48,7 +49,7 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
-toride-runner = { path = "../toride-runner", features = ["fake"] }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["fake"] }
 
 [lints]
 workspace = true

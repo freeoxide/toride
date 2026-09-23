@@ -1,7 +1,10 @@
 [package]
 name = "toride-ssh"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "Async SSH manager library: a unified facade over the toride-ssh key, config, agent, known-hosts, authorized-keys, doctor, forward, and certificate sub-crates"
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = [
@@ -24,15 +27,15 @@ full = [
 ]
 
 [dependencies]
-toride-ssh-core = { path = "crates/core" }
-toride-ssh-config = { path = "crates/config" }
-toride-ssh-key = { path = "crates/key" }
-toride-ssh-agent = { path = "crates/agent", optional = true }
-toride-ssh-known-hosts = { path = "crates/known-hosts", optional = true }
-toride-ssh-authorized-keys = { path = "crates/authorized-keys", optional = true }
-toride-ssh-doctor = { path = "crates/doctor", optional = true }
-toride-ssh-forward = { path = "crates/forward", optional = true }
-toride-ssh-certificate = { path = "crates/certificate", optional = true }
+toride-ssh-core = { path = "crates/core", version = "0.1.0" }
+toride-ssh-config = { path = "crates/config", version = "0.1.0" }
+toride-ssh-key = { path = "crates/key", version = "0.1.0" }
+toride-ssh-agent = { path = "crates/agent", version = "0.1.0", optional = true }
+toride-ssh-known-hosts = { path = "crates/known-hosts", version = "0.1.0", optional = true }
+toride-ssh-authorized-keys = { path = "crates/authorized-keys", version = "0.1.0", optional = true }
+toride-ssh-doctor = { path = "crates/doctor", version = "0.1.0", optional = true }
+toride-ssh-forward = { path = "crates/forward", version = "0.1.0", optional = true }
+toride-ssh-certificate = { path = "crates/certificate", version = "0.1.0", optional = true }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 
 [dev-dependencies]

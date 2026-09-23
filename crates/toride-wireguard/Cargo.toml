@@ -1,9 +1,10 @@
 [package]
 name = "toride-wireguard"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "WireGuard VPN tunnel management"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["client", "doctor"]
@@ -24,10 +25,10 @@ path = "src/main.rs"
 required-features = ["cli"]
 
 [dependencies]
-toride-runner = { path = "../toride-runner", default-features = false }
-toride-fs = { path = "../toride-fs" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types" }
-toride-service = { path = "../toride-service", optional = true, default-features = false }
+toride-runner = { path = "../toride-runner", version = "0.1.0", default-features = false }
+toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0" }
+toride-service = { path = "../toride-service", version = "0.1.0", optional = true, default-features = false }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
@@ -45,7 +46,7 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
-toride-runner = { path = "../toride-runner", default-features = false, features = ["fake"] }
+toride-runner = { path = "../toride-runner", version = "0.1.0", default-features = false, features = ["fake"] }
 
 [lints]
 workspace = true

@@ -1,8 +1,10 @@
 [package]
 name = "ufw-kit-test-support"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
 description = "Test utilities for ufw-kit"
 
 [dependencies]
-ufw-kit = { path = "../ufw-kit", features = ["client", "doctor", "app-profile", "framework", "service", "firewall-nft", "firewall-iptables"] }
+ufw-kit = { path = "../ufw-kit", version = "0.1.0", features = ["client", "doctor", "app-profile", "framework", "service", "firewall-nft", "firewall-iptables"] }

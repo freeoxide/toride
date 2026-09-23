@@ -1,11 +1,14 @@
 [package]
 name = "toride-ssh-config"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "SSH config file parsing, editing, and host resolution via a lossless AST"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-toride-ssh-core = { path = "../core" }
-toride-fs = { path = "../../../toride-fs" }
+toride-ssh-core = { path = "../core", version = "0.1.0" }
+toride-fs = { path = "../../../toride-fs", version = "0.1.0" }
 # Used directly only by sshd::edit()'s cross-process edit lock, which must hold
 # an exclusive flock guard across an async (load → mutate → save) critical
 # section. toride_fs::with_lock exposes a sync closure only (no guard), so it
