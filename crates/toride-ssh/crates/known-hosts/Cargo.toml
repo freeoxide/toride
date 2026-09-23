@@ -17,6 +17,8 @@ async-trait = { workspace = true }
 dirs = { workspace = true }
 duct = "1"
 base64 = "0.22"
+hmac = "0.12"
+sha1 = "0.10"
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "std"] }
 
 [dev-dependencies]
