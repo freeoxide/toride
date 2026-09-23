@@ -22,6 +22,7 @@ base64 = "0.22"
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
 
 [dev-dependencies]
+serial_test = "3"
 tempfile = "3"
 
 [lints]

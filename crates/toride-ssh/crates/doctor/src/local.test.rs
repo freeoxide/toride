@@ -1,4 +1,5 @@
 use super::*;
+use serial_test::serial;
 
 /// Set up a temporary SSH directory with the given layout and run `run_all`.
 async fn run_checks_with_dir(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
@@ -933,6 +934,7 @@ async fn run_home_dir_check_with_mode(mode: u32) -> Vec<toride_ssh_core::Diagnos
 }
 
 #[cfg(unix)]
+#[serial]
 #[tokio::test]
 async fn home_dir_permissions_ok_when_secure() {
     // 0755 — no group or world write bits.
@@ -949,6 +951,7 @@ async fn home_dir_permissions_ok_when_secure() {
 }
 
 #[cfg(unix)]
+#[serial]
 #[tokio::test]
 async fn home_dir_permissions_warns_when_group_writable() {
     // 0775 — group write bit set.
@@ -968,6 +971,7 @@ async fn home_dir_permissions_warns_when_group_writable() {
 }
 
 #[cfg(unix)]
+#[serial]
 #[tokio::test]
 async fn home_dir_permissions_warns_when_world_writable() {
     // 0757 — world (other) write bit set, group write clear.
@@ -987,6 +991,7 @@ async fn home_dir_permissions_warns_when_world_writable() {
 }
 
 #[cfg(unix)]
+#[serial]
 #[tokio::test]
 async fn home_dir_permissions_warns_when_group_and_world_writable() {
     // 0777 — both group and world write bits set.
@@ -1003,6 +1008,7 @@ async fn home_dir_permissions_warns_when_group_and_world_writable() {
 }
 
 #[cfg(unix)]
+#[serial]
 #[tokio::test]
 async fn home_dir_permissions_info_when_home_unknown() {
     // `dirs::home_dir()` reads `$HOME` on Unix.  When the variable is
@@ -1894,6 +1900,7 @@ async fn nfs_home_returns_valid_diagnostic() {
     }
 }
 
+#[serial]
 #[tokio::test]
 async fn nfs_home_info_when_home_unknown() {
     // Save and remove $HOME so dirs::home_dir() returns None (or falls back

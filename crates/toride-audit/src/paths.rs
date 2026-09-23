@@ -153,6 +153,7 @@ fn secure_mode(path: &std::path::Path, mode: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Result parity with the unix implementation
 fn secure_mode(_path: &std::path::Path, _mode: u32) -> Result<()> {
     Ok(())
 }

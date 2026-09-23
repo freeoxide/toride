@@ -1,6 +1,7 @@
 #![allow(clippy::unreadable_literal)]
 
 use super::*;
+#[cfg(unix)] // only the unix-gated tests below use #[serial]
 use serial_test::serial;
 
 #[test]

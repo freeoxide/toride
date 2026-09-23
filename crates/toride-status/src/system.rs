@@ -540,17 +540,17 @@ fn detect_dns_servers() -> Vec<String> {
 
     #[cfg(target_os = "macos")]
     {
-        if servers.is_empty() {
-            if let Some(text) = run_cmd("scutil", &["--dns"]) {
-                for line in text.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("nameserver[")
-                        && let Some(val) = trimmed.split(':').nth(1)
-                    {
-                        let server = val.trim();
-                        if !server.is_empty() {
-                            servers.push(server.to_string());
-                        }
+        if servers.is_empty()
+            && let Some(text) = run_cmd("scutil", &["--dns"])
+        {
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("nameserver[")
+                    && let Some(val) = trimmed.split(':').nth(1)
+                {
+                    let server = val.trim();
+                    if !server.is_empty() {
+                        servers.push(server.to_string());
                     }
                 }
             }
@@ -774,10 +774,10 @@ fn read_cpu_topology() -> CpuTopology {
         .map(|hz| hz / 1_000_000);
 
     // Cache sizes in bytes.
-    let cache_l1d = sysctl_u64("hw.l1dcachesize")
+    let l1_data_bytes = sysctl_u64("hw.l1dcachesize")
         .filter(|&v| v > 0)
         .map(|v| v as u32);
-    let cache_l1i = sysctl_u64("hw.l1icachesize")
+    let l1_instruction_bytes = sysctl_u64("hw.l1icachesize")
         .filter(|&v| v > 0)
         .map(|v| v as u32);
     let cache_l2 = sysctl_u64("hw.l2cachesize")
@@ -791,8 +791,8 @@ fn read_cpu_topology() -> CpuTopology {
         threads_per_core,
         base_frequency,
         max_frequency,
-        cache_l1d,
-        cache_l1i,
+        cache_l1d: l1_data_bytes,
+        cache_l1i: l1_instruction_bytes,
         cache_l2,
         cache_l3,
     }

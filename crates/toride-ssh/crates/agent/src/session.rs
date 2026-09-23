@@ -111,6 +111,9 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
 /// On Unix, control sockets are Unix domain sockets. We check the file type
 /// heuristically by looking at the name pattern first, then verifying it's
 /// a socket.
+// The non-Unix arm has no await points but the signature must stay `async`
+// for call-site parity with the Unix arm.
+#[cfg_attr(not(unix), allow(clippy::unused_async))]
 async fn is_control_socket_candidate(path: &Path) -> bool {
     let name = path
         .file_name()

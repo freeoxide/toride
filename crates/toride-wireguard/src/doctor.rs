@@ -863,6 +863,7 @@ peer: AAA=
         );
     }
 
+    #[cfg(unix)] // mode bits have no Windows equivalent
     #[test]
     fn key_permissions_flags_world_readable() {
         use std::os::unix::fs::PermissionsExt;
@@ -889,6 +890,7 @@ peer: AAA=
         );
     }
 
+    #[cfg(unix)] // mode bits have no Windows equivalent
     #[test]
     fn key_permissions_errors_on_group_writable() {
         use std::os::unix::fs::PermissionsExt;
@@ -915,6 +917,7 @@ peer: AAA=
         );
     }
 
+    #[cfg(unix)] // mode bits have no Windows equivalent
     #[test]
     fn key_permissions_silent_on_0600() {
         use std::os::unix::fs::PermissionsExt;

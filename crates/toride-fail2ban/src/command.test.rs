@@ -1,4 +1,5 @@
 use super::*;
+#[cfg(unix)]
 use std::os::unix::process::ExitStatusExt;
 use std::time::Duration;
 
@@ -341,6 +342,7 @@ fn command_output_new_success() {
     assert!(out.stderr.is_empty());
 }
 
+#[cfg(unix)] // from_raw(0) encodes Unix raw status bits
 #[test]
 fn command_output_from_raw_output_captures_fields() {
     use std::process::Output;
@@ -360,6 +362,7 @@ fn command_output_from_raw_output_captures_fields() {
     assert!(out.stderr.is_empty());
 }
 
+#[cfg(unix)] // from_raw(256) encodes Unix raw status bits
 #[test]
 fn command_output_from_raw_output_nonzero() {
     use std::process::Output;

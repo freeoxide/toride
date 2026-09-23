@@ -482,6 +482,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")] // snapshot encodes Linux capability probing; add per-OS snapshots when needed
     #[test]
     #[expect(
         clippy::too_many_lines,
