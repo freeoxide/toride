@@ -387,11 +387,7 @@ mod tests {
 
         // throughput_gauge: a few label/value pairs including multibyte
         // arrow glyphs (each arrow is 1 column but 3 bytes).
-        for (label, value) in [
-            ("disk", "1.2↓ 0.5↑ MB"),
-            ("net", "12 MB/s"),
-            ("disk", ""),
-        ] {
+        for (label, value) in [("disk", "1.2↓ 0.5↑ MB"), ("net", "12 MB/s"), ("disk", "")] {
             let spans = throughput_gauge_spans(label, value, CHARM.accent3, CHARM);
             assert_eq!(
                 usize::from(throughput_gauge_width(label, value)),

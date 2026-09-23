@@ -98,10 +98,6 @@ pub struct TailscaleCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
-#[expect(
-    clippy::duration_suboptimal_units,
-    reason = "stable std lacks from_mins"
-)]
 const FINDINGS_TTL: Duration = Duration::from_secs(60);
 
 impl TailscaleCollector {

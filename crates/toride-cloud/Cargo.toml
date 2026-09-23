@@ -1,9 +1,10 @@
 [package]
 name = "toride-cloud"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Cloud provider security group and firewall management"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "toride-cloud"
@@ -43,10 +44,10 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
 dirs = { workspace = true }
-toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
-toride-fs = { path = "../toride-fs" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types" }
-toride-service = { path = "../toride-service", optional = true }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
+toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0" }
+toride-service = { path = "../toride-service", version = "0.1.0", optional = true }
 
 # --- Optional (feature-gated) ---
 duct = { workspace = true, optional = true }

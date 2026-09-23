@@ -1,9 +1,10 @@
 [package]
 name = "toride-fail2ban"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Fail2Ban-style intrusion prevention library"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = ["client", "doctor"]
@@ -48,13 +49,13 @@ chrono = { version = "0.4", features = ["serde"] }
 humantime = "2"
 
 # --- Shared workspace crates ---
-toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
-toride-fs = { path = "../toride-fs" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types", features = ["serde"] }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
+toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0", features = ["serde"] }
 
 # --- Optional (feature-gated) ---
 duct = { workspace = true, optional = true }
-toride-service = { path = "../toride-service", optional = true }
+toride-service = { path = "../toride-service", version = "0.1.0", optional = true }
 clap = { version = "4", features = ["derive"], optional = true }
 regex = { version = "1", optional = true }
 typed-builder = { version = "0.20", optional = true }

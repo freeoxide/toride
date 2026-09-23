@@ -1,7 +1,10 @@
 [package]
 name = "toride-status"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "Point-in-time host status snapshots: OS metrics, daemon liveness, and SSH health"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "toride_status"
@@ -34,9 +37,9 @@ tracing = { workspace = true }
 which = { workspace = true }
 nix = { version = "0.31", features = ["user", "signal", "fs"] }
 dirs = { workspace = true }
-toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
-toride-fs = { path = "../toride-fs" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
+toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0" }
 
 # Optional dependencies
 procfs = { version = "0.18", optional = true }

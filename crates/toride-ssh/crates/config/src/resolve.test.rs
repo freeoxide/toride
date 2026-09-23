@@ -28,7 +28,9 @@ static ENV_LOCK: Mutex<()> = Mutex::new(());
 fn acquire_env_lock() -> std::sync::MutexGuard<'static, ()> {
     // `std::sync::Mutex` can be poisoned; ignore poisoning so a panicking
     // test does not cascade-fail every other env test.
-    ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    ENV_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 /// RAII guard that restores a single env var to its prior value on Drop.

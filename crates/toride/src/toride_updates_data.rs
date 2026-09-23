@@ -99,10 +99,6 @@ pub struct UpdatesCollector {
 }
 
 /// How long to keep cached findings before re-running the doctor suite.
-#[expect(
-    clippy::duration_suboptimal_units,
-    reason = "stable std lacks from_mins"
-)]
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Hard deadline for the entire probe closure. `check_updates` shells out to

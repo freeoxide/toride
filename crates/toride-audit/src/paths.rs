@@ -44,7 +44,9 @@ pub fn validate_name(name: &str) -> Result<&str> {
     // but a standalone `..` or `..something` starting the name is suspicious
     // only when it is exactly `..`).
     if name == ".." || name == "." {
-        return Err(Error::Other(format!("name must not be '.' or '..': {name:?}")));
+        return Err(Error::Other(format!(
+            "name must not be '.' or '..': {name:?}"
+        )));
     }
     if name.starts_with('-') {
         return Err(Error::Other(format!(
@@ -151,6 +153,7 @@ fn secure_mode(path: &std::path::Path, mode: u32) -> Result<()> {
 }
 
 #[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)] // Result parity with the unix implementation
 fn secure_mode(_path: &std::path::Path, _mode: u32) -> Result<()> {
     Ok(())
 }

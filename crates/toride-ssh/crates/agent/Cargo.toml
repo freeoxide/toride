@@ -1,14 +1,17 @@
 [package]
 name = "toride-ssh-agent"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "SSH agent management: listing, adding, and removing keys"
+license.workspace = true
+repository.workspace = true
 
 [features]
 default = []
 native = ["dep:ssh-agent-lib"]
 
 [dependencies]
-toride-ssh-core = { path = "../core" }
+toride-ssh-core = { path = "../core", version = "0.1.0" }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 thiserror = { workspace = true }
 serde = { workspace = true }

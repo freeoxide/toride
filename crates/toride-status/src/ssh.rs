@@ -75,6 +75,8 @@
 //! ```
 
 use std::fmt;
+// `std::fs` is only consulted by the Unix control-path check and tests.
+#[cfg(unix)]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;

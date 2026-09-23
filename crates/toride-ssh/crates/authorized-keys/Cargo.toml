@@ -1,11 +1,14 @@
 [package]
 name = "toride-ssh-authorized-keys"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
+description = "authorized_keys file management: listing, adding, removing, and querying entries"
+license.workspace = true
+repository.workspace = true
 
 [dependencies]
-toride-ssh-core = { path = "../core" }
-toride-fs = { path = "../../../toride-fs" }
+toride-ssh-core = { path = "../core", version = "0.1.0" }
+toride-fs = { path = "../../../toride-fs", version = "0.1.0" }
 tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 thiserror = { workspace = true }
 serde = { workspace = true }

@@ -1531,9 +1531,7 @@ impl<'a> Doctor<'a> {
             // into memory. `read_to_string` would slurp a multi-hundred-MB
             // auth.log on every diagnostic run; BufReader bounds memory to the
             // first `PROXY_IP_SAMPLE_LINES` lines regardless of file size.
-            if !already_flagged
-                && let Ok(file) = std::fs::File::open(path)
-            {
+            if !already_flagged && let Ok(file) = std::fs::File::open(path) {
                 use std::io::BufRead;
                 let reader = std::io::BufReader::new(file);
                 let lines: Vec<String> = reader

@@ -148,9 +148,8 @@ pub async fn generate_key(
     // passed in argv — `-N <passphrase>` would expose it via `ps`/cmdline. The
     // handler's Drop removes the script as soon as the run completes.
     if passphrase_nonempty {
-        let askpass = toride_ssh_agent::AskpassHandler::new(
-            params.passphrase.as_deref().unwrap_or(""),
-        )?;
+        let askpass =
+            toride_ssh_agent::AskpassHandler::new(params.passphrase.as_deref().unwrap_or(""))?;
         let askpass_env = vec![
             (
                 "SSH_ASKPASS".to_owned(),
@@ -167,6 +166,9 @@ pub async fn generate_key(
     // Set file permissions and read the generated key in a blocking context
     // to avoid blocking the async runtime with synchronous filesystem ops.
     let private_path_clone = private_path.clone();
+    // Only the Unix branch chmods the containing directory (no POSIX modes
+    // elsewhere), so the binding exists solely on Unix.
+    #[cfg(unix)]
     let ssh_dir = paths.ssh_dir().to_path_buf();
 
     let result = tokio::task::spawn_blocking(move || {

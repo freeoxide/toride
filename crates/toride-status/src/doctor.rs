@@ -679,6 +679,9 @@ fn check_ssh(ssh: SshStatus) -> Vec<DoctorCheck> {
     checks
 }
 
+// On non-Unix the cfg(unix) probe arms compile out, leaving a
+// push-after-init pattern that clippy::vec_init_then_push flags.
+#[allow(clippy::vec_init_then_push)]
 fn check_permissions() -> Vec<DoctorCheck> {
     let mut checks = Vec::new();
 
@@ -1685,6 +1688,7 @@ mod tests {
         );
     }
 
+    #[cfg(target_os = "linux")] // snapshot encodes Linux capability probing; add per-OS snapshots when needed
     #[test]
     #[expect(
         clippy::too_many_lines,

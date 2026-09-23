@@ -720,16 +720,17 @@ mod tests {
             .env("HIGHLIGHT_COLOR", "yellow")
             .env("WEIGHT_LIMIT", "100");
         let env = display_env(&spec, &[]);
-        let by_key: std::collections::HashMap<&str, &str> = env
-            .iter()
-            .map(|(k, v)| (k.as_str(), v.as_str()))
-            .collect();
+        let by_key: std::collections::HashMap<&str, &str> =
+            env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
         assert_eq!(by_key["GH_TOKEN"], "***", "GH_TOKEN must be redacted");
         assert_eq!(
             by_key["HIGHLIGHT_COLOR"], "yellow",
             "HIGHLIGHT must NOT be over-redacted by the bare GH substring"
         );
-        assert_eq!(by_key["WEIGHT_LIMIT"], "100", "WEIGHT must NOT be over-redacted");
+        assert_eq!(
+            by_key["WEIGHT_LIMIT"], "100",
+            "WEIGHT must NOT be over-redacted"
+        );
     }
 
     /// A trivially short secret value (1-2 chars) is position-redacted in argv
@@ -738,9 +739,7 @@ mod tests {
     /// output. Real-length secrets are still scrubbed.
     #[test]
     fn redact_output_skips_trivially_short_secret_substring() {
-        let spec_short = CommandSpec::new("cmd")
-            .args(["--token", "a"])
-            .redact(true);
+        let spec_short = CommandSpec::new("cmd").args(["--token", "a"]).redact(true);
         let scrubbed = redact_output(&spec_short, "auth failed at api endpoint");
         assert!(
             scrubbed.contains('a'),

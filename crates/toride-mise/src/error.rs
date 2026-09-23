@@ -208,9 +208,7 @@ pub enum MiseError {
     ///
     /// Bootstrap fails closed when the published checksum does not match the
     /// bytes actually downloaded — the binary is never extracted.
-    #[error(
-        "checksum mismatch for mise tarball: expected sha256 {expected}, got {actual}"
-    )]
+    #[error("checksum mismatch for mise tarball: expected sha256 {expected}, got {actual}")]
     ChecksumMismatch {
         /// Expected sha256 (lowercase hex) sourced from the release's
         /// published checksum file.

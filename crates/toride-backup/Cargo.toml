@@ -1,9 +1,10 @@
 [package]
 name = "toride-backup"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Backup scheduling and management via restic or borg"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "toride_backup"
@@ -44,9 +45,9 @@ cli = ["dep:clap", "client", "doctor", "service", "config", "serde"]
 
 [dependencies]
 # --- Always required ---
-toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
-toride-fs = { path = "../toride-fs" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types" }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
+toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0" }
 dirs = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
@@ -56,7 +57,7 @@ which = { workspace = true }
 tempfile = { workspace = true }
 
 # --- Optional (feature-gated) ---
-toride-service = { path = "../toride-service", optional = true }
+toride-service = { path = "../toride-service", version = "0.1.0", optional = true }
 duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, features = ["derive"], optional = true }
 serde_json = { workspace = true, optional = true }

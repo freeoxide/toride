@@ -25,11 +25,22 @@ const SSHD_CONFIG_PATH: &str = "/etc/ssh/sshd_config";
 ///
 /// This is the single source of truth for privilege detection across the
 /// app. It is a cheap syscall and safe to call anywhere.
+///
+/// On non-Unix targets there is no effective-UID concept; toride's
+/// privilege-escalation paths never apply there, so this returns `false`.
+#[cfg(unix)]
 pub fn is_root() -> bool {
     // SAFETY: `geteuid` is a trivial syscall with no preconditions; it just
     // reads the kernel's record of the effective UID.
     let euid = unsafe { libc::geteuid() };
     euid == 0
+}
+
+/// Non-Unix fallback: no POSIX effective UID exists, so never report root.
+#[cfg(not(unix))]
+#[must_use]
+pub fn is_root() -> bool {
+    false
 }
 
 /// An operation that requires elevated privileges to perform.
@@ -301,12 +312,15 @@ fn write_sshd_config(
     //    validation in [`write_sshd_config_finish`]. Staging in `/etc/ssh`
     //    directly when non-root would EACCES (the process is unprivileged).
     let staging_dir = staging_dir(running_as_root, target);
-    let tmp = tempfile::Builder::new()
-        .prefix(STAGED_TEMP_PREFIX)
-        .suffix(TEMP_SUFFIX)
-        // O_EXCL + 0o600 kills the predictable-pid-name symlink-attack surface
-        // of the old `/tmp/<prefix>.<pid>.tmp` scheme.
-        .permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600))
+    let mut staged = tempfile::Builder::new();
+    staged.prefix(STAGED_TEMP_PREFIX).suffix(TEMP_SUFFIX);
+    // O_EXCL + 0o600 kills the predictable-pid-name symlink-attack surface
+    // of the old `/tmp/<prefix>.<pid>.tmp` scheme. POSIX mode bits are
+    // Unix-only; other targets get platform-default permissions (these
+    // targets are never the privileged-write targets of this code).
+    #[cfg(unix)]
+    staged.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
+    let tmp = staged
         .tempfile_in(&staging_dir)
         .map_err(|e| Error::ConfigWriteFailed(format!("failed to stage sshd_config: {e}")))?;
 
@@ -983,6 +997,7 @@ mod tests {
         ValidateOutcome::Invalid("line 1: Bad configuration option: foo".into())
     }
 
+    #[cfg(unix)] // reads libc::geteuid directly
     #[test]
     fn is_root_matches_geteuid() {
         // Smoke test: is_root() should agree with a direct libc check.
@@ -1262,6 +1277,7 @@ mod tests {
     /// staged temp path back to the test (function pointers can't capture).
     static STAGED_PATH: std::sync::Mutex<Option<std::path::PathBuf>> = std::sync::Mutex::new(None);
 
+    #[cfg(unix)] // uses mode bits (read-only parent dir) to force the backup failure
     #[test]
     fn write_sshd_config_aborts_install_when_backup_fails() {
         use std::os::unix::fs::PermissionsExt as _;
@@ -1405,6 +1421,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // creates a symlink; unix-only semantics
     #[test]
     fn write_sshd_config_refuses_to_install_over_symlink() {
         // [LOW #2] If the pinned `target` is a symlink, rename(2)/mv would
@@ -1418,13 +1435,7 @@ mod tests {
         std::fs::write(&resolved, original).unwrap();
         // `target` is a symlink pointing at `resolved`.
         let target = dir.path().join("sshd_config");
-        #[cfg(unix)]
         std::os::unix::fs::symlink(&resolved, &target).unwrap();
-        #[cfg(not(unix))]
-        {
-            // Symlinks are a unix concept; nothing to test off-unix.
-            return;
-        }
 
         let err = write_sshd_config("# new\nPort 22\n", true, &target, Some(validator_ok), None)
             .expect_err("must refuse to install over a symlink");

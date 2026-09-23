@@ -650,7 +650,9 @@ COMMIT
 ";
     let findings = framework_findings(content);
     assert!(
-        findings.iter().any(|f| f.id == "fw:test.rules:no-commit-nat"),
+        findings
+            .iter()
+            .any(|f| f.id == "fw:test.rules:no-commit-nat"),
         "expected NAT-missing-COMMIT finding, got {findings:?}"
     );
 }
@@ -699,4 +701,3 @@ COMMIT
         "two COMMITs must satisfy the count guard: {findings:?}"
     );
 }
-

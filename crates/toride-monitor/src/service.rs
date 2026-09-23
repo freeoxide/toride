@@ -186,12 +186,10 @@ mod tests {
         // that shape or `FakeRunner` won't consume the response. Strict mode
         // turns any future drift into an explicit error rather than a silent
         // fallthrough to the empty-default success.
-        let runner = FakeRunner::new()
-            .strict()
-            .respond(
-                CommandSpec::new("systemctl").args(["is-active", "--", "toride-monitor.service"]),
-                CommandOutput::new("active\n".into(), String::new(), Some(0)),
-            );
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("systemctl").args(["is-active", "--", "toride-monitor.service"]),
+            CommandOutput::new("active\n".into(), String::new(), Some(0)),
+        );
         let paths = test_paths();
         let client = MonitorClient::with_paths(paths.clone());
         let svc = MonitorService::with_runner(client, &paths, Box::new(runner));
@@ -201,12 +199,10 @@ mod tests {
 
     #[test]
     fn is_active_returns_false_for_inactive_unit() {
-        let runner = FakeRunner::new()
-            .strict()
-            .respond(
-                CommandSpec::new("systemctl").args(["is-active", "--", "toride-monitor.service"]),
-                CommandOutput::new("inactive\n".into(), String::new(), Some(3)),
-            );
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("systemctl").args(["is-active", "--", "toride-monitor.service"]),
+            CommandOutput::new("inactive\n".into(), String::new(), Some(3)),
+        );
         let paths = test_paths();
         let client = MonitorClient::with_paths(paths.clone());
         let svc = MonitorService::with_runner(client, &paths, Box::new(runner));

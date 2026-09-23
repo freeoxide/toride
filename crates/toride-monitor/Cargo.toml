@@ -1,9 +1,10 @@
 [package]
 name = "toride-monitor"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Outbound traffic monitoring and anomaly detection"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [lib]
 name = "toride_monitor"
@@ -44,10 +45,10 @@ webhook = ["client", "dep:reqwest", "serde"]
 
 [dependencies]
 # --- Always required ---
-toride-runner = { path = "../toride-runner" }
-toride-fs = { path = "../toride-fs" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types" }
-toride-service = { path = "../toride-service", optional = true }
+toride-runner = { path = "../toride-runner", version = "0.1.0" }
+toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0" }
+toride-service = { path = "../toride-service", version = "0.1.0", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
@@ -67,7 +68,7 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
-toride-runner = { path = "../toride-runner", features = ["fake"] }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["fake"] }
 
 [lints]
 workspace = true

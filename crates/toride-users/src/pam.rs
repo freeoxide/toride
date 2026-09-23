@@ -407,6 +407,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)] // asserts Unix mode bits on the written file
     #[test]
     fn write_pam_config_sets_world_readable_mode() {
         // PAM service files must be 0o644 so the PAM stack (which may run as

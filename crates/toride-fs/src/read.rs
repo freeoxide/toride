@@ -62,6 +62,7 @@ pub fn read_optional_bytes(path: &Path) -> Result<Option<Vec<u8>>> {
 mod tests {
     use super::*;
     use std::fs;
+    #[cfg(unix)]
     use std::os::unix::fs::PermissionsExt;
     use tempfile::TempDir;
 
@@ -86,6 +87,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)] // Uses POSIX mode bits to make the file unreadable.
     fn read_optional_returns_err_for_unreadable_file() {
         let dir = TempDir::new().expect("temp dir creation should succeed");
         let path = dir.path().join("unreadable.txt");
@@ -137,6 +139,7 @@ mod tests {
     }
 
     /// Check if the current process is running as root (uid 0) by invoking `id -u`.
+    #[cfg(unix)]
     fn running_as_root() -> bool {
         std::process::Command::new("id")
             .arg("-u")

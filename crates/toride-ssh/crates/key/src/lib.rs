@@ -594,6 +594,7 @@ impl MultiAskpassHandler {
     /// Returns [`Error::CommandFailed`] if the temporary script cannot be
     /// written or made executable.
     fn new(responses: &[&str]) -> Result<Self> {
+        #[cfg(unix)]
         use std::io::Write;
         #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
@@ -635,6 +636,9 @@ impl MultiAskpassHandler {
         // ETXTBSY). The temp file is created with its final 0o700 mode via a
         // single O_CREAT|O_EXCL open, so there is no window in which the
         // script exists but is world-readable or non-executable.
+        // Only the Unix branch performs the hidden-temp write; other targets
+        // write the script directly, so the temp path would be unused there.
+        #[cfg(unix)]
         let tmp_path = dir.join(format!("{filename}.tmp"));
         let script_path = dir.join(&filename);
         // Sibling counter file; its path is baked into the script so no extra
@@ -790,9 +794,7 @@ fn filter_config_lines(content: &str, ssh_dir_str: &str, key_name: &str) -> Stri
                 let value = trimmed[keyword.len()..].trim();
                 // Remove quotes if present
                 let value = value.trim_matches('"').trim_matches('\'');
-                return value != key_pattern_tilde
-                    && value != key_pattern_abs
-                    && value != key_name;
+                return value != key_pattern_tilde && value != key_pattern_abs && value != key_name;
             }
 
             if keyword.eq_ignore_ascii_case("CertificateFile") {

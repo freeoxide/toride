@@ -193,9 +193,18 @@ fn parse_byte_value(field: &str, keyword: &str) -> Option<u64> {
 ///
 /// Some platforms return the full `st_mode` (file-type bits + permission bits)
 /// from `PermissionsExt::mode()`, so we mask down to the permission bits here.
+#[cfg(unix)]
 fn file_mode_bits(metadata: &std::fs::Metadata) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     metadata.permissions().mode() & 0o7777
+}
+
+/// Non-Unix fallback: there are no POSIX permission bits to inspect, so
+/// report 0 (no group/other bits) and the world-writable key check stays
+/// silent rather than misfiring on an unrelated permission model.
+#[cfg(not(unix))]
+fn file_mode_bits(_metadata: &std::fs::Metadata) -> u32 {
+    0
 }
 
 /// Return the DNS resolver(s) configured on the tunnel, if we can determine
@@ -854,6 +863,7 @@ peer: AAA=
         );
     }
 
+    #[cfg(unix)] // mode bits have no Windows equivalent
     #[test]
     fn key_permissions_flags_world_readable() {
         use std::os::unix::fs::PermissionsExt;
@@ -880,6 +890,7 @@ peer: AAA=
         );
     }
 
+    #[cfg(unix)] // mode bits have no Windows equivalent
     #[test]
     fn key_permissions_errors_on_group_writable() {
         use std::os::unix::fs::PermissionsExt;
@@ -906,6 +917,7 @@ peer: AAA=
         );
     }
 
+    #[cfg(unix)] // mode bits have no Windows equivalent
     #[test]
     fn key_permissions_silent_on_0600() {
         use std::os::unix::fs::PermissionsExt;

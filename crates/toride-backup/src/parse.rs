@@ -316,7 +316,10 @@ mod tests {
     fn restic_check_records_output_lines() {
         let output = "line one\nno errors were found\n";
         let result = parse_restic_check(output);
-        assert_eq!(result.output_lines, vec!["line one", "no errors were found"]);
+        assert_eq!(
+            result.output_lines,
+            vec!["line one", "no errors were found"]
+        );
     }
 
     #[test]

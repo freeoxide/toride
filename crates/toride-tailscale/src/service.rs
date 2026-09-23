@@ -381,21 +381,33 @@ mod tests {
             progs[2],
             (
                 &"systemctl".to_owned(),
-                vec!["restart".to_owned(), "--".to_owned(), "tailscaled".to_owned()]
+                vec![
+                    "restart".to_owned(),
+                    "--".to_owned(),
+                    "tailscaled".to_owned()
+                ]
             )
         );
         assert_eq!(
             progs[3],
             (
                 &"systemctl".to_owned(),
-                vec!["enable".to_owned(), "--".to_owned(), "tailscaled".to_owned()]
+                vec![
+                    "enable".to_owned(),
+                    "--".to_owned(),
+                    "tailscaled".to_owned()
+                ]
             )
         );
         assert_eq!(
             progs[4],
             (
                 &"systemctl".to_owned(),
-                vec!["disable".to_owned(), "--".to_owned(), "tailscaled".to_owned()]
+                vec![
+                    "disable".to_owned(),
+                    "--".to_owned(),
+                    "tailscaled".to_owned()
+                ]
             )
         );
     }

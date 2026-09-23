@@ -249,11 +249,7 @@ impl App {
     /// [`virt_detect`] filesystem/cpuinfo probe). Keeping the assembly here
     /// ensures the test and production constructors can never drift.
     #[must_use]
-    fn new_with_motion(
-        active_theme: Theme,
-        anim_pref: AnimPref,
-        reduced_motion: bool,
-    ) -> Self {
+    fn new_with_motion(active_theme: Theme, anim_pref: AnimPref, reduced_motion: bool) -> Self {
         let (ssh_error_tx, ssh_error_rx) = mpsc::unbounded_channel();
         let (ssh_op_done_tx, ssh_op_done_rx) = mpsc::unbounded_channel();
         let mut welcome = WelcomeScreen::new();

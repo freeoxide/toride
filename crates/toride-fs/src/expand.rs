@@ -48,7 +48,9 @@ pub fn expand_tilde(path: &str) -> PathBuf {
 /// Expand a path string with tilde and `$HOME` variable support.
 ///
 /// First performs tilde expansion via [`expand_tilde`], then replaces any
-/// `$HOME` occurrences with the actual home directory.
+/// `$HOME` occurrences with the actual home directory. Expansion relies on
+/// the `HOME` environment variable; where it is unset (some non-Unix
+/// environments), `$HOME` occurrences are left literal.
 ///
 /// # Examples
 ///
@@ -74,10 +76,13 @@ pub fn expand_path(path: &str) -> PathBuf {
 
 /// Returns the current user's home directory.
 ///
-/// Uses the `dirs` crate which respects platform conventions. Falls back
-/// to `/root` on Unix if the home directory cannot be determined.
+/// Uses the `dirs` crate, which respects platform conventions (e.g. `$HOME`
+/// on Unix, `USERPROFILE` on Windows). If the home directory cannot be
+/// determined at all, falls back to the current directory (`.`) so callers
+/// still get a usable relative path. No Unix-specific path (such as `/root`)
+/// is invented.
 fn home_dir() -> PathBuf {
-    dirs::home_dir().unwrap_or_else(|| PathBuf::from("/root"))
+    dirs::home_dir().unwrap_or_else(|| PathBuf::from("."))
 }
 
 #[cfg(test)]

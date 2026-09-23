@@ -56,6 +56,8 @@ impl Progress {
     pub fn percent(self) -> Option<u64> {
         // Guard against `total == 0`: a zero-length Content-Length is a legal
         // (if odd) response and must not panic the caller's percent math.
-        self.total.filter(|&t| t != 0).map(|t| self.downloaded * 100 / t)
+        self.total
+            .filter(|&t| t != 0)
+            .map(|t| self.downloaded * 100 / t)
     }
 }

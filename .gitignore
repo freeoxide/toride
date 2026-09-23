@@ -1,5 +1,10 @@
 # Build artifacts
 target/
+# Cross-target audit build dirs (Windows/macOS checks from local hosts)
+target-audit-*/
+
+# ZCode session-local files (workflow drafts, plans)
+.zcode/
 
 # IDE / Editor
 .idea/

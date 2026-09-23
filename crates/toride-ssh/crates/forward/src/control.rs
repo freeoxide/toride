@@ -257,11 +257,11 @@ pub async fn cancel_known_forward(control_path: &Path, forward: &PortForward) ->
     };
 
     let spec = if forward.forward_type == ForwardType::Dynamic {
-        format!("[{}]:{}", &forward.local_addr, forward.local_port)
+        format!("[{}]:{}", forward.local_addr, forward.local_port)
     } else {
         format!(
             "[{}]:{}:{}:{}",
-            &forward.local_addr,
+            forward.local_addr,
             forward.local_port,
             if forward.remote_addr.is_empty() {
                 "localhost"

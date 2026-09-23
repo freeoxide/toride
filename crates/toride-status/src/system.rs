@@ -64,6 +64,9 @@ use sysinfo::{
     Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
     ProcessesToUpdate, RefreshKind, System,
 };
+// Only [`run_cmd`] consumes these, and it exists solely on macOS/Linux
+// (every probed tool is platform-specific).
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 use crate::error::StatusResult;
@@ -177,6 +180,8 @@ fn parse_vram_to_bytes(v: &str) -> Option<u64> {
 /// Returns `None` if the command fails to execute, times out, or exits
 /// with a non-zero status. This is the shared helper for migrating raw
 /// `std::process::Command` calls to the `toride-runner` abstraction.
+/// Every caller probes a macOS or Linux tool, so it only exists there.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
     let mut spec = CommandSpec::new(program);
     for arg in args {
@@ -511,7 +516,12 @@ fn detect_gateway() -> Option<String> {
 
 /// Detect DNS servers (Unix: /etc/resolv.conf; macOS also tries scutil).
 fn detect_dns_servers() -> Vec<String> {
+    // The `mut` binding only exists where something can push into the vec;
+    // other targets have no DNS source to consult.
+    #[cfg(unix)]
     let mut servers = Vec::new();
+    #[cfg(not(unix))]
+    let servers = Vec::new();
 
     #[cfg(unix)]
     {
@@ -530,17 +540,17 @@ fn detect_dns_servers() -> Vec<String> {
 
     #[cfg(target_os = "macos")]
     {
-        if servers.is_empty() {
-            if let Some(text) = run_cmd("scutil", &["--dns"]) {
-                for line in text.lines() {
-                    let trimmed = line.trim();
-                    if trimmed.starts_with("nameserver[")
-                        && let Some(val) = trimmed.split(':').nth(1)
-                    {
-                        let server = val.trim();
-                        if !server.is_empty() {
-                            servers.push(server.to_string());
-                        }
+        if servers.is_empty()
+            && let Some(text) = run_cmd("scutil", &["--dns"])
+        {
+            for line in text.lines() {
+                let trimmed = line.trim();
+                if trimmed.starts_with("nameserver[")
+                    && let Some(val) = trimmed.split(':').nth(1)
+                {
+                    let server = val.trim();
+                    if !server.is_empty() {
+                        servers.push(server.to_string());
                     }
                 }
             }
@@ -764,10 +774,10 @@ fn read_cpu_topology() -> CpuTopology {
         .map(|hz| hz / 1_000_000);
 
     // Cache sizes in bytes.
-    let cache_l1d = sysctl_u64("hw.l1dcachesize")
+    let l1_data_bytes = sysctl_u64("hw.l1dcachesize")
         .filter(|&v| v > 0)
         .map(|v| v as u32);
-    let cache_l1i = sysctl_u64("hw.l1icachesize")
+    let l1_instruction_bytes = sysctl_u64("hw.l1icachesize")
         .filter(|&v| v > 0)
         .map(|v| v as u32);
     let cache_l2 = sysctl_u64("hw.l2cachesize")
@@ -781,8 +791,8 @@ fn read_cpu_topology() -> CpuTopology {
         threads_per_core,
         base_frequency,
         max_frequency,
-        cache_l1d,
-        cache_l1i,
+        cache_l1d: l1_data_bytes,
+        cache_l1i: l1_instruction_bytes,
         cache_l2,
         cache_l3,
     }
@@ -2136,7 +2146,12 @@ impl SystemStatus {
         reason = "GPU enumeration spans multiple platform-specific probe strategies; splitting reduces readability"
     )]
     fn read_gpus() -> Vec<GpuInfo> {
+        // The `mut` binding only exists where a probe can push GPU entries;
+        // other targets have no enumeration strategy and return an empty vec.
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
         let mut gpus = Vec::new();
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let gpus = Vec::new();
         // Try system_profiler on macOS
         #[cfg(target_os = "macos")]
         {

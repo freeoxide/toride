@@ -1,9 +1,10 @@
 [package]
 name = "toride-audit"
-version = "0.1.0"
-edition = "2024"
+version.workspace = true
+edition.workspace = true
 description = "Linux audit daemon, file integrity monitoring, and log management"
-license = "MIT"
+license.workspace = true
+repository.workspace = true
 
 [[bin]]
 name = "toride-audit"
@@ -50,10 +51,10 @@ serde = ["dep:serde", "dep:serde_json"]
 cli = ["dep:clap", "client", "doctor", "auditd", "service", "integrity", "logs"]
 
 [dependencies]
-toride-runner = { path = "../toride-runner", features = ["duct-runner", "fake"] }
-toride-fs = { path = "../toride-fs" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types" }
-toride-service = { path = "../toride-service", optional = true }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
+toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0" }
+toride-service = { path = "../toride-service", version = "0.1.0", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }

@@ -158,12 +158,12 @@ pub fn totp_file_path(paths: &UserPaths, username: &str) -> Result<std::path::Pa
 #[cfg(feature = "client")]
 fn enrollment_argv() -> Vec<&'static str> {
     vec![
-        "-t",      // time-based
-        "-d",      // disallow reuse
+        "-t", // time-based
+        "-d", // disallow reuse
         "-r", "3", // rate limit: 3 per 30s
-        "-w", "3", // window size
-        "-s",      // generate scratch codes
-        "-f",      // force (non-interactive)
+        "-w", "3",  // window size
+        "-s", // generate scratch codes
+        "-f", // force (non-interactive)
     ]
 }
 
@@ -178,11 +178,7 @@ fn enrollment_argv() -> Vec<&'static str> {
 /// the binary name is returned separately by the caller.
 #[cfg(feature = "client")]
 fn enrollment_argv_as_user(username: &str) -> Vec<String> {
-    let mut argv: Vec<String> = vec![
-        "-u".to_owned(),
-        username.to_owned(),
-        "--".to_owned(),
-    ];
+    let mut argv: Vec<String> = vec!["-u".to_owned(), username.to_owned(), "--".to_owned()];
     argv.extend(enrollment_argv().into_iter().map(String::from));
     argv
 }
@@ -201,11 +197,15 @@ fn enforce_totp_file_owner_mode(
     username: &str,
     file: &std::path::Path,
 ) -> Result<()> {
-    use std::os::unix::fs::PermissionsExt;
+    // mode 0600, always. POSIX mode bits only exist on Unix targets; other
+    // targets keep the platform-default permissions.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
 
-    // mode 0600, always.
-    let perms = std::fs::Permissions::from_mode(0o600);
-    std::fs::set_permissions(file, perms)?;
+        let perms = std::fs::Permissions::from_mode(0o600);
+        std::fs::set_permissions(file, perms)?;
+    }
 
     // Resolve the target uid:gid from passwd so a custom base dir is honored.
     let entries = crate::parse::read_passwd(&paths.passwd)?;
@@ -274,8 +274,8 @@ pub fn enroll_totp(paths: &UserPaths, username: &str) -> Result<TotpSecret> {
         )));
     }
 
-    let runuser_bin = which::which("runuser")
-        .map_err(|_| Error::BinaryNotFound("runuser".into()))?;
+    let runuser_bin =
+        which::which("runuser").map_err(|_| Error::BinaryNotFound("runuser".into()))?;
     let user_argv = enrollment_argv_as_user(username);
 
     let output = duct::cmd(&runuser_bin, &user_argv)
@@ -401,7 +401,10 @@ mod tests {
         // The google-authenticator flags follow, unchanged from the old
         // direct-invocation argv.
         assert!(argv.contains(&"-t".to_owned()), "time-based flag present");
-        assert!(argv.contains(&"-f".to_owned()), "force/non-interactive flag");
+        assert!(
+            argv.contains(&"-f".to_owned()),
+            "force/non-interactive flag"
+        );
         assert!(argv.contains(&"-d".to_owned()), "disallow-reuse flag");
         // The ga flags must NOT contain the username again (it's the runuser
         // target, not a ga argument).
@@ -433,11 +436,7 @@ mod tests {
         // The home field is taken verbatim from passwd (absolute here).
         let dir = tempfile::tempdir().unwrap();
         let passwd = dir.path().join("passwd");
-        std::fs::write(
-            &passwd,
-            "alice:x:1000:1000::/home/alice:/bin/bash\n",
-        )
-        .unwrap();
+        std::fs::write(&passwd, "alice:x:1000:1000::/home/alice:/bin/bash\n").unwrap();
         let paths = UserPaths::with_base(dir.path());
         let file = totp_file_path(&paths, "alice").unwrap();
         assert_eq!(
@@ -468,11 +467,7 @@ mod tests {
         // was resolved).
         let dir = tempfile::tempdir().unwrap();
         let passwd = dir.path().join("passwd");
-        std::fs::write(
-            &passwd,
-            "alice:x:1000:1000::/home/alice:/bin/bash\n",
-        )
-        .unwrap();
+        std::fs::write(&passwd, "alice:x:1000:1000::/home/alice:/bin/bash\n").unwrap();
         let paths = UserPaths::with_base(dir.path());
         let file = dir.path().join("ga");
         std::fs::write(&file, "secret\n").unwrap();

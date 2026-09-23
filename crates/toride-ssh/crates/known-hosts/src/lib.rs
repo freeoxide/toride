@@ -173,8 +173,8 @@ impl<'a> KnownHostsService<'a> {
     /// Remove all entries matching the given host from `~/.ssh/known_hosts`.
     ///
     /// Entries whose hostname patterns list contains an exact match for `host`
-    /// are removed.  Hashed entries (`|1|...`) cannot be matched by name and
-    /// are left untouched.
+    /// are removed — including hashed entries (`|1|...`), which are matched by
+    /// verifying the entry's HMAC against `host`.
     ///
     /// The removal is performed atomically (write to a temp file, then rename)
     /// so that a crash mid-write cannot corrupt the file.
@@ -197,9 +197,9 @@ impl<'a> KnownHostsService<'a> {
     /// Check whether a host appears in `~/.ssh/known_hosts`.
     ///
     /// Returns `true` if any entry's host pattern list contains an exact match.
-    /// Both plain and bracketed (`[host]:port`) forms are checked.  Hashed
-    /// entries are not matched (that would require re-hashing the hostname
-    /// with the stored salt).
+    /// Both plain and bracketed (`[host]:port`) forms are checked. Hashed
+    /// entries (`|1|...`) are matched by verifying the entry's HMAC against
+    /// the hostname.
     ///
     /// # Errors
     ///
@@ -869,6 +869,11 @@ fn remove_host_sync(path: &Path, host: &str) -> Result<()> {
 /// Does **not** expand glob patterns (`*`, `?`) or negations (`!`) — those
 /// require the full SSH matching algorithm.
 fn host_pattern_matches(pattern: &str, target: &str) -> bool {
+    // Hashed form (used by `ssh-keyscan -H` and `HashKnownHosts yes`).
+    if pattern.starts_with("|1|") {
+        return hashed_host_matches(pattern, target);
+    }
+
     // Direct match.
     if pattern == target {
         return true;
@@ -891,6 +896,35 @@ fn host_pattern_matches(pattern: &str, target: &str) -> bool {
     false
 }
 
+/// Verify an OpenSSH hashed hostname field against `target`.
+///
+/// Hashed entries have the form `|1|<base64 salt>|<base64 HMAC-SHA1(salt,
+/// hostname)>` (the format `ssh-keyscan -H` writes). The salt stored in the
+/// entry lets us re-derive the digest for the candidate hostname and compare
+/// in constant time, so hashed entries can be removed and queried without
+/// ever storing the plaintext name.
+fn hashed_host_matches(field: &str, target: &str) -> bool {
+    use base64::Engine as _;
+    use hmac::Mac as _;
+    type HmacSha1 = hmac::Hmac<sha1::Sha1>;
+
+    let Some((salt_b64, digest_b64)) = field.strip_prefix("|1|").and_then(|r| r.split_once('|'))
+    else {
+        return false;
+    };
+    let (Ok(salt), Ok(expected)) = (
+        base64::engine::general_purpose::STANDARD.decode(salt_b64),
+        base64::engine::general_purpose::STANDARD.decode(digest_b64),
+    ) else {
+        return false;
+    };
+    let Ok(mut mac) = HmacSha1::new_from_slice(&salt) else {
+        return false;
+    };
+    mac.update(target.as_bytes());
+    mac.verify_slice(&expected).is_ok()
+}
+
 /// Extract host and port from a bracketed `[host]:port` string.
 ///
 /// Returns `None` if the string is not in bracketed form.
@@ -902,8 +936,8 @@ fn strip_brackets(s: &str) -> Option<(&str, &str)> {
 
 /// Check whether a `known_hosts` line refers to the given host.
 ///
-/// Handles plain hostnames, comma-separated patterns, and markers.
-/// Does **not** attempt to match hashed entries.
+/// Handles plain hostnames, comma-separated patterns, markers, and OpenSSH
+/// hashed entries (`|1|<salt>|<digest>`).
 fn line_matches_host(line: &str, target: &str) -> bool {
     // Skip optional marker.
     let rest = if line.starts_with('@') {
@@ -920,9 +954,9 @@ fn line_matches_host(line: &str, target: &str) -> bool {
         return false;
     };
 
-    // Hashed entries — cannot match by name.
+    // Hashed entries — match by verifying the HMAC with the entry's salt.
     if hosts_field.starts_with("|1|") {
-        return false;
+        return hashed_host_matches(hosts_field, target);
     }
 
     // Comma-separated patterns — try each one.
@@ -1006,11 +1040,57 @@ mod tests {
     }
 
     #[test]
-    fn line_matches_host_skips_hashed() {
+    fn line_matches_host_hashed() {
+        // OpenSSH hashed form: |1|<b64 salt>|<b64 HMAC-SHA1(hostname)>.
+        // Vectors: salt = bytes 0..16, hosts "localhost" / "example.com".
+        let localhost = "|1|AAECAwQFBgcICQoLDA0ODw==|QPxsRPrqmgtYIUn5eQ4JuxaQ0B0=";
+        let example = "|1|AAECAwQFBgcICQoLDA0ODw==|WUsirEoKqUFIgxenWq6ntO/wUUg=";
+        assert!(line_matches_host(
+            &format!("{localhost} ssh-ed25519 AAAA..."),
+            "localhost"
+        ));
         assert!(!line_matches_host(
-            "|1|salt|hash ssh-ed25519 AAAA...",
+            &format!("{localhost} ssh-ed25519 AAAA..."),
             "example.com"
         ));
+        assert!(line_matches_host(
+            &format!("{example} ssh-ed25519 AAAA..."),
+            "example.com"
+        ));
+        // Malformed hashed fields never match.
+        assert!(!line_matches_host(
+            "|1|!!!|??? ssh-ed25519 AAAA...",
+            "localhost"
+        ));
+        assert!(!line_matches_host(
+            "|1|only-two-fields ssh-ed25519 x",
+            "localhost"
+        ));
+    }
+
+    #[test]
+    fn remove_host_sync_removes_hashed_entry() {
+        let dir = tempfile::TempDir::new().expect("temp dir");
+        let path = dir.path().join("known_hosts");
+        let localhost = "|1|AAECAwQFBgcICQoLDA0ODw==|QPxsRPrqmgtYIUn5eQ4JuxaQ0B0=";
+        std::fs::write(
+            &path,
+            format!("{localhost} ssh-ed25519 AAAA...\nexample.org ssh-ed25519 BBBB...\n"),
+        )
+        .expect("write known_hosts");
+
+        remove_host_sync(&path, "localhost").expect("remove should match hashed entry");
+
+        let left = std::fs::read_to_string(&path).expect("reread");
+        assert!(
+            !left.contains("QPxsRPrqmgtYIUn5eQ4JuxaQ0B0="),
+            "hashed localhost entry should be removed, got: {left}"
+        );
+        assert!(left.contains("example.org"), "other entries are kept");
+
+        // No matching entry (hashed or otherwise) still errors.
+        let result = remove_host_sync(&path, "localhost");
+        assert!(matches!(result, Err(Error::HostNotKnown(_))));
     }
 
     #[test]
@@ -1494,10 +1574,7 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
             result.is_err(),
             "missing-binary error must be propagated, not swallowed as empty"
         );
-        assert!(matches!(
-            result.unwrap_err(),
-            crate::Error::ToolNotFound(_)
-        ));
+        assert!(matches!(result.unwrap_err(), crate::Error::ToolNotFound(_)));
     }
 
     #[tokio::test]
@@ -1560,7 +1637,9 @@ example.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7
             "command `ssh-keygen` failed with exit None: ".into()
         )));
         // Non-CommandFailed variants are real errors.
-        assert!(!is_host_not_found(&Error::ToolNotFound("ssh-keygen".into())));
+        assert!(!is_host_not_found(&Error::ToolNotFound(
+            "ssh-keygen".into()
+        )));
         assert!(!is_host_not_found(&Error::TaskFailed("panic".into())));
         assert!(!is_host_not_found(&Error::PermissionDenied("/x".into())));
     }

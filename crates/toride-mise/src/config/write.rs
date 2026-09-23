@@ -319,15 +319,13 @@ mod tests {
     fn write_and_read(path: &Utf8PathBuf, key: &str, value: &str) -> String {
         Mise::config_set_toml_edit(path, key, value, false)
             .expect("config_set_toml_edit should succeed");
-        fs_err::read_to_string(path.as_std_path())
-            .expect("written file should be readable")
+        fs_err::read_to_string(path.as_std_path()).expect("written file should be readable")
     }
 
     #[test]
     fn creates_new_file_for_missing_config() {
         let dir = TempDir::new().expect("tempdir");
-        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml"))
-            .expect("utf8 path");
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml")).expect("utf8 path");
 
         let content = write_and_read(&path, "python", "3.12");
 
@@ -341,15 +339,12 @@ mod tests {
     #[test]
     fn overwrites_existing_key_value() {
         let dir = TempDir::new().expect("tempdir");
-        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml"))
-            .expect("utf8 path");
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml")).expect("utf8 path");
 
-        fs_err::write(path.as_std_path(), "python = \"3.11\"\n")
-            .expect("seed write");
+        fs_err::write(path.as_std_path(), "python = \"3.11\"\n").expect("seed write");
 
         let existed = path.as_std_path().exists();
-        Mise::config_set_toml_edit(&path, "python", "3.12", existed)
-            .expect("edit should succeed");
+        Mise::config_set_toml_edit(&path, "python", "3.12", existed).expect("edit should succeed");
 
         let content = fs_err::read_to_string(path.as_std_path()).expect("read");
         let doc = content
@@ -366,8 +361,7 @@ mod tests {
     #[test]
     fn sets_dotted_key_into_nested_table() {
         let dir = TempDir::new().expect("tempdir");
-        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml"))
-            .expect("utf8 path");
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml")).expect("utf8 path");
 
         // SettingsEntry::from_raw has no array parser, so array-shaped input
         // is stored verbatim as a string. Exercise the dotted-key navigation
@@ -387,15 +381,10 @@ mod tests {
     #[test]
     fn adds_sibling_key_without_disturbing_existing() {
         let dir = TempDir::new().expect("tempdir");
-        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml"))
-            .expect("utf8 path");
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml")).expect("utf8 path");
 
         // Start with an existing table.
-        fs_err::write(
-            path.as_std_path(),
-            "[settings]\nexperimental = true\n",
-        )
-        .expect("seed");
+        fs_err::write(path.as_std_path(), "[settings]\nexperimental = true\n").expect("seed");
 
         Mise::config_set_toml_edit(&path, "settings.color", "true", true)
             .expect("edit should succeed");
@@ -419,8 +408,7 @@ mod tests {
     #[test]
     fn round_trip_preserves_typed_values() {
         let dir = TempDir::new().expect("tempdir");
-        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml"))
-            .expect("utf8 path");
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml")).expect("utf8 path");
 
         // bool
         write_and_read(&path, "cd", "true");
@@ -430,8 +418,7 @@ mod tests {
         Mise::config_set_toml_edit(&path, "node", "20.0.0", true).expect("str edit");
         // array-shaped input falls back to a verbatim string (from_raw has no
         // array parser); assert it round-trips as a quoted string.
-        Mise::config_set_toml_edit(&path, "env", "[\"FOO=1\", \"BAR=2\"]", true)
-            .expect("str edit");
+        Mise::config_set_toml_edit(&path, "env", "[\"FOO=1\", \"BAR=2\"]", true).expect("str edit");
 
         let content = fs_err::read_to_string(path.as_std_path()).expect("read");
         let doc = content
@@ -451,21 +438,14 @@ mod tests {
     #[test]
     fn atomic_rename_leaves_no_temp_file_behind_on_success() {
         let dir = TempDir::new().expect("tempdir");
-        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml"))
-            .expect("utf8 path");
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml")).expect("utf8 path");
 
-        Mise::config_set_toml_edit(&path, "python", "3.12", false)
-            .expect("edit should succeed");
+        Mise::config_set_toml_edit(&path, "python", "3.12", false).expect("edit should succeed");
 
         // The only entry in the parent dir should be the target file itself.
         let entries: Vec<String> = fs_err::read_dir(dir.path())
             .expect("read_dir")
-            .map(|e| {
-                e.expect("entry")
-                    .file_name()
-                    .to_string_lossy()
-                    .to_string()
-            })
+            .map(|e| e.expect("entry").file_name().to_string_lossy().to_string())
             .collect();
         assert_eq!(entries, ["mise.toml"], "no leftover temp files");
         assert!(path.as_std_path().exists());
@@ -474,8 +454,7 @@ mod tests {
     #[test]
     fn parse_error_on_existing_file_does_not_clobber() {
         let dir = TempDir::new().expect("tempdir");
-        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml"))
-            .expect("utf8 path");
+        let path = Utf8PathBuf::from_path_buf(dir.path().join("mise.toml")).expect("utf8 path");
 
         let original = "this is = = not valid toml";
         fs_err::write(path.as_std_path(), original).expect("seed");

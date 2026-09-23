@@ -580,7 +580,9 @@ where
     {
         use std::sync::Mutex;
         static APPLE_PIPE_LOCK: Mutex<()> = Mutex::new(());
-        let _guard = APPLE_PIPE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        let _guard = APPLE_PIPE_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         f()
     }
     #[cfg(not(target_os = "macos"))]

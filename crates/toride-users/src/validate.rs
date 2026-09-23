@@ -65,9 +65,10 @@ pub fn validate_username(name: &str) -> Result<()> {
     // argv and filenames. Enforce the documented set explicitly so the
     // validator matches its contract and cannot be bypassed with characters
     // the denylist happened to omit.
-    if let Some(ch) = name.chars().find(|c| {
-        !c.is_ascii_lowercase() && !c.is_ascii_digit() && *c != '_' && *c != '-'
-    }) {
+    if let Some(ch) = name
+        .chars()
+        .find(|c| !c.is_ascii_lowercase() && !c.is_ascii_digit() && *c != '_' && *c != '-')
+    {
         return Err(Error::Validation(format!(
             "username contains character {ch:?} which is not a lowercase letter, digit, '_', or '-': {name:?}"
         )));
@@ -245,7 +246,10 @@ mod tests {
     #[test]
     fn rejects_reserved_names() {
         for reserved in ["root", "nobody", "daemon", "bin", "sys", "adm"] {
-            assert!(is_invalid(&validate_username(reserved)), "rejected {reserved:?}");
+            assert!(
+                is_invalid(&validate_username(reserved)),
+                "rejected {reserved:?}"
+            );
         }
     }
 

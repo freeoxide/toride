@@ -285,7 +285,9 @@ mod tests {
     /// mutex, and we take the guard regardless so the suite doesn't deadlock.
     fn env_test_lock() -> std::sync::MutexGuard<'static, ()> {
         static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        ENV_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     /// Build a minimal-but-populated [`TorideStatus`] for the convert tests.
