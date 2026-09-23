@@ -39,11 +39,12 @@ env:
     toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
     toride-ssh-known-hosts toride-status toride-updates toride-users
     toride-wireguard ufw-kit ufw-kit-test-support
-  # Test execution is narrower than compilation on Windows: several test
-  # suites assume Unix (bash, POSIX paths) and are unproven on Windows
-  # runners. Grow this list only with green runner evidence.
+  # Test execution is narrower than compilation on Windows: the first CI run
+  # showed toride-runner/toride-service process tests fail on Windows (they
+  # drive Unix process semantics). Grow this list only with green runner
+  # evidence.
   PORTABLE_TESTS_WINDOWS: >-
-    toride-diagnostic-types toride-mise toride-runner toride-service
+    toride-diagnostic-types toride-mise
   # Every publishable workspace member (no manifest sets publish = false),
   # topologically sorted dependencies-first via cargo metadata --no-deps.
   PUBLISH_ORDER: >-
@@ -173,13 +174,19 @@ jobs:
     name: Publish readiness
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    # Informational until the workspace first lands on crates.io: `cargo
-    # publish --dry-run` resolves intra-workspace deps against the live
-    # registry, so every crate with unpublished siblings fails with
-    # "no matching package" (order-blocked, not a manifest defect). Flip
-    # this to false after running scripts/publish-crates.sh once.
-    continue-on-error: true
     steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo publish --dry-run (every publishable crate, dependency order)
+        shell: bash
+        # Informational until the workspace first lands on crates.io: `cargo
+        # publish --dry-run` resolves intra-workspace deps against the live
+        # registry, so every crate with unpublished siblings fails with
+        # "no matching package" (order-blocked, not a manifest defect). Remove
+        # this continue-on-error after running scripts/publish-crates.sh once.
+        continue-on-error: true
+        run: |
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
