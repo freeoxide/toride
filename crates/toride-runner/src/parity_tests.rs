@@ -6,6 +6,8 @@
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
     use crate::async_runner::AsyncRunner;
     use crate::duct_runner::DuctRunner;
     use crate::runner::Runner;
@@ -61,6 +63,24 @@ mod tests {
         assert!(async_output.success);
         assert_eq!(sync_output.stdout_trimmed(), async_output.stdout_trimmed());
         assert_eq!(sync_output.stdout_trimmed(), "hello world");
+    }
+
+    #[tokio::test]
+    async fn parity_stdin_null_eof() {
+        // Both runners must wire a null-stdin spec to the null device: `cat`
+        // sees EOF immediately and both return empty successes (rather than
+        // inheriting the harness's stdin).
+        let spec = CommandSpec::new("cat")
+            .stdin_null(true)
+            .timeout(Duration::from_secs(2));
+
+        let sync_output = Runner::run(&DuctRunner, &spec).unwrap();
+        let async_output = AsyncRunner::run(&TokioRunner, &spec).await.unwrap();
+
+        assert!(sync_output.success);
+        assert!(async_output.success);
+        assert_eq!(sync_output.stdout, async_output.stdout);
+        assert_eq!(sync_output.stdout, "");
     }
 
     #[tokio::test]

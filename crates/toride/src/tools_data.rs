@@ -22,8 +22,12 @@
 //! so a tool installed off-`$PATH` still surfaces as installed. A single
 //! `spawn_blocking` runs a bounded `<binary> --version` / `-V` probe per
 //! found tool through the runner and keeps the trimmed first non-empty stdout
-//! line as the version string. The data is genuinely live: it reflects the
-//! actual machine.
+//! line as the version string. The probes carry a null stdin (the Detector
+//! wires each probe spec with `stdin_null`, exactly like the replaced
+//! hand-rolled probe's `Stdio::null()`), so a catalogue binary that reads
+//! stdin sees EOF and answers instead of blocking on — or consuming — this
+//! TUI's terminal. The data is genuinely live: it reflects the actual
+//! machine.
 //!
 //! ## Doctor findings cache
 //!
@@ -614,10 +618,13 @@ mod tests {
         let bin_path = bin.to_str().expect("utf-8 tempdir").to_owned();
 
         let stdout = "paritytool version 12.0.1 (rev deadbeef)";
-        // `timeout` is excluded from exact matching (runtime policy), so the
-        // Detector's `--version` probe matches this spec.
+        // `timeout` is excluded from exact matching (runtime policy), but the
+        // null-stdin wiring IS compared, so this spec must mirror what the
+        // Detector's `probe_version` issues.
         let fake = FakeRunner::new().strict().respond(
-            CommandSpec::new(bin_path.clone()).arg("--version"),
+            CommandSpec::new(bin_path.clone())
+                .arg("--version")
+                .stdin_null(true),
             CommandOutput::from_stdout(stdout),
         );
         let detector = Detector::with_runner(Arc::new(fake));

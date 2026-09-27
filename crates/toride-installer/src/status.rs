@@ -319,11 +319,13 @@ impl Detector {
     ///    managed arm is simply absent and classification is PATH-only.
     ///
     /// Then the classified path's version is probed through the injected
-    /// runner as `CommandSpec::new(path).arg("--version").timeout(probe_timeout)`
-    /// (capture output is the default), falling back to `-V`. A failed /
-    /// timed-out / non-zero / empty-stdout probe degrades to `version: None`
-    /// — presence is the path probe's verdict, never the version's. Never
-    /// errors, never touches the network.
+    /// runner as
+    /// `CommandSpec::new(path).arg("--version").timeout(probe_timeout).stdin_null(true)`
+    /// (capture output is the default; stdin is the null device so a probe
+    /// can neither block on nor consume the caller's stdin), falling back to
+    /// `-V`. A failed / timed-out / non-zero / empty-stdout probe degrades to
+    /// `version: None` — presence is the path probe's verdict, never the
+    /// version's. Never errors, never touches the network.
     #[must_use]
     pub fn detect(&self, tool: &Tool) -> ToolStatus {
         let managed = resolve_install_dir(tool, self.install_dir.as_ref())
@@ -383,7 +385,15 @@ impl Detector {
         for arg in ["--version", "-V"] {
             let spec = CommandSpec::new(path.as_str())
                 .arg(arg)
-                .timeout(self.probe_timeout);
+                .timeout(self.probe_timeout)
+                // Probes must never inherit the caller's stdin: an
+                // unspecified stdin is wired to the parent's terminal by both
+                // runners, so a stdin-reading catalogue binary would block
+                // until the timeout (degrading to `version: None`) and could
+                // consume the host UI's keystrokes, instead of seeing EOF and
+                // answering. Null stdin is what the hand-rolled probes this
+                // detector replaced spawned with.
+                .stdin_null(true);
             // `Runner::run`, NOT `run_checked`: a non-zero exit is a probe
             // outcome (degrade / try the next flag), never an error.
             let Ok(output) = self.runner.run(&spec) else {
@@ -765,11 +775,14 @@ mod tests {
 
     /// The exact version-probe spec `Detector` issues — used both to
     /// register `FakeRunner` responses (which ignore `timeout` when
-    /// matching) and to assert on recorded calls.
+    /// matching) and to assert on recorded calls. Must mirror
+    /// `probe_version`: exact matching compares the null-stdin wiring too,
+    /// so a detector that stops carrying it fails every strict test here.
     fn probe_spec(path: &Utf8Path, arg: &str) -> CommandSpec {
         CommandSpec::new(path.as_str())
             .arg(arg)
             .timeout(DEFAULT_PROBE_TIMEOUT)
+            .stdin_null(true)
     }
 
     /// Shorthand: parse with an arbitrary bin name.
@@ -934,6 +947,43 @@ mod tests {
             .unwrap();
         assert_eq!(Detector::new().detect(&tool), ToolStatus::NotInstalled);
         assert_eq!(Detector::default().detect(&tool), ToolStatus::NotInstalled);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn detect_probe_hands_the_child_eof_not_the_callers_stdin() {
+        // End-to-end pin of the null-stdin probe wiring through the real
+        // default runner: the fixture reads stdin BEFORE answering, so it can
+        // only report a version if the probe handed it EOF. Under inherited
+        // stdin the fixture blocks on the harness's stdin until the probe
+        // timeout and this assert fails; on a harness whose stdin is already
+        // at EOF (CI) the test is vacuous but harmless.
+        let tmp = TempDir::new().unwrap();
+        let dir = utf8_dir(&tmp);
+        let bin = dir.join(BIN);
+        std::fs::write(
+            &bin,
+            format!("#!/bin/sh\nhead -n 1 >/dev/null\necho \"{BIN} version 7.7.7\"\n"),
+        )
+        .unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod dummy script");
+        }
+        let tool = Tool::builder()
+            .name(BIN)
+            .bin_name(BIN)
+            .default_install_dir(dir)
+            .build()
+            .expect("valid tool descriptor");
+
+        let status = Detector::new().detect(&tool);
+
+        let version = status
+            .version()
+            .expect("a stdin-reading binary must still answer under a null stdin");
+        assert_eq!(version.raw, "7.7.7");
     }
 
     // -----------------------------------------------------------------------

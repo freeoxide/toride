@@ -202,7 +202,8 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
 
 /// Build a `tokio::process::Command` with args, cwd, env policy, and piped
 /// stdout/stderr. Shared by the unlimited, limited, and (indirectly) streaming
-/// paths. stdin is piped only when the spec carries stdin data.
+/// paths. stdin is piped when the spec carries stdin data, wired to the null
+/// device when [`CommandSpec::stdin_null`] is set, and inherited otherwise.
 fn build_tokio_command(spec: &CommandSpec) -> tokio::process::Command {
     let mut cmd = tokio::process::Command::new(&spec.program);
     cmd.args(&spec.args)
@@ -236,6 +237,11 @@ fn build_tokio_command(spec: &CommandSpec) -> tokio::process::Command {
 
     if spec.stdin.is_some() {
         cmd.stdin(std::process::Stdio::piped());
+    } else if spec.stdin_null {
+        // Same wiring as DuctRunner: a null-stdin spec must not inherit the
+        // parent's stdin, or a stdin-reading child blocks on (or consumes)
+        // the parent's terminal instead of seeing EOF.
+        cmd.stdin(std::process::Stdio::null());
     }
 
     cmd
@@ -545,6 +551,8 @@ async fn run_streaming_command(
     apply_env_policy(&mut cmd, spec);
     if spec.stdin.is_some() {
         cmd.stdin(std::process::Stdio::piped());
+    } else if spec.stdin_null {
+        cmd.stdin(std::process::Stdio::null());
     }
 
     let mut child = cmd.spawn().map_err(|e| Error::SpawnFailed {
@@ -1049,6 +1057,20 @@ mod tests {
         let spec = CommandSpec::new("cat").stdin("piped content");
         let output = runner.run(&spec).await.unwrap();
         assert_eq!(output.stdout_trimmed(), "piped content");
+    }
+
+    #[tokio::test]
+    async fn stdin_null_reads_eof_instead_of_inheriting() {
+        // Mirrors the DuctRunner test of the same name: a null-stdin spec must
+        // wire the child to the null device, not inherit the harness's stdin
+        // (where an interactive run would block `cat` until the timeout).
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("cat")
+            .stdin_null(true)
+            .timeout(Duration::from_secs(2));
+        let output = runner.run(&spec).await.unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "");
     }
 
     #[tokio::test]
