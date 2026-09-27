@@ -3,7 +3,7 @@
 //! A [`Target`] captures the operating system and CPU architecture of the
 //! machine an artifact will run on. It is detected from
 //! [`std::env::consts`] and mapped — per tool — to the release-asset naming
-//! that tool uses (e.g. `linux-x64`, `macos-arm64`).
+//! that tool uses (e.g. `linux-x64`, `macos-arm64`, `windows-x64`).
 
 use crate::error::{Error, Result};
 
@@ -14,19 +14,23 @@ pub enum Os {
     Linux,
     /// macOS.
     Macos,
+    /// Windows.
+    Windows,
 }
 
 impl Os {
     /// Detect the host operating system.
     ///
     /// Returns `None` on platforms the framework does not bootstrap
-    /// (anything other than `Linux`/`macOS`).
+    /// (anything other than `Linux`/`macOS`/`Windows`).
     #[must_use]
     pub fn host() -> Option<Self> {
         if cfg!(target_os = "linux") {
             Some(Self::Linux)
         } else if cfg!(target_os = "macos") {
             Some(Self::Macos)
+        } else if cfg!(target_os = "windows") {
+            Some(Self::Windows)
         } else {
             None
         }
@@ -38,6 +42,7 @@ impl Os {
         match self {
             Self::Linux => "linux",
             Self::Macos => "macos",
+            Self::Windows => "windows",
         }
     }
 }
@@ -159,11 +164,29 @@ mod tests {
     }
 
     #[test]
+    fn keyword_windows_x64() {
+        let t = Target {
+            os: Os::Windows,
+            arch: Arch::X64,
+        };
+        assert_eq!(t.keyword(), "windows-x64");
+    }
+
+    #[test]
+    fn keyword_windows_arm64() {
+        let t = Target {
+            os: Os::Windows,
+            arch: Arch::Arm64,
+        };
+        assert_eq!(t.keyword(), "windows-arm64");
+    }
+
+    #[test]
     fn host_detects_current_platform() {
-        // The test host is linux or macos on x64/arm64; this must always
-        // resolve since CI/dev runs on supported platforms.
+        // The test host is linux, macos, or windows on x64/arm64; this must
+        // always resolve since CI/dev runs on supported platforms.
         let t = Target::host().expect("host target should be supported");
-        assert!(matches!(t.os, Os::Linux | Os::Macos));
+        assert!(matches!(t.os, Os::Linux | Os::Macos | Os::Windows));
         assert!(matches!(t.arch, Arch::Arm64 | Arch::X64));
     }
 
@@ -179,5 +202,6 @@ mod tests {
     fn os_str_values() {
         assert_eq!(Os::Linux.as_str(), "linux");
         assert_eq!(Os::Macos.as_str(), "macos");
+        assert_eq!(Os::Windows.as_str(), "windows");
     }
 }

@@ -5,6 +5,11 @@
 //! executable asset named `mise-v<VERSION>-<os>-<arch>` (no extension,
 //! no tarball) for each release, plus glibc/musl tarballs; we use the raw
 //! binary so the framework's `Binary` artifact path is exercised end-to-end.
+//! On Windows the raw asset carries an `.exe` suffix —
+//! `mise-v<VERSION>-windows-x64.exe`, with a `.zip` bundle published
+//! alongside that we do not use — verified against the live v2026.9.15
+//! release (asset list and `SHASUMS256.txt`); the descriptor installs the
+//! binary as `mise.exe` there (see [`MISE_BIN_NAME`]).
 //!
 //! Every mise release also publishes a `SHASUMS256.txt` covering its
 //! assets (coreutils `sha256sum` format with `./`-prefixed filenames —
@@ -35,7 +40,7 @@ use camino::Utf8PathBuf;
 use crate::error::{Error, Result};
 use crate::installer::Installer;
 use crate::status::{Detector, EnsureOutcome, version_satisfied};
-use crate::target::Target;
+use crate::target::{Os, Target};
 use crate::tool::{ArtifactKind, Checksum, ReleaseResolver, Tool};
 
 /// The GitHub owner/repo slug for mise.
@@ -44,7 +49,17 @@ pub const MISE_REPO: &str = "jdx/mise";
 /// The GitHub releases API base for mise.
 const MISE_API: &str = "https://api.github.com/repos/jdx/mise/releases";
 
-/// The on-disk binary name installed by mise.
+/// The on-disk binary name the mise descriptor installs as on the compile
+/// target: `mise.exe` under `cfg(windows)` — the managed install lands at
+/// `<dir>/<bin_name>` and the published Windows raw asset is an `.exe`
+/// executable (verified against the live v2026.9.15 release) — `mise`
+/// everywhere else.
+#[cfg(windows)]
+pub const MISE_BIN_NAME: &str = "mise.exe";
+
+/// [`MISE_BIN_NAME`] on non-Windows targets, where the raw asset has no
+/// extension. Split per target so exactly one definition compiles.
+#[cfg(not(windows))]
 pub const MISE_BIN_NAME: &str = "mise";
 
 /// The sha256 checksum file mise publishes with every release.
@@ -60,7 +75,8 @@ const USER_AGENT: &str = concat!("toride-installer/", env!("CARGO_PKG_VERSION"))
 /// version — the install paths pin [`Checksum::Url`] for that version once
 /// it is known (see [`checksum_pinned_tool`]). The default install dir is
 /// `~/.local/bin` (handled by the engine when `default_install_dir` is
-/// `None`).
+/// `None`), and `bin_name` follows the compile target: `mise.exe` under
+/// `cfg(windows)` ([`MISE_BIN_NAME`]), `mise` elsewhere.
 #[must_use]
 pub fn mise_tool() -> Tool {
     Tool {
@@ -97,12 +113,19 @@ impl MiseResolver {
     }
 
     /// The asset filename for a given (version, target), e.g.
-    /// `mise-v2026.6.14-linux-x64`.
+    /// `mise-v2026.6.14-linux-x64`, or `mise-v2026.6.14-windows-x64.exe`
+    /// on Windows targets — the raw Windows asset carries an `.exe`
+    /// extension, verified against the live v2026.9.15 release whose
+    /// `SHASUMS256.txt` lists `./mise-v2026.9.15-windows-x64.exe`.
     fn asset_name(version: &str, target: Target) -> String {
         // The asset filename always prefixes `v`; strip any caller-supplied
         // one first so we don't double it up.
         let trimmed = version.strip_prefix('v').unwrap_or(version);
-        format!("mise-v{trimmed}-{}", target.keyword())
+        let mut name = format!("mise-v{trimmed}-{}", target.keyword());
+        if matches!(target.os, Os::Windows) {
+            name.push_str(".exe");
+        }
+        name
     }
 
     fn client(&self) -> reqwest::Client {
@@ -407,10 +430,54 @@ mod tests {
     }
 
     #[test]
+    fn asset_name_format_windows_x64() {
+        let t = Target {
+            os: Os::Windows,
+            arch: Arch::X64,
+        };
+        assert_eq!(
+            MiseResolver::asset_name("2026.6.14", t),
+            "mise-v2026.6.14-windows-x64.exe"
+        );
+    }
+
+    #[test]
+    fn asset_name_format_windows_arm64() {
+        let t = Target {
+            os: Os::Windows,
+            arch: Arch::Arm64,
+        };
+        assert_eq!(
+            MiseResolver::asset_name("2026.6.14", t),
+            "mise-v2026.6.14-windows-arm64.exe"
+        );
+    }
+
+    #[test]
+    fn download_url_format_windows_x64() {
+        let t = Target {
+            os: Os::Windows,
+            arch: Arch::X64,
+        };
+        let url = MiseResolver::download_url("2026.6.14", t);
+        // The full literal is one char over the 100-column budget, so it is
+        // assembled from two pieces (concat!, not runtime formatting).
+        assert_eq!(
+            url,
+            concat!(
+                "https://github.com/jdx/mise/releases/download/",
+                "v2026.6.14/mise-v2026.6.14-windows-x64.exe"
+            )
+        );
+    }
+
+    #[test]
     fn mise_tool_descriptor() {
         let tool = mise_tool();
         assert_eq!(tool.name, "mise");
-        assert_eq!(tool.bin_name, "mise");
+        // MISE_BIN_NAME is cfg-split (mise.exe under cfg(windows));
+        // asserting against it keeps the test true on every compile target.
+        assert_eq!(tool.bin_name, MISE_BIN_NAME);
         assert_eq!(tool.artifact, ArtifactKind::Binary);
         // The static descriptor stays checksum-free (the checksum-file URL
         // is version-dependent); installs pin `Checksum::Url` — see
@@ -448,6 +515,28 @@ mod tests {
         assert_eq!(tool.name, "mise");
         assert_eq!(tool.artifact, ArtifactKind::Binary);
         assert!(tool.bin_path.is_none());
+        tool.validate().unwrap();
+    }
+
+    #[test]
+    fn checksum_pinned_tool_names_the_windows_asset() {
+        let t = Target {
+            os: Os::Windows,
+            arch: Arch::X64,
+        };
+        let tool = checksum_pinned_tool("2026.9.15", t);
+        assert_eq!(
+            tool.checksum,
+            Checksum::Url {
+                url: "https://github.com/jdx/mise/releases/download/v2026.9.15/SHASUMS256.txt"
+                    .into(),
+                // Must byte-match the SHASUMS256.txt entry after the parser
+                // strips its `./` prefix — including the `.exe` (live-
+                // verified against v2026.9.15:
+                // `./mise-v2026.9.15-windows-x64.exe`).
+                asset_name: "mise-v2026.9.15-windows-x64.exe".into(),
+            }
+        );
         tool.validate().unwrap();
     }
 
