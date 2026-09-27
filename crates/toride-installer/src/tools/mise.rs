@@ -242,7 +242,7 @@ mod tests {
     }
 
     #[test]
-    fn download_url_format() {
+    fn download_url_format_linux_x64() {
         let t = Target {
             os: Os::Linux,
             arch: Arch::X64,
@@ -251,6 +251,45 @@ mod tests {
         assert_eq!(
             url,
             "https://github.com/jdx/mise/releases/download/v2026.6.14/mise-v2026.6.14-linux-x64"
+        );
+    }
+
+    #[test]
+    fn download_url_format_macos_arm64() {
+        let t = Target {
+            os: Os::Macos,
+            arch: Arch::Arm64,
+        };
+        let url = MiseResolver::download_url("2026.6.14", t);
+        assert_eq!(
+            url,
+            "https://github.com/jdx/mise/releases/download/v2026.6.14/mise-v2026.6.14-macos-arm64"
+        );
+    }
+
+    #[test]
+    fn download_url_format_linux_arm64() {
+        let t = Target {
+            os: Os::Linux,
+            arch: Arch::Arm64,
+        };
+        let url = MiseResolver::download_url("2026.6.14", t);
+        assert_eq!(
+            url,
+            "https://github.com/jdx/mise/releases/download/v2026.6.14/mise-v2026.6.14-linux-arm64"
+        );
+    }
+
+    #[test]
+    fn download_url_format_macos_x64() {
+        let t = Target {
+            os: Os::Macos,
+            arch: Arch::X64,
+        };
+        let url = MiseResolver::download_url("2026.6.14", t);
+        assert_eq!(
+            url,
+            "https://github.com/jdx/mise/releases/download/v2026.6.14/mise-v2026.6.14-macos-x64"
         );
     }
 

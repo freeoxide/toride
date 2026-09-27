@@ -7,7 +7,7 @@
 //!
 //! [`Detector::detect`] probes the real `$PATH` first (that is the binary a
 //! shell would actually execute), then the managed install location — the
-//! exact directory [`resolve_install_dir`] installs into, so "where we
+//! exact directory `resolve_install_dir` installs into, so "where we
 //! look" cannot drift from "where we install". A `$PATH` hit that
 //! canonicalizes to the managed path (or a managed file found with no
 //! `$PATH` hit) is [`ToolSource::Managed`]; any other `$PATH` hit is the
@@ -22,15 +22,24 @@
 //! release needs a network fetch, so it is a derived [`Freshness`] computed
 //! by callers that explicitly have a `latest` in hand.
 //!
+//! The one network-touching piece lives here too, kept behind an explicit
+//! opt-in: [`latest`] is a single [`ReleaseResolver::resolve`] call for the
+//! host [`Target`] with `"latest"`, and [`LatestCache`] is an in-memory TTL
+//! cache of that lookup. Release-API failures — rate limiting above all —
+//! surface there as ordinary errors; callers must treat them as non-fatal,
+//! because an unreachable release API says nothing about the health of an
+//! installed tool.
+//!
 //! # Name collision
 //!
 //! `toride-mise` also exports a `ToolStatus` (its mise-installed-tool
 //! listing) with a different meaning. One crate, one meaning; consumers
 //! adopting both must qualify the import at every use.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use camino::{Utf8Path, Utf8PathBuf};
 use toride_runner::discovery::find_binary;
@@ -38,7 +47,8 @@ use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 use crate::error::Result;
 use crate::installer::resolve_install_dir;
-use crate::tool::Tool;
+use crate::target::Target;
+use crate::tool::{ReleaseResolver, Tool};
 
 /// Default per-tool version-probe timeout. A UI catalogue sweep typically
 /// uses a much tighter per-probe cap (hundreds of ms) across many tools; a
@@ -440,6 +450,100 @@ impl Default for DetectorBuilder {
     }
 }
 
+/// Network latest-version lookup: exactly one
+/// [`ReleaseResolver::resolve`] call for the host [`Target`] with
+/// `"latest"`.
+///
+/// The concrete version the resolver returns (per the trait's contract a
+/// bare version like `"2026.6.14"` — no tag prefix, never the string
+/// `"latest"`) becomes the [`ToolVersion`]: `line`/`raw` carry the version
+/// text and `parsed` is a best-effort semver parse. The download URL is
+/// discarded — a staleness verdict via [`Freshness::evaluate`] needs only
+/// the version, and this function must not invite a download.
+///
+/// Only errors the pieces already produce can escape; there are no new
+/// variants on the `#[non_exhaustive]` [`Error`](crate::Error) enum:
+///
+/// - [`Error::UnsupportedTarget`](crate::Error::UnsupportedTarget) when
+///   [`Target::host`] cannot classify this platform;
+/// - whatever the resolver's contract allows — typically
+///   [`Error::Resolve`](crate::Error::Resolve),
+///   [`Error::Download`](crate::Error::Download) or
+///   [`Error::HttpStatus`](crate::Error::HttpStatus).
+///
+/// Callers must treat failure as non-fatal: release-API rate limiting
+/// surfaces here as an [`Error::HttpStatus`](crate::Error::HttpStatus) on
+/// a perfectly healthy install, so a staleness check that hard-fails
+/// would report every rate limit as a broken tool. Report no verdict
+/// instead.
+///
+/// # Errors
+///
+/// See above: host-target detection and the resolver itself — nothing
+/// else.
+pub async fn latest(resolver: &dyn ReleaseResolver) -> Result<ToolVersion> {
+    let target = Target::host()?;
+    let (version, _url) = resolver.resolve(target, "latest").await?;
+    // An empty bin name disables prefix stripping: the resolver contract
+    // already delivers a bare version, and there is no binary name to
+    // strip here. `ToolVersion::parse` remains the single parsing path.
+    Ok(ToolVersion::parse(&version, ""))
+}
+
+/// In-memory TTL cache for [`latest`], keyed by [`Tool::name`].
+///
+/// Deliberately minimal: `&mut self` access only (no interior mutability,
+/// no shared handle) and no persistence — a `dirs::cache_dir()`-backed
+/// cache adds fs-layout and staleness-semantics decisions with no
+/// consumer yet. Repeats within the TTL (a doctor check plus a run in one
+/// invocation, say) cost a single release-API lookup; a rate-limited miss
+/// surfaces as [`Error::HttpStatus`](crate::Error::HttpStatus) and must
+/// stay non-fatal in callers, exactly like [`latest`].
+#[derive(Debug)]
+pub struct LatestCache {
+    /// How long an entry stays fresh.
+    ttl: Duration,
+
+    /// Per-tool `(fetched_at, version)` entries.
+    entries: HashMap<String, (Instant, ToolVersion)>,
+}
+
+impl LatestCache {
+    /// A cache whose entries stay fresh for `ttl`. A zero `ttl` disables
+    /// caching: every lookup refetches.
+    #[must_use]
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            ttl,
+            entries: HashMap::new(),
+        }
+    }
+
+    /// The cached latest [`ToolVersion`] of `tool` while fresh within the
+    /// TTL; otherwise a fresh [`latest`] fetch, stored for next time.
+    ///
+    /// # Errors
+    ///
+    /// Propagates [`latest`]'s error on a cache miss. A failed fetch is
+    /// not cached, so the next call retries the resolver rather than
+    /// replaying the error for the whole TTL.
+    pub async fn get(
+        &mut self,
+        tool: &Tool,
+        resolver: &dyn ReleaseResolver,
+    ) -> Result<ToolVersion> {
+        if let Some((fetched_at, version)) = self.entries.get(&tool.name)
+            && fetched_at.elapsed() < self.ttl
+        {
+            return Ok(version.clone());
+        }
+        let version = latest(resolver).await?;
+        self.entries
+            .insert(tool.name.clone(), (Instant::now(), version.clone()));
+        Ok(version)
+    }
+}
+
 /// Classify a discovered `$PATH` hit against the managed install path.
 ///
 /// The PATH hit wins: canonicalized-equal to the managed path -> `Managed`
@@ -479,6 +583,8 @@ fn same_file(a: &Path, b: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use toride_runner::error::Error as RunnerError;
     use toride_runner::{CommandOutput, FakeRunner};
@@ -524,6 +630,15 @@ mod tests {
     /// Shorthand: parse with an arbitrary bin name.
     fn tv(output: &str) -> ToolVersion {
         ToolVersion::parse(output, "tool")
+    }
+
+    /// A `Tool` with a distinctive `name` — the key [`LatestCache`] uses.
+    fn named_tool(name: &str) -> Tool {
+        Tool::builder()
+            .name(name)
+            .bin_name(name)
+            .build()
+            .expect("valid tool descriptor")
     }
 
     // -----------------------------------------------------------------------
@@ -1112,5 +1227,182 @@ mod tests {
         assert_eq!(on_path.path(), Some(&path));
         assert_eq!(on_path.version().map(|v| v.raw.as_str()), Some("1.0.0"));
         assert_eq!(on_path.source(), Some(ToolSource::Path));
+    }
+
+    // -----------------------------------------------------------------------
+    // latest() + LatestCache — local stub resolver, zero network
+    // -----------------------------------------------------------------------
+
+    /// Canned [`ReleaseResolver`] for the `latest`/cache tests: each call
+    /// pops the next outcome — `Some(version)` resolves, `None` errors —
+    /// and the last outcome repeats on any extra call. Counts invocations;
+    /// no HTTP, no TCP.
+    struct StubResolver {
+        outcomes: Mutex<Vec<Option<String>>>,
+        calls: AtomicUsize,
+    }
+
+    impl StubResolver {
+        /// One canned outcome, repeated forever.
+        fn new(outcomes: Vec<Option<String>>) -> Self {
+            Self {
+                outcomes: Mutex::new(outcomes),
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        /// Every call resolves to `version`.
+        fn resolving(version: &str) -> Self {
+            Self::new(vec![Some(version.to_owned())])
+        }
+
+        /// Calls resolve to `versions` in order; the last one repeats.
+        fn resolving_in_order(versions: &[&str]) -> Self {
+            Self::new(versions.iter().map(|v| Some((*v).to_owned())).collect())
+        }
+
+        /// The first call fails (a stubbed rate limit); later calls resolve
+        /// to `version`.
+        fn failing_then_resolving(version: &str) -> Self {
+            Self::new(vec![None, Some(version.to_owned())])
+        }
+
+        /// Every call fails.
+        fn always_failing() -> Self {
+            Self::new(vec![None])
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ReleaseResolver for StubResolver {
+        async fn resolve(&self, target: Target, version: &str) -> Result<(String, String)> {
+            // Pins both halves of `latest`'s contract: the host target and
+            // the literal `"latest"` request.
+            assert_eq!(
+                target,
+                Target::host().expect("test host is a supported target"),
+                "latest() must resolve for the host target"
+            );
+            assert_eq!(version, "latest", "latest() must request exactly `latest`");
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut outcomes = self.outcomes.lock().expect("stub mutex poisoned");
+            let outcome = if outcomes.len() > 1 {
+                outcomes.remove(0)
+            } else {
+                outcomes[0].clone()
+            };
+            let concrete = outcome.ok_or_else(|| crate::Error::Resolve {
+                tool: "stub".to_owned(),
+                reason: "stubbed release-API failure".to_owned(),
+            })?;
+            Ok((concrete.clone(), format!("https://stub.invalid/{concrete}")))
+        }
+    }
+
+    #[tokio::test]
+    async fn latest_converts_concrete_version_and_discards_url() {
+        let resolver = StubResolver::resolving("2026.6.14");
+
+        let version = latest(&resolver).await.expect("stub resolves");
+
+        assert_eq!(version.line, "2026.6.14");
+        assert_eq!(version.raw, "2026.6.14");
+        assert_eq!(version.parsed, Some(semver::Version::new(2026, 6, 14)));
+        assert_eq!(
+            resolver.call_count(),
+            1,
+            "latest() is exactly one resolve call"
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_propagates_resolver_error_without_new_variants() {
+        let resolver = StubResolver::always_failing();
+
+        let err = latest(&resolver).await.expect_err("stub always fails");
+
+        assert!(
+            matches!(err, crate::Error::Resolve { .. }),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_get_within_ttl_does_not_reinvoke_resolver() {
+        let resolver = StubResolver::resolving("1.0.0");
+        let mut cache = LatestCache::new(Duration::from_secs(3600));
+        let tool = named_tool("cache-fresh-tool");
+
+        let first = cache.get(&tool, &resolver).await.unwrap();
+        let second = cache.get(&tool, &resolver).await.unwrap();
+
+        assert_eq!(first.raw, "1.0.0");
+        assert_eq!(second, first);
+        assert_eq!(
+            resolver.call_count(),
+            1,
+            "a get within the TTL must be served from the cache"
+        );
+    }
+
+    #[tokio::test]
+    async fn cache_get_after_ttl_expiry_reinvokes_resolver() {
+        // Deterministic without a mock clock: tokio's sleep guarantees at
+        // least the requested duration, so afterwards the entry is
+        // certainly older than the TTL. (A mock clock would need
+        // tokio::time::Instant in LatestCache; the plan pins std Instant.)
+        let resolver = StubResolver::resolving_in_order(&["1.0.0", "2.0.0"]);
+        let mut cache = LatestCache::new(Duration::from_millis(20));
+        let tool = named_tool("cache-expiry-tool");
+
+        let first = cache.get(&tool, &resolver).await.unwrap();
+        assert_eq!(first.raw, "1.0.0");
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let second = cache.get(&tool, &resolver).await.unwrap();
+        assert_eq!(second.raw, "2.0.0", "an expired entry must be refetched");
+        assert_eq!(resolver.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn cache_miss_error_is_not_cached() {
+        // A failed lookup (e.g. a rate limit) must not poison the cache:
+        // the next get retries the resolver instead of replaying the error
+        // for the whole TTL.
+        let resolver = StubResolver::failing_then_resolving("1.2.3");
+        let mut cache = LatestCache::new(Duration::from_secs(3600));
+        let tool = named_tool("cache-error-tool");
+
+        assert!(cache.get(&tool, &resolver).await.is_err());
+
+        let retried = cache.get(&tool, &resolver).await.unwrap();
+        assert_eq!(retried.raw, "1.2.3");
+        assert_eq!(resolver.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn cache_keys_entries_per_tool() {
+        let resolver = StubResolver::resolving("3.0.0");
+        let mut cache = LatestCache::new(Duration::from_secs(3600));
+        let first = named_tool("cache-tool-a");
+        let second_tool = named_tool("cache-tool-b");
+
+        let a = cache.get(&first, &resolver).await.unwrap();
+        let b = cache.get(&second_tool, &resolver).await.unwrap();
+        let a_again = cache.get(&first, &resolver).await.unwrap();
+
+        assert_eq!(a.raw, "3.0.0");
+        assert_eq!(b.raw, "3.0.0");
+        assert_eq!(a_again, a);
+        assert_eq!(
+            resolver.call_count(),
+            2,
+            "each tool name gets its own entry"
+        );
     }
 }
