@@ -12,8 +12,8 @@ set -euo pipefail
 CRATES=(
   toride-diagnostic-types
   toride-fs
-  toride-installer
   toride-runner
+  toride-installer
   toride-mise
   toride-service
   toride-audit
