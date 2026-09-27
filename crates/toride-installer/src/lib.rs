@@ -95,6 +95,7 @@ pub mod error;
 pub mod extract;
 pub mod installer;
 pub mod progress;
+pub mod status;
 pub mod target;
 pub mod tool;
 pub mod tools;
@@ -106,5 +107,9 @@ pub use installer::{
     install_tool,
 };
 pub use progress::Progress;
+pub use status::{
+    DEFAULT_PROBE_TIMEOUT, Detector, DetectorBuilder, Freshness, ToolSource, ToolStatus,
+    ToolVersion,
+};
 pub use target::{Arch, Os, Target};
 pub use tool::{ArtifactKind, Checksum, ReleaseResolver, Tarball, Tool, ToolBuilder};

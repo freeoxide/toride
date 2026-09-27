@@ -589,7 +589,14 @@ impl ReleaseResolver for TemplateResolver {
 
 /// Resolve which directory to install into: explicit override > tool default
 /// > `~/.local/bin`.
-fn resolve_install_dir(tool: &Tool, override_dir: Option<&Utf8PathBuf>) -> Result<Utf8PathBuf> {
+///
+/// `pub(crate)` so the offline detector (`crate::status`) can consult the
+/// same precedence installs use — detect's managed location cannot drift
+/// from where installs actually land.
+pub(crate) fn resolve_install_dir(
+    tool: &Tool,
+    override_dir: Option<&Utf8PathBuf>,
+) -> Result<Utf8PathBuf> {
     if let Some(d) = override_dir {
         return Ok(d.clone());
     }

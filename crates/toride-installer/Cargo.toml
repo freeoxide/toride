@@ -13,7 +13,13 @@ camino = { workspace = true }
 async-trait = { workspace = true }
 dirs = { workspace = true }
 reqwest = { workspace = true }
+semver = { workspace = true }
 tokio = { workspace = true }
+# External commands (version probes) go through the workspace's shared
+# `Runner` trait. The dep/dev-dep split keeps the test-only `fake` feature
+# out of the normal build — stricter than the single-entry shape other
+# consumers use.
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner"] }
 sha2 = "0.10"
 tar = "0.4"
 flate2 = "1"
@@ -25,6 +31,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 camino = { workspace = true }
 serde_json = { workspace = true }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
 
 [lints]
 workspace = true
