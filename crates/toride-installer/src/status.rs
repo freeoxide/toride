@@ -589,7 +589,11 @@ pub enum EnsureOutcome {
 ///
 /// Precondition: `status.is_installed()` — `ensure_installed` checks that
 /// before consulting this.
-fn version_satisfied(status: &ToolStatus, requested: &str) -> bool {
+///
+/// `pub(crate)`: the per-tool ensure paths (`ensure_mise`) replicate the
+/// detect-first flow so their misses can route through the checksum-pinning
+/// per-tool installer, and must keep the same satisfaction rule.
+pub(crate) fn version_satisfied(status: &ToolStatus, requested: &str) -> bool {
     if requested == "latest" {
         return true;
     }
@@ -610,8 +614,10 @@ async fn ensure_with_detector(
     install_dir: Option<&Utf8PathBuf>,
     resolver: &(dyn ReleaseResolver + Send + Sync),
 ) -> Result<EnsureOutcome> {
-    // 1. detect first — offline, never errors.
-    let status = detector.detect(tool);
+    // 1. detect first — offline, never errors, and via `detect_async`: the
+    //    version probe spawns subprocesses and must not run on an async
+    //    runtime worker.
+    let status = detector.detect_async(tool).await;
 
     // 2. a copy that satisfies the request is kept as-is, zero network.
     if status.is_installed() && version_satisfied(&status, version) {
@@ -621,11 +627,12 @@ async fn ensure_with_detector(
     // 3. a true miss: run the install pipeline with the caller's resolver,
     //    then re-detect for the freshly installed version. In a shadowed
     //    environment the re-probe reports whichever copy `detect`
-    //    classifies (the same one a subsequent ensure would keep).
+    //    classifies (the same one a subsequent ensure would keep). The
+    //    re-probe goes through `detect_async` for the same reason.
     let path = Installer::new()
         .install_with_resolver(tool, target, version, install_dir, resolver)
         .await?;
-    let version = detector.detect(tool).version().cloned();
+    let version = detector.detect_async(tool).await.version().cloned();
     Ok(EnsureOutcome::Installed { path, version })
 }
 

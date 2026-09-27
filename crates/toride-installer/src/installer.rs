@@ -8,8 +8,8 @@
 //!    request is `"latest"`);
 //! 2. **download** the bytes via `reqwest`, following redirects, capped at
 //!    a configurable maximum size;
-//! 3. **verify** — sha256 when the tool publishes one, otherwise a sane
-//!    non-zero size floor (documented below);
+//! 3. **verify** — sha256 when the tool's descriptor pins one, otherwise a
+//!    sane non-zero size floor (documented below);
 //! 4. **extract** — a `Binary` is placed directly, a `Tarball` is
 //!    decompressed (gzip or xz) and the configured entry is read out;
 //! 5. **install** — written atomically (temp + rename) into the install
@@ -17,14 +17,15 @@
 //!
 //! ## Verification policy
 //!
-//! Some tools (mise among them) publish no sha256 for their release
-//! artifacts. For those, the installer applies a **size floor** (default
-//! 1 MiB): a download smaller than the floor is rejected as suspicious
-//! (a 404 HTML page, an empty response, a redirect to a login screen, …).
-//! This is NOT a security guarantee — it is a sanity check. Tools that DO
-//! publish checksums are verified strictly. Pass
-//! [`Verifier::Strict`] to refuse tools that have
-//! no checksum at all.
+//! A tool whose descriptor pins no checksum ([`Checksum::None`]) is
+//! verified with a **size floor** (default 1 MiB): a download smaller than
+//! the floor is rejected as suspicious (a 404 HTML page, an empty
+//! response, a redirect to a login screen, …). This is NOT a security
+//! guarantee — it is a sanity check. Tools that DO publish checksums —
+//! statically as [`Checksum::Digest`], or per-release as a
+//! [`Checksum::Url`] checksum file — are verified strictly against the
+//! sha256. Pass [`Verifier::Strict`] to refuse installs whose descriptor
+//! carries no checksum at all.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -106,9 +107,9 @@ fn build_http_client() -> reqwest::Client {
 /// Verification strictness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Verifier {
-    /// Verify the sha256 when the tool publishes one; otherwise fall back
-    /// to the documented size-floor sanity check. This is the default and
-    /// the right choice for tools like mise.
+    /// Verify the sha256 when the tool's descriptor carries one
+    /// ([`Checksum::Digest`] or [`Checksum::Url`]); otherwise fall back to
+    /// the documented size-floor sanity check. This is the default.
     #[default]
     Lenient,
 
@@ -739,10 +740,12 @@ fn hex_sha256(bytes: &[u8]) -> String {
 ///
 /// Accepts both coreutils `sha256sum` output (`<hex>  <filename>`, separated
 /// by two spaces; the filename is optional and may be prefixed with `*` to
-/// mark a binary-mode digest) and a bare `<hex>` line. The first matching
-/// line wins. Lines whose leading token is not a 64-character lowercase or
-/// uppercase hex digest are skipped, so banners/blanks/comments in the file
-/// cannot be mistaken for a digest.
+/// mark a binary-mode digest) and a bare `<hex>` line. A filename's leading
+/// `./` (as emitted by `find`-style listings — mise's published
+/// `SHASUMS256.txt` carries `./`-prefixed names) is stripped before
+/// matching. The first matching line wins. Lines whose leading token is not
+/// a 64-character lowercase or uppercase hex digest are skipped, so
+/// banners/blanks/comments in the file cannot be mistaken for a digest.
 ///
 /// Returns `None` when no line carries a digest for `asset_name` (or, when
 /// `asset_name` is empty, any bare digest).
@@ -771,6 +774,11 @@ fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<Str
         let filename = rest.trim_start();
         // coreutils `sha256sum` prefixes binary-mode filenames with `*`.
         let filename = filename.trim_start_matches('*').trim();
+        // `find . -type f -exec sha256sum`-style listings emit `./`-prefixed
+        // filenames (mise's SHASUMS256.txt does): the prefix is directory
+        // noise, not part of the asset name. Only the leading `./` is
+        // stripped, so the remainder must still match `asset_name` exactly.
+        let filename = filename.strip_prefix("./").unwrap_or(filename);
         if asset_name.is_empty() || filename == asset_name {
             return Some(digest.to_ascii_lowercase());
         }
@@ -1241,6 +1249,34 @@ mod tests {
         assert_eq!(
             extract_digest_from_checksum_body(&body, "mise"),
             Some(digest)
+        );
+    }
+
+    #[test]
+    fn checksum_body_parses_live_mise_shasums_line() {
+        // A line from mise's published SHASUMS256.txt (v2026.9.15, fetched
+        // live while wiring Checksum::Url for mise): coreutils format with a
+        // `./`-prefixed filename. The entry for the exact asset this crate
+        // installs must parse.
+        let body = concat!(
+            "09ea631d6f3e7031d63606a0892dc4c796f9fb57f493bc45937f9f7113c88216",
+            "  ./mise-v2026.9.15-linux-x64\n",
+        );
+        assert_eq!(
+            extract_digest_from_checksum_body(body, "mise-v2026.9.15-linux-x64"),
+            Some("09ea631d6f3e7031d63606a0892dc4c796f9fb57f493bc45937f9f7113c88216".to_owned())
+        );
+    }
+
+    #[test]
+    fn checksum_body_strips_only_a_leading_dot_slash() {
+        // The `./` strip must not loosen matching: a name that merely starts
+        // with a dot once `./` is removed is still a different asset.
+        let digest = hex_sha256(b"x");
+        let body = format!("{digest}  ./.mise-v2026.9.15-linux-x64\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-v2026.9.15-linux-x64"),
+            None
         );
     }
 
