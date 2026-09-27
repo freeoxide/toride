@@ -8,6 +8,12 @@
 //! ```
 //!
 //! This mirrors the `TORIDE_MISE_INTEGRATION` pattern used in `toride-mise`.
+//!
+//! The whole file is also `http`-feature-gated: every test drives the
+//! install engine (network + GitHub), which does not exist in the offline
+//! `--no-default-features` build.
+
+#![cfg(feature = "http")]
 
 use std::env;
 use std::process::Command;

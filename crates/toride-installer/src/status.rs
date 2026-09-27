@@ -53,7 +53,9 @@ use toride_runner::discovery::find_binary;
 use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 use crate::error::Result;
-use crate::installer::{Installer, resolve_install_dir};
+#[cfg(feature = "http")]
+use crate::installer::Installer;
+use crate::installer::resolve_install_dir;
 use crate::target::Target;
 use crate::tool::{ReleaseResolver, Tool};
 
@@ -603,6 +605,10 @@ pub enum EnsureOutcome {
 /// `pub(crate)`: the per-tool ensure paths (`ensure_mise`) replicate the
 /// detect-first flow so their misses can route through the checksum-pinning
 /// per-tool installer, and must keep the same satisfaction rule.
+///
+/// Gated behind `http`: its only callers are the install-on-miss paths,
+/// which need the engine.
+#[cfg(feature = "http")]
 pub(crate) fn version_satisfied(status: &ToolStatus, requested: &str) -> bool {
     if requested == "latest" {
         return true;
@@ -616,6 +622,7 @@ pub(crate) fn version_satisfied(status: &ToolStatus, requested: &str) -> bool {
 
 /// The body of [`ensure_installed`], split out so tests can drive the
 /// decision table through a [`Detector`] with an injected (fake) runner.
+#[cfg(feature = "http")]
 async fn ensure_with_detector(
     detector: &Detector,
     tool: &Tool,
@@ -675,6 +682,7 @@ async fn ensure_with_detector(
 /// `NoChecksum`, `Archive`, `EntryNotFound`, `Io`, `NoHomeDir` and
 /// `BlockingJoin`. Detection and the version probe never error, so a
 /// request satisfied by an installed copy cannot fail.
+#[cfg(feature = "http")]
 pub async fn ensure_installed(
     tool: &Tool,
     target: Target,
@@ -1618,295 +1626,306 @@ mod tests {
 
     // -----------------------------------------------------------------------
     // ensure_installed — the detect-first decision table
+    //
+    // The ensure path runs the install pipeline on a miss, so these tests
+    // need the `http` engine and ride behind the same feature.
     // -----------------------------------------------------------------------
 
-    /// The host target, resolved once per test.
-    fn host_target() -> Target {
-        Target::host().expect("test host is a supported target")
-    }
+    #[cfg(feature = "http")]
+    mod ensure {
+        use super::*;
 
-    /// A `Managed` status at the usual non-existent fixture path.
-    fn managed_status(version: Option<ToolVersion>) -> ToolStatus {
-        ToolStatus::Managed {
-            path: Utf8PathBuf::from("/nonexistent-toride-test/tool"),
-            version,
+        /// The host target, resolved once per test.
+        fn host_target() -> Target {
+            Target::host().expect("test host is a supported target")
         }
-    }
 
-    #[test]
-    fn version_satisfied_table() {
-        let installed = managed_status(Some(tv("1.2.3")));
+        /// A `Managed` status at the usual non-existent fixture path.
+        fn managed_status(version: Option<ToolVersion>) -> ToolStatus {
+            ToolStatus::Managed {
+                path: Utf8PathBuf::from("/nonexistent-toride-test/tool"),
+                version,
+            }
+        }
 
-        assert!(version_satisfied(&installed, "latest"));
-        assert!(
-            version_satisfied(&installed, "1.2.3"),
-            "equal counts as satisfied"
-        );
-        assert!(version_satisfied(&installed, "1.2.0"));
-        assert!(
-            version_satisfied(&installed, "v1.2.3"),
-            "tag prefix accepted, matching the resolvers' normalization"
-        );
-        assert!(!version_satisfied(&installed, "1.3.0"));
-        assert!(
-            !version_satisfied(&installed, "banana"),
-            "no pinned semver in the request: never satisfied"
-        );
-        assert!(
-            !version_satisfied(&managed_status(None), "1.0.0"),
-            "an unprobeable copy is never confirmed"
-        );
-    }
+        #[test]
+        fn version_satisfied_table() {
+            let installed = managed_status(Some(tv("1.2.3")));
 
-    #[tokio::test]
-    async fn ensure_latest_keeps_installed_copy_without_consulting_resolver() {
-        let tmp = TempDir::new().unwrap();
-        let tool = managed_tool(&tmp);
-        let managed = Detector::managed_path(&tool, None).unwrap();
+            assert!(version_satisfied(&installed, "latest"));
+            assert!(
+                version_satisfied(&installed, "1.2.3"),
+                "equal counts as satisfied"
+            );
+            assert!(version_satisfied(&installed, "1.2.0"));
+            assert!(
+                version_satisfied(&installed, "v1.2.3"),
+                "tag prefix accepted, matching the resolvers' normalization"
+            );
+            assert!(!version_satisfied(&installed, "1.3.0"));
+            assert!(
+                !version_satisfied(&installed, "banana"),
+                "no pinned semver in the request: never satisfied"
+            );
+            assert!(
+                !version_satisfied(&managed_status(None), "1.0.0"),
+                "an unprobeable copy is never confirmed"
+            );
+        }
 
-        let stdout = format!("{BIN} version 1.2.3");
-        let fake = FakeRunner::new().strict().respond(
-            probe_spec(&managed, "--version"),
-            CommandOutput::from_stdout(stdout.clone()),
-        );
-        let detector = Detector::with_runner(Arc::new(fake));
-        // The stub FAILS if consulted: reaching AlreadyPresent with zero
-        // calls proves the keep-copy fast path spends no network.
-        let resolver = StubResolver::always_failing();
+        #[tokio::test]
+        async fn ensure_latest_keeps_installed_copy_without_consulting_resolver() {
+            let tmp = TempDir::new().unwrap();
+            let tool = managed_tool(&tmp);
+            let managed = Detector::managed_path(&tool, None).unwrap();
 
-        let outcome =
-            ensure_with_detector(&detector, &tool, host_target(), "latest", None, &resolver)
+            let stdout = format!("{BIN} version 1.2.3");
+            let fake = FakeRunner::new().strict().respond(
+                probe_spec(&managed, "--version"),
+                CommandOutput::from_stdout(stdout.clone()),
+            );
+            let detector = Detector::with_runner(Arc::new(fake));
+            // The stub FAILS if consulted: reaching AlreadyPresent with zero
+            // calls proves the keep-copy fast path spends no network.
+            let resolver = StubResolver::always_failing();
+
+            let outcome =
+                ensure_with_detector(&detector, &tool, host_target(), "latest", None, &resolver)
+                    .await
+                    .expect("`latest` must keep an installed copy");
+
+            assert_eq!(
+                outcome,
+                EnsureOutcome::AlreadyPresent(ToolStatus::Managed {
+                    path: managed,
+                    version: Some(ToolVersion::parse(&stdout, BIN)),
+                })
+            );
+            assert_eq!(resolver.call_count(), 0);
+        }
+
+        #[tokio::test]
+        async fn ensure_pinned_met_keeps_installed_copy_without_consulting_resolver() {
+            let tmp = TempDir::new().unwrap();
+            let tool = managed_tool(&tmp);
+            let managed = Detector::managed_path(&tool, None).unwrap();
+
+            let stdout = format!("{BIN} 1.2.3");
+            let fake = FakeRunner::new().strict().respond(
+                probe_spec(&managed, "--version"),
+                CommandOutput::from_stdout(stdout.clone()),
+            );
+            let detector = Detector::with_runner(Arc::new(fake));
+            let resolver = StubResolver::always_failing();
+
+            // 1.2.0 < detected 1.2.3: the pin is met by the installed copy.
+            let outcome =
+                ensure_with_detector(&detector, &tool, host_target(), "1.2.0", None, &resolver)
+                    .await
+                    .expect("a met pin must keep the installed copy");
+
+            assert_eq!(
+                outcome,
+                EnsureOutcome::AlreadyPresent(ToolStatus::Managed {
+                    path: managed,
+                    version: Some(ToolVersion::parse(&stdout, BIN)),
+                })
+            );
+            assert_eq!(resolver.call_count(), 0);
+        }
+
+        #[tokio::test]
+        async fn ensure_v_prefixed_pinned_is_understood() {
+            let tmp = TempDir::new().unwrap();
+            let tool = managed_tool(&tmp);
+            let managed = Detector::managed_path(&tool, None).unwrap();
+
+            let fake = FakeRunner::new().strict().respond(
+                probe_spec(&managed, "--version"),
+                CommandOutput::from_stdout(format!("{BIN} 1.2.3")),
+            );
+            let detector = Detector::with_runner(Arc::new(fake));
+            let resolver = StubResolver::always_failing();
+
+            let outcome =
+                ensure_with_detector(&detector, &tool, host_target(), "v1.2.3", None, &resolver)
+                    .await
+                    .expect("a v-prefixed pin met by the copy must keep it");
+
+            assert!(matches!(outcome, EnsureOutcome::AlreadyPresent(_)));
+            assert_eq!(resolver.call_count(), 0);
+        }
+
+        #[tokio::test]
+        async fn ensure_pinned_unmet_runs_the_installer_with_the_callers_resolver() {
+            let tmp = TempDir::new().unwrap();
+            let tool = managed_tool(&tmp);
+            let managed = Detector::managed_path(&tool, None).unwrap();
+
+            let fake = FakeRunner::new().strict().respond(
+                probe_spec(&managed, "--version"),
+                CommandOutput::from_stdout(format!("{BIN} 1.0.0")),
+            );
+            let detector = Detector::with_runner(Arc::new(fake));
+            // The stub fails at resolve: enough to prove the install path was
+            // entered and handed the caller's resolver — the download itself is
+            // exercised only by the gated integration tests (it needs network).
+            let resolver = StubResolver::always_failing();
+
+            let err =
+                ensure_with_detector(&detector, &tool, host_target(), "2.0.0", None, &resolver)
+                    .await
+                    .expect_err("2.0.0 is newer than the installed 1.0.0: the install must run");
+
+            assert!(
+                matches!(err, crate::Error::Resolve { .. }),
+                "unexpected error: {err:?}"
+            );
+            assert_eq!(
+                resolver.call_count(),
+                1,
+                "the miss must consult the caller's resolver exactly once"
+            );
+        }
+
+        #[tokio::test]
+        async fn ensure_pinned_against_unprobeable_version_reinstalls() {
+            let tmp = TempDir::new().unwrap();
+            let tool = managed_tool(&tmp);
+            // Lenient runner: unmatched probes return empty success output, so
+            // the copy's version is unknown. A pinned request cannot be
+            // confirmed — the conservative verdict is to reinstall.
+            let detector = Detector::with_runner(Arc::new(FakeRunner::new()));
+            let resolver = StubResolver::always_failing();
+
+            let err =
+                ensure_with_detector(&detector, &tool, host_target(), "1.0.0", None, &resolver)
+                    .await
+                    .expect_err("an unconfirmed version must not short-circuit the install");
+
+            assert!(
+                matches!(err, crate::Error::Resolve { .. }),
+                "unexpected error: {err:?}"
+            );
+            assert_eq!(resolver.call_count(), 1);
+        }
+
+        #[tokio::test]
+        async fn ensure_not_installed_runs_the_installer_even_for_latest() {
+            // Strict runner with NO responses: any version probe would error and
+            // fail the test, so a resolver consultation proves detection
+            // returned NotInstalled without probing — and that `latest` does
+            // not short-circuit a true miss.
+            let detector = Detector::with_runner(Arc::new(FakeRunner::new().strict()));
+            let tool = Tool::builder()
+                .name("toride-test-absent")
+                .bin_name("toride-test-absent")
+                .build()
+                .unwrap();
+            let resolver = StubResolver::always_failing();
+
+            let err =
+                ensure_with_detector(&detector, &tool, host_target(), "latest", None, &resolver)
+                    .await
+                    .expect_err("a missing tool must be installed");
+
+            assert!(
+                matches!(err, crate::Error::Resolve { .. }),
+                "unexpected error: {err:?}"
+            );
+            assert_eq!(resolver.call_count(), 1);
+        }
+
+        // -------------------------------------------------------------------
+        // ensure_installed through the public entry point (default duct runner)
+        // -------------------------------------------------------------------
+
+        /// Writes a real executable script at `<dir>/<BIN>` that answers
+        /// `--version` with `<BIN> version <line>` (unix-only: needs a shebang
+        /// plus the executable bit).
+        #[cfg(unix)]
+        fn write_echoing_script(dir: &Utf8Path, version: &str) -> Utf8PathBuf {
+            use std::os::unix::fs::PermissionsExt;
+
+            let bin = dir.join(BIN);
+            std::fs::write(
+                &bin,
+                format!("#!/bin/sh\necho \"{BIN} version {version}\"\n"),
+            )
+            .expect("write dummy script");
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod dummy script");
+            bin
+        }
+
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn ensure_public_probes_the_real_binary_and_skips_resolver() {
+            // No FakeRunner here: the public entry point wires its own default
+            // runner, so detection probes the real script. `latest` must keep
+            // the copy without ever consulting the (deliberately failing)
+            // resolver.
+            let tmp = TempDir::new().unwrap();
+            let dir = utf8_dir(&tmp);
+            let bin = write_echoing_script(&dir, "9.9.9");
+            let tool = Tool::builder()
+                .name(BIN)
+                .bin_name(BIN)
+                .default_install_dir(dir)
+                .build()
+                .unwrap();
+            let resolver = StubResolver::always_failing();
+
+            let outcome = ensure_installed(&tool, host_target(), "latest", None, &resolver)
                 .await
-                .expect("`latest` must keep an installed copy");
+                .expect("an installed copy satisfies `latest` offline");
 
-        assert_eq!(
-            outcome,
-            EnsureOutcome::AlreadyPresent(ToolStatus::Managed {
-                path: managed,
-                version: Some(ToolVersion::parse(&stdout, BIN)),
-            })
-        );
-        assert_eq!(resolver.call_count(), 0);
-    }
+            assert_eq!(
+                outcome,
+                EnsureOutcome::AlreadyPresent(ToolStatus::Managed {
+                    path: bin,
+                    version: Some(ToolVersion::parse(&format!("{BIN} version 9.9.9"), BIN)),
+                })
+            );
+            assert_eq!(resolver.call_count(), 0, "zero network when a copy runs");
+        }
 
-    #[tokio::test]
-    async fn ensure_pinned_met_keeps_installed_copy_without_consulting_resolver() {
-        let tmp = TempDir::new().unwrap();
-        let tool = managed_tool(&tmp);
-        let managed = Detector::managed_path(&tool, None).unwrap();
+        #[cfg(unix)]
+        #[tokio::test]
+        async fn ensure_public_detects_against_the_install_dir_override() {
+            // The tool's default dir stays empty; the override dir carries the
+            // script. ensure must build its Detector with that override —
+            // proving install_dir flows into detection, not just into install.
+            let tool_dir = TempDir::new().unwrap();
+            let override_tmp = TempDir::new().unwrap();
+            let override_dir = utf8_dir(&override_tmp);
+            let bin = write_echoing_script(&override_dir, "4.0.0");
+            let tool = Tool::builder()
+                .name(BIN)
+                .bin_name(BIN)
+                .default_install_dir(utf8_dir(&tool_dir))
+                .build()
+                .unwrap();
+            let resolver = StubResolver::always_failing();
 
-        let stdout = format!("{BIN} 1.2.3");
-        let fake = FakeRunner::new().strict().respond(
-            probe_spec(&managed, "--version"),
-            CommandOutput::from_stdout(stdout.clone()),
-        );
-        let detector = Detector::with_runner(Arc::new(fake));
-        let resolver = StubResolver::always_failing();
-
-        // 1.2.0 < detected 1.2.3: the pin is met by the installed copy.
-        let outcome =
-            ensure_with_detector(&detector, &tool, host_target(), "1.2.0", None, &resolver)
-                .await
-                .expect("a met pin must keep the installed copy");
-
-        assert_eq!(
-            outcome,
-            EnsureOutcome::AlreadyPresent(ToolStatus::Managed {
-                path: managed,
-                version: Some(ToolVersion::parse(&stdout, BIN)),
-            })
-        );
-        assert_eq!(resolver.call_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn ensure_v_prefixed_pinned_is_understood() {
-        let tmp = TempDir::new().unwrap();
-        let tool = managed_tool(&tmp);
-        let managed = Detector::managed_path(&tool, None).unwrap();
-
-        let fake = FakeRunner::new().strict().respond(
-            probe_spec(&managed, "--version"),
-            CommandOutput::from_stdout(format!("{BIN} 1.2.3")),
-        );
-        let detector = Detector::with_runner(Arc::new(fake));
-        let resolver = StubResolver::always_failing();
-
-        let outcome =
-            ensure_with_detector(&detector, &tool, host_target(), "v1.2.3", None, &resolver)
-                .await
-                .expect("a v-prefixed pin met by the copy must keep it");
-
-        assert!(matches!(outcome, EnsureOutcome::AlreadyPresent(_)));
-        assert_eq!(resolver.call_count(), 0);
-    }
-
-    #[tokio::test]
-    async fn ensure_pinned_unmet_runs_the_installer_with_the_callers_resolver() {
-        let tmp = TempDir::new().unwrap();
-        let tool = managed_tool(&tmp);
-        let managed = Detector::managed_path(&tool, None).unwrap();
-
-        let fake = FakeRunner::new().strict().respond(
-            probe_spec(&managed, "--version"),
-            CommandOutput::from_stdout(format!("{BIN} 1.0.0")),
-        );
-        let detector = Detector::with_runner(Arc::new(fake));
-        // The stub fails at resolve: enough to prove the install path was
-        // entered and handed the caller's resolver — the download itself is
-        // exercised only by the gated integration tests (it needs network).
-        let resolver = StubResolver::always_failing();
-
-        let err = ensure_with_detector(&detector, &tool, host_target(), "2.0.0", None, &resolver)
+            let outcome = ensure_installed(
+                &tool,
+                host_target(),
+                "latest",
+                Some(&override_dir),
+                &resolver,
+            )
             .await
-            .expect_err("2.0.0 is newer than the installed 1.0.0: the install must run");
+            .expect("the copy in the override dir satisfies `latest`");
 
-        assert!(
-            matches!(err, crate::Error::Resolve { .. }),
-            "unexpected error: {err:?}"
-        );
-        assert_eq!(
-            resolver.call_count(),
-            1,
-            "the miss must consult the caller's resolver exactly once"
-        );
-    }
-
-    #[tokio::test]
-    async fn ensure_pinned_against_unprobeable_version_reinstalls() {
-        let tmp = TempDir::new().unwrap();
-        let tool = managed_tool(&tmp);
-        // Lenient runner: unmatched probes return empty success output, so
-        // the copy's version is unknown. A pinned request cannot be
-        // confirmed — the conservative verdict is to reinstall.
-        let detector = Detector::with_runner(Arc::new(FakeRunner::new()));
-        let resolver = StubResolver::always_failing();
-
-        let err = ensure_with_detector(&detector, &tool, host_target(), "1.0.0", None, &resolver)
-            .await
-            .expect_err("an unconfirmed version must not short-circuit the install");
-
-        assert!(
-            matches!(err, crate::Error::Resolve { .. }),
-            "unexpected error: {err:?}"
-        );
-        assert_eq!(resolver.call_count(), 1);
-    }
-
-    #[tokio::test]
-    async fn ensure_not_installed_runs_the_installer_even_for_latest() {
-        // Strict runner with NO responses: any version probe would error and
-        // fail the test, so a resolver consultation proves detection
-        // returned NotInstalled without probing — and that `latest` does
-        // not short-circuit a true miss.
-        let detector = Detector::with_runner(Arc::new(FakeRunner::new().strict()));
-        let tool = Tool::builder()
-            .name("toride-test-absent")
-            .bin_name("toride-test-absent")
-            .build()
-            .unwrap();
-        let resolver = StubResolver::always_failing();
-
-        let err = ensure_with_detector(&detector, &tool, host_target(), "latest", None, &resolver)
-            .await
-            .expect_err("a missing tool must be installed");
-
-        assert!(
-            matches!(err, crate::Error::Resolve { .. }),
-            "unexpected error: {err:?}"
-        );
-        assert_eq!(resolver.call_count(), 1);
-    }
-
-    // -----------------------------------------------------------------------
-    // ensure_installed through the public entry point (default duct runner)
-    // -----------------------------------------------------------------------
-
-    /// Writes a real executable script at `<dir>/<BIN>` that answers
-    /// `--version` with `<BIN> version <line>` (unix-only: needs a shebang
-    /// plus the executable bit).
-    #[cfg(unix)]
-    fn write_echoing_script(dir: &Utf8Path, version: &str) -> Utf8PathBuf {
-        use std::os::unix::fs::PermissionsExt;
-
-        let bin = dir.join(BIN);
-        std::fs::write(
-            &bin,
-            format!("#!/bin/sh\necho \"{BIN} version {version}\"\n"),
-        )
-        .expect("write dummy script");
-        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
-            .expect("chmod dummy script");
-        bin
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn ensure_public_probes_the_real_binary_and_skips_resolver() {
-        // No FakeRunner here: the public entry point wires its own default
-        // runner, so detection probes the real script. `latest` must keep
-        // the copy without ever consulting the (deliberately failing)
-        // resolver.
-        let tmp = TempDir::new().unwrap();
-        let dir = utf8_dir(&tmp);
-        let bin = write_echoing_script(&dir, "9.9.9");
-        let tool = Tool::builder()
-            .name(BIN)
-            .bin_name(BIN)
-            .default_install_dir(dir)
-            .build()
-            .unwrap();
-        let resolver = StubResolver::always_failing();
-
-        let outcome = ensure_installed(&tool, host_target(), "latest", None, &resolver)
-            .await
-            .expect("an installed copy satisfies `latest` offline");
-
-        assert_eq!(
-            outcome,
-            EnsureOutcome::AlreadyPresent(ToolStatus::Managed {
-                path: bin,
-                version: Some(ToolVersion::parse(&format!("{BIN} version 9.9.9"), BIN)),
-            })
-        );
-        assert_eq!(resolver.call_count(), 0, "zero network when a copy runs");
-    }
-
-    #[cfg(unix)]
-    #[tokio::test]
-    async fn ensure_public_detects_against_the_install_dir_override() {
-        // The tool's default dir stays empty; the override dir carries the
-        // script. ensure must build its Detector with that override —
-        // proving install_dir flows into detection, not just into install.
-        let tool_dir = TempDir::new().unwrap();
-        let override_tmp = TempDir::new().unwrap();
-        let override_dir = utf8_dir(&override_tmp);
-        let bin = write_echoing_script(&override_dir, "4.0.0");
-        let tool = Tool::builder()
-            .name(BIN)
-            .bin_name(BIN)
-            .default_install_dir(utf8_dir(&tool_dir))
-            .build()
-            .unwrap();
-        let resolver = StubResolver::always_failing();
-
-        let outcome = ensure_installed(
-            &tool,
-            host_target(),
-            "latest",
-            Some(&override_dir),
-            &resolver,
-        )
-        .await
-        .expect("the copy in the override dir satisfies `latest`");
-
-        assert_eq!(
-            outcome,
-            EnsureOutcome::AlreadyPresent(ToolStatus::Managed {
-                path: bin,
-                version: Some(ToolVersion::parse(&format!("{BIN} version 4.0.0"), BIN)),
-            })
-        );
-        assert_eq!(resolver.call_count(), 0);
+            assert_eq!(
+                outcome,
+                EnsureOutcome::AlreadyPresent(ToolStatus::Managed {
+                    path: bin,
+                    version: Some(ToolVersion::parse(&format!("{BIN} version 4.0.0"), BIN)),
+                })
+            );
+            assert_eq!(resolver.call_count(), 0);
+        }
     }
 }

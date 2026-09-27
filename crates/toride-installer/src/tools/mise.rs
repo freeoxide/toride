@@ -34,20 +34,25 @@
 //! # }
 //! ```
 
+#[cfg(feature = "http")]
 use async_trait::async_trait;
+#[cfg(feature = "http")]
 use camino::Utf8PathBuf;
 
+#[cfg(feature = "http")]
 use crate::error::{Error, Result};
+#[cfg(feature = "http")]
 use crate::installer::Installer;
+#[cfg(feature = "http")]
 use crate::status::{Detector, EnsureOutcome, version_satisfied};
+#[cfg(feature = "http")]
 use crate::target::{Os, Target};
-use crate::tool::{ArtifactKind, Checksum, ReleaseResolver, Tool};
+#[cfg(feature = "http")]
+use crate::tool::ReleaseResolver;
+use crate::tool::{ArtifactKind, Checksum, Tool};
 
 /// The GitHub owner/repo slug for mise.
 pub const MISE_REPO: &str = "jdx/mise";
-
-/// The GitHub releases API base for mise.
-const MISE_API: &str = "https://api.github.com/repos/jdx/mise/releases";
 
 /// The on-disk binary name the mise descriptor installs as on the compile
 /// target: `mise.exe` under `cfg(windows)` — the managed install lands at
@@ -62,10 +67,16 @@ pub const MISE_BIN_NAME: &str = "mise.exe";
 #[cfg(not(windows))]
 pub const MISE_BIN_NAME: &str = "mise";
 
+/// The GitHub releases API base for mise.
+#[cfg(feature = "http")]
+const MISE_API: &str = "https://api.github.com/repos/jdx/mise/releases";
+
 /// The sha256 checksum file mise publishes with every release.
+#[cfg(feature = "http")]
 const SHASUMS_FILE: &str = "SHASUMS256.txt";
 
 /// User-Agent string sent to GitHub (api.github.com requires one).
+#[cfg(feature = "http")]
 const USER_AGENT: &str = concat!("toride-installer/", env!("CARGO_PKG_VERSION"));
 
 /// Build the [`Tool`] descriptor for mise.
@@ -98,6 +109,7 @@ pub fn mise_tool() -> Tool {
 ///
 /// (`releases/latest/download/mise-linux-x64` returns 404 because mise's
 /// asset filenames embed the version, e.g. `mise-v2026.6.14-linux-x64`.)
+#[cfg(feature = "http")]
 #[derive(Debug, Clone, Default)]
 pub struct MiseResolver {
     /// Optional injected HTTP client (e.g. for a shared connection pool or
@@ -105,6 +117,7 @@ pub struct MiseResolver {
     pub client: Option<reqwest::Client>,
 }
 
+#[cfg(feature = "http")]
 impl MiseResolver {
     /// Create a new resolver with a default HTTP client.
     #[must_use]
@@ -169,6 +182,7 @@ impl MiseResolver {
     }
 }
 
+#[cfg(feature = "http")]
 impl MiseResolver {
     /// Build the versioned download URL for (concrete version, target).
     fn download_url(version: &str, target: Target) -> String {
@@ -177,6 +191,7 @@ impl MiseResolver {
     }
 }
 
+#[cfg(feature = "http")]
 #[async_trait]
 impl ReleaseResolver for MiseResolver {
     async fn resolve(&self, target: Target, version: &str) -> Result<(String, String)> {
@@ -190,6 +205,7 @@ impl ReleaseResolver for MiseResolver {
 }
 
 /// The subset of a GitHub release we need from `releases/latest`.
+#[cfg(feature = "http")]
 #[derive(Debug, serde::Deserialize)]
 struct LatestRelease {
     /// The git tag, e.g. `v2026.6.14`.
@@ -198,6 +214,7 @@ struct LatestRelease {
 
 /// The versioned [`SHASUMS_FILE`] URL for a concrete mise release, e.g.
 /// `https://github.com/jdx/mise/releases/download/v2026.9.15/SHASUMS256.txt`.
+#[cfg(feature = "http")]
 fn shasums256_url(version: &str) -> String {
     format!("https://github.com/{MISE_REPO}/releases/download/v{version}/{SHASUMS_FILE}")
 }
@@ -209,6 +226,7 @@ fn shasums256_url(version: &str) -> String {
 /// asset's sha256 strictly, so the size-floor policy never applies to a mise
 /// install. The parser accepts the file's coreutils format, including its
 /// `./`-prefixed filenames.
+#[cfg(feature = "http")]
 fn checksum_pinned_tool(version: &str, target: Target) -> Tool {
     let mut tool = mise_tool();
     tool.checksum = Checksum::Url {
@@ -234,6 +252,7 @@ fn checksum_pinned_tool(version: &str, target: Target) -> Tool {
 /// [`Error::HttpStatus`] if GitHub rate-limits the latest-version lookup or
 /// the checksum fetch, and [`Error::NoChecksumEntry`] if the published
 /// checksum file stops listing the asset.
+#[cfg(feature = "http")]
 pub async fn install_mise(version: &str, install_dir: Option<&Utf8PathBuf>) -> Result<Utf8PathBuf> {
     let target = Target::host()?;
     let resolver = MiseResolver::new();
@@ -280,6 +299,7 @@ pub async fn install_mise(version: &str, install_dir: Option<&Utf8PathBuf>) -> R
 ///
 /// [`Error::UnsupportedTarget`] when [`Target::host`] cannot classify this
 /// platform, plus everything [`install_mise`] can return.
+#[cfg(feature = "http")]
 pub async fn ensure_mise(
     version: &str,
     install_dir: Option<&Utf8PathBuf>,
@@ -314,6 +334,30 @@ pub async fn ensure_mise(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn mise_tool_descriptor() {
+        let tool = mise_tool();
+        assert_eq!(tool.name, "mise");
+        // MISE_BIN_NAME is cfg-split (mise.exe under cfg(windows));
+        // asserting against it keeps the test true on every compile target.
+        assert_eq!(tool.bin_name, MISE_BIN_NAME);
+        assert_eq!(tool.artifact, ArtifactKind::Binary);
+        // The static descriptor stays checksum-free (the checksum-file URL
+        // is version-dependent); installs pin `Checksum::Url` — see
+        // `checksum_pinned_tool_names_the_release_checksum_file`.
+        assert_eq!(tool.checksum, Checksum::None);
+        assert!(tool.bin_path.is_none());
+        assert!(tool.default_install_dir.is_none());
+        tool.validate().unwrap();
+    }
+}
+
+/// Resolver/install tests: they exercise the `http`-gated engine paths and
+/// ride behind the same feature.
+#[cfg(all(test, feature = "http"))]
+mod resolver_tests {
     use super::*;
     use crate::target::{Arch, Os};
 
@@ -469,23 +513,6 @@ mod tests {
                 "v2026.6.14/mise-v2026.6.14-windows-x64.exe"
             )
         );
-    }
-
-    #[test]
-    fn mise_tool_descriptor() {
-        let tool = mise_tool();
-        assert_eq!(tool.name, "mise");
-        // MISE_BIN_NAME is cfg-split (mise.exe under cfg(windows));
-        // asserting against it keeps the test true on every compile target.
-        assert_eq!(tool.bin_name, MISE_BIN_NAME);
-        assert_eq!(tool.artifact, ArtifactKind::Binary);
-        // The static descriptor stays checksum-free (the checksum-file URL
-        // is version-dependent); installs pin `Checksum::Url` — see
-        // `checksum_pinned_tool_names_the_release_checksum_file`.
-        assert_eq!(tool.checksum, Checksum::None);
-        assert!(tool.bin_path.is_none());
-        assert!(tool.default_install_dir.is_none());
-        tool.validate().unwrap();
     }
 
     #[test]

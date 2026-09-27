@@ -60,6 +60,21 @@ impl fmt::Display for MiseVersion {
     }
 }
 
+impl From<&toride_installer::ToolVersion> for MiseVersion {
+    /// Convert the installer detector's probed version into a
+    /// [`MiseVersion`]. Both types parse with the same conventions (prefix
+    /// strip, first whitespace token, best-effort semver), so `raw` and
+    /// `parsed` carry over unchanged; `ToolVersion::line` (the full
+    /// trimmed output line) has no `MiseVersion` counterpart and is
+    /// dropped.
+    fn from(v: &toride_installer::ToolVersion) -> Self {
+        Self {
+            raw: v.raw.clone(),
+            parsed: v.parsed.clone(),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -131,5 +146,25 @@ mod tests {
     fn display_uses_raw() {
         let v = MiseVersion::parse("mise 2024.1.2");
         assert_eq!(v.to_string(), "2024.1.2");
+    }
+
+    #[test]
+    fn from_tool_version_keeps_raw_and_parsed() {
+        // The detector parses with the same prefix-strip + first-token
+        // conventions as `MiseVersion::parse`, so both routes agree.
+        let tv = toride_installer::ToolVersion::parse("mise 2026.9.1 linux-x64", "mise");
+        let mv = MiseVersion::from(&tv);
+        assert_eq!(mv, MiseVersion::parse("2026.9.1 linux-x64"));
+        assert_eq!(mv.raw, "2026.9.1");
+        assert_eq!(mv.parsed, Some(Version::parse("2026.9.1").unwrap()));
+    }
+
+    #[test]
+    fn from_unparseable_tool_version_stays_unparsed() {
+        let tv = toride_installer::ToolVersion::parse("not a version", "mise");
+        let mv = MiseVersion::from(&tv);
+        assert_eq!(mv.raw, "not");
+        assert!(mv.parsed.is_none());
+        assert!(!mv.is_at_least(&Version::new(0, 0, 1)));
     }
 }

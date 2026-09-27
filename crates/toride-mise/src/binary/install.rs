@@ -580,6 +580,14 @@ impl MiseBinary {
     /// [`MiseError::BootstrapHint`] error is returned with installation
     /// instructions.
     ///
+    /// Discovery is offline and never installs: it consults `MISE_BIN`, then
+    /// `toride_installer`'s `Detector` over the real `$PATH` and the managed
+    /// install location (`~/.local/bin` — where the installer's checksum-
+    /// verified install path writes), then the system-wide and app-bundled
+    /// fallbacks. A true miss is reported as the hint below rather than
+    /// triggering a download, so the meaning of the user-facing outcome is
+    /// unchanged — only the probe behind it is shared with the installer.
+    ///
     /// For automated bootstrapping, match on [`MiseError::BootstrapHint`]
     /// and call [`install_mise`] with the desired [`BootstrapMethod`].
     // The `async` keyword is part of the public signature — callers `.await`

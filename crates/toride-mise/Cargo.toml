@@ -18,11 +18,16 @@ blocking = []
 
 [dependencies]
 toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner", "stream", "fake"] }
+# Offline detection of the mise binary ($PATH + the managed install
+# location). `default-features = false` keeps the installer's HTTP/archive
+# engine out of this crate's graph: no reqwest (rustls -> ring), no xz2
+# (lzma-sys) — the C build scripts that keep toride-mise on CI's portable
+# macOS/Windows lists.
+toride-installer = { path = "../toride-installer", version = "0.1.0", default-features = false }
 thiserror = { workspace = true }
 camino = { workspace = true }
 fs-err = { workspace = true }
 semver = { workspace = true }
-which = { workspace = true }
 dirs = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
