@@ -108,8 +108,8 @@ pub use installer::{
 };
 pub use progress::Progress;
 pub use status::{
-    DEFAULT_PROBE_TIMEOUT, Detector, DetectorBuilder, Freshness, LatestCache, ToolSource,
-    ToolStatus, ToolVersion, latest,
+    DEFAULT_PROBE_TIMEOUT, Detector, DetectorBuilder, EnsureOutcome, Freshness, LatestCache,
+    ToolSource, ToolStatus, ToolVersion, ensure_installed, latest,
 };
 pub use target::{Arch, Os, Target};
 pub use tool::{ArtifactKind, Checksum, ReleaseResolver, Tarball, Tool, ToolBuilder};

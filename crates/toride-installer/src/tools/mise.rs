@@ -17,6 +17,9 @@
 //! use toride_installer::tools::mise;
 //!
 //! # async fn run() -> toride_installer::Result<()> {
+//! // Detect-first: installs only when no satisfying copy already runs.
+//! let outcome = mise::ensure_mise("latest", None).await?;
+//! // Or install unconditionally:
 //! let dest = mise::install_mise("latest", None).await?;
 //! println!("installed mise to {dest}");
 //! # Ok(())
@@ -28,6 +31,7 @@ use camino::Utf8PathBuf;
 
 use crate::error::{Error, Result};
 use crate::installer::Installer;
+use crate::status::{EnsureOutcome, ensure_installed};
 use crate::target::Target;
 use crate::tool::{ArtifactKind, Checksum, ReleaseResolver, Tool};
 
@@ -174,6 +178,46 @@ pub async fn install_mise(version: &str, install_dir: Option<&Utf8PathBuf>) -> R
     Installer::new()
         .install_with_resolver(&tool, target, version, install_dir, &resolver)
         .await
+}
+
+/// Detect-first mise install: [`ensure_installed`] with [`mise_tool`] and a
+/// fresh [`MiseResolver`].
+///
+/// A copy that already runs is kept with **zero network** — the resolver is
+/// never consulted. `"latest"` always keeps an installed copy (deciding
+/// whether a newer release exists needs network by definition); a pinned
+/// semver keeps it when the detected version meets the pin. Only a true
+/// miss routes into the install pipeline, and that pipeline is exactly the
+/// one [`install_mise`] runs — same descriptor, same resolver, same engine
+/// entry. mise publishes **no release checksums** (see the module-level
+/// note), so there is no checksum lookup on this path at all: misses
+/// install under the engine's documented size-floor sanity check.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use toride_installer::status::EnsureOutcome;
+///
+/// # async fn run() -> toride_installer::Result<()> {
+/// match mise::ensure_mise("latest", None).await? {
+///     EnsureOutcome::AlreadyPresent(status) => println!("already running: {status:?}"),
+///     EnsureOutcome::Installed { path, .. } => println!("installed: {path}"),
+/// }
+/// # Ok(())
+/// # }
+/// ```
+///
+/// # Errors
+///
+/// [`Error::UnsupportedTarget`] when [`Target::host`] cannot classify this
+/// platform, plus everything [`ensure_installed`] can return.
+pub async fn ensure_mise(
+    version: &str,
+    install_dir: Option<&Utf8PathBuf>,
+) -> Result<EnsureOutcome> {
+    let tool = mise_tool();
+    let target = Target::host()?;
+    ensure_installed(&tool, target, version, install_dir, &MiseResolver::new()).await
 }
 
 #[cfg(test)]
