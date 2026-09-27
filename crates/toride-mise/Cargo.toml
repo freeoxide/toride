@@ -29,6 +29,10 @@ camino = { workspace = true }
 fs-err = { workspace = true }
 semver = { workspace = true }
 dirs = { workspace = true }
+# `spawn_blocking` in `MiseBinary::discover_async`: the detector's version
+# probes are sync subprocess work and must not run on an async runtime
+# worker. Already in every graph via toride-runner/toride-installer.
+tokio = { workspace = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
 tracing = { workspace = true, optional = true }

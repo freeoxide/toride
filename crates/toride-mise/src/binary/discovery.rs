@@ -49,6 +49,13 @@ impl MiseBinary {
     ///    PATH-scrubbed host with a system-wide mise must still be found.
     /// 4. App-bundled binary path (alongside the current executable).
     ///
+    /// Discovery performs blocking work: tier 2 runs the detector's
+    /// `mise --version` / `-V` subprocess probes, each bounded by
+    /// [`DEFAULT_PROBE_TIMEOUT`](toride_installer::DEFAULT_PROBE_TIMEOUT).
+    /// Sync callers may use this freely; async callers must go through
+    /// [`MiseBinary::discover_async`] so the probes stay off the async
+    /// runtime worker.
+    ///
     /// # Errors
     ///
     /// Returns [`MiseError::BinaryNotFound`] if none of the strategies succeed.
@@ -99,6 +106,20 @@ impl MiseBinary {
         }
 
         Err(MiseError::BinaryNotFound)
+    }
+
+    /// `spawn_blocking` wrapper over [`MiseBinary::discover`] — the cascade
+    /// ends in the detector's sync subprocess probes (`mise --version`,
+    /// then `-V`), which must not run on an async runtime worker.
+    ///
+    /// Parity: returns exactly what `discover` returns. A blocking task
+    /// that panics or is cancelled has no other error channel here, so it
+    /// surfaces as [`MiseError::Io`] (tokio's `JoinError` → `io::Error`
+    /// conversion records "task panicked" / "task was cancelled").
+    pub async fn discover_async() -> MiseResult<Self> {
+        tokio::task::spawn_blocking(Self::discover)
+            .await
+            .map_err(std::io::Error::from)?
     }
 
     /// Create a [`MiseBinary`] from a known path without performing discovery.
@@ -217,5 +238,19 @@ mod tests {
         let version = version.expect("the fake probe answered --version");
         assert_eq!(version.raw, "2026.9.1");
         assert_eq!(version.line, "mise 2026.9.1 linux-x64");
+    }
+
+    /// Parity (the same shape as the installer's `detect_async_matches_
+    /// detect`): `discover_async` runs the identical cascade on the
+    /// blocking pool, so both routes must agree — the same binary when one
+    /// is found, a shared miss verdict otherwise.
+    #[tokio::test]
+    async fn discover_async_matches_discover() {
+        let sync = MiseBinary::discover();
+        let discovered = MiseBinary::discover_async().await;
+        assert_eq!(discovered.is_ok(), sync.is_ok());
+        if let (Ok(expected), Ok(found)) = (&sync, &discovered) {
+            assert_eq!(found, expected);
+        }
     }
 }
