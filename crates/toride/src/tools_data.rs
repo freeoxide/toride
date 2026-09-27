@@ -8,17 +8,22 @@
 //!
 //! This is a read-only integration: there are no write operations, no
 //! optimistic updates, no cooldown gate, and no loading spinner. Every probe
-//! is a pure read of the host's `PATH`.
+//! is a pure read of the host.
 //!
 //! ## What "live" means here
 //!
 //! Unlike most sibling sections (which shell out to a specific backend
-//! daemon), this one scans the host `PATH` itself for a curated catalogue of
-//! CLI tools toride cares about. `which::which(name)` resolves each binary
-//! (trying every alias in a tool's `binaries` list — e.g. `fd` resolves to
-//! `fdfind` on Debian), and a single `spawn_blocking` runs a bounded
-//! `<binary> --version` / `-V` probe per found tool to capture the version
-//! string. The data is genuinely live: it reflects the actual machine.
+//! daemon), this one scans the host itself for a curated catalogue of CLI
+//! tools toride cares about. Every catalogue alias is classified through
+//! [`toride_installer::Detector`](toride_installer::Detector): the real
+//! `$PATH` is probed first (what a shell would actually execute — trying
+//! every alias in a tool's `binaries` list, e.g. `fd` resolves to `fdfind` on
+//! Debian), then the installer's managed location (`~/.local/bin/<alias>`),
+//! so a tool installed off-`$PATH` still surfaces as installed. A single
+//! `spawn_blocking` runs a bounded `<binary> --version` / `-V` probe per
+//! found tool through the runner and keeps the trimmed first non-empty stdout
+//! line as the version string. The data is genuinely live: it reflects the
+//! actual machine.
 //!
 //! ## Doctor findings cache
 //!
@@ -32,15 +37,23 @@
 //!
 //! ## Blocking
 //!
-//! `which::which` and `std::process::Command` are synchronous. ALL of this
-//! work runs inside a single [`tokio::task::spawn_blocking`] so the tokio
-//! worker is never stalled — mirroring the harden / fail2ban / ufw-kit pattern.
+//! Binary discovery and the version probes are synchronous subprocess work.
+//! ALL of this work runs inside a single [`tokio::task::spawn_blocking`] so
+//! the tokio worker is never stalled — mirroring the harden / fail2ban /
+//! ufw-kit pattern.
+//!
+//! # Name collision
+//!
+//! `toride_mise::ToolStatus` is a different type (the `mise ls --json`
+//! listing, used by [`crate::toride_mise_convert`]); this module only ever
+//! touches the installer's, kept fully qualified at every use.
 
 use std::time::Duration;
 
 use tokio::sync::oneshot;
+use toride_installer::{Detector, Tool};
 
-use crate::tools_convert;
+use crate::tools_convert::{self, ToolSpec};
 use crate::ui::screens::tools::{FindingEntry, ToolEntry};
 
 /// Aggregated installed-tools data for the read-only section.
@@ -126,8 +139,9 @@ impl ToolsCollector {
                 .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
-        // The catalogue scan is entirely synchronous (`which` + `Command`),
-        // so it runs inside ONE spawn_blocking owned by the spawned task body
+        // The catalogue scan is entirely synchronous (PATH discovery plus
+        // version subprocesses), so it runs inside ONE spawn_blocking owned
+        // by the spawned task body
         // — mirroring the harden / fail2ban / ufw-kit pattern. The inner task
         // body is itself spawned and awaited so a JoinError (panic inside
         // `collect_real_tools`) is matched here and surfaced as a degraded
@@ -200,17 +214,20 @@ impl Default for ToolsCollector {
 
 // ── Real data collection ────────────────────────────────────────────────────
 
-/// Collect the installed-tools catalogue by scanning the host PATH.
+/// Collect the installed-tools catalogue by scanning the host for every
+/// catalogue entry.
 ///
 /// All work runs on the blocking thread pool inside a single
-/// `spawn_blocking`: `which::which` resolves each binary (trying every
-/// alias), and a bounded `Command::new(binary).arg("--version")` (or `-V`)
-/// probe captures the version string. The findings (missing-expected-tool
+/// `spawn_blocking`: each catalogue alias is classified through a
+/// [`Detector`](toride_installer::Detector) (`$PATH` first, then the managed
+/// `~/.local/bin` location — the first resolving alias wins), and the found
+/// binary is probed under [`VERSION_TIMEOUT`] (`--version`, falling back to
+/// `-V`) for its version string. The findings (missing-expected-tool
 /// warnings) are reused from the cache when fresh.
 ///
 /// `use_cache` / `cached_findings` mirror the harden / mise findings cache:
 /// when the cache is fresh the findings are taken verbatim and the version
-/// probes are still run (the catalogue is short and `which` is cheap), but
+/// probes are still run (the catalogue is short and discovery is cheap), but
 /// the missing-tool warnings are not re-derived.
 ///
 /// On ANY panic (`JoinError` from the outer `tokio::spawn`) returns
@@ -222,36 +239,27 @@ async fn collect_real_tools(
     use_cache: bool,
     cached_findings: Option<Vec<FindingEntry>>,
 ) -> (ToolsDataBundle, bool) {
-    // Run the entire catalogue scan in ONE spawn_blocking. `which` and
-    // `std::process::Command` are synchronous, so this keeps every probe off
-    // the tokio worker (mirroring the harden / fail2ban / ufw-kit pattern).
+    // Run the entire catalogue scan in ONE spawn_blocking. Binary discovery
+    // and the version probes are synchronous subprocess work, so this keeps
+    // every probe off the tokio worker (mirroring the harden / fail2ban /
+    // ufw-kit pattern).
     let result = tokio::task::spawn_blocking(move || {
         let catalogue = tools_convert::catalogue();
+
+        // One detector drives the whole sweep: it is cheap and `Clone`, and
+        // the 800ms per-probe cap ([`VERSION_TIMEOUT`]) preserves the
+        // hand-rolled probe's worst-case bound per found binary.
+        let detector = Detector::builder().probe_timeout(VERSION_TIMEOUT).build();
 
         let mut tools: Vec<ToolEntry> = Vec::with_capacity(catalogue.len());
         let mut installed_count = 0usize;
 
         for spec in &catalogue {
-            // Resolve the binary via which, trying each alias. A found alias
-            // is recorded so the version probe and path display match what
-            // actually resolved (e.g. `fd` -> `fdfind` on Debian).
-            let resolved = resolve_binary(&spec.binaries);
-            let (installed, path, version) = match resolved {
-                Some((name, path)) => {
-                    installed_count += 1;
-                    let version = probe_version(&name, &path);
-                    (true, Some(path), version)
-                }
-                None => (false, None, None),
-            };
-            tools.push(ToolEntry {
-                name: spec.name.to_string(),
-                category: spec.category.to_string(),
-                installed,
-                version,
-                path,
-                expected: spec.expected,
-            });
+            let entry = detect_entry(spec, &detector);
+            if entry.installed {
+                installed_count += 1;
+            }
+            tools.push(entry);
         }
 
         // Findings: one warning per MISSING expected tool. Reused from the
@@ -292,114 +300,79 @@ async fn collect_real_tools(
     }
 }
 
-/// Resolve a tool to its first found alias via `which::which`.
-///
-/// Tries each binary name in order (e.g. `["fd", "fdfind"]`) and returns the
-/// first one found along with its resolved path. `None` if no alias resolved.
-/// Errors from `which` (a binary simply not on PATH is the common case) are
-/// logged at `debug` — not a warning — and degrade to `None`.
-fn resolve_binary(aliases: &[String]) -> Option<(String, String)> {
-    for alias in aliases {
-        match which::which(alias) {
-            Ok(path) => {
-                let path_str = path.to_string_lossy().to_string();
-                if path_str.is_empty() {
-                    tracing::warn!(
-                        "tools: which resolved '{alias}' to an empty path — skipping alias"
-                    );
-                    continue;
-                }
-                return Some((alias.clone(), path_str));
-            }
-            Err(e) => {
-                // A missing binary is the expected/common case (not every host
-                // has every tool); log at debug so the log isn't noisy.
-                tracing::debug!("tools: which('{alias}') failed: {e}");
-            }
-        }
-    }
-    None
-}
-
-/// Probe a binary's version by running `<binary> --version` or `-V` under a
-/// bounded timeout, capturing the first non-empty stdout line as the version.
-///
-/// `found-but-no-version` is fine — some binaries reject both flags, exit
-/// non-zero, or print to stderr; in all those cases `None` is returned and the
-/// tool is still recorded as installed (the `which` resolution is the source
-/// of truth for presence). Never panics: every `Command` failure is mapped to
-/// `None`.
-fn probe_version(binary: &str, path: &str) -> Option<String> {
-    // Try `--version` first, then `-V` (covers the common GNU/BSD split:
-    // GNU tools accept `--version`, BSD/busybox/macOS tools often only `-V`).
-    for arg in ["--version", "-V"] {
-        match run_version_command(path, arg) {
-            Ok(Some(line)) if !line.trim().is_empty() => {
-                return Some(line.trim().to_string());
-            }
-            Ok(_) => {}
-            Err(e) => {
-                tracing::debug!("tools: version probe '{binary}' {arg}: {e}");
-            }
-        }
-    }
-    None
-}
-
-/// Run `<path> <arg>` under an ~800ms timeout, returning the first non-empty
-/// stdout line (trimmed) on success. `Ok(None)` means the command ran but
-/// produced no usable output; `Err` means spawn/wait failed or it timed out.
-fn run_version_command(path: &str, arg: &str) -> std::io::Result<Option<String>> {
-    let child = std::process::Command::new(path)
-        .arg(arg)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::null())
-        .stdin(std::process::Stdio::null())
-        .spawn()?;
-    // Block on the child under a timeout. We are inside spawn_blocking so a
-    // synchronous wait is fine; the timeout caps any hung binary (e.g. one
-    // that reads stdin despite /dev/null) at ~800ms.
-    let output = wait_with_timeout(child, VERSION_TIMEOUT)?;
-    if !output.status.success() {
-        return Ok(None);
-    }
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    Ok(stdout
-        .lines()
-        .find(|l| !l.trim().is_empty())
-        .map(String::from))
-}
-
-/// Per-version-probe timeout. Generous for a fast `--version` (sub-50ms) but
-/// short enough that a hung binary cannot stall the scan.
+/// Per-version-probe timeout fed to the
+/// [`Detector`](toride_installer::Detector). Generous for a fast `--version`
+/// (sub-50ms) but short enough that a hung binary cannot stall the scan —
+/// the same cap the replaced hand-rolled probe enforced.
 const VERSION_TIMEOUT: Duration = Duration::from_millis(800);
 
-/// Wait for a spawned child under a timeout, killing it if it overruns.
+/// The detection descriptor for one catalogue alias.
 ///
-/// Synchronous (we are on the blocking pool). On timeout the child is killed
-/// and reaped so no zombie lingers, then `Err` is returned so the caller maps
-/// the probe to `None`.
-fn wait_with_timeout(
-    mut child: std::process::Child,
-    timeout: Duration,
-) -> std::io::Result<std::process::Output> {
-    let deadline = std::time::Instant::now() + timeout;
-    loop {
-        if let Some(_status) = child.try_wait()? {
-            return child.wait_with_output();
+/// `Tool`'s defaults are exactly the catalogue's detection semantics:
+/// `ArtifactKind::Binary`, `Checksum::None` (detection never downloads), and
+/// `default_install_dir: None` — the managed tier is therefore
+/// `~/.local/bin/<alias>`, the installer's standard location, which is what
+/// lets a tool installed off-`$PATH` still surface. Built as a struct literal
+/// (an officially supported construction per `Tool`'s docs) because
+/// `ToolBuilder::build`'s validation can only reject a tarball descriptor
+/// without a `bin_path` — the `Result` cannot fail for a `Binary` descriptor.
+fn catalogue_tool(name: &str, alias: &str) -> Tool {
+    Tool {
+        name: name.to_string(),
+        bin_name: alias.to_string(),
+        ..Tool::default()
+    }
+}
+
+/// Resolve one catalogue spec to its UI row by trying every alias in order.
+///
+/// The first alias the [`Detector`](toride_installer::Detector) classifies as
+/// installed (on `$PATH` or at the managed location) wins — e.g. `fd`
+/// resolves to `fdfind` on Debian — matching the replaced `which`-based
+/// resolver's first-hit semantics. A miss on one alias is the expected common
+/// case and is logged at `debug`, never `warn`. When no alias resolves, a
+/// missing row ([`missing_entry`]) is returned: presence is the path probe's
+/// verdict, never the version probe's.
+fn detect_entry(spec: &ToolSpec, detector: &Detector) -> ToolEntry {
+    for alias in &spec.binaries {
+        let status = detector.detect(&catalogue_tool(spec.name, alias));
+        if let Some(entry) = entry_from_status(spec, &status) {
+            return entry;
         }
-        if std::time::Instant::now() >= deadline {
-            // Kill + reap so the child does not become a zombie.
-            let _ = child.kill();
-            let _ = child.wait();
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::TimedOut,
-                format!("version probe exceeded {timeout:?}"),
-            ));
-        }
-        // Short sleep to avoid a tight spin; we are on the blocking
-        // pool so std::thread::sleep is appropriate here.
-        std::thread::sleep(Duration::from_millis(20));
+        tracing::debug!("tools: '{alias}' not found on PATH or at the managed location");
+    }
+    missing_entry(spec)
+}
+
+/// Map a detection status to the UI row for `spec`; `None` when the tool is
+/// not installed (`ToolStatus::path` is `None` iff `NotInstalled`).
+///
+/// `version` carries [`toride_installer::ToolVersion::line`] verbatim — the
+/// trimmed first non-empty `--version`/`-V` stdout line, byte-identical to
+/// what the replaced hand-rolled probe returned. `path` is the resolved
+/// executable path as a string, identical to the old
+/// `to_string_lossy` rendering for the UTF-8 paths detection can produce.
+fn entry_from_status(spec: &ToolSpec, status: &toride_installer::ToolStatus) -> Option<ToolEntry> {
+    let path = status.path()?;
+    Some(ToolEntry {
+        name: spec.name.to_string(),
+        category: spec.category.to_string(),
+        installed: true,
+        version: status.version().map(|v| v.line.clone()),
+        path: Some(path.as_str().to_string()),
+        expected: spec.expected,
+    })
+}
+
+/// The missing-tool row for `spec`: not installed, no version, no path.
+fn missing_entry(spec: &ToolSpec) -> ToolEntry {
+    ToolEntry {
+        name: spec.name.to_string(),
+        category: spec.category.to_string(),
+        installed: false,
+        version: None,
+        path: None,
+        expected: spec.expected,
     }
 }
 
@@ -436,6 +409,8 @@ fn empty_bundle_with_reason(reason: String) -> ToolsDataBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use toride_runner::{CommandOutput, CommandSpec, FakeRunner};
 
     #[test]
     fn new_is_not_pending() {
@@ -478,8 +453,8 @@ mod tests {
     async fn poll_clears_pending() {
         let mut collector = ToolsCollector::new();
         collector.start();
-        // The catalogue scan resolves ~30 binaries; give it time. `which` is
-        // fast and version probes are bounded at 800ms each.
+        // The catalogue scan resolves ~30 binaries; give it time. Discovery
+        // is fast and version probes are bounded at 800ms each.
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let _ = collector.poll().await;
         assert!(!collector.is_pending(), "poll should clear pending state");
@@ -554,23 +529,187 @@ mod tests {
         assert!(collector.findings_fresh_at.is_none());
     }
 
+    /// A catalogue spec for `name` trying `aliases` in order — the tests'
+    /// stand-in for a `tools_convert::ToolSpec` row.
+    fn fixture_spec(name: &'static str, aliases: &[&str]) -> ToolSpec {
+        ToolSpec {
+            name,
+            category: "Shell/System",
+            binaries: aliases.iter().map(|a| (*a).to_string()).collect(),
+            expected: true,
+        }
+    }
+
+    /// The detector construction the production collector uses (800ms
+    /// per-probe cap) — the tests must exercise the same sweep as the app.
+    fn production_detector() -> Detector {
+        Detector::builder().probe_timeout(VERSION_TIMEOUT).build()
+    }
+
+    /// A bin name no real `$PATH` or `~/.local/bin` carries.
+    const BOGUS: &str = "this-binary-does-not-exist-toride-xyz";
+
     #[test]
-    fn resolve_binary_finds_a_known_alias() {
+    fn detect_entry_finds_a_known_alias_environmental() {
         // `which` and `cargo` are guaranteed on the dev/CI host that runs
-        // tests (they are how the test binary itself was built). Picking one
-        // present in the catalogue makes this assertion stable across hosts.
-        let aliases = vec!["which".to_string(), "cargo".to_string()];
-        let resolved = resolve_binary(&aliases);
-        // At least one of these MUST be on PATH on a host that compiled toride.
+        // tests (they are how the test binary itself was built). Adapted from
+        // the old `resolve_binary_finds_a_known_alias`: at least one alias in
+        // the list must classify as installed.
+        let entry = detect_entry(
+            &fixture_spec("cargo", &["which", "cargo"]),
+            &production_detector(),
+        );
         assert!(
-            resolved.is_some(),
-            "expected at least one of [which, cargo] to resolve on PATH"
+            entry.installed,
+            "expected at least one of [which, cargo] to resolve"
         );
     }
 
     #[test]
-    fn resolve_binary_returns_none_for_bogus_name() {
-        let resolved = resolve_binary(&["this-binary-does-not-exist-toride-xyz".to_string()]);
-        assert!(resolved.is_none());
+    fn detect_entry_missing_row_for_bogus_alias() {
+        // Adapted from the old `resolve_binary_returns_none_for_bogus_name`:
+        // an absent alias yields the missing row — no version, no path —
+        // while `expected` (catalogue data) is preserved.
+        let entry = detect_entry(&fixture_spec(BOGUS, &[BOGUS]), &production_detector());
+        assert!(!entry.installed);
+        assert_eq!(entry.version, None);
+        assert_eq!(entry.path, None);
+        assert!(entry.expected);
+    }
+
+    #[test]
+    fn detect_entry_tries_aliases_in_order_until_one_resolves() {
+        // The first alias is absent everywhere; the second is guaranteed on
+        // the dev/CI host (it built this test binary). Proves iteration
+        // continues past a miss and stops at the first resolving alias — the
+        // first-hit semantics `fd` -> `fdfind` on Debian relies on.
+        let entry = detect_entry(
+            &fixture_spec("cargo", &[BOGUS, "cargo"]),
+            &production_detector(),
+        );
+        assert!(entry.installed);
+        assert!(
+            entry.path.as_deref().is_some_and(|p| p.ends_with("cargo")),
+            "row path is the resolving alias: {:?}",
+            entry.path
+        );
+    }
+
+    #[test]
+    fn entry_version_is_the_probe_line_byte_identical() {
+        // Parity with the replaced hand-rolled probe: the row's version is
+        // the trimmed first non-empty `--version` stdout line, verbatim. The
+        // strict FakeRunner supplies the probe output; the tempdir stands in
+        // for the managed install dir so the fixture is hermetic.
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let bin_name = "toride-test-paritytool";
+        let bin = tmp.path().join(bin_name);
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").expect("write dummy executable");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod dummy executable");
+        }
+        let bin_path = bin.to_str().expect("utf-8 tempdir").to_owned();
+
+        let stdout = "paritytool version 12.0.1 (rev deadbeef)";
+        // `timeout` is excluded from exact matching (runtime policy), so the
+        // Detector's `--version` probe matches this spec.
+        let fake = FakeRunner::new().strict().respond(
+            CommandSpec::new(bin_path.clone()).arg("--version"),
+            CommandOutput::from_stdout(stdout),
+        );
+        let detector = Detector::with_runner(Arc::new(fake));
+
+        let tool = Tool::builder()
+            .name("paritytool")
+            .bin_name(bin_name)
+            .default_install_dir(tmp.path().to_str().expect("utf-8 tempdir"))
+            .build()
+            .expect("binary-kind descriptor always validates");
+        let status = detector.detect(&tool);
+
+        let entry = entry_from_status(&fixture_spec("paritytool", &[bin_name]), &status)
+            .expect("the managed fixture is installed");
+        assert_eq!(
+            entry.version.as_deref(),
+            Some(stdout),
+            "ToolEntry.version must be ToolVersion.line, byte-identical"
+        );
+        assert_eq!(entry.path.as_deref(), Some(bin_path.as_str()));
+    }
+
+    #[test]
+    fn entry_from_status_is_none_when_not_installed() {
+        // The `None` arm of the mapping is what drives `detect_entry`'s
+        // alias loop and, once aliases are exhausted, the missing row.
+        let status = toride_installer::ToolStatus::NotInstalled;
+        assert!(entry_from_status(&fixture_spec("t", &["t"]), &status).is_none());
+    }
+
+    #[test]
+    fn detect_entry_keeps_presence_when_probe_degrades() {
+        // Hermetic: detect classifies the managed fixture file below as
+        // installed, and the strict FakeRunner has NO responses, so both
+        // version probes error. The row built from that status must stay
+        // installed with no version — presence is the path probe's verdict,
+        // never the version probe's.
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let dir_str = dir.path().to_str().expect("utf-8 tempdir").to_owned();
+        let tool = Tool::builder()
+            .name("paritytool")
+            .bin_name("toride-test-degradetool")
+            .default_install_dir(dir_str)
+            .build()
+            .expect("binary-kind descriptor always validates");
+        std::fs::write(dir.path().join("toride-test-degradetool"), b"x")
+            .expect("write managed fixture");
+
+        // detect_entry builds descriptors without an install dir, so drive
+        // the same detector + mapping pair the collector uses, against the
+        // fixture descriptor.
+        let detector = Detector::with_runner(Arc::new(FakeRunner::new().strict()));
+        let status = detector.detect(&tool);
+        let entry = entry_from_status(&fixture_spec("paritytool", &[]), &status)
+            .expect("the managed fixture is installed");
+
+        assert!(entry.installed);
+        assert_eq!(entry.version, None);
+    }
+
+    /// ENVIRONMENTAL smoke test: run the WHOLE production catalogue through
+    /// the production detector on the real host. Pins the row contract the
+    /// UI relies on — one row per catalogue entry, in catalogue order, with
+    /// `installed ⇔ path` and no version on a missing row.
+    #[test]
+    fn catalogue_smoke_rows_are_well_formed_environmental() {
+        let catalogue = tools_convert::catalogue();
+        let detector = production_detector();
+
+        let rows: Vec<ToolEntry> = catalogue
+            .iter()
+            .map(|spec| detect_entry(spec, &detector))
+            .collect();
+
+        assert_eq!(rows.len(), catalogue.len(), "one row per catalogue entry");
+        for (spec, row) in catalogue.iter().zip(&rows) {
+            assert_eq!(row.name, spec.name, "rows must stay in catalogue order");
+            assert_eq!(row.category, spec.category);
+            assert!(row.expected, "catalogue entries are expected");
+            assert_eq!(
+                row.installed,
+                row.path.is_some(),
+                "{}: installed iff a path resolved",
+                row.name
+            );
+            if !row.installed {
+                assert_eq!(
+                    row.version, None,
+                    "{}: a missing tool carries no version",
+                    row.name
+                );
+            }
+        }
     }
 }
