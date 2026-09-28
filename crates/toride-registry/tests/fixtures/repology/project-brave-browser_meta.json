@@ -1,0 +1,16 @@
+{
+  "synthetic": true,
+  "reason": "repology.org is unreachable from this sandbox: DNS pins repology.org to 127.0.0.1 (getent hosts repology.org -> 127.0.0.1) and the connection is refused (curl -s -m 10 https://repology.org/api/v1/project/brave-browser -> exit 7, 'Connection refused', HTTP 000). No live payload could be fetched. The response shape was reconstructed from the documented API page and the repology-webapp source; see crates/toride-registry/docs/survey/repology.md for the full source list.",
+  "endpoint_modeled": "GET https://repology.org/api/v1/project/brave-browser",
+  "shape_sources": [
+    "https://repology.org/api (docs page text captured via server-side reader; template mirrored at https://github.com/repology/repology-webapp/blob/master/repologyapp/templates/api.html)",
+    "https://github.com/repology/repology-webapp/blob/master/repologyapp/views/api.py (api_v1_package_to_json field list)",
+    "https://github.com/renovatebot/renovate/discussions/26619 (real fedora_rawhide payload snippet, field-set cross-check)"
+  ],
+  "field_provenance": {
+    "verified_current": "repo, subrepo, srcname, binname, visiblename, version, status, origversion, summary, categories, licenses, maintainers",
+    "verified_2019_2023_era": "name (serialized until commit 7efb88cb 'Remove uses of name package field', repology-webapp 2023-03-29); kept here per assignment spec",
+    "not_verified_as_entry_field": "families - present in NO checked serializer revision (2017/2019/2022/master); verified only as a /api/v1/projects/ FILTER parameter and as the repo 'family' concept. Included here only because the assignment named it; a client must not rely on receiving it.",
+    "synthetic_values": "All version strings, maintainers, families count, and statuses are invented (plausible for 2026-09); note that in reality several of these repos (e.g. official debian/fedora/arch) do not ship brave-browser at all."
+  }
+}

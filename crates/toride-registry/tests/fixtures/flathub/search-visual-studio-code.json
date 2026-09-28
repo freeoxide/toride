@@ -1,0 +1,877 @@
+{
+  "hits": [
+    {
+      "name": "Visual Studio Code",
+      "keywords": [
+        "vscode"
+      ],
+      "localized_keywords": [
+        "vscode"
+      ],
+      "summary": "Code editing. Redefined.",
+      "description": "**NOTE: This is the proprietary Microsoft build of Visual Studio Code, packaged into a Flatpak. This repackaging is not supported by Microsoft.**\n      Visual Studio Code is a new choice of tool that combines the simplicity of a code editor with what developers need for the core edit-build-debug cycle.\n      IMPORTANT: To use certain features in this flatpacked version (like the integrated terminal), please read the linked documentation.\n    ",
+      "id": "com_visualstudio_code",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "LicenseRef-proprietary=https://code.visualstudio.com/license",
+      "is_free_license": false,
+      "app_id": "com.visualstudio.code",
+      "icon": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/icons/128x128/com.visualstudio.code.png",
+      "main_categories": "development",
+      "sub_categories": [
+        "TextEditor",
+        "IDE"
+      ],
+      "developer_name": "Microsoft Corporation",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Sdk/x86_64/25.08",
+      "updated_at": 1790343859,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1511228529,
+      "trending": -1.9986476456705775,
+      "installs_last_month": 57252,
+      "favorites_count": 356,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "VSCodium",
+      "keywords": [
+        "vscodium",
+        "codium",
+        "vscode"
+      ],
+      "localized_keywords": [
+        "codium",
+        "vscode",
+        "vscodium"
+      ],
+      "summary": "Telemetry-less code editing",
+      "description": "VSCodium combines the simplicity of a code editor with what developers need for the core\n      edit-build-debug cycle.\n      This is the telemetry-less version of Visual Studio Code, packaged into a Flatpak.\n      This repackaging is not supported by Microsoft.\n      Note: To use certain features in this flatpak version, please see Readme file.\n    ",
+      "id": "com_vscodium_codium",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "com.vscodium.codium",
+      "icon": "https://dl.flathub.org/media/com/vscodium/codium/4b48e24bf41ab9e9d93323a6eaa6edf8/icons/128x128/com.vscodium.codium.png",
+      "main_categories": "development",
+      "sub_categories": [
+        "TextEditor",
+        "IDE",
+        "Utility"
+      ],
+      "developer_name": "The VSCodium team",
+      "verification_verified": true,
+      "verification_method": "website",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": false,
+      "verification_website": "vscodium.com",
+      "verification_timestamp": "1708770167",
+      "runtime": "org.freedesktop.Sdk/x86_64/25.08",
+      "updated_at": 1789080024,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1588577796,
+      "trending": -1.422369887046474,
+      "installs_last_month": 22395,
+      "favorites_count": 213,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "VSCodium - Insiders",
+      "keywords": [
+        "vscodium",
+        "codium",
+        "vscode"
+      ],
+      "localized_keywords": [
+        "codium",
+        "vscode",
+        "vscodium"
+      ],
+      "summary": "Telemetry-less code editing",
+      "description": "VSCodium Insiders combines the simplicity of a code editor with what developers need for the\n      core edit-build-debug cycle.\n      This is the telemetry-less version of Visual Studio Code, packaged into a Flatpak. This\n      repackaging is not supported by Microsoft.\n    ",
+      "id": "com_vscodium_codium-insiders",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "com.vscodium.codium-insiders",
+      "icon": "https://dl.flathub.org/media/com/vscodium/codium-insiders/329b19c7324ebe6d5ffee8faa503c802/icons/128x128/com.vscodium.codium-insiders.png",
+      "main_categories": "development",
+      "sub_categories": [
+        "TextEditor",
+        "IDE",
+        "Utility"
+      ],
+      "developer_name": "The VSCodium team",
+      "verification_verified": true,
+      "verification_method": "website",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": false,
+      "verification_website": "vscodium.com",
+      "verification_timestamp": "1708770154",
+      "runtime": "org.freedesktop.Sdk/x86_64/25.08",
+      "updated_at": 1789080082,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1706169139,
+      "trending": -2.377720126689799,
+      "installs_last_month": 1355,
+      "favorites_count": 11,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "Dragengine IGDE",
+      "keywords": [
+        "dragengine"
+      ],
+      "localized_keywords": [
+        "dragengine"
+      ],
+      "summary": "Edit Drag[en]gine game projects.",
+      "description": "\n\t\tSupports creating and modifying Drag[en]gine game projects.\n\t\t\n      \n\t\tDoes not require compiler toolchains to be installed.\n\t\tUsing a code IDE is though recommended for syntax\n\t\thighlighting and code completion.\n\t\t\n      \n\t\tDEIGDE creates *.delga files as game distributable\n\t\twhich can be run using the Drag[en]gine Delauncher\n\t\t(ch.dragondreams.delauncher). For publishing on stores\n\t\tlike Steam see https://github.com/LordOfDragons/dedistribute/releases\n\t\tfor the necessairy files.\n\t\t\n      \n\t\tRecommended additional software to use with IGDE:\n\t\t\n      \n        Blender 3D (org.blender.Blender): Create 3D models.\n        GIMP (org.gimp.GIMP), Krita (org.kde.krita),\n\t\t\tInkScape (org.inkscape.Inkscape):\n\t\t\tCreate textures, decals and images.\n        Audacity (org.audacityteam.Audacity): Create sound files.\n        Visual Studio Code (com.visualstudio.code): Edit game scripts\n      \n      \n\t\tMore information on the Wiki: https://developer.dragondreams.ch/wiki/doku.php/gamedev:deigde\n\t\t\n    ",
+      "id": "ch_dragondreams_deigde",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "ch.dragondreams.deigde",
+      "icon": "https://dl.flathub.org/media/ch/dragondreams/deigde/6852d60dd81a5bd4e4256aa7e389adf9/icons/128x128/ch.dragondreams.deigde.png",
+      "main_categories": "game",
+      "sub_categories": [
+        "IDE",
+        "Development"
+      ],
+      "developer_name": "DragonDreams GmbH",
+      "verification_verified": true,
+      "verification_method": "website",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": false,
+      "verification_website": "dragondreams.ch",
+      "verification_timestamp": "1763910510",
+      "runtime": "org.freedesktop.Platform/x86_64/25.08",
+      "updated_at": 1789054286,
+      "arches": [
+        "x86_64"
+      ],
+      "added_at": 1763877480,
+      "trending": -0.9858910780741752,
+      "installs_last_month": 143,
+      "favorites_count": 1,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "roobuilder",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "Vala and Javascript IDE - for building Vala Desktop applications and Web Javascript",
+      "description": "\n    It's a cross between Glade / Visual Studio - the idea is that most 'action' code for an application is actually quite \n    simple - so entering the code on the event handlers for an widget makes the proximity of code to action better. \n\n      \n    This idea is applied to the Vala based Gtk applications, along with the Javascript based Roo web applications that this \n    application is used to build and develop.\n\n      \n\n \n Features Wishlist -  Random list of ideas to add - I regulary add these in totally random order.  (see the url / wishlist)\n  \n      \n  Known issues -  See the wishlist..\n  \n    ",
+      "id": "org_roojs_roobuilder",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "LGPL-3.0-or-later",
+      "is_free_license": true,
+      "app_id": "org.roojs.roobuilder",
+      "icon": "https://dl.flathub.org/media/org/roojs/roobuilder/e591b4b3ab75389d26029f28e7307b45/icons/128x128/org.roojs.roobuilder.png",
+      "main_categories": "utility",
+      "sub_categories": [
+        "Development"
+      ],
+      "developer_name": "Alan Knowles",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.gnome.Sdk/x86_64/50",
+      "updated_at": 1780384640,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1749044443,
+      "trending": -0.17050459755871034,
+      "installs_last_month": 36,
+      "favorites_count": 2,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "GB Studio",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "A quick and easy to use drag and drop retro game creator for Game Boy",
+      "description": "GB Studio is drag and drop game creator for making Game Boy games\n      It is designed to be usable by people with little to no previous programming knowledge using simple visual scripting but also provides multiple access points for advanced users to access the game engine's virtual machine (GBVM) and to directly modify game engine's C and Z80 assembly code through plugins.\n      You can generate ROM files that can be run in an emulator, on a web page or on real Game Boy hardware\n    ",
+      "id": "dev_gbstudio_gb-studio",
+      "type": "desktop-application",
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "dev.gbstudio.gb-studio",
+      "icon": "https://dl.flathub.org/media/dev/gbstudio/gb-studio/02e81ea937c5ecb8b9f8409b7f36d471/icons/128x128/dev.gbstudio.gb-studio.png",
+      "main_categories": "development",
+      "sub_categories": [
+        "IDE"
+      ],
+      "developer_name": "Chris Maltby",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Platform/x86_64/26.08",
+      "updated_at": 1789815697,
+      "arches": [
+        "x86_64"
+      ],
+      "added_at": 1680418800,
+      "trending": 1.0082614473444993,
+      "installs_last_month": 435,
+      "favorites_count": 15,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "ecode",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "Lightweight multi-platform code editor designed for modern hardware with a focus on responsiveness and performance",
+      "description": "\n            ecode is a lightweight multi-platform code editor designed for modern hardware with a\n            focus on responsiveness and performance. It has been developed with the\n            hardware-accelerated eepp GUI, which provides the core technology for the editor. The\n            project comes as the first serious project using the eepp GUI, and it's currently being\n            developed to improve the eepp GUI library as part of one of its main objectives.\n        \n    ",
+      "id": "dev_ensoft_ecode",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "dev.ensoft.ecode",
+      "icon": "https://dl.flathub.org/media/dev/ensoft/ecode/15ac84059ae8c586595c9c3ae074f28d/icons/128x128/dev.ensoft.ecode.png",
+      "main_categories": "utility",
+      "sub_categories": [
+        "TextEditor"
+      ],
+      "developer_name": "Mart\u00edn Lucas Golini",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Platform/x86_64/25.08",
+      "updated_at": 1784643361,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1676449202,
+      "trending": -0.5152243648256041,
+      "installs_last_month": 190,
+      "favorites_count": 3,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "OpenCode",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "Open source AI coding agent",
+      "description": "\n      OpenCode is an open source agent that helps you write and run code with any AI model.\n    \n    ",
+      "id": "ai_opencode_opencode",
+      "type": "desktop-application",
+      "translations": null,
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "ai.opencode.opencode",
+      "icon": "https://dl.flathub.org/media/ai/opencode/opencode/a593e8db95f8188e70a87943c69f9897/icons/128x128/ai.opencode.opencode.png",
+      "main_categories": "development",
+      "sub_categories": [],
+      "developer_name": "Anomaly Innovations Inc.",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Platform/x86_64/25.08",
+      "updated_at": 1790245314,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1776948406,
+      "trending": 2.8537332188792055,
+      "installs_last_month": 6247,
+      "favorites_count": 32,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "MarkText",
+      "keywords": [
+        "marktext"
+      ],
+      "localized_keywords": [
+        "marktext"
+      ],
+      "summary": "Next generation markdown editor",
+      "description": "\n      MarkText is a free and open-source realtime preview markdown editor which support both CommonMark\n      Spec and GitHub Flavored Markdown Spec. It is a concise text editor, dedicated to improving your\n      writing efficiency.\n    \n      Features:\n      \n        Realtime preview (WYSIWYG) and a clean and simple interface to get a distraction-free writing experience\n        GitHub Flavored Markdown like task-lists, tables, links and emojis\n        Markdown extensions such as math expressions (KaTeX) and front matter\n        Code fence for all the popular languages\n        Support paragraphs and inline style shortcuts to improve your writing efficiency\n        Various edit modes and themes: source code mode, typewriter mode, focus mode\n      \n    ",
+      "id": "com_github_marktext_marktext",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "com.github.marktext.marktext",
+      "icon": "https://dl.flathub.org/media/com/github/marktext.marktext/1036ccd49c27e1dd1bc7c6a52fe9f5d0/icons/128x128/com.github.marktext.marktext.png",
+      "main_categories": "office",
+      "sub_categories": [
+        "TextEditor",
+        "Utility"
+      ],
+      "developer_name": "MarkText",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Platform/x86_64/25.08",
+      "updated_at": 1780226432,
+      "arches": [
+        "x86_64"
+      ],
+      "added_at": 1529345244,
+      "trending": 0.5827541625249922,
+      "installs_last_month": 3287,
+      "favorites_count": 24,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "GitButler",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "Git, finally designed for humans",
+      "description": "\n      GitButler is the Git-backed change management tool for modern, AI coding workflows.\n      Parallel and stacked branches, unlimited undo, agent integrations, and more. It's Git, refined.\n    \n    ",
+      "id": "com_gitbutler_gitbutler",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "LicenseRef-FSL-1.1-MIT=https://github.com/gitbutlerapp/gitbutler/blob/master/LICENSE.md",
+      "is_free_license": false,
+      "app_id": "com.gitbutler.gitbutler",
+      "icon": "https://dl.flathub.org/media/com/gitbutler/gitbutler/72eae989a136e2ca5d33fdf260889dc1/icons/128x128/com.gitbutler.gitbutler.png",
+      "main_categories": "development",
+      "sub_categories": [],
+      "developer_name": "GitButler Inc.",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.gnome.Platform/x86_64/50",
+      "updated_at": 1790232945,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1709109530,
+      "trending": 1.4414315937322886,
+      "installs_last_month": 430,
+      "favorites_count": 24,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "GitKraken",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "For repo management, in-app code editing & issue tracking",
+      "description": "**This wrapper is not verified by, affiliated with, or supported by Axosoft, LLC.**\n      Git legendary, my friends.\n            GitKraken includes two legendary products that make devs more productive: the Git Client and Glo Boards!\n      Use the Git Client to visualize the history and changes to your repos in a beautiful graph that makes working with Git more intuitive.\n      GitKraken Git Client Features:\n      \n        See your branching, merging and commit history in a dark or light themed graph.\n        Simplify complicated commands like merge, rebase and push into drag and drop actions.\n        Integrate with GitHub, GitHub Enterprise, GitLab, GitLab Self-Hosted, Bitbucket and VSTS.\n        Create, clone and add remote repos from integrated services.\n        Create and view pull requests from integrated services.\n        Easily open repos, set favorites, and organize them in project groups.\n        View file history and blame.\n        Quickly undo or redo with one click.\n        Use the built-in code editor to directly edit files without switching tools.\n        While editing code, use diff split view, syntax highlighting and search files.\n        Resolve merge conflicts without ever leaving the app.\n        Use multiple profiles for work and personal projects.\n        Use Gitflow, Git Hooks, LFS and submodules.\n      \n      GitKraken Glo Boards Features:\n      \n        Reduce context switching, and use Glo Boards to help your dev team track tasks and issues from inside the GitKraken Git Client.\n        Also access Glo inside VS Code, Atom, a browser or from our iPhone or Android apps.\n        Create cards to track tasks, issues, items, features, etc.\n        Sync GitHub Issues, assignees, descriptions, comments and labels in real-time across systems.\n        Visualize the progress of GitHub issues with workflows.\n        Create different workflows and labels for each board.\n        Add different users and security permissions for each board.\n        Track board activity.\n        See only what you\u2019re looking for with powerful search &amp; filters.\n        Use card labels to quickly see priority, item type, etc.\n        Use card task lists to create additional checklists for each card.\n        Easily add images and files by dragging and dropping.\n        Use markdown in card descriptions and comments.\n        Get notifications in-app and via email.\n        Tag people in comments using @mentions.\n        Choose the light or dark theme.\n      \n    ",
+      "id": "com_axosoft_GitKraken",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "LicenseRef-proprietary",
+      "is_free_license": false,
+      "app_id": "com.axosoft.GitKraken",
+      "icon": "https://dl.flathub.org/media/com/axosoft/GitKraken/633f944edef282628138e1c0c4e405f4/icons/128x128/com.axosoft.GitKraken.png",
+      "main_categories": "development",
+      "sub_categories": [
+        "RevisionControl"
+      ],
+      "developer_name": "Axosoft",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Sdk/x86_64/25.08",
+      "updated_at": 1790567256,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1529320213,
+      "trending": 1.2496846365008183,
+      "installs_last_month": 1374,
+      "favorites_count": 28,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "Pinegrow",
+      "keywords": [
+        "Web",
+        "Website",
+        "HTML"
+      ],
+      "localized_keywords": [
+        "HTML",
+        "Web",
+        "Website"
+      ],
+      "summary": "Visual web editor for professionals",
+      "description": "\n  Pinegrow lets you work faster with HTML, CSS / SASS, Bootstrap, Tailwind CSS, GreenSock Interactions, WordPress and WooCommerce.\n  \n      \n  Pinegrow works with standard web files and easily integrates into your existing workflow.\n  \n      \n  Quickly build the layout of your webpage with powerful visual tools for adding, editing, moving, cloning and deleting HTML elements. Insert multiple elements with repeater and modify the layout of all selected elements with one move.\n  \n      \n  Inspect active CSS rules, use rich visual controls, CSS Grid editor, Dev tools-like editor or code - all working together as one. Edit SASS and LESS, live, without any external tools.\n  \n      \n  Turn hundreds of framework classes into powerful visual controls. Use the complete library of ready-to-use components and work with dynamic components like modals. Resize columns on the page and visualize the layout with display helpers.\n  \n      \n  An add-on for Pinegrow Web Editor that lets you visually work with Tailwind CSS projects including those that use a custom theme.\n  \n      \n  Use multi-page editing to edit your pages at multiple device sizes. Easily design responsive websites with Media query helper tool. Add custom breakpoints or let Pinegrow detect them by analyzing stylesheets.\n  \n      \n  Pinegrow Pro lets you speed up your work even more with smart features such as master pages that let you define templates for your project. Turn page elements into reusable components with custom editable areas. Use Pinegrow as CMS for static HTML websites.\n  \n      \n  Pinegrow lets you create powerful interactions and scroll scenes with custom animations designed with the timeline editor. Animations are powered by GreenSock GSAP, a proven high-performance animation library.\n  \n      \n  Pinegrow is also the perfect tool for creating production-ready WordPress themes and plugins. Take any HTML page and turn it into a WordPress theme or Gutenberg blocks by assigning WordPress actions to individual elements on the page. Pinegrow exports the standard PHP WordPress files.\n  \n    ",
+      "id": "com_pinegrow_Pinegrow",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "LicenseRef-proprietary",
+      "is_free_license": false,
+      "app_id": "com.pinegrow.Pinegrow",
+      "icon": "https://dl.flathub.org/media/com/pinegrow/Pinegrow/c0f3ee2ed225cbe3a434c7d9e1705fea/icons/128x128/com.pinegrow.Pinegrow.png",
+      "main_categories": "development",
+      "sub_categories": [
+        "IDE"
+      ],
+      "developer_name": "Pinegrow Pte. Ltd.",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Sdk/x86_64/25.08",
+      "updated_at": 1787879968,
+      "arches": [
+        "x86_64"
+      ],
+      "added_at": 1685597936,
+      "trending": -0.7893908330548394,
+      "installs_last_month": 291,
+      "favorites_count": 13,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "Liri Text",
+      "keywords": [
+        "Text",
+        "Editor"
+      ],
+      "localized_keywords": [
+        "Editor",
+        "Text"
+      ],
+      "summary": "Edit text files",
+      "description": "\n      Liri Text is a cross-platform text editor made in accordance with Material Design,\n      aiming at simplicity and ease of use.\n    \n      \n      It is best suited for taking notes, writing text documents or\n      quick programming with its syntax highlighting feature.\n    \n    ",
+      "id": "io_liri_Text",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "GPL-3.0-or-later",
+      "is_free_license": true,
+      "app_id": "io.liri.Text",
+      "icon": "https://dl.flathub.org/media/io/liri/Text/ae71569f62a6fa0e86136ca4d61e3015/icons/128x128/io.liri.Text.png",
+      "main_categories": "utility",
+      "sub_categories": [
+        "TextEditor"
+      ],
+      "developer_name": "The Liri developers",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.kde.Platform/x86_64/5.15-25.08",
+      "updated_at": 1768649916,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1539453265,
+      "trending": -0.16213614270895294,
+      "installs_last_month": 88,
+      "favorites_count": 1,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "RustRover",
+      "keywords": [
+        "rustrover",
+        "ide",
+        "rust"
+      ],
+      "localized_keywords": [
+        "ide",
+        "rust",
+        "rustrover"
+      ],
+      "summary": "Powerful IDE for Rust",
+      "description": "\n      RustRover is a cross-platform IDE that provides consistent experience on the Windows, macOS, and Linux operating systems.\n      It also provides essential support for Python, popular web technologies\n     (like JavaScript, XML, HTML, Markdown and others), and this also includes support for all the other languages\n     that are available through bundled and repository plugins.\n    \n      \n      RustRover is free for non-commercial use. When using commercially, it is available for a free 30-day evaluation. After that period monthly and yearly subscription options exists for commercial use.\n    \n    ",
+      "id": "com_jetbrains_RustRover",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "LicenseRef-proprietary",
+      "is_free_license": false,
+      "app_id": "com.jetbrains.RustRover",
+      "icon": "https://dl.flathub.org/media/com/jetbrains/RustRover/e02d49095b0d46f7bdabe78298cedf5b/icons/128x128/com.jetbrains.RustRover.png",
+      "main_categories": "development",
+      "sub_categories": [
+        "IDE"
+      ],
+      "developer_name": "JetBrains s.r.o.",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Sdk/x86_64/26.08",
+      "updated_at": 1790053210,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1732792171,
+      "trending": 1.3936311279325038,
+      "installs_last_month": 975,
+      "favorites_count": 11,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "neovide",
+      "keywords": [
+        "Text",
+        "Editor"
+      ],
+      "localized_keywords": [
+        "Editor",
+        "Text"
+      ],
+      "summary": "Advanced graphical interface for Neovim",
+      "description": "Fully-featured Neovim GUI with some visual upgrades:\n      \n        Animated cursor\n        Smooth scrolling\n        Animated windows\n        Blurred floating windows\n        Emoji support\n      \n    ",
+      "id": "dev_neovide_neovide",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "dev.neovide.neovide",
+      "icon": "https://dl.flathub.org/media/dev/neovide/neovide/5b731c50346bce7495824eed65971b11/icons/128x128/dev.neovide.neovide.png",
+      "main_categories": "utility",
+      "sub_categories": [
+        "TextEditor"
+      ],
+      "developer_name": "Kaylee Simmons",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Sdk/x86_64/26.08",
+      "updated_at": 1789688958,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1731213642,
+      "trending": 0.2417813311790742,
+      "installs_last_month": 513,
+      "favorites_count": 3,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "SafeScript",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "Organize and manage code snippets",
+      "description": "SafeScript is a fast, clean code snippet manager for developers. Organize your snippets into folders, search instantly, and edit with a built-in syntax-aware code editor.\n      \n        Organize snippets into folders with drag-to-reorder\n        Syntax-aware code editor with line numbers\n        Dark and light mode\n        Instant search across all snippets\n        Notes field for each snippet\n        100% local storage \u2014 all data stays on your device\n      \n    ",
+      "id": "com_brainscanmedia_SafeScript",
+      "type": "desktop-application",
+      "translations": null,
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "com.brainscanmedia.SafeScript",
+      "icon": "https://dl.flathub.org/media/com/brainscanmedia/SafeScript/5f7af22c2d02ac9249c30556468eda57/icons/128x128/com.brainscanmedia.SafeScript.png",
+      "main_categories": "development",
+      "sub_categories": [],
+      "developer_name": "BrainScanMedia.com, Inc.",
+      "verification_verified": true,
+      "verification_method": "website",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": false,
+      "verification_website": "brainscanmedia.com",
+      "verification_timestamp": "1775075229",
+      "runtime": "org.kde.Platform/x86_64/6.11",
+      "updated_at": 1785549321,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1774950424,
+      "trending": 0.8472189829465847,
+      "installs_last_month": 115,
+      "favorites_count": 7,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "OmniDev",
+      "keywords": [
+        "COSMIC",
+        "Tool",
+        "Utility"
+      ],
+      "localized_keywords": [
+        "COSMIC",
+        "N\u00e1stroj",
+        "Tool",
+        "Utility",
+        "V\u00fdvoj"
+      ],
+      "summary": "Utilities for developers",
+      "description": "A collection of tools and utilities for developers. Following tools are currently available:\n      \n        UNIX Time Converter\n        Data Converter/Formatter\n        Base64 Encoder/Decoder\n        GZip Compressor/Decompressor\n        URL Encoder/Decoder\n        JWT Debugger\n        Lorem ipsum Generator\n      \n    ",
+      "id": "io_github_avomar_dev-toolbox",
+      "type": "desktop-application",
+      "project_license": "GPL-3.0",
+      "is_free_license": true,
+      "app_id": "io.github.avomar.dev-toolbox",
+      "icon": "https://dl.flathub.org/media/io/github/avomar.dev-toolbox/d694850102f71f107f2fefa76ec5b94d/icons/128x128/io.github.avomar.dev-toolbox.png",
+      "main_categories": "utility",
+      "sub_categories": [
+        "COSMIC",
+        "Development"
+      ],
+      "developer_name": "Aviral Omar",
+      "verification_verified": true,
+      "verification_method": "login_provider",
+      "verification_login_name": "avomar",
+      "verification_login_provider": "github",
+      "verification_login_is_organization": true,
+      "verification_website": null,
+      "verification_timestamp": "1773816679",
+      "runtime": "org.freedesktop.Platform/x86_64/25.08",
+      "updated_at": 1784150001,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1773798018,
+      "trending": -1.5068050956990051,
+      "installs_last_month": 301,
+      "favorites_count": 3,
+      "isMobileFriendly": true
+    },
+    {
+      "name": "Embellish",
+      "keywords": [
+        "Fonts",
+        "NerdFonts",
+        "nerd"
+      ],
+      "localized_keywords": [
+        "Fontes",
+        "Fonts",
+        "NerdFonts",
+        "nerd"
+      ],
+      "summary": "Install nerd fonts",
+      "description": "\n            User-friendly application designed for managing Nerd Fonts on your system. With a sleek\n            GTK4 user interface enhanced by libadwaita, Embellish provides a seamless experience for\n            installing, uninstalling and updating of Nerd Fonts.\n        \n      \n        List all available Nerd Fonts\n        Download and install a Font\n        Uninstall an installed Font\n        preview fonts\n        Browse icons (icon's cheat sheet)\n        Search fonts\n        Read font's license(s)\n        Add custom fonts\n        Import and export custom fonts\n      \n    ",
+      "id": "io_github_getnf_embellish",
+      "type": "desktop-application",
+      "project_license": "GPL-3.0-or-later",
+      "is_free_license": true,
+      "app_id": "io.github.getnf.embellish",
+      "icon": "https://dl.flathub.org/media/io/github/getnf.embellish/4ea1c1e9e5765fa4dec4f611529800b4/icons/128x128/io.github.getnf.embellish.png",
+      "main_categories": "utility",
+      "sub_categories": [
+        "TextTools"
+      ],
+      "developer_name": "Ronnie Nissan",
+      "verification_verified": true,
+      "verification_method": "login_provider",
+      "verification_login_name": "getnf",
+      "verification_login_provider": "github",
+      "verification_login_is_organization": true,
+      "verification_website": null,
+      "verification_timestamp": "1721214889",
+      "runtime": "org.gnome.Platform/x86_64/50",
+      "updated_at": 1785827969,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1721209624,
+      "trending": 0.2593554260819986,
+      "installs_last_month": 2227,
+      "favorites_count": 80,
+      "isMobileFriendly": true
+    },
+    {
+      "name": "GitHub Desktop",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "Simple collaboration from your desktop",
+      "description": "\n      Focus on what matters instead of fighting with Git. Whether you're new to Git or a seasoned\n      user, GitHub Desktop simplifies your development workflow.\n    \n      \n      Attribute commits with collaborators easily. Quickly add co-authors to your commit. Great for\n      pairing and excellent for sending a little love/credit to that special someone who helped fix\n      that gnarly bug of yours. See the attribution on the history page, undo an accidental\n      attribution, and see the co-authors on github.com\n    \n      \n      Checkout branches with pull requests and view CI statuses. See all open pull requests for your\n      repositories and check them out as if they were a local branch, even if they're from upstream\n      branches or forks. See which pull requests pass commit status checks, too!]\n    \n      \n      Syntax highlighted diffs. The new GitHub Desktop supports syntax highlighting when viewing\n      diffs for a variety of different languages.\n    \n      \n      Expanded image diff support. Easily compare changed images. See the before and after, swipe or\n      fade between the two, or look at just the changed parts.\n    \n      \n      Extensive editor &amp; shell integrations. Open your favorite editor or shell from the app, or\n      jump back to GitHub Desktop from your shell. GitHub Desktop is your springboard for work.\n    \n      \n      Community supported. GitHub Desktop is open source now! Check out our roadmap, contribute, and\n      help us make collaboration even easier.\n    \n      \n      This version of GitHub Desktop is a fork that adds support for Linux.\n    \n    ",
+      "id": "io_github_shiftey_Desktop",
+      "type": "desktop-application",
+      "translations": {},
+      "project_license": "MIT",
+      "is_free_license": true,
+      "app_id": "io.github.shiftey.Desktop",
+      "icon": "https://dl.flathub.org/media/io/github/shiftey.Desktop/8d98948ef8d3ac80c55f4ef46a38d2d9/icons/128x128/io.github.shiftey.Desktop.png",
+      "main_categories": "development",
+      "sub_categories": [],
+      "developer_name": "shiftkey",
+      "verification_verified": false,
+      "verification_method": "none",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": null,
+      "verification_website": null,
+      "verification_timestamp": null,
+      "runtime": "org.freedesktop.Platform/x86_64/25.08",
+      "updated_at": 1776996968,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1626674529,
+      "trending": -0.2908898895411294,
+      "installs_last_month": 10635,
+      "favorites_count": 152,
+      "isMobileFriendly": false
+    },
+    {
+      "name": "Mini Text",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "Ephemeral scratch pad",
+      "description": "A very small and minimalistic digital scratch pad with minimal editing capabilities.\nBest used with 'Always on Top' and/or 'Always on Visible Workspace'. It doesn't save or load files, just your clipboard.\n\t  \n    ",
+      "id": "io_github_nokse22_minitext",
+      "type": "desktop-application",
+      "project_license": "GPL-3.0-or-later",
+      "is_free_license": true,
+      "app_id": "io.github.nokse22.minitext",
+      "icon": "https://dl.flathub.org/media/io/github/nokse22.minitext/d5b52983f1374bb093167460e0be92f4/icons/128x128/io.github.nokse22.minitext.png",
+      "main_categories": "utility",
+      "sub_categories": [],
+      "developer_name": "Nokse",
+      "verification_verified": true,
+      "verification_method": "login_provider",
+      "verification_login_name": "nokse22",
+      "verification_login_provider": "github",
+      "verification_login_is_organization": true,
+      "verification_website": null,
+      "verification_timestamp": "1691412173",
+      "runtime": "org.gnome.Platform/x86_64/50",
+      "updated_at": 1775861208,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1691138959,
+      "trending": -4.287891268961931,
+      "installs_last_month": 483,
+      "favorites_count": 19,
+      "isMobileFriendly": true
+    },
+    {
+      "name": "jdTextEdit",
+      "keywords": null,
+      "localized_keywords": null,
+      "summary": "An advanced text editor",
+      "description": "jdTextEdit is a feature rich text editor with Plugin Support\n      Features:\n      \n        Syntaxhighlighting\n        Very well configurable\n        Different encodings are supported\n        The session can be saved\n        Pluginsupport\n        Bookmarks\n        Macros\n      \n    ",
+      "id": "page_codeberg_JakobDev_jdTextEdit",
+      "type": "desktop-application",
+      "project_license": "GPL-3.0-only",
+      "is_free_license": true,
+      "app_id": "page.codeberg.JakobDev.jdTextEdit",
+      "icon": "https://dl.flathub.org/media/page/codeberg/JakobDev.jdTextEdit/3e24395837e494fa710b0cde31b5fcca/icons/128x128/page.codeberg.JakobDev.jdTextEdit.png",
+      "main_categories": "development",
+      "sub_categories": [
+        "TextEditor",
+        "Qt"
+      ],
+      "developer_name": "JakobDev",
+      "verification_verified": true,
+      "verification_method": "website",
+      "verification_login_name": null,
+      "verification_login_provider": null,
+      "verification_login_is_organization": false,
+      "verification_website": "jakobdev.codeberg.page",
+      "verification_timestamp": "1688990275",
+      "runtime": "org.kde.Sdk/x86_64/6.11",
+      "updated_at": 1789923113,
+      "arches": [
+        "aarch64",
+        "x86_64"
+      ],
+      "added_at": 1688972774,
+      "trending": -1.0446520082108597,
+      "installs_last_month": 119,
+      "favorites_count": 1,
+      "isMobileFriendly": false
+    }
+  ],
+  "query": "visual studio code",
+  "processingTimeMs": 809,
+  "hitsPerPage": 21,
+  "page": 1,
+  "totalPages": 2,
+  "totalHits": 30,
+  "facetDistribution": {
+    "arches": {
+      "aarch64": 25,
+      "x86_64": 30
+    },
+    "is_free_license": {
+      "false": 5,
+      "true": 25
+    },
+    "main_categories": {
+      "Development": 14,
+      "Game": 1,
+      "Network": 1,
+      "Office": 1,
+      "Utility": 12
+    },
+    "type": {
+      "desktop-application": 30
+    },
+    "verification_verified": {
+      "false": 18,
+      "true": 12
+    }
+  },
+  "facetStats": {}
+}

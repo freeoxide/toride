@@ -1,0 +1,253 @@
+{
+  "provides": [
+    "application/pdf",
+    "application/rdf+xml",
+    "application/rss+xml",
+    "application/xhtml+xml",
+    "application/xhtml_xml",
+    "application/xml",
+    "image/gif",
+    "image/jpeg",
+    "image/png",
+    "image/webp",
+    "text/html",
+    "text/xml",
+    "x-scheme-handler/http",
+    "x-scheme-handler/https",
+    "x-scheme-handler/ipfs",
+    "x-scheme-handler/ipns"
+  ],
+  "screenshots": [
+    {
+      "sizes": [
+        {
+          "width": "1490",
+          "height": "1048",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-1_orig.png"
+        },
+        {
+          "width": "1248",
+          "height": "877",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-1_1248x877@1.png"
+        },
+        {
+          "width": "752",
+          "height": "528",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-1_752x528@1.png"
+        },
+        {
+          "width": "624",
+          "height": "438",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-1_624x438@1.png"
+        },
+        {
+          "width": "224",
+          "height": "157",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-1_224x157@1.png"
+        }
+      ],
+      "caption": "Welcome page of Brave",
+      "default": true
+    },
+    {
+      "sizes": [
+        {
+          "width": "1653",
+          "height": "1046",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-2_orig.png"
+        },
+        {
+          "width": "1248",
+          "height": "789",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-2_1248x789@1.png"
+        },
+        {
+          "width": "752",
+          "height": "475",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-2_752x475@1.png"
+        },
+        {
+          "width": "624",
+          "height": "394",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-2_624x394@1.png"
+        },
+        {
+          "width": "224",
+          "height": "141",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/screenshots/image-2_224x141@1.png"
+        }
+      ],
+      "caption": "New tab page of Brave",
+      "default": null
+    }
+  ],
+  "name": "Brave",
+  "isMobileFriendly": false,
+  "summary": "Fast Internet, AI, Adblock",
+  "description": "<p>Brave is on a mission to fix the web by giving users a safer, faster and better browsing\n      experience while growing support for content creators through a new attention-based ecosystem\n      of rewards.</p>\n      <p>Browse faster by blocking ads and trackers that violate your privacy and cost you time and\n      money.</p>\n    ",
+  "urls": {
+    "help": "https://support.brave.com/hc/en-us",
+    "donation": null,
+    "translate": null,
+    "faq": "https://brave.com/faq",
+    "contact": null,
+    "vcs_browser": null,
+    "contribute": "https://github.com/brave/brave-browser/blob/master/CONTRIBUTING.md",
+    "bugtracker": "https://github.com/brave/brave-browser/issues",
+    "homepage": "https://brave.com"
+  },
+  "icons": [
+    {
+      "type": "remote",
+      "width": 128,
+      "url": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/icons/128x128/com.brave.Browser.png",
+      "scale": null,
+      "height": 128
+    },
+    {
+      "type": "remote",
+      "width": 128,
+      "url": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/icons/128x128@2/com.brave.Browser.png",
+      "scale": 2,
+      "height": 128
+    }
+  ],
+  "releases": [
+    {
+      "description": null,
+      "urgency": null,
+      "date_eol": null,
+      "url": null,
+      "version": "1.96.59",
+      "type": "stable",
+      "timestamp": "1790208000",
+      "date": null
+    },
+    {
+      "description": null,
+      "urgency": null,
+      "date_eol": null,
+      "url": null,
+      "version": "1.95.104",
+      "type": "stable",
+      "timestamp": "1789689600",
+      "date": null
+    },
+    {
+      "description": null,
+      "urgency": null,
+      "date_eol": null,
+      "url": null,
+      "version": "1.95.102",
+      "type": "stable",
+      "timestamp": "1789516800",
+      "date": null
+    },
+    {
+      "description": null,
+      "urgency": null,
+      "date_eol": null,
+      "url": null,
+      "version": "1.95.101",
+      "type": "stable",
+      "timestamp": "1789084800",
+      "date": null
+    }
+  ],
+  "is_eol": false,
+  "branding": [
+    {
+      "scheme_preference": "light",
+      "type": "primary",
+      "value": "#bd7277"
+    },
+    {
+      "scheme_preference": "dark",
+      "type": "primary",
+      "value": "#704646"
+    }
+  ],
+  "is_free_license": true,
+  "launchable": {
+    "type": "desktop-id",
+    "value": "com.brave.Browser.desktop"
+  },
+  "metadata": {
+    "flathub::verification::login_is_organization": false,
+    "flathub::manifest": null,
+    "flathub::verification::verified": true,
+    "flathub::verification::method": "website",
+    "flathub::verification::timestamp": "1711639797",
+    "flathub::verification::login_name": null,
+    "flathub::verification::login_provider": null,
+    "flathub::verification::website": "brave.com"
+  },
+  "translation": null,
+  "type": "desktop-application",
+  "developer_name": "Brave Software",
+  "bundle": {
+    "runtime": "org.freedesktop.Platform/x86_64/25.08",
+    "type": "flatpak",
+    "sdk": "org.freedesktop.Sdk/x86_64/25.08",
+    "value": "app/com.brave.Browser/x86_64/stable"
+  },
+  "categories": [
+    "Network",
+    "WebBrowser"
+  ],
+  "id": "com.brave.Browser",
+  "icon": "https://dl.flathub.org/media/com/brave/Browser/88ba10fd6d588ec60ea651378045aaa6/icons/128x128/com.brave.Browser.png",
+  "content_rating_details": {
+    "en_US": {
+      "categories": [
+        {
+          "id": "social",
+          "level": "none",
+          "description": "No way to chat with other users"
+        },
+        {
+          "id": "drugs",
+          "level": "none",
+          "description": "No references to alcohol"
+        },
+        {
+          "id": "language",
+          "level": "none",
+          "description": "No profanity of any kind"
+        },
+        {
+          "id": "money",
+          "level": "none",
+          "description": "No ability to spend money"
+        },
+        {
+          "id": "sex",
+          "level": "none",
+          "description": "No nudity of any sort"
+        },
+        {
+          "id": "violence",
+          "level": "none",
+          "description": "No cartoon violence"
+        }
+      ],
+      "contentRatingSystem": "ESRB",
+      "minimumAge": 3,
+      "minimumAgeText": "Early Childhood"
+    }
+  },
+  "kudos": null,
+  "keywords": [],
+  "mimetypes": null,
+  "project_license": "MPL-2.0"
+}

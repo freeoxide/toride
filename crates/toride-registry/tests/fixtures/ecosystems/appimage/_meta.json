@@ -1,0 +1,7 @@
+{
+  "synthetic": false,
+  "url": "https://appimage.github.io/feed.json",
+  "fetched": "2026-09-28",
+  "command": "curl -s -m 20 https://appimage.github.io/feed.json -o /tmp/appimage-feed.json, then python3 json.dump of top-level metadata + 3 selected items",
+  "trimming": "Kept 3 of 1611 items from the live feed (4KWALL = first item, Firefox, Joplin); all other top-level keys verbatim. Full feed is 967,428 bytes / 1611 items — kept whole size out of the repo deliberately."
+}

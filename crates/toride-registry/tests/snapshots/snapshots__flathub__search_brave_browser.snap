@@ -1,0 +1,519 @@
+---
+source: crates/toride-registry/tests/snapshots.rs
+expression: "serde_json::to_string_pretty(value).expect(\"snapshot value serializes\")"
+---
+[
+  {
+    "id": "com-brave-browser",
+    "name": "Brave",
+    "aliases": [],
+    "summary": "Fast Internet, AI, Adblock",
+    "description": "Brave is on a mission to fix the web by giving users a safer, faster and better browsing\n      experience while growing support for content creators through a new attention-based ecosystem\n      of rewards.\n      Browse faster by blocking ads and trackers that violate your privacy and cost you time and\n      money.\n    ",
+    "homepage": null,
+    "license": "MPL-2.0",
+    "developer": "Brave Software",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.brave.Browser",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.brave.Browser",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-github-giantpinkrobots-varia",
+    "name": "Varia",
+    "aliases": [],
+    "summary": "Download files, videos and torrents",
+    "description": "\nVaria is better than your browser at downloading stuff.\n\n      \nSupporting videos and torrents on top of just regular files, and with a variety of advanced features wrapped inside an easy to understand interface, Varia is both quite powerful and dead simple to use:\n\n      \n        \nDownload anything you want quickly - potentially faster than your browser, continue incomplete downloads even after reboots\n\n        \nDownload video and audio (as well as whole playlists) from thousands of websites (anything supported by yt-dlp) including YouTube, TikTok, Twitter etc\n\n        \nIntegrate with Firefox and Chrome (or any Chromium based browser like Brave or Opera) to redirect downloads\n\n        \nSchedule downloads with a powerful scheduler function allowing for custom timespans for each day of the week\n\n        \nDownload from protected areas with basic auth and cookies.txt import support, as well as an option to automatically transfer your browser cookies through the extension\n\n        \nControl a remote aria2 instance running on any server through Remote Mode\n\n      \n    ",
+    "homepage": null,
+    "license": "MPL-2.0",
+    "developer": "Giant Pink Robots!",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.github.giantpinkrobots.varia",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.github.giantpinkrobots.varia",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-ktechpit-ultimate-media-downloader",
+    "name": "Ultimate Media Downloader",
+    "aliases": [],
+    "summary": "Media Downloader for YouTube and 1500+ other websites",
+    "description": "\n      Ultimate Media Downloader is a fast and open source YouTube downloader for\n      Linux and a video downloader for more than 1500 other websites. It saves\n      videos, playlists, channels, live streams and music from YouTube,\n      Facebook, Instagram, TikTok, X (Twitter), Reddit, Vimeo, SoundCloud,\n      Twitch, Kick, Dailymotion, Rumble, Odysee, Bilibili, Bandcamp, Mixcloud,\n      Pinterest, Tumblr, Streamable and the Internet Archive. Copy a link from\n      Chrome, Firefox or any browser, paste it, pick a preset and download.\n    \n      Why choose Ultimate Media Downloader?\n      \n        YouTube video downloader: save videos as MP4, MKV or WEBM in any quality from 144p and 720p HD to 1080p Full HD, 4K and 8K, including 60 fps\n        YouTube to MP3 converter, MP3 downloader and music downloader: download YouTube Music songs, albums and playlists, and extract audio as MP3 at 128 to 320 kbps, M4A, Opus or lossless FLAC with tags and cover art\n        YouTube playlist downloader and channel downloader: list an entire playlist or channel in seconds and pick exactly the items you want\n        YouTube Shorts, live streams and premieres: download Shorts, record a live stream while it runs and grab the VOD afterwards\n        Batch downloader and download manager: queue many links, download them all at once, watch progress and open finished files from the download library\n        Subtitles and closed captions: download or embed subtitles in the languages a video offers, including auto-generated captions, as SRT, VTT or ASS\n        Sign-in required, private, members-only and age-restricted videos: log in once with your Google account in the built-in Chromium-based browser and download what your account can watch\n        YouTube search built in: find videos and playlists inside the app and play them without ads\n        Custom format selector: choose the exact resolution, codec, container and bitrate when a preset is not enough\n        Dark theme, drag and drop, clipboard link detection and a download engine that updates itself so website changes are handled quickly\n      \n      More than a YouTube downloader\n      \n        Social video downloader: Facebook video downloader, Instagram Reels and video downloader, TikTok downloader, X (Twitter) video downloader, Reddit video downloader with audio, Pinterest and Tumblr\n        Streaming and live: Twitch VOD and clip downloader, Kick, Dailymotion, Rumble, Odysee, Bilibili, Streamable and live stream recording\n        Music and podcasts: SoundCloud downloader, Bandcamp, Mixcloud and podcast downloader, saved as MP3, M4A, Opus or FLAC\n        Any page with a video: HLS (m3u8) and DASH streams, direct MP4 and MP3 links, embedded players on news sites, blogs, forums and the Internet Archive\n      \n      \n      Built on yt-dlp. Ultimate Media Downloader is a graphical yt-dlp GUI and a\n      friendly front end for the youtube-dl successor: every site, format and\n      option yt-dlp supports is available from the interface, with no command\n      line and no terminal. The yt-dlp engine updates itself inside the app, so\n      a YouTube or TikTok change is fixed in hours, not at the next release.\n    \n      \n      Works with the browser you already use. Copy a video link from Google\n      Chrome, Chromium, Firefox, Brave or Edge and the app picks it up from the\n      clipboard. The built-in Chromium-based browser lets you sign in to\n      YouTube, Google, Twitch or Instagram once, so private, unlisted,\n      subscriber-only and age-restricted videos download like any other link.\n    \n      \n      Free, open source and offline: nothing is uploaded to a server, there are\n      no ads, no watermarks added and no daily limits. A native YouTube desktop\n      app, video downloader app and 4K video downloader for any Linux desktop\n      (Ubuntu, Fedora, Debian, Arch, openSUSE and Steam Deck via Flatpak), and a\n      free alternative to 4KTUBE, 4K Video Downloader, SnapTube, online video\n      downloaders and YouTube to MP3 converter websites.\n    \n    ",
+    "homepage": null,
+    "license": "GPL-2.0-or-later",
+    "developer": "Keshav Bhatt",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.ktechpit.ultimate-media-downloader",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.ktechpit.ultimate-media-downloader",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "net-mullvad-mullvadbrowser",
+    "name": "Mullvad Browser",
+    "aliases": [],
+    "summary": "Free the internet from mass surveillance",
+    "description": "\n            The Mullvad Browser is a privacy-focused web browser developed in a collaboration\n            between Mullvad VPN and the Tor Project. It’s designed to minimize tracking and\n            fingerprinting. You could say it’s a Tor Browser to use without the Tor Network.\n            Instead, you can use it with a trustworthy VPN. The idea is to provide one more\n            alternative – beside the Tor Network – to browse the internet with more privacy. To get\n            as many people as possible to fight the big data gathering of today. To free the\n            internet from mass surveillance.\n        \n    ",
+    "homepage": null,
+    "license": "MPL-2.0",
+    "developer": "Mullvad VPN AB",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "net.mullvad.MullvadBrowser",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "net.mullvad.MullvadBrowser",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-surfshark-surfshark",
+    "name": "Surfshark",
+    "aliases": [],
+    "summary": "Connect to secure, private web!",
+    "description": "\n        Protect yourself with the Surfshark VPN bundle for Linux!\n      \n      Surfshark VPN app protects you on both public and private Wi-Fi. It offers a VPN with global server infrastructure, an integrated ad blocker, a dedicated IP option, and many features like double VPN. \n      Independently audited by Deloitte, Surfshark VPN doesn't track your activity and keeps it safe. Surfshark has 4,500+ RAM-only servers with speeds of at least 10 Gbps and reaching 100 Gbps in the most crowded areas.\n      Surfshark’s servers located in 100 countries worldwide are connected to an industry-first self-healing infrastructure Everlink that ensures even better VPN connection stability.\n      \n        Protect the entire household:\n      \n      Forget counting devices. With a single subscription, you'll get unlimited simultaneous connections. Connect and protect all your household devices with Surfshark VPN.\n      \n        Secure your data and privacy:\n      \n      Your ISP can see the websites you visit and the products you look for. With a VPN and its end-to-end encryption, your browsing remains private.\n      \n        Surf with blazing speeds:\n      \n      Surfshark offers 4,500+ servers in 100 countries. Use your favorite apps or browse websites lag-free with a secure and fast VPN connection.\n      \n        Keep your data private:\n      \n      Surfshark has a no-activity-logs policy, proven by audits, which ensures we don't see or collect your online activity.\n      \n        Stay safe on public Wi-Fi:\n      \n      Public Wi-Fi is a perfect space for hackers. And even more dangers might hide in these networks. A VPN connection protects your data and ensures that it's safe.\n      \n        Access internet without censorship:\n      \n      Censorship or internet restrictions while traveling might stand between you and your favorite things online. That's where a secure VPN steps in and helps you access your home content.\n      \n        Block ads and trackers:\n      \n      Websites collect info about you and display ads based on your online habits. Surfshark stops those annoying ads and protects you from malware attacks.\n      \n        \n          Discover more Surfshark Linux app features:\n        \n        Global server network — travel the world without leaving your room with more than 4,500 VPN servers in over 100 countries.\n        Clean Web — block ads, trackers, malware, and pop-ups.\n        Multi Hop — select two different servers to connect through simultaneously\n        Dedicated IP — connect to your dedicated IP directly from your Linux devices.\n        Everlink — get better IP protection with a self-healing mechanism that revives your connection by reconfiguring the VPN tunnel without disconnecting you from the VPN.\n        24/7 customer support — get help via live chat, email, or social media. You can also check our Blog and Help Center.\n      \n      If you have any questions, contact us directly at support@surfshark.com or via live chat.\n    ",
+    "homepage": null,
+    "license": "LicenseRef-proprietary=https://surfshark.com/terms-of-service",
+    "developer": "Surfshark B.V",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.surfshark.Surfshark",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.surfshark.Surfshark",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-flow-browser-flow",
+    "name": "Flow",
+    "aliases": [],
+    "summary": "Cleaner browsing, sharper focus",
+    "description": "\n      Flow is an opinionated modern browser focused on productivity and privacy. With a clean, minimalistic user interface, it helps you focus on your work and get things done quickly.\n    \n      Features that make it stand out:\n      \n        Clean, collapsible sidebar\n        Spaces to organise your work\n        Command palette to quickly open a new tab, bookmark, or history\n        Supports most streaming services via Widevine\n      \n    ",
+    "homepage": null,
+    "license": "GPL-3.0-only",
+    "developer": "Multibox Labs",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.flow_browser.flow",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.flow_browser.flow",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-ulaa-ulaa",
+    "name": "Ulaa",
+    "aliases": [],
+    "summary": "Private, Secure & Fast Browsing",
+    "description": "\n      Built with privacy at its core, Ulaa ensures that your data remains protected at every step,\n      offering a browsing experience where security is non-negotiable.\n    \n      \n      Ulaa offers 5 unique modes—Personal, Work, Kids, Developer, and Open Season—designed to help\n      you cut through the clutter, whether you’re working or unwinding.\n    \n      \n      Ulaa’s productivity tools including Smart Tab Grouping, Screen Capture, Notes, Zen View, and\n      more make multitasking effortless.\n    \n      \n      You can also enable Ulaa Sync, powered by Zoho Accounts, to seamlessly take your data wherever\n      you go.\n    \n      \n      Choose Ulaa and enjoy online privacy like never before.\n    \n    ",
+    "homepage": null,
+    "license": "LicenseRef-proprietary",
+    "developer": "Zoho Corporation Pvt. Ltd.",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.ulaa.Ulaa",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.ulaa.Ulaa",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-github-alamahant-jasmine",
+    "name": "Jasmine",
+    "aliases": [],
+    "summary": "Launch websites and sessions",
+    "description": "\nJasmine is a website launcher and session management platform with shared, named or private profiles for each tab. Also featuring Internet Radio, IPTV and Podcasts.\n    \n      \n      Key Features:\n    \n      \n      Core:\n    \n      \n        Smart Bookmarking - Store websites with titles, URLs, comments, favicons, and login references\n        Session Management - Create, save, and restore multi-tab sessions with one click\n        Flexible Profiles - Choose between shared, named-shared (user-created), or private (incognito) profiles per tab\n        Multi-Account Support - Access multiple accounts on the same service without conflicts\n      \n      \n      Media:\n    \n      \n        Internet Radio - Browse, search, and play thousands of stations with local icon caching\n        IPTV - Import M3U playlists, browse channels by category, and watch live TV\n        Podcast Manager - Subscribe via iTunes search or RSS, manage episodes, and play audio\n      \n      \n      Utilities:\n    \n      \n        Download Manager - Progress tracking and file organization\n        Ad Blocker - Block unwanted ads and popups for cleaner browsing\n        2FA Integration - Built-in TOTP code generator\n      \n      \n      Security:\n    \n      \n        Master Password Protection - Encrypted data protection\n        Private Profiles - Completely isolated browsing environments\n      \n    ",
+    "homepage": null,
+    "license": "GPL-3.0-or-later",
+    "developer": "Alamahant",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.github.alamahant.Jasmine",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.github.alamahant.Jasmine",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "ru-yandex-browser",
+    "name": "Yandex Browser",
+    "aliases": [],
+    "summary": "Web browser from Yandex",
+    "description": "New Yandex Browser with AI search and Alisa voice assistant is a modern fast web browser with familiar user interface.\n    ",
+    "homepage": null,
+    "license": "LicenseRef-proprietary=https://yandex.ru/legal/browser_agreement",
+    "developer": "Yandex",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "ru.yandex.Browser",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "ru.yandex.Browser",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-github-brisklydev-brisk",
+    "name": "Brisk",
+    "aliases": [],
+    "summary": "Ultra-fast, modern download manager",
+    "description": "\n      Brisk is a high-speed desktop download manager designed for efficiency and integration with the browser\n    \n      \n      Features:\n    \n      \n        Powerful, Custom-Built Download Engine\n        Multiple themes including catppuccin and tokyo night\n        Browser Integration\n        Downloading video streams from the browser\n        Soft-subbing video files downloaded from streaming websites\n        Download Queues and Scheduling\n        Customizable Hotkey for adding a URL from clipboard\n      \n    ",
+    "homepage": null,
+    "license": "GPL-3.0-or-later",
+    "developer": "Amin Beheshti",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.github.BrisklyDev.Brisk",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.github.BrisklyDev.Brisk",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-wavebox-wavebox",
+    "name": "Wavebox",
+    "aliases": [],
+    "summary": "The next generation of web-desktop communication",
+    "description": "\n      With customizable toolbars, sleeping tabs, cookie containers, and multiple profiles,\n      Wavebox has everything you need to work better across Slack, Asana, Gmail, Teams,\n      Figma, and all your other daily web tools.\n    \n      \n        Tab organizing, sleep, and search.\n        Containers for multi-accounts.\n        Profiles for multiple setups.\n        High performance, longer battery life.\n        Zero ads or tracking.\n      \n    ",
+    "homepage": null,
+    "license": "LicenseRef-proprietary=https://wavebox.io/eula",
+    "developer": "Wavebox.io",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.wavebox.Wavebox",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.wavebox.Wavebox",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "org-chromium-chromium",
+    "name": "Chromium Web Browser",
+    "aliases": [],
+    "summary": "The web browser from Chromium project",
+    "description": "\n    Chromium is an open-source browser project that aims to build a safer, faster,\n    and more stable way to experience the web.\n    \n      \n    We invite you to join our effort to build a powerful platform for developing a\n    new generation of web applications.\n    \n    ",
+    "homepage": null,
+    "license": "BSD-3-Clause and LGPL-2.1+ and Apache-2.0 and IJG and MIT and GPL-2.0+ and ISC and OpenSSL and (MPL-1.1 or GPL-2.0 or LGPL-2.0)",
+    "developer": "The Chromium Authors",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "org.chromium.Chromium",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "org.chromium.Chromium",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "dev-vieb-vieb",
+    "name": "Vieb",
+    "aliases": [],
+    "summary": "Vim Inspired Electron Browser",
+    "description": "Vim bindings for the web by design.\n      Vieb is the Vim Inspired Electron Browser.\n      Features:\n      \n        Free, open source, fast and secure\n        Local first adblocking, auto-complete, AMP protection, custom redirects and more, all without web requests\n        Privacy with strict permission system, navigator overrides, firefox mode, custom WebRTC policy and more\n        Accessible with custom themes, full interface &amp; fontsize scaling, page zooming, spellcheck and mouse support\n        Security settings with permissions, cache usage, cookie management, (auto-)download settings and more\n        Window splitting with buffer, split, Vexplore and Ctrl-w bindings, for multi-window browsing\n        Map commands for completely custom keyboard sequences, keystrokes, commands and actions\n        Viebrc config file for all custom/Vim/Vieb commands to configure settings permanently\n        Set command for runtime setting configuration exactly like Vim\n        Vim-compatible options: showcmd, timeout, colorscheme, maxmapdepth, spelllang, splitright, smartcase etc.\n        Container tabs with colored grouping, auto-clearing, individual cookies and tab restore from containers\n        Ad-blocker with cosmetic filtering, optional updater, custom lists and uses easylist/easyprivacy by default\n        Tabs including audio indicator, a toggle for multi-line tabs, pinned tabs, muted tabs and suspended tabs\n        Offline help documentation always available upon pressing F1\n        And much, much more. For more details, visit https://vieb.dev/features\n      \n    ",
+    "homepage": null,
+    "license": "GPL-3.0-or-later",
+    "developer": "Jelmer van Arnhem",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "dev.vieb.Vieb",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "dev.vieb.Vieb",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  }
+]

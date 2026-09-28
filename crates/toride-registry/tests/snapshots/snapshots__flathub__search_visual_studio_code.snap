@@ -1,0 +1,847 @@
+---
+source: crates/toride-registry/tests/snapshots.rs
+expression: "serde_json::to_string_pretty(value).expect(\"snapshot value serializes\")"
+---
+[
+  {
+    "id": "com-visualstudio-code",
+    "name": "Visual Studio Code",
+    "aliases": [],
+    "summary": "Code editing. Redefined.",
+    "description": "**NOTE: This is the proprietary Microsoft build of Visual Studio Code, packaged into a Flatpak. This repackaging is not supported by Microsoft.**\n      Visual Studio Code is a new choice of tool that combines the simplicity of a code editor with what developers need for the core edit-build-debug cycle.\n      IMPORTANT: To use certain features in this flatpacked version (like the integrated terminal), please read the linked documentation.\n    ",
+    "homepage": null,
+    "license": "LicenseRef-proprietary=https://code.visualstudio.com/license",
+    "developer": "Microsoft Corporation",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.visualstudio.code",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.visualstudio.code",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-vscodium-codium",
+    "name": "VSCodium",
+    "aliases": [],
+    "summary": "Telemetry-less code editing",
+    "description": "VSCodium combines the simplicity of a code editor with what developers need for the core\n      edit-build-debug cycle.\n      This is the telemetry-less version of Visual Studio Code, packaged into a Flatpak.\n      This repackaging is not supported by Microsoft.\n      Note: To use certain features in this flatpak version, please see Readme file.\n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "The VSCodium team",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.vscodium.codium",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.vscodium.codium",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-vscodium-codium-insiders",
+    "name": "VSCodium - Insiders",
+    "aliases": [],
+    "summary": "Telemetry-less code editing",
+    "description": "VSCodium Insiders combines the simplicity of a code editor with what developers need for the\n      core edit-build-debug cycle.\n      This is the telemetry-less version of Visual Studio Code, packaged into a Flatpak. This\n      repackaging is not supported by Microsoft.\n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "The VSCodium team",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.vscodium.codium-insiders",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.vscodium.codium-insiders",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "ch-dragondreams-deigde",
+    "name": "Dragengine IGDE",
+    "aliases": [],
+    "summary": "Edit Drag[en]gine game projects.",
+    "description": "\n\t\tSupports creating and modifying Drag[en]gine game projects.\n\t\t\n      \n\t\tDoes not require compiler toolchains to be installed.\n\t\tUsing a code IDE is though recommended for syntax\n\t\thighlighting and code completion.\n\t\t\n      \n\t\tDEIGDE creates *.delga files as game distributable\n\t\twhich can be run using the Drag[en]gine Delauncher\n\t\t(ch.dragondreams.delauncher). For publishing on stores\n\t\tlike Steam see https://github.com/LordOfDragons/dedistribute/releases\n\t\tfor the necessairy files.\n\t\t\n      \n\t\tRecommended additional software to use with IGDE:\n\t\t\n      \n        Blender 3D (org.blender.Blender): Create 3D models.\n        GIMP (org.gimp.GIMP), Krita (org.kde.krita),\n\t\t\tInkScape (org.inkscape.Inkscape):\n\t\t\tCreate textures, decals and images.\n        Audacity (org.audacityteam.Audacity): Create sound files.\n        Visual Studio Code (com.visualstudio.code): Edit game scripts\n      \n      \n\t\tMore information on the Wiki: https://developer.dragondreams.ch/wiki/doku.php/gamedev:deigde\n\t\t\n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "DragonDreams GmbH",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "ch.dragondreams.deigde",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "ch.dragondreams.deigde",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "org-roojs-roobuilder",
+    "name": "roobuilder",
+    "aliases": [],
+    "summary": "Vala and Javascript IDE - for building Vala Desktop applications and Web Javascript",
+    "description": "\n    It's a cross between Glade / Visual Studio - the idea is that most 'action' code for an application is actually quite \n    simple - so entering the code on the event handlers for an widget makes the proximity of code to action better. \n\n      \n    This idea is applied to the Vala based Gtk applications, along with the Javascript based Roo web applications that this \n    application is used to build and develop.\n\n      \n\n \n Features Wishlist -  Random list of ideas to add - I regulary add these in totally random order.  (see the url / wishlist)\n  \n      \n  Known issues -  See the wishlist..\n  \n    ",
+    "homepage": null,
+    "license": "LGPL-3.0-or-later",
+    "developer": "Alan Knowles",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "org.roojs.roobuilder",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "org.roojs.roobuilder",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "dev-gbstudio-gb-studio",
+    "name": "GB Studio",
+    "aliases": [],
+    "summary": "A quick and easy to use drag and drop retro game creator for Game Boy",
+    "description": "GB Studio is drag and drop game creator for making Game Boy games\n      It is designed to be usable by people with little to no previous programming knowledge using simple visual scripting but also provides multiple access points for advanced users to access the game engine's virtual machine (GBVM) and to directly modify game engine's C and Z80 assembly code through plugins.\n      You can generate ROM files that can be run in an emulator, on a web page or on real Game Boy hardware\n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "Chris Maltby",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "dev.gbstudio.gb-studio",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "dev.gbstudio.gb-studio",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "dev-ensoft-ecode",
+    "name": "ecode",
+    "aliases": [],
+    "summary": "Lightweight multi-platform code editor designed for modern hardware with a focus on responsiveness and performance",
+    "description": "\n            ecode is a lightweight multi-platform code editor designed for modern hardware with a\n            focus on responsiveness and performance. It has been developed with the\n            hardware-accelerated eepp GUI, which provides the core technology for the editor. The\n            project comes as the first serious project using the eepp GUI, and it's currently being\n            developed to improve the eepp GUI library as part of one of its main objectives.\n        \n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "Martín Lucas Golini",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "dev.ensoft.ecode",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "dev.ensoft.ecode",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "ai-opencode-opencode",
+    "name": "OpenCode",
+    "aliases": [],
+    "summary": "Open source AI coding agent",
+    "description": "\n      OpenCode is an open source agent that helps you write and run code with any AI model.\n    \n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "Anomaly Innovations Inc.",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "ai.opencode.opencode",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "ai.opencode.opencode",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-github-marktext-marktext",
+    "name": "MarkText",
+    "aliases": [],
+    "summary": "Next generation markdown editor",
+    "description": "\n      MarkText is a free and open-source realtime preview markdown editor which support both CommonMark\n      Spec and GitHub Flavored Markdown Spec. It is a concise text editor, dedicated to improving your\n      writing efficiency.\n    \n      Features:\n      \n        Realtime preview (WYSIWYG) and a clean and simple interface to get a distraction-free writing experience\n        GitHub Flavored Markdown like task-lists, tables, links and emojis\n        Markdown extensions such as math expressions (KaTeX) and front matter\n        Code fence for all the popular languages\n        Support paragraphs and inline style shortcuts to improve your writing efficiency\n        Various edit modes and themes: source code mode, typewriter mode, focus mode\n      \n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "MarkText",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.github.marktext.marktext",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.github.marktext.marktext",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-gitbutler-gitbutler",
+    "name": "GitButler",
+    "aliases": [],
+    "summary": "Git, finally designed for humans",
+    "description": "\n      GitButler is the Git-backed change management tool for modern, AI coding workflows.\n      Parallel and stacked branches, unlimited undo, agent integrations, and more. It's Git, refined.\n    \n    ",
+    "homepage": null,
+    "license": "LicenseRef-FSL-1.1-MIT=https://github.com/gitbutlerapp/gitbutler/blob/master/LICENSE.md",
+    "developer": "GitButler Inc.",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.gitbutler.gitbutler",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.gitbutler.gitbutler",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-axosoft-gitkraken",
+    "name": "GitKraken",
+    "aliases": [],
+    "summary": "For repo management, in-app code editing & issue tracking",
+    "description": "**This wrapper is not verified by, affiliated with, or supported by Axosoft, LLC.**\n      Git legendary, my friends.\n            GitKraken includes two legendary products that make devs more productive: the Git Client and Glo Boards!\n      Use the Git Client to visualize the history and changes to your repos in a beautiful graph that makes working with Git more intuitive.\n      GitKraken Git Client Features:\n      \n        See your branching, merging and commit history in a dark or light themed graph.\n        Simplify complicated commands like merge, rebase and push into drag and drop actions.\n        Integrate with GitHub, GitHub Enterprise, GitLab, GitLab Self-Hosted, Bitbucket and VSTS.\n        Create, clone and add remote repos from integrated services.\n        Create and view pull requests from integrated services.\n        Easily open repos, set favorites, and organize them in project groups.\n        View file history and blame.\n        Quickly undo or redo with one click.\n        Use the built-in code editor to directly edit files without switching tools.\n        While editing code, use diff split view, syntax highlighting and search files.\n        Resolve merge conflicts without ever leaving the app.\n        Use multiple profiles for work and personal projects.\n        Use Gitflow, Git Hooks, LFS and submodules.\n      \n      GitKraken Glo Boards Features:\n      \n        Reduce context switching, and use Glo Boards to help your dev team track tasks and issues from inside the GitKraken Git Client.\n        Also access Glo inside VS Code, Atom, a browser or from our iPhone or Android apps.\n        Create cards to track tasks, issues, items, features, etc.\n        Sync GitHub Issues, assignees, descriptions, comments and labels in real-time across systems.\n        Visualize the progress of GitHub issues with workflows.\n        Create different workflows and labels for each board.\n        Add different users and security permissions for each board.\n        Track board activity.\n        See only what you’re looking for with powerful search &amp; filters.\n        Use card labels to quickly see priority, item type, etc.\n        Use card task lists to create additional checklists for each card.\n        Easily add images and files by dragging and dropping.\n        Use markdown in card descriptions and comments.\n        Get notifications in-app and via email.\n        Tag people in comments using @mentions.\n        Choose the light or dark theme.\n      \n    ",
+    "homepage": null,
+    "license": "LicenseRef-proprietary",
+    "developer": "Axosoft",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.axosoft.GitKraken",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.axosoft.GitKraken",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-pinegrow-pinegrow",
+    "name": "Pinegrow",
+    "aliases": [],
+    "summary": "Visual web editor for professionals",
+    "description": "\n  Pinegrow lets you work faster with HTML, CSS / SASS, Bootstrap, Tailwind CSS, GreenSock Interactions, WordPress and WooCommerce.\n  \n      \n  Pinegrow works with standard web files and easily integrates into your existing workflow.\n  \n      \n  Quickly build the layout of your webpage with powerful visual tools for adding, editing, moving, cloning and deleting HTML elements. Insert multiple elements with repeater and modify the layout of all selected elements with one move.\n  \n      \n  Inspect active CSS rules, use rich visual controls, CSS Grid editor, Dev tools-like editor or code - all working together as one. Edit SASS and LESS, live, without any external tools.\n  \n      \n  Turn hundreds of framework classes into powerful visual controls. Use the complete library of ready-to-use components and work with dynamic components like modals. Resize columns on the page and visualize the layout with display helpers.\n  \n      \n  An add-on for Pinegrow Web Editor that lets you visually work with Tailwind CSS projects including those that use a custom theme.\n  \n      \n  Use multi-page editing to edit your pages at multiple device sizes. Easily design responsive websites with Media query helper tool. Add custom breakpoints or let Pinegrow detect them by analyzing stylesheets.\n  \n      \n  Pinegrow Pro lets you speed up your work even more with smart features such as master pages that let you define templates for your project. Turn page elements into reusable components with custom editable areas. Use Pinegrow as CMS for static HTML websites.\n  \n      \n  Pinegrow lets you create powerful interactions and scroll scenes with custom animations designed with the timeline editor. Animations are powered by GreenSock GSAP, a proven high-performance animation library.\n  \n      \n  Pinegrow is also the perfect tool for creating production-ready WordPress themes and plugins. Take any HTML page and turn it into a WordPress theme or Gutenberg blocks by assigning WordPress actions to individual elements on the page. Pinegrow exports the standard PHP WordPress files.\n  \n    ",
+    "homepage": null,
+    "license": "LicenseRef-proprietary",
+    "developer": "Pinegrow Pte. Ltd.",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.pinegrow.Pinegrow",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.pinegrow.Pinegrow",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-liri-text",
+    "name": "Liri Text",
+    "aliases": [],
+    "summary": "Edit text files",
+    "description": "\n      Liri Text is a cross-platform text editor made in accordance with Material Design,\n      aiming at simplicity and ease of use.\n    \n      \n      It is best suited for taking notes, writing text documents or\n      quick programming with its syntax highlighting feature.\n    \n    ",
+    "homepage": null,
+    "license": "GPL-3.0-or-later",
+    "developer": "The Liri developers",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.liri.Text",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.liri.Text",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-jetbrains-rustrover",
+    "name": "RustRover",
+    "aliases": [],
+    "summary": "Powerful IDE for Rust",
+    "description": "\n      RustRover is a cross-platform IDE that provides consistent experience on the Windows, macOS, and Linux operating systems.\n      It also provides essential support for Python, popular web technologies\n     (like JavaScript, XML, HTML, Markdown and others), and this also includes support for all the other languages\n     that are available through bundled and repository plugins.\n    \n      \n      RustRover is free for non-commercial use. When using commercially, it is available for a free 30-day evaluation. After that period monthly and yearly subscription options exists for commercial use.\n    \n    ",
+    "homepage": null,
+    "license": "LicenseRef-proprietary",
+    "developer": "JetBrains s.r.o.",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.jetbrains.RustRover",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.jetbrains.RustRover",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "dev-neovide-neovide",
+    "name": "neovide",
+    "aliases": [],
+    "summary": "Advanced graphical interface for Neovim",
+    "description": "Fully-featured Neovim GUI with some visual upgrades:\n      \n        Animated cursor\n        Smooth scrolling\n        Animated windows\n        Blurred floating windows\n        Emoji support\n      \n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "Kaylee Simmons",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "dev.neovide.neovide",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "dev.neovide.neovide",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "com-brainscanmedia-safescript",
+    "name": "SafeScript",
+    "aliases": [],
+    "summary": "Organize and manage code snippets",
+    "description": "SafeScript is a fast, clean code snippet manager for developers. Organize your snippets into folders, search instantly, and edit with a built-in syntax-aware code editor.\n      \n        Organize snippets into folders with drag-to-reorder\n        Syntax-aware code editor with line numbers\n        Dark and light mode\n        Instant search across all snippets\n        Notes field for each snippet\n        100% local storage — all data stays on your device\n      \n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "BrainScanMedia.com, Inc.",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "com.brainscanmedia.SafeScript",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "com.brainscanmedia.SafeScript",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-github-avomar-dev-toolbox",
+    "name": "OmniDev",
+    "aliases": [],
+    "summary": "Utilities for developers",
+    "description": "A collection of tools and utilities for developers. Following tools are currently available:\n      \n        UNIX Time Converter\n        Data Converter/Formatter\n        Base64 Encoder/Decoder\n        GZip Compressor/Decompressor\n        URL Encoder/Decoder\n        JWT Debugger\n        Lorem ipsum Generator\n      \n    ",
+    "homepage": null,
+    "license": "GPL-3.0",
+    "developer": "Aviral Omar",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.github.avomar.dev-toolbox",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.github.avomar.dev-toolbox",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-github-getnf-embellish",
+    "name": "Embellish",
+    "aliases": [],
+    "summary": "Install nerd fonts",
+    "description": "\n            User-friendly application designed for managing Nerd Fonts on your system. With a sleek\n            GTK4 user interface enhanced by libadwaita, Embellish provides a seamless experience for\n            installing, uninstalling and updating of Nerd Fonts.\n        \n      \n        List all available Nerd Fonts\n        Download and install a Font\n        Uninstall an installed Font\n        preview fonts\n        Browse icons (icon's cheat sheet)\n        Search fonts\n        Read font's license(s)\n        Add custom fonts\n        Import and export custom fonts\n      \n    ",
+    "homepage": null,
+    "license": "GPL-3.0-or-later",
+    "developer": "Ronnie Nissan",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.github.getnf.embellish",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.github.getnf.embellish",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-github-shiftey-desktop",
+    "name": "GitHub Desktop",
+    "aliases": [],
+    "summary": "Simple collaboration from your desktop",
+    "description": "\n      Focus on what matters instead of fighting with Git. Whether you're new to Git or a seasoned\n      user, GitHub Desktop simplifies your development workflow.\n    \n      \n      Attribute commits with collaborators easily. Quickly add co-authors to your commit. Great for\n      pairing and excellent for sending a little love/credit to that special someone who helped fix\n      that gnarly bug of yours. See the attribution on the history page, undo an accidental\n      attribution, and see the co-authors on github.com\n    \n      \n      Checkout branches with pull requests and view CI statuses. See all open pull requests for your\n      repositories and check them out as if they were a local branch, even if they're from upstream\n      branches or forks. See which pull requests pass commit status checks, too!]\n    \n      \n      Syntax highlighted diffs. The new GitHub Desktop supports syntax highlighting when viewing\n      diffs for a variety of different languages.\n    \n      \n      Expanded image diff support. Easily compare changed images. See the before and after, swipe or\n      fade between the two, or look at just the changed parts.\n    \n      \n      Extensive editor &amp; shell integrations. Open your favorite editor or shell from the app, or\n      jump back to GitHub Desktop from your shell. GitHub Desktop is your springboard for work.\n    \n      \n      Community supported. GitHub Desktop is open source now! Check out our roadmap, contribute, and\n      help us make collaboration even easier.\n    \n      \n      This version of GitHub Desktop is a fork that adds support for Linux.\n    \n    ",
+    "homepage": null,
+    "license": "MIT",
+    "developer": "shiftkey",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.github.shiftey.Desktop",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.github.shiftey.Desktop",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "io-github-nokse22-minitext",
+    "name": "Mini Text",
+    "aliases": [],
+    "summary": "Ephemeral scratch pad",
+    "description": "A very small and minimalistic digital scratch pad with minimal editing capabilities.\nBest used with 'Always on Top' and/or 'Always on Visible Workspace'. It doesn't save or load files, just your clipboard.\n\t  \n    ",
+    "homepage": null,
+    "license": "GPL-3.0-or-later",
+    "developer": "Nokse",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "io.github.nokse22.minitext",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "io.github.nokse22.minitext",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "page-codeberg-jakobdev-jdtextedit",
+    "name": "jdTextEdit",
+    "aliases": [],
+    "summary": "An advanced text editor",
+    "description": "jdTextEdit is a feature rich text editor with Plugin Support\n      Features:\n      \n        Syntaxhighlighting\n        Very well configurable\n        Different encodings are supported\n        The session can be saved\n        Pluginsupport\n        Bookmarks\n        Macros\n      \n    ",
+    "homepage": null,
+    "license": "GPL-3.0-only",
+    "developer": "JakobDev",
+    "binaries": [],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "Aarch64",
+        "min_release": null
+      },
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Flatpak": {
+        "app_id": "page.codeberg.JakobDev.jdTextEdit",
+        "remote": "flathub"
+      }
+    },
+    "sources": [
+      {
+        "source": "Flathub",
+        "id": "page.codeberg.JakobDev.jdTextEdit",
+        "repo": null,
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  }
+]

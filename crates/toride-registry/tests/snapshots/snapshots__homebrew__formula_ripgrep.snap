@@ -1,0 +1,148 @@
+---
+source: crates/toride-registry/tests/snapshots.rs
+expression: "serde_json::to_string_pretty(value).expect(\"snapshot value serializes\")"
+---
+{
+  "id": "ripgrep",
+  "name": "ripgrep",
+  "aliases": [
+    "rg"
+  ],
+  "summary": "Search tool like grep and The Silver Searcher",
+  "description": null,
+  "homepage": "https://github.com/BurntSushi/ripgrep",
+  "license": "Unlicense",
+  "developer": null,
+  "binaries": [
+    "rg"
+  ],
+  "latest": {
+    "value": "15.2.0",
+    "original": null,
+    "published_unix": null
+  },
+  "platforms": [
+    {
+      "os": "MacOs",
+      "arch": "X86_64",
+      "min_release": null
+    },
+    {
+      "os": "MacOs",
+      "arch": "Aarch64",
+      "min_release": null
+    },
+    {
+      "os": "Linux",
+      "arch": "X86_64",
+      "min_release": null
+    },
+    {
+      "os": "Linux",
+      "arch": "Aarch64",
+      "min_release": null
+    }
+  ],
+  "artifacts": [
+    {
+      "url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:327215e000a1e83a9e3bf643bd88a3211796bfede87958955ad2a27df270ec4d",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "327215e000a1e83a9e3bf643bd88a3211796bfede87958955ad2a27df270ec4d"
+      },
+      "os": "MacOs",
+      "arch": "Aarch64",
+      "kind": "Bottle"
+    },
+    {
+      "url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:d3659fe11edcb52b93ce3510428435991fcb479c854d0b66bd14a2ffc7ef956a",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "d3659fe11edcb52b93ce3510428435991fcb479c854d0b66bd14a2ffc7ef956a"
+      },
+      "os": "Linux",
+      "arch": "Aarch64",
+      "kind": "Bottle"
+    },
+    {
+      "url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:2754dac3a512be2007dde3a8a481f1753ea9b0e22041a1a32b544daed966981b",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "2754dac3a512be2007dde3a8a481f1753ea9b0e22041a1a32b544daed966981b"
+      },
+      "os": "MacOs",
+      "arch": "Aarch64",
+      "kind": "Bottle"
+    },
+    {
+      "url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:8e485dfa978673c6ada6f83ca39f5f15f8b7444b0cdbe8814cd3d3d7bd83afa0",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "8e485dfa978673c6ada6f83ca39f5f15f8b7444b0cdbe8814cd3d3d7bd83afa0"
+      },
+      "os": "MacOs",
+      "arch": "Aarch64",
+      "kind": "Bottle"
+    },
+    {
+      "url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:7829e262f0ebbb51c4744b343bf801a5107479fe08c6d6f61f4d909748cba337",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "7829e262f0ebbb51c4744b343bf801a5107479fe08c6d6f61f4d909748cba337"
+      },
+      "os": "MacOs",
+      "arch": "Aarch64",
+      "kind": "Bottle"
+    },
+    {
+      "url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:9dd76bad725daf9ad1d4c983419e79ec92aefdae0cc9c92d465b424c8aea4808",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "9dd76bad725daf9ad1d4c983419e79ec92aefdae0cc9c92d465b424c8aea4808"
+      },
+      "os": "MacOs",
+      "arch": "X86_64",
+      "kind": "Bottle"
+    },
+    {
+      "url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:b92a80402edd4e6fa17e9eb580d20e941c60787510c4ce2716fa53d2c6d4c432",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "b92a80402edd4e6fa17e9eb580d20e941c60787510c4ce2716fa53d2c6d4c432"
+      },
+      "os": "Linux",
+      "arch": "X86_64",
+      "kind": "Bottle"
+    },
+    {
+      "url": "https://github.com/BurntSushi/ripgrep/archive/refs/tags/15.2.0.tar.gz",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "7605249d3eb0d5f170e3414498e3344e26b1e7a147aec518b57090b80036a562"
+      },
+      "os": null,
+      "arch": null,
+      "kind": "Source"
+    }
+  ],
+  "install": {
+    "Homebrew": {
+      "cask": false,
+      "token": "ripgrep"
+    }
+  },
+  "sources": [
+    {
+      "source": "HomebrewFormula",
+      "id": "ripgrep",
+      "repo": null,
+      "version": {
+        "value": "15.2.0",
+        "original": null,
+        "published_unix": null
+      },
+      "provisional": false
+    }
+  ],
+  "availability": "Available"
+}

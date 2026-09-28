@@ -1,0 +1,92 @@
+[
+ {
+  "repo": "homebrew",
+  "srcname": "brave-browser",
+  "binname": "brave-browser",
+  "visiblename": "brave-browser",
+  "name": "brave-browser",
+  "version": "1.83.112",
+  "status": "newest",
+  "families": 40,
+  "summary": "Secure, fast and private web browser with ad blocker",
+  "licenses": [
+   "MPL-2.0"
+  ]
+ },
+ {
+  "repo": "debian_13",
+  "subrepo": "main",
+  "srcname": "brave-browser",
+  "binname": "brave-browser",
+  "visiblename": "brave-browser",
+  "name": "brave-browser",
+  "version": "1.79.126",
+  "origversion": "1.79.126-1",
+  "status": "outdated",
+  "families": 40,
+  "summary": "Secure, fast and private web browser with ad blocker",
+  "categories": [
+   "web"
+  ],
+  "licenses": [
+   "MPL-2.0"
+  ],
+  "maintainers": [
+   "brave-packagers@lists.debian.org"
+  ]
+ },
+ {
+  "repo": "fedora_rawhide",
+  "subrepo": "development",
+  "srcname": "brave-browser",
+  "binname": "brave-browser",
+  "visiblename": "brave-browser",
+  "name": "brave-browser",
+  "version": "1.83.112",
+  "origversion": "1.83.112-1.fc44",
+  "status": "newest",
+  "families": 40,
+  "summary": "Secure, fast and private web browser with ad blocker",
+  "categories": [
+   "Unspecified"
+  ],
+  "licenses": [
+   "MPL-2.0"
+  ],
+  "maintainers": [
+   "brave-sig@lists.fedoraproject.org"
+  ]
+ },
+ {
+  "repo": "arch",
+  "srcname": "brave-browser",
+  "binname": "brave",
+  "visiblename": "brave-browser",
+  "name": "brave-browser",
+  "version": "1.83.112",
+  "status": "newest",
+  "families": 40,
+  "summary": "Secure, fast and private web browser with ad blocker",
+  "categories": [
+   "network"
+  ],
+  "licenses": [
+   "MPL-2.0"
+  ]
+ },
+ {
+  "repo": "alpine_edge",
+  "subrepo": "community",
+  "srcname": "brave-browser",
+  "visiblename": "brave-browser",
+  "name": "brave-browser",
+  "version": "1.83.120",
+  "origversion": "1.83.120-r0",
+  "status": "devel",
+  "families": 40,
+  "summary": "Secure, fast and private web browser with ad blocker",
+  "licenses": [
+   "MPL-2.0"
+  ]
+ }
+]

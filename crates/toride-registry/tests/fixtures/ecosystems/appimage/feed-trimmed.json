@@ -1,0 +1,102 @@
+{
+ "version": 1,
+ "home_page_url": "https://appimage.github.io/",
+ "feed_url": "https://appimage.github.io/feed.json",
+ "description": "AppImage applications for Linux without installation",
+ "icon": "https://appimage.github.io/apple-touch-icon.png",
+ "favicon": "https://appimage.github.io/favicon.ico",
+ "expired": false,
+ "items": [
+  {
+   "name": "4KWALL",
+   "description": "Browse, download, and auto-change 4K wallpapers",
+   "categories": [
+    "Graphics"
+   ],
+   "authors": [
+    {
+     "name": "rishabh3354",
+     "url": "https://github.com/rishabh3354"
+    }
+   ],
+   "license": "LicenseRef-proprietary=https://raw.githubusercontent.com/rishabh3354/4KWALL/main/share/license/LICENSE",
+   "links": [
+    {
+     "type": "GitHub",
+     "url": "rishabh3354/4KWALL"
+    },
+    {
+     "type": "Download",
+     "url": "https://github.com/rishabh3354/4KWALL/releases"
+    }
+   ],
+   "icons": [
+    "4KWALL/icons/512x512/com.warlordsoftwares.wallpaper-app-4kwall.png"
+   ],
+   "screenshots": [
+    "4KWALL/screenshot.png"
+   ]
+  },
+  {
+   "name": "Firefox",
+   "description": "Browse the Web",
+   "categories": [
+    "Network"
+   ],
+   "authors": [
+    {
+     "name": "srevinsaju",
+     "url": "https://github.com/srevinsaju"
+    }
+   ],
+   "license": "MIT",
+   "links": [
+    {
+     "type": "GitHub",
+     "url": "srevinsaju/Firefox-Appimage"
+    },
+    {
+     "type": "Download",
+     "url": "https://github.com/srevinsaju/Firefox-Appimage/releases"
+    }
+   ],
+   "icons": [
+    "Firefox/icons/128x128/default128.png"
+   ],
+   "screenshots": [
+    "Firefox/screenshot.png"
+   ],
+   "libc": "host",
+   "self_contained": false,
+   "glibc_required": "2.18"
+  },
+  {
+   "name": "Joplin",
+   "description": "Joplin for Desktop",
+   "categories": [
+    "Office"
+   ],
+   "authors": [
+    {
+     "name": "laurent22",
+     "url": "https://github.com/laurent22"
+    }
+   ],
+   "license": "MIT",
+   "links": [
+    {
+     "type": "GitHub",
+     "url": "laurent22/joplin"
+    },
+    {
+     "type": "Install",
+     "url": "https://github.com/laurent22/joplin/releases"
+    }
+   ],
+   "icons": null,
+   "screenshots": [
+    "Joplin/screenshot.png"
+   ]
+  }
+ ]
+}

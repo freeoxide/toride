@@ -1,0 +1,7 @@
+{
+  "synthetic": false,
+  "url": "https://raw.githubusercontent.com/microsoft/winget-pkgs/master/manifests/b/Brave/Brave/154.1.96.59/",
+  "fetched": "2026-09-28",
+  "command": "curl -s -m 30 <base>/<file> -o <file> for each of the 3 files; path discovered via https://api.github.com/repos/microsoft/winget-pkgs/contents/manifests/b/Brave/Brave (latest stable version dir at fetch time: 154.1.96.59)",
+  "note": "One manifest version directory = 4 files; all 3 YAMLs saved unmodified (installer 2822 B, locale.en-US 2876 B, root 261 B). The 4th file in the dir, Brave.Brave.locale.zh-CN.yaml (1104 B), was seen via the GitHub API listing but not saved. ManifestVersion 1.12.0."
+}

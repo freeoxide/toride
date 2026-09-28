@@ -1,0 +1,66 @@
+---
+source: crates/toride-registry/tests/snapshots.rs
+expression: "serde_json::to_string_pretty(value).expect(\"snapshot value serializes\")"
+---
+[
+  {
+    "repo": "homebrew",
+    "version": {
+      "value": "1.83.112",
+      "original": null,
+      "published_unix": null
+    },
+    "status": "newest",
+    "summary": "Secure, fast and private web browser with ad blocker",
+    "srcname": "brave-browser",
+    "binname": "brave-browser"
+  },
+  {
+    "repo": "debian_13",
+    "version": {
+      "value": "1.79.126",
+      "original": "1.79.126-1",
+      "published_unix": null
+    },
+    "status": "outdated",
+    "summary": "Secure, fast and private web browser with ad blocker",
+    "srcname": "brave-browser",
+    "binname": "brave-browser"
+  },
+  {
+    "repo": "fedora_rawhide",
+    "version": {
+      "value": "1.83.112",
+      "original": "1.83.112-1.fc44",
+      "published_unix": null
+    },
+    "status": "newest",
+    "summary": "Secure, fast and private web browser with ad blocker",
+    "srcname": "brave-browser",
+    "binname": "brave-browser"
+  },
+  {
+    "repo": "arch",
+    "version": {
+      "value": "1.83.112",
+      "original": null,
+      "published_unix": null
+    },
+    "status": "newest",
+    "summary": "Secure, fast and private web browser with ad blocker",
+    "srcname": "brave-browser",
+    "binname": "brave"
+  },
+  {
+    "repo": "alpine_edge",
+    "version": {
+      "value": "1.83.120",
+      "original": "1.83.120-r0",
+      "published_unix": null
+    },
+    "status": "devel",
+    "summary": "Secure, fast and private web browser with ad blocker",
+    "srcname": "brave-browser",
+    "binname": null
+  }
+]

@@ -1,0 +1,88 @@
+{
+ "hits": {
+  "total": {
+   "value": 1,
+   "relation": "eq"
+  },
+  "max_score": 11.669271,
+  "hits": [
+   {
+    "_index": "nixos-51-26.05-cf5e76507c6e23b59f7e0ffcc7baa2a39ddd8442",
+    "_type": "_doc",
+    "_id": "677M5qABjFGxZWo2SmMW",
+    "_score": 11.669271,
+    "_source": {
+     "type": "package",
+     "package_attr_name": "hello",
+     "package_attr_set": "No package set",
+     "package_pname": "hello",
+     "package_pversion": "2.12.3",
+     "package_platforms": [
+      "x86_64-linux",
+      "riscv64-linux",
+      "aarch64-darwin",
+      "x86_64-windows",
+      "armv7l-linux",
+      "wasm32-wasi",
+      "x86_64-freebsd",
+      "i686-linux",
+      "x86_64-darwin",
+      "loongarch64-linux",
+      "aarch64-linux",
+      "powerpc64le-linux"
+     ],
+     "package_outputs": [
+      "out"
+     ],
+     "package_default_output": "out",
+     "package_programs": [
+      "hello"
+     ],
+     "package_mainProgram": "hello",
+     "package_license": [
+      {
+       "url": "https://spdx.org/licenses/GPL-3.0-or-later.html",
+       "fullName": "GNU General Public License v3.0 or later",
+       "shortName": "gpl3Plus",
+       "spdxId": "GPL-3.0-or-later"
+      }
+     ],
+     "package_license_set": [
+      "GPL-3.0-or-later"
+     ],
+     "package_license_expression": null,
+     "package_maintainers": [
+      {
+       "name": "Steffen Vogel",
+       "github": "stv0g",
+       "email": "post@steffenvogel.de"
+      }
+     ],
+     "package_maintainers_set": [
+      "Steffen Vogel"
+     ],
+     "package_teams": [],
+     "package_teams_set": [],
+     "package_description": "Program that produces a familiar, friendly greeting",
+     "package_longDescription": "<rendered-html><p>GNU Hello is a program that prints \u201cHello, world!\u201d when you run it.\nIt is fully customizable.</p>\n</rendered-html>",
+     "package_hydra": null,
+     "package_system": "x86_64-linux",
+     "package_homepage": [
+      "https://www.gnu.org/software/hello/manual/"
+     ],
+     "package_position": "pkgs/by-name/he/hello/package.nix:57",
+     "package_modular_services": [],
+     "package_dep_count": 6,
+     "package_repology_repos": 70
+    }
+   }
+  ]
+ },
+ "took": 1,
+ "_shards": {
+  "total": 1,
+  "successful": 1,
+  "skipped": 0,
+  "failed": 0
+ }
+}
