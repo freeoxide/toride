@@ -46,8 +46,10 @@
 //!   [`Error::Command`](crate::Error::Command) carrying brew's stderr;
 //!   unparseable machine output maps to the same variant wrapping
 //!   `toride_runner::Error::OutputParse`. Where classification is cheap —
-//!   "not installed" stderr on the scoped `brew list --versions` probes —
-//!   a failed probe becomes `Ok(None)` instead of an error (see
+//!   the kind-scoped `brew list --versions` probes, whose absent tokens
+//!   fail *silently* at exit 1 (the normal signal) and whose rare
+//!   degenerate states raise matching `Error:` lines — a failed probe
+//!   becomes `Ok(None)` instead of an error (see
 //!   [`HomebrewBackend::installed_version`] for both not-installed
 //!   signals).
 //!
@@ -77,15 +79,19 @@ const BREW: &str = "brew";
 
 /// Markers whose presence on a brew **`Error:` line** classifies a failure
 /// as "the queried item is simply not installed" rather than a real error.
-/// Matched case-insensitively against `Error:`-prefixed lines only (brew's
-/// diagnostics elsewhere — warnings, context lines — may mention other
-/// packages being "not installed" without the probe's item being the
-/// subject); deliberately cheap — exact brew wording varies across
-/// versions.
+/// These lines are *not* the probes' normal absent-token signal (that is a
+/// silent exit 1 — see [`HomebrewBackend::installed_version`]); they fire
+/// only from degenerate states (a cask whose token directory exists
+/// without the cask being installed) and from other brew paths sharing the
+/// wording. Matched case-insensitively against `Error:`-prefixed lines
+/// only (brew's diagnostics elsewhere — warnings, context lines — may
+/// mention other packages being "not installed" without the probe's item
+/// being the subject); deliberately cheap — exact brew wording varies
+/// across versions.
 const NOT_INSTALLED_MARKERS: [&str; 3] = [
-    // `Error: Cask 'x' is not installed.` / `Error: <name> is not installed.`
+    // `Error: Cask 'x' is not installed.` (degenerate cask state)
     "not installed",
-    // `Error: No available formula with the name "x".`
+    // `Error: No available formula with the name "x".` (info/uninstall paths)
     "no available formula",
     // `Error: No installed keg or formula with the name "x".`
     "no installed keg",
@@ -214,27 +220,34 @@ impl HomebrewBackend {
     ///
     /// The kind is load-bearing: the unscoped `brew list --versions` is
     /// formula-only (casks have no Cellar rack), so casks must probe with
-    /// `--cask`. Two not-installed signals are classified instead of
-    /// erroring: a brew `Error:` line matching the not-installed markers
-    /// (what the cask path raises for absent casks), and the formula
-    /// path's *silent* exit 1 — unknown names to the formula list set
-    /// brew's failure flag with empty stdout and stderr.
+    /// `--cask`. Not-installed is classified instead of erroring on two
+    /// signals: the normal one is *silent* — an absent token on either
+    /// kind fails with exit code 1 and empty stdout and stderr (brew only
+    /// sets its failure flag); the other is a brew `Error:` line matching
+    /// the not-installed markers, which brew emits only from degenerate
+    /// states (e.g. a cask whose token directory exists without the cask
+    /// being installed) and from other brew paths that share the probes'
+    /// wording. The silent signal is exit-code-gated to 1 so a
+    /// signal-killed brew (exit 130 and friends) stays a real error.
     ///
     /// `Ok(None)` also covers "installed but no version reported".
     ///
     /// # Errors
     ///
-    /// [`Error::Command`] when brew fails with stderr that is neither
-    /// empty nor a not-installed `Error:` line.
+    /// [`Error::Command`] when brew fails any other way — stderr that is
+    /// neither a not-installed `Error:` line nor, at exit code 1, empty.
     pub async fn installed_version(&self, kind: BrewKind, token: &str) -> Result<Option<String>> {
         let spec = command(BREW, ["list", kind.flag(), "--versions", token]);
         match self.runner.run_checked(spec).await {
             Ok(output) => Ok(parse_versions_output(&output.stdout)),
-            // "Not installed" is an answer, not a failure: the cask probe
-            // raises a marker-matching error line, the formula probe fails
-            // silently (empty stderr). Anything else escapes.
-            Err(Error::Command(toride_runner::Error::CommandFailed { stderr, .. }))
-                if stderr_says_not_installed(&stderr) || stderr.trim().is_empty() =>
+            // "Not installed" is an answer, not a failure: a marker-
+            // matching Error: line, or a silent exit 1 (empty stderr —
+            // the exit-code gate keeps signal kills as errors). Anything
+            // else escapes.
+            Err(Error::Command(toride_runner::Error::CommandFailed {
+                stderr, exit_code, ..
+            })) if stderr_says_not_installed(&stderr)
+                || (stderr.trim().is_empty() && exit_code == Some(1)) =>
             {
                 Ok(None)
             }
@@ -1546,9 +1559,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn installed_version_returns_none_for_a_cask_not_installed() {
-        // The cask-scoped probe raises a marker-matching error line for
-        // absent casks.
+    async fn installed_version_returns_none_for_the_cask_degenerate_error_line() {
+        // Absent casks normally fail silently like formulae (covered
+        // below); brew emits this Error line only from the degenerate
+        // token-dir-exists state — the markers must still catch it.
         let spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
         let fake = FakeRunner::new().strict().respond(
             spec.clone(),
@@ -1569,6 +1583,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn installed_version_returns_none_for_the_silent_cask_not_installed_signal() {
+        // The normal absent-cask signal is silent, same as formulae:
+        // exit 1 with empty stdout and stderr.
+        let spec = command(BREW, ["list", "--cask", "--versions", "nope"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec, toride_runner::CommandOutput::from_stderr("", 1));
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .installed_version(BrewKind::Cask, "nope")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn installed_version_returns_none_for_the_silent_formula_not_installed_signal() {
         // Unknown names to the formula-scoped list fail silently: exit 1
         // with empty stdout and stderr (brew only sets its failure flag).
@@ -1583,6 +1615,29 @@ mod tests {
                 .await
                 .unwrap(),
             None
+        );
+    }
+
+    #[tokio::test]
+    async fn installed_version_maps_a_signal_killed_probe_to_command_error() {
+        // Empty stderr alone must NOT classify not-installed: a brew killed
+        // by a signal (exit 130, SIGINT) is a real error — the silent
+        // not-installed signal is exit 1 only.
+        let spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec, toride_runner::CommandOutput::from_stderr("", 130));
+        let backend = backend(&fake);
+        let error = backend
+            .installed_version(BrewKind::Cask, "brave-browser")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed { .. })
+            ),
+            "{error:?}"
         );
     }
 
