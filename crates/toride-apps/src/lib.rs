@@ -20,7 +20,10 @@
 //! - a thin **runner seam** ([`CommandRunner`]) over
 //!   `toride_runner::AsyncRunner` so every backend command is constructed and
 //!   executed through one injectable, fake-able choke point — backends never
-//!   spawn processes directly.
+//!   spawn processes directly;
+//! - the [`Apps`] **facade** composing all of the above with the install
+//!   manifest and the registry adapters into the user-facing operations
+//!   (ensure-installed, uninstall, status, search).
 //!
 //! ## Pipeline
 //!
@@ -89,6 +92,7 @@
 #![allow(clippy::module_name_repetitions)]
 #![allow(clippy::return_self_not_must_use)]
 
+pub mod apps;
 pub mod backend;
 pub mod backends;
 pub mod error;
@@ -98,6 +102,10 @@ pub mod runner;
 pub mod status;
 
 // Re-exports — the public API surface.
+pub use apps::{
+    AppInstallOptions, AppUninstallOptions, Apps, AppsBuilder, AppsError, AppsResult,
+    EnsureAppOutcome, UninstallAppOutcome,
+};
 pub use backend::{
     Backend, BackendId, BackendStatus, InstallOutcome, InstallRequest, InstalledApp, ListQuery,
     StatusQuery, UninstallOutcome, UninstallRequest,
