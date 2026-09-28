@@ -72,9 +72,11 @@
 //!   ancestor wins: Rocky's `ID="rocky" ID_LIKE="rhel fedora"` is Fedora
 //!   because `fedora` is the first entry the registry knows, and Mint's
 //!   `ID_LIKE="ubuntu debian"` is Ubuntu). [`DistroBackend::detect`] reads
-//!   the real [`OS_RELEASE_PATH`] and PATH-checks both the manager and the
-//!   query program; [`detect_family_from`] is the injectable-reader seam
-//!   the fixture tests ride.
+//!   the real os-release(5) locations — [`OS_RELEASE_PATH`] first, then
+//!   [`OS_RELEASE_FALLBACK_PATH`] when it is absent, the spec's mandated
+//!   two-path check — and PATH-checks both the manager and the query
+//!   program; [`detect_family_from`] is the injectable-reader seam the
+//!   fixture tests ride.
 //!
 //! ## Elevation
 //!
@@ -103,10 +105,18 @@ use crate::error::{Error, Result};
 use crate::plan::{Operation, PackageManager, Target};
 use crate::runner::{CommandRunner, command};
 
-/// The os-release(5) document [`DistroBackend::detect`] reads — the
-/// standard location (usually a symlink to `/usr/lib/os-release`, followed
-/// by the read like every consumer does).
+/// The primary os-release(5) location, read first by
+/// [`DistroBackend::detect`] and [`detect_host_family`]. `/etc/os-release`
+/// is the administrator-owned file — normally a symlink into the OS
+/// vendor's `/usr` tree, which is why it usually wins by existing.
 pub const OS_RELEASE_PATH: &str = "/etc/os-release";
+
+/// The os-release(5) fallback location, consulted only when
+/// [`OS_RELEASE_PATH`] is absent. The spec **mandates** this explicit
+/// two-path check rather than relying on the `/etc` symlink: the symlink
+/// is the common arrangement on complete systems, not a guarantee — a
+/// stripped-down container can lack it while the vendor's file remains.
+pub const OS_RELEASE_FALLBACK_PATH: &str = "/usr/lib/os-release";
 
 /// The debconf frontend selector applied to every mutating apt command, so
 /// package configuration scripts never prompt (debconf(7); apt-get's `-y`
@@ -241,20 +251,35 @@ pub fn parse_distro_family(os_release: &str) -> Option<DistroFamily> {
 }
 
 /// Detect the family through an injected os-release reader — the seam the
-/// fixture tests ride; a failing read is an undetectable family (`None`),
+/// fixture tests ride. The reader is called with each of
+/// [`OS_RELEASE_PATH`] and [`OS_RELEASE_FALLBACK_PATH`] in spec order;
+/// the first document it reads is authoritative even when its family does
+/// not parse (the fallback is for an *absent* `/etc` file, not for a
+/// foreign one), and unreadable paths mean an undetectable family (`None`),
 /// not an error.
 #[must_use]
 pub fn detect_family_from(
-    read_os_release: impl FnOnce() -> std::io::Result<String>,
+    mut read_os_release: impl FnMut(&str) -> std::io::Result<String>,
 ) -> Option<DistroFamily> {
-    let content = read_os_release().ok()?;
-    parse_distro_family(&content)
+    for path in [OS_RELEASE_PATH, OS_RELEASE_FALLBACK_PATH] {
+        // First readable document wins — a present-but-unknown
+        // /etc/os-release must not be second-guessed against a stale
+        // /usr/lib copy.
+        if let Ok(content) = read_os_release(path) {
+            return parse_distro_family(&content);
+        }
+    }
+    None
 }
 
-/// Detect this host's family from the real [`OS_RELEASE_PATH`].
+/// Detect this host's family from the real os-release(5) locations:
+/// [`OS_RELEASE_PATH`] first, [`OS_RELEASE_FALLBACK_PATH`] only when it is
+/// absent (os-release(5) mandates the two-path check rather than reliance
+/// on the `/etc` symlink). `None` when both are absent or the authoritative
+/// document names no known family.
 #[must_use]
 pub fn detect_host_family() -> Option<DistroFamily> {
-    detect_family_from(|| std::fs::read_to_string(OS_RELEASE_PATH))
+    detect_family_from(|path| std::fs::read_to_string(path))
 }
 
 /// The registry family an os-release id (or `ID_LIKE` entry) names. Ids the
@@ -338,20 +363,22 @@ impl DistroBackend {
         Self { family, runner }
     }
 
-    /// Create the backend for this host: read [`OS_RELEASE_PATH`], refuse
-    /// unknown families and families without a wave-1 executor, and
-    /// PATH-check both the manager and its query program (via
-    /// toride-runner's discovery helpers — no command is executed).
+    /// Create the backend for this host: read the os-release(5) locations
+    /// ([`OS_RELEASE_PATH`], then [`OS_RELEASE_FALLBACK_PATH`] when it is
+    /// absent), refuse unknown families and families without a wave-1
+    /// executor, and PATH-check both the manager and its query program
+    /// (via toride-runner's discovery helpers — no command is executed).
     ///
     /// # Errors
     ///
-    /// [`Error::Command`] wrapping `Other` when the family is
-    /// undetectable or unexecutable, `BinaryNotFound` when a program is
-    /// missing from the PATH.
+    /// [`Error::Command`] wrapping `Other` when both paths are absent or
+    /// name no known family (or the family has no executor), and
+    /// `BinaryNotFound` when a program is missing from the PATH.
     pub fn detect(runner: CommandRunner) -> Result<Self> {
         let family = detect_host_family().ok_or_else(|| {
             Error::Command(toride_runner::Error::Other(format!(
-                "could not detect a known distro family from {OS_RELEASE_PATH}"
+                "could not detect a known distro family from {OS_RELEASE_PATH} \
+                 or {OS_RELEASE_FALLBACK_PATH}"
             )))
         })?;
         let backend = Self::new(family, runner);
@@ -966,21 +993,76 @@ mod tests {
     #[test]
     fn detect_family_from_reads_through_the_injected_reader() {
         // The injector is the seam: hand it a fixture read (the same way
-        // the real default hands in the /etc/os-release read).
-        let family = detect_family_from(|| Ok(os_release("os-release-fedora"))).unwrap();
+        // the real default hands in the os-release(5) file reads).
+        let family = detect_family_from(|_| Ok(os_release("os-release-fedora"))).unwrap();
         assert_eq!(family, DistroFamily::Fedora);
     }
 
     #[test]
-    fn detect_family_from_maps_a_failing_read_to_none() {
-        // A failing read is an undetectable family, not an error.
-        let family = detect_family_from(|| Err(std::io::Error::other("no host")));
-        assert_eq!(family, None);
+    fn detect_family_from_prefers_the_etc_os_release_document() {
+        // os-release(5) precedence: /etc/os-release is authoritative when
+        // present — the fallback must not even be read (a panic in the
+        // fallback arm fails the test if it ever is).
+        let family = detect_family_from(|path| {
+            if path == OS_RELEASE_PATH {
+                Ok(os_release("os-release-fedora"))
+            } else {
+                panic!("the fallback must not be read while /etc/os-release is present: {path}")
+            }
+        })
+        .unwrap();
+        assert_eq!(family, DistroFamily::Fedora);
     }
 
     #[test]
-    fn detect_family_from_returns_none_for_an_unknown_host_document() {
-        let family = detect_family_from(|| Ok(os_release("os-release-gentoo")));
+    fn detect_family_from_falls_back_to_usr_lib_when_etc_is_absent() {
+        // First /etc read fails, the /usr/lib fallback answers — and both
+        // paths are consulted in spec order.
+        let mut reads: Vec<String> = Vec::new();
+        let family = detect_family_from(|path| {
+            reads.push(path.to_owned());
+            if path == OS_RELEASE_FALLBACK_PATH {
+                Ok(os_release("os-release-fedora"))
+            } else {
+                Err(std::io::Error::other("absent"))
+            }
+        })
+        .unwrap();
+        assert_eq!(family, DistroFamily::Fedora);
+        assert_eq!(
+            reads,
+            [OS_RELEASE_PATH, OS_RELEASE_FALLBACK_PATH].map(str::to_owned),
+            "the search must cover both paths in spec order"
+        );
+    }
+
+    #[test]
+    fn detect_family_from_returns_none_when_both_os_release_paths_are_absent() {
+        let mut reads: Vec<String> = Vec::new();
+        let family = detect_family_from(|path| {
+            reads.push(path.to_owned());
+            Err(std::io::Error::other("absent"))
+        });
+        assert_eq!(family, None);
+        assert_eq!(
+            reads,
+            [OS_RELEASE_PATH, OS_RELEASE_FALLBACK_PATH].map(str::to_owned),
+            "both paths must be tried before giving up"
+        );
+    }
+
+    #[test]
+    fn detect_family_from_does_not_fall_through_when_etc_present_but_unknown() {
+        // The fallback is for an ABSENT /etc file, not a foreign one: a
+        // gentoo /etc/os-release must not be second-guessed against the
+        // vendor copy behind it.
+        let family = detect_family_from(|path| {
+            if path == OS_RELEASE_PATH {
+                Ok(os_release("os-release-gentoo"))
+            } else {
+                panic!("a present /etc/os-release is authoritative: {path}")
+            }
+        });
         assert_eq!(family, None);
     }
 
