@@ -90,6 +90,8 @@ impl ToolVersion {
     /// Takes the first non-empty stdout line and trims it (that is `line`);
     /// strips a leading `"<bin_name> version "` then `"<bin_name> "` prefix
     /// (covers tools printing `tool version 1.2.3 (rev …)` and `tool 1.2.3`);
+    /// under an `.exe`-suffixed `bin_name` the bare stem is tried too
+    /// (Windows binaries self-report without the loader extension);
     /// bare output passes through; takes the first whitespace token as
     /// `raw`; best-effort semver-parses. Never fails.
     #[must_use]
@@ -124,19 +126,36 @@ impl ToolVersion {
 /// (`" version "` or a single space), so a line beginning with a *longer*
 /// word that merely extends `bin_name` (`"mystery"` for `bin_name = "mist"`)
 /// is left alone.
+///
+/// When `bin_name` carries the Windows loader suffix (`mise.exe`) and the
+/// line matches neither prefix shape, the bare stem (`mise`) is tried too:
+/// the on-disk name is a Windows artifact, while the binary self-reports
+/// its stem (`mise 2026.9.1 …`).
 fn strip_bin_prefix<'line>(line: &'line str, bin_name: &str) -> &'line str {
     if bin_name.is_empty() {
         return line;
     }
-    let Some(rest) = line.strip_prefix(bin_name) else {
-        return line;
-    };
+    if let Some(stripped) = strip_named_prefix(line, bin_name) {
+        return stripped;
+    }
+    if let Some(stem) = bin_name.strip_suffix(".exe")
+        && let Some(stripped) = strip_named_prefix(line, stem)
+    {
+        return stripped;
+    }
+    line
+}
+
+/// One `"<name> version "` then `"<name> "` prefix strip; `None` when `line`
+/// does not start with `name` followed by a separator.
+fn strip_named_prefix<'line>(line: &'line str, name: &str) -> Option<&'line str> {
+    let rest = line.strip_prefix(name)?;
     if let Some(rest) = rest.strip_prefix(" version ") {
-        return rest.trim();
+        return Some(rest.trim());
     }
     match rest.strip_prefix(' ') {
-        Some(rest) => rest.trim_start(),
-        None => line,
+        Some(rest) => Some(rest.trim_start()),
+        None => None,
     }
 }
 
@@ -1310,6 +1329,27 @@ mod tests {
         let v = ToolVersion::parse("mystery 1.2.3", "mist");
         assert_eq!(v.raw, "mystery");
         assert!(v.parsed.is_none());
+    }
+
+    #[test]
+    fn parse_strips_prefix_under_windows_exe_bin_name() {
+        // Windows regression (CI: `detector_finds_managed_mise_with_probed_
+        // version` failed there): under `cfg(windows)` the mise descriptor's
+        // `bin_name` is `mise.exe` while the binary self-reports its bare
+        // stem. The stem strip must fire so `raw` is the version token, not
+        // the program name.
+        let v = ToolVersion::parse("mise 2026.9.1 linux-x64", "mise.exe");
+        assert_eq!(v.line, "mise 2026.9.1 linux-x64");
+        assert_eq!(v.raw, "2026.9.1");
+        assert_eq!(v.parsed, Some(semver::Version::new(2026, 9, 1)));
+    }
+
+    #[test]
+    fn parse_prefers_the_on_disk_name_before_the_exe_stem() {
+        // A line that does carry the `.exe` name still strips via bin_name
+        // itself; the stem fallback only fires when that misses.
+        let v = ToolVersion::parse("mise.exe version 1.2.3", "mise.exe");
+        assert_eq!(v.raw, "1.2.3");
     }
 
     #[test]
