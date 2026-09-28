@@ -1,5 +1,6 @@
 ---
 source: crates/toride-mise/tests/snapshots.rs
+assertion_line: 153
 expression: spec
 ---
 CommandSpec {
@@ -13,6 +14,7 @@ CommandSpec {
         "node",
     ],
     stdin: None,
+    stdin_null: false,
     timeout: None,
     env: [],
     env_remove: [],

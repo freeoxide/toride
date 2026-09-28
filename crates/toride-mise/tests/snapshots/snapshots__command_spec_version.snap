@@ -1,5 +1,6 @@
 ---
 source: crates/toride-mise/tests/snapshots.rs
+assertion_line: 183
 expression: spec
 ---
 CommandSpec {
@@ -8,6 +9,7 @@ CommandSpec {
         "--version",
     ],
     stdin: None,
+    stdin_null: false,
     timeout: None,
     env: [],
     env_remove: [],

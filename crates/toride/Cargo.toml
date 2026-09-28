@@ -62,6 +62,10 @@ which = { workspace = true }
 # Direct dep so the proxy cert-expiry wiring can name the `Runner` trait and
 # `DuctRunner`/`FakeRunner` types (the proxy backend takes `&dyn Runner`).
 toride-runner = { path = "../toride-runner", version = "0.1.0" }
+# Tool-availability detection for the installed-tools catalogue (tools_data):
+# Detector classifies every catalogue alias on $PATH or at the installer's
+# managed ~/.local/bin location and probes versions through toride-runner.
+toride-installer = { path = "../toride-installer", version = "0.1.0" }
 
 [dev-dependencies]
 insta = "1"

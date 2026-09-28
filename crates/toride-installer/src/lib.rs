@@ -19,6 +19,15 @@
 //! Adding a new tool (node, bun, …) means implementing [`ReleaseResolver`]
 //! and constructing a [`Tool`] — the engine is otherwise unchanged.
 //!
+//! ## Feature gate
+//!
+//! The `http` feature (enabled by default) carries the install engine and
+//! everything that needs reqwest, sha256, or gzip/xz extraction. The
+//! offline detector ([`Detector`], [`ToolVersion`], [`Freshness`],
+//! [`latest`], [`LatestCache`]) builds without it — depend on this crate
+//! with `default-features = false` for a detection-only, C-build-script-free
+//! graph.
+//!
 //! ## Pipeline
 //!
 //! 1. **Resolve** the artifact URL (and the concrete version when the
@@ -92,19 +101,30 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod error;
+#[cfg(feature = "http")]
 pub mod extract;
 pub mod installer;
+#[cfg(feature = "http")]
 pub mod progress;
+pub mod status;
 pub mod target;
 pub mod tool;
 pub mod tools;
 
 // Re-exports — the public API surface.
 pub use error::{Error, Result};
+#[cfg(feature = "http")]
 pub use installer::{
     DEFAULT_MAX_BYTES, DEFAULT_MIN_BYTES, Installer, InstallerBuilder, TemplateResolver, Verifier,
     install_tool,
 };
+#[cfg(feature = "http")]
 pub use progress::Progress;
+#[cfg(feature = "http")]
+pub use status::ensure_installed;
+pub use status::{
+    DEFAULT_PROBE_TIMEOUT, Detector, DetectorBuilder, EnsureOutcome, Freshness, LatestCache,
+    ToolSource, ToolStatus, ToolVersion, latest,
+};
 pub use target::{Arch, Os, Target};
 pub use tool::{ArtifactKind, Checksum, ReleaseResolver, Tarball, Tool, ToolBuilder};

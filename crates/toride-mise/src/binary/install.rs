@@ -575,23 +575,27 @@ async fn install_from_github(_opts: &BootstrapOptions) -> MiseResult<Utf8PathBuf
 impl MiseBinary {
     /// Ensure that the `mise` binary is available on the host.
     ///
-    /// This first attempts normal discovery via [`MiseBinary::discover`].
-    /// If the binary is found, it is returned immediately.  Otherwise a
+    /// This first attempts normal discovery via
+    /// [`MiseBinary::discover_async`] — the same offline cascade as
+    /// [`MiseBinary::discover`], run on tokio's blocking pool because the
+    /// detector's `mise --version` / `-V` probes are sync subprocess work
+    /// and must not occupy an async runtime worker. If the binary is found,
+    /// it is returned immediately.  Otherwise a
     /// [`MiseError::BootstrapHint`] error is returned with installation
     /// instructions.
     ///
+    /// Discovery is offline and never installs: it consults `MISE_BIN`, then
+    /// `toride_installer`'s `Detector` over the real `$PATH` and the managed
+    /// install location (`~/.local/bin` — where the installer's checksum-
+    /// verified install path writes), then the system-wide and app-bundled
+    /// fallbacks. A true miss is reported as the hint below rather than
+    /// triggering a download, so the meaning of the user-facing outcome is
+    /// unchanged — only the probe behind it is shared with the installer.
+    ///
     /// For automated bootstrapping, match on [`MiseError::BootstrapHint`]
     /// and call [`install_mise`] with the desired [`BootstrapMethod`].
-    // The `async` keyword is part of the public signature — callers `.await`
-    // this function — so removing it (as the lint suggests) would be a
-    // breaking API change. Suppress rather than rewrite.
-    #[allow(clippy::unused_async)]
-    #[expect(
-        clippy::unused_async_trait_impl,
-        reason = "signature stability: callers .await this fn; dropping `async` would break them"
-    )]
     pub async fn ensure_installed() -> MiseResult<Self> {
-        match Self::discover() {
+        match Self::discover_async().await {
             Ok(bin) => Ok(bin),
             Err(MiseError::BinaryNotFound) => Err(MiseError::BootstrapHint {
                 message: String::from(
@@ -624,6 +628,26 @@ mod tests {
         let opts = BootstrapOptions::default();
         assert!(opts.target_dir.is_none());
         assert!(opts.version.is_none());
+    }
+
+    /// Environmental (agrees with the host either way): `ensure_installed`
+    /// passes the discovered binary through unchanged, and reports the
+    /// bootstrap hint exactly when the offline cascade misses.
+    #[tokio::test]
+    async fn ensure_installed_matches_discovery() {
+        match MiseBinary::discover() {
+            Ok(expected) => match MiseBinary::ensure_installed().await {
+                Ok(found) => assert_eq!(found, expected),
+                other => panic!("expected {expected:?}, got {other:?}"),
+            },
+            Err(MiseError::BinaryNotFound) => {
+                let Err(MiseError::BootstrapHint { .. }) = MiseBinary::ensure_installed().await
+                else {
+                    panic!("expected BootstrapHint when discovery misses");
+                };
+            }
+            Err(other) => panic!("unexpected discovery error: {other:?}"),
+        }
     }
 
     #[tokio::test]

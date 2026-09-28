@@ -28,6 +28,18 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     /// Optional data to pipe to the process's stdin.
     pub stdin: Option<String>,
+    /// Whether the child's stdin should be wired to the platform null device.
+    ///
+    /// `false` (the default) leaves stdin inherited from the parent when
+    /// [`CommandSpec::stdin`] carries no data — the child reads whatever the
+    /// parent reads (for a foreground command, the terminal). `true` connects
+    /// the child's stdin to the null device instead, so reads return EOF
+    /// immediately: the child can neither block on nor consume the parent's
+    /// stdin. Use it for non-interactive captured commands — version probes,
+    /// catalogue sweeps — where an inherited stdin is at best meaningless and
+    /// at worst steals keystrokes from the parent UI. When [`CommandSpec::stdin`]
+    /// carries data, that data is piped and this flag has no effect.
+    pub stdin_null: bool,
     /// Optional wall-clock timeout for the command.
     pub timeout: Option<Duration>,
     /// Extra environment variables (`(key, value)` pairs).
@@ -71,6 +83,7 @@ impl CommandSpec {
             program: program.into(),
             args: Vec::new(),
             stdin: None,
+            stdin_null: false,
             timeout: None,
             env: Vec::new(),
             env_remove: Vec::new(),
@@ -104,6 +117,15 @@ impl CommandSpec {
     #[must_use]
     pub fn stdin(mut self, data: impl Into<String>) -> Self {
         self.stdin = Some(data.into());
+        self
+    }
+
+    /// Wire the child's stdin to the platform null device (reads return EOF)
+    /// instead of leaving it inherited from the parent. No-op when
+    /// [`CommandSpec::stdin`] carries data — the piped data wins.
+    #[must_use]
+    pub fn stdin_null(mut self, null: bool) -> Self {
+        self.stdin_null = null;
         self
     }
 
@@ -203,11 +225,17 @@ impl serde::Serialize for CommandSpec {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CommandSpec", 11)?;
+        let mut s = serializer.serialize_struct("CommandSpec", 12)?;
         s.serialize_field("program", &self.program)?;
         s.serialize_field("args", &self.args)?;
         s.serialize_field("stdin", &self.stdin)?;
-        s.serialize_field("timeout_nanos", &self.timeout.map(|d| d.as_nanos() as u64))?;
+        s.serialize_field("stdin_null", &self.stdin_null)?;
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "a timeout beyond u64::MAX nanos (~584 years) cannot occur"
+        )]
+        let timeout_nanos = self.timeout.map(|d| d.as_nanos() as u64);
+        s.serialize_field("timeout_nanos", &timeout_nanos)?;
         s.serialize_field("env", &self.env)?;
         s.serialize_field("env_remove", &self.env_remove)?;
         s.serialize_field("clear_env", &self.clear_env)?;
@@ -233,6 +261,8 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             program: String,
             args: Vec<String>,
             stdin: Option<String>,
+            #[serde(default)]
+            stdin_null: bool,
             #[serde(default)]
             timeout_nanos: Option<u64>,
             #[serde(default)]
@@ -266,6 +296,7 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             program: h.program,
             args: h.args,
             stdin: h.stdin,
+            stdin_null: h.stdin_null,
             timeout,
             env: h.env,
             env_remove: h.env_remove,
@@ -350,6 +381,19 @@ mod serde_tests {
         assert!(spec.timeout.is_none());
         assert!(spec.env_remove.is_empty());
         assert!(!spec.clear_env);
+        // Payloads serialized before `stdin_null` existed default to inherit.
+        assert!(!spec.stdin_null);
+    }
+
+    #[test]
+    fn stdin_null_round_trip() {
+        let spec = CommandSpec::new("cat").stdin_null(true);
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert!(roundtripped.stdin_null);
+        assert_eq!(roundtripped.stdin, None);
     }
 
     #[test]

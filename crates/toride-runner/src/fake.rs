@@ -118,8 +118,8 @@ impl FakeRunner {
     /// Register an exact-match response for a specific [`CommandSpec`].
     ///
     /// When a call matches the spec, this response takes priority over the
-    /// FIFO queue. Matching compares `program`, `args`, `stdin`, `env`, and
-    /// `env_remove`, `clear_env`, `cwd`, and `output_mode`.
+    /// FIFO queue. Matching compares `program`, `args`, `stdin`, `stdin_null`,
+    /// `env`, `env_remove`, `clear_env`, `cwd`, and `output_mode`.
     #[must_use]
     pub fn respond(self, spec: CommandSpec, output: CommandOutput) -> Self {
         self.exact_responses
@@ -260,17 +260,20 @@ impl AsyncRunner for FakeRunner {
 
 /// Check if two specs match on the fields used for exact matching.
 ///
-/// Compares `program`, `args`, `stdin`, `env`, `env_remove`, `clear_env`,
-/// `cwd`, `output_mode`, and `redact`. `timeout` and `output_limit` are
-/// ignored — they are runtime/safety policy, not command-construction
-/// concerns, so two specs that differ only in those fields still match.
-/// `redact` IS compared: it is a command-construction property (whether the
-/// command carries secret-bearing args/env that must be scrubbed from errors
-/// and logs), so a spec that forgot `redact(true)` must fail an exact match.
+/// Compares `program`, `args`, `stdin`, `stdin_null`, `env`, `env_remove`,
+/// `clear_env`, `cwd`, `output_mode`, and `redact`. `timeout` and
+/// `output_limit` are ignored — they are runtime/safety policy, not
+/// command-construction concerns, so two specs that differ only in those
+/// fields still match. `redact` and `stdin_null` ARE compared: they are
+/// command-construction properties (whether the command carries
+/// secret-bearing args/env that must be scrubbed from errors and logs; how
+/// the child's stdin is wired), so a spec that forgot either must fail an
+/// exact match.
 fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
     a.program == b.program
         && a.args == b.args
         && a.stdin == b.stdin
+        && a.stdin_null == b.stdin_null
         && a.env == b.env
         && a.env_remove == b.env_remove
         && a.clear_env == b.clear_env
@@ -469,6 +472,24 @@ mod tests {
             &CommandSpec::new("cmd").output_mode(crate::OutputMode::Inherit),
         )
         .unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    /// `stdin_null` is command construction (how the child's stdio is wired),
+    /// so a spec that forgot it must fail an exact match — same ruling as
+    /// `redact`. This is what pins probe-issuing callers (e.g. the installer's
+    /// `Detector`) to keep carrying the flag their tests registered.
+    #[test]
+    fn specs_match_compares_stdin_null() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd").stdin_null(true),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        let result = run_sync(&runner, &CommandSpec::new("cmd"));
+        assert!(result.is_err(), "different stdin wiring should not match");
+
+        let output = run_sync(&runner, &CommandSpec::new("cmd").stdin_null(true)).unwrap();
         assert_eq!(output.stdout_trimmed(), "ok");
     }
 

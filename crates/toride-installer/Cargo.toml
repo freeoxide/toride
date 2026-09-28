@@ -7,24 +7,43 @@ description = "Tool-agnostic release-artifact installer framework (pure Rust, re
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["http"]
+# The HTTP/archive install engine: reqwest download, sha256 hashing,
+# gzip/xz tarball extraction, and the concrete tool wiring that drives
+# them (`tools/mise`'s resolver + install/ensure paths). The offline
+# detector (`status` minus its install-on-miss path) builds WITHOUT it, so
+# a consumer can take `toride-installer` with `default-features = false`
+# and inherit neither reqwest (rustls -> ring) nor xz2 (lzma-sys) — the
+# two C build scripts that keep this crate off CI's portable macOS/Windows
+# lists.
+http = ["dep:reqwest", "dep:sha2", "dep:tar", "dep:flate2", "dep:xz2", "dep:serde"]
+
 [dependencies]
 thiserror = { workspace = true }
 camino = { workspace = true }
 async-trait = { workspace = true }
 dirs = { workspace = true }
-reqwest = { workspace = true }
+reqwest = { workspace = true, optional = true }
+semver = { workspace = true }
 tokio = { workspace = true }
-sha2 = "0.10"
-tar = "0.4"
-flate2 = "1"
-xz2 = "0.1"
-serde = { workspace = true }
+# External commands (version probes) go through the workspace's shared
+# `Runner` trait. The dep/dev-dep split keeps the test-only `fake` feature
+# out of the normal build — stricter than the single-entry shape other
+# consumers use.
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner"] }
+sha2 = { version = "0.10", optional = true }
+tar = { version = "0.4", optional = true }
+flate2 = { version = "1", optional = true }
+xz2 = { version = "0.1", optional = true }
+serde = { workspace = true, optional = true }
 tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
 camino = { workspace = true }
 serde_json = { workspace = true }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
 
 [lints]
 workspace = true

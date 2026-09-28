@@ -252,6 +252,11 @@ fn build_duct_expression(spec: &CommandSpec) -> duct::Expression {
 
     if let Some(ref stdin_data) = spec.stdin {
         cmd = cmd.stdin_bytes(stdin_data.as_bytes());
+    } else if spec.stdin_null {
+        // Without this, duct leaves `IoValue::ParentStdin` and the child
+        // inherits the parent's stdin — a stdin-reading child would block on
+        // (or consume) the parent's terminal instead of seeing EOF.
+        cmd = cmd.stdin_null();
     }
 
     cmd
@@ -698,6 +703,35 @@ mod tests {
     fn stdin_piped() {
         let runner = DuctRunner;
         let spec = CommandSpec::new("cat").stdin("piped content");
+        let output = runner.run(&spec).unwrap();
+        assert_eq!(output.stdout_trimmed(), "piped content");
+    }
+
+    #[test]
+    fn stdin_null_reads_eof_instead_of_inheriting() {
+        // `cat` with no piped data and stdin wired to the null device sees
+        // EOF immediately and exits 0 with empty output. Under the old
+        // inherit-by-default behavior the child reads the *test harness's*
+        // stdin: on an interactive run it would block until the timeout fires
+        // (CommandTimeout, failing this test). On a harness whose stdin is
+        // already at EOF (CI) the test is vacuous but harmless.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("cat")
+            .stdin_null(true)
+            .timeout(Duration::from_secs(2));
+        let output = runner.run(&spec).unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "");
+    }
+
+    #[test]
+    fn stdin_data_wins_over_stdin_null() {
+        // The documented precedence: piped stdin data is the stronger,
+        // more intentional request, so a set `stdin_null` flag is ignored.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("cat")
+            .stdin("piped content")
+            .stdin_null(true);
         let output = runner.run(&spec).unwrap();
         assert_eq!(output.stdout_trimmed(), "piped content");
     }

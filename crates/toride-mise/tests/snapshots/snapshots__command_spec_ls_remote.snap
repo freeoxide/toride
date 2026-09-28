@@ -1,5 +1,6 @@
 ---
 source: crates/toride-mise/tests/snapshots.rs
+assertion_line: 81
 expression: spec
 ---
 CommandSpec {
@@ -10,6 +11,7 @@ CommandSpec {
         "--output=json",
     ],
     stdin: None,
+    stdin_null: false,
     timeout: None,
     env: [],
     env_remove: [],

@@ -45,6 +45,10 @@ pub enum Error {
     },
 
     /// An HTTP request failed (transport, redirect loop, timeout, …).
+    ///
+    /// Only the `http`-feature engine issues HTTP requests; the variant is
+    /// gated with it so the offline detector build needs no reqwest.
+    #[cfg(feature = "http")]
     #[error("download failed for {url}: {source}")]
     Download {
         /// The URL being fetched.

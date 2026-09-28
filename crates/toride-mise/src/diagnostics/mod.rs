@@ -23,6 +23,7 @@
 //! }
 //! ```
 
+use crate::binary::MiseBinary;
 use crate::client::Mise;
 use crate::error::MiseResult;
 
@@ -284,8 +285,10 @@ impl<'a> DiagnosticsBuilder<'a> {
         for kind in &self.checks {
             match kind {
                 DiagnosticKind::BinaryMissing => {
-                    // Try discovering the binary.
-                    if Mise::discover().is_err() {
+                    // Try discovering the binary — via the async wrapper, so
+                    // the detector's version probes stay off the async
+                    // runtime worker.
+                    if MiseBinary::discover_async().await.is_err() {
                         errors.push(Diagnostic::new(
                             DiagnosticKind::BinaryMissing,
                             "mise binary not found on PATH",

@@ -8,13 +8,19 @@
 //! ```
 //!
 //! This mirrors the `TORIDE_MISE_INTEGRATION` pattern used in `toride-mise`.
+//!
+//! The whole file is also `http`-feature-gated: every test drives the
+//! install engine (network + GitHub), which does not exist in the offline
+//! `--no-default-features` build.
+
+#![cfg(feature = "http")]
 
 use std::env;
 use std::process::Command;
 
 use camino::Utf8PathBuf;
 use tempfile::TempDir;
-use toride_installer::{Error, tools::mise};
+use toride_installer::{EnsureOutcome, Error, tools::mise};
 
 /// Returns `true` only when the integration gate env var is `1`.
 fn should_run() -> bool {
@@ -132,4 +138,124 @@ async fn install_mise_bad_version_is_http_error() {
         matches!(err, Error::HttpStatus { status: 404, .. }),
         "expected HTTP 404, got {err:?}"
     );
+}
+
+/// The detect-first front door, live: a fresh tempdir must miss (download +
+/// install + report the freshly probed version), a second call must keep
+/// the copy without a second download, and a pin equal to the installed
+/// version must also be satisfied in place.
+///
+/// The "first call misses" premise needs a `$PATH` that does not already
+/// provide mise. On hosts with a mise of their own (developer laptops),
+/// run the gate with a scrubbed PATH:
+///
+/// ```sh
+/// TORIDE_INSTALLER_INTEGRATION=1 PATH="$HOME/.cargo/bin:/usr/bin:/bin" \
+///     cargo test -p toride-installer --test integration ensure_mise
+/// ```
+#[tokio::test]
+async fn ensure_mise_installs_latest_then_keeps_it_without_redownload() {
+    if !should_run() {
+        eprintln!("TORIDE_INSTALLER_INTEGRATION not set; skipping live test");
+        return;
+    }
+
+    let dir = TempDir::new().expect("temp dir creation");
+    let install_dir = Utf8PathBuf::from_path_buf(dir.path().to_owned()).expect("tempdir is utf-8");
+
+    // First call: the tempdir is empty, so detect must miss and the install
+    // pipeline must run.
+    let first = mise::ensure_mise("latest", Some(&install_dir))
+        .await
+        .expect("ensure_mise(latest) should install into the fresh tempdir");
+
+    let (dest, installed_raw) = match first {
+        EnsureOutcome::Installed { path, version } => {
+            assert!(
+                path.starts_with(&install_dir),
+                "installed path {path} should be inside the override dir"
+            );
+            assert_eq!(
+                path.file_name(),
+                Some("mise"),
+                "installed binary should be named `mise`, got {path}"
+            );
+            assert!(path.exists(), "installed binary should exist at {path}");
+            let version =
+                version.expect("the freshly installed mise answers --version after a re-probe");
+            assert!(
+                version.parsed.is_some(),
+                "mise's version should semver-parse, got: {}",
+                version.line
+            );
+            (path, version.raw)
+        }
+        EnsureOutcome::AlreadyPresent(status) => panic!(
+            "a fresh tempdir must miss, but a copy was already found at {:?}; the host likely \
+             provides mise on $PATH — rerun the gate with a scrubbed PATH, e.g. \
+             PATH=\"$HOME/.cargo/bin:/usr/bin:/bin\"",
+            status.path(),
+        ),
+    };
+
+    // The freshly installed binary actually runs.
+    assert_mise_runs(&dest);
+
+    let before = std::fs::metadata(dest.as_std_path()).expect("stat installed mise");
+
+    // Second call: detect finds the copy and `latest` never compares
+    // versions, so no second download may happen.
+    let second = mise::ensure_mise("latest", Some(&install_dir))
+        .await
+        .expect("the second ensure_mise must keep an installed copy");
+
+    let second_status = match second {
+        EnsureOutcome::AlreadyPresent(status) => {
+            assert!(status.is_installed());
+            assert!(
+                status.version().is_some(),
+                "the copy answering the second call reports a version"
+            );
+            status
+        }
+        EnsureOutcome::Installed { path, .. } => {
+            panic!("the second call must not reinstall; it installed again to {path}")
+        }
+    };
+
+    let after = std::fs::metadata(dest.as_std_path()).expect("stat installed mise again");
+    assert_eq!(
+        before.len(),
+        after.len(),
+        "the second call must not rewrite the binary"
+    );
+    assert_eq!(
+        before.modified().expect("mtime before"),
+        after.modified().expect("mtime after"),
+        "the second call must not rewrite the binary (no second download)"
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        assert_eq!(
+            before.ino(),
+            after.ino(),
+            "a re-download would rename a fresh inode over the binary"
+        );
+    }
+
+    // A pin equal to the installed version is satisfied in place too —
+    // again with no download. Only meaningful when OUR copy is the one
+    // detect classifies (a host PATH mise may shadow with another version;
+    // on this branch it answered the second call).
+    if second_status.path() == Some(&dest) {
+        let third = mise::ensure_mise(&installed_raw, Some(&install_dir))
+            .await
+            .expect("a pin met by the installed copy must keep it");
+
+        assert!(
+            matches!(third, EnsureOutcome::AlreadyPresent(_)),
+            "a met pin must not reinstall, got {third:?}"
+        );
+    }
 }

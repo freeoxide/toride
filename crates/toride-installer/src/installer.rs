@@ -8,8 +8,8 @@
 //!    request is `"latest"`);
 //! 2. **download** the bytes via `reqwest`, following redirects, capped at
 //!    a configurable maximum size;
-//! 3. **verify** — sha256 when the tool publishes one, otherwise a sane
-//!    non-zero size floor (documented below);
+//! 3. **verify** — sha256 when the tool's descriptor pins one, otherwise a
+//!    sane non-zero size floor (documented below);
 //! 4. **extract** — a `Binary` is placed directly, a `Tarball` is
 //!    decompressed (gzip or xz) and the configured entry is read out;
 //! 5. **install** — written atomically (temp + rename) into the install
@@ -17,30 +17,38 @@
 //!
 //! ## Verification policy
 //!
-//! Some tools (mise among them) publish no sha256 for their release
-//! artifacts. For those, the installer applies a **size floor** (default
-//! 1 MiB): a download smaller than the floor is rejected as suspicious
-//! (a 404 HTML page, an empty response, a redirect to a login screen, …).
-//! This is NOT a security guarantee — it is a sanity check. Tools that DO
-//! publish checksums are verified strictly. Pass
-//! [`Verifier::Strict`] to refuse tools that have
-//! no checksum at all.
+//! A tool whose descriptor pins no checksum ([`Checksum::None`]) is
+//! verified with a **size floor** (default 1 MiB): a download smaller than
+//! the floor is rejected as suspicious (a 404 HTML page, an empty
+//! response, a redirect to a login screen, …). This is NOT a security
+//! guarantee — it is a sanity check. Tools that DO publish checksums —
+//! statically as [`Checksum::Digest`], or per-release as a
+//! [`Checksum::Url`] checksum file — are verified strictly against the
+//! sha256. Pass [`Verifier::Strict`] to refuse installs whose descriptor
+//! carries no checksum at all.
 
+use std::io::Write;
 use std::path::Path;
+
+#[cfg(feature = "http")]
 use std::sync::Arc;
 
-#[cfg(unix)]
-use std::io::Write;
-
+#[cfg(feature = "http")]
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
+#[cfg(feature = "http")]
 use sha2::{Digest, Sha256};
 
 use crate::error::{Error, Result};
+#[cfg(feature = "http")]
 use crate::extract::extract_executable;
+#[cfg(feature = "http")]
 use crate::progress::Progress;
+#[cfg(feature = "http")]
 use crate::target::Target;
-use crate::tool::{Checksum, ReleaseResolver, Tool};
+use crate::tool::Tool;
+#[cfg(feature = "http")]
+use crate::tool::{Checksum, ReleaseResolver};
 
 /// Default upper bound on a single download: 256 MiB.
 pub const DEFAULT_MAX_BYTES: u64 = 256 * 1024 * 1024;
@@ -81,6 +89,7 @@ pub const DEFAULT_CHUNK_TIMEOUT: std::time::Duration = std::time::Duration::from
 /// (which would flood a UI render loop). A final completion callback is
 /// always emitted regardless of this step — see
 /// [`Installer::with_progress`](Installer::with_progress).
+#[cfg(feature = "http")]
 const PROGRESS_EMIT_STEP: u64 = 256 * 1024;
 
 /// Build the shared HTTP client used for release downloads.
@@ -92,6 +101,7 @@ const PROGRESS_EMIT_STEP: u64 = 256 * 1024;
 /// overall request timeout plus a connect-only timeout — reqwest applies no
 /// timeout by default, so omitting either lets a stalled connection hang the
 /// download future indefinitely.
+#[cfg(feature = "http")]
 fn build_http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .user_agent(concat!("toride-installer/", env!("CARGO_PKG_VERSION")))
@@ -104,11 +114,12 @@ fn build_http_client() -> reqwest::Client {
 }
 
 /// Verification strictness.
+#[cfg(feature = "http")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Verifier {
-    /// Verify the sha256 when the tool publishes one; otherwise fall back
-    /// to the documented size-floor sanity check. This is the default and
-    /// the right choice for tools like mise.
+    /// Verify the sha256 when the tool's descriptor carries one
+    /// ([`Checksum::Digest`] or [`Checksum::Url`]); otherwise fall back to
+    /// the documented size-floor sanity check. This is the default.
     #[default]
     Lenient,
 
@@ -121,6 +132,7 @@ pub enum Verifier {
 ///
 /// Cloneable and cheap to share (the HTTP client is behind an `Arc`).
 /// Construct via [`Installer::new`] or [`Installer::builder`](crate::InstallerBuilder).
+#[cfg(feature = "http")]
 #[derive(Clone)]
 pub struct Installer {
     client: reqwest::Client,
@@ -136,6 +148,7 @@ pub struct Installer {
     progress: Option<Arc<dyn Fn(Progress) + Send + Sync>>,
 }
 
+#[cfg(feature = "http")]
 impl std::fmt::Debug for Installer {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Installer")
@@ -146,12 +159,14 @@ impl std::fmt::Debug for Installer {
     }
 }
 
+#[cfg(feature = "http")]
 impl Default for Installer {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[cfg(feature = "http")]
 impl Installer {
     /// Create a new installer with sensible defaults.
     ///
@@ -569,6 +584,7 @@ impl Installer {
 ///
 /// (Provided for completeness; the wired mise tool uses its own resolver
 /// because "latest" requires an API call.)
+#[cfg(feature = "http")]
 pub struct TemplateResolver {
     /// A format string with two positional placeholders: `{version}` and
     /// `{target}`. Example:
@@ -576,6 +592,7 @@ pub struct TemplateResolver {
     pub template: String,
 }
 
+#[cfg(feature = "http")]
 #[async_trait]
 impl ReleaseResolver for TemplateResolver {
     async fn resolve(&self, target: Target, version: &str) -> Result<(String, String)> {
@@ -589,7 +606,14 @@ impl ReleaseResolver for TemplateResolver {
 
 /// Resolve which directory to install into: explicit override > tool default
 /// > `~/.local/bin`.
-fn resolve_install_dir(tool: &Tool, override_dir: Option<&Utf8PathBuf>) -> Result<Utf8PathBuf> {
+///
+/// `pub(crate)` so the offline detector (`crate::status`) can consult the
+/// same precedence installs use — detect's managed location cannot drift
+/// from where installs actually land.
+pub(crate) fn resolve_install_dir(
+    tool: &Tool,
+    override_dir: Option<&Utf8PathBuf>,
+) -> Result<Utf8PathBuf> {
     if let Some(d) = override_dir {
         return Ok(d.clone());
     }
@@ -609,6 +633,11 @@ fn resolve_install_dir(tool: &Tool, override_dir: Option<&Utf8PathBuf>) -> Resul
 /// inode is reachable the instant the rename completes, already `0o755` on
 /// Unix, so there is never a moment where a fresh executable sits on disk
 /// readable but not executable (or vice-versa).
+///
+/// Deliberately ungated: this is the shared install-write primitive, kept
+/// available to the offline (`--no-default-features`) build. Only the
+/// engine calls it today, hence the allowance there.
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
 fn write_executable(dest: &Path, bytes: &[u8]) -> Result<()> {
     // Ensure the parent directory exists.
     if let Some(parent) = dest.parent() {
@@ -666,6 +695,7 @@ fn write_executable(dest: &Path, bytes: &[u8]) -> Result<()> {
 /// This is split out of the async `verify` path so the heavy hashing (up to
 /// 256 MiB) can run on a [`tokio::task::spawn_blocking`] thread without
 /// blocking an async runtime worker.
+#[cfg(feature = "http")]
 fn verify_blocking(
     bytes: &[u8],
     digest: Option<&str>,
@@ -714,6 +744,7 @@ fn verify_blocking(
 }
 
 /// Hex-encode the sha256 of `bytes`.
+#[cfg(feature = "http")]
 fn hex_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
@@ -732,13 +763,21 @@ fn hex_sha256(bytes: &[u8]) -> String {
 ///
 /// Accepts both coreutils `sha256sum` output (`<hex>  <filename>`, separated
 /// by two spaces; the filename is optional and may be prefixed with `*` to
-/// mark a binary-mode digest) and a bare `<hex>` line. The first matching
-/// line wins. Lines whose leading token is not a 64-character lowercase or
-/// uppercase hex digest are skipped, so banners/blanks/comments in the file
-/// cannot be mistaken for a digest.
+/// mark a binary-mode digest) and a bare `<hex>` line. A filename's leading
+/// `./` (as emitted by `find`-style listings — mise's published
+/// `SHASUMS256.txt` carries `./`-prefixed names) is stripped before
+/// matching. The first matching line wins. Lines whose leading token is not
+/// a 64-character lowercase or uppercase hex digest are skipped, so
+/// banners/blanks/comments in the file cannot be mistaken for a digest.
+///
+/// Deliberately ungated (like [`write_executable`]): the shared checksum
+/// parsing primitive, kept available to the offline
+/// (`--no-default-features`) build. Only the engine's `Checksum::Url` arm
+/// calls it today, hence the allowance there.
 ///
 /// Returns `None` when no line carries a digest for `asset_name` (or, when
 /// `asset_name` is empty, any bare digest).
+#[cfg_attr(not(feature = "http"), allow(dead_code))]
 fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<String> {
     /// True iff `s` is exactly 64 hex digits (case-insensitive).
     fn is_hex64(s: &str) -> bool {
@@ -764,6 +803,11 @@ fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<Str
         let filename = rest.trim_start();
         // coreutils `sha256sum` prefixes binary-mode filenames with `*`.
         let filename = filename.trim_start_matches('*').trim();
+        // `find . -type f -exec sha256sum`-style listings emit `./`-prefixed
+        // filenames (mise's SHASUMS256.txt does): the prefix is directory
+        // noise, not part of the asset name. Only the leading `./` is
+        // stripped, so the remainder must still match `asset_name` exactly.
+        let filename = filename.strip_prefix("./").unwrap_or(filename);
         if asset_name.is_empty() || filename == asset_name {
             return Some(digest.to_ascii_lowercase());
         }
@@ -781,6 +825,7 @@ fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<Str
 ///     .verifier(Verifier::Strict)
 ///     .build();
 /// ```
+#[cfg(feature = "http")]
 #[derive(Debug, Clone)]
 pub struct InstallerBuilder {
     max_bytes: u64,
@@ -788,6 +833,7 @@ pub struct InstallerBuilder {
     verifier: Verifier,
 }
 
+#[cfg(feature = "http")]
 impl Default for InstallerBuilder {
     fn default() -> Self {
         Self {
@@ -798,6 +844,7 @@ impl Default for InstallerBuilder {
     }
 }
 
+#[cfg(feature = "http")]
 impl InstallerBuilder {
     /// Start a builder with the default settings.
     #[must_use]
@@ -841,6 +888,7 @@ impl InstallerBuilder {
 ///
 /// Re-exported as a free function for callers that do not hold an
 /// [`Installer`] handle.
+#[cfg(feature = "http")]
 pub async fn install_tool(
     tool: &Tool,
     target: Target,
@@ -857,35 +905,18 @@ pub async fn install_tool(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ArtifactKind;
-    use crate::target::{Arch, Os};
     use std::fs;
     #[cfg(unix)]
     use std::os::unix::fs::MetadataExt;
-    use std::sync::Mutex;
     use tempfile::TempDir;
 
-    fn host_target() -> Target {
-        Target::host().unwrap_or(Target {
-            os: Os::Linux,
-            arch: Arch::X64,
-        })
-    }
-
-    /// A resolver that returns a constant URL — used to drive the engine
-    /// without touching the network. The test then stubs `download` by
-    /// going through `verify`/`write` directly.
-    struct ConstResolver {
-        url: String,
-        version: String,
-    }
-
-    #[async_trait]
-    impl ReleaseResolver for ConstResolver {
-        async fn resolve(&self, _target: Target, _version: &str) -> Result<(String, String)> {
-            Ok((self.version.clone(), self.url.clone()))
-        }
-    }
+    /// Well-formed 64-hex digest fixtures for the checksum-body parser
+    /// tests. The parser validates hex *shape* and matches filenames; the
+    /// digests need not be real hashes of anything, so these tests avoid
+    /// the engine's sha2-backed `hex_sha256` and stay green under
+    /// `--no-default-features`.
+    const DIGEST_A: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+    const DIGEST_B: &str = "2222222222222222222222222222222222222222222222222222222222222222";
 
     #[test]
     fn resolve_install_dir_uses_explicit_override() {
@@ -944,6 +975,138 @@ mod tests {
         let dest = tmp.path().join("nested/deep/bin/tool");
         write_executable(&dest, b"X").unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b"X");
+    }
+
+    #[test]
+    fn checksum_body_parses_coreutils_two_space_format() {
+        let body = format!("{DIGEST_A}  mise-1.0-linux-x64\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64").as_deref(),
+            Some(DIGEST_A)
+        );
+    }
+
+    #[test]
+    fn checksum_body_parses_binary_mode_star_prefix() {
+        // `sha256sum -b` emits `*<filename>`.
+        let body = format!("{DIGEST_B} *mise-1.0-linux-x64\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64").as_deref(),
+            Some(DIGEST_B)
+        );
+    }
+
+    #[test]
+    fn checksum_body_parses_bare_hex_line() {
+        assert_eq!(
+            extract_digest_from_checksum_body(DIGEST_A, "").as_deref(),
+            Some(DIGEST_A)
+        );
+    }
+
+    #[test]
+    fn checksum_body_picks_matching_asset_among_many() {
+        let body = format!(
+            "{DIGEST_B}  other-file\n{DIGEST_A}  mise-1.0-linux-x64\nfifth-line-not-a-digest\n"
+        );
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64").as_deref(),
+            Some(DIGEST_A)
+        );
+    }
+
+    #[test]
+    fn checksum_body_rejects_non_hex_leading_token() {
+        // A banner line that happens to be followed by a filename must not be
+        // mistaken for a digest.
+        let body = "This is mise 1.0  mise-1.0-linux-x64\n";
+        assert_eq!(
+            extract_digest_from_checksum_body(body, "mise-1.0-linux-x64"),
+            None
+        );
+    }
+
+    #[test]
+    fn checksum_body_returns_none_when_asset_absent() {
+        let body = format!("{DIGEST_B}  some-other-asset\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
+            None
+        );
+    }
+
+    #[test]
+    fn checksum_body_is_case_insensitive_on_digest() {
+        let body = format!("{}  mise\n", DIGEST_A.to_uppercase());
+        // Normalized to lowercase so the later eq_ignore_ascii_case compare is
+        // robust regardless of the published casing.
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise").as_deref(),
+            Some(DIGEST_A)
+        );
+    }
+
+    #[test]
+    fn checksum_body_parses_live_mise_shasums_line() {
+        // A line from mise's published SHASUMS256.txt (v2026.9.15, fetched
+        // live while wiring Checksum::Url for mise): coreutils format with a
+        // `./`-prefixed filename. The entry for the exact asset this crate
+        // installs must parse.
+        let body = concat!(
+            "09ea631d6f3e7031d63606a0892dc4c796f9fb57f493bc45937f9f7113c88216",
+            "  ./mise-v2026.9.15-linux-x64\n",
+        );
+        assert_eq!(
+            extract_digest_from_checksum_body(body, "mise-v2026.9.15-linux-x64"),
+            Some("09ea631d6f3e7031d63606a0892dc4c796f9fb57f493bc45937f9f7113c88216".to_owned())
+        );
+    }
+
+    #[test]
+    fn checksum_body_strips_only_a_leading_dot_slash() {
+        // The `./` strip must not loosen matching: a name that merely starts
+        // with a dot once `./` is removed is still a different asset.
+        let body = format!("{DIGEST_A}  ./.mise-v2026.9.15-linux-x64\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-v2026.9.15-linux-x64"),
+            None
+        );
+    }
+}
+
+/// Engine tests: they drive the `http`-gated install pipeline (download,
+/// verify, extract, progress) and so ride behind the same feature.
+#[cfg(all(test, feature = "http"))]
+mod engine_tests {
+    use super::*;
+    use crate::ArtifactKind;
+    use crate::target::{Arch, Os};
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::MetadataExt;
+    use std::sync::Mutex;
+    use tempfile::TempDir;
+
+    fn host_target() -> Target {
+        Target::host().unwrap_or(Target {
+            os: Os::Linux,
+            arch: Arch::X64,
+        })
+    }
+
+    /// A resolver that returns a constant URL — used to drive the engine
+    /// without touching the network. The test then stubs `download` by
+    /// going through `verify`/`write` directly.
+    struct ConstResolver {
+        url: String,
+        version: String,
+    }
+
+    #[async_trait]
+    impl ReleaseResolver for ConstResolver {
+        async fn resolve(&self, _target: Target, _version: &str) -> Result<(String, String)> {
+            Ok((self.version.clone(), self.url.clone()))
+        }
     }
 
     #[test]
@@ -1163,79 +1326,6 @@ mod tests {
     }
 
     // ---- Finding (2): Checksum::Url sha256 verification --------------------
-
-    #[test]
-    fn checksum_body_parses_coreutils_two_space_format() {
-        let digest = hex_sha256(b"artifact-bytes");
-        let body = format!("{digest}  mise-1.0-linux-x64\n");
-        assert_eq!(
-            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
-            Some(digest)
-        );
-    }
-
-    #[test]
-    fn checksum_body_parses_binary_mode_star_prefix() {
-        let digest = hex_sha256(b"x");
-        // `sha256sum -b` emits `*<filename>`.
-        let body = format!("{digest} *mise-1.0-linux-x64\n");
-        assert_eq!(
-            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
-            Some(digest)
-        );
-    }
-
-    #[test]
-    fn checksum_body_parses_bare_hex_line() {
-        let digest = hex_sha256(b"lonely");
-        assert_eq!(extract_digest_from_checksum_body(&digest, ""), Some(digest));
-    }
-
-    #[test]
-    fn checksum_body_picks_matching_asset_among_many() {
-        let other = hex_sha256(b"other-asset");
-        let want = hex_sha256(b"wanted-asset");
-        let body =
-            format!("{other}  other-file\n{want}  mise-1.0-linux-x64\nfifth-line-not-a-digest\n");
-        assert_eq!(
-            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
-            Some(want)
-        );
-    }
-
-    #[test]
-    fn checksum_body_rejects_non_hex_leading_token() {
-        // A banner line that happens to be followed by a filename must not be
-        // mistaken for a digest.
-        let body = "This is mise 1.0  mise-1.0-linux-x64\n";
-        assert_eq!(
-            extract_digest_from_checksum_body(body, "mise-1.0-linux-x64"),
-            None
-        );
-    }
-
-    #[test]
-    fn checksum_body_returns_none_when_asset_absent() {
-        let digest = hex_sha256(b"x");
-        let body = format!("{digest}  some-other-asset\n");
-        assert_eq!(
-            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
-            None
-        );
-    }
-
-    #[test]
-    fn checksum_body_is_case_insensitive_on_digest() {
-        let digest = hex_sha256(b"caps");
-        let upper = digest.to_uppercase();
-        let body = format!("{upper}  mise\n");
-        // Normalized to lowercase so the later eq_ignore_ascii_case compare is
-        // robust regardless of the published casing.
-        assert_eq!(
-            extract_digest_from_checksum_body(&body, "mise"),
-            Some(digest)
-        );
-    }
 
     /// A tiny single-shot HTTP/1.0 server: serves `body` for the next GET,
     /// then stops accepting. Used to drive `Installer::verify` for the
