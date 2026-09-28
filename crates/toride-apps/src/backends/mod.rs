@@ -6,8 +6,10 @@
 //! the module path. A new backend wires in by adding its module here and
 //! extending the re-export list.
 
+pub mod distro;
 pub mod flatpak;
 pub mod homebrew;
 
+pub use distro::DistroBackend;
 pub use flatpak::FlatpakBackend;
 pub use homebrew::HomebrewBackend;
