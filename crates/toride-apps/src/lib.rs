@@ -92,8 +92,10 @@
 pub mod backend;
 pub mod backends;
 pub mod error;
+pub mod manifest;
 pub mod plan;
 pub mod runner;
+pub mod status;
 
 // Re-exports — the public API surface.
 pub use backend::{
@@ -101,11 +103,13 @@ pub use backend::{
     StatusQuery, UninstallOutcome, UninstallRequest,
 };
 pub use error::{Error, Result};
+pub use manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
 pub use plan::{
     FlatpakInstallation, InstallPlan, Operation, PackageManager, Target, UninstallOptions,
     UninstallPlan, plan_install, plan_uninstall,
 };
 pub use runner::{CommandRunner, CommandRunnerBuilder, command};
+pub use status::{AppStatus, BackendSet, app_status};
 
 // Re-exported host-side contract types callers need beside the planner.
 pub use toride_registry::{Arch, DistroFamily, InstallMethod, Os, TorideId};
