@@ -271,8 +271,12 @@ async fn foreign_status(native: &NativeIds, backends: &BackendSet<'_>) -> Result
             let Some(backend) = backends.homebrew else {
                 return Ok(AppStatus::NotInstalled);
             };
-            // Kind-agnostic presence: no record means no recorded
-            // cask/formula kind, and the info listing covers both kinds.
+            // Kind-agnostic presence, deliberately: the caller's
+            // cask/formula kind is destructured away on purpose — whoever
+            // installed this app may have used the OTHER kind than the
+            // registry method names (user installed the cask, method
+            // says formula, or vice versa), and presence of either kind
+            // makes the app Foreign. The info listing covers both kinds.
             let status = backend.status(StatusQuery::new(token)).await?;
             Ok(foreign_from(
                 BackendId::Homebrew,
@@ -284,8 +288,11 @@ async fn foreign_status(native: &NativeIds, backends: &BackendSet<'_>) -> Result
             let Some(backend) = backends.flatpak else {
                 return Ok(AppStatus::NotInstalled);
             };
-            // All installations (trait default): a foreign install may
-            // live in either one — no record means no recorded scope.
+            // All installations (trait default), deliberately: the
+            // caller's installation scope is destructured away on purpose
+            // — a foreign install may live in the other installation
+            // (user-installed under --system while toride plans --user),
+            // and presence in either makes the app Foreign.
             let status = backend.status(StatusQuery::new(app_id)).await?;
             Ok(foreign_from(
                 BackendId::Flatpak,
