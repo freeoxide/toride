@@ -18,13 +18,18 @@
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
 //!   homebrew-specific [`HomebrewBackend::outdated`] and
 //!   [`HomebrewBackend::installed_version`] probes.
-//! - **JSON parsing** — `brew list --cask --formula --json=v2` and
+//! - **JSON parsing** — `brew info --json=v2 --installed` and
 //!   `brew outdated --json=v2` documents parsed into typed entries.
 //!   Per-item tolerance: a malformed item (missing its identifying field,
 //!   wrong JSON type) is skipped, never fatal to the whole listing — the
 //!   cask/formula item shape is the same one the registry crate's API
 //!   fixtures carry (every field can be `null`, unknown keys are
 //!   everywhere), so unknown keys are ignored and nulls are defaults.
+//!   (`brew list --json` is deliberately not used: `--formula` and
+//!   `--cask` conflict on `list`, and its `--versions --json` shape is a
+//!   flat `{name, version}` array behind a jq fast path — `info
+//!   --installed` emits the composite envelope for both kinds in one
+//!   call.)
 //!
 //! ## Conventions honored
 //!
@@ -41,8 +46,10 @@
 //!   [`Error::Command`](crate::Error::Command) carrying brew's stderr;
 //!   unparseable machine output maps to the same variant wrapping
 //!   `toride_runner::Error::OutputParse`. Where classification is cheap —
-//!   "not installed" stderr on `brew list --versions` — a failed probe
-//!   becomes `Ok(None)` instead of an error.
+//!   "not installed" stderr on the scoped `brew list --versions` probes —
+//!   a failed probe becomes `Ok(None)` instead of an error (see
+//!   [`HomebrewBackend::installed_version`] for both not-installed
+//!   signals).
 //!
 //! [`Operation::BrewInstall`]: crate::Operation::BrewInstall
 //! [`Operation::BrewUninstall`]: crate::Operation::BrewUninstall
@@ -58,9 +65,8 @@ use serde::Deserialize;
 use toride_registry::Os;
 
 use crate::backend::{
-    Backend, BackendId, BackendStatus, InstallOutcome, InstallRequest, InstalledApp, ListQuery,
-    StatusQuery, UninstallOutcome, UninstallRequest, ensure_install_allowed,
-    ensure_uninstall_allowed,
+    Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, UninstallOutcome,
+    UninstallRequest, ensure_install_allowed, ensure_uninstall_allowed,
 };
 use crate::error::{Error, Result};
 use crate::plan::{Operation, Target};
@@ -69,10 +75,13 @@ use crate::runner::{CommandRunner, command};
 /// The Homebrew CLI binary every command in this module targets.
 const BREW: &str = "brew";
 
-/// Markers whose presence in brew stderr classifies a failure as "the
-/// queried item is simply not installed" rather than a real error. Matched
-/// case-insensitively against the whole stderr; deliberately cheap — exact
-/// brew wording varies across versions.
+/// Markers whose presence on a brew **`Error:` line** classifies a failure
+/// as "the queried item is simply not installed" rather than a real error.
+/// Matched case-insensitively against `Error:`-prefixed lines only (brew's
+/// diagnostics elsewhere — warnings, context lines — may mention other
+/// packages being "not installed" without the probe's item being the
+/// subject); deliberately cheap — exact brew wording varies across
+/// versions.
 const NOT_INSTALLED_MARKERS: [&str; 3] = [
     // `Error: Cask 'x' is not installed.` / `Error: <name> is not installed.`
     "not installed",
@@ -177,12 +186,17 @@ impl HomebrewBackend {
         Ok(prefix)
     }
 
-    /// The full typed listing (`brew list --cask --formula --json=v2`):
-    /// casks and formulae with token, display name, kind, and version.
+    /// The full typed listing (`brew info --json=v2 --installed`): every
+    /// installed cask and formula with token, display name, kind, and
+    /// version, from the composite `{"formulae": [...], "casks": [...]}`
+    /// envelope of full info items.
     ///
     /// Richer than the trait's [`Backend::list_installed`] (which maps
     /// these entries to plain `InstalledApp`s) so callers that need the
-    /// cask/formula distinction can take it directly.
+    /// cask/formula distinction can take it directly. (`brew list --json`
+    /// is not usable for this — its `--formula`/`--cask` flags conflict
+    /// and its `--json` shape is a flat `{name, version}` array behind a
+    /// jq fast path; `info --installed` gives both kinds in one call.)
     ///
     /// # Errors
     ///
@@ -190,31 +204,37 @@ impl HomebrewBackend {
     /// document cannot be parsed at all (malformed *items* are skipped,
     /// not fatal).
     pub async fn list_entries(&self) -> Result<Vec<BrewEntry>> {
-        let spec = command(BREW, ["list", "--cask", "--formula", "--json=v2"]);
+        let spec = command(BREW, ["info", "--json=v2", "--installed"]);
         let output = self.runner.run_checked(spec).await?;
-        parse_list_output(&output.stdout)
+        parse_installed_info_output(&output.stdout)
     }
 
-    /// The installed version of one token, from `brew list --versions
-    /// <token>` — the cheap direct probe the trait's [`Backend::status`]
-    /// override is built on.
+    /// The installed version of one item, from the kind-scoped probe
+    /// `brew list --cask|--formula --versions <token>`.
     ///
-    /// `Ok(None)` covers both "not installed at all" (brew exits non-zero
-    /// with a not-installed stderr, classified) and "installed but no
-    /// version reported".
+    /// The kind is load-bearing: the unscoped `brew list --versions` is
+    /// formula-only (casks have no Cellar rack), so casks must probe with
+    /// `--cask`. Two not-installed signals are classified instead of
+    /// erroring: a brew `Error:` line matching the not-installed markers
+    /// (what the cask path raises for absent casks), and the formula
+    /// path's *silent* exit 1 — unknown names to the formula list set
+    /// brew's failure flag with empty stdout and stderr.
+    ///
+    /// `Ok(None)` also covers "installed but no version reported".
     ///
     /// # Errors
     ///
-    /// [`Error::Command`] when brew fails with a stderr that is *not* a
-    /// not-installed message.
-    pub async fn installed_version(&self, token: &str) -> Result<Option<String>> {
-        let spec = command(BREW, ["list", "--versions", token]);
+    /// [`Error::Command`] when brew fails with stderr that is neither
+    /// empty nor a not-installed `Error:` line.
+    pub async fn installed_version(&self, kind: BrewKind, token: &str) -> Result<Option<String>> {
+        let spec = command(BREW, ["list", kind.flag(), "--versions", token]);
         match self.runner.run_checked(spec).await {
             Ok(output) => Ok(parse_versions_output(&output.stdout)),
-            // "Not installed" is an answer, not a failure — classify the
-            // cheap way before letting the error escape.
+            // "Not installed" is an answer, not a failure: the cask probe
+            // raises a marker-matching error line, the formula probe fails
+            // silently (empty stderr). Anything else escapes.
             Err(Error::Command(toride_runner::Error::CommandFailed { stderr, .. }))
-                if stderr_says_not_installed(&stderr) =>
+                if stderr_says_not_installed(&stderr) || stderr.trim().is_empty() =>
             {
                 Ok(None)
             }
@@ -269,16 +289,22 @@ impl Backend for HomebrewBackend {
 
     async fn install(&self, request: InstallRequest<'_>) -> Result<InstallOutcome> {
         ensure_install_allowed(&request)?;
-        let Operation::BrewInstall { token, .. } = &request.plan.operation else {
+        let Operation::BrewInstall { cask, token } = &request.plan.operation else {
             return Err(misrouted_operation(&request.plan.operation));
         };
         self.runner
             .run_checked(request.plan.operation.command_spec())
             .await?;
         // Post-verify: ask brew what it just installed, for the manifest
-        // record. The install already succeeded, so a failing probe degrades
-        // to "no version reported" instead of failing the outcome.
-        let version = self.installed_version(token).await.ok().flatten();
+        // record — kind-scoped, since the plan already knows cask vs
+        // formula. The install already succeeded, so a failing probe
+        // degrades to "no version reported" instead of failing the outcome.
+        let kind = if *cask {
+            BrewKind::Cask
+        } else {
+            BrewKind::Formula
+        };
+        let version = self.installed_version(kind, token).await.ok().flatten();
         Ok(InstallOutcome {
             version,
             detail: request.plan.operation.description(),
@@ -310,15 +336,12 @@ impl Backend for HomebrewBackend {
             .collect())
     }
 
-    async fn status(&self, query: StatusQuery<'_>) -> Result<BackendStatus> {
-        // Cheaper than the default list-derived impl: one targeted probe.
-        Ok(match self.installed_version(query.id).await? {
-            Some(version) => BackendStatus::Installed {
-                version: Some(version),
-            },
-            None => BackendStatus::NotInstalled,
-        })
-    }
+    // `status` keeps the trait's default list-derived implementation: a
+    // bare id carries no cask/formula kind, and the direct version probes
+    // are kind-scoped (see `installed_version`) — so one id lookup rides
+    // the `brew info --json=v2 --installed` listing. Callers that know
+    // the kind (plan operations, manifest records) should call
+    // `installed_version(kind, token)` directly.
 }
 
 // ---------------------------------------------------------------------------
@@ -343,7 +366,19 @@ impl std::fmt::Display for BrewKind {
     }
 }
 
-/// One item from `brew list --cask --formula --json=v2`: the typed,
+impl BrewKind {
+    /// The brew CLI flag that scopes a command to this kind (`--cask` /
+    /// `--formula`) — used by the kind-scoped `brew list` probes.
+    #[must_use]
+    pub const fn flag(self) -> &'static str {
+        match self {
+            Self::Cask => "--cask",
+            Self::Formula => "--formula",
+        }
+    }
+}
+
+/// One item from `brew info --json=v2 --installed`: the typed,
 /// backend-native view behind the trait's plain [`InstalledApp`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BrewEntry {
@@ -405,18 +440,18 @@ impl OutdatedScope {
 // Raw JSON shapes (brew --json=v2 items)
 // ---------------------------------------------------------------------------
 
-/// Top level of `brew list --formula --cask --json=v2` (and `brew info
-/// --json=v2`): one array per kind. Items are kept as raw [`serde_json`]
-/// values so one malformed item cannot sink the listing.
+/// Top level of `brew info --json=v2` output (and the formulae.brew.sh
+/// API's envelopes): one array per kind. Items are kept as raw
+/// [`serde_json`] values so one malformed item cannot sink the listing.
 #[derive(Deserialize)]
-struct RawListDocument {
+struct RawInstalledInfoDocument {
     #[serde(default)]
     formulae: Vec<serde_json::Value>,
     #[serde(default)]
     casks: Vec<serde_json::Value>,
 }
 
-/// The per-cask item shape shared by `brew list --json=v2` and the brew
+/// The per-cask item shape shared by `brew info --json=v2` and the brew
 /// API's cask payloads (registry fixtures carry the same shape). Only the
 /// fields this backend consumes are modeled; every optional field can be
 /// `null` or absent.
@@ -431,13 +466,13 @@ struct RawCaskItem {
     /// The tap's version for the cask.
     #[serde(default)]
     version: Option<String>,
-    /// Installed version (a string in `brew list --json=v2` output; `null`
-    /// in server-side API payloads).
+    /// Installed version (a string in `brew info --json=v2 --installed`
+    /// output; `null` in server-side API payloads).
     #[serde(default)]
     installed: Option<String>,
 }
 
-/// The per-formula item shape shared by `brew list --json=v2` and the brew
+/// The per-formula item shape shared by `brew info --json=v2` and the brew
 /// API's formula payloads.
 #[derive(Deserialize)]
 struct RawFormulaItem {
@@ -446,8 +481,8 @@ struct RawFormulaItem {
     /// Tap versions (`versions.stable` is the current stable).
     #[serde(default)]
     versions: Option<RawVersions>,
-    /// Installed kegs; `brew list --json=v2` fills this with the poured
-    /// kegs, API payloads with `[]` or `null`.
+    /// Installed kegs; `brew info --json=v2 --installed` fills this with
+    /// the poured kegs, API payloads with `[]` or `null`.
     #[serde(default)]
     installed: Option<Vec<RawKeg>>,
 }
@@ -495,16 +530,16 @@ struct RawOutdatedItem {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-/// Parse a `brew list --cask --formula --json=v2` document into typed
-/// entries, skipping malformed items.
+/// Parse a `brew info --json=v2 --installed` document into typed entries,
+/// skipping malformed items.
 ///
 /// # Errors
 ///
 /// [`Error::Command`] wrapping `OutputParse` when the payload is not a
 /// JSON object with the expected envelope shape.
-fn parse_list_output(stdout: &str) -> Result<Vec<BrewEntry>> {
-    let document: RawListDocument = serde_json::from_str(stdout)
-        .map_err(|error| output_parse_error("brew list --json=v2", &error))?;
+fn parse_installed_info_output(stdout: &str) -> Result<Vec<BrewEntry>> {
+    let document: RawInstalledInfoDocument = serde_json::from_str(stdout)
+        .map_err(|error| output_parse_error("brew info --json=v2", &error))?;
     let mut entries = Vec::new();
     // Document order: formulae array first, casks second.
     for value in document.formulae {
@@ -643,9 +678,10 @@ fn parse_prefix_output(stdout: &str) -> Result<Utf8PathBuf> {
     )
 }
 
-/// Parse `brew list --versions <token>` output (`<name> <version>` per
-/// line, one line per installed keg): the first line's version token.
-/// Empty output yields `None`.
+/// Parse the output of the kind-scoped `brew list --cask|--formula
+/// --versions <token>` probes (`<name> <version>` per line, one line per
+/// installed keg): the first line's version token. Empty output yields
+/// `None`.
 fn parse_versions_output(stdout: &str) -> Option<String> {
     let first = stdout.lines().find(|line| !line.trim().is_empty())?;
     // brew echoes the canonical name first; the version follows. The name
@@ -655,13 +691,21 @@ fn parse_versions_output(stdout: &str) -> Option<String> {
 }
 
 /// Whether brew stderr says the queried item is not installed (see
-/// [`NOT_INSTALLED_MARKERS`]). Best-effort: brew's exact wording varies by
+/// [`NOT_INSTALLED_MARKERS`]): markers are matched only on `Error:`-prefixed
+/// lines, so multi-line stderr mentioning other packages' "not installed"
+/// states does not misclassify. Best-effort: brew's exact wording varies by
 /// version; anything unrecognized is treated as a real error.
 fn stderr_says_not_installed(stderr: &str) -> bool {
-    let lower = stderr.to_ascii_lowercase();
-    NOT_INSTALLED_MARKERS
-        .iter()
-        .any(|marker| lower.contains(marker))
+    stderr
+        .lines()
+        .map(str::trim_start)
+        .filter(|line| line.starts_with("Error:"))
+        .any(|error_line| {
+            let lower = error_line.to_ascii_lowercase();
+            NOT_INSTALLED_MARKERS
+                .iter()
+                .any(|marker| lower.contains(marker))
+        })
 }
 
 /// The error for a plan operation this backend cannot execute (a non-brew
@@ -695,6 +739,7 @@ fn cache_poisoned() -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::{BackendStatus, StatusQuery};
     use crate::plan::{InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall};
     use std::path::Path;
     use std::sync::Arc;
@@ -723,14 +768,14 @@ mod tests {
             .unwrap_or_else(|error| panic!("failed to parse fixture {relative}: {error}"))
     }
 
-    /// Wrap the registry-shaped cask/formula fixtures into the envelope
-    /// `brew list --cask --formula --json=v2` emits: the same per-item
-    /// payloads under `formulae` / `casks` keys.
-    fn brew_list_payload(items: &[serde_json::Value]) -> String {
+    /// Wrap registry-shaped formula fixtures into the envelope `brew info
+    /// --json=v2 --installed` emits: the same per-item payloads (full info
+    /// objects) under `formulae` / `casks` keys.
+    fn installed_info_payload(formulae: &[serde_json::Value]) -> String {
         let mut document = serde_json::Map::new();
         document.insert(
             "formulae".to_owned(),
-            serde_json::Value::Array(items.to_vec()),
+            serde_json::Value::Array(formulae.to_vec()),
         );
         document.insert("casks".to_owned(), serde_json::Value::Array(Vec::new()));
         serde_json::Value::Object(document).to_string()
@@ -845,15 +890,15 @@ mod tests {
         );
     }
 
-    // --- list document parsing ------------------------------------------------
+    // --- installed-info document parsing ------------------------------------------
 
     #[test]
-    fn parse_list_reads_real_formula_fixture_items() {
+    fn parse_installed_info_reads_real_formula_fixture_items() {
         // The registry crate's live-fetched formula payload, wrapped in the
-        // brew list envelope: `installed` is `[]` (API shape), so the
+        // brew info envelope: `installed` is `[]` (API shape), so the
         // version falls back to `versions.stable`.
-        let payload = brew_list_payload(&[fixture_value("homebrew/formula-ripgrep.json")]);
-        let entries = parse_list_output(&payload).unwrap();
+        let payload = installed_info_payload(&[fixture_value("homebrew/formula-ripgrep.json")]);
+        let entries = parse_installed_info_output(&payload).unwrap();
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(
             entries[0],
@@ -867,12 +912,12 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_reads_real_cask_fixture_items() {
+    fn parse_installed_info_reads_real_cask_fixture_items() {
         // Same for the cask payload: `installed` is `null` (API shape), so
         // the version falls back to the cask's `version` field.
         let cask = fixture_value("homebrew/cask-brave-browser.json");
         let document = serde_json::json!({ "formulae": [], "casks": [cask] });
-        let entries = parse_list_output(&document.to_string()).unwrap();
+        let entries = parse_installed_info_output(&document.to_string()).unwrap();
         assert_eq!(entries.len(), 1, "{entries:?}");
         assert_eq!(
             entries[0],
@@ -886,13 +931,13 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_takes_the_first_display_name_of_a_cask() {
+    fn parse_installed_info_takes_the_first_display_name_of_a_cask() {
         // The vscode cask carries two display names
         // (["Microsoft Visual Studio Code", "VS Code"]); the first is the
         // primary one.
         let cask = fixture_value("homebrew/cask-visual-studio-code.json");
         let document = serde_json::json!({ "formulae": [], "casks": [cask] });
-        let entries = parse_list_output(&document.to_string()).unwrap();
+        let entries = parse_installed_info_output(&document.to_string()).unwrap();
         assert_eq!(
             entries[0].name.as_deref(),
             Some("Microsoft Visual Studio Code")
@@ -900,7 +945,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_list_prefers_the_reported_installed_version_over_the_tap_version() {
+    fn parse_installed_info_prefers_the_reported_installed_version_over_the_tap_version() {
         let document = serde_json::json!({
             "casks": [{
                 "token": "brave-browser",
@@ -909,12 +954,12 @@ mod tests {
                 "installed": "1.0.0"
             }]
         });
-        let entries = parse_list_output(&document.to_string()).unwrap();
+        let entries = parse_installed_info_output(&document.to_string()).unwrap();
         assert_eq!(entries[0].version.as_deref(), Some("1.0.0"));
     }
 
     #[test]
-    fn parse_list_prefers_the_first_poured_keg_version_for_formulae() {
+    fn parse_installed_info_prefers_the_first_poured_keg_version_for_formulae() {
         let document = serde_json::json!({
             "formulae": [{
                 "name": "ripgrep",
@@ -922,12 +967,12 @@ mod tests {
                 "versions": { "stable": "15.2.0" }
             }]
         });
-        let entries = parse_list_output(&document.to_string()).unwrap();
+        let entries = parse_installed_info_output(&document.to_string()).unwrap();
         assert_eq!(entries[0].version.as_deref(), Some("15.1.0"));
     }
 
     #[test]
-    fn parse_list_tolerates_malformed_items_without_failing_the_listing() {
+    fn parse_installed_info_tolerates_malformed_items_without_failing_the_listing() {
         let document = serde_json::json!({
             "formulae": [
                 { "name": "ripgrep", "versions": { "stable": "15.2.0" } },
@@ -940,21 +985,22 @@ mod tests {
                 { "token": "brave-browser" }           // minimal cask -> fine
             ]
         });
-        let entries = parse_list_output(&document.to_string()).unwrap();
+        let entries = parse_installed_info_output(&document.to_string()).unwrap();
         let tokens: Vec<&str> = entries.iter().map(|entry| entry.token.as_str()).collect();
         assert_eq!(tokens, ["ripgrep", "wget", "brave-browser"], "{entries:?}");
     }
 
     #[test]
-    fn parse_list_tolerates_documents_missing_one_kind_entirely() {
-        let payload = brew_list_payload(&[fixture_value("homebrew/formula-ripgrep.json")]);
-        let entries = parse_list_output(&payload).unwrap();
+    fn parse_installed_info_tolerates_documents_missing_one_kind_entirely() {
+        // A brew with no installed casks may omit the key entirely.
+        let payload = installed_info_payload(&[fixture_value("homebrew/formula-ripgrep.json")]);
+        let entries = parse_installed_info_output(&payload).unwrap();
         assert_eq!(entries.len(), 1);
     }
 
     #[test]
-    fn parse_list_rejects_non_json_output() {
-        let error = parse_list_output("Error: not json at all").unwrap_err();
+    fn parse_installed_info_rejects_non_json_output() {
+        let error = parse_installed_info_output("Error: not json at all").unwrap_err();
         assert!(
             matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
             "{error:?}"
@@ -1035,6 +1081,16 @@ mod tests {
         ] {
             assert!(stderr_says_not_installed(stderr), "{stderr}");
         }
+    }
+
+    #[test]
+    fn stderr_classification_ignores_markers_outside_error_lines() {
+        // Multi-line stderr mentioning another package's "not installed"
+        // state must not classify the probe's failure as not-installed
+        // when the actual Error: line says something else.
+        assert!(!stderr_says_not_installed(
+            "Warning: dependency foo is not installed\nError: permission denied"
+        ));
     }
 
     #[test]
@@ -1137,7 +1193,8 @@ mod tests {
     #[tokio::test]
     async fn install_runs_cask_argv_exactly_and_reports_the_installed_version() {
         let install_spec = command(BREW, ["install", "--cask", "brave-browser"]);
-        let probe_spec = command(BREW, ["list", "--versions", "brave-browser"]);
+        // Post-verify probe is kind-scoped: casks must ask `--cask`.
+        let probe_spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
         let fake = FakeRunner::new()
             .strict()
             .respond(
@@ -1168,7 +1225,8 @@ mod tests {
     #[tokio::test]
     async fn install_runs_formula_argv_without_the_cask_flag() {
         let install_spec = command(BREW, ["install", "brave-browser"]);
-        let probe_spec = command(BREW, ["list", "--versions", "brave-browser"]);
+        // Formula post-verify probes the formula-scoped list.
+        let probe_spec = command(BREW, ["list", "--formula", "--versions", "brave-browser"]);
         let fake = FakeRunner::new()
             .strict()
             .respond(
@@ -1225,7 +1283,7 @@ mod tests {
         // The install itself succeeded; a "not installed" probe answer must
         // degrade the outcome to version=None, not fail it.
         let install_spec = command(BREW, ["install", "--cask", "brave-browser"]);
-        let probe_spec = command(BREW, ["list", "--versions", "brave-browser"]);
+        let probe_spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
         let fake = FakeRunner::new()
             .strict()
             .respond(install_spec, toride_runner::CommandOutput::from_stdout(""))
@@ -1347,49 +1405,42 @@ mod tests {
 
     // --- listing + status ----------------------------------------------------------
 
-    #[tokio::test]
-    async fn list_installed_runs_brew_list_json_v2_and_maps_entries() {
-        let spec = command(BREW, ["list", "--cask", "--formula", "--json=v2"]);
+    /// The exact spec the installed listing runs, shared by the listing
+    /// and status tests.
+    fn installed_info_spec() -> toride_runner::CommandSpec {
+        command(BREW, ["info", "--json=v2", "--installed"])
+    }
+
+    /// A strict fake answering the installed listing with both fixture
+    /// items (ripgrep formula + brave cask) in the info envelope.
+    fn listing_fake() -> FakeRunner {
         let cask = fixture_value("homebrew/cask-brave-browser.json");
         let formula = fixture_value("homebrew/formula-ripgrep.json");
         let document = serde_json::json!({ "formulae": [formula], "casks": [cask] });
-        let fake = FakeRunner::new().strict().respond(
-            spec.clone(),
+        FakeRunner::new().strict().respond(
+            installed_info_spec(),
             toride_runner::CommandOutput::from_stdout(document.to_string()),
-        );
+        )
+    }
+
+    #[tokio::test]
+    async fn list_installed_runs_brew_info_installed_json_v2_and_maps_entries() {
+        let fake = listing_fake();
         let backend = backend(&fake);
-        let apps: Vec<InstalledApp> = backend
-            .list_installed(ListQuery::all())
-            .await
-            .unwrap()
-            .into_iter()
-            .map(|app| {
-                assert!(
-                    app.version.is_some(),
-                    "both fixture items carry a version: {app:?}"
-                );
-                app
-            })
-            .collect();
+        let apps = backend.list_installed(ListQuery::all()).await.unwrap();
         // The plain trait view keeps only id (= token) + version, in
         // document order (formulae first).
+        assert_eq!(apps.len(), 2, "{apps:?}");
         assert_eq!(apps[0].id, "ripgrep");
         assert_eq!(apps[0].version.as_deref(), Some("15.2.0"));
         assert_eq!(apps[1].id, "brave-browser");
         assert_eq!(apps[1].version.as_deref(), Some("1.96.59.0"));
-        fake.assert_called_with(&spec);
+        fake.assert_called_with(&installed_info_spec());
     }
 
     #[tokio::test]
     async fn list_installed_keeps_the_fuller_typed_entries_available() {
-        let spec = command(BREW, ["list", "--cask", "--formula", "--json=v2"]);
-        let cask = fixture_value("homebrew/cask-brave-browser.json");
-        let formula = fixture_value("homebrew/formula-ripgrep.json");
-        let document = serde_json::json!({ "formulae": [formula], "casks": [cask] });
-        let fake = FakeRunner::new().strict().respond(
-            spec,
-            toride_runner::CommandOutput::from_stdout(document.to_string()),
-        );
+        let fake = listing_fake();
         let backend = backend(&fake);
         let entries = backend.list_entries().await.unwrap();
         assert_eq!(entries.len(), 2, "{entries:?}");
@@ -1400,14 +1451,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_installed_filters_to_the_requested_ids() {
-        let spec = command(BREW, ["list", "--cask", "--formula", "--json=v2"]);
-        let cask = fixture_value("homebrew/cask-brave-browser.json");
-        let formula = fixture_value("homebrew/formula-ripgrep.json");
-        let document = serde_json::json!({ "formulae": [formula], "casks": [cask] });
-        let fake = FakeRunner::new().strict().respond(
-            spec,
-            toride_runner::CommandOutput::from_stdout(document.to_string()),
-        );
+        let fake = listing_fake();
         let backend = backend(&fake);
         let apps = backend
             .list_installed(ListQuery::id("brave-browser"))
@@ -1419,7 +1463,7 @@ mod tests {
 
     #[tokio::test]
     async fn list_installed_maps_nonzero_exit_to_command_error() {
-        let spec = command(BREW, ["list", "--cask", "--formula", "--json=v2"]);
+        let spec = installed_info_spec();
         let fake = FakeRunner::new().strict().respond(
             spec,
             toride_runner::CommandOutput::from_stderr("Error: could not read cellar", 1),
@@ -1436,15 +1480,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_reports_the_installed_version_via_the_direct_probe() {
-        // Only the `brew list --versions` response is registered on the
-        // strict fake: the default list-derived status impl would run the
-        // json listing instead and fail, so this also pins the override.
-        let spec = command(BREW, ["list", "--versions", "brave-browser"]);
-        let fake = FakeRunner::new().strict().respond(
-            spec.clone(),
-            toride_runner::CommandOutput::from_stdout("brave-browser 1.96.59.0\n"),
-        );
+    async fn status_derives_the_installed_version_from_the_listing() {
+        // No status override exists: a bare id carries no cask/formula
+        // kind (the direct probes are kind-scoped), so the trait's default
+        // list-derived impl answers from the info listing.
+        let fake = listing_fake();
         let backend = backend(&fake);
         let status = backend
             .status(StatusQuery::new("brave-browser"))
@@ -1456,27 +1496,60 @@ mod tests {
                 version: Some("1.96.59.0".to_owned())
             }
         );
-        fake.assert_called_with(&spec);
+        fake.assert_called_with(&installed_info_spec());
     }
 
     #[tokio::test]
-    async fn status_reports_not_installed_for_unknown_tokens() {
-        let spec = command(BREW, ["list", "--versions", "nope"]);
-        let fake = FakeRunner::new().strict().respond(
-            spec,
-            toride_runner::CommandOutput::from_stderr(
-                "Error: No available formula with the name \"nope\".",
-                1,
-            ),
-        );
+    async fn status_reports_not_installed_for_tokens_absent_from_the_listing() {
+        let fake = listing_fake();
         let backend = backend(&fake);
         let status = backend.status(StatusQuery::new("nope")).await.unwrap();
         assert_eq!(status, BackendStatus::NotInstalled);
     }
 
+    // --- installed-version probes ------------------------------------------------
+
+    #[tokio::test]
+    async fn installed_version_probes_casks_with_the_cask_scoped_flag() {
+        let spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("brave-browser 1.96.59.0\n"),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .installed_version(BrewKind::Cask, "brave-browser")
+                .await
+                .unwrap(),
+            Some("1.96.59.0".to_owned())
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn installed_version_probes_formulae_with_the_formula_scoped_flag() {
+        let spec = command(BREW, ["list", "--formula", "--versions", "ripgrep"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("ripgrep 15.2.0\n"),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .installed_version(BrewKind::Formula, "ripgrep")
+                .await
+                .unwrap(),
+            Some("15.2.0".to_owned())
+        );
+        fake.assert_called_with(&spec);
+    }
+
     #[tokio::test]
     async fn installed_version_returns_none_for_a_cask_not_installed() {
-        let spec = command(BREW, ["list", "--versions", "brave-browser"]);
+        // The cask-scoped probe raises a marker-matching error line for
+        // absent casks.
+        let spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
         let fake = FakeRunner::new().strict().respond(
             spec.clone(),
             toride_runner::CommandOutput::from_stderr(
@@ -1486,22 +1559,43 @@ mod tests {
         );
         let backend = backend(&fake);
         assert_eq!(
-            backend.installed_version("brave-browser").await.unwrap(),
+            backend
+                .installed_version(BrewKind::Cask, "brave-browser")
+                .await
+                .unwrap(),
             None
         );
         fake.assert_called_with(&spec);
     }
 
     #[tokio::test]
+    async fn installed_version_returns_none_for_the_silent_formula_not_installed_signal() {
+        // Unknown names to the formula-scoped list fail silently: exit 1
+        // with empty stdout and stderr (brew only sets its failure flag).
+        let spec = command(BREW, ["list", "--formula", "--versions", "nope"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec, toride_runner::CommandOutput::from_stderr("", 1));
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .installed_version(BrewKind::Formula, "nope")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
     async fn installed_version_maps_unrelated_failures_to_command_error() {
-        let spec = command(BREW, ["list", "--versions", "brave-browser"]);
+        let spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
         let fake = FakeRunner::new().strict().respond(
             spec,
             toride_runner::CommandOutput::from_stderr("Error: permission denied", 1),
         );
         let backend = backend(&fake);
         let error = backend
-            .installed_version("brave-browser")
+            .installed_version(BrewKind::Cask, "brave-browser")
             .await
             .unwrap_err();
         assert!(
@@ -1576,5 +1670,11 @@ mod tests {
     fn brew_kind_displays_lowercase_slugs() {
         assert_eq!(BrewKind::Cask.to_string(), "cask");
         assert_eq!(BrewKind::Formula.to_string(), "formula");
+    }
+
+    #[test]
+    fn brew_kind_flags_select_the_kind_scoped_probes() {
+        assert_eq!(BrewKind::Cask.flag(), "--cask");
+        assert_eq!(BrewKind::Formula.flag(), "--formula");
     }
 }
