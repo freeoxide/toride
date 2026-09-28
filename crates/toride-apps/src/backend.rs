@@ -9,12 +9,15 @@
 //!
 //! Contract every implementation must honor:
 //!
-//! - **Dry-run refusal** — a plan marked `dry_run` is never executed;
-//!   implementations call [`ensure_install_allowed`] /
-//!   [`ensure_uninstall_allowed`] first, which return [`Error::DryRun`].
+//! - **Dry-run refusal** — a plan marked `dry_run` is never executed.
+//!   This is convention, not compiler enforcement: implementations MUST
+//!   call [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] as
+//!   their first statement (see [`Backend::install`]), and every backend
+//!   round must carry the two refusal tests against a fake runner.
 //! - **No auto-sudo** — when a plan `requires_elevation` and the request
 //!   does not carry `elevated: true`, the backend returns
-//!   [`Error::ElevationRequired`]; backends never invoke `sudo` themselves.
+//!   [`Error::ElevationRequired`]; backends never invoke `sudo` themselves
+//!   (enforced by the same guard call).
 //! - **Seam-only execution** — all commands go through
 //!   [`CommandRunner`](crate::CommandRunner); backends never spawn processes
 //!   directly.
@@ -229,6 +232,13 @@ pub trait Backend: Send + Sync {
 
     /// Execute an install plan.
     ///
+    /// **Binding convention on every implementation:** the first statement
+    /// of an implementation MUST be
+    /// `ensure_install_allowed(&request)?` — the trait cannot enforce this
+    /// structurally, so the shared guard is how dry-run refusal and
+    /// no-auto-sudo stay uniform across backends. Review rounds verify each
+    /// backend by testing both refusals against a fake runner.
+    ///
     /// # Errors
     ///
     /// [`Error::DryRun`] when the plan is marked dry-run;
@@ -238,6 +248,11 @@ pub trait Backend: Send + Sync {
     async fn install(&self, request: InstallRequest<'_>) -> Result<InstallOutcome>;
 
     /// Execute an uninstall plan.
+    ///
+    /// **Binding convention on every implementation:** the first statement
+    /// of an implementation MUST be
+    /// `ensure_uninstall_allowed(&request)?` — same rationale as
+    /// [`Backend::install`].
     ///
     /// # Errors
     ///
@@ -482,11 +497,13 @@ mod tests {
         });
         let plan = plan_install(&app, &linux_target()).unwrap();
         let target = linux_target();
-        let outcome = backend
+        backend
             .install(InstallRequest::new(&plan, &target).elevated(true))
             .await
             .unwrap();
-        assert_eq!(outcome.detail, "installed via homebrew");
+        // The load-bearing assertion: the planned argv reached the seam.
+        // (No assert on the fake's own `detail` string — that would only
+        // test the fake against itself.)
         fake.assert_called_with(&spec);
     }
 

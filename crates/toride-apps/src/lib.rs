@@ -71,9 +71,10 @@
 //! - [`InstallMethod::Homebrew`] → [`Operation::BrewInstall`] /
 //!   [`Operation::BrewUninstall`] (`--cask` vs plain token, `--zap` on
 //!   request)
-//! - [`InstallMethod::Flatpak`] → [`Operation::FlatpakInstall`] /
-//!   [`Operation::FlatpakUninstall`] (remote + derived `app/…` ref + user
-//!   installation)
+//! - [`InstallMethod::Flatpak`] → [`Operation::FlatpakInstall`] (remote +
+//!   derived `app/<id>/<arch>/stable` ref + user installation) /
+//!   [`Operation::FlatpakUninstall`] (bare app id flatpak resolves against
+//!   installed refs + user installation)
 //! - [`InstallMethod::Distro`] → [`Operation::DistroInstall`] /
 //!   [`Operation::DistroUninstall`] with the family's manager verbs (apt,
 //!   dnf, pacman, apk) and a mandatory elevation requirement
