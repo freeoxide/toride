@@ -189,6 +189,10 @@ fn brew_install_cask_spec(token: &str) -> CommandSpec {
     command("brew", ["install", "--cask", token])
 }
 
+fn brew_install_formula_spec(token: &str) -> CommandSpec {
+    command("brew", ["install", token])
+}
+
 fn brew_uninstall_cask_spec(token: &str) -> CommandSpec {
     command("brew", ["uninstall", "--cask", token])
 }
@@ -480,11 +484,12 @@ async fn a_second_ensure_installed_is_already_present_with_no_new_mutating_calls
             },
         )],
     );
-    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+    let mut apps = facade(&fake, macos(), &path, vec![adapter.clone()]);
     apps.ensure_installed(&id("firefox"), AppInstallOptions::new())
         .await
         .expect("first install succeeds");
     let calls_after_install = fake.calls().len();
+    let adapter_lookups_after_install = adapter.lookups().len();
 
     let outcome = apps
         .ensure_installed(&id("firefox"), AppInstallOptions::new())
@@ -501,14 +506,111 @@ async fn a_second_ensure_installed_is_already_present_with_no_new_mutating_calls
     );
     // Exactly ONE new runner call — the kind-scoped confirming probe — and
     // zero mutating ones (the detect-before-resolve path reuses local
-    // state only; the adapter is never consulted again either).
+    // state only).
     let calls = fake.calls();
     assert_eq!(calls.len(), calls_after_install + 1, "{calls:?}");
     assert_call_is(
         calls.last().expect("one new call"),
         &brew_versions_spec("--cask", "firefox"),
     );
+    // And ZERO registry adapter calls: the AlreadyPresent path answers
+    // from the manifest + probe alone, never re-consulting the registry
+    // (the doc's "zero registry adapter calls" claim, pinned).
+    assert_eq!(
+        adapter.lookups().len(),
+        adapter_lookups_after_install,
+        "the AlreadyPresent path must not resolve through the registry"
+    );
     fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn ensure_installed_brew_formula_installs_records_and_persists_the_manifest() {
+    // The formula half of the brew matrix: no `--cask` anywhere, the
+    // kind-scoped probes carry `--formula`, and the record's cask flag
+    // reads false.
+    let path = temp_manifest_path("formula-installed");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(EMPTY_BREW_INFO),
+        )
+        .respond(
+            brew_install_formula_spec("ripgrep"),
+            CommandOutput::from_stdout(""),
+        )
+        // The backend's own post-install probe, then the facade's verify.
+        .respond(
+            brew_versions_spec("--formula", "ripgrep"),
+            CommandOutput::from_stdout("ripgrep 14.1.0"),
+        )
+        .respond(
+            brew_versions_spec("--formula", "ripgrep"),
+            CommandOutput::from_stdout("ripgrep 14.1.0"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewFormula,
+        vec![app(
+            "ripgrep",
+            "ripgrep",
+            InstallMethod::Homebrew {
+                cask: false,
+                token: "ripgrep".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(&id("ripgrep"), AppInstallOptions::new())
+        .await
+        .expect("formula install succeeds");
+
+    let EnsureAppOutcome::Installed {
+        backend,
+        ids,
+        version,
+        verified,
+        warning,
+    } = outcome
+    else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(backend, BackendId::Homebrew);
+    assert_eq!(
+        ids,
+        NativeIds::Homebrew {
+            token: "ripgrep".to_owned(),
+            cask: false,
+        }
+    );
+    assert_eq!(version.as_deref(), Some("14.1.0"));
+    assert!(verified);
+    assert_eq!(warning, None);
+
+    fake.assert_called_with(&brew_install_formula_spec("ripgrep"));
+    fake.assert_no_unmatched_calls();
+
+    // The manifest FILE records the FORMULA kind (cask: false) and the
+    // verified version.
+    let document: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(path.as_std_path()).expect("manifest file written"),
+    )
+    .expect("manifest file is JSON");
+    assert_eq!(
+        document["apps"]["ripgrep"]["ids"]["Homebrew"]["token"],
+        serde_json::json!("ripgrep")
+    );
+    assert_eq!(
+        document["apps"]["ripgrep"]["ids"]["Homebrew"]["cask"],
+        serde_json::json!(false),
+        "the record names the formula kind"
+    );
+    assert_eq!(
+        document["apps"]["ripgrep"]["version"],
+        serde_json::json!("14.1.0")
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -887,6 +989,33 @@ fn seed_formula_record(path: &Utf8PathBuf, token: &str) {
     manifest.save().expect("seed manifest saves");
 }
 
+/// Seed a distro record: the brave-browser apt package on Debian, with
+/// the elevation requirement every distro plan carries.
+fn seed_distro_record(path: &Utf8PathBuf) {
+    let mut manifest = InstallManifest::at(path);
+    manifest.record(
+        InstallRecord::new(
+            toride_apps::InstallPlan {
+                app: id("brave"),
+                backend: BackendId::Distro(DistroFamily::Debian),
+                operation: toride_apps::Operation::DistroInstall {
+                    manager: toride_apps::PackageManager::Apt,
+                    package: "brave-browser".to_owned(),
+                },
+                dry_run: false,
+                requires_elevation: true,
+            },
+            NativeIds::Distro {
+                package: "brave-browser".to_owned(),
+                family: DistroFamily::Debian,
+            },
+            Some("1.4.2".to_owned()),
+        )
+        .with_installed_at(1_700_000_000),
+    );
+    manifest.save().expect("seed manifest saves");
+}
+
 #[tokio::test]
 async fn uninstall_runs_the_record_ids_removes_and_clears_the_manifest_record() {
     let path = temp_manifest_path("uninstall-cask");
@@ -1044,6 +1173,82 @@ async fn uninstall_of_a_flatpak_record_survives_an_already_absent_target() {
             warning: None,
         }
     );
+    assert!(InstallManifest::load(&path).expect("reload").is_empty());
+}
+
+#[tokio::test]
+async fn uninstall_distro_record_refuses_without_an_elevation_grant_and_never_dispatches() {
+    let path = temp_manifest_path("uninstall-distro-refusal");
+    seed_distro_record(&path);
+    // Strict with NO responses: any dispatch would fail the test loudly,
+    // so reaching the refusal proves nothing ran.
+    let fake = FakeRunner::new().strict();
+    let adapter = FixtureAdapter::new(SourceKind::Distro, Vec::new());
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let error = apps
+        .uninstall(&id("brave"), AppUninstallOptions::new())
+        .await
+        .expect_err("distro removals require an elevation grant");
+    assert!(
+        matches!(
+            error,
+            AppsError::Backend(ref inner)
+                if matches!(inner, toride_apps::Error::ElevationRequired { .. })
+        ),
+        "{error:?}"
+    );
+    assert!(
+        fake.calls().is_empty(),
+        "the refusal fires before any command is built"
+    );
+    // The record stays: a refused uninstall mutates nothing.
+    assert!(
+        InstallManifest::load(&path)
+            .expect("reload")
+            .get(&id("brave"))
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn uninstall_distro_record_with_the_grant_removes_and_verifies_via_dpkg_query() {
+    let path = temp_manifest_path("uninstall-distro-grant");
+    seed_distro_record(&path);
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            apt_get_spec("remove", "brave-browser"),
+            CommandOutput::from_stdout(""),
+        )
+        // Verify-gone: dpkg-query's not-found answer.
+        .respond(
+            dpkg_query_spec("brave-browser"),
+            dpkg_not_found("brave-browser"),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::Distro, Vec::new());
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let outcome = apps
+        .uninstall(&id("brave"), AppUninstallOptions::new().elevated(true))
+        .await
+        .expect("granted distro removal succeeds");
+
+    assert_eq!(
+        outcome,
+        UninstallAppOutcome::Removed {
+            backend: BackendId::Distro(DistroFamily::Debian),
+            ids: NativeIds::Distro {
+                package: "brave-browser".to_owned(),
+                family: DistroFamily::Debian,
+            },
+            warning: None,
+        }
+    );
+    // The removal argv — apt-get (not the plan's canonical `apt`), -y,
+    // and the DEBIAN_FRONTEND env the exact-match fake compares.
+    fake.assert_called_with(&apt_get_spec("remove", "brave-browser"));
+    fake.assert_no_unmatched_calls();
     assert!(InstallManifest::load(&path).expect("reload").is_empty());
 }
 
@@ -1344,7 +1549,7 @@ async fn status_reports_installed_from_the_record_and_a_fresh_probe() {
         CommandOutput::from_stdout("firefox 138.0.1"),
     );
     let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
-    let apps = facade(&fake, macos(), &path, vec![adapter]);
+    let apps = facade(&fake, macos(), &path, vec![adapter.clone()]);
 
     let status = apps
         .status(&id("firefox"))
@@ -1356,6 +1561,13 @@ async fn status_reports_installed_from_the_record_and_a_fresh_probe() {
             backend: BackendId::Homebrew,
             version: Some("138.0.1".to_owned()),
         }
+    );
+    // Manifest-first: a record hit never consults the registry — the
+    // resolve the old ordering performed (and discarded) is gone.
+    assert_eq!(
+        adapter.lookups().len(),
+        0,
+        "a record hit must be answered without an adapter round trip"
     );
     fake.assert_no_unmatched_calls();
 }

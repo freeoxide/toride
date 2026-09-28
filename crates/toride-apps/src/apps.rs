@@ -10,8 +10,8 @@
 //!    backends' kind-aware probes — with **zero registry adapter calls**
 //!    when the manifest already records the app and its backend still
 //!    confirms it. Only a true miss resolves through the registry
-//!    [`Adapter`]s, plans via [`plan_install`](crate::plan_install), and
-//!    executes through the routed [`Backend`](crate::Backend).
+//!    [`Adapter`]s, plans via [`plan_install`], and executes through the
+//!    routed [`Backend`].
 //! 2. **Record what actually ran**: after a successful install the manifest
 //!    record is built from the **executed** plan operation — the flatpak
 //!    ref the backend ran (never re-derived from the registry app), the
@@ -82,7 +82,7 @@ use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::BrewKind;
 use crate::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
 use crate::error::Error as BackendError;
-use crate::manifest::{InstallManifest, InstallRecord, ManifestError, NativeIds};
+use crate::manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
 use crate::plan::{
     FlatpakInstallation, InstallPlan, Operation, PackageManager, Target, UninstallOptions,
     UninstallPlan, plan_install, plan_uninstall,
@@ -479,7 +479,7 @@ impl Apps {
             ids.clone(),
             recorded_version.clone(),
         ));
-        if let Err(error) = self.manifest.save() {
+        if let Err(error) = self.save_manifest().await {
             push_warning(
                 &mut warning,
                 format!("installed, but saving the install manifest failed: {error}"),
@@ -534,7 +534,7 @@ impl Apps {
             .await?;
         let mut warning = self.verify_absence(&record.ids).await;
         self.manifest.remove(id);
-        if let Err(error) = self.manifest.save() {
+        if let Err(error) = self.save_manifest().await {
             push_warning(
                 &mut warning,
                 format!(
@@ -599,17 +599,24 @@ impl Apps {
 
     /// Where `id` stands on this host — the A5 status layer, delegated to.
     ///
-    /// The manifest record is probed with its own recorded identifiers
-    /// (Installed/NotInstalled); without a record, a best-effort registry
-    /// resolve supplies the native identifiers for `Foreign` detection —
-    /// a resolve failure degrades to the record-based answer instead of
-    /// failing the query (a registry outage says nothing about the host).
+    /// Manifest-first, per this facade's detect-before-resolve principle:
+    /// a record hit is answered entirely from local state (the record's
+    /// own identifiers against its backend) — the registry is never
+    /// consulted, so a record hit costs no adapter round trip whose
+    /// result would only be discarded. Only without a record does a
+    /// best-effort registry resolve supply the native identifiers for
+    /// `Foreign` detection — and a resolve failure degrades to the
+    /// record-based answer instead of failing the query (a registry
+    /// outage says nothing about the host).
     ///
     /// # Errors
     ///
     /// [`AppsError::Backend`] when a present backend fails its probe;
     /// never for an absent backend.
     pub async fn status(&self, id: &TorideId) -> AppsResult<AppStatus> {
+        if self.manifest.get(id).is_some() {
+            return Ok(app_status(id, None, &self.manifest, &self.backend_set()).await?);
+        }
         let native = self
             .resolve(id)
             .await
@@ -790,6 +797,29 @@ impl Apps {
             )),
         }
     }
+
+    /// Persist the manifest off the async runtime.
+    ///
+    /// [`InstallManifest::save`] is synchronous filesystem IO (create
+    /// parent dirs, write temp, rename) and must not run on an async
+    /// worker — the standing don't-block rule; the crate-family precedent
+    /// (toride-installer's extraction and detect) wraps its blocking work
+    /// in [`tokio::task::spawn_blocking`] the same way. The manifest is
+    /// cloned into the task (small by construction — one record per
+    /// installed app), so no borrow is held across the await. Error
+    /// semantics are `save`'s own; a join failure (the blocking task was
+    /// cancelled or panicked) maps to [`ManifestError::Io`] so callers'
+    /// warning paths stay uniform.
+    async fn save_manifest(&self) -> ManifestResult<()> {
+        let snapshot = self.manifest.clone();
+        tokio::task::spawn_blocking(move || snapshot.save())
+            .await
+            .map_err(|error| {
+                ManifestError::Io(std::io::Error::other(format!(
+                    "manifest save task failed to join: {error}"
+                )))
+            })?
+    }
 }
 
 /// What a presence probe answered.
@@ -909,8 +939,9 @@ impl AppsBuilder {
     /// Attach every backend this host supports: homebrew and flatpak via
     /// their PATH checks, distro via os-release(5) detection plus its PATH
     /// checks. A backend whose binary is simply absent is skipped (no
-    /// brew on a Linux box is normal, not an error); a distro host with no
-    /// known family is skipped the same way. No command executes.
+    /// brew on a Linux box is normal, not an error); a distro host with
+    /// no known family, or one whose family has no wave-1 executor
+    /// (Arch/Alpine), is skipped the same way. No command executes.
     ///
     /// The seam the detection shares is kept as the builder's runner, so
     /// the built facade and its backends ride one seam.
@@ -918,7 +949,8 @@ impl AppsBuilder {
     /// # Errors
     ///
     /// [`AppsError::Backend`] when a detection fails for a reason other
-    /// than absence (unknown distro family wording aside).
+    /// than the skip modes above (absent binary, unknown family,
+    /// executor-less family).
     pub fn detect_backends(self) -> AppsResult<Self> {
         let runner = self
             .runner
@@ -938,8 +970,10 @@ impl AppsBuilder {
         }
         match DistroBackend::detect(runner.clone()) {
             Ok(backend) => builder = builder.distro(backend),
-            // Absent binaries, or no known family on this host — the
-            // os-release detection's only failure modes.
+            // Absent binaries, no known family on this host, or a
+            // detected family without a wave-1 executor (Arch/Alpine
+            // route pacman/apk) — every mode here is "this host has no
+            // distro backend to attach", not a failure worth surfacing.
             Err(BackendError::Command(
                 toride_runner::Error::BinaryNotFound(_) | toride_runner::Error::Other(_),
             )) => {}
