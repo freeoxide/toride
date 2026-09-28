@@ -90,6 +90,7 @@
 #![allow(clippy::return_self_not_must_use)]
 
 pub mod backend;
+pub mod backends;
 pub mod error;
 pub mod plan;
 pub mod runner;

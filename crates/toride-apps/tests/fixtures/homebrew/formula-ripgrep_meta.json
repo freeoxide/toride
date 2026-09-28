@@ -1,0 +1,7 @@
+{
+  "synthetic": false,
+  "url": "https://formulae.brew.sh/api/formula/ripgrep.json",
+  "fetched": "2026-09-28",
+  "command": "curl -s -m 30 https://formulae.brew.sh/api/formula/ripgrep.json -o formula-ripgrep.json",
+  "note": "Fetched unmodified (3951 bytes); no trimming needed. generated_date in payload: 2026-09-28."
+}
