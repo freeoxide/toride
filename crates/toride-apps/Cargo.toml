@@ -1,0 +1,34 @@
+[package]
+name = "toride-apps"
+version.workspace = true
+edition.workspace = true
+description = "App install/uninstall execution layer: plans registry `App`s into concrete backend operations (homebrew, flatpak, distro) and runs them through the shared runner seam."
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+tokio = { workspace = true }
+async-trait = { workspace = true }
+thiserror = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+camino = { workspace = true }
+# Host home/data dir resolution for backend detection (A2+); declared now so
+# the A1 dep surface is stable for the backend rounds.
+dirs = { workspace = true }
+# All external command execution flows through the workspace's shared
+# `AsyncRunner` seam (cf. toride-mise's builder injection pattern). The
+# dep/dev-dep split keeps the test-only `fake` feature out of the normal
+# build, mirroring toride-installer's split.
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner"] }
+# The planner consumes the normalized `App`/`InstallMethod` contract, and
+# the facade round (A6) resolves apps through the registry's adapters — so
+# the workspace default (the `http` fetch engine) is taken deliberately.
+toride-registry = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner", "fake"] }
+
+[lints]
+workspace = true
