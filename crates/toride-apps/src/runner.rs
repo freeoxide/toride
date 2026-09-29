@@ -2,8 +2,9 @@
 //!
 //! [`CommandRunner`] is the single choke point every backend command flows
 //! through: it wraps an `Arc<dyn `[`AsyncRunner`]`>` (real
-//! [`TokioRunner`] by default, [`FakeRunner`] in tests), applies the seam's
-//! cwd/env policy to every spec, and maps runner failures into the crate's
+//! [`TokioRunner`] by default, `FakeRunner` — toride-runner's `fake`
+//! feature — in tests), applies the seam's cwd/env policy to every spec,
+//! and maps runner failures into the crate's
 //! [`Error::Command`]. Backends never spawn processes directly — they build
 //! specs with [`command`] (or [`CommandRunner::command`]) and hand them to
 //! the seam.
@@ -11,7 +12,6 @@
 //! The builder mirrors toride-mise's `MiseBuilder` injection pattern: set an
 //! explicit runner for tests, leave it unset for the production default.
 //!
-//! [`FakeRunner`]: toride_runner::FakeRunner
 //! [`Error::Command`]: crate::Error::Command
 
 use std::collections::BTreeMap;
@@ -57,7 +57,7 @@ pub fn command(
 /// All execution flows through [`CommandRunner::run`] /
 /// [`CommandRunner::run_checked`], which apply the seam's cwd/env policy
 /// (see [`CommandRunner::prepare`]) before dispatching and map runner
-/// failures into [`Error::Command`].
+/// failures into [`crate::Error::Command`].
 #[derive(Clone)]
 pub struct CommandRunner {
     /// The injectable command executor.
@@ -118,8 +118,8 @@ impl CommandRunner {
     ///
     /// # Errors
     ///
-    /// [`Error::Command`] when the runner fails to spawn, wait, or otherwise
-    /// execute the command. A non-zero exit is *not* an error here — use
+    /// [`crate::Error::Command`] when the runner fails to spawn, wait, or
+    /// otherwise execute the command. A non-zero exit is *not* an error here — use
     /// [`CommandRunner::run_checked`] for that.
     pub async fn run(&self, spec: CommandSpec) -> Result<CommandOutput> {
         let spec = self.prepare(spec);
@@ -130,8 +130,9 @@ impl CommandRunner {
     ///
     /// # Errors
     ///
-    /// [`Error::Command`] on execution failure or non-zero exit (the runner's
-    /// `run_checked` renders program, args, exit code, and scrubbed stderr).
+    /// [`crate::Error::Command`] on execution failure or non-zero exit (the
+    /// runner's `run_checked` renders program, args, exit code, and scrubbed
+    /// stderr).
     pub async fn run_checked(&self, spec: CommandSpec) -> Result<CommandOutput> {
         let spec = self.prepare(spec);
         Ok(self.runner.run_checked(&spec).await?)
@@ -161,10 +162,9 @@ impl CommandRunnerBuilder {
         Self::default()
     }
 
-    /// Set the async command runner (a [`FakeRunner`] in tests, a
-    /// [`TokioRunner`] or wrapper in production).
-    ///
-    /// [`FakeRunner`]: toride_runner::FakeRunner
+    /// Set the async command runner (a `FakeRunner` — toride-runner's
+    /// `fake` feature — in tests, a [`TokioRunner`] or wrapper in
+    /// production).
     #[must_use]
     pub fn runner(mut self, runner: Arc<dyn AsyncRunner>) -> Self {
         self.runner = Some(runner);

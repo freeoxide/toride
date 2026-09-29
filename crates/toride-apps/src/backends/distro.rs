@@ -51,7 +51,8 @@
 //!   lib/query.cc, `RPMLOG_NOTICE`) and exits with the **count** of failed
 //!   lookups (lib/query.cc sums per-operand failures), so two missing
 //!   packages exit 2, not 1. Both signals map to `Ok(None)` /
-//!   [`BackendStatus::NotInstalled`] — never an error. Partial results
+//!   [`BackendStatus::NotInstalled`](crate::BackendStatus::NotInstalled) —
+//!   never an error. Partial results
 //!   survive: dpkg-query prints found packages on stdout while reporting the
 //!   missing ones on stderr, and the classification keeps the stdout rows.
 //! - **Failures surface with their stderr tail** — apt-get fails at exit
@@ -357,7 +358,7 @@ impl DistroBackend {
     /// injectable and the seam's runner is fake-able. Families without a
     /// wave-1 executor (Arch, Alpine) are constructible — their id is a
     /// real routing target — but every operation answers with the honest
-    /// [`Self::executor`] error.
+    /// `Self::executor` error.
     #[must_use]
     pub const fn new(family: DistroFamily, runner: CommandRunner) -> Self {
         Self { family, runner }

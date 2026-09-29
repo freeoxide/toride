@@ -10,13 +10,13 @@
 //! itself (no auto-sudo).
 //!
 //! Everything here is I/O-free: no clock, no filesystem, no processes. Input
-//! `App` in, plan or [`Error`](crate::Error) out, so every derivation is
+//! `App` in, plan or [`Error`] out, so every derivation is
 //! fixture-testable and plans round-trip `Debug`/`PartialEq`/JSON.
 //!
 //! ## Planning rules
 //!
 //! 1. **Availability** — installs of apps the source marked `disabled` are
-//!    refused ([`Error::AppDisabled`](crate::Error::AppDisabled));
+//!    refused ([`Error::AppDisabled`]);
 //!    `deprecated` still plans (warning is the caller's job). Uninstalls
 //!    skip this check — removing a disabled app must stay possible.
 //! 2. **Platform claims** — *install-only gate*: when the app declares

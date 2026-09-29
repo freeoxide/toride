@@ -1,10 +1,11 @@
 //! # toride-apps
 //!
 //! The app install/uninstall **execution** layer: it consumes the normalized
-//! [`App`] model from `toride-registry` (which deliberately stops at
-//! *describing* what to run) and turns each [`InstallMethod`] into a concrete,
-//! backend-routed operation that is actually executed on the host — closing
-//! the gap the registry crate documents as out of scope.
+//! [`App`](toride_registry::App) model from `toride-registry` (which
+//! deliberately stops at *describing* what to run) and turns each
+//! [`InstallMethod`] into a concrete, backend-routed operation that is
+//! actually executed on the host — closing the gap the registry crate
+//! documents as out of scope.
 //!
 //! ## Design
 //!
@@ -27,8 +28,11 @@
 //!
 //! ## Pipeline
 //!
-//! 1. **Resolve** — the caller resolves a [`TorideId`] to a registry `App`
-//!    (the registry crate's job, not ours).
+//! 1. **Resolve** — the [`Apps`] facade resolves the [`TorideId`] through
+//!    the registered registry adapters (each asked to look up the slug
+//!    under its own source kind; the first hit wins), yielding a
+//!    normalized registry `App`. (`status` short-circuits this: a manifest
+//!    record is answered from local state alone.)
 //! 2. **Plan** — [`plan_install`] / [`plan_uninstall`] match the app's
 //!    [`InstallMethod`] against the host [`Target`], check platform claims
 //!    (empty claims are skipped, per the model's contract), refuse disabled
@@ -46,25 +50,39 @@
 //!
 //! ## Quick start
 //!
-//! ```rust,ignore
-//! use toride_apps::{plan_install, Target};
-//! use toride_registry::{Arch, InstallMethod, Os, TorideId};
+//! The [`Apps`] facade is the front door: registry adapters in, executed
+//! operations out, every mutation recorded in the install manifest. This
+//! example runs offline (no adapters, no backends attached) and still
+//! exercises the real pipeline — a full build calls `.adapter(...)` per
+//! registry source and `.detect_backends()` to wire whatever this host has:
 //!
-//! # async fn run(app: toride_registry::App) -> toride_apps::Result<()> {
-//! // Host: Linux x86_64 on a Debian-family distro.
-//! let target = Target::new(Os::Linux, Arch::X86_64).with_distro(
-//!     toride_registry::DistroFamily::Debian,
-//! );
+//! ```
+//! use toride_apps::{AppInstallOptions, AppStatus, Apps, AppsError};
 //!
-//! // Pure planning: exact argv, no I/O.
-//! let plan = plan_install(&app, &target)?;
-//! assert_eq!(plan.operation.argv(), ["apt", "install", "firefox"]);
-//! assert!(plan.requires_elevation); // never auto-sudoed
+//! # #[tokio::main]
+//! # async fn main() -> Result<(), AppsError> {
+//! // A scratch manifest for the example; a real CLI drops the override
+//! // and uses the default data-dir location.
+//! let scratch = std::env::temp_dir()
+//!     .join(format!("toride-apps-quickstart-{}.json", std::process::id()));
+//! let manifest_path = scratch
+//!     .to_str()
+//! .ok_or(AppsError::NoManifestPath)?
+//!     .to_owned();
 //!
-//! // Execution: hand the plan to the routed backend through the seam.
-//! let runner = toride_apps::CommandRunner::builder().build();
-//! // let backend = ...; // A2+ wire the homebrew/flatpak/distro backends
-//! # let _ = (runner, plan);
+//! let id = toride_registry::TorideId::slugify("firefox");
+//! let mut apps = Apps::builder().manifest_path(manifest_path.as_str()).build()?;
+//!
+//! // status() is manifest-first: no record, no adapters, no backends —
+//! // an honest NotInstalled, with nothing executed to learn it.
+//! assert_eq!(apps.status(&id).await?, AppStatus::NotInstalled);
+//!
+//! // ensure_installed() resolves through the registered adapters; with
+//! // none registered, the id is Unresolved — never guessed at.
+//! assert!(matches!(
+//!     apps.ensure_installed(&id, AppInstallOptions::new()).await,
+//!     Err(AppsError::Unresolved { .. })
+//! ));
 //! # Ok(())
 //! # }
 //! ```

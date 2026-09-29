@@ -12,7 +12,7 @@
 //!   `toride-runner`'s discovery helpers), [`HomebrewBackend::version`]
 //!   (`brew --version`), [`HomebrewBackend::prefix`] (`brew --prefix`,
 //!   cached after the first call). Offline tests exercise the seam probes
-//!   via [`FakeRunner`](toride_runner::FakeRunner); the PATH check in
+//!   via `FakeRunner` (toride-runner's `fake` feature); the PATH check in
 //!   `detect` reads the real host PATH and is only covered by live tests.
 //! - **Trait operations** — install/uninstall/list/status per the
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
@@ -43,7 +43,7 @@
 //!   [`Operation::BrewUninstall`] argv at plan time via
 //!   [`UninstallOptions`](crate::UninstallOptions) `{ zap: true }`.
 //! - Error mapping: non-zero exits surface as
-//!   [`Error::Command`](crate::Error::Command) carrying brew's stderr;
+//!   [`Error::Command`] carrying brew's stderr;
 //!   unparseable machine output maps to the same variant wrapping
 //!   `toride_runner::Error::OutputParse`. Where classification is cheap —
 //!   the kind-scoped `brew list --versions` probes, whose absent tokens

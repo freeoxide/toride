@@ -36,7 +36,7 @@ pub enum Error {
     PlatformMismatch {
         /// Canonical toride id of the app.
         app: String,
-        /// Debug rendering of the host [`Target`].
+        /// Debug rendering of the host [`crate::Target`].
         target: String,
         /// The app's declared platform claims, none of which matched.
         claims: Vec<Platform>,
@@ -54,7 +54,7 @@ pub enum Error {
         ///
         /// [`InstallMethod`]: toride_registry::InstallMethod
         method: String,
-        /// Debug rendering of the host [`Target`].
+        /// Debug rendering of the host [`crate::Target`].
         target: String,
         /// Why the method is inapplicable (e.g. "cask requires macOS").
         reason: String,

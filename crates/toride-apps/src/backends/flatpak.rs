@@ -75,13 +75,13 @@
 //!   nothing to search or choose). The `-y`/`--assumeyes` flag is not
 //!   used: it answers questions with "yes" rather than avoiding them.
 //! - Error mapping: non-zero exits surface as
-//!   [`Error::Command`](crate::Error::Command) carrying flatpak's stderr.
+//!   [`Error::Command`] carrying flatpak's stderr.
 //!   One classification: a failed uninstall whose stderr carries flatpak's
 //!   own typed not-installed error (exit 1, an `error:` line matching the
 //!   markers — flatpak's `FLATPAK_ERROR_NOT_INSTALLED`, wording "No
 //!   installed refs found for …") becomes a success noting the app was
 //!   already absent, keeping manifest-driven uninstalls idempotent. See
-//!   [`NOT_INSTALLED_MARKERS`].
+//!   `NOT_INSTALLED_MARKERS`.
 //!
 //! [`Operation::FlatpakInstall`]: crate::Operation::FlatpakInstall
 //! [`Operation::FlatpakUninstall`]: crate::Operation::FlatpakUninstall
