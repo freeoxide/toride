@@ -6,6 +6,9 @@ target-audit-*/
 # ZCode session-local files (workflow drafts, plans)
 .zcode/
 
+# z-proflow orchestration state (run-local, not project source)
+.z-proflow/
+
 # IDE / Editor
 .idea/
 .vscode/

@@ -1,0 +1,7 @@
+ii apt	3.0.3
+ii bash	5.2.37-2+b9
+ii bind9-dnsutils	1:9.20.23-1~deb13u1
+ii coreutils	9.7-3
+ii dpkg	1.22.22
+ii fakeroot	1.37.1.1-1
+ii libc6	2.41-12+deb13u3

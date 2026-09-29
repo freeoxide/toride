@@ -1,0 +1,3 @@
+firefox	141.0.2
+gcc	14.2.1
+kernel-core	6.11.0
