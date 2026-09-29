@@ -238,6 +238,10 @@ async fn appstream_fetch_normalizes_the_live_debian_catalog() {
     let adapter =
         AppstreamAdapter::from_text(&text, Some(Arch::X86_64)).expect("the live catalog parses");
 
+    // gitg, not a household name like firefox-esr: bookworm's dep11
+    // catalog ships 0 firefox-esr components (132 for gitg), so probing
+    // firefox-esr here fails the lookup confusingly — do not "fix" this
+    // back to firefox-esr without checking the catalog first.
     let app = adapter
         .lookup(&reference(SourceKind::Distro, "gitg"))
         .await
