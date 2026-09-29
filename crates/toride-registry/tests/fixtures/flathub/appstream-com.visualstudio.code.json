@@ -1,0 +1,196 @@
+{
+  "kudos": null,
+  "keywords": [
+    "vscode"
+  ],
+  "mimetypes": null,
+  "project_license": "LicenseRef-proprietary=https://code.visualstudio.com/license",
+  "name": "Visual Studio Code",
+  "provides": [
+    "text/plain",
+    "inode/directory",
+    "application/x-code-workspace"
+  ],
+  "launchable": {
+    "type": "desktop-id",
+    "value": "com.visualstudio.code.desktop"
+  },
+  "bundle": {
+    "sdk": "org.freedesktop.Sdk/x86_64/25.08",
+    "type": "flatpak",
+    "runtime": "org.freedesktop.Sdk/x86_64/25.08",
+    "value": "app/com.visualstudio.code/x86_64/stable"
+  },
+  "summary": "Code editing. Redefined.",
+  "releases": [
+    {
+      "version": "1.138.0",
+      "urgency": null,
+      "url": null,
+      "description": null,
+      "date_eol": null,
+      "type": "stable",
+      "timestamp": "1789516800",
+      "date": null
+    },
+    {
+      "version": "1.137.0",
+      "urgency": null,
+      "url": null,
+      "description": null,
+      "date_eol": null,
+      "type": "stable",
+      "timestamp": "1788912000",
+      "date": null
+    },
+    {
+      "version": "1.130.0",
+      "urgency": null,
+      "url": null,
+      "description": null,
+      "date_eol": null,
+      "type": "stable",
+      "timestamp": "1784678400",
+      "date": null
+    },
+    {
+      "version": "1.129.1",
+      "urgency": null,
+      "url": null,
+      "description": null,
+      "date_eol": null,
+      "type": "stable",
+      "timestamp": "1784246400",
+      "date": null
+    }
+  ],
+  "description": "<p>**NOTE: This is the proprietary Microsoft build of Visual Studio Code, packaged into a Flatpak. This repackaging is not supported by Microsoft.**</p>\n      <p>Visual Studio Code is a new choice of tool that combines the simplicity of a code editor with what developers need for the core edit-build-debug cycle.</p>\n      <p>IMPORTANT: To use certain features in this flatpacked version (like the integrated terminal), please read the linked documentation.</p>\n    ",
+  "translation": null,
+  "developer_name": "Microsoft Corporation",
+  "icon": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/icons/128x128/com.visualstudio.code.png",
+  "is_eol": false,
+  "icons": [
+    {
+      "height": 128,
+      "scale": null,
+      "type": "remote",
+      "url": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/icons/128x128/com.visualstudio.code.png",
+      "width": 128
+    },
+    {
+      "height": 128,
+      "scale": 2,
+      "type": "remote",
+      "url": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/icons/128x128@2/com.visualstudio.code.png",
+      "width": 128
+    }
+  ],
+  "branding": null,
+  "urls": {
+    "bugtracker": "https://github.com/flathub/com.visualstudio.code/issues",
+    "homepage": "https://code.visualstudio.com",
+    "help": "https://github.com/flathub/com.visualstudio.code?tab=readme-ov-file#usage",
+    "donation": null,
+    "translate": null,
+    "faq": null,
+    "contact": null,
+    "vcs_browser": null,
+    "contribute": null
+  },
+  "id": "com.visualstudio.code",
+  "is_free_license": false,
+  "metadata": {
+    "flathub::verification::timestamp": null,
+    "flathub::manifest": null,
+    "flathub::verification::verified": null,
+    "flathub::verification::method": null,
+    "flathub::verification::login_is_organization": null,
+    "flathub::verification::login_name": null,
+    "flathub::verification::website": null,
+    "flathub::verification::login_provider": null
+  },
+  "type": "desktop-application",
+  "screenshots": [
+    {
+      "sizes": [
+        {
+          "height": "1291",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/screenshots/image-1_orig.png",
+          "width": "2376"
+        },
+        {
+          "height": "678",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/screenshots/image-1_1248x678@1.png",
+          "width": "1248"
+        },
+        {
+          "height": "408",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/screenshots/image-1_752x408@1.png",
+          "width": "752"
+        },
+        {
+          "height": "339",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/screenshots/image-1_624x339@1.png",
+          "width": "624"
+        },
+        {
+          "height": "121",
+          "scale": "1x",
+          "src": "https://dl.flathub.org/media/com/visualstudio/code/981e85427da2cbea5611326121496fdf/screenshots/image-1_224x121@1.png",
+          "width": "224"
+        }
+      ],
+      "default": true,
+      "caption": "Editing TypeScript"
+    }
+  ],
+  "content_rating_details": {
+    "en_US": {
+      "minimumAgeText": "Teen",
+      "contentRatingSystem": "ESRB",
+      "minimumAge": 13,
+      "categories": [
+        {
+          "id": "social",
+          "level": "moderate",
+          "description": "Sharing diagnostic data that does not let others identify the user"
+        },
+        {
+          "id": "drugs",
+          "level": "none",
+          "description": "No references to alcohol"
+        },
+        {
+          "id": "language",
+          "level": "none",
+          "description": "No profanity of any kind"
+        },
+        {
+          "id": "money",
+          "level": "none",
+          "description": "No ability to spend money"
+        },
+        {
+          "id": "sex",
+          "level": "none",
+          "description": "No nudity of any sort"
+        },
+        {
+          "id": "violence",
+          "level": "none",
+          "description": "No cartoon violence"
+        }
+      ]
+    }
+  },
+  "isMobileFriendly": false,
+  "categories": [
+    "TextEditor",
+    "Development",
+    "IDE"
+  ]
+}

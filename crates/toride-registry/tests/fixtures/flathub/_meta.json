@@ -1,0 +1,44 @@
+{
+  "search-brave-browser.json": {
+    "synthetic": false,
+    "url": "https://flathub.org/api/v2/search (POST {\"query\":\"brave browser\"})",
+    "fetched_at": "2026-09-28",
+    "note": "verbatim JSON response, reformatted with indent=2; no content trimmed"
+  },
+  "search-visual-studio-code.json": {
+    "synthetic": false,
+    "url": "https://flathub.org/api/v2/search (POST {\"query\":\"visual studio code\"})",
+    "fetched_at": "2026-09-28",
+    "note": "verbatim JSON response, reformatted with indent=2; no content trimmed"
+  },
+  "appstream-com.brave.Browser.json": {
+    "synthetic": false,
+    "url": "https://flathub.org/api/v2/appstream/com.brave.Browser",
+    "fetched_at": "2026-09-28",
+    "note": "verbatim JSON response, reformatted with indent=2; no content trimmed"
+  },
+  "appstream-com.visualstudio.code.json": {
+    "synthetic": false,
+    "url": "https://flathub.org/api/v2/appstream/com.visualstudio.code",
+    "fetched_at": "2026-09-28",
+    "note": "verbatim JSON response, reformatted with indent=2; no content trimmed"
+  },
+  "openapi-v2.json": {
+    "synthetic": false,
+    "url": "https://flathub.org/api/v2/openapi.json",
+    "fetched_at": "2026-09-28",
+    "note": "verbatim JSON response, reformatted with indent=2; no content trimmed"
+  },
+  "flathub.flatpakrepo": {
+    "synthetic": false,
+    "url": "https://dl.flathub.org/repo/flathub.flatpakrepo",
+    "fetched_at": "2026-09-28",
+    "note": "verbatim text response (Flathub repo descriptor: URL + GPG key)"
+  },
+  "com.brave.Browser.flatpakref": {
+    "synthetic": false,
+    "url": "https://dl.flathub.org/repo/appstream/com.brave.Browser.flatpakref",
+    "fetched_at": "2026-09-28",
+    "note": "verbatim text response (per-app flatpakref pointer file)"
+  }
+}

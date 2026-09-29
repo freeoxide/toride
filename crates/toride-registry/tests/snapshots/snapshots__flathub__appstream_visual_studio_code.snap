@@ -1,0 +1,48 @@
+---
+source: crates/toride-registry/tests/snapshots.rs
+expression: "serde_json::to_string_pretty(value).expect(\"snapshot value serializes\")"
+---
+{
+  "id": "com-visualstudio-code",
+  "name": "Visual Studio Code",
+  "aliases": [],
+  "summary": "Code editing. Redefined.",
+  "description": "**NOTE: This is the proprietary Microsoft build of Visual Studio Code, packaged into a Flatpak. This repackaging is not supported by Microsoft.**\nVisual Studio Code is a new choice of tool that combines the simplicity of a code editor with what developers need for the core edit-build-debug cycle.\nIMPORTANT: To use certain features in this flatpacked version (like the integrated terminal), please read the linked documentation.",
+  "homepage": "https://code.visualstudio.com",
+  "license": "LicenseRef-proprietary=https://code.visualstudio.com/license",
+  "developer": "Microsoft Corporation",
+  "binaries": [],
+  "latest": {
+    "value": "1.138.0",
+    "original": null,
+    "published_unix": 1789516800
+  },
+  "platforms": [
+    {
+      "os": "Linux",
+      "arch": "X86_64",
+      "min_release": null
+    }
+  ],
+  "artifacts": [],
+  "install": {
+    "Flatpak": {
+      "app_id": "com.visualstudio.code",
+      "remote": "flathub"
+    }
+  },
+  "sources": [
+    {
+      "source": "Flathub",
+      "id": "com.visualstudio.code",
+      "repo": null,
+      "version": {
+        "value": "1.138.0",
+        "original": null,
+        "published_unix": 1789516800
+      },
+      "provisional": false
+    }
+  ],
+  "availability": "Available"
+}

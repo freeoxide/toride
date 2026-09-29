@@ -1,0 +1,8 @@
+{
+  "synthetic": false,
+  "url": "https://search.nixos.org/backend/latest-51-nixos-26.05/_search?request_cache=true",
+  "fetched": "2026-09-28",
+  "command": "curl -s -m 15 -u 'aWVSALXpZv:X8gPHnzL52wFEekuxsfQ9cSh' -H 'Content-Type: application/json' -X POST <url> -d '{\"query\":{\"bool\":{\"must\":[{\"term\":{\"type\":\"package\"}},{\"term\":{\"package_attr_name\":{\"value\":\"hello\"}}}]}},\"size\":1}'",
+  "trimming": "Live response for the single hit, except package_platforms was reduced from 80 entries to 12 representative ones (x86_64-linux/aarch64-linux/i686-linux/x86_64-darwin/aarch64-darwin/x86_64-freebsd/x86_64-windows/armv7l-linux/powerpc64le-linux/riscv64-linux/loongarch64-linux/wasm32-wasi); _index/_id kept. Everything else verbatim.",
+  "auth_note": "Basic-auth username/password are embedded verbatim in the public frontend bundle https://search.nixos.org/static/js/index.771b9a4a.js (elasticsearchUsername/elasticsearchPassword); they are shared public credentials, not a secret. Index naming: latest-<searchMappingSchemaVersion>-<branch>, schema version 51 at fetch time; branches live in nixosChannels JSON embedded in the same bundle (2026-09-28: nixos-26.05 stable/default, nixos-unstable rolling). The sibling index latest-51-nixos-unstable also answered HTTP 200 to the same query."
+}

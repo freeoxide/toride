@@ -1,0 +1,45 @@
+[package]
+name = "toride-registry"
+version.workspace = true
+edition.workspace = true
+description = "Normalizes external package registries (Homebrew, Flathub, AppStream/DEP-11, Repology) into a single `App` model behind per-source adapters."
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = ["http"]
+# The fetch half: reqwest clients + gzip catalog decompression (DESIGN.md
+# §9, mirroring toride-installer's `http` gate, installer Cargo.toml:11-20).
+# The pure parse half builds fully WITHOUT it, so a consumer can take
+# `toride-registry` with `default-features = false` and inherit neither
+# reqwest (rustls -> ring) nor flate2.
+http = ["dep:reqwest", "dep:flate2"]
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# The [`Adapter`](src/adapter.rs) trait is `#[async_trait::async_trait]`
+# (DESIGN.md §3, house style per toride-installer's `ReleaseResolver`), so
+# it is needed by the trait itself, not only by the fetch layer.
+async-trait = { workspace = true }
+# Async fetch clients + the `#[tokio::test]` suites (DESIGN.md §9).
+tokio = { workspace = true }
+# Typed UTF-8 cache paths in the appstream fetch client (DESIGN.md §9).
+camino = { workspace = true }
+# DEP-11 YAML catalogs (appstream.rs); upstream serde_yaml is archived,
+# swap the backend behind the `&str -> Result<Dep11Catalog>` signature if
+# that blocks (DESIGN.md §9, appstream.md §6).
+serde_yaml = "0.9"
+reqwest = { workspace = true, optional = true }
+# `.yml.gz` catalog decompression in the appstream fetch client — same
+# C-free story as installer's gzip support (DESIGN.md §9).
+flate2 = { version = "1", optional = true }
+
+[dev-dependencies]
+# Snapshot tests of the normalized output per §7 fixture (DESIGN.md §9,
+# conventions.md §7); snapshots live in `tests/snapshots/`.
+insta = { workspace = true }
+
+[lints]
+workspace = true

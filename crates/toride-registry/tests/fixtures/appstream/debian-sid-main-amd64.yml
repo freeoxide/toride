@@ -1,0 +1,523 @@
+%YAML 1.2
+---
+File: DEP-11
+Version: '1.0'
+Origin: debian-sid-main
+MediaBaseUrl: https://appstream.debian.org/media/sid
+Time: '2026-09-27T20:10:17Z'
+---
+Type: desktop-application
+ID: firefox-esr.desktop
+Package: firefox-esr
+Name:
+  C: Firefox ESR
+  fr: Firefox ESR
+Summary:
+  C: Browse the World Wide Web
+  de: Im Internet surfen
+  fr: Navigue sur Internet
+Description:
+  C: <p>Firefox ESR is a powerful, extensible web browser with support for modern web application technologies.</p>
+Categories:
+- Network
+- WebBrowser
+Icon:
+  cached:
+  - name: firefox-esr_firefox-esr.jxl
+    width: 48
+    height: 48
+  remote:
+  - url: f/fi/firefox-esr.desktop/b7665b1e87a3bf3acba1e22e855f2cfa/icons/128x128/firefox-esr_firefox-esr.jxl
+    width: 128
+    height: 128
+  stock: firefox-esr
+Launchable:
+  desktop-id:
+  - firefox-esr.desktop
+Provides:
+  mediatypes:
+  - text/html
+  - text/xml
+  - application/xhtml+xml
+  - application/xml
+  - application/vnd.mozilla.xul+xml
+  - application/rss+xml
+  - application/rdf+xml
+  - image/gif
+  - image/jpeg
+  - image/png
+  - x-scheme-handler/http
+  - x-scheme-handler/https
+---
+Type: desktop-application
+ID: firefox.desktop
+Package: firefox
+Name:
+  C: Firefox
+  fr: Firefox
+Summary:
+  C: Browse the World Wide Web
+  de: Im Internet surfen
+  fr: Navigue sur Internet
+Description:
+  C: <p>Firefox is a powerful, extensible web browser with support for modern web application technologies.</p>
+  de: <p>Firefox ist ein leistungsstarker, erweiterbarer Webbrowser. Er unterstützt moderne Techniken für Webanwendungen.</p>
+  fr: <p>Firefox est un navigateur web puissant, extensible, qui gère les technologies web modernes.</p>
+Categories:
+- Network
+- WebBrowser
+Icon:
+  cached:
+  - name: firefox_firefox.jxl
+    width: 48
+    height: 48
+  remote:
+  - url: f/fi/firefox.desktop/f188c4b5975399c6766a17bc263ae3a7/icons/128x128/firefox_firefox.jxl
+    width: 128
+    height: 128
+  stock: firefox
+Launchable:
+  desktop-id:
+  - firefox.desktop
+Provides:
+  mediatypes:
+  - text/html
+  - text/xml
+  - application/xhtml+xml
+  - application/xml
+  - application/vnd.mozilla.xul+xml
+  - application/rss+xml
+  - application/rdf+xml
+  - image/gif
+  - image/jpeg
+  - image/png
+  - x-scheme-handler/http
+  - x-scheme-handler/https
+---
+Type: desktop-application
+ID: org.gnome.TextEditor
+Package: gnome-text-editor
+ProjectLicense: GPL-3.0-or-later
+Name:
+  C: Text Editor
+  en-GB: Text Editor
+  de: Texteditor
+  fr: Éditeur de texte
+Summary:
+  C: Edit text files
+  en-GB: Edit text files
+  de: Textdateien bearbeiten
+  fr: Modifier des fichiers texte
+Description:
+  C: <p>GNOME Text Editor is a simple text editor focused on a pleasing default experience.</p>
+  en-GB: <p>GNOME Text Editor is a simple text editor focused on a pleasing default experience.</p>
+  de: <p>Texteditor ist ein einfacher Texteditor mit dem Ziel einer angenehmen Handhabung.</p>
+  fr: <p>Éditeur de texte de GNOME est un éditeur de texte simple, axé sur une expérience utilisateur agréable.</p>
+ProjectGroup: GNOME
+Developer:
+  id: org.gnome
+  name:
+    zh-Hant-TW: GNOME 專案
+    kab: Asenfar n GNOME
+    vi: Dự án GNOME
+    he: מיזם GNOME
+    fur: Il progjet GNOME
+    eu: GNOME proiektua
+    mjw: The GNOME Project
+    ka: პროექტი "GNOME"
+    eo: La GNOME-Projekto
+    nb: GNOME
+    ja: The GNOME Project
+    de: Das GNOME-Projekt
+    be-Cyrl: Праект GNOME
+    hi: गनोम परियोजना
+    bg: Проектът GNOME
+    oc: Lo projècte GNOME
+    pt: O Projeto GNOME
+    ro: Proiectul GNOME
+    nn: GNOME-prosjektet
+    pt-BR: O Projeto GNOME
+    fa: پروژهٔ گنوم
+    ru: Проект GNOME
+    gl: O Proxecto GNOME
+    en-GB: The GNOME Project
+    C: The GNOME Project
+    uk: Проєкт GNOME
+    mi: Te Kaupapa GNOME
+    is: GNOME-verkefnið
+    lt: GNOME projektas
+    sv: GNOME-projektet
+    sk: Projekt GNOME
+    kk-Cyrl: GNOME жобасы
+    el: Το έργο GNOME
+    hr: GNOME projekt
+    uz-Latn: GNOME loyihasi
+    ca: El projecte GNOME
+    da: GNOME-projektet
+    ko: 그놈 프로젝트
+    it: Il progetto GNOME
+    fr: Le projet GNOME
+    ne: जिनोम परियोजना
+    ug: GNOME قۇرۇلۇشى
+    sr-Cyrl: Гном пројекат
+    tr: GNOME Projesi
+    zh-Hans-CN: GNOME 项目
+    id: Proyek GNOME
+    ab: The GNOME Project
+    sl: Projekt GNOME
+    fi: Gnome-projekti
+    ar: مشروع جنوم
+    lv: GNOME projekts
+    pl: Projekt GNOME
+    pa: ਗਨੋਮ ਪਰੋਜੈਕਟ
+    es: El Proyecto GNOME
+    sr-Latn: Gnom projekat
+    th: โครงการ GNOME
+    nl: Het GNOME-project
+    hu: A GNOME projekt
+    ie: Li projecte GNOME
+    cs: Projekt GNOME
+Categories:
+- Utility
+- TextEditor
+Keywords:
+  he:
+  - כתיבה
+  - כתבן
+  - עורך
+  - עורך טקסט
+  fur:
+  - scrivi
+  - tacuin
+  - notis
+  - bloc notis
+  eu:
+  - idatzi
+  - notepad
+  tr:
+  - Text Editor
+  - write
+  - notepad
+  - yaz
+  - not defteri
+  - not kağıdı
+  - bloknot
+  - gedit
+  pa:
+  - ਲਿਖਤ
+  - ਲਿਖਣਾ
+  - ਨੋਟਪੈਡ
+  mjw:
+  - write
+  - notepad
+  zh-TW:
+  - write
+  - notepad
+  - 書寫
+  - 撰寫
+  - 記事本
+  - 筆記簿
+  - 文字
+  - 編輯
+  ka:
+  - write
+  - notepad
+  uz:
+  - yozish
+  - daftar
+  nb:
+  - notepad
+  - skriving
+  - text editor
+  ja:
+  - write
+  - notepad
+  - メモ帳
+  - memo
+  de:
+  - write
+  - notepad
+  - schreiben
+  - Notiz
+  - Editor
+  - Texteditor
+  ug:
+  - write
+  - notepad
+  - يازغۇچ
+  - خاتىرە دەپتەر
+  vi:
+  - write
+  - notepad
+  - ghi
+  - notepad
+  - văn bản
+  - van ban
+  be:
+  - write
+  - notepad
+  - пісаць
+  - запісы
+  - нататкі
+  - нататнік
+  gl:
+  - escribir
+  - caderno de notas
+  nn:
+  - skrive
+  - notisblokk
+  hr:
+  - piši
+  - bilježnica
+  pt:
+  - escrever
+  - bloco de notas
+  fa:
+  - write
+  - notepad
+  - نوشتن
+  - یادداشت
+  - متن
+  oc:
+  - escriure
+  - nòtas
+  el:
+  - γράφω
+  - σημειωματάριο
+  - write
+  - notepad
+  zh-CN:
+  - write
+  - notepad
+  - text
+  - txt
+  - plain
+  - 写作
+  - 编写
+  - 笔记本
+  - 记事本
+  fr:
+  - écrire
+  - bloc-notes
+  uk:
+  - write
+  - notepad
+  - запис
+  - нотатник
+  is:
+  - skrifa
+  - ritill
+  da:
+  - skriv
+  - notesblok
+  lt:
+  - rašyti
+  - užrašinė
+  ca:
+  - escriure
+  - bloc de notes
+  sk:
+  - písať
+  - písanie
+  - zapísať
+  - zápisník
+  - poznámky
+  ro:
+  - write
+  - notepad
+  - scrie
+  - carnețel
+  - notițe
+  - text
+  sv:
+  - skriv
+  - anteckningar
+  pt-BR:
+  - escrever
+  - escreva
+  - notas
+  - bloco de notas
+  C:
+  - write
+  - notepad
+  ru:
+  - write
+  - notepad
+  - писать
+  - блокнот
+  it:
+  - scrivere
+  - appunti
+  es:
+  - escribir
+  - cuaderno de notas
+  ar:
+  - الكتابة
+  - الكتابات
+  - اكتب
+  - الدفتر
+  - الملاحظات
+  - الملاحظة
+  - المحرر
+  - المفكرة
+  - المفكرات
+  - write
+  - notepad
+  ko:
+  - write
+  - 기록
+  - 쓰기
+  - notepad
+  - 메모장
+  - 텍스트
+  - 편집기
+  - 에디터
+  hi:
+  - लिखें
+  - नोटपैड
+  sl:
+  - besedilo
+  - urejevalnik
+  - tekst
+  - write
+  - gedit
+  - pisanje
+  - zapis:urejanje
+  - beležnica
+  bg:
+  - текстов
+  - редактор
+  - ноутпад
+  - райт
+  - write
+  - notepad
+  cs:
+  - psát
+  - zapisovat
+  - zápisník
+  id:
+  - tulis
+  - notepad
+  ne:
+  - लेखन
+  - नोटप्याड
+  fi:
+  - write
+  - notepad
+  - kirjoita
+  - muistio
+  sr:
+  - write
+  - notepad
+  - писање
+  - нотепад
+  - гедит
+  - pisanje
+  - notepad
+  - gedit
+  - текст
+  - tekst
+  - text
+  lv:
+  - rakstīt
+  - notepad
+  en-GB:
+  - write
+  - notepad
+  hu:
+  - írás
+  - jegyzettömb
+  pl:
+  - pisanie
+  - pisz
+  - napisz
+  - write
+  - notatnik
+  - notepad
+  - text
+  kk:
+  - write
+  - notepad
+  - жазу
+  - блокнот
+  ie:
+  - write
+  - notepad
+  eo:
+  - skribi
+  - notbloko
+  nl:
+  - write
+  - notepad
+  - schrijven
+  - notitieblok
+  - tekstbewerker
+  - teksteditor
+  - tekstverwerker
+  th:
+  - เขียน
+  - โน้ตแพด
+  sr-Latn:
+  - write
+  - notepad
+  - pisanje
+  - notepad
+  - gedit
+  - pisanje
+  - notepad
+  - gedit
+  - tekst
+  - tekst
+  - text
+Url:
+  homepage: https://apps.gnome.org/TextEditor/
+  bugtracker: https://gitlab.gnome.org/GNOME/gnome-text-editor/issues
+  translate: https://l10n.gnome.org/module/gnome-text-editor/
+  vcs-browser: https://gitlab.gnome.org/GNOME/gnome-text-editor
+  donation: https://www.gnome.org/donate/
+  contribute: https://welcome.gnome.org/app/TextEditor/
+Icon:
+  cached:
+  - name: gnome-text-editor_org.gnome.TextEditor.jxl
+    width: 48
+    height: 48
+  remote:
+  - url: org/gnome/TextEditor/8e1618a302239ce84be6a6fd349d27c9/icons/128x128/gnome-text-editor_org.gnome.TextEditor.jxl
+    width: 128
+    height: 128
+  stock: org.gnome.TextEditor
+Launchable:
+  desktop-id:
+  - org.gnome.TextEditor.desktop
+Requires:
+- display_length: 360
+- internet: offline-only
+Supports:
+- control: pointing
+- control: keyboard
+- control: touch
+Provides:
+  mediatypes:
+  - text/plain
+  - application/x-zerosize
+Languages:
+- locale: ar
+  percentage: 95
+- locale: be
+  percentage: 96
+- locale: bg
+  percentage: 96
+Branding:
+  colors:
+  - type: primary
+    scheme-preference: light
+    value: '#e2dfd6'
+  - type: primary
+    scheme-preference: dark
+    value: '#676759'
+Releases:
+- version: '51.0'
+  type: development
+  unix-timestamp: 1789344000
+ContentRating:
+  oars-1.1: {}

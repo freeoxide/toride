@@ -1,0 +1,74 @@
+---
+source: crates/toride-registry/tests/snapshots.rs
+expression: "serde_json::to_string_pretty(value).expect(\"snapshot value serializes\")"
+---
+{
+  "id": "brave-browser",
+  "name": "Brave",
+  "aliases": [],
+  "summary": "Web browser focusing on privacy",
+  "description": null,
+  "homepage": "https://brave.com/",
+  "license": null,
+  "developer": null,
+  "binaries": [],
+  "latest": {
+    "value": "1.96.59.0",
+    "original": null,
+    "published_unix": null
+  },
+  "platforms": [
+    {
+      "os": "MacOs",
+      "arch": "X86_64",
+      "min_release": "13"
+    },
+    {
+      "os": "MacOs",
+      "arch": "Aarch64",
+      "min_release": "13"
+    }
+  ],
+  "artifacts": [
+    {
+      "url": "https://updates-cdn.bravesoftware.com/sparkle/Brave-Browser/stable-arm64/196.59/Brave-Browser-arm64.dmg",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "57690cf24e5ce5e15768b220d46621e575e0caabd3d651bdad5afc2b184f118a"
+      },
+      "os": "MacOs",
+      "arch": null,
+      "kind": "Package"
+    },
+    {
+      "url": "https://updates-cdn.bravesoftware.com/sparkle/Brave-Browser/stable/196.59/Brave-Browser-x64.dmg",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "fbeca8107c308993d343cd33857f40ab1812d51ee0502ac86872aaf7e7f5bdd8"
+      },
+      "os": "MacOs",
+      "arch": "X86_64",
+      "kind": "Package"
+    }
+  ],
+  "install": {
+    "Homebrew": {
+      "cask": true,
+      "token": "brave-browser"
+    }
+  },
+  "sources": [
+    {
+      "source": "HomebrewCask",
+      "id": "brave-browser",
+      "repo": null,
+      "version": {
+        "value": "1.96.59.0",
+        "original": null,
+        "published_unix": null
+      },
+      "provisional": false
+    }
+  ],
+  "availability": "Available"
+}

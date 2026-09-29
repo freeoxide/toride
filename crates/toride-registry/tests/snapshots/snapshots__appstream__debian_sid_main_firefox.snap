@@ -1,0 +1,98 @@
+---
+source: crates/toride-registry/tests/snapshots.rs
+expression: "serde_json::to_string_pretty(value).expect(\"snapshot value serializes\")"
+---
+[
+  {
+    "id": "firefox-esr",
+    "name": "Firefox ESR",
+    "aliases": [],
+    "summary": "Browse the World Wide Web",
+    "description": "Firefox ESR is a powerful, extensible web browser with support for modern web application technologies.",
+    "homepage": null,
+    "license": null,
+    "developer": null,
+    "binaries": [
+      "firefox-esr"
+    ],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Distro": {
+        "family": "Debian",
+        "repo": "debian-sid-main",
+        "package": "firefox-esr"
+      }
+    },
+    "sources": [
+      {
+        "source": "Distro",
+        "id": "firefox-esr",
+        "repo": "debian-sid-main",
+        "version": null,
+        "provisional": false
+      },
+      {
+        "source": "Distro",
+        "id": "firefox-esr.desktop",
+        "repo": "debian-sid-main",
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  },
+  {
+    "id": "firefox",
+    "name": "Firefox",
+    "aliases": [],
+    "summary": "Browse the World Wide Web",
+    "description": "Firefox is a powerful, extensible web browser with support for modern web application technologies.",
+    "homepage": null,
+    "license": null,
+    "developer": null,
+    "binaries": [
+      "firefox"
+    ],
+    "latest": null,
+    "platforms": [
+      {
+        "os": "Linux",
+        "arch": "X86_64",
+        "min_release": null
+      }
+    ],
+    "artifacts": [],
+    "install": {
+      "Distro": {
+        "family": "Debian",
+        "repo": "debian-sid-main",
+        "package": "firefox"
+      }
+    },
+    "sources": [
+      {
+        "source": "Distro",
+        "id": "firefox",
+        "repo": "debian-sid-main",
+        "version": null,
+        "provisional": false
+      },
+      {
+        "source": "Distro",
+        "id": "firefox.desktop",
+        "repo": "debian-sid-main",
+        "version": null,
+        "provisional": false
+      }
+    ],
+    "availability": "Available"
+  }
+]

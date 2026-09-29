@@ -1,0 +1,99 @@
+---
+source: crates/toride-registry/tests/snapshots.rs
+expression: "serde_json::to_string_pretty(value).expect(\"snapshot value serializes\")"
+---
+{
+  "id": "visual-studio-code",
+  "name": "Microsoft Visual Studio Code",
+  "aliases": [
+    "VS Code"
+  ],
+  "summary": "Open-source code editor",
+  "description": null,
+  "homepage": "https://code.visualstudio.com/",
+  "license": null,
+  "developer": null,
+  "binaries": [
+    "code",
+    "code-tunnel"
+  ],
+  "latest": {
+    "value": "1.139.1",
+    "original": null,
+    "published_unix": null
+  },
+  "platforms": [
+    {
+      "os": "MacOs",
+      "arch": "X86_64",
+      "min_release": null
+    },
+    {
+      "os": "MacOs",
+      "arch": "Aarch64",
+      "min_release": null
+    }
+  ],
+  "artifacts": [
+    {
+      "url": "https://update.code.visualstudio.com/1.139.1/darwin-arm64/stable",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "923080bebc194ec178c2a06b61bcb138376776406c23b8bd3e4fc3286f91cba2"
+      },
+      "os": "MacOs",
+      "arch": null,
+      "kind": "Package"
+    },
+    {
+      "url": "https://update.code.visualstudio.com/1.106.3/darwin-arm64/stable",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "35dd438808dde1dd1f65490ffe7713ed64102324c0809efbec0b4eb2809b218b"
+      },
+      "os": "MacOs",
+      "arch": "Aarch64",
+      "kind": "Package"
+    },
+    {
+      "url": "https://update.code.visualstudio.com/1.106.3/darwin/stable",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "c41872149a205f3a3be3e5d3a8f04920407a0762531e607f78dc93f4d4813cda"
+      },
+      "os": "MacOs",
+      "arch": "X86_64",
+      "kind": "Package"
+    },
+    {
+      "url": "https://update.code.visualstudio.com/1.139.1/darwin/stable",
+      "checksum": {
+        "algo": "Sha256",
+        "digest": "7818d91a5cca2b7ae1557954923e8975cd6393526f9361091e40de02c2e2e58f"
+      },
+      "os": "MacOs",
+      "arch": "X86_64",
+      "kind": "Package"
+    }
+  ],
+  "install": {
+    "Homebrew": {
+      "cask": true,
+      "token": "visual-studio-code"
+    }
+  },
+  "sources": [
+    {
+      "source": "HomebrewCask",
+      "id": "visual-studio-code",
+      "repo": null,
+      "version": {
+        "value": "1.139.1",
+        "original": null,
+        "published_unix": null
+      },
+      "provisional": false
+    }
+  ],
+  "availability": "Available"
+}

@@ -1,0 +1,7 @@
+{
+  "synthetic": false,
+  "url": "https://raw.githubusercontent.com/jdx/mise/main/registry/ripgrep.toml",
+  "fetched": "2026-09-28",
+  "command": "curl -s -m 30 https://raw.githubusercontent.com/jdx/mise/main/registry/ripgrep.toml -o ripgrep.toml",
+  "note": "Fetched unmodified (341 bytes). NOTE: the URL in the original ask (jdx/mise-registry/main/registry.toml) 404s — that standalone repo no longer exists (GitHub API: repos/jdx/mise-registry → 404 on 2026-09-28); the registry now lives inside jdx/mise as a directory of per-tool TOML files, registry/<short-name>.toml."
+}
