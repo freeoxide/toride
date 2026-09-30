@@ -1,0 +1,123 @@
+%YAML 1.2
+# ---------------------------------------------------------------------------
+# SYNTHETIC DEP-11 catalog subset — benchmark fixture, never fetched.
+#
+# Hand-written for benches/dep11_parse.rs (the F14 parse-half pin): a few
+# components shaped like `tests/fixtures/appstream/debian-sid-main-amd64.yml`
+# but with entirely invented `org.toride.bench.*` data, sized to keep the
+# bench seconds-scale. Deliberately exercises every wire edge the parser
+# must tolerate: localized Name/Summary/Description maps (inline + block
+# scalars), Releases (quoted, numeric AND string-encoded unix-timestamps),
+# Provides.binaries/mediatypes, Developer, Launchable, unknown spec fields
+# (Keywords/Icon), a bare-numeric Package/Name, a non-app `Type`, a
+# Package-less component, and a stray empty document.
+# ---------------------------------------------------------------------------
+---
+File: DEP-11
+Version: '1.0'
+Origin: debian-bench-main
+MediaBaseUrl: https://bench.invalid/media
+Time: '2026-09-30T00:00:00Z'
+---
+Type: desktop-application
+ID: org.toride.bench.Editor.desktop
+Package: toride-bench-editor
+ProjectLicense: MIT
+Name:
+  C: Bench Editor
+  de: Bench-Editor
+  fr: Éditeur Bench
+Summary:
+  C: Edit benchmark fixtures offline
+  de: Benchmark-Fixtures offline bearbeiten
+Description:
+  C: |-
+    <p>Bench Editor is a synthetic component that exists only to give
+    <code>parse_dep11_catalog</code> a stable workload. It maps no real
+    Debian package.</p>
+  de: <p>Bench Editor ist eine synthetische Komponente.</p>
+Developer:
+  id: org.toride.bench
+  name:
+    C: The Toride Bench Project
+Categories:
+- Utility
+- TextEditor
+Keywords:
+  C:
+  - bench
+  - editor
+Icon:
+  cached:
+  - name: toride-bench-editor_org.toride.bench.Editor.jxl
+    width: 48
+    height: 48
+  stock: toride-bench-editor
+Launchable:
+  desktop-id:
+  - org.toride.bench.Editor.desktop
+Provides:
+  binaries:
+  - toride-bench-editor
+  mediatypes:
+  - text/plain
+Releases:
+- version: '1.2.3'
+  type: stable
+  unix-timestamp: 1789344000
+- version: '1.1.0'
+  type: stable
+  unix-timestamp: 1700000000
+---
+Type: console-application
+ID: toride-bench-rg.desktop
+Package: toride-bench-rg
+Name:
+  C: Bench Grep
+Summary:
+  C: Search benchmark fixtures
+Description:
+  C: <p>A synthetic console application with a binaries-only Provides.</p>
+Categories:
+- Utility
+Provides:
+  binaries:
+  - tbrg
+---
+Type: desktop-application
+ID: org.toride.bench.TwoThousandFortyEight
+Package: 2048
+Name:
+  C: 2048
+Summary:
+  C: Numeric-looking scalars must degrade to text
+Description:
+  C: <p>Package and Name arrive as bare integers on the wire.</p>
+---
+Type: generic
+ID: org.toride.bench.Library
+Package: libtoride-bench0
+Name:
+  C: Bench Library
+Summary:
+  C: Parsed but filtered out of the app surface
+---
+Type: desktop-application
+ID: org.toride.bench.Minimal
+Name:
+  C: Minimal
+Summary:
+  C: Package-less component; the ID stands in downstream
+---
+---
+Type: console-application
+ID: org.toride.bench.Clock.desktop
+Package: toride-bench-clock
+Name:
+  C: Bench Clock
+Summary:
+  C: Exercises the string-encoded unix-timestamp deserializer path
+Releases:
+- version: '0.9.0'
+  type: development
+  unix-timestamp: "1789344000"
