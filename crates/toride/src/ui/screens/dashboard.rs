@@ -726,6 +726,25 @@ impl DashboardScreen {
         self.ssh_content.push_error(msg);
     }
 
+    /// Whether the SSH section currently shows its error notification bar.
+    ///
+    /// Drives the app loop's toast-expiry tick: with the F01 draw gate the
+    /// 5s TTL is only enforced at draw time (`SshContent::view` →
+    /// `clear_expired_error`), so a visible toast needs a timer wake to
+    /// disappear on schedule instead of lingering until the next
+    /// event/data-driven draw (up to ~2s, the refresh arm).
+    #[must_use]
+    pub fn ssh_error_showing(&self) -> bool {
+        self.active_section() == Section::Ssh && self.ssh_content.error_showing()
+    }
+
+    /// Whether the SSH section's error notification has hit its 5s TTL (the
+    /// next draw would clear it). See [`ssh_error_showing`](Self::ssh_error_showing).
+    #[must_use]
+    pub fn ssh_error_expired(&self) -> bool {
+        self.active_section() == Section::Ssh && self.ssh_content.error_expired()
+    }
+
     /// Update SSH loading state (spinner overlay) from the in-flight counter.
     pub fn set_ssh_loading(&mut self, loading: bool, count: usize) {
         self.ssh_content.set_loading(loading, count);
@@ -2190,6 +2209,7 @@ impl AppScreen for DashboardScreen {
         self.sidebar.is_animating() // selection/hover highlight fade
             || self.header_spinners_live() // braille gauge spinners while a rate is unknown
             || self.ssh_content.is_loading() // serialized write-op spinner overlay
+            || self.ssh_content.has_pending_fingerprints() // Keys-tab "generating…" rows
             || self.tooltip_fx.is_running() // gauge tooltip fade-in
     }
 
@@ -2740,6 +2760,71 @@ mod tests {
         assert!(s.needs_fast_frames(), "SSH write spinner needs fast frames");
         s.set_ssh_loading(false, 0);
         assert!(!s.needs_fast_frames(), "spinner gone — slow cadence again");
+    }
+
+    #[test]
+    fn needs_fast_frames_covers_pending_key_fingerprints() {
+        // Round-2 audit follow-up: after a KeyCreate batch drains, the 5s
+        // write cooldown delays the refresh that fills fingerprints — the
+        // Keys-tab "generating…" spinner must keep full frame rate for that
+        // window instead of dropping to shimmer cadence (~4fps).
+        use crate::ui::screens::SshKeyEntry;
+
+        fn key_entry(fingerprint: &str) -> SshKeyEntry {
+            SshKeyEntry {
+                name: "id_ed25519".into(),
+                key_type: "Ed25519".into(),
+                fingerprint: fingerprint.into(),
+                encrypted: false,
+                permissions: "0600".into(),
+                has_public: true,
+                has_cert: false,
+                used_by_hosts: Vec::new(),
+            }
+        }
+
+        let mut s = DashboardScreen::new();
+        s.net_rx_rate = Some(1.0);
+        s.net_tx_rate = Some(1.0);
+        s.disk_read_rate = Some(1.0);
+        s.disk_write_rate = Some(1.0);
+        assert!(!s.needs_fast_frames(), "settled screen is shimmer-only");
+
+        s.ssh_content.set_keys(vec![key_entry("")]);
+        assert!(
+            s.needs_fast_frames(),
+            "a pending fingerprint row spins at full frame rate"
+        );
+
+        s.ssh_content.set_keys(vec![key_entry("SHA256:abc123")]);
+        assert!(
+            !s.needs_fast_frames(),
+            "filled fingerprint settles back to shimmer cadence"
+        );
+    }
+
+    #[test]
+    fn ssh_error_expiry_flags_follow_the_visible_section() {
+        // Round-2 audit follow-up: the toast-expiry tick only arms where the
+        // toast is actually rendered (the SSH section) — elsewhere the bar is
+        // invisible, so expiry can wait for the next event/data-driven draw.
+        let mut s = DashboardScreen::new();
+        s.push_ssh_error("write failed".into());
+        assert!(
+            !s.ssh_error_showing(),
+            "the Dashboard overview does not render the SSH toast"
+        );
+
+        let idx = s
+            .data
+            .sidebar
+            .iter()
+            .position(|i| i.section == Section::Ssh)
+            .expect("SSH section is in the sidebar");
+        s.active = idx;
+        assert_eq!(s.active_section(), Section::Ssh);
+        assert!(s.ssh_error_showing(), "visible on the SSH section");
+        assert!(!s.ssh_error_expired(), "a fresh toast is not expired");
     }
 
     #[test]

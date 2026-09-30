@@ -175,6 +175,38 @@ impl SshContent {
         }
     }
 
+    /// Whether the error notification bar is currently shown.
+    ///
+    /// Drives the app loop's toast-expiry tick: with the F01 draw gate,
+    /// `clear_expired_error` only runs at draw time, so a visible toast
+    /// needs a wake to disappear on schedule (see the `toast_tick` arm in
+    /// `App::run`).
+    #[must_use]
+    pub fn error_showing(&self) -> bool {
+        self.last_error.is_some()
+    }
+
+    /// Whether the error notification has hit its 5s TTL, i.e. the next
+    /// draw would clear it.
+    #[must_use]
+    pub fn error_expired(&self) -> bool {
+        self.last_error
+            .as_ref()
+            .is_some_and(|(_, ts)| ts.elapsed().as_secs() >= 5)
+    }
+
+    /// Whether any key entry is still waiting for its fingerprint (the Keys
+    /// tab renders a braille "generating…" spinner for those rows).
+    ///
+    /// Drives the dashboard's full-frame-rate tick: after a `KeyCreate` batch
+    /// drains, the 5s write cooldown delays the refresh that fills
+    /// fingerprints, so without this clause the visible spinner would
+    /// animate at shimmer cadence (~4fps) instead of ~30fps for that window.
+    #[must_use]
+    pub fn has_pending_fingerprints(&self) -> bool {
+        self.keys.has_pending_fingerprints()
+    }
+
     /// Update the loading state from the app's in-flight counter.
     pub fn set_loading(&mut self, loading: bool, count: usize) {
         if loading && !self.ssh_loading {
@@ -858,6 +890,76 @@ fn truncate_error(msg: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_expiry_truth_table() {
+        // Round-2 audit follow-up: with the F01 draw gate, the 5s toast TTL
+        // is enforced at draw time, so the app loop asks these flags (the
+        // `toast_tick` arm) when to flag the clearing redraw.
+        let mut content = SshContent::new();
+        assert!(!content.error_showing());
+        assert!(!content.error_expired());
+
+        content.push_error("write failed".into());
+        assert!(content.error_showing());
+        assert!(!content.error_expired(), "a fresh toast is not expired");
+
+        // Age the toast past the 5s TTL. checked_sub: `Instant - Duration`
+        // can underflow the monotonic clock's epoch on a just-booted host;
+        // skip the aged assertions rather than panic there.
+        if let Some(ts) = Instant::now().checked_sub(std::time::Duration::from_secs(6)) {
+            content.last_error = Some(("write failed".into(), ts));
+            assert!(
+                content.error_showing(),
+                "the toast stays shown until a draw clears it"
+            );
+            assert!(
+                content.error_expired(),
+                "past the TTL it must report expired"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_fingerprints_flag_follows_key_rows() {
+        // Round-2 audit follow-up: rows with empty fingerprints render the
+        // "generating…" braille spinner, which needs full-frame-rate ticks
+        // (after a KeyCreate drains, the 5s write cooldown delays the
+        // refresh that fills them).
+        let mut content = SshContent::new();
+        assert!(
+            !content.has_pending_fingerprints(),
+            "no keys → no spinner rows"
+        );
+        content.set_keys(vec![SshKeyEntry {
+            name: "id_ed25519".into(),
+            key_type: "Ed25519".into(),
+            fingerprint: "SHA256:abc123".into(),
+            encrypted: false,
+            permissions: "0600".into(),
+            has_public: true,
+            has_cert: false,
+            used_by_hosts: Vec::new(),
+        }]);
+        assert!(
+            !content.has_pending_fingerprints(),
+            "a filled fingerprint renders text, not a spinner"
+        );
+        content.set_keys(vec![SshKeyEntry {
+            name: "id_new".into(),
+            key_type: "Ed25519".into(),
+            fingerprint: String::new(),
+            encrypted: false,
+            permissions: "0600".into(),
+            has_public: false,
+            has_cert: false,
+            used_by_hosts: Vec::new(),
+        }]);
+        assert!(
+            content.has_pending_fingerprints(),
+            "an empty fingerprint row spins"
+        );
+    }
 
     #[test]
     fn new_defaults_to_security_tab() {

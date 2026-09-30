@@ -81,6 +81,18 @@ pub struct KeysTab {
 }
 
 impl KeysTab {
+    /// Whether any key row still shows the braille "generating…" spinner
+    /// (an empty fingerprint awaiting the post-write refresh).
+    ///
+    /// The dashboard's full-frame-rate tick consults this: after a `KeyCreate`
+    /// batch drains, the 5s write cooldown delays the refresh that fills
+    /// fingerprints, and without this clause the visible spinner would drop
+    /// to shimmer cadence (~4fps) for that window.
+    #[must_use]
+    pub fn has_pending_fingerprints(&self) -> bool {
+        self.keys.iter().any(|k| k.fingerprint.is_empty())
+    }
+
     /// Create a new empty keys tab.
     #[must_use]
     pub fn new() -> Self {

@@ -16,10 +16,12 @@
 //! palette `App::view` bakes each frame (see `common::render_palette`).
 //!
 //! The `mouse_sweep` group extends the rig for the F01 draw-gating fix: a
-//! 100-event mouse sweep across the content pane now costs only the hover
-//! hit-tests (`AppScreen::handle_mouse` returning no action), while before
-//! the gating each motion event also paid the full `dashboard_render` frame
-//! below — compare 100 sweeps against 100x that per-frame number.
+//! full-height no-change mouse sweep across the content pane (one motion
+//! event per row below the header — 20 events at 80x24, 56 at 200x60) now
+//! costs only the hover hit-tests (`AppScreen::handle_mouse` returning no
+//! action), while before the gating each motion event also paid the full
+//! `dashboard_render` frame below — compare one sweep against that
+//! per-frame number times its event count.
 
 mod common;
 
@@ -81,11 +83,11 @@ fn dashboard_mouse_sweep(c: &mut Criterion) {
             b.iter(|| {
                 // A vertical sweep through the content pane (header rows
                 // skipped so no gauge hitbox is crossed, center column so
-                // the sidebar is never entered): motion events that change
-                // no hover state. After the F01 gating each event costs only
-                // the hit-tests (no action returned, no frame rendered);
-                // before it, every event ALSO paid the full frame measured
-                // by `dashboard_render` above.
+                // the sidebar is never entered): one motion event per row
+                // below the header, none changing hover state. After the F01
+                // gating each event costs only the hit-tests (no action
+                // returned, no frame rendered); before it, every event ALSO
+                // paid the full frame measured by `dashboard_render` above.
                 for row in 4..height {
                     let action = screen.handle_mouse(MouseEvent {
                         kind: MouseEventKind::Moved,
