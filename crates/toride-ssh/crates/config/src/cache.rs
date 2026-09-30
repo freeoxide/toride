@@ -203,15 +203,22 @@ fn read_and_parse(path: &Path) -> std::io::Result<ast::ConfigAst> {
     Ok(ast::parse(&content))
 }
 
-/// Drop every cached read/parse. Test hook: benchmark and unit tests need a
-/// clean cache so a previous test's entry for the same path cannot serve as
+/// Drop the cached read/parse for `path`. Test hook: unit tests need a
+/// clean entry so an earlier test's entry for the same path cannot serve as
 /// a hit.
+///
+/// Scoped to one path on purpose. The cache is process-global while cargo
+/// test runs this crate's tests on parallel threads, and a whole-cache wipe
+/// from one test could evict a sibling's mid-flight entry — the sibling's
+/// next load would re-read the file and hand out a fresh content `Arc`,
+/// failing its share assertions. Fixtures live in distinct tempdirs, so a
+/// per-path remove isolates the tests without serializing them.
 #[cfg(test)]
-pub(crate) fn clear_cache_for_tests() {
+pub(crate) fn clear_cache_for_tests(path: &Path) {
     CONFIG_CACHE
         .lock()
         .expect("config cache mutex poisoned")
-        .clear();
+        .remove(path);
 }
 
 #[cfg(test)]

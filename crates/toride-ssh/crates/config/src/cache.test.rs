@@ -37,9 +37,9 @@ fn mtime_of(path: &Path) -> SystemTime {
 
 #[test]
 fn missing_file_returns_not_found_like_read_to_string() {
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let missing = dir.path().join("config");
+    clear_cache_for_tests(&missing);
     let err = load_cached_ast(&missing).expect_err("missing config must err");
     assert_eq!(
         err.kind(),
@@ -50,9 +50,9 @@ fn missing_file_returns_not_found_like_read_to_string() {
 
 #[test]
 fn unchanged_file_shares_one_ast() {
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
+    clear_cache_for_tests(&path);
     std::fs::write(&path, "Host alpha\n    User alice\n").expect("write fixture");
 
     let first = load_cached_ast(&path).expect("parse");
@@ -66,9 +66,9 @@ fn unchanged_file_shares_one_ast() {
 
 #[test]
 fn changed_file_reparses() {
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
+    clear_cache_for_tests(&path);
     std::fs::write(&path, "Host alpha\n    User alice\n").expect("write fixture");
 
     let first = load_cached_ast(&path).expect("parse");
@@ -87,9 +87,9 @@ fn same_length_rewrite_reparses() {
     // A same-length rewrite still changes mtime, so the (mtime, len) stamp
     // must miss. This pins that content edits which do not change the
     // length are never served stale.
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
+    clear_cache_for_tests(&path);
     std::fs::write(&path, "Host alpha\n").expect("write fixture");
     let first = load_cached_ast(&path).expect("parse");
     assert_eq!(first.nodes.len(), 1);
@@ -112,10 +112,11 @@ fn same_length_rewrite_reparses() {
 
 #[test]
 fn distinct_paths_cache_independently() {
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let a = dir.path().join("config_a");
     let b = dir.path().join("config_b");
+    clear_cache_for_tests(&a);
+    clear_cache_for_tests(&b);
     std::fs::write(&a, "Host a\n").expect("write a");
     std::fs::write(&b, "Host b\n").expect("write b");
 
@@ -126,9 +127,9 @@ fn distinct_paths_cache_independently() {
 
 #[test]
 fn content_load_shares_one_buffer_for_unchanged_file() {
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
+    clear_cache_for_tests(&path);
     std::fs::write(&path, "Host alpha\n    VerifyHostKeyDNS yes\n").expect("write fixture");
 
     let first = load_cached_content(&path).expect("content load");
@@ -146,9 +147,9 @@ fn ast_after_content_parses_cached_bytes_without_reread() {
     // second read for a later AST consumer: the AST is parsed from the
     // memoized bytes. Observable as: content and AST agree, and a second
     // content load still shares the original Arc.
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
+    clear_cache_for_tests(&path);
     std::fs::write(&path, "Host alpha\nHost beta\n").expect("write fixture");
 
     let content = load_cached_content(&path).expect("content load");
@@ -170,9 +171,9 @@ fn ast_after_content_parses_cached_bytes_without_reread() {
 
 #[test]
 fn content_after_ast_shares_the_same_entry() {
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
+    clear_cache_for_tests(&path);
     std::fs::write(&path, "Host alpha\n").expect("write fixture");
 
     let ast = load_cached_ast(&path).expect("ast load");
@@ -183,9 +184,9 @@ fn content_after_ast_shares_the_same_entry() {
 
 #[test]
 fn changed_file_invalidates_content_too() {
-    clear_cache_for_tests();
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
+    clear_cache_for_tests(&path);
     std::fs::write(&path, "Host alpha\n").expect("write fixture");
     let first = load_cached_content(&path).expect("content load");
 
