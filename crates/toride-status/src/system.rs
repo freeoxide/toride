@@ -688,26 +688,38 @@ thread_local! {
 ///
 /// `start_time` is the sysinfo start time of the live process; `None` means
 /// unknown, in which case only the TTL validates the entry.
+///
+/// Locking discipline: the cache mutex is NEVER held across the /proc reads.
+/// The fast path serves a fresh entry under one short lock; a miss drops the
+/// lock, samples /proc, then re-locks only to insert. The benign race (two
+/// concurrent misses for the same pid both sample; the last insert wins with
+/// equivalent data) cannot happen in-app — one collection is in flight per
+/// tick — and would be harmless if it did.
 #[cfg(target_os = "linux")]
 fn slow_proc_fields(
     pid: u32,
     start_time: Option<u64>,
 ) -> (Option<String>, Option<u32>, Option<u32>) {
-    let mut cache = SLOW_PROC_CACHE
-        .lock()
-        .expect("slow-proc cache poisoned by a panicking sampler");
-    if let Some(entry) = cache.get(&pid)
-        && entry.start_time == start_time
-        && !slow_proc_ttl_expired(entry.sampled_at)
+    // Fast path: serve a fresh entry under one short critical section (a
+    // hashmap lookup — no I/O while the lock is held).
     {
-        #[cfg(test)]
-        SLOW_CACHE_HITS.with(|c| c.set(c.get() + 1));
-        return (
-            entry.working_dir.clone(),
-            entry.fd_count,
-            entry.thread_count,
-        );
+        let cache = SLOW_PROC_CACHE
+            .lock()
+            .expect("slow-proc cache poisoned by a panicking sampler");
+        if let Some(entry) = cache.get(&pid)
+            && entry.start_time == start_time
+            && !slow_proc_ttl_expired(entry.sampled_at)
+        {
+            #[cfg(test)]
+            SLOW_CACHE_HITS.with(|c| c.set(c.get() + 1));
+            return (
+                entry.working_dir.clone(),
+                entry.fd_count,
+                entry.thread_count,
+            );
+        }
     }
+    // Miss: sample /proc OUTSIDE the lock, then re-lock only to insert.
     #[cfg(test)]
     SLOW_SAMPLES.with(|c| c.set(c.get() + 1));
     let sampled = SlowProcFields {
@@ -722,14 +734,21 @@ fn slow_proc_fields(
         sampled.fd_count,
         sampled.thread_count,
     );
-    cache.insert(pid, sampled);
+    SLOW_PROC_CACHE
+        .lock()
+        .expect("slow-proc cache poisoned by a panicking sampler")
+        .insert(pid, sampled);
     out
 }
 
 /// Drop cache entries for pids that no longer exist, so the map tracks the
 /// live process table instead of growing without bound across a long session.
+///
+/// The live set is a `HashSet` so the `retain` is O(live pids), not
+/// O(cache entries × live pids) — the whole-process-table prune runs once per
+/// collect.
 #[cfg(target_os = "linux")]
-fn prune_slow_proc_cache(live_pids: &[u32]) {
+fn prune_slow_proc_cache(live_pids: &std::collections::HashSet<u32>) {
     let mut cache = SLOW_PROC_CACHE
         .lock()
         .expect("slow-proc cache poisoned by a panicking sampler");
@@ -2280,7 +2299,7 @@ impl SystemStatus {
         // cache tracks the live process table.
         #[cfg(target_os = "linux")]
         {
-            let live: Vec<u32> = processes.iter().map(|ps| ps.pid).collect();
+            let live: std::collections::HashSet<u32> = processes.iter().map(|ps| ps.pid).collect();
             prune_slow_proc_cache(&live);
         }
         let total_count = processes.len();
@@ -6510,7 +6529,8 @@ mod tests {
     }
 
     /// ORACLE: pruning drops exited pids so the cache tracks the live process
-    /// table instead of growing unboundedly.
+    /// table instead of growing unboundedly. The live set is the same
+    /// `HashSet` shape the per-collect prune builds.
     #[cfg(target_os = "linux")]
     #[test]
     fn prune_slow_proc_cache_drops_exited_pids() {
@@ -6520,7 +6540,7 @@ mod tests {
         let dead = live.wrapping_add(1);
         slow_proc_fields(dead, Some(1));
 
-        prune_slow_proc_cache(&[live]);
+        prune_slow_proc_cache(&std::iter::once(live).collect());
         let cache = SLOW_PROC_CACHE.lock().unwrap();
         assert!(cache.contains_key(&live), "the live pid is retained");
         assert!(!cache.contains_key(&dead), "the exited pid is pruned");

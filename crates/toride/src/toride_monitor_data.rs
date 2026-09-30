@@ -15,9 +15,9 @@
 //! `conntrack -L` + anomaly detection + the OUTPUT-rule count) gets a much
 //! shorter TTL — 8s — because anomaly detection consumes snapshots: the
 //! window stays bounded for detection while the per-2s-tick spawn storm
-//! (2 subprocesses/tick + the iptables-save pass) drops to a fifth. The
-//! listening-ports enumeration is native (netstat2, no subprocess) and stays
-//! fresh every collection.
+//! (2 subprocesses/tick + the iptables-save pass) drops to a quarter (30
+//! cluster runs/min → 7.5). The listening-ports enumeration is native
+//! (netstat2, no subprocess) and stays fresh every collection.
 //!
 //! ## macOS / construction
 //!
@@ -130,9 +130,11 @@ const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 ///
 /// Deliberate freshness semantics (F11): the anomaly detector consumes
 /// snapshots, so the staleness window must stay inside the product's
-/// detection window — 8s keeps a connection visible to detection well within
-/// a 10s window while cutting the per-tick spawn storm (2 subprocesses per
-/// 2s tick, 30×/minute) to a fifth.
+/// detection window. The default threshold window is 60s
+/// ([`AnomalyThreshold`](toride_monitor::spec::AnomalyThreshold)'s `window`
+/// default), so an 8s TTL keeps a connection visible to detection well
+/// inside it while cutting the per-tick spawn storm (2 subprocesses per 2s
+/// tick, 30×/minute) to a quarter (7.5 cluster runs/minute).
 const SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 
 /// Whether a cache TTL has already elapsed for an entry refreshed at
@@ -268,7 +270,11 @@ impl MonitorCollector {
     /// its clock advanced) only when that tier actually re-ran and the bundle
     /// is a real (available) result — otherwise the TTLs would be re-armed
     /// forever with cached data, and a degraded bundle would be pinned for
-    /// the TTL instead of retried.
+    /// the TTL instead of retried. The snapshot tier additionally caches only
+    /// SUCCESSFUL runs (`snapshot_ok`): a fresh snapshot whose `ss`/conntrack
+    /// pass failed is handed to the UI but NOT cached, so the next 2s tick
+    /// retries it at the pre-cache cadence instead of pinning empty
+    /// connections/anomalies for the 8s TTL.
     pub async fn poll(&mut self) -> Option<MonitorDataBundle> {
         match &mut self.rx {
             Some(rx) => {
@@ -282,9 +288,12 @@ impl MonitorCollector {
                     }
                     if let Some(cluster) = fresh_cluster
                         && !snapshot_used
+                        && cluster.snapshot_ok
                     {
                         // The fresh cluster is handed back only when the
-                        // snapshot tier re-ran (`snapshot_used == false`).
+                        // snapshot tier re-ran (`snapshot_used == false`), and
+                        // is cached only when the snapshot itself succeeded —
+                        // a failed run must be retried on the next tick.
                         self.cached_snapshot = Some(cluster.clone());
                         self.snapshot_fresh_at = Some(std::time::Instant::now());
                     }
@@ -943,6 +952,25 @@ mod cadence_oracle {
         (client, runner)
     }
 
+    /// A hermetic client whose `ss -tunap` run ERRORS, so
+    /// `MonitorClient::snapshot()` fails and the fresh cluster carries
+    /// `snapshot_ok == false` (every other command still answers an empty
+    /// success via the lenient `FakeRunner`).
+    fn failing_ss_client() -> (
+        toride_monitor::client::MonitorClient,
+        toride_runner::fake::FakeRunner,
+    ) {
+        let runner = toride_runner::fake::FakeRunner::new().respond_err(
+            ss_spec(),
+            toride_runner::Error::Io("oracle: ss spawn failure".into()),
+        );
+        let client = toride_monitor::client::MonitorClient::with_runner(
+            Box::new(runner.clone()),
+            toride_monitor::paths::MonitorPaths::default_paths(),
+        );
+        (client, runner)
+    }
+
     /// How many `ss -tunap` spawns the runner recorded. `CommandSpec` has no
     /// `PartialEq`, so match on the public program/args fields — the same
     /// fields `FakeRunner`'s exact-match responder keys on (modulo the
@@ -1128,6 +1156,73 @@ mod cadence_oracle {
         assert!(
             collector.snapshot_fresh_at.is_some_and(|t| t > primed),
             "the re-run snapshot tier must re-arm its clock"
+        );
+    }
+
+    /// ORACLE (round 3): a fresh snapshot that FAILED (`snapshot_ok == false`)
+    /// is served to the UI but NOT cached — the snapshot tier stays uncached
+    /// so the NEXT tick re-runs `ss` at the pre-cache retry cadence instead of
+    /// pinning empty connections/anomalies for the 8s TTL. The findings tier
+    /// is primed fresh with the sentinel so `available` holds deterministically
+    /// via the findings disjunct (no dependence on native port enumeration).
+    #[tokio::test]
+    async fn failed_fresh_snapshot_is_served_but_not_cached_and_retried() {
+        let mut collector = MonitorCollector::new();
+        collector.cached_findings = Some(sentinel_findings());
+        collector.findings_fresh_at = Some(std::time::Instant::now());
+        // No snapshot cache primed: the snapshot tier runs fresh on the first
+        // collection by construction — no TTL crank needed.
+
+        let (client, runner) = failing_ss_client();
+        collector.start_with_client(client);
+        let bundle = collector.poll().await.expect("collection completes");
+
+        assert!(
+            bundle.available,
+            "the sentinel findings keep the section available"
+        );
+        assert_eq!(
+            bundle.findings[0].id, SENTINEL_ID,
+            "the fresh findings tier served its sentinel"
+        );
+        assert!(
+            bundle.connections.is_empty(),
+            "the failed snapshot produced no connections"
+        );
+        assert_eq!(ss_spawn_count(&runner), 1, "the snapshot tier did run ss");
+        assert!(
+            collector.cached_snapshot.is_none(),
+            "a FAILED fresh snapshot must not be cached"
+        );
+        assert!(
+            collector.snapshot_fresh_at.is_none(),
+            "a FAILED fresh snapshot must not arm the TTL clock"
+        );
+
+        // The next collection retries the snapshot tier (nothing was cached)
+        // and — now that ss answers the fixture — caches the SUCCESSFUL
+        // cluster, restoring the TTL throttle exactly as on a healthy host.
+        let (client2, runner2) = fake_client();
+        collector.start_with_client(client2);
+        let second = collector.poll().await.expect("second collection completes");
+        assert!(second.available);
+        assert_eq!(
+            ss_spawn_count(&runner2),
+            1,
+            "the retry re-ran ss — there was no cache to hit"
+        );
+        assert_eq!(
+            second.connections.len(),
+            2,
+            "the successful retry parsed both fixture rows"
+        );
+        assert!(
+            collector.cached_snapshot.is_some(),
+            "the SUCCESSFUL retry is cached"
+        );
+        assert!(
+            collector.snapshot_fresh_at.is_some(),
+            "and its TTL clock armed"
         );
     }
 }
