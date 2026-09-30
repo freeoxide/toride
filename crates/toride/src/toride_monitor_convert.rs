@@ -40,9 +40,10 @@ pub fn convert_snapshot(report: &toride_monitor::report::MonitorReport) -> Snaps
 
 /// Convert backend outbound connections into presentation rows.
 ///
-/// Each [`ConnectionInfo`] maps 1:1. Source/destination are formatted as
-/// `ip:port`; an unset port renders as just the IP. Protocol/state are cloned
-/// verbatim (the backend already lower-cases protocol and upper-cases state).
+/// Each [`ConnectionInfo`](toride_monitor::report::ConnectionInfo) maps 1:1.
+/// Source/destination are formatted as `ip:port`; an unset port renders as
+/// just the IP. Protocol/state are cloned verbatim (the backend already
+/// lower-cases protocol and upper-cases state).
 pub fn convert_connections(
     conns: &[toride_monitor::report::ConnectionInfo],
 ) -> Vec<ConnectionEntry> {

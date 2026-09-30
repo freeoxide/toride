@@ -126,7 +126,7 @@ pub struct SnapshotSummary {
 /// area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`MonitorContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `MonitorContent::set_*` setters
 /// driven by [`MonitorCollector`](crate::toride_monitor_data::MonitorCollector).
 pub struct MonitorContent {
     /// Whether the monitor backend was reachable at all (binaries present,
@@ -135,18 +135,21 @@ pub struct MonitorContent {
     available: bool,
     /// Aggregated snapshot counters.
     summary: SnapshotSummary,
-    /// Outbound connections table.
-    connections: Vec<ConnectionEntry>,
+    /// Outbound connections table — shared (`Arc<[T]>`) with the collector's
+    /// snapshot-cache tier, so a cache-hit tick replaces it with a
+    /// reference-count bump instead of a clone proportional to the live
+    /// connection count.
+    connections: std::sync::Arc<[ConnectionEntry]>,
     /// Listening ports.
     ports: Vec<PortEntry>,
     /// Conntrack counters.
     conntrack: ConntrackSummary,
     /// Number of installed OUTPUT chain LOG rules (from `iptables-save`).
     output_rule_count: Option<usize>,
-    /// Anomaly findings.
-    anomalies: Vec<AnomalyEntry>,
-    /// Doctor findings.
-    findings: Vec<FindingEntry>,
+    /// Anomaly findings — shared with the snapshot-cache tier.
+    anomalies: std::sync::Arc<[AnomalyEntry]>,
+    /// Doctor findings — shared with the 60s findings-cache tier.
+    findings: std::sync::Arc<[FindingEntry]>,
     /// Human-readable reason the backend was unreachable, surfaced in the
     /// degraded panel. Populated only when a collection task panicked or
     /// `MonitorClient::system()` returned `BinaryNotFound` (macOS).
@@ -168,12 +171,12 @@ impl MonitorContent {
         Self {
             available: false,
             summary: SnapshotSummary::default(),
-            connections: Vec::new(),
+            connections: Vec::new().into(),
             ports: Vec::new(),
             conntrack: ConntrackSummary::default(),
             output_rule_count: None,
-            anomalies: Vec::new(),
-            findings: Vec::new(),
+            anomalies: Vec::new().into(),
+            findings: Vec::new().into(),
             unavailable_reason: None,
             scroll: 0,
         }
@@ -209,8 +212,9 @@ impl MonitorContent {
         self.summary = summary;
     }
 
-    /// Replace the connections list and clamp scroll.
-    pub fn set_connections(&mut self, connections: Vec<ConnectionEntry>) {
+    /// Replace the connections list and clamp scroll. Takes the shared slice
+    /// the collector's cache tier hands out (Arc bump on cache-hit ticks).
+    pub fn set_connections(&mut self, connections: std::sync::Arc<[ConnectionEntry]>) {
         self.connections = connections;
         self.clamp_scroll();
     }
@@ -231,14 +235,16 @@ impl MonitorContent {
         self.output_rule_count = count;
     }
 
-    /// Replace the anomaly findings and clamp scroll.
-    pub fn set_anomalies(&mut self, anomalies: Vec<AnomalyEntry>) {
+    /// Replace the anomaly findings and clamp scroll. Takes the shared slice
+    /// the collector's cache tier hands out.
+    pub fn set_anomalies(&mut self, anomalies: std::sync::Arc<[AnomalyEntry]>) {
         self.anomalies = anomalies;
         self.clamp_scroll();
     }
 
-    /// Replace the doctor findings and clamp scroll.
-    pub fn set_findings(&mut self, findings: Vec<FindingEntry>) {
+    /// Replace the doctor findings and clamp scroll. Takes the shared slice
+    /// the collector's cache tier hands out.
+    pub fn set_findings(&mut self, findings: std::sync::Arc<[FindingEntry]>) {
         self.findings = findings;
         self.clamp_scroll();
     }
@@ -490,7 +496,7 @@ impl MonitorContent {
             return;
         }
 
-        for conn in &self.connections {
+        for conn in self.connections.iter() {
             let proto = truncate_str(&conn.protocol, 4);
             let src = truncate_str(&conn.src, 21);
             let dst = truncate_str(&conn.dst, 21);
@@ -752,7 +758,7 @@ mod tests {
     use crate::ui::theme::CHARM;
     use ratatui::{Terminal, backend::TestBackend};
 
-    fn sample_connections() -> Vec<ConnectionEntry> {
+    fn sample_connections() -> std::sync::Arc<[ConnectionEntry]> {
         vec![
             ConnectionEntry {
                 protocol: "tcp".into(),
@@ -769,6 +775,7 @@ mod tests {
                 bytes: None,
             },
         ]
+        .into()
     }
 
     fn sample_ports() -> Vec<PortEntry> {
@@ -794,7 +801,7 @@ mod tests {
         ]
     }
 
-    fn sample_anomalies() -> Vec<AnomalyEntry> {
+    fn sample_anomalies() -> std::sync::Arc<[AnomalyEntry]> {
         vec![AnomalyEntry {
             id: "anomaly.connection-volume".into(),
             severity: "warning".into(),
@@ -803,9 +810,10 @@ mod tests {
             threshold: "500 connections".into(),
             fix: Some("Investigate processes with high outbound connection counts.".into()),
         }]
+        .into()
     }
 
-    fn sample_findings() -> Vec<FindingEntry> {
+    fn sample_findings() -> std::sync::Arc<[FindingEntry]> {
         vec![
             FindingEntry {
                 id: "doctor.binary.iptables.missing".into(),
@@ -822,6 +830,7 @@ mod tests {
                 fix: Some("Run monitor setup to install logging rules.".into()),
             },
         ]
+        .into()
     }
 
     /// Render a content area to a string (snapshot pattern from fail2ban).
@@ -1098,8 +1107,8 @@ mod tests {
         // ── Baseline: available, no findings, no anomalies → active, 0. ──
         let mut c = MonitorContent::new();
         c.set_available(true);
-        c.set_findings(Vec::new());
-        c.set_anomalies(Vec::new());
+        c.set_findings(Vec::new().into());
+        c.set_anomalies(Vec::new().into());
         assert_eq!(c.status_label(), "active");
         assert_eq!(c.findings_count(), 0);
 
@@ -1107,14 +1116,17 @@ mod tests {
         // Before the fix this reported `active · 0 finding(s)`, contradicting
         // the monitor screen's own anomaly grouping. Now it must be degraded
         // with the anomaly counted.
-        c.set_anomalies(vec![AnomalyEntry {
-            id: "anomaly.connection-volume".into(),
-            severity: "critical".into(),
-            title: "Outbound connection volume exceeds threshold".into(),
-            observed: "650 connections".into(),
-            threshold: "500 connections".into(),
-            fix: Some("Investigate high outbound connection counts.".into()),
-        }]);
+        c.set_anomalies(
+            vec![AnomalyEntry {
+                id: "anomaly.connection-volume".into(),
+                severity: "critical".into(),
+                title: "Outbound connection volume exceeds threshold".into(),
+                observed: "650 connections".into(),
+                threshold: "500 connections".into(),
+                fix: Some("Investigate high outbound connection counts.".into()),
+            }]
+            .into(),
+        );
         assert_eq!(
             c.status_label(),
             "degraded",
@@ -1134,14 +1146,17 @@ mod tests {
         // ── Warning-severity anomaly also degrades (plan rule). ──
         let mut w = MonitorContent::new();
         w.set_available(true);
-        w.set_anomalies(vec![AnomalyEntry {
-            id: "anomaly.ports.unexpected".into(),
-            severity: "warning".into(),
-            title: "Unexpected listening port".into(),
-            observed: "0.0.0.0:1337".into(),
-            threshold: "no unbound listeners".into(),
-            fix: None,
-        }]);
+        w.set_anomalies(
+            vec![AnomalyEntry {
+                id: "anomaly.ports.unexpected".into(),
+                severity: "warning".into(),
+                title: "Unexpected listening port".into(),
+                observed: "0.0.0.0:1337".into(),
+                threshold: "no unbound listeners".into(),
+                fix: None,
+            }]
+            .into(),
+        );
         assert_eq!(w.status_label(), "degraded");
         assert_eq!(w.findings_count(), 1);
 
@@ -1149,28 +1164,34 @@ mod tests {
         // elevated set), but still counts toward findings_count. ──
         let mut i = MonitorContent::new();
         i.set_available(true);
-        i.set_anomalies(vec![AnomalyEntry {
-            id: "anomaly.info-note".into(),
-            severity: "info".into(),
-            title: "informational note".into(),
-            observed: "n/a".into(),
-            threshold: "n/a".into(),
-            fix: None,
-        }]);
+        i.set_anomalies(
+            vec![AnomalyEntry {
+                id: "anomaly.info-note".into(),
+                severity: "info".into(),
+                title: "informational note".into(),
+                observed: "n/a".into(),
+                threshold: "n/a".into(),
+                fix: None,
+            }]
+            .into(),
+        );
         assert_eq!(i.status_label(), "active");
         assert_eq!(i.findings_count(), 1);
 
         // ── Offline (unavailable) dominates regardless of anomalies. ──
         let mut off = MonitorContent::new();
         off.set_available(false);
-        off.set_anomalies(vec![AnomalyEntry {
-            id: "anomaly.connection-volume".into(),
-            severity: "critical".into(),
-            title: "ignored when offline".into(),
-            observed: "650".into(),
-            threshold: "500".into(),
-            fix: None,
-        }]);
+        off.set_anomalies(
+            vec![AnomalyEntry {
+                id: "anomaly.connection-volume".into(),
+                severity: "critical".into(),
+                title: "ignored when offline".into(),
+                observed: "650".into(),
+                threshold: "500".into(),
+                fix: None,
+            }]
+            .into(),
+        );
         assert_eq!(off.status_label(), "offline");
         // Count is independent of availability (mirrors `findings_total()`).
         assert_eq!(off.findings_count(), 1);
