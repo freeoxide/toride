@@ -15,12 +15,15 @@
 //!   mentioned … are not recognized by DEP-11 parsers");
 //! - the pure parse half [`parse_dep11_catalog`] (`&str` in →
 //!   [`Dep11Catalog`] out: header document + component documents);
-//! - the fetch half [`AppstreamClient`] — streams the `.yml.gz` download
-//!   to the disk cache through flate2 write-through (8.7 MB gz for
-//!   sid/main), then hands the fully decompressed ~27 MB text to the pure
-//!   parser ("never buffer whole" applies to the download only; the
-//!   lighter `CID-Index-<arch>.json.gz` is the documented fallback if
-//!   that ever proves too heavy, appstream.md §7);
+//! - the fetch half [`AppstreamClient`] — serves repeat calls from an
+//!   mtime-keyed TTL cache (zero network inside the window), revalidates
+//!   stale entries with a conditional `If-None-Match`/`If-Modified-Since`
+//!   GET, and only then streams the `.yml.gz` download to the disk cache
+//!   through flate2 write-through (8.7 MB gz for sid/main), handing the
+//!   fully decompressed ~27 MB text to the pure parser ("never buffer
+//!   whole" applies to the download only; the lighter
+//!   `CID-Index-<arch>.json.gz` is the documented fallback if that ever
+//!   proves too heavy, appstream.md §7);
 //! - [`AppstreamAdapter`], which emits
 //!   [`InstallMethod::Distro`]`{family,
 //!   repo, package}` scoped by the header `Origin`, claims
@@ -34,9 +37,13 @@
 //!
 //! ## Pipeline
 //!
-//! 1. **Fetch** — [`AppstreamClient::fetch_catalog`] streams the gzipped
-//!    catalog to `<cache>/appstream/<suite>-<component>-Components-<arch>.yml.gz`
-//!    (write-through, one chunk at a time) and decompresses it from disk.
+//! 1. **Fetch** — [`AppstreamClient::fetch_catalog`] answers from the
+//!    cached `<cache>/appstream/<suite>-<component>-Components-<arch>.yml.gz`
+//!    while it is younger than [`CATALOG_CACHE_TTL`] (mtime-keyed, no
+//!    network); a stale or missing copy is revalidated with a conditional
+//!    GET and only re-downloaded on change or missing validators,
+//!    streaming write-through into the cache (buffered, one chunk at a
+//!    time) and decompressing from disk.
 //! 2. **Parse** — [`parse_dep11_catalog`] splits the multi-document YAML
 //!    stream (header first, one document per component; stray empty
 //!    documents are skipped) with every field defaulted, never erroring
@@ -102,6 +109,8 @@ use crate::model::{
 
 #[cfg(feature = "http")]
 use std::io::{Read, Write};
+#[cfg(feature = "http")]
+use std::time::{Duration, SystemTime};
 
 // ---------------------------------------------------------------------------
 // Wire structs (DESIGN.md §3.1 — declared, not invented)
@@ -859,19 +868,42 @@ pub fn catalog_url(base_url: &str, suite: &str, component: &str, arch: &str) -> 
 
 /// Thin fetch client for the Debian/Ubuntu DEP-11 layout (DESIGN.md
 /// §3.1). Streams the `.yml.gz` DOWNLOAD to the disk cache write-through
-/// (one chunk at a time — the 8.7 MB sid/main archive is never held in
-/// memory whole), then decompresses the cached file and returns the
-/// ~27 MB YAML text for [`parse_dep11_catalog`] / [`AppstreamAdapter::from_text`]
-/// ("never buffer whole" applies to the download only, §3.1). The cache
-/// is write-through provenance, not a TTL cache: every call re-downloads
-/// (catalogs republish ~daily; a freshness policy is a later-wave
-/// decision), replacing the cached file atomically via rename.
+/// (buffered, one chunk at a time — the 8.7 MB sid/main archive is never
+/// held in memory whole), then decompresses the cached file and returns
+/// the ~27 MB YAML text for [`parse_dep11_catalog`] /
+/// [`AppstreamAdapter::from_text`] ("never buffer whole" applies to the
+/// download only, §3.1).
+///
+/// The cache is an mtime-keyed TTL cache plus conditional-GET
+/// revalidation — the freshness policy this client's own doc once
+/// deferred to a later wave, now decided (F14): a cached copy younger
+/// than [`CATALOG_CACHE_TTL`] is decompressed from disk with **no
+/// network at all**; a stale or missing copy is fetched *conditionally*
+/// (`If-None-Match`/`If-Modified-Since`, from the server's
+/// `ETag`/`Last-Modified` kept in a `<catalog>.validators` sidecar), so
+/// an unchanged catalog costs a `304 Not Modified` header exchange
+/// instead of the 8.7 MB re-download + 27 MB re-decompression. All
+/// file-system and gzip work (probe, part-file open, finalize,
+/// decompress) runs on [`tokio::task::spawn_blocking`]; only the
+/// response chunk loop stays on the async task.
 #[cfg(feature = "http")]
 pub struct AppstreamClient {
     http: reqwest::Client,
     /// Directory under which the `appstream/` cache subtree is kept.
     cache_dir: camino::Utf8PathBuf,
 }
+
+/// How long a cached catalog is served with no network round-trip at all.
+///
+/// The freshness key is the cache file's **mtime** — probed by
+/// [`AppstreamClient::fetch_catalog`], and restarted (touched) whenever a
+/// conditional GET answers `304 Not Modified`. Conservative by design
+/// against the ~daily republish cadence (appstream.md §3): six hours
+/// bound the worst-case staleness inside a long-lived process, while a
+/// hot process still performs at most four revalidations a day — each
+/// usually a cheap `304` once the validators are cached.
+#[cfg(feature = "http")]
+pub const CATALOG_CACHE_TTL: Duration = Duration::from_hours(6);
 
 #[cfg(feature = "http")]
 impl AppstreamClient {
@@ -890,6 +922,13 @@ impl AppstreamClient {
     /// [`DEBIAN_BASE_URL`] or [`UBUNTU_BASE_URL`]; the returned text is
     /// exactly what [`AppstreamAdapter::from_text`] consumes.
     ///
+    /// Freshness ladder (F14): a cached copy within [`CATALOG_CACHE_TTL`]
+    /// is decompressed from disk with zero network; a stale or missing
+    /// copy is fetched — conditionally, with the cached `ETag`/
+    /// `Last-Modified` validators — replacing the cached file atomically
+    /// via rename. A `304 Not Modified` restarts the cache's TTL clock
+    /// and again serves the cached bytes, unchanged.
+    ///
     /// # Errors
     ///
     /// [`Error::Http`] for transport failures, non-success statuses, and
@@ -906,14 +945,70 @@ impl AppstreamClient {
         let url = catalog_url(base_url, suite, component, arch);
         let final_path = self.cache_path(suite, component, arch);
         let part_path = camino::Utf8PathBuf::from(format!("{final_path}.part"));
-        let result = self
-            .download_and_decompress(&url, &part_path, &final_path)
-            .await;
-        if result.is_err() {
-            // Best-effort cleanup of the aborted write-through.
-            let _ = std::fs::remove_file(&part_path);
+        // TTL probe off the async thread: one stat plus, on a hit, the
+        // full gzip decompression of the cached copy (the fs+gzip block
+        // must not run on an async worker — toride-apps' `save_manifest`
+        // precedent).
+        let probe_path = final_path.clone();
+        let probe = tokio::task::spawn_blocking(move || {
+            probe_cache(&probe_path, CATALOG_CACHE_TTL, SystemTime::now())
+        })
+        .await
+        .map_err(|error| http_error(&url, "cache probe join", &error.to_string()))?;
+        match probe {
+            CacheProbe::Fresh(text) => Ok(text),
+            CacheProbe::Stale {
+                etag,
+                last_modified,
+            } => {
+                let result = self
+                    .download_and_decompress(
+                        &url,
+                        &part_path,
+                        &final_path,
+                        etag.as_deref(),
+                        last_modified.as_deref(),
+                    )
+                    .await;
+                if result.is_err() {
+                    // Best-effort cleanup of the aborted write-through —
+                    // off the async thread like every other fs step.
+                    let cleanup = part_path.clone();
+                    let _ =
+                        tokio::task::spawn_blocking(move || std::fs::remove_file(cleanup)).await;
+                }
+                result
+            }
         }
-        result
+    }
+
+    /// The decompressed cached catalog for one scope, when a copy exists —
+    /// the offline/fixture seam over exactly the work a TTL-hit
+    /// [`AppstreamClient::fetch_catalog`] performs. No freshness check
+    /// and no network: `Ok(None)` means no cached copy exists yet.
+    ///
+    /// Synchronous by design — disk I/O plus the gzip inflate run on the
+    /// caller's thread; `fetch_catalog` wraps the identical
+    /// decompression step in `spawn_blocking` on its async path.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Http`] when a cached copy exists but cannot be read or
+    /// decompressed (the `url` field carries the cache path — I/O during
+    /// fetch+cache is transport-adjacent, so detail lives in `message`).
+    pub fn cached_catalog(
+        &self,
+        suite: &str,
+        component: &str,
+        arch: &str,
+    ) -> Result<Option<String>> {
+        let path = self.cache_path(suite, component, arch);
+        if !path.exists() {
+            return Ok(None);
+        }
+        decompress_cached(&path)
+            .map(Some)
+            .map_err(|error| http_error(path.as_str(), "decompress", &error.to_string()))
     }
 
     /// Cache location for one catalog: `<cache_dir>/appstream/<suite>-
@@ -928,28 +1023,64 @@ impl AppstreamClient {
         ))
     }
 
-    /// Stream the response into `part_path` (write-through), rename it
-    /// over `final_path`, then decompress the cached file fully.
+    /// Revalidate, and if needed re-download, one catalog: a conditional
+    /// GET with the cached validators, then either serve the revalidated
+    /// cache (`304`) or stream the response into `part_path`
+    /// (write-through, buffered), rename it over `final_path`, and
+    /// decompress it. Every fs/gzip step outside the awaited chunk loop
+    /// runs under `spawn_blocking`.
     async fn download_and_decompress(
         &self,
         url: &str,
         part_path: &camino::Utf8Path,
         final_path: &camino::Utf8Path,
+        etag: Option<&str>,
+        last_modified: Option<&str>,
     ) -> Result<String> {
-        let response = self
-            .http
-            .get(url)
+        let mut request = self.http.get(url);
+        for (name, value) in conditional_headers(etag, last_modified) {
+            request = request.header(name, value);
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| http_error(url, "send", &error.to_string()))?;
+        if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+            // Revalidated: restart the cache's TTL clock and serve the
+            // cached bytes — by definition of a 304 the validators
+            // themselves are unchanged, so the sidecar stays as-is.
+            let revalidated = final_path.to_owned();
+            let url_owned = url.to_owned();
+            return tokio::task::spawn_blocking(move || {
+                refresh_mtime(&revalidated).map_err(|error| {
+                    http_error(&url_owned, "refresh cache mtime", &error.to_string())
+                })?;
+                decompress_cached(&revalidated)
+                    .map_err(|error| http_error(&url_owned, "decompress", &error.to_string()))
+            })
+            .await
+            .map_err(|error| http_error(url, "revalidate join", &error.to_string()))?;
+        }
         if !response.status().is_success() {
             return Err(http_error(url, "status", &response.status().to_string()));
         }
-        std::fs::create_dir_all(part_path.parent().unwrap_or(part_path))
-            .map_err(|error| http_error(url, "create cache dir", &error.to_string()))?;
+        let etag = response_header(&response, reqwest::header::ETAG);
+        let last_modified = response_header(&response, reqwest::header::LAST_MODIFIED);
+        // Open the part file off the async thread (mkdir -p + create are fs
+        // work; the crate-family `spawn_blocking` convention — fs never on
+        // an async worker).
+        let open_path = part_path.to_owned();
+        let part = tokio::task::spawn_blocking(move || {
+            std::fs::create_dir_all(open_path.parent().unwrap_or(open_path.as_path()))
+                .and_then(|()| std::fs::File::create(&open_path))
+        })
+        .await
+        .map_err(|error| http_error(url, "open join", &error.to_string()))?
+        .map_err(|error| http_error(url, "create cache file", &error.to_string()))?;
         let mut response = response;
-        let mut part = std::fs::File::create(part_path)
-            .map_err(|error| http_error(url, "create cache file", &error.to_string()))?;
+        // BufWriter: the chunk loop must stay on the async task (it awaits
+        // the stream), so its writes coalesce into buffer-sized syscalls.
+        let mut part = std::io::BufWriter::new(part);
         while let Some(chunk) = response
             .chunk()
             .await
@@ -958,20 +1089,181 @@ impl AppstreamClient {
             part.write_all(chunk.as_ref())
                 .map_err(|error| http_error(url, "write cache", &error.to_string()))?;
         }
-        part.flush()
-            .map_err(|error| http_error(url, "flush cache", &error.to_string()))?;
-        drop(part);
-        // Same-directory rename: atomic on the cache filesystem.
-        std::fs::rename(part_path, final_path)
-            .map_err(|error| http_error(url, "finalize cache", &error.to_string()))?;
-        let compressed = std::fs::File::open(final_path)
-            .map_err(|error| http_error(url, "open cache", &error.to_string()))?;
-        let mut text = String::new();
-        flate2::read::GzDecoder::new(compressed)
-            .read_to_string(&mut text)
-            .map_err(|error| http_error(url, "decompress", &error.to_string()))?;
-        Ok(text)
+        // Flush, finalize, and decompress: all blocking, all off the async
+        // task in one blocking task (the crate-family `spawn_blocking`
+        // precedent — fs+gzip must never run on an async worker).
+        let finalized = final_path.to_owned();
+        let part_final = part_path.to_owned();
+        let url_owned = url.to_owned();
+        tokio::task::spawn_blocking(move || {
+            part.flush()
+                .map_err(|error| http_error(&url_owned, "flush cache", &error.to_string()))?;
+            drop(part);
+            // Same-directory rename: atomic on the cache filesystem.
+            std::fs::rename(&part_final, &finalized)
+                .map_err(|error| http_error(&url_owned, "finalize cache", &error.to_string()))?;
+            // Best-effort validators sidecar: a failed write only costs
+            // the next stale fetch an unconditional GET (the pre-F14
+            // behavior), never a failed catalog fetch.
+            let _ = write_validators(&finalized, etag.as_deref(), last_modified.as_deref());
+            decompress_cached(&finalized)
+                .map_err(|error| http_error(&url_owned, "decompress", &error.to_string()))
+        })
+        .await
+        .map_err(|error| http_error(url, "finalize join", &error.to_string()))?
     }
+}
+
+/// What the cache probe decided for one catalog path: serve the cached
+/// bytes, or revalidate with the stored validators.
+#[cfg(feature = "http")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum CacheProbe {
+    /// The cached copy is within [`CATALOG_CACHE_TTL`] and already fully
+    /// decompressed — no network needed.
+    Fresh(String),
+    /// Missing, stale, or unreadable cache; these are the validators to
+    /// send with the conditional GET (`None`/`None` = unconditional).
+    Stale {
+        /// Cached `ETag` validator, when one was stored.
+        etag: Option<String>,
+        /// Cached `Last-Modified` validator, when one was stored.
+        last_modified: Option<String>,
+    },
+}
+
+/// Probe one cached catalog — the mtime-keyed TTL decision (F14). The
+/// file's modification time IS the freshness clock: younger than `ttl`
+/// at `now` → the fully decompressed copy; older, missing, or
+/// undecompressable → the stored validators for a conditional GET.
+///
+/// Infallible by design: a corrupt or unreadable cache degrades to a
+/// miss with the validators dropped (forcing the full re-download that
+/// replaces the bad file), never to an error that would brick fetches
+/// for a whole TTL window.
+#[cfg(feature = "http")]
+fn probe_cache(path: &camino::Utf8Path, ttl: Duration, now: SystemTime) -> CacheProbe {
+    let fresh = std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|mtime| now.duration_since(mtime).ok())
+        .is_some_and(|age| age < ttl);
+    if !fresh {
+        let (etag, last_modified) = read_validators(path);
+        return CacheProbe::Stale {
+            etag,
+            last_modified,
+        };
+    }
+    match decompress_cached(path) {
+        Ok(text) => CacheProbe::Fresh(text),
+        // Corrupt cache: drop the validators too, so revalidation is a
+        // full GET that overwrites the bad copy (a 304 would keep it).
+        Err(_) => CacheProbe::Stale {
+            etag: None,
+            last_modified: None,
+        },
+    }
+}
+
+/// Decompress one cached `.yml.gz` catalog fully — the fs+gzip block
+/// that must run under `spawn_blocking` on any async path. Returns the
+/// raw I/O error; callers attach the fetch URL (or cache path, for the
+/// offline seam) when mapping it.
+#[cfg(feature = "http")]
+fn decompress_cached(path: &camino::Utf8Path) -> std::io::Result<String> {
+    let compressed = std::fs::File::open(path)?;
+    let mut text = String::new();
+    flate2::read::GzDecoder::new(compressed).read_to_string(&mut text)?;
+    Ok(text)
+}
+
+/// The conditional-GET request headers for the cached validators:
+/// `If-None-Match: <etag>` and `If-Modified-Since: <last-modified>`,
+/// each emitted only when that validator was cached (`None` in → header
+/// out). Values are verbatim echoes of what the server previously sent —
+/// no date reformatting, so the validation round-trip stays exact.
+#[cfg(feature = "http")]
+#[must_use]
+fn conditional_headers(
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Vec<(&'static str, String)> {
+    let mut headers = Vec::new();
+    if let Some(etag) = etag {
+        headers.push((reqwest::header::IF_NONE_MATCH.as_str(), etag.to_owned()));
+    }
+    if let Some(last_modified) = last_modified {
+        headers.push((
+            reqwest::header::IF_MODIFIED_SINCE.as_str(),
+            last_modified.to_owned(),
+        ));
+    }
+    headers
+}
+
+/// One response header as an owned string, when present and UTF-8 —
+/// validators are optional, so a missing or non-UTF-8 header is simply
+/// `None`.
+#[cfg(feature = "http")]
+#[must_use]
+fn response_header(
+    response: &reqwest::Response,
+    name: reqwest::header::HeaderName,
+) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+}
+
+/// The validators sidecar path for one cached catalog:
+/// `<catalog>.validators`.
+#[cfg(feature = "http")]
+#[must_use]
+fn validators_path(path: &camino::Utf8Path) -> camino::Utf8PathBuf {
+    camino::Utf8PathBuf::from(format!("{path}.validators"))
+}
+
+/// Read the cached validators from the sidecar (line 1 = `ETag`, line 2 =
+/// `Last-Modified`; an empty line = no validator). A missing or
+/// malformed sidecar reads as `(None, None)` — the next stale fetch is
+/// then an unconditional GET, exactly the pre-validator behavior (e.g. a
+/// cache written by an older build).
+#[cfg(feature = "http")]
+#[must_use]
+fn read_validators(path: &camino::Utf8Path) -> (Option<String>, Option<String>) {
+    let Ok(text) = std::fs::read_to_string(validators_path(path)) else {
+        return (None, None);
+    };
+    let mut lines = text.lines();
+    let non_empty = |line: Option<&str>| line.filter(|line| !line.is_empty()).map(str::to_owned);
+    (non_empty(lines.next()), non_empty(lines.next()))
+}
+
+/// Store the validators sidecar next to a finalized catalog.
+#[cfg(feature = "http")]
+fn write_validators(
+    path: &camino::Utf8Path,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> std::io::Result<()> {
+    std::fs::write(
+        validators_path(path),
+        format!("{}\n{}\n", etag.unwrap_or(""), last_modified.unwrap_or("")),
+    )
+}
+
+/// Restart the TTL clock for a revalidated cache entry: the mtime IS the
+/// freshness key, so a `304 Not Modified` (cache confirmed current)
+/// touches it to now.
+#[cfg(feature = "http")]
+fn refresh_mtime(path: &camino::Utf8Path) -> std::io::Result<()> {
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(path)?
+        .set_modified(SystemTime::now())
 }
 
 /// [`Error::Http`] constructor for the client's transport-adjacent
@@ -1497,10 +1789,66 @@ Launchable:
 }
 
 /// Client-layer unit tests (compile- and run-offline; only the gated
-/// feature is exercised, never the network).
+/// feature is exercised, never the network). The F14 freshness rig lives
+/// here: the mtime-keyed TTL probe, the validators sidecar, the
+/// conditional-GET headers, and cached-vs-fresh parity at the offline
+/// seam.
 #[cfg(all(test, feature = "http"))]
 mod client_tests {
     use super::*;
+
+    /// Tiny DEP-11 excerpt for the cache probes (header + one component;
+    /// the parse-half wire edges are pinned by `tests` above).
+    const PROBE_CATALOG: &str = "%YAML 1.2
+---
+File: DEP-11
+Origin: debian-sid-main
+---
+Type: console-application
+ID: rg.desktop
+Package: ripgrep
+Name:
+  C: ripgrep
+";
+
+    /// One `If-None-Match`/`If-Modified-Since` validator pair used across
+    /// the probes.
+    const ETAG: &str = "\"dep11-v1\"";
+    const LAST_MODIFIED: &str = "Wed, 01 Jan 2026 00:00:00 GMT";
+
+    /// Unique scratch dir for one test (the `network_tests` temp-dir
+    /// precedent, plus best-effort cleanup so reruns start empty).
+    fn scratch(name: &str) -> camino::Utf8PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "toride-registry-appstream-client-{name}-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir creatable");
+        camino::Utf8PathBuf::from_path_buf(dir).expect("temp path is UTF-8")
+    }
+
+    /// Gzip `text` into `path` — exactly the bytes a fresh download
+    /// leaves behind in the cache (parent dirs created, as a fetch would).
+    fn seed_gz(path: &camino::Utf8Path, text: &str) {
+        std::fs::create_dir_all(path.parent().unwrap_or(path)).expect("seed dir creatable");
+        let file = std::fs::File::create(path).expect("seed file creatable");
+        let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+        encoder
+            .write_all(text.as_bytes())
+            .expect("seed content writable");
+        encoder.finish().expect("seed gzip finishable");
+    }
+
+    /// Pin a file's mtime to an explicit instant (the TTL's clock).
+    fn set_mtime(path: &camino::Utf8Path, at: SystemTime) {
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .expect("open for mtime")
+            .set_modified(at)
+            .expect("set mtime");
+    }
 
     #[test]
     fn cache_path_is_layout_shaped() {
@@ -1513,6 +1861,158 @@ mod client_tests {
         assert_eq!(
             client.cache_path("si/d", "ma/in", "amd64").as_str(),
             "/var/cache/toride/appstream/si_d-ma_in-Components-amd64.yml.gz"
+        );
+    }
+
+    #[test]
+    fn cache_probe_is_mtime_keyed() {
+        let dir = scratch("probe");
+        let path = dir.join("sid-main-Components-amd64.yml.gz");
+        // Missing cache: an unconditional revalidation.
+        assert_eq!(
+            probe_cache(&path, CATALOG_CACHE_TTL, SystemTime::now()),
+            CacheProbe::Stale {
+                etag: None,
+                last_modified: None
+            }
+        );
+        seed_gz(&path, PROBE_CATALOG);
+        write_validators(&path, Some(ETAG), Some(LAST_MODIFIED)).expect("sidecar writable");
+        // A fixed mtime makes the TTL boundary deterministic.
+        let mtime = SystemTime::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        set_mtime(&path, mtime);
+        // One second inside the window: the fresh hit carries the fully
+        // decompressed copy — the zero-network serving path.
+        assert_eq!(
+            probe_cache(
+                &path,
+                CATALOG_CACHE_TTL,
+                mtime + CATALOG_CACHE_TTL - Duration::from_secs(1)
+            ),
+            CacheProbe::Fresh(PROBE_CATALOG.to_owned())
+        );
+        // At the boundary and beyond: stale, with the sidecar validators
+        // for the conditional GET.
+        assert_eq!(
+            probe_cache(&path, CATALOG_CACHE_TTL, mtime + CATALOG_CACHE_TTL),
+            CacheProbe::Stale {
+                etag: Some(ETAG.to_owned()),
+                last_modified: Some(LAST_MODIFIED.to_owned())
+            }
+        );
+    }
+
+    #[test]
+    fn corrupt_cache_degrades_to_an_unconditional_miss() {
+        let dir = scratch("corrupt");
+        let path = dir.join("sid-main-Components-amd64.yml.gz");
+        std::fs::write(&path, b"not gzip").expect("garbage seedable");
+        write_validators(&path, Some(ETAG), None).expect("sidecar writable");
+        // A fresh-but-undecompressable cache must neither error (bricking
+        // fetches for a whole TTL window) nor send validators that could
+        // 304 and keep the bad copy: it forces the full re-download.
+        assert_eq!(
+            probe_cache(&path, CATALOG_CACHE_TTL, SystemTime::now()),
+            CacheProbe::Stale {
+                etag: None,
+                last_modified: None
+            }
+        );
+    }
+
+    #[test]
+    fn validators_sidecar_round_trips() {
+        let dir = scratch("validators");
+        let path = dir.join("sid-main-Components-amd64.yml.gz");
+        std::fs::write(&path, b"gz").expect("cache file seedable");
+        // No sidecar (a cache from the pre-validator build): none.
+        assert_eq!(read_validators(&path), (None, None));
+        write_validators(&path, Some(ETAG), Some(LAST_MODIFIED)).expect("sidecar writable");
+        assert_eq!(
+            read_validators(&path),
+            (Some(ETAG.to_owned()), Some(LAST_MODIFIED.to_owned()))
+        );
+        // Either validator alone survives the two-line format.
+        write_validators(&path, None, Some(LAST_MODIFIED)).expect("sidecar rewritable");
+        assert_eq!(
+            read_validators(&path),
+            (None, Some(LAST_MODIFIED.to_owned()))
+        );
+        write_validators(&path, Some(ETAG), None).expect("sidecar rewritable");
+        assert_eq!(read_validators(&path), (Some(ETAG.to_owned()), None));
+        // Both absent: empty lines read back as no validators.
+        write_validators(&path, None, None).expect("sidecar rewritable");
+        assert_eq!(read_validators(&path), (None, None));
+    }
+
+    #[test]
+    fn conditional_headers_mirror_cached_validators() {
+        assert_eq!(
+            conditional_headers(Some(ETAG), Some(LAST_MODIFIED)),
+            vec![
+                ("if-none-match", ETAG.to_owned()),
+                ("if-modified-since", LAST_MODIFIED.to_owned()),
+            ]
+        );
+        assert_eq!(
+            conditional_headers(Some(ETAG), None),
+            vec![("if-none-match", ETAG.to_owned())]
+        );
+        assert_eq!(
+            conditional_headers(None, Some(LAST_MODIFIED)),
+            vec![("if-modified-since", LAST_MODIFIED.to_owned())]
+        );
+        // No cached validators: an unconditional GET, exactly the
+        // pre-F14 request shape.
+        assert!(conditional_headers(None, None).is_empty());
+    }
+
+    #[test]
+    fn cached_catalog_serves_the_seeded_copy_with_parse_parity() {
+        let client = AppstreamClient::new(scratch("cached-catalog"));
+        // Nothing cached for the scope yet: an honest None, not an error.
+        assert_eq!(
+            client
+                .cached_catalog("sid", "main", "amd64")
+                .expect("uncached scope reads clean"),
+            None
+        );
+        // Seed exactly what a fresh download leaves behind...
+        seed_gz(&client.cache_path("sid", "main", "amd64"), PROBE_CATALOG);
+        let cached = client
+            .cached_catalog("sid", "main", "amd64")
+            .expect("cached copy decompresses")
+            .expect("cached copy exists");
+        // ...then the cached read must be byte-identical to the source and
+        // normalize identically (cached-vs-fresh parity, the F14 oracle:
+        // a TTL hit may never diverge from what a fresh fetch parses).
+        assert_eq!(cached, PROBE_CATALOG);
+        let from_cache =
+            AppstreamAdapter::from_text(&cached, Some(Arch::X86_64)).expect("cached text parses");
+        let from_source = AppstreamAdapter::from_text(PROBE_CATALOG, Some(Arch::X86_64))
+            .expect("source text parses");
+        assert_eq!(from_cache, from_source);
+    }
+
+    #[test]
+    fn refresh_mtime_restarts_the_ttl_clock() {
+        let dir = scratch("refresh");
+        let path = dir.join("sid-main-Components-amd64.yml.gz");
+        seed_gz(&path, PROBE_CATALOG);
+        let ancient = SystemTime::UNIX_EPOCH + Duration::from_secs(60);
+        set_mtime(&path, ancient);
+        assert!(
+            matches!(
+                probe_cache(&path, CATALOG_CACHE_TTL, SystemTime::now()),
+                CacheProbe::Stale { .. }
+            ),
+            "an aged-out cache revalidates"
+        );
+        // The 304 arm's touch: the same cache is fresh again.
+        refresh_mtime(&path).expect("mtime refreshable");
+        assert_eq!(
+            probe_cache(&path, CATALOG_CACHE_TTL, SystemTime::now()),
+            CacheProbe::Fresh(PROBE_CATALOG.to_owned())
         );
     }
 }
@@ -1543,17 +2043,47 @@ mod network_tests {
             eprintln!("skipping live DEP-11 fetch: set TORIDE_REGISTRY_INTEGRATION=1 to run");
             return;
         }
+        // Per-run scratch dir: every invocation starts with an empty cache
+        // so the first fetch below exercises the true full-download path.
         let cache_dir = camino::Utf8PathBuf::from(
             std::env::temp_dir()
-                .join("toride-registry-appstream")
+                .join(format!("toride-registry-appstream-{}", std::process::id()))
                 .to_string_lossy()
                 .into_owned(),
         );
-        let client = AppstreamClient::new(cache_dir);
+        let _ = std::fs::remove_dir_all(&cache_dir);
+        let client = AppstreamClient::new(&cache_dir);
         let text = client
             .fetch_catalog(DEBIAN_BASE_URL, "sid", "main", "amd64")
             .await
             .expect("live sid/main catalog fetch");
+        // F14 freshness parity, live: an immediate second fetch is a
+        // TTL hit (mtime-keyed, no network) and must be byte-identical.
+        let ttl_hit = client
+            .fetch_catalog(DEBIAN_BASE_URL, "sid", "main", "amd64")
+            .await
+            .expect("ttl-hit catalog serve");
+        assert_eq!(
+            ttl_hit, text,
+            "a TTL hit must serve the cached bytes verbatim"
+        );
+        // Aging the cache past the TTL forces the conditional GET — 304
+        // or 200, the served text must still match what was fetched.
+        let cached_path = client.cache_path("sid", "main", "amd64");
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&cached_path)
+            .expect("cache file openable")
+            .set_modified(std::time::SystemTime::UNIX_EPOCH)
+            .expect("cache mtime agable");
+        let revalidated = client
+            .fetch_catalog(DEBIAN_BASE_URL, "sid", "main", "amd64")
+            .await
+            .expect("revalidated catalog fetch");
+        assert_eq!(
+            revalidated, text,
+            "a conditional-GET fetch (304 or 200) must serve the same catalog"
+        );
         let adapter =
             AppstreamAdapter::from_text(&text, decode_catalog_arch("Components-amd64.yml.gz"))
                 .expect("live catalog parses");

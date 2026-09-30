@@ -5,10 +5,20 @@
 //! fetch side (streaming, decompression, client) cannot quietly regress
 //! parsing.
 //!
+//! Round 2 extends the pin to the F14 **fetch-side cache** (the `http`
+//! feature's TTL serving path): `cached_catalog` over a seeded cache
+//! directory — stat + open + full gzip inflate, exactly the work a
+//! TTL-hit `fetch_catalog` performs off its async thread. The network
+//! arms of the fix (conditional GET, `304` revalidation, the streamed
+//! `BufWriter` download) are pinned offline by the crate's
+//! `client_tests` (validator sidecar round-trip, conditional-header
+//! construction, mtime-keyed probe) and live by `network_tests` — none
+//! of them are benchable hermetically.
+//!
 //! Hermetic by construction: the fixture is `include_str!`-ed at compile
 //! time (no runtime file access, no network, no clock), the parse half is
-//! pure, and the group is tuned (short warm-up, 2 s measurement window) to
-//! keep the whole bench seconds-scale for per-round campaign re-runs.
+//! pure, and the groups are tuned (short warm-up, 2 s measurement window)
+//! to keep the whole bench seconds-scale for per-round campaign re-runs.
 //!
 //! Deterministic oracle (runs before any timing): the fixture's parse is
 //! pinned by exact count, header shape, numeric-scalar and
@@ -150,5 +160,82 @@ fn bench_dep11_parse(criterion: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_dep11_parse);
+/// The F14 fetch-side cache group (`http` feature): the TTL-hit serving
+/// path over a seeded cache directory. Seeding gzips the fixture to the
+/// client's exact layout path (`<cache>/appstream/sid-main-Components-
+/// amd64.yml.gz`, pinned by `client_tests::cache_path_is_layout_shaped`)
+/// — byte-for-byte what a fresh download leaves behind.
+///
+/// Deterministic oracle before any timing (cached-vs-fresh parity, the
+/// F14 round-2 requirement): the seeded scope must decompress back to the
+/// fixture verbatim, and an uncached scope must answer `Ok(None)`.
+#[cfg(feature = "http")]
+fn bench_dep11_cache(criterion: &mut Criterion) {
+    use std::io::Write as _;
+    use toride_registry::sources::appstream::AppstreamClient;
+
+    let cache_root = std::env::temp_dir().join(format!(
+        "toride-registry-dep11-cache-bench-{}",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_dir_all(&cache_root);
+    std::fs::create_dir_all(&cache_root).expect("bench cache dir creatable");
+    let client = AppstreamClient::new(cache_root.to_string_lossy().into_owned());
+
+    // Seed: the fixture gzipped to the layout path (flate2 write-through,
+    // the same encoder shape the download's write-through produces).
+    let catalog_path = cache_root
+        .join("appstream")
+        .join("sid-main-Components-amd64.yml.gz");
+    std::fs::create_dir_all(catalog_path.parent().expect("layout parent")).expect("layout dir");
+    let file = std::fs::File::create(&catalog_path).expect("seed file creatable");
+    let mut encoder = flate2::write::GzEncoder::new(file, flate2::Compression::default());
+    encoder
+        .write_all(FIXTURE.as_bytes())
+        .expect("seed writable");
+    encoder.finish().expect("seed finishable");
+
+    // Parity oracle before timing: benchmarking a broken cache read would
+    // measure the wrong thing.
+    assert_eq!(
+        client
+            .cached_catalog("sid", "main", "amd64")
+            .expect("seeded scope reads")
+            .as_deref(),
+        Some(FIXTURE),
+        "cached-vs-fresh parity: the gz round-trip must be lossless"
+    );
+    assert_eq!(
+        client
+            .cached_catalog("bookworm", "main", "amd64")
+            .expect("uncached scope reads"),
+        None,
+        "an uncached scope is an honest None"
+    );
+
+    let mut group = criterion.benchmark_group("dep11_cache");
+    group.sample_size(30);
+    group.warm_up_time(Duration::from_millis(500));
+    group.measurement_time(Duration::from_secs(2));
+    group.throughput(Throughput::Bytes(FIXTURE.len() as u64));
+    group.bench_function("cached_catalog", |bencher| {
+        bencher.iter(|| {
+            client
+                .cached_catalog(black_box("sid"), black_box("main"), black_box("amd64"))
+                .expect("seeded scope reads")
+                .expect("seeded copy exists")
+        });
+    });
+    group.finish();
+}
+
+/// Register every group, keeping the `http`-gated cache group out of
+/// `--no-default-features` builds.
+fn bench_all(criterion: &mut Criterion) {
+    bench_dep11_parse(criterion);
+    #[cfg(feature = "http")]
+    bench_dep11_cache(criterion);
+}
+
+criterion_group!(benches, bench_all);
 criterion_main!(benches);
