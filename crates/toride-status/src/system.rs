@@ -706,7 +706,10 @@ thread_local! {
 
 /// Run `f` with every test thread's `SLOW_PROC_CACHE` access serialized
 /// against this one. Reentrant on the holding thread; production compiles
-/// the identity.
+/// the identity. The reentrancy depth is raised through an RAII guard, so a
+/// panic inside `f` cannot leak depth ≥ 1 onto a reused test thread (a leak
+/// would make every later `slow_proc_serialized` on that thread take the
+/// identity fast path and silently run unserialized).
 #[cfg(all(test, target_os = "linux"))]
 fn slow_proc_serialized<R>(f: impl FnOnce() -> R) -> R {
     if SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get) > 0 {
@@ -715,10 +718,31 @@ fn slow_proc_serialized<R>(f: impl FnOnce() -> R) -> R {
     let _guard = SLOW_PROC_TEST_SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    SLOW_PROC_SERIAL_DEPTH.with(|d| d.set(d.get() + 1));
-    let out = f();
-    SLOW_PROC_SERIAL_DEPTH.with(|d| d.set(d.get() - 1));
-    out
+    let _depth = SlowSerialDepth::raise();
+    f()
+}
+
+/// RAII bump of [`SLOW_PROC_SERIAL_DEPTH`] for the current thread, dropped
+/// (decremented) even when the guarded body panics. Same shape as the
+/// lock-discipline marker [`SlowLockHeld`].
+#[cfg(all(test, target_os = "linux"))]
+struct SlowSerialDepth;
+
+#[cfg(all(test, target_os = "linux"))]
+impl SlowSerialDepth {
+    /// Raise this thread's serializer depth by one until the returned guard
+    /// drops.
+    fn raise() -> Self {
+        SLOW_PROC_SERIAL_DEPTH.with(|d| d.set(d.get() + 1));
+        Self
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+impl Drop for SlowSerialDepth {
+    fn drop(&mut self) {
+        SLOW_PROC_SERIAL_DEPTH.with(|d| d.set(d.get() - 1));
+    }
 }
 
 /// Production identity of [`slow_proc_serialized`] (see its docs for why the
@@ -6680,7 +6704,10 @@ mod tests {
     /// ORACLE: pruning drops exited pids so the cache tracks the live process
     /// table instead of growing unboundedly. The live set is the same
     /// `HashSet` shape the per-collect prune builds. Whole body serialized:
-    /// the seed→seed→prune sequence must be atomic against siblings.
+    /// the seed→seed→prune sequence must be atomic against siblings. The
+    /// containment results are read under the cache lock but asserted AFTER
+    /// releasing it — a failing assert under the guard would poison the cache
+    /// mutex and cascade into every later slow-proc test.
     #[cfg(target_os = "linux")]
     #[test]
     fn prune_slow_proc_cache_drops_exited_pids() {
@@ -6692,9 +6719,14 @@ mod tests {
             slow_proc_fields(dead, Some(1));
 
             prune_slow_proc_cache(&std::iter::once(live).collect());
-            let cache = SLOW_PROC_CACHE.lock().unwrap();
-            assert!(cache.contains_key(&live), "the live pid is retained");
-            assert!(!cache.contains_key(&dead), "the exited pid is pruned");
+            let (live_retained, dead_pruned) = {
+                let cache = SLOW_PROC_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (cache.contains_key(&live), !cache.contains_key(&dead))
+            };
+            assert!(live_retained, "the live pid is retained");
+            assert!(dead_pruned, "the exited pid is pruned");
         });
     }
 
@@ -6710,7 +6742,10 @@ mod tests {
             let pid = std::process::id();
             // Force the miss: no cached entry for this pid, whatever a sibling
             // test on this pooled thread may have left.
-            SLOW_PROC_CACHE.lock().unwrap().remove(&pid);
+            SLOW_PROC_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&pid);
             SLOW_READS_UNDER_LOCK.with(|c| c.set(0));
             let samples_before = slow_proc_counters().0;
 
@@ -6738,7 +6773,9 @@ mod tests {
     /// serialized: the seed→len→prune window is exactly where a parallel
     /// sibling's insert would inflate the probe count past the exact
     /// equality, and the tiny synthetic live set makes this prune wipe the
-    /// whole cache — atomicity keeps both sides safe.
+    /// whole cache — atomicity keeps both sides safe. Containment results
+    /// are read under the cache lock but asserted AFTER releasing it, so a
+    /// failure cannot poison the cache mutex and cascade into later tests.
     #[cfg(target_os = "linux")]
     #[test]
     fn prune_probes_each_cached_entry_exactly_once() {
@@ -6755,7 +6792,9 @@ mod tests {
             // body holds the test serializer: with siblings serialized out,
             // no insert can land between this len and the prune below.
             let expected_probes = {
-                let cache = SLOW_PROC_CACHE.lock().unwrap();
+                let cache = SLOW_PROC_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 u64::try_from(cache.len()).expect("a test cache fits in u64")
             };
             // Live set: two seeded pids plus two strangers.
@@ -6770,15 +6809,19 @@ mod tests {
                 expected_probes,
                 "one membership probe per cached entry, not entries × live pids"
             );
-            let cache = SLOW_PROC_CACHE.lock().unwrap();
-            assert!(
-                cache.contains_key(&seeded[0]) && cache.contains_key(&seeded[3]),
-                "the live synthetic pids are retained"
-            );
-            assert!(
-                !cache.contains_key(&seeded[1]) && !cache.contains_key(&seeded[2]),
-                "the dead synthetic pids are pruned"
-            );
+            let (live0, live3, dead1, dead2) = {
+                let cache = SLOW_PROC_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (
+                    cache.contains_key(&seeded[0]),
+                    cache.contains_key(&seeded[3]),
+                    cache.contains_key(&seeded[1]),
+                    cache.contains_key(&seeded[2]),
+                )
+            };
+            assert!(live0 && live3, "the live synthetic pids are retained");
+            assert!(!dead1 && !dead2, "the dead synthetic pids are pruned");
         });
     }
 
@@ -6789,6 +6832,49 @@ mod tests {
             SLOW_SAMPLES.with(std::cell::Cell::get),
             SLOW_CACHE_HITS.with(std::cell::Cell::get),
         )
+    }
+
+    /// ORACLE (round 6, serializer panic safety): a panic inside a guarded
+    /// body must still reset the reentrancy depth — the RAII guard drops
+    /// during unwind — so a REUSED test thread's next
+    /// [`slow_proc_serialized`] call takes the mutex path, not the
+    /// identity fast path (a leaked depth ≥ 1 would silently skip
+    /// serialization for the rest of that thread's tests). Note: the
+    /// deliberate unwind below poisons `SLOW_PROC_TEST_SERIAL` for the rest
+    /// of this test binary's run — by design; every lock site is
+    /// poison-tolerant, so this oracle doubles as a live exercise of that
+    /// tolerance.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_serialized_depth_resets_across_a_panic() {
+        let before = SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get);
+        // Silence the panic hook for the deliberate unwind below so the
+        // test log stays clean.
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(|| {
+            slow_proc_serialized(|| panic!("oracle: deliberate unwind mid-guard"));
+        });
+        std::panic::set_hook(prev_hook);
+        assert!(
+            outcome.is_err(),
+            "the guarded body did panic (the unwind path ran)"
+        );
+        assert_eq!(
+            SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get),
+            before,
+            "the reentrancy depth must reset even when the guarded body panics"
+        );
+        // And the next call on this thread still serializes (depth back at
+        // the baseline, so it takes the mutex path, not the fast path).
+        slow_proc_serialized(|| {
+            assert_eq!(
+                SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get),
+                before + 1,
+                "the post-panic call took the mutex path (depth raised), \
+                 not the leaked-depth identity fast path"
+            );
+        });
     }
 
     /// Advances this thread's slow-field TTL test clock past the TTL,
