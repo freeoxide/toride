@@ -29,15 +29,15 @@
 //! TUI's terminal. The data is genuinely live: it reflects the actual
 //! machine.
 //!
-//! ## Doctor findings cache
+//! ## Whole-sweep cache
 //!
 //! The catalogue scan resolves ~30 binaries and runs a version probe on each
-//! found tool, and a tool's presence changes slowly, so the findings (one
-//! `tools.missing.<name>` warning per MISSING expected tool) are cached for
-//! 60s — exactly like the harden / mise / fail2ban findings caches. The whole
-//! scan is treated as the "doctor": `use_cache` reuses the cached findings and
-//! skips re-probing; the tool list itself is still re-resolved each poll
-//! (cheap) so a freshly-installed tool surfaces quickly.
+//! found tool, and a tool's presence changes slowly, so the ENTIRE sweep —
+//! tool rows, counts, and the findings (one `tools.missing.<name>` warning per
+//! MISSING expected tool) — is cached for 60s, mirroring the proxy
+//! collector's whole-report cache: a cache hit performs zero `$PATH` scans and
+//! zero version-probe subprocesses. Freshness caveat (deliberate cadence
+//! decision): a freshly installed or removed tool surfaces up to 60s late.
 //!
 //! ## Blocking
 //!
@@ -90,32 +90,34 @@ pub struct ToolsDataBundle {
 
 /// Manages periodic async collection of the installed-tools catalogue.
 ///
-/// Mirrors [`HardenCollector`](crate::toride_harden_data::HardenCollector): a
-/// oneshot channel for the in-flight result, plus a 60s TTL cache for the
-/// expensive findings (missing-expected-tool warnings) so they are not
-/// re-derived on every 2s refresh tick.
+/// Mirrors the proxy collector's whole-report cache: a oneshot channel for the
+/// in-flight result, plus a 60s TTL cache over the ENTIRE sweep (tool rows,
+/// counts, and findings) so neither the per-alias `$PATH` scans nor the
+/// version-probe subprocesses re-run on every 2s refresh tick.
 pub struct ToolsCollector {
-    /// Carries the bundle AND whether the cached findings were reused for this
-    /// poll. The freshness timestamp must only be advanced when the scan was
+    /// Carries the bundle AND whether the cached bundle was reused for this
+    /// poll. The freshness timestamp must only be advanced when the sweep was
     /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
-    /// would reset the TTL clock with the SAME (already-cached) findings and
+    /// would reset the TTL clock with the SAME (already-cached) bundle and
     /// the cache would never expire for the lifetime of the app.
     rx: Option<oneshot::Receiver<(ToolsDataBundle, bool)>>,
-    /// Cached doctor findings (missing-expected-tool warnings) from the last
-    /// collection.
-    cached_findings: Option<Vec<FindingEntry>>,
-    /// When the findings cache was last refreshed.
-    findings_fresh_at: Option<std::time::Instant>,
+    /// Cached bundle (tool rows + counts + findings) from the last sweep.
+    cached_bundle: Option<ToolsDataBundle>,
+    /// When the bundle cache was last refreshed.
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
-/// How long to keep cached findings before re-running the catalogue scan.
-const FINDINGS_TTL: Duration = Duration::from_secs(60);
+/// How long to keep the cached bundle before re-running the catalogue sweep.
+///
+/// Deliberate freshness semantics: a freshly installed or removed tool
+/// surfaces up to this TTL late (see the module docs).
+const SWEEP_TTL: Duration = Duration::from_secs(60);
 
-/// Whether the findings-cache TTL has already elapsed for a cache that was
+/// Whether the sweep-cache TTL has already elapsed for a cache that was
 /// last refreshed at `fresh_at`.
 ///
 /// Round-0 instrumentation seam, ZERO behavior change: outside `cfg(test)`
-/// this is exactly the negation of the `t.elapsed() < FINDINGS_TTL` check
+/// this is exactly the negation of the `t.elapsed() < SWEEP_TTL` check
 /// `start` always evaluated inline. Under `cfg(test)` the thread-local
 /// [`TTL_TEST_OFFSET_MS`] is folded into the elapsed time so the cadence
 /// oracles can observe TTL expiry deterministically — no 60s sleeps and no
@@ -127,7 +129,7 @@ fn ttl_expired(fresh_at: std::time::Instant) -> bool {
     let elapsed = fresh_at.elapsed();
     #[cfg(test)]
     let elapsed = elapsed + Duration::from_millis(TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
-    elapsed >= FINDINGS_TTL
+    elapsed >= SWEEP_TTL
 }
 
 // Extra milliseconds folded into `ttl_expired`'s elapsed time by the
@@ -146,8 +148,8 @@ impl ToolsCollector {
     pub fn new() -> Self {
         Self {
             rx: None,
-            cached_findings: None,
-            findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -158,17 +160,18 @@ impl ToolsCollector {
 
     /// Start a new background collection.
     ///
-    /// If a collection is already in-flight, this is a no-op. The 60s findings
-    /// cache is consulted: when fresh, the spawned task reuses the cached
-    /// findings instead of re-probing every binary's version.
+    /// If a collection is already in-flight, this is a no-op. The 60s
+    /// whole-sweep cache is consulted: when fresh, the spawned task serves the
+    /// cached bundle verbatim — no `$PATH` scans, no version-probe
+    /// subprocesses.
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
         }
         let (tx, rx) = oneshot::channel();
-        let use_cache = self.cached_findings.is_some()
-            && self.findings_fresh_at.is_some_and(|t| !ttl_expired(t));
-        let cached_findings = self.cached_findings.clone();
+        let use_cache =
+            self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
+        let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
         // The catalogue scan is entirely synchronous (PATH discovery plus
         // version subprocesses), so it runs inside ONE spawn_blocking owned
@@ -182,7 +185,7 @@ impl ToolsCollector {
         // and poll() would map that to `None`, leaving the dashboard showing
         // stale last-good data indefinitely with no degraded-state signal.
         let handle =
-            tokio::spawn(async move { collect_real_tools(use_cache, cached_findings).await });
+            tokio::spawn(async move { collect_real_tools(use_cache, cached_bundle).await });
         tokio::spawn(async move {
             let result = handle.await;
             let (bundle, reused_cache) = match result {
@@ -202,24 +205,28 @@ impl ToolsCollector {
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. On success the cached findings are
-    /// updated to the freshly-returned findings, but the freshness timestamp is
-    /// only advanced when the scan was actually re-run (not on a cache-hit
-    /// poll) — otherwise the 60s TTL would be re-armed forever with the same
-    /// cached data on every 2s refresh.
+    /// pending or if the collection failed. On a real (available) bundle the
+    /// whole bundle is cached, but the freshness timestamp is only advanced
+    /// when the sweep was actually re-run (not on a cache-hit poll) —
+    /// otherwise the 60s TTL would be re-armed forever with the same cached
+    /// data on every 2s refresh. A degraded bundle (a panic caught by the
+    /// outer spawn) is never cached, so the next refresh re-runs the sweep
+    /// instead of pinning an empty panel for the TTL.
     pub async fn poll(&mut self) -> Option<ToolsDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
-                    self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the scan was
-                    // actually re-run. On a cache-hit poll the findings are
+                if let Some((ref bundle, used_cache)) = result
+                    && bundle.available
+                {
+                    self.cached_bundle = Some(bundle.clone());
+                    // Only advance the freshness clock when the sweep was
+                    // actually re-run. On a cache-hit poll the bundle is
                     // the SAME data we already cached, so resetting the TTL
-                    // here would let the cache live forever as long as the 2s
-                    // refresh tick keeps firing inside the TTL window.
+                    // here would let the cache live forever as long as the
+                    // 2s refresh tick keeps firing inside the TTL window.
                     if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
+                        self.bundle_fresh_at = Some(std::time::Instant::now());
                     }
                 }
                 self.rx = None;
@@ -229,11 +236,11 @@ impl ToolsCollector {
         }
     }
 
-    /// Invalidate the findings cache so the next collection re-runs the scan.
+    /// Invalidate the sweep cache so the next collection re-runs the scan.
     #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
-        self.cached_findings = None;
-        self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -248,28 +255,32 @@ impl Default for ToolsCollector {
 /// Collect the installed-tools catalogue by scanning the host for every
 /// catalogue entry.
 ///
-/// All work runs on the blocking thread pool inside a single
+/// When `use_cache` is set and a cached bundle is present, the cached bundle
+/// is served verbatim and NOTHING runs — no `$PATH` scans, no version-probe
+/// subprocesses — mirroring the proxy collector's whole-report cache arm.
+///
+/// Otherwise all work runs on the blocking thread pool inside a single
 /// `spawn_blocking`: each catalogue alias is classified through a
 /// [`Detector`](toride_installer::Detector) (`$PATH` first, then the managed
 /// `~/.local/bin` location — the first resolving alias wins), and the found
 /// binary is probed under [`VERSION_TIMEOUT`] (`--version`, falling back to
-/// `-V`) for its version string. The findings (missing-expected-tool
-/// warnings) are reused from the cache when fresh.
-///
-/// `use_cache` / `cached_findings` mirror the harden / mise findings cache:
-/// when the cache is fresh the findings are taken verbatim and the version
-/// probes are still run (the catalogue is short and discovery is cheap), but
-/// the missing-tool warnings are not re-derived.
+/// `-V`) for its version string.
 ///
 /// On ANY panic (`JoinError` from the outer `tokio::spawn`) returns
 /// [`empty_bundle_with_reason`] with `available = false`.
 ///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
-/// findings were actually taken from the cache on a successful collection.
+/// bundle was served verbatim from the cache.
 async fn collect_real_tools(
     use_cache: bool,
-    cached_findings: Option<Vec<FindingEntry>>,
+    cached_bundle: Option<ToolsDataBundle>,
 ) -> (ToolsDataBundle, bool) {
+    // Cache hit: serve the whole bundle verbatim. The sweep (per-alias PATH
+    // scans + version-probe subprocesses) is skipped entirely.
+    if use_cache && let Some(bundle) = cached_bundle {
+        return (bundle, true);
+    }
+
     // Run the entire catalogue scan in ONE spawn_blocking. Binary discovery
     // and the version probes are synchronous subprocess work, so this keeps
     // every probe off the tokio worker (mirroring the harden / fail2ban /
@@ -293,13 +304,10 @@ async fn collect_real_tools(
             tools.push(entry);
         }
 
-        // Findings: one warning per MISSING expected tool. Reused from the
-        // cache when fresh (`use_cache`), otherwise re-derived here.
-        let findings = if use_cache {
-            cached_findings.unwrap_or_default()
-        } else {
-            tools_convert::convert_findings(&tools)
-        };
+        // Findings: one warning per MISSING expected tool, derived from the
+        // fresh rows. (A cache hit never reaches this point — it returned the
+        // whole bundle verbatim above.)
+        let findings = tools_convert::convert_findings(&tools);
 
         // Availability heuristic: the scan ALWAYS ran (we got here), so the
         // section is available. Only a task panic flips this to false, and
@@ -320,7 +328,10 @@ async fn collect_real_tools(
     .await;
 
     match result {
-        Ok(bundle) => (bundle, use_cache),
+        // Reaching this point means the sweep DID run (a cache hit returned
+        // above), so the truthful provenance is "not from cache" — even for
+        // the defensive use_cache-with-empty-cache fall-through.
+        Ok(bundle) => (bundle, false),
         Err(e) => {
             tracing::warn!("tools collection task panicked: {e}");
             (
@@ -544,20 +555,35 @@ mod tests {
         collector.start();
         tokio::time::sleep(Duration::from_secs(2)).await;
         let _ = collector.poll().await;
-        // After a successful poll the cache is populated (even if to an empty
-        // Vec on a host where every expected tool is installed).
-        assert!(collector.cached_findings.is_some());
-        assert!(collector.findings_fresh_at.is_some());
+        // After a successful poll the whole-bundle cache is populated (even
+        // with an empty findings Vec on a host where every expected tool is
+        // installed).
+        assert!(collector.cached_bundle.is_some());
+        assert!(collector.bundle_fresh_at.is_some());
     }
 
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = ToolsCollector::new();
-        collector.cached_findings = Some(Vec::new());
-        collector.findings_fresh_at = Some(std::time::Instant::now());
+        collector.cached_bundle = Some(available_empty_bundle());
+        collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
-        assert!(collector.cached_findings.is_none());
-        assert!(collector.findings_fresh_at.is_none());
+        assert!(collector.cached_bundle.is_none());
+        assert!(collector.bundle_fresh_at.is_none());
+    }
+
+    /// An available bundle shape for seeding the cache in unit tests (the
+    /// `empty_bundle` helpers all set `available == false`, which `poll()`
+    /// would refuse to cache).
+    fn available_empty_bundle() -> ToolsDataBundle {
+        ToolsDataBundle {
+            available: true,
+            tools: Vec::new(),
+            installed_count: 0,
+            total_count: 0,
+            findings: Vec::new(),
+            unavailable_reason: None,
+        }
     }
 
     /// A catalogue spec for `name` trying `aliases` in order — the tests'
@@ -748,26 +774,26 @@ mod tests {
     }
 }
 
-// ── Cadence oracles (round 0) ───────────────────────────────────────────────
+// ── Cadence oracles (round 0, extended round 1) ──────────────────────────────
 
-/// Round-0 cadence oracles for the 60s findings cache.
+/// Cadence oracles for the 60s whole-sweep cache.
 ///
-/// These pin the CURRENT cache behavior with sentinel findings whose id the
-/// real missing-tool scan can never emit (real ids are always
-/// `tools.missing.<catalogue-name>`): "findings came back verbatim" proves
-/// the missing-tool warnings were not re-derived, and "freshness timestamp
-/// untouched" proves the TTL is not re-armed on a cache hit.
+/// Round 1 (F05) extended these from a findings-only cache to the whole
+/// bundle: sentinel data now covers the tool ROWS as well as the findings.
+/// The sentinel tool name and finding id are strings no real catalogue sweep
+/// can produce, so "the bundle came back verbatim" proves the sweep — per
+/// alias `$PATH` scans AND version-probe subprocesses — did not run at all
+/// (a real sweep always emits the fixed catalogue's row names and real
+/// `tools.missing.<name>` ids, never the sentinels).
 ///
-/// The lifecycle goes through the REAL `start()` / spawned catalogue scan —
-/// the same sweep the dashboard's 2s refresh tick drives. On a cache hit the
-/// scan still re-resolves the tool rows (current behavior; only the findings
-/// are cached), but the ASSERTED state (findings provenance, freshness
-/// bookkeeping) is deterministic on any host.
+/// The lifecycle goes through the REAL `start()` / spawned collection — the
+/// same path the dashboard's 2s refresh tick drives. The ASSERTED state
+/// (bundle provenance, freshness bookkeeping) is deterministic on any host.
 ///
 /// No spawn-counting seam is added at this layer: `collect_real_tools`
 /// hardcodes `Detector::builder()`, and threading an injectable runner
 /// through `start()` would change production signatures — the sentinel
-/// already answers "were the findings re-derived?".
+/// bundle already answers "did the sweep run?".
 #[cfg(test)]
 mod cadence_oracle {
     use super::*;
@@ -775,14 +801,32 @@ mod cadence_oracle {
     /// Sentinel id no real catalogue finding can carry.
     const SENTINEL_ID: &str = "oracle-sentinel.tools.findings-cache";
 
-    /// One sentinel finding — enough to distinguish cache passthrough from
-    /// any real derivation.
-    fn sentinel_findings() -> Vec<FindingEntry> {
-        vec![FindingEntry {
-            id: SENTINEL_ID.to_string(),
-            severity: "warning".to_string(),
-            title: "cadence-oracle sentinel".to_string(),
-        }]
+    /// Sentinel tool name no catalogue row can carry (the catalogue is a
+    /// fixed in-code list that never contains this string).
+    const SENTINEL_TOOL: &str = "oracle-sentinel-tools-row";
+
+    /// A sentinel bundle: one tool row + one finding + counts no real sweep
+    /// can derive, with `available == true` so `poll()` caches it.
+    fn sentinel_bundle() -> ToolsDataBundle {
+        ToolsDataBundle {
+            available: true,
+            tools: vec![ToolEntry {
+                name: SENTINEL_TOOL.to_string(),
+                category: "oracle".to_string(),
+                installed: true,
+                version: Some("sentinel 1.2.3".to_string()),
+                path: Some("/nonexistent/oracle-sentinel-bin".to_string()),
+                expected: false,
+            }],
+            installed_count: 1,
+            total_count: 1,
+            findings: vec![FindingEntry {
+                id: SENTINEL_ID.to_string(),
+                severity: "warning".to_string(),
+                title: "cadence-oracle sentinel".to_string(),
+            }],
+            unavailable_reason: None,
+        }
     }
 
     /// Advances this thread's TTL test clock past the TTL, resetting it on
@@ -791,11 +835,11 @@ mod cadence_oracle {
     struct TtlOffsetGuard;
 
     impl TtlOffsetGuard {
-        /// Set the thread-local offset to `FINDINGS_TTL` + 10s.
+        /// Set the thread-local offset to `SWEEP_TTL` + 10s.
         fn past_ttl() -> Self {
             TTL_TEST_OFFSET_MS.with(|o| {
                 o.set(
-                    u64::try_from(FINDINGS_TTL.as_millis())
+                    u64::try_from(SWEEP_TTL.as_millis())
                         .expect("a 60s TTL in milliseconds always fits in u64")
                         + 10_000,
                 );
@@ -810,20 +854,33 @@ mod cadence_oracle {
         }
     }
 
-    /// ORACLE (current behavior): a fresh cache serves its cached findings
-    /// verbatim on the next collection — the missing-tool warnings are NOT
-    /// re-derived — and the freshness timestamp is NOT re-armed by the
-    /// cache-hit poll.
+    /// ORACLE: a fresh cache serves the WHOLE cached bundle verbatim on the
+    /// next collection — the sweep (PATH scans + version probes) does NOT
+    /// run — and the freshness timestamp is NOT re-armed by the cache-hit
+    /// poll.
     #[tokio::test]
-    async fn cache_hit_returns_cached_findings_without_rederiving() {
+    async fn cache_hit_returns_cached_bundle_without_resweeping() {
         let mut collector = ToolsCollector::new();
-        collector.cached_findings = Some(sentinel_findings());
+        collector.cached_bundle = Some(sentinel_bundle());
         let primed = std::time::Instant::now();
-        collector.findings_fresh_at = Some(primed);
+        collector.bundle_fresh_at = Some(primed);
 
         collector.start();
         let bundle = collector.poll().await.expect("collection completes");
 
+        // Cached-vs-fresh parity: every sentinel field comes back verbatim.
+        assert_eq!(
+            bundle.tools.len(),
+            1,
+            "a cache hit must serve the cached tool rows verbatim"
+        );
+        assert_eq!(
+            bundle.tools[0].name, SENTINEL_TOOL,
+            "the sentinel row name can only come from the cache, never from a real sweep"
+        );
+        assert_eq!(bundle.tools[0].version.as_deref(), Some("sentinel 1.2.3"));
+        assert_eq!(bundle.installed_count, 1);
+        assert_eq!(bundle.total_count, 1);
         assert_eq!(
             bundle.findings.len(),
             1,
@@ -833,22 +890,29 @@ mod cadence_oracle {
             bundle.findings[0].id, SENTINEL_ID,
             "the sentinel id can only come from the cache, never from a real catalogue scan"
         );
+        // A real sweep re-derives total_count from the fixed catalogue; the
+        // sentinel count of 1 proves zero rows were re-scanned.
+        let catalogue_len = tools_convert::catalogue().len();
+        assert_ne!(
+            bundle.total_count, catalogue_len,
+            "total_count must be the cached sentinel, not a fresh catalogue count"
+        );
         assert_eq!(
-            collector.findings_fresh_at,
+            collector.bundle_fresh_at,
             Some(primed),
             "a cache-hit poll must not advance (re-arm) the freshness timestamp"
         );
     }
 
-    /// ORACLE (current behavior): once the TTL has elapsed the cache is
-    /// bypassed — the sentinel is NOT served — and the freshness timestamp
-    /// advances past its primed value after the real re-derivation.
+    /// ORACLE: once the TTL has elapsed the cache is bypassed — no sentinel
+    /// survives in rows OR findings — and the freshness timestamp advances
+    /// past its primed value after the real re-derivation.
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = ToolsCollector::new();
-        collector.cached_findings = Some(sentinel_findings());
+        collector.cached_bundle = Some(sentinel_bundle());
         let primed = std::time::Instant::now();
-        collector.findings_fresh_at = Some(primed);
+        collector.bundle_fresh_at = Some(primed);
 
         let _ttl = TtlOffsetGuard::past_ttl();
         collector.start();
@@ -856,13 +920,22 @@ mod cadence_oracle {
 
         assert!(
             bundle.findings.iter().all(|f| f.id != SENTINEL_ID),
-            "an expired cache must not serve the sentinel"
+            "an expired cache must not serve the sentinel finding"
         );
-        // The scan ALWAYS ran (available == true by construction) and
-        // poll() has no availability gate, so the re-derivation must have
-        // re-armed the clock.
         assert!(
-            collector.findings_fresh_at.is_some_and(|t| t > primed),
+            bundle.tools.iter().all(|t| t.name != SENTINEL_TOOL),
+            "an expired cache must not serve the sentinel tool row"
+        );
+        let catalogue_len = tools_convert::catalogue().len();
+        assert_eq!(
+            bundle.total_count, catalogue_len,
+            "an expired cache must re-run the real catalogue sweep"
+        );
+        // The sweep ALWAYS yields an available bundle, and poll() advances
+        // the clock for every available !used_cache result, so the
+        // re-derivation must have re-armed it.
+        assert!(
+            collector.bundle_fresh_at.is_some_and(|t| t > primed),
             "an expired cache must be re-derived and the freshness clock advanced"
         );
     }

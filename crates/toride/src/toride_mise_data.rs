@@ -45,18 +45,40 @@
 //! isolated to the inner task and reaches the outer awaiter as a `JoinError`
 //! rather than aborting the whole process.
 //!
-//! ## Doctor findings cache
+//! ## Whole-bundle cache + process-lifetime discovery
 //!
 //! `mise doctor` is expensive (it fans out to registry lookups and version
-//! checks) and changes slowly, so findings are cached for 60s — exactly like
-//! the fail2ban / Tailscale / cloud findings caches.
+//! checks) and changes slowly — and so does the rest of the probe set
+//! (`--version`, `ls --installed`, `ls --current`, `outdated --json` — a
+//! NETWORK call, `config ls`). The ENTIRE collection is therefore cached for
+//! 60s, mirroring the proxy collector's whole-report cache: a cache hit
+//! performs zero subprocess spawns. Freshness caveat (deliberate cadence
+//! decision): tool installs/upgrades and new outdated entries surface up to
+//! 60s late.
+//!
+//! The discovered [`toride_mise::MiseBinary`] is cached for the PROCESS
+//! lifetime (`std::sync::OnceLock`): discovery tier 2 runs version-probe
+//! subprocesses, so re-discovering on every 2s tick was pure waste. Only
+//! successful discoveries are cached — a host without mise keeps degrading
+//! at construction each tick (PATH scans + file stats, zero subprocess
+//! spawns), so a mise installed mid-session is picked up on the next tick.
+//! Discovery itself is routed through
+//! [`MiseBinary::discover_async`](toride_mise::binary::MiseBinary::discover_async)
+//! (a `spawn_blocking` wrapper) so its tier-2 version probes never run on a
+//! tokio worker — the contract `discover`'s own docs state.
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tokio::sync::oneshot;
+use toride_mise::MiseBinary;
 
 use crate::toride_mise_convert;
 use crate::ui::screens::toride_mise::{MiseFindingEntry, MiseOutdatedEntry, MiseToolEntry};
+
+/// Process-lifetime cache for the discovered mise binary (see the module
+/// docs). Only successful discoveries land here.
+static MISE_BINARY: OnceLock<MiseBinary> = OnceLock::new();
 
 /// Per-command timeout. Generous enough for a healthy local `mise` (sub-100ms
 /// for `ls`) but short enough that a hung registry/network lookup cannot stall
@@ -98,30 +120,34 @@ pub struct MiseDataBundle {
 
 /// Manages periodic async collection of mise data.
 ///
-/// Mirrors [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector): a
-/// oneshot channel for the in-flight result, plus a 60s TTL cache for the
-/// expensive doctor findings so they are not re-run on every 2s refresh tick.
+/// Mirrors the proxy collector's whole-report cache: a oneshot channel for
+/// the in-flight result, plus a 60s TTL cache over the ENTIRE bundle (version,
+/// tools, outdated, config, findings) so the five mise subprocesses — one of
+/// them a network `outdated --json` — do not repeat on every 2s refresh tick.
 pub struct MiseCollector {
-    /// Carries the bundle AND whether the cached findings were reused for this
-    /// poll. The freshness timestamp must only be advanced when the doctor was
-    /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
-    /// would reset the TTL clock with the SAME (already-cached) findings and
-    /// the cache would never expire for the lifetime of the app.
+    /// Carries the bundle AND whether the cached bundle was reused for this
+    /// poll. The freshness timestamp must only be advanced when the probes
+    /// were actually re-run (`used_cache == false`); otherwise every
+    /// cache-hit poll would reset the TTL clock with the SAME (already-cached)
+    /// bundle and the cache would never expire for the lifetime of the app.
     rx: Option<oneshot::Receiver<(MiseDataBundle, bool)>>,
-    /// Cached doctor findings from the last collection.
-    cached_findings: Option<Vec<MiseFindingEntry>>,
-    /// When the findings cache was last refreshed.
-    findings_fresh_at: Option<std::time::Instant>,
+    /// Cached bundle from the last collection.
+    cached_bundle: Option<MiseDataBundle>,
+    /// When the bundle cache was last refreshed.
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
-/// How long to keep cached findings before re-running the doctor suite.
-const FINDINGS_TTL: Duration = Duration::from_secs(60);
+/// How long to keep the cached bundle before re-running the mise probes.
+///
+/// Deliberate freshness semantics: tool installs/upgrades and new outdated
+/// entries surface up to this TTL late (see the module docs).
+const BUNDLE_TTL: Duration = Duration::from_secs(60);
 
-/// Whether the findings-cache TTL has already elapsed for a cache that was
+/// Whether the bundle-cache TTL has already elapsed for a cache that was
 /// last refreshed at `fresh_at`.
 ///
 /// Round-0 instrumentation seam, ZERO behavior change: outside `cfg(test)`
-/// this is exactly the negation of the `t.elapsed() < FINDINGS_TTL` check
+/// this is exactly the negation of the `t.elapsed() < BUNDLE_TTL` check
 /// `start` always evaluated inline. Under `cfg(test)` the thread-local
 /// [`TTL_TEST_OFFSET_MS`] is folded into the elapsed time so the cadence
 /// oracles can observe TTL expiry deterministically — no 60s sleeps and no
@@ -133,7 +159,7 @@ fn ttl_expired(fresh_at: std::time::Instant) -> bool {
     let elapsed = fresh_at.elapsed();
     #[cfg(test)]
     let elapsed = elapsed + Duration::from_millis(TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
-    elapsed >= FINDINGS_TTL
+    elapsed >= BUNDLE_TTL
 }
 
 // Extra milliseconds folded into `ttl_expired`'s elapsed time by the
@@ -152,8 +178,8 @@ impl MiseCollector {
     pub fn new() -> Self {
         Self {
             rx: None,
-            cached_findings: None,
-            findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -164,10 +190,11 @@ impl MiseCollector {
 
     /// Start a new background collection.
     ///
-    /// If a collection is already in-flight, this is a no-op. The 60s findings
-    /// cache is consulted: when fresh, the spawned task reuses the cached
-    /// findings instead of re-running the doctor suite. The collection future
-    /// is spawned as an INNER task and its `JoinHandle` awaited in an OUTER
+    /// If a collection is already in-flight, this is a no-op. The 60s
+    /// whole-bundle cache is consulted: when fresh, the spawned task serves
+    /// the cached bundle verbatim — every mise subprocess (including the
+    /// network `outdated --json`) is skipped. The collection future is
+    /// spawned as an INNER task and its `JoinHandle` awaited in an OUTER
     /// task, so a panic inside `collect_real_mise` is isolated to the inner
     /// task and surfaces here as a `JoinError` — which is converted into an
     /// `empty_bundle_with_reason` (with `available = false`) and still sent
@@ -184,9 +211,9 @@ impl MiseCollector {
             return;
         }
         let (tx, rx) = oneshot::channel();
-        let use_cache = self.cached_findings.is_some()
-            && self.findings_fresh_at.is_some_and(|t| !ttl_expired(t));
-        let cached_findings = self.cached_findings.clone();
+        let use_cache =
+            self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
+        let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
         // Two-spawn JoinError pattern (mirrors toride_tailscale_data.rs). The
         // inner task runs the real collection; the outer task awaits its handle
@@ -195,8 +222,7 @@ impl MiseCollector {
         // forever, leaving the bundle stale with no reason). `catch_unwind` was
         // a no-op under `panic = "abort"` (the release profile), so the old
         // guard only worked in dev; the JoinError path survives both.
-        let handle =
-            tokio::spawn(async move { collect_real_mise(use_cache, cached_findings).await });
+        let handle = tokio::spawn(async move { collect_real_mise(use_cache, cached_bundle).await });
         tokio::spawn(async move {
             let (bundle, reused_cache) = match handle.await {
                 Ok(tuple) => tuple,
@@ -219,24 +245,30 @@ impl MiseCollector {
     /// sends a result on completion — including the all-probes-failed case
     /// (`available = false` + reason) and the caught-panic case (an
     /// `empty_bundle_with_reason`) — so `poll` returning `None` here means the
-    /// task is still in flight, not that it failed. On success the cached
-    /// findings are updated to the freshly-returned findings, but the freshness
-    /// timestamp is only advanced when the doctor was actually re-run (not on a
-    /// cache-hit poll) — otherwise the 60s TTL would be re-armed forever with
-    /// the same cached data on every 2s refresh.
+    /// task is still in flight, not that it failed. On an available bundle the
+    /// whole bundle is cached, but the freshness timestamp is only advanced
+    /// when the probes were actually re-run (not on a cache-hit poll) —
+    /// otherwise the 60s TTL would be re-armed forever with the same cached
+    /// data on every 2s refresh. A degraded bundle (mise absent,
+    /// all-probes-failed, or a caught panic) is never cached, so the next
+    /// refresh retries construction instead of pinning the degraded panel for
+    /// the TTL.
     pub async fn poll(&mut self) -> Option<MiseDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
-                    self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the doctor was
-                    // actually re-run. On a cache-hit poll the findings are the
-                    // SAME data we already cached, so resetting the TTL here
-                    // would let the cache live forever as long as the 2s refresh
-                    // tick keeps firing inside the TTL window.
+                if let Some((ref bundle, used_cache)) = result
+                    && bundle.available
+                {
+                    self.cached_bundle = Some(bundle.clone());
+                    // Only advance the freshness clock when the probes
+                    // were actually re-run. On a cache-hit poll the bundle
+                    // is the SAME data we already cached, so resetting the
+                    // TTL here would let the cache live forever as long as
+                    // the 2s refresh tick keeps firing inside the TTL
+                    // window.
                     if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
+                        self.bundle_fresh_at = Some(std::time::Instant::now());
                     }
                 }
                 self.rx = None;
@@ -246,11 +278,11 @@ impl MiseCollector {
         }
     }
 
-    /// Invalidate the findings cache so the next collection re-runs the doctor.
+    /// Invalidate the bundle cache so the next collection re-runs the probes.
     #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
-        self.cached_findings = None;
-        self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -264,37 +296,51 @@ impl Default for MiseCollector {
 
 /// Collect mise data by invoking the real `mise` binary.
 ///
-/// The client is constructed inside the spawned async task (construction is a
-/// pure binary-discovery, no exec) and its async methods are awaited directly —
-/// NOT wrapped in `spawn_blocking` (the mise backend uses an async
-/// `TokioRunner`). Doctor findings may be reused from the cache. The two
-/// error paths handled HERE (inside this future) are: construction failure
-/// (`BinaryNotFound`) → [`empty_bundle_with_reason`], and construction
-/// succeeding with every probe failing/timing out → a bundle with
-/// `available = false` and an accurate "did not respond" reason. A panic in
-/// this future is NOT caught here — it is caught by the two-spawn `JoinError`
-/// guard in [`MiseCollector::start`]'s outer spawn, which converts it into an
-/// `empty_bundle_with_reason` so the refresh is not silently dropped.
+/// When `use_cache` is set and a cached bundle is present, the cached bundle
+/// is served verbatim and NOTHING runs — every mise subprocess (including the
+/// network `outdated --json`) is skipped entirely.
 ///
-/// `use_cache` / `cached_findings` mirror the fail2ban / Tailscale findings
-/// cache: when the cache is fresh the doctor suite is skipped entirely.
+/// Otherwise the client is constructed inside the spawned async task from the
+/// process-lifetime cached [`MiseBinary`] (or a fresh
+/// [`MiseBinary::discover_async`](toride_mise::MiseBinary::discover_async)
+/// on the first collection — a `spawn_blocking` wrapper, so discovery's
+/// tier-2 version probes never run on a tokio worker). The client's async
+/// methods are then awaited directly — NOT wrapped in `spawn_blocking` (the
+/// mise backend uses an async `TokioRunner`). The two error paths handled
+/// HERE (inside this future) are: construction failure (`BinaryNotFound`) →
+/// [`empty_bundle_with_reason`], and construction succeeding with every probe
+/// failing/timing out → a bundle with `available = false` and an accurate
+/// "did not respond" reason. A panic in this future is NOT caught here — it
+/// is caught by the two-spawn `JoinError` guard in [`MiseCollector::start`]'s
+/// outer spawn, which converts it into an `empty_bundle_with_reason` so the
+/// refresh is not silently dropped.
 ///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
-/// findings were actually taken from the cache on a successful collection. The
-/// caller advances the TTL clock ONLY when `used_cache == false`, so a cache-hit
-/// poll never resets the freshness timestamp with stale data.
+/// bundle was served verbatim from the cache. The caller advances the TTL
+/// clock ONLY when `used_cache == false`, so a cache-hit poll never resets
+/// the freshness timestamp with stale data.
 #[expect(
     clippy::too_many_lines,
     reason = "real-data collection is inherently linear"
 )]
 async fn collect_real_mise(
     use_cache: bool,
-    cached_findings: Option<Vec<MiseFindingEntry>>,
+    cached_bundle: Option<MiseDataBundle>,
 ) -> (MiseDataBundle, bool) {
-    // Build the client ONCE per collection. `Mise::builder().build()` is a sync
-    // binary-discovery call (no exec) and returns BinaryNotFound when mise is
-    // absent — that is the clean degraded path.
-    let mise = match toride_mise::Mise::builder().build() {
+    // Cache hit: serve the whole bundle verbatim. No mise subprocess runs.
+    if use_cache && let Some(bundle) = cached_bundle {
+        return (bundle, true);
+    }
+
+    // Build the client ONCE per collection, from the process-lifetime cached
+    // binary when one exists. Fresh discovery goes through `discover_async`
+    // (spawn_blocking): discovery tier 2 runs `mise --version` / `-V` probes
+    // through the BLOCKING runner, which must not run on a tokio worker.
+    // Only successful discoveries are cached — on a host without mise the
+    // construction below fails again each tick (PATH scans only, zero
+    // subprocess spawns), so a mise installed mid-session is picked up on the
+    // next refresh rather than after a process restart.
+    let mise = match discover_mise_client().await {
         Ok(m) => m,
         Err(e) => {
             tracing::debug!("mise backend construction failed: {e}");
@@ -307,7 +353,7 @@ async fn collect_real_mise(
         }
     };
 
-    // Run ALL async probes in parallel — diagnostics may be cached.
+    // Run ALL async probes in parallel.
     let (version_r, tools_r, current_r, outdated_r, config_r, diag_r) = tokio::join!(
         async { tokio::time::timeout(CMD_TIMEOUT, mise.run_checked(["--version"])).await },
         async { tokio::time::timeout(CMD_TIMEOUT, mise.list_installed()).await },
@@ -321,13 +367,7 @@ async fn collect_real_mise(
         // was permanently empty. See the audit note on collect_real_mise.
         async { tokio::time::timeout(CMD_TIMEOUT, mise.outdated_map()).await },
         async { tokio::time::timeout(CMD_TIMEOUT, mise.config_ls()).await },
-        async {
-            if use_cache {
-                None
-            } else {
-                Some(tokio::time::timeout(CMD_TIMEOUT, mise.doctor()).await)
-            }
-        },
+        async { tokio::time::timeout(CMD_TIMEOUT, mise.doctor()).await },
     );
 
     // ── Version ─────────────────────────────────────────────────────────────
@@ -431,25 +471,22 @@ async fn collect_real_mise(
         }
     };
 
-    // ── Doctor (unless cached) ──────────────────────────────────────────────
-    let findings: Vec<MiseFindingEntry> = if use_cache {
-        cached_findings.unwrap_or_default()
-    } else {
-        match diag_r {
-            Some(Ok(Ok(report))) => {
-                let mut entries = toride_mise_convert::convert_diagnostics(report.errors);
-                entries.extend(toride_mise_convert::convert_diagnostics(report.warnings));
-                entries
-            }
-            Some(Ok(Err(e))) => {
-                tracing::debug!("mise doctor: {e}");
-                Vec::new()
-            }
-            Some(Err(_)) => {
-                tracing::debug!("mise doctor: timed out");
-                Vec::new()
-            }
-            None => cached_findings.unwrap_or_default(),
+    // ── Doctor ──────────────────────────────────────────────────────────────
+    // (A cache hit never reaches this point — it returned the whole bundle
+    // verbatim above.)
+    let findings: Vec<MiseFindingEntry> = match diag_r {
+        Ok(Ok(report)) => {
+            let mut entries = toride_mise_convert::convert_diagnostics(report.errors);
+            entries.extend(toride_mise_convert::convert_diagnostics(report.warnings));
+            entries
+        }
+        Ok(Err(e)) => {
+            tracing::debug!("mise doctor: {e}");
+            Vec::new()
+        }
+        Err(_) => {
+            tracing::debug!("mise doctor: timed out");
+            Vec::new()
         }
     };
 
@@ -490,8 +527,36 @@ async fn collect_real_mise(
             findings,
             unavailable_reason,
         },
-        use_cache,
+        // Reaching this point means the probes DID run (a cache hit returned
+        // above), so the truthful provenance is "not from cache".
+        false,
     )
+}
+
+/// Build the mise client for one collection.
+///
+/// Serves the process-lifetime cached [`MiseBinary`] when present; otherwise
+/// discovers one through
+/// [`MiseBinary::discover_async`](toride_mise::MiseBinary::discover_async)
+/// (a `spawn_blocking` wrapper, keeping the discovery cascade's sync
+/// subprocess probes off the tokio worker) and caches a SUCCESSFUL discovery
+/// in [`MISE_BINARY`]. `Mise::builder().binary(..).build()` performs no
+/// discovery of its own, so the cached path costs no `$PATH` scan.
+///
+/// # Errors
+///
+/// Propagates [`toride_mise::MiseError::BinaryNotFound`] when no mise exists
+/// on the host (the clean per-tick degraded path — never cached, so a mise
+/// installed mid-session is found on the next refresh).
+async fn discover_mise_client() -> toride_mise::MiseResult<toride_mise::Mise> {
+    let binary = if let Some(cached) = MISE_BINARY.get() {
+        cached.clone()
+    } else {
+        let discovered = MiseBinary::discover_async().await?;
+        let _ = MISE_BINARY.set(discovered.clone());
+        discovered
+    };
+    toride_mise::Mise::builder().binary(binary).build()
 }
 
 /// Empty bundle used when mise could not be constructed at all.
@@ -656,21 +721,29 @@ mod tests {
         let mut collector = MiseCollector::new();
         collector.start();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let _ = collector.poll().await;
-        // After a successful poll the cache is populated (even if to an empty
-        // Vec on a host where the doctor produced no findings).
-        assert!(collector.cached_findings.is_some());
-        assert!(collector.findings_fresh_at.is_some());
+        let bundle = collector.poll().await;
+        // After a successful AVAILABLE poll the whole-bundle cache is
+        // populated. A host without mise (or with every probe failing) stays
+        // uncached so the next tick retries construction.
+        if bundle.is_some_and(|b| b.available) {
+            assert!(collector.cached_bundle.is_some());
+            assert!(collector.bundle_fresh_at.is_some());
+        } else {
+            assert!(
+                collector.cached_bundle.is_none(),
+                "a degraded bundle must not be cached"
+            );
+        }
     }
 
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = MiseCollector::new();
-        collector.cached_findings = Some(Vec::new());
-        collector.findings_fresh_at = Some(std::time::Instant::now());
+        collector.cached_bundle = Some(empty_bundle());
+        collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
-        assert!(collector.cached_findings.is_none());
-        assert!(collector.findings_fresh_at.is_none());
+        assert!(collector.cached_bundle.is_none());
+        assert!(collector.bundle_fresh_at.is_none());
     }
 
     // ── Collection edge cases / unhappy paths ────────────────────────────────
@@ -999,29 +1072,30 @@ mod tests {
     }
 }
 
-// ── Cadence oracles (round 0) ───────────────────────────────────────────────
+// ── Cadence oracles (round 0, extended round 1) ──────────────────────────────
 
-/// Round-0 cadence oracles for the 60s findings cache.
+/// Cadence oracles for the 60s whole-bundle cache.
 ///
-/// These pin the CURRENT cache behavior with sentinel findings whose message
-/// the real mise doctor can never emit: "findings came back verbatim" proves
-/// `mise doctor` was not re-run, and "freshness timestamp untouched" proves
-/// the TTL is not re-armed on a cache hit.
+/// Round 1 (F07) extended these from a findings-only cache to the whole
+/// bundle: sentinel data now covers the version string and the tool rows as
+/// well as the findings. The sentinel values (finding message, version,
+/// tool name) are ones no real mise probe can emit, so "the bundle came back
+/// verbatim" proves `--version`, `ls`, `outdated`, `config ls`, AND `doctor`
+/// did not spawn a single subprocess.
 ///
 /// The lifecycle goes through the REAL `start()` / spawned collection. With
-/// a non-empty sentinel in the cache, a successful construction keeps the
-/// section `available` (the availability heuristic unions over non-empty
-/// findings), so `available == true` ⟺ the cache arm ran — the strong arm
-/// of each oracle. On a host without `mise` on `$PATH`, construction fails
-/// BEFORE the cache arm and the degraded arm pins that side of the current
-/// behavior instead (`poll()` is ungated here: it caches the empty findings
-/// and advances the clock because `used_cache == false`). Both arms are
-/// deterministic for the host they run on.
+/// a non-empty sentinel bundle in the cache, the cache-hit arm is
+/// deterministic on any host (nothing runs). On a host WITH mise the expiry
+/// arm re-runs the real probes (available bundle, clock re-armed); on a host
+/// without `mise` on `$PATH` construction fails before the cache arm and —
+/// since `poll()` now gates cache writes on `available` — the degraded arm
+/// leaves the primed clock untouched. Both arms are deterministic for the
+/// host they run on.
 ///
 /// No spawn-counting seam is added at this layer: `collect_real_mise`
-/// hardcodes `Mise::builder().build()`, and threading an injectable runner
+/// hardcodes its runner discovery, and threading an injectable runner
 /// through `start()` would change production signatures — the sentinel
-/// already answers "was the doctor re-run?".
+/// bundle already answers "did anything re-run?".
 #[cfg(test)]
 mod cadence_oracle {
     use super::*;
@@ -1029,27 +1103,47 @@ mod cadence_oracle {
     /// Sentinel message no real mise diagnostic can carry.
     const SENTINEL_MSG: &str = "oracle-sentinel mise findings-cache";
 
-    /// One sentinel finding — enough to distinguish cache passthrough from
-    /// any real derivation.
-    fn sentinel_findings() -> Vec<MiseFindingEntry> {
-        vec![MiseFindingEntry {
-            severity: "ok".to_string(),
-            message: SENTINEL_MSG.to_string(),
-            detail: None,
-        }]
+    /// Sentinel version no real `mise --version` prints.
+    const SENTINEL_VERSION: &str = "oracle-sentinel 0.0.0";
+
+    /// Sentinel tool name no real `mise ls` lists.
+    const SENTINEL_TOOL: &str = "oracle-sentinel-tool";
+
+    /// A sentinel bundle with `available == true` so `poll()` caches it.
+    fn sentinel_bundle() -> MiseDataBundle {
+        MiseDataBundle {
+            available: true,
+            version: Some(SENTINEL_VERSION.to_string()),
+            tools: vec![MiseToolEntry {
+                name: SENTINEL_TOOL.to_string(),
+                version: Some("1.0.0".to_string()),
+                active: true,
+                outdated: false,
+                missing: false,
+                source: None,
+            }],
+            outdated: Vec::new(),
+            config_files: Vec::new(),
+            findings: vec![MiseFindingEntry {
+                severity: "ok".to_string(),
+                message: SENTINEL_MSG.to_string(),
+                detail: None,
+            }],
+            unavailable_reason: None,
+        }
     }
 
-    /// Advances this thread's TTL test clock past the TTL, resetting it on
+    /// Advances this thread\'s TTL test clock past the TTL, resetting it on
     /// drop so a failing assertion cannot leak a cranked clock into a later
     /// test scheduled on the same reused cargo-test thread.
     struct TtlOffsetGuard;
 
     impl TtlOffsetGuard {
-        /// Set the thread-local offset to `FINDINGS_TTL` + 10s.
+        /// Set the thread-local offset to `BUNDLE_TTL` + 10s.
         fn past_ttl() -> Self {
             TTL_TEST_OFFSET_MS.with(|o| {
                 o.set(
-                    u64::try_from(FINDINGS_TTL.as_millis())
+                    u64::try_from(BUNDLE_TTL.as_millis())
                         .expect("a 60s TTL in milliseconds always fits in u64")
                         + 10_000,
                 );
@@ -1064,61 +1158,59 @@ mod cadence_oracle {
         }
     }
 
-    /// ORACLE (current behavior): a fresh cache serves its cached findings
-    /// verbatim on the next collection — `mise doctor` is NOT re-run — and
-    /// the freshness timestamp is NOT re-armed by the cache-hit poll.
+    /// ORACLE: a fresh cache serves the WHOLE cached bundle verbatim on the
+    /// next collection — every mise subprocess (including the network
+    /// `outdated --json`) is skipped — and the freshness timestamp is NOT
+    /// re-armed by the cache-hit poll.
     #[tokio::test]
-    async fn cache_hit_returns_cached_findings_without_rederiving() {
+    async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = MiseCollector::new();
-        collector.cached_findings = Some(sentinel_findings());
+        collector.cached_bundle = Some(sentinel_bundle());
         let primed = std::time::Instant::now();
-        collector.findings_fresh_at = Some(primed);
+        collector.bundle_fresh_at = Some(primed);
 
         collector.start();
         let bundle = collector.poll().await.expect("collection completes");
 
-        if bundle.available {
-            // Construction succeeded (mise present): the cache must be
-            // served verbatim.
-            assert_eq!(
-                bundle.findings.len(),
-                1,
-                "a cache hit must serve the cached findings verbatim"
-            );
-            assert_eq!(
-                bundle.findings[0].message, SENTINEL_MSG,
-                "the sentinel message can only come from the cache, never from a real doctor run"
-            );
-            assert_eq!(
-                collector.findings_fresh_at,
-                Some(primed),
-                "a cache-hit poll must not advance (re-arm) the freshness timestamp"
-            );
-        } else {
-            // mise absent: construction failed before the cache arm. poll()
-            // here is ungated — it caches the empty findings and ADVANCES the
-            // clock, because the failed construction reports
-            // `used_cache == false`.
-            assert!(
-                bundle.findings.is_empty(),
-                "construction failure bypasses the cache arm entirely"
-            );
-            assert!(
-                collector.findings_fresh_at.is_some_and(|t| t > primed),
-                "ungated poll() advances the clock on a !used_cache result"
-            );
-        }
+        // The cache-hit arm returns before construction, so it is
+        // deterministic on ANY host (mise present or not).
+        assert_eq!(
+            bundle.findings.len(),
+            1,
+            "a cache hit must serve the cached findings verbatim"
+        );
+        assert_eq!(
+            bundle.findings[0].message, SENTINEL_MSG,
+            "the sentinel message can only come from the cache, never from a real doctor run"
+        );
+        assert_eq!(
+            bundle.version.as_deref(),
+            Some(SENTINEL_VERSION),
+            "the sentinel version can only come from the cache, never from a real probe"
+        );
+        assert_eq!(bundle.tools.len(), 1);
+        assert_eq!(
+            bundle.tools[0].name, SENTINEL_TOOL,
+            "the sentinel tool row can only come from the cache, never from a real ls probe"
+        );
+        assert_eq!(
+            collector.bundle_fresh_at,
+            Some(primed),
+            "a cache-hit poll must not advance (re-arm) the freshness timestamp"
+        );
     }
 
-    /// ORACLE (current behavior): once the TTL has elapsed the cache is
-    /// bypassed — the sentinel is NOT served — and the freshness timestamp
-    /// advances past its primed value after the real re-derivation.
+    /// ORACLE: once the TTL has elapsed the cache is bypassed — no sentinel
+    /// survives in ANY field — and the freshness bookkeeping reflects the
+    /// re-derivation: re-armed on a host where mise answered, untouched on a
+    /// host where construction failed (`poll()` gates cache writes on
+    /// `available`).
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = MiseCollector::new();
-        collector.cached_findings = Some(sentinel_findings());
+        collector.cached_bundle = Some(sentinel_bundle());
         let primed = std::time::Instant::now();
-        collector.findings_fresh_at = Some(primed);
+        collector.bundle_fresh_at = Some(primed);
 
         let _ttl = TtlOffsetGuard::past_ttl();
         collector.start();
@@ -1126,13 +1218,31 @@ mod cadence_oracle {
 
         assert!(
             bundle.findings.iter().all(|f| f.message != SENTINEL_MSG),
-            "an expired cache must not serve the sentinel"
+            "an expired cache must not serve the sentinel finding"
         );
-        // poll() is ungated in this module: every !used_cache result (real
-        // re-derivation OR construction failure) re-arms the clock.
+        assert_ne!(
+            bundle.version.as_deref(),
+            Some(SENTINEL_VERSION),
+            "an expired cache must not serve the sentinel version"
+        );
         assert!(
-            collector.findings_fresh_at.is_some_and(|t| t > primed),
-            "an expired cache must be re-derived and the freshness clock advanced"
+            bundle.tools.iter().all(|t| t.name != SENTINEL_TOOL),
+            "an expired cache must not serve the sentinel tool row"
         );
+        if bundle.available {
+            // The real probes re-ran and produced an available bundle.
+            assert!(
+                collector.bundle_fresh_at.is_some_and(|t| t > primed),
+                "an expired cache must be re-derived and the freshness clock advanced"
+            );
+        } else {
+            // mise absent / unresponsive: the availability gate keeps the
+            // primed clock untouched so the next tick retries construction.
+            assert_eq!(
+                collector.bundle_fresh_at,
+                Some(primed),
+                "a degraded re-derivation must leave the primed clock untouched"
+            );
+        }
     }
 }

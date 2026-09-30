@@ -11,9 +11,16 @@
 //! the backend is a pure read.
 //!
 //! Doctor findings are expensive (they probe `$PATH`, stat config dirs, and —
-//! once the TODOs in `doctor.rs` land — query systemd) and change slowly, so
-//! they are cached for 60s — exactly like the fail2ban / wireguard / harden
-//! findings caches.
+//! once the TODOs in `doctor.rs` land — query systemd) and change slowly —
+//! and so does the rest of the probe cluster: `check_updates` shells out to
+//! `apt-check` (Python/apt, often the largest per-tick item) or
+//! `dnf check-update --security` (network!), and `status`/`is_active` shell
+//! out to `systemctl`. The ENTIRE collection is therefore cached for 60s,
+//! mirroring the proxy collector's whole-report cache: a cache hit performs
+//! zero subprocess spawns. Freshness caveat (deliberate cadence decision,
+//! stated where the TTL lives): pending-update counts and service status
+//! surface up to 60s late — the dnf path can take minutes on a slow network,
+//! so a long TTL (rather than new network behavior) is the right trade.
 //!
 //! ## macOS / construction
 //!
@@ -82,30 +89,41 @@ pub struct UpdatesDataBundle {
 
 /// Manages periodic async collection of updates data.
 ///
-/// Mirrors [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector): a
-/// oneshot channel for the in-flight result, plus a 60s TTL cache for the
-/// expensive doctor findings so they are not re-run on every 2s refresh tick.
+/// Mirrors the proxy collector's whole-report cache: a oneshot channel for
+/// the in-flight result, plus a 60s TTL cache over the ENTIRE bundle (doctor
+/// findings, pending-update counts, service status) so the `apt-check` /
+/// `dnf check-update` / `systemctl` shell-outs do not repeat on every 2s
+/// refresh tick.
 pub struct UpdatesCollector {
-    /// Carries the bundle AND whether the cached findings were reused for this
-    /// poll. The freshness timestamp must only be advanced when the doctor was
-    /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
-    /// would reset the TTL clock with the SAME (already-cached) findings and
-    /// the cache would never expire for the lifetime of the app.
+    /// Carries the bundle AND whether the cached bundle was reused for this
+    /// poll. The freshness timestamp must only be advanced when the
+    /// collection was actually re-run (`used_cache == false`); otherwise
+    /// every cache-hit poll would reset the TTL clock with the SAME
+    /// (already-cached) bundle and the cache would never expire for the
+    /// lifetime of the app.
     rx: Option<oneshot::Receiver<(UpdatesDataBundle, bool)>>,
-    /// Cached doctor findings from the last collection.
-    cached_findings: Option<Vec<FindingEntry>>,
-    /// When the findings cache was last refreshed.
-    findings_fresh_at: Option<std::time::Instant>,
+    /// Cached bundle (doctor findings + counts + status) from the last
+    /// collection.
+    cached_bundle: Option<UpdatesDataBundle>,
+    /// When the bundle cache was last refreshed.
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
-/// How long to keep cached findings before re-running the doctor suite.
-const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+/// How long to keep the cached bundle before re-running the doctor suite and
+/// the update-count / service-status probes.
+///
+/// Deliberate freshness semantics (the product decision this TTL encodes):
+/// pending-update counts and service status surface up to this TTL late. The
+/// alternative — probing every 2s tick — re-ran `apt-check` (Python/apt) or
+/// `dnf check-update --security` (network, minutes on a slow link) thirty
+/// times a minute. No new network behavior is introduced either way.
+const BUNDLE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
-/// Whether the findings-cache TTL has already elapsed for a cache that was
+/// Whether the bundle-cache TTL has already elapsed for a cache that was
 /// last refreshed at `fresh_at`.
 ///
 /// Round-0 instrumentation seam, ZERO behavior change: outside `cfg(test)`
-/// this is exactly the negation of the `t.elapsed() < FINDINGS_TTL` check
+/// this is exactly the negation of the `t.elapsed() < BUNDLE_TTL` check
 /// `start` always evaluated inline. Under `cfg(test)` the thread-local
 /// [`TTL_TEST_OFFSET_MS`] is folded into the elapsed time so the cadence
 /// oracles can observe TTL expiry deterministically — no 60s sleeps and no
@@ -118,7 +136,7 @@ fn ttl_expired(fresh_at: std::time::Instant) -> bool {
     #[cfg(test)]
     let elapsed =
         elapsed + std::time::Duration::from_millis(TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
-    elapsed >= FINDINGS_TTL
+    elapsed >= BUNDLE_TTL
 }
 
 // Extra milliseconds folded into `ttl_expired`'s elapsed time by the
@@ -144,8 +162,8 @@ impl UpdatesCollector {
     pub fn new() -> Self {
         Self {
             rx: None,
-            cached_findings: None,
-            findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -156,25 +174,27 @@ impl UpdatesCollector {
 
     /// Start a new background collection.
     ///
-    /// If a collection is already in-flight, this is a no-op. The 60s findings
-    /// cache is consulted: when fresh, the spawned task reuses the cached
-    /// findings instead of re-running the doctor suite.
+    /// If a collection is already in-flight, this is a no-op. The 60s
+    /// whole-bundle cache is consulted: when fresh, the spawned task serves
+    /// the cached bundle verbatim — the doctor, `apt-check`/`dnf
+    /// check-update`, and the `systemctl` status probes do not run at all.
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
         }
         let (tx, rx) = oneshot::channel();
-        let use_cache = self.cached_findings.is_some()
-            && self.findings_fresh_at.is_some_and(|t| !ttl_expired(t));
-        let cached_findings = self.cached_findings.clone();
+        let use_cache =
+            self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
+        let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
             // Race the probe against a deadline so a wedged network cannot hold
             // the task slot. On timeout we surface a degraded bundle carrying
-            // the reason; the next eligible refresh re-tries cleanly.
+            // the reason; the next eligible refresh re-tries cleanly. (A cache
+            // hit returns before any probe, so the deadline never bites there.)
             let outcome: (UpdatesDataBundle, bool) = match tokio::time::timeout(
                 PROBE_DEADLINE,
-                collect_real_updates(use_cache, cached_findings),
+                collect_real_updates(use_cache, cached_bundle),
             )
             .await
             {
@@ -193,31 +213,31 @@ impl UpdatesCollector {
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. On success the cached findings are
-    /// updated to the freshly-returned findings, but the freshness timestamp is
-    /// only advanced when the doctor was actually re-run (not on a cache-hit
-    /// poll) — otherwise the 60s TTL would be re-armed forever with the same
-    /// cached data on every 2s refresh.
+    /// pending or if the collection failed. On success the whole bundle is
+    /// cached, but the freshness timestamp is only advanced when the
+    /// collection was actually re-run (not on a cache-hit poll) — otherwise
+    /// the 60s TTL would be re-armed forever with the same cached data on
+    /// every 2s refresh.
     pub async fn poll(&mut self) -> Option<UpdatesDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, used_cache)) = result {
-                    // Only cache findings when the bundle is a real (available)
-                    // result. A timed-out or panicked bundle carries an empty
-                    // `findings` Vec and `available == false`; writing it into
-                    // the cache would make the next start() take the `use_cache`
-                    // branch and skip re-running the doctor for up to the TTL,
-                    // leaving the panel showing "no findings" after recovery.
-                    // Leave the existing cached findings intact on a degraded
-                    // bundle so the next collection re-runs the doctor.
+                    // Only cache when the bundle is a real (available) result.
+                    // A timed-out, construction-failed, or panicked bundle
+                    // carries an empty bundle and `available == false`; writing
+                    // it into the cache would make the next start() take the
+                    // `use_cache` branch and skip re-probing for up to the TTL,
+                    // leaving the panel degraded after recovery. Leave the
+                    // existing cache intact on a degraded bundle so the next
+                    // collection re-runs everything.
                     if bundle.available {
-                        self.cached_findings = Some(bundle.findings.clone());
-                    }
-                    // Only advance the freshness clock when the doctor was
-                    // actually re-run (mirrors fail2ban / wireguard / harden).
-                    if !used_cache && bundle.available {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
+                        self.cached_bundle = Some(bundle.clone());
+                        // Only advance the freshness clock when the collection
+                        // was actually re-run (mirrors fail2ban / backup).
+                        if !used_cache {
+                            self.bundle_fresh_at = Some(std::time::Instant::now());
+                        }
                     }
                 }
                 self.rx = None;
@@ -227,11 +247,11 @@ impl UpdatesCollector {
         }
     }
 
-    /// Invalidate the findings cache so the next collection re-runs the doctor.
+    /// Invalidate the bundle cache so the next collection re-runs the probes.
     #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
-        self.cached_findings = None;
-        self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -245,18 +265,29 @@ impl Default for UpdatesCollector {
 
 /// Collect updates data by shelling out to the real binaries.
 ///
-/// All work runs on the blocking thread pool. The `UpdatesClient` is
-/// constructed inside `spawn_blocking` (`new()` probes `$PATH`); on macOS it
-/// returns `Err(PackageDetection)` and we surface a degraded bundle. Doctor
-/// findings may be reused from the cache. On ANY error or panic returns
-/// [`empty_bundle`] / [`empty_bundle_with_reason`] with `available = false`.
+/// When `use_cache` is set and a cached bundle is present, the cached bundle
+/// is served verbatim and NOTHING runs — the doctor, `apt-check` /
+/// `dnf check-update`, and the `systemctl` status probes are skipped
+/// entirely.
+///
+/// Otherwise all work runs on the blocking thread pool. The `UpdatesClient`
+/// is constructed inside `spawn_blocking` (`new()` probes `$PATH`); on hosts
+/// with neither apt nor dnf it returns `Err(PackageDetection)` and we surface
+/// a degraded bundle. On ANY error or panic returns [`empty_bundle`] /
+/// [`empty_bundle_with_reason`] with `available = false`.
 ///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
-/// findings were actually taken from the cache on a successful collection.
+/// bundle was served verbatim from the cache.
 async fn collect_real_updates(
     use_cache: bool,
-    cached_findings: Option<Vec<FindingEntry>>,
+    cached_bundle: Option<UpdatesDataBundle>,
 ) -> (UpdatesDataBundle, bool) {
+    // Cache hit: serve the whole bundle verbatim. Neither the doctor nor any
+    // update-count / status probe spawns a subprocess.
+    if use_cache && let Some(bundle) = cached_bundle {
+        return (bundle, true);
+    }
+
     // Build the UpdatesClient on the blocking pool. new() probes $PATH for
     // apt-get / dnf; on macOS it returns Err(PackageDetection).
     let client = match tokio::task::spawn_blocking(toride_updates::client::UpdatesClient::new).await
@@ -282,12 +313,11 @@ async fn collect_real_updates(
     // Run ALL blocking probes in a single spawn_blocking that owns `client`.
     // This keeps every shell-out / file read off the tokio worker (the
     // `DuctRunner` is synchronous) and sidesteps the 'static-borrow problem:
-    // the doctor / backend / service / schedule constructors each take
-    // `&dyn Runner`, so collecting everything in one owned closure that builds
-    // a single DuctRunner is both simpler and cheaper than spawning one task
-    // per probe. Results are returned as plain owned data so they cross the
-    // thread boundary cleanly. Doctor findings are taken from the cache when
-    // fresh (`use_cache`), otherwise re-run here.
+    // the doctor / backend / service constructors each take `&dyn Runner`, so
+    // collecting everything in one owned closure that builds a single
+    // DuctRunner is both simpler and cheaper than spawning one task per
+    // probe. Results are returned as plain owned data so they cross the
+    // thread boundary cleanly.
     let result = tokio::task::spawn_blocking(move || {
         // One DuctRunner shared by every &dyn Runner consumer below. Mirrors
         // the wireguard / harden idiom (a fresh DuctRunner built inside the
@@ -295,10 +325,8 @@ async fn collect_real_updates(
         // rather than reading a global.
         let runner = toride_updates::DuctRunner;
 
-        // ── Doctor (unless cached) ─────────────────────────────────────────
-        let findings: Vec<FindingEntry> = if use_cache {
-            cached_findings.unwrap_or_default()
-        } else {
+        // ── Doctor ──────────────────────────────────────────────────────────
+        let findings: Vec<FindingEntry> = {
             let doc = toride_updates::doctor::Doctor::new(&runner);
             match doc.run() {
                 Ok(raw) => toride_updates_convert::convert_findings(raw),
@@ -309,8 +337,11 @@ async fn collect_real_updates(
             }
         };
 
-        // ── Package manager label ──────────────────────────────────────────
-        let pm = toride_updates::detect::detect_package_manager();
+        // ── Package manager label (memoized on the client) ─────────────────
+        // The client detected the manager once at construction; reading the
+        // label through it (instead of a fresh detect_package_manager())
+        // avoids re-scanning `$PATH` on every collection.
+        let pm = client.package_manager();
         let package_manager = toride_updates_convert::package_manager_str(pm).to_string();
 
         // ── Pending updates (hits the network: apt-check / dnf check-update) ──
@@ -325,10 +356,22 @@ async fn collect_real_updates(
         };
 
         // ── Status (auto-enabled / service-active / last-run) ──────────────
+        // `status()` internally probes `systemctl is-active --quiet` for the
+        // SAME unit the old separate `ServiceManager::is_active()` call
+        // probed ("unattended-upgrades" on apt, "dnf-automatic.timer" on
+        // dnf) — so the unit-active answer is single-sourced from here and
+        // the duplicate spawn is gone. `timer_active` degrades to `None`
+        // (unknown) only when `status()` itself failed, which previously
+        // meant the separate probe answered alone.
+        let timer_active;
         let status = match client.status() {
-            Ok(s) => s,
+            Ok(s) => {
+                timer_active = Some(s.service_active);
+                s
+            }
             Err(e) => {
                 tracing::debug!("updates status: {e}");
+                timer_active = None;
                 toride_updates::report::UpdateStatus::empty()
             }
         };
@@ -342,16 +385,6 @@ async fn collect_real_updates(
         // schedule is wired, so we leave the explicit cadence label as `None`
         // (the UI renders "not configured") until the feature is enabled.
         let schedule: Option<String> = None;
-
-        // ── Timer / service-unit activity (ServiceManager::is_active) ──────
-        let svc_mgr = toride_updates::service::ServiceManager::new(&runner);
-        let timer_active = match svc_mgr.is_active() {
-            Ok(active) => Some(active),
-            Err(e) => {
-                tracing::debug!("updates service is_active: {e}");
-                None
-            }
-        };
 
         // ── Availability heuristic ────────────────────────────────────────
         // The section is "available" if the package manager was detected
@@ -380,7 +413,9 @@ async fn collect_real_updates(
     .await;
 
     match result {
-        Ok(bundle) => (bundle, use_cache),
+        // Reaching this point means the probes DID run (a cache hit returned
+        // above), so the truthful provenance is "not from cache".
+        Ok(bundle) => (bundle, false),
         Err(e) => {
             tracing::warn!("updates collection task panicked: {e}");
             (
@@ -528,17 +563,17 @@ mod tests {
         match bundle {
             Some(b) if b.available => {
                 assert!(
-                    collector.cached_findings.is_some(),
+                    collector.cached_bundle.is_some(),
                     "cache must be populated from an available bundle"
                 );
                 assert!(
-                    collector.findings_fresh_at.is_some(),
+                    collector.bundle_fresh_at.is_some(),
                     "freshness clock must advance on a real collection"
                 );
             }
             _ => {
                 assert!(
-                    collector.cached_findings.is_none(),
+                    collector.cached_bundle.is_none(),
                     "cache must NOT be populated from a degraded (unavailable) bundle"
                 );
             }
@@ -548,9 +583,9 @@ mod tests {
     #[tokio::test]
     async fn poll_does_not_overwrite_cache_with_empty_on_degraded_bundle() {
         // Regression for the PROBE_DEADLINE / JoinError path: a degraded bundle
-        // (available == false, empty findings) must NOT replace existing cached
-        // findings, otherwise the next start() would take the `use_cache` branch
-        // and skip re-running the doctor for up to the TTL — leaving the panel
+        // (available == false, empty findings) must NOT replace the existing
+        // cached bundle, otherwise the next start() would take the `use_cache`
+        // branch and skip re-probing for up to the TTL — leaving the panel
         // showing "no findings" for ~90s after a transient network stall.
         //
         // We feed a degraded bundle straight through the oneshot channel (the
@@ -558,15 +593,9 @@ mod tests {
         // write path against a controlled bundle shape.
         let mut collector = UpdatesCollector::new();
         // Seed the cache as if a prior successful collection had run.
-        let prior = vec![FindingEntry {
-            id: "binary.unattended-upgrades.found".into(),
-            severity: "ok".into(),
-            title: "unattended-upgrades binary available".into(),
-            detail: String::new(),
-            fix: None,
-        }];
-        collector.cached_findings = Some(prior.clone());
-        collector.findings_fresh_at = Some(std::time::Instant::now());
+        let prior = available_bundle_with_finding();
+        collector.cached_bundle = Some(prior.clone());
+        collector.bundle_fresh_at = Some(std::time::Instant::now());
 
         let (tx, rx) = oneshot::channel();
         tx.send((
@@ -586,54 +615,80 @@ mod tests {
             bundle.as_ref().unwrap().findings.is_empty(),
             "degraded bundle must carry empty findings"
         );
-        // The cache must be UNCHANGED — not overwritten with an empty Vec.
-        // (FindingEntry has no PartialEq, so compare structurally.)
+        // The cache must be UNCHANGED — not overwritten with an empty bundle.
         let cached = collector
-            .cached_findings
+            .cached_bundle
             .as_ref()
-            .expect("cached findings must NOT have been cleared by a degraded bundle");
+            .expect("cached bundle must NOT have been cleared by a degraded bundle");
         assert_eq!(
-            cached.len(),
-            prior.len(),
-            "degraded bundle must not overwrite existing cached findings"
+            cached.findings.len(),
+            prior.findings.len(),
+            "degraded bundle must not overwrite the existing cached bundle"
         );
         assert_eq!(
-            cached[0].id, prior[0].id,
-            "degraded bundle must not overwrite existing cached findings"
+            cached.findings[0].id, prior.findings[0].id,
+            "degraded bundle must not overwrite the existing cached bundle"
         );
     }
 
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = UpdatesCollector::new();
-        collector.cached_findings = Some(Vec::new());
-        collector.findings_fresh_at = Some(std::time::Instant::now());
+        collector.cached_bundle = Some(empty_bundle());
+        collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
-        assert!(collector.cached_findings.is_none());
-        assert!(collector.findings_fresh_at.is_none());
+        assert!(collector.cached_bundle.is_none());
+        assert!(collector.bundle_fresh_at.is_none());
+    }
+
+    /// An available bundle with one finding — the prior-good cache shape for
+    /// the degraded-bundle test.
+    fn available_bundle_with_finding() -> UpdatesDataBundle {
+        UpdatesDataBundle {
+            available: true,
+            package_manager: "apt".to_string(),
+            auto_updates_enabled: false,
+            service_active: false,
+            pending_security: 0,
+            pending_total: 0,
+            last_run: None,
+            schedule: None,
+            timer_active: Some(false),
+            findings: vec![FindingEntry {
+                id: "binary.unattended-upgrades.found".into(),
+                severity: "ok".into(),
+                title: "unattended-upgrades binary available".into(),
+                detail: String::new(),
+                fix: None,
+            }],
+            unavailable_reason: None,
+        }
     }
 }
 
-// ── Cadence oracles (round 0) ───────────────────────────────────────────────
+// ── Cadence oracles (round 0, extended round 1) ──────────────────────────────
 
-/// Round-0 cadence oracles for the 60s findings cache.
+/// Cadence oracles for the 60s whole-bundle cache.
 ///
-/// These pin the CURRENT cache behavior with sentinel findings whose id the
-/// real updates doctor can never emit: "findings came back verbatim" proves
-/// the doctor was not re-run, and "freshness timestamp untouched" proves the
-/// TTL is not re-armed on a cache hit.
+/// Round 1 (F06) extended these from a findings-only cache to the whole
+/// bundle: sentinel data now covers the update counts, the package-manager
+/// label, and the timer flag as well as the findings. The sentinel values
+/// (finding id, label, counts) are ones no real probe can emit, so "the
+/// bundle came back verbatim" proves the doctor, `apt-check`/`dnf
+/// check-update`, and the `systemctl` status probes did not spawn a single
+/// subprocess.
 ///
 /// The lifecycle goes through the REAL `start()` / spawned collection. On a
 /// host with apt/dnf (the campaign host) the bundle is `available` and the
-/// strong arm of each oracle runs; on a host where
-/// [`UpdatesClient::new`] fails package detection (e.g. macOS) the degraded
-/// arm pins that side of the current behavior instead. Both arms are
-/// deterministic for the host they run on.
+/// strong arm of each oracle runs; on a host where [`UpdatesClient::new`]
+/// fails package detection (e.g. macOS) the degraded arm pins that side of
+/// the current behavior instead. Both arms are deterministic for the host
+/// they run on.
 ///
 /// No spawn-counting seam is added at this layer: `collect_real_updates`
 /// hardcodes its `DuctRunner`, and threading an injectable runner through
-/// `start()` would change production signatures — the sentinel already
-/// answers "was the doctor re-run?".
+/// `start()` would change production signatures — the sentinel bundle
+/// already answers "did anything re-run?".
 #[cfg(test)]
 mod cadence_oracle {
     use super::*;
@@ -641,16 +696,33 @@ mod cadence_oracle {
     /// Sentinel id no real doctor finding can carry.
     const SENTINEL_ID: &str = "oracle-sentinel.updates.findings-cache";
 
-    /// One sentinel finding — enough to distinguish cache passthrough from
-    /// any real derivation.
-    fn sentinel_findings() -> Vec<FindingEntry> {
-        vec![FindingEntry {
-            id: SENTINEL_ID.to_string(),
-            severity: "ok".to_string(),
-            title: "cadence-oracle sentinel".to_string(),
-            detail: String::new(),
-            fix: None,
-        }]
+    /// Sentinel package-manager label no real detection can produce (real
+    /// labels are "apt", "dnf", "unknown").
+    const SENTINEL_LABEL: &str = "oracle-sentinel";
+
+    /// A sentinel bundle with `available == true` so `poll()` caches it; the
+    /// counts are ones no real `apt-check`/`dnf` run can be coerced into by
+    /// the environment.
+    fn sentinel_bundle() -> UpdatesDataBundle {
+        UpdatesDataBundle {
+            available: true,
+            package_manager: SENTINEL_LABEL.to_string(),
+            auto_updates_enabled: true,
+            service_active: true,
+            pending_security: 1234,
+            pending_total: 5678,
+            last_run: None,
+            schedule: None,
+            timer_active: Some(true),
+            findings: vec![FindingEntry {
+                id: SENTINEL_ID.to_string(),
+                severity: "ok".to_string(),
+                title: "cadence-oracle sentinel".to_string(),
+                detail: String::new(),
+                fix: None,
+            }],
+            unavailable_reason: None,
+        }
     }
 
     /// Advances this thread's TTL test clock past the TTL, resetting it on
@@ -659,11 +731,11 @@ mod cadence_oracle {
     struct TtlOffsetGuard;
 
     impl TtlOffsetGuard {
-        /// Set the thread-local offset to `FINDINGS_TTL` + 10s.
+        /// Set the thread-local offset to `BUNDLE_TTL` + 10s.
         fn past_ttl() -> Self {
             TTL_TEST_OFFSET_MS.with(|o| {
                 o.set(
-                    u64::try_from(FINDINGS_TTL.as_millis())
+                    u64::try_from(BUNDLE_TTL.as_millis())
                         .expect("a 60s TTL in milliseconds always fits in u64")
                         + 10_000,
                 );
@@ -678,15 +750,16 @@ mod cadence_oracle {
         }
     }
 
-    /// ORACLE (current behavior): a fresh cache serves its cached findings
-    /// verbatim on the next collection — the doctor is NOT re-run — and the
-    /// freshness timestamp is NOT re-armed by the cache-hit poll.
+    /// ORACLE: a fresh cache serves the WHOLE cached bundle verbatim on the
+    /// next collection — the doctor, the update-count probe, and the service
+    /// status probe are skipped (zero subprocess spawns) — and the freshness
+    /// timestamp is NOT re-armed by the cache-hit poll.
     #[tokio::test]
-    async fn cache_hit_returns_cached_findings_without_rederiving() {
+    async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = UpdatesCollector::new();
-        collector.cached_findings = Some(sentinel_findings());
+        collector.cached_bundle = Some(sentinel_bundle());
         let primed = std::time::Instant::now();
-        collector.findings_fresh_at = Some(primed);
+        collector.bundle_fresh_at = Some(primed);
 
         collector.start();
         let bundle = collector.poll().await.expect("collection completes");
@@ -704,7 +777,13 @@ mod cadence_oracle {
                 "the sentinel id can only come from the cache, never from a real doctor run"
             );
             assert_eq!(
-                collector.findings_fresh_at,
+                bundle.package_manager, SENTINEL_LABEL,
+                "the sentinel label can only come from the cache, never from a real detection"
+            );
+            assert_eq!(bundle.pending_security, 1234);
+            assert_eq!(bundle.pending_total, 5678);
+            assert_eq!(
+                collector.bundle_fresh_at,
                 Some(primed),
                 "a cache-hit poll must not advance (re-arm) the freshness timestamp"
             );
@@ -717,23 +796,22 @@ mod cadence_oracle {
                 "construction failure bypasses the cache arm entirely"
             );
             assert_eq!(
-                collector.findings_fresh_at,
+                collector.bundle_fresh_at,
                 Some(primed),
                 "a degraded bundle must not advance the freshness timestamp"
             );
         }
     }
 
-    /// ORACLE (current behavior): once the TTL has elapsed the cache is
-    /// bypassed — the sentinel is NOT served — and (on an available bundle)
-    /// the freshness timestamp advances past its primed value after the real
-    /// re-derivation.
+    /// ORACLE: once the TTL has elapsed the cache is bypassed — no sentinel
+    /// survives in ANY field — and (on an available bundle) the freshness
+    /// timestamp advances past its primed value after the real re-derivation.
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = UpdatesCollector::new();
-        collector.cached_findings = Some(sentinel_findings());
+        collector.cached_bundle = Some(sentinel_bundle());
         let primed = std::time::Instant::now();
-        collector.findings_fresh_at = Some(primed);
+        collector.bundle_fresh_at = Some(primed);
 
         let _ttl = TtlOffsetGuard::past_ttl();
         collector.start();
@@ -741,19 +819,27 @@ mod cadence_oracle {
 
         assert!(
             bundle.findings.iter().all(|f| f.id != SENTINEL_ID),
-            "an expired cache must not serve the sentinel"
+            "an expired cache must not serve the sentinel finding"
+        );
+        assert_ne!(
+            bundle.package_manager, SENTINEL_LABEL,
+            "an expired cache must not serve the sentinel label"
+        );
+        assert_ne!(
+            bundle.pending_total, 5678,
+            "an expired cache must re-run the real update-count probe"
         );
         if bundle.available {
             // poll() gates the clock write on `available`, and an available
             // re-derived bundle must have re-armed it.
             assert!(
-                collector.findings_fresh_at.is_some_and(|t| t > primed),
+                collector.bundle_fresh_at.is_some_and(|t| t > primed),
                 "an expired cache must be re-derived and the freshness clock advanced"
             );
         } else {
             // Degraded bundle: the gate keeps the primed clock untouched.
             assert_eq!(
-                collector.findings_fresh_at,
+                collector.bundle_fresh_at,
                 Some(primed),
                 "a degraded bundle must not advance the freshness timestamp"
             );

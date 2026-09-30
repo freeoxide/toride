@@ -11,8 +11,12 @@
 //! no `ssh_loading` spinner. Every call to the backend is a pure read.
 //!
 //! Doctor findings are expensive (they shell out to `fail2ban-client`,
-//! `systemctl`, `nft`, `iptables`, …) and change slowly, so they are cached
-//! for 60s — exactly like the SSH diagnostics cache.
+//! `systemctl`, `nft`, `iptables`, …) and change slowly — and so does the
+//! rest of the probe bundle (service status, jails, bans, firewall-backend
+//! availability). The ENTIRE collection is therefore cached for 60s,
+//! mirroring the proxy collector's whole-report cache: a cache hit performs
+//! zero subprocess spawns. Freshness caveat (deliberate cadence decision):
+//! new bans/jails and service transitions surface up to 60s late.
 //!
 //! ## macOS / construction
 //!
@@ -67,30 +71,37 @@ pub struct Fail2banDataBundle {
 
 /// Manages periodic async collection of fail2ban data.
 ///
-/// Mirrors [`SshDataCollector`](crate::ssh_data::SshDataCollector): a oneshot
-/// channel for the in-flight result, plus a 60s TTL cache for the expensive
-/// doctor findings so they are not re-run on every 2s refresh tick.
+/// Mirrors the proxy collector's whole-report cache: a oneshot channel for
+/// the in-flight result, plus a 60s TTL cache over the ENTIRE bundle (doctor
+/// findings AND the probe bundle: service status, jails, bans, firewall
+/// availability) so the 6+N per-collection subprocess spawns do not repeat on
+/// every 2s refresh tick.
 pub struct Fail2banCollector {
-    /// Carries the bundle AND whether the cached findings were reused for this
-    /// poll. The freshness timestamp must only be advanced when the doctor was
-    /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
-    /// would reset the TTL clock with the SAME (already-cached) findings and
-    /// the cache would never expire for the lifetime of the app.
+    /// Carries the bundle AND whether the cached bundle was reused for this
+    /// poll. The freshness timestamp must only be advanced when the probes
+    /// were actually re-run (`used_cache == false`); otherwise every
+    /// cache-hit poll would reset the TTL clock with the SAME (already-cached)
+    /// bundle and the cache would never expire for the lifetime of the app.
     rx: Option<oneshot::Receiver<(Fail2banDataBundle, bool)>>,
-    /// Cached doctor findings from the last collection.
-    cached_findings: Option<Vec<FindingEntry>>,
-    /// When the findings cache was last refreshed.
-    findings_fresh_at: Option<std::time::Instant>,
+    /// Cached bundle (doctor findings + all probe results) from the last
+    /// collection.
+    cached_bundle: Option<Fail2banDataBundle>,
+    /// When the bundle cache was last refreshed.
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
-/// How long to keep cached findings before re-running the doctor suite.
-const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_mins(1);
+/// How long to keep the cached bundle before re-running the doctor suite and
+/// the probe bundle.
+///
+/// Deliberate freshness semantics: new bans/jails and service transitions
+/// surface up to this TTL late (see the module docs).
+const BUNDLE_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
-/// Whether the findings-cache TTL has already elapsed for a cache that was
+/// Whether the bundle-cache TTL has already elapsed for a cache that was
 /// last refreshed at `fresh_at`.
 ///
 /// Round-0 instrumentation seam, ZERO behavior change: outside `cfg(test)`
-/// this is exactly the negation of the `t.elapsed() < FINDINGS_TTL` check
+/// this is exactly the negation of the `t.elapsed() < BUNDLE_TTL` check
 /// `start` always evaluated inline. Under `cfg(test)` the thread-local
 /// [`TTL_TEST_OFFSET_MS`] is folded into the elapsed time so the cadence
 /// oracles can observe TTL expiry deterministically — no 60s sleeps and no
@@ -103,7 +114,7 @@ fn ttl_expired(fresh_at: std::time::Instant) -> bool {
     #[cfg(test)]
     let elapsed =
         elapsed + std::time::Duration::from_millis(TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
-    elapsed >= FINDINGS_TTL
+    elapsed >= BUNDLE_TTL
 }
 
 // Extra milliseconds folded into `ttl_expired`'s elapsed time by the
@@ -122,8 +133,8 @@ impl Fail2banCollector {
     pub fn new() -> Self {
         Self {
             rx: None,
-            cached_findings: None,
-            findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -134,20 +145,21 @@ impl Fail2banCollector {
 
     /// Start a new background collection.
     ///
-    /// If a collection is already in-flight, this is a no-op. The 60s findings
-    /// cache is consulted: when fresh, the spawned task reuses the cached
-    /// findings instead of re-running the doctor suite.
+    /// If a collection is already in-flight, this is a no-op. The 60s
+    /// whole-bundle cache is consulted: when fresh, the spawned task serves
+    /// the cached bundle verbatim — the doctor AND the probe bundle
+    /// (systemctl, fail2ban-client, nft/iptables) do not run at all.
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
         }
         let (tx, rx) = oneshot::channel();
-        let use_cache = self.cached_findings.is_some()
-            && self.findings_fresh_at.is_some_and(|t| !ttl_expired(t));
-        let cached_findings = self.cached_findings.clone();
+        let use_cache =
+            self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
+        let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
-            let (bundle, reused_cache) = collect_real_fail2ban(use_cache, cached_findings).await;
+            let (bundle, reused_cache) = collect_real_fail2ban(use_cache, cached_bundle).await;
             let _ = tx.send((bundle, reused_cache));
         });
     }
@@ -155,24 +167,29 @@ impl Fail2banCollector {
     /// Poll for a completed collection result.
     ///
     /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. On success the cached findings are
-    /// updated to the freshly-returned findings, but the freshness timestamp is
-    /// only advanced when the doctor was actually re-run (not on a cache-hit
-    /// poll) — otherwise the 60s TTL would be re-armed forever with the same
-    /// cached data on every 2s refresh.
+    /// pending or if the collection failed. On an available bundle the whole
+    /// bundle is cached, but the freshness timestamp is only advanced when the
+    /// probes were actually re-run (not on a cache-hit poll) — otherwise the
+    /// 60s TTL would be re-armed forever with the same cached data on every
+    /// 2s refresh. A degraded bundle (a collection-task panic) is never
+    /// cached, so the next refresh re-runs the probes instead of pinning the
+    /// degraded panel for the TTL.
     pub async fn poll(&mut self) -> Option<Fail2banDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
-                    self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the doctor was
-                    // actually re-run. On a cache-hit poll the findings are the
-                    // SAME data we already cached, so resetting the TTL here
-                    // would let the cache live forever as long as the 2s refresh
-                    // tick keeps firing inside the TTL window.
+                if let Some((ref bundle, used_cache)) = result
+                    && bundle.available
+                {
+                    self.cached_bundle = Some(bundle.clone());
+                    // Only advance the freshness clock when the probes
+                    // were actually re-run. On a cache-hit poll the bundle
+                    // is the SAME data we already cached, so resetting the
+                    // TTL here would let the cache live forever as long as
+                    // the 2s refresh tick keeps firing inside the TTL
+                    // window.
                     if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
+                        self.bundle_fresh_at = Some(std::time::Instant::now());
                     }
                 }
                 self.rx = None;
@@ -182,11 +199,11 @@ impl Fail2banCollector {
         }
     }
 
-    /// Invalidate the findings cache so the next collection re-runs the doctor.
+    /// Invalidate the bundle cache so the next collection re-runs the probes.
     #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
-        self.cached_findings = None;
-        self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -200,26 +217,34 @@ impl Default for Fail2banCollector {
 
 /// Collect fail2ban data by shelling out to the real binaries.
 ///
-/// All work runs on the blocking thread pool (the `DuctRunner` shells out
-/// synchronously). Doctor findings may be reused from the cache. On ANY error
-/// — construction failure, doctor error, every probe failing — returns
-/// [`empty_bundle`] with `available = false`.
+/// When `use_cache` is set and a cached bundle is present, the cached bundle
+/// is served verbatim and NOTHING runs — the doctor AND the probe bundle
+/// (systemctl is-active/is-enabled, fail2ban-client version/status/banned,
+/// nft/iptables availability) are skipped entirely.
 ///
-/// `use_cache` / `cached_findings` mirror the SSH diagnostics cache: when the
-/// cache is fresh the doctor suite is skipped entirely.
+/// Otherwise all work runs on the blocking thread pool (the `DuctRunner`
+/// shells out synchronously). The `fail2ban-client` handle is constructed
+/// ONCE per collection (`f2b.client()` resolves the binary through a `$PATH`
+/// scan on every call, so the second construction the banned-IPs probe used
+/// to pay is gone — the status and banned probes now share one client, and
+/// with it one jail list). On ANY error — construction failure, doctor
+/// error, every probe failing — returns [`empty_bundle`] with
+/// `available = false`.
 ///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
-/// findings were actually taken from the cache on a successful collection.
-/// The caller advances the TTL clock ONLY when `used_cache == false`, so a
-/// cache-hit poll never resets the freshness timestamp with stale data.
-#[expect(
-    clippy::too_many_lines,
-    reason = "real-data collection is inherently linear"
-)]
+/// bundle was served verbatim from the cache. The caller advances the TTL
+/// clock ONLY when `used_cache == false`, so a cache-hit poll never resets
+/// the freshness timestamp with stale data.
 async fn collect_real_fail2ban(
     use_cache: bool,
-    cached_findings: Option<Vec<FindingEntry>>,
+    cached_bundle: Option<Fail2banDataBundle>,
 ) -> (Fail2banDataBundle, bool) {
+    // Cache hit: serve the whole bundle verbatim. Neither the doctor nor any
+    // probe spawns a subprocess.
+    if use_cache && let Some(bundle) = cached_bundle {
+        return (bundle, true);
+    }
+
     // Build the Fail2Ban facade on the blocking pool. with_runner skips the
     // /etc/fail2ban existence check, so construction succeeds even on macOS.
     let f2b = match tokio::task::spawn_blocking(|| {
@@ -245,29 +270,29 @@ async fn collect_real_fail2ban(
     // enrichment calls `client.status_jail(&name)` repeatedly, so collecting
     // everything in one owned closure is both simpler and cheaper than
     // spawning one task per probe. Results are returned as plain owned data
-    // so they cross the thread boundary cleanly. Doctor findings are taken
-    // from the cache when fresh (`use_cache`), otherwise re-run here.
+    // so they cross the thread boundary cleanly. The fail2ban-client handle
+    // is constructed once here and shared by the status and banned probes —
+    // each `f2b.client()` call re-resolves the binary on `$PATH`.
     let result = tokio::task::spawn_blocking(move || {
-        // ── Doctor (unless cached) ─────────────────────────────────────────
-        let findings: Vec<FindingEntry> = if use_cache {
-            cached_findings.unwrap_or_default()
-        } else {
+        // ── Doctor ─────────────────────────────────────────────────────────
+        let findings: Vec<FindingEntry> =
             match f2b.doctor(toride_fail2ban::doctor::DoctorScope::All) {
                 Ok(report) => fail2ban_convert::convert_findings(report.findings),
                 Err(e) => {
                     tracing::warn!("fail2ban doctor: {e}");
                     Vec::new()
                 }
-            }
-        };
+            };
 
         // ── Service status ────────────────────────────────────────────────
         let svc = f2b.service();
         let service_active = svc.is_active().unwrap_or(false);
         let service_enabled = svc.is_enabled().unwrap_or(false);
 
-        // ── Client status + version ───────────────────────────────────────
-        let (jails, version) = match f2b.client() {
+        // ── Client status + version + banned IPs (ONE client) ─────────────
+        // A missing fail2ban-client degrades exactly as before: empty
+        // jails/version AND empty bans, each with its own debug log.
+        let (jails, version, bans) = match f2b.client() {
             Ok(client) => {
                 let version = client.version().ok();
                 let jails = match client.status() {
@@ -291,24 +316,19 @@ async fn collect_real_fail2ban(
                         Vec::new()
                     }
                 };
-                (jails, version)
+                let bans = match client.banned() {
+                    Ok(raw) => fail2ban_convert::parse_bans(&raw),
+                    Err(e) => {
+                        tracing::debug!("fail2ban client banned: {e}");
+                        Vec::new()
+                    }
+                };
+                (jails, version, bans)
             }
             Err(e) => {
                 tracing::debug!("fail2ban client init: {e}");
-                (Vec::new(), None)
+                (Vec::new(), None, Vec::new())
             }
-        };
-
-        // ── Banned IPs ────────────────────────────────────────────────────
-        let bans = match f2b.client() {
-            Ok(client) => match client.banned() {
-                Ok(raw) => fail2ban_convert::parse_bans(&raw),
-                Err(e) => {
-                    tracing::debug!("fail2ban client banned: {e}");
-                    Vec::new()
-                }
-            },
-            Err(_) => Vec::new(),
         };
 
         // ── Firewall backend availability ─────────────────────────────────
@@ -344,7 +364,11 @@ async fn collect_real_fail2ban(
     .await;
 
     match result {
-        Ok(bundle) => (bundle, use_cache),
+        // `use_cache == true` with an empty cache cannot happen via start()
+        // (it only sets the flag when the cache is populated), and reaching
+        // this point means every probe above DID run — so the truthful
+        // provenance is "not from cache".
+        Ok(bundle) => (bundle, false),
         Err(e) => {
             tracing::warn!("fail2ban collection task panicked: {e}");
             (
@@ -470,46 +494,57 @@ mod tests {
         let mut collector = Fail2banCollector::new();
         collector.start();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
-        let _ = collector.poll().await;
-        // After a successful poll the cache is populated (even if to an empty
-        // Vec on a host where the doctor produced no findings).
-        assert!(collector.cached_findings.is_some());
-        assert!(collector.findings_fresh_at.is_some());
+        let bundle = collector.poll().await;
+        // After a successful AVAILABLE poll the whole-bundle cache is
+        // populated. A host where every probe fails (available == false,
+        // e.g. no fail2ban and a doctor that produced nothing) stays
+        // uncached so the next tick re-runs the probes.
+        if bundle.is_some_and(|b| b.available) {
+            assert!(collector.cached_bundle.is_some());
+            assert!(collector.bundle_fresh_at.is_some());
+        } else {
+            assert!(
+                collector.cached_bundle.is_none(),
+                "an unavailable bundle must not be cached"
+            );
+        }
     }
 
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = Fail2banCollector::new();
-        collector.cached_findings = Some(Vec::new());
-        collector.findings_fresh_at = Some(std::time::Instant::now());
+        collector.cached_bundle = Some(empty_bundle());
+        collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
-        assert!(collector.cached_findings.is_none());
-        assert!(collector.findings_fresh_at.is_none());
+        assert!(collector.cached_bundle.is_none());
+        assert!(collector.bundle_fresh_at.is_none());
     }
 }
 
-// ── Cadence oracles (round 0) ───────────────────────────────────────────────
+// ── Cadence oracles (round 0, extended round 1) ──────────────────────────────
 
-/// Round-0 cadence oracles for the 60s findings cache.
+/// Cadence oracles for the 60s whole-bundle cache.
 ///
-/// These pin the CURRENT cache behavior with sentinel findings whose id the
-/// real fail2ban doctor can never emit: "findings came back verbatim" proves
-/// the doctor was not re-run (a re-derivation emits real ids, or none — never
-/// the sentinel), and "freshness timestamp untouched" proves the TTL is not
-/// re-armed on a cache hit.
+/// Round 1 (F02) extended these from a findings-only cache to the whole
+/// probe bundle: sentinel data now covers service flags, version, jails,
+/// bans, and firewall availability as well as the findings. The sentinel
+/// strings (finding id, jail name, version, ban IP) are values no real
+/// fail2ban doctor/probe can emit, so "the bundle came back verbatim" proves
+/// the doctor AND the probe bundle — systemctl, fail2ban-client
+/// version/status/banned, nft/iptables — did not spawn a single subprocess.
 ///
 /// The lifecycle goes through the REAL `start()` / spawned collection — the
-/// same shell-out path the dashboard's 2s refresh tick drives — so these are
-/// environmental in the same way the existing lifecycle tests above are. The
-/// ASSERTED state (findings provenance, freshness bookkeeping) is
-/// deterministic on any host: with a fresh cache the collector's `use_cache`
-/// arm serves the cache verbatim regardless of how the probes fare.
+/// same shell-out path the dashboard's 2s refresh tick drives. The cache-hit
+/// arm is deterministic on any host (nothing runs). The expiry arm's clock
+/// assertion is conditional on the re-derived bundle being `available`
+/// (`poll()` only caches/advances for available bundles; a host where every
+/// probe fails legitimately keeps its primed clock).
 ///
 /// No spawn-counting seam is added at this layer: `collect_real_fail2ban`
 /// hardcodes its `DuctRunner`, and threading an injectable runner through
 /// `start()` would change production signatures for zero observed benefit —
-/// the sentinel already answers "was the doctor re-run?". (Counting seams at
-/// the backend-crate level exist separately, e.g. toride-fail2ban's
+/// the sentinel bundle already answers "did anything re-run?". (Counting
+/// seams at the backend-crate level exist separately, e.g. toride-fail2ban's
 /// `spawn_oracle`.)
 #[cfg(test)]
 mod cadence_oracle {
@@ -518,16 +553,48 @@ mod cadence_oracle {
     /// Sentinel id no real doctor finding can carry.
     const SENTINEL_ID: &str = "oracle-sentinel.fail2ban.findings-cache";
 
-    /// One sentinel finding — enough to distinguish cache passthrough from
-    /// any real derivation.
-    fn sentinel_findings() -> Vec<FindingEntry> {
-        vec![FindingEntry {
-            id: SENTINEL_ID.to_string(),
-            severity: "ok".to_string(),
-            title: "cadence-oracle sentinel".to_string(),
-            detail: String::new(),
-            fix: None,
-        }]
+    /// Sentinel jail name no real `fail2ban-client status` can list.
+    const SENTINEL_JAIL: &str = "oracle-sentinel-jail";
+
+    /// Sentinel version string no real `fail2ban-client --version` prints.
+    const SENTINEL_VERSION: &str = "oracle-sentinel 0.0.0";
+
+    /// A sentinel bundle with `available == true` so `poll()` caches it: real
+    /// probe outputs can never produce any of these field values.
+    fn sentinel_bundle() -> Fail2banDataBundle {
+        Fail2banDataBundle {
+            available: true,
+            service_active: true,
+            service_enabled: true,
+            version: Some(SENTINEL_VERSION.to_string()),
+            jails: vec![JailEntry {
+                name: SENTINEL_JAIL.to_string(),
+                ..jail_entry_default()
+            }],
+            bans: Vec::new(),
+            findings: vec![FindingEntry {
+                id: SENTINEL_ID.to_string(),
+                severity: "ok".to_string(),
+                title: "cadence-oracle sentinel".to_string(),
+                detail: String::new(),
+                fix: None,
+            }],
+            fw_nft_available: Some(true),
+            fw_iptables_available: Some(false),
+            unavailable_reason: None,
+        }
+    }
+
+    /// Fills the non-sentinel [`JailEntry`] fields with values no assertion
+    /// depends on (`JailEntry` has no Default).
+    fn jail_entry_default() -> JailEntry {
+        JailEntry {
+            name: String::new(),
+            is_running: false,
+            banned_count: 0,
+            total_bans: 0,
+            file_count: 0,
+        }
     }
 
     /// Advances this thread's TTL test clock past the TTL, resetting it on
@@ -536,11 +603,11 @@ mod cadence_oracle {
     struct TtlOffsetGuard;
 
     impl TtlOffsetGuard {
-        /// Set the thread-local offset to `FINDINGS_TTL` + 10s.
+        /// Set the thread-local offset to `BUNDLE_TTL` + 10s.
         fn past_ttl() -> Self {
             TTL_TEST_OFFSET_MS.with(|o| {
                 o.set(
-                    u64::try_from(FINDINGS_TTL.as_millis())
+                    u64::try_from(BUNDLE_TTL.as_millis())
                         .expect("a 60s TTL in milliseconds always fits in u64")
                         + 10_000,
                 );
@@ -555,44 +622,57 @@ mod cadence_oracle {
         }
     }
 
-    /// ORACLE (current behavior): a fresh cache serves its cached findings
-    /// verbatim on the next collection — the doctor is NOT re-run — and the
-    /// freshness timestamp is NOT re-armed by the cache-hit poll.
+    /// ORACLE: a fresh cache serves the WHOLE cached bundle verbatim on the
+    /// next collection — the doctor AND every probe are skipped (zero
+    /// subprocess spawns) — and the freshness timestamp is NOT re-armed by
+    /// the cache-hit poll.
     #[tokio::test]
-    async fn cache_hit_returns_cached_findings_without_rederiving() {
+    async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = Fail2banCollector::new();
-        collector.cached_findings = Some(sentinel_findings());
+        collector.cached_bundle = Some(sentinel_bundle());
         let primed = std::time::Instant::now();
-        collector.findings_fresh_at = Some(primed);
+        collector.bundle_fresh_at = Some(primed);
 
         collector.start();
         let bundle = collector.poll().await.expect("collection completes");
 
-        assert_eq!(
-            bundle.findings.len(),
-            1,
-            "a cache hit must serve the cached findings verbatim"
-        );
+        // Cached-vs-fresh parity: every sentinel field comes back verbatim.
+        assert_eq!(bundle.findings.len(), 1);
         assert_eq!(
             bundle.findings[0].id, SENTINEL_ID,
             "the sentinel id can only come from the cache, never from a real doctor run"
         );
         assert_eq!(
-            collector.findings_fresh_at,
+            bundle.version.as_deref(),
+            Some(SENTINEL_VERSION),
+            "the sentinel version can only come from the cache"
+        );
+        assert_eq!(bundle.jails.len(), 1);
+        assert_eq!(
+            bundle.jails[0].name, SENTINEL_JAIL,
+            "the sentinel jail can only come from the cache, never from a real status probe"
+        );
+        assert!(
+            bundle.service_active,
+            "sentinel service flag served verbatim"
+        );
+        assert_eq!(bundle.fw_nft_available, Some(true));
+        assert_eq!(
+            collector.bundle_fresh_at,
             Some(primed),
             "a cache-hit poll must not advance (re-arm) the freshness timestamp"
         );
     }
 
-    /// ORACLE (current behavior): once the TTL has elapsed the cache is
-    /// bypassed — the sentinel is NOT served — and the freshness timestamp
-    /// advances past its primed value after the real re-derivation.
+    /// ORACLE: once the TTL has elapsed the cache is bypassed — no sentinel
+    /// survives in ANY field — and (on an available re-derivation) the
+    /// freshness timestamp advances past its primed value.
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = Fail2banCollector::new();
-        collector.cached_findings = Some(sentinel_findings());
+        collector.cached_bundle = Some(sentinel_bundle());
         let primed = std::time::Instant::now();
-        collector.findings_fresh_at = Some(primed);
+        collector.bundle_fresh_at = Some(primed);
 
         let _ttl = TtlOffsetGuard::past_ttl();
         collector.start();
@@ -600,13 +680,31 @@ mod cadence_oracle {
 
         assert!(
             bundle.findings.iter().all(|f| f.id != SENTINEL_ID),
-            "an expired cache must not serve the sentinel"
+            "an expired cache must not serve the sentinel finding"
         );
-        // fail2ban's poll() advances the clock on every !used_cache result
-        // (no availability gate), so the re-derivation must have re-armed it.
+        assert_ne!(
+            bundle.version.as_deref(),
+            Some(SENTINEL_VERSION),
+            "an expired cache must not serve the sentinel version"
+        );
         assert!(
-            collector.findings_fresh_at.is_some_and(|t| t > primed),
-            "an expired cache must be re-derived and the freshness clock advanced"
+            bundle.jails.iter().all(|j| j.name != SENTINEL_JAIL),
+            "an expired cache must not serve the sentinel jail"
         );
+        if bundle.available {
+            // poll() gates the clock write on `available`; a host where the
+            // doctor responded (any finding, incl. binary-missing) is
+            // available and must have re-armed the clock.
+            assert!(
+                collector.bundle_fresh_at.is_some_and(|t| t > primed),
+                "an expired cache must be re-derived and the freshness clock advanced"
+            );
+        } else {
+            assert_eq!(
+                collector.bundle_fresh_at,
+                Some(primed),
+                "an unavailable re-derivation must leave the primed clock untouched"
+            );
+        }
     }
 }

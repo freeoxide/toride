@@ -24,7 +24,11 @@ use crate::spec::UpdateSpec;
 /// Client for interacting with the system's automatic update subsystem.
 ///
 /// Owns a boxed [`toride_runner::Runner`] for command execution and resolved
-/// [`UpdatePaths`] for locating configuration files.
+/// [`UpdatePaths`] for locating configuration files. The package manager is
+/// detected ONCE at construction and memoized on the client: `check_updates`,
+/// `status`, and `apply_updates` used to re-probe `$PATH` (two `which` scans
+/// each) on every call — a per-tick cost the dashboard collector paid ~7
+/// times per refresh.
 ///
 /// # Construction
 ///
@@ -33,6 +37,9 @@ use crate::spec::UpdateSpec;
 pub struct UpdatesClient {
     runner: Box<dyn toride_runner::Runner>,
     paths: UpdatePaths,
+    /// Memoized package-manager detection (resolved once at construction —
+    /// a `$PATH` change mid-process is not observed, by design).
+    pkg_mgr: PackageManager,
 }
 
 impl UpdatesClient {
@@ -57,6 +64,7 @@ impl UpdatesClient {
         Ok(Self {
             runner: Box::new(toride_runner::DuctRunner),
             paths,
+            pkg_mgr,
         })
     }
 
@@ -65,6 +73,7 @@ impl UpdatesClient {
         Self {
             runner,
             paths: UpdatePaths::new(),
+            pkg_mgr: crate::detect::detect_package_manager(),
         }
     }
 
@@ -73,7 +82,11 @@ impl UpdatesClient {
         runner: Box<dyn toride_runner::Runner>,
         paths: UpdatePaths,
     ) -> Self {
-        Self { runner, paths }
+        Self {
+            runner,
+            paths,
+            pkg_mgr: crate::detect::detect_package_manager(),
+        }
     }
 
     /// A reference to the owned runner (used to construct backends).
@@ -81,10 +94,11 @@ impl UpdatesClient {
         self.runner.as_ref()
     }
 
-    /// The detected package manager.
-    fn package_manager(&self) -> PackageManager {
-        let _ = self;
-        crate::detect::detect_package_manager()
+    /// The detected package manager (memoized at construction — no `$PATH`
+    /// probe).
+    #[must_use]
+    pub fn package_manager(&self) -> PackageManager {
+        self.pkg_mgr
     }
 
     // -----------------------------------------------------------------------
@@ -386,6 +400,7 @@ impl Default for UpdatesClient {
         Self::new().unwrap_or_else(|_| Self {
             runner: Box::new(toride_runner::DuctRunner),
             paths: UpdatePaths::new(),
+            pkg_mgr: PackageManager::Unknown,
         })
     }
 }
@@ -597,5 +612,25 @@ mod tests {
     fn with_runner_keeps_runner_alive() {
         let runner = SharedRunner::new(FakeRunner::new());
         let _client = UpdatesClient::with_runner(runner.boxed());
+    }
+
+    /// ORACLE (F06 memoization parity): the client's package-manager answer
+    /// equals a fresh `$PATH` detection and is stable across reads — it is
+    /// resolved once at construction and served from the memoized field, so
+    /// the per-call `which` scans (two per `check_updates`/`status`/`apply`
+    /// call before) are gone.
+    #[test]
+    fn package_manager_is_memoized_and_matches_detection() {
+        let client = UpdatesClient::with_runner(Box::new(FakeRunner::new()));
+        assert_eq!(
+            client.package_manager(),
+            crate::detect::detect_package_manager(),
+            "memoized answer must agree with a fresh detection on the same host"
+        );
+        assert_eq!(
+            client.package_manager(),
+            client.package_manager(),
+            "repeated reads must be stable (served from the field, not re-probed)"
+        );
     }
 }

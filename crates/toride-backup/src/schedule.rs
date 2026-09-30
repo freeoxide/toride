@@ -70,6 +70,23 @@ fn default_unit_dir() -> &'static Path {
 // ScheduleManager
 // ---------------------------------------------------------------------------
 
+/// One-pass schedule + timer snapshot returned by
+/// [`ScheduleManager::timer_status`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScheduleTimerStatus {
+    /// Whether a schedule is installed for the job (same verdict
+    /// [`ScheduleManager::is_installed`] returns).
+    pub installed: bool,
+    /// Whether the job's systemd timer — or, failing that, any backup-related
+    /// timer on the host — is active (same verdict
+    /// `BackupServiceManager::is_timer_active` returns).
+    pub timer_active: bool,
+    /// Informational note explaining a negative reading (`"systemd not
+    /// detected"` on a host without systemd; empty otherwise) — the same
+    /// string [`ScheduleManager::schedule_note`] returns.
+    pub note: String,
+}
+
 /// Manages backup schedule installation and removal.
 ///
 /// Creates and manages systemd timer units or cron entries for backup jobs.
@@ -203,6 +220,90 @@ impl ScheduleManager {
             String::new()
         } else {
             detected.note
+        }
+    }
+
+    /// One-pass schedule + timer status for the dashboard's refresh tick.
+    ///
+    /// Returns exactly what separately calling
+    /// [`is_installed`](Self::is_installed) + `schedule_note` +
+    /// `BackupServiceManager::is_timer_active` returned (for a job name that
+    /// needs no unit-name sanitization, i.e. `[A-Za-z0-9._-]`), but shares
+    /// the work: ONE `systemd::detect()` (instead of three), ONE
+    /// [`systemd::probe_timer`] for the job's own unit (instead of two), and —
+    /// when the fallback fan-out is needed at all — ONE
+    /// [`systemd::enumerate_backup_timers`] shared between the installed and
+    /// active questions (instead of one full fan-out each).
+    ///
+    /// Early-exit symmetry with the separate probes is preserved: when the
+    /// job's timer unit is BOTH installed and active, no enumeration runs at
+    /// all (each separate probe returned early in that case too).
+    pub fn timer_status(&self, name: &str) -> ScheduleTimerStatus {
+        let detected = systemd::detect();
+        let note = if detected.available {
+            String::new()
+        } else {
+            detected.note
+        };
+
+        if !detected.available {
+            return ScheduleTimerStatus {
+                installed: match self.backend {
+                    // The managed unit-file check precedes the systemd probe
+                    // in `is_systemd_timer_installed` and stays ahead of the
+                    // detection here: a file written out-of-band keeps
+                    // `installed` honest even on a systemd-less host.
+                    ScheduleBackend::SystemdTimer => {
+                        let (_, timer_unit) = systemd::unit_names(name);
+                        self.unit_dir.join(&timer_unit).exists()
+                    }
+                    ScheduleBackend::Cron => self.is_cron_installed(name),
+                },
+                // Mirrors BackupServiceManager::is_timer_active's honest
+                // systemd-absent answer: no command invoked, not active.
+                timer_active: false,
+                note,
+            };
+        }
+
+        match self.backend {
+            ScheduleBackend::Cron => {
+                let (_, timer_unit) = systemd::unit_names(name);
+                let timer_active =
+                    systemd::probe_timer(&timer_unit).active || systemd::any_backup_timer_active();
+                ScheduleTimerStatus {
+                    installed: self.is_cron_installed(name),
+                    timer_active,
+                    note,
+                }
+            }
+            ScheduleBackend::SystemdTimer => {
+                let (_, timer_unit) = systemd::unit_names(name);
+                let file_installed = self.unit_dir.join(&timer_unit).exists();
+                let probe = systemd::probe_timer(&timer_unit);
+                let mut installed = file_installed || probe.installed;
+                let mut timer_active = probe.active;
+
+                // The enumeration ran (separately, twice) in the old pair
+                // exactly when the installed question OR the active question
+                // was still unanswered; run it once here under the same
+                // condition.
+                if !installed || !timer_active {
+                    let probes = systemd::enumerate_backup_timers();
+                    if !installed {
+                        installed = !probes.is_empty();
+                    }
+                    if !timer_active {
+                        timer_active = probes.iter().any(|p| p.active);
+                    }
+                }
+
+                ScheduleTimerStatus {
+                    installed,
+                    timer_active,
+                    note,
+                }
+            }
         }
     }
 
@@ -851,5 +952,58 @@ mod tests {
             std::path::PathBuf::from("/etc/systemd/system")
         );
         assert_eq!(mgr.cron_dir, std::path::PathBuf::from("/etc/cron.d"));
+    }
+
+    // -----------------------------------------------------------------------
+    // timer_status one-pass snapshot (F04: share ONE enumeration)
+    // -----------------------------------------------------------------------
+
+    /// ORACLE: a managed timer file on disk makes `installed` true WITHOUT
+    /// consulting systemd — the file check precedes detection in both the
+    /// snapshot and the separate `is_installed` probe, so this holds on
+    /// systemd and non-systemd hosts alike. Deterministic: the temp unit dir
+    /// isolates the file check, and the asserted flag does not depend on the
+    /// host's real timers.
+    #[test]
+    fn timer_status_unit_file_present_means_installed() {
+        let (mgr, _dir) = mgr_with_temp(ScheduleBackend::SystemdTimer, FakeRunner::new());
+        let (_, timer_unit) = systemd::unit_names("toride-backup");
+        std::fs::write(mgr.unit_dir.join(&timer_unit), b"[Timer]\n").unwrap();
+
+        let status = mgr.timer_status("toride-backup");
+        assert!(
+            status.installed,
+            "an on-disk managed timer file must read as installed regardless of the init system"
+        );
+    }
+
+    /// ORACLE: on a host without systemd the snapshot carries the honest
+    /// "systemd not detected" note, reports the timer as NOT active without
+    /// invoking any command, and agrees with `is_installed` + `schedule_note`
+    /// on every field. On a systemd host only the note arm is deterministic
+    /// (real timers may exist), so that side asserts the empty note.
+    #[test]
+    fn timer_status_matches_separate_probes_and_note_tracks_detection() {
+        let (mgr, _dir) = mgr_with_temp(ScheduleBackend::SystemdTimer, FakeRunner::new());
+        let status = mgr.timer_status("toride-backup");
+        let detected = systemd::detect();
+
+        // Parity with the separate probes the snapshot replaces.
+        assert_eq!(status.installed, mgr.is_installed("toride-backup").unwrap());
+        assert_eq!(status.note, mgr.schedule_note());
+
+        if detected.available {
+            assert!(status.note.is_empty(), "systemd host carries no note");
+        } else {
+            assert_eq!(status.note, detected.note);
+            assert!(
+                !status.timer_active,
+                "a systemd-absent host must report timer_active=false"
+            );
+            assert!(
+                !status.installed,
+                "empty temp unit dir + no systemd -> not installed"
+            );
+        }
     }
 }

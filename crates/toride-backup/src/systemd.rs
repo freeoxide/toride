@@ -93,7 +93,18 @@ pub fn detect() -> SystemdDetect {
 /// exit status is **not** an error here — callers interpret exit codes per
 /// subcommand (e.g. `is-active` exits non-zero for inactive units).
 fn run_systemctl(args: &[&str]) -> std::result::Result<std::process::Output, std::io::Error> {
+    #[cfg(test)]
+    SYSTEMCTL_SPAWNS.with(|c| c.set(c.get() + 1));
     Command::new("systemctl").args(args).output()
+}
+
+// Number of `systemctl` spawn ATTEMPTS issued by this thread. Test-only
+// oracle seam: incremented by `run_systemctl` whether or not the spawn
+// succeeds, so spawn-count thresholds hold on systemd and non-systemd hosts
+// alike. Thread-local so parallel test threads cannot perturb each other.
+#[cfg(test)]
+thread_local! {
+    static SYSTEMCTL_SPAWNS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Check whether a unit is known to systemd (i.e. its unit file is installed).
@@ -180,11 +191,14 @@ pub fn enable_unit(unit: &str) -> crate::Result<()> {
 }
 
 /// Probe a single timer unit for installed + active status.
+///
+/// `is-active` is only issued when `systemctl cat` showed the unit installed:
+/// an absent unit can never be active (`is-active` on an unknown unit prints
+/// `inactive`/`unknown` and exits non-zero, which maps to `false`), so the
+/// second spawn is pure waste on the — by far most common — absent-unit path.
 pub fn probe_timer(unit: &str) -> TimerProbe {
     let installed = unit_installed(unit);
-    // `is-active` is only meaningful for an installed unit, but invoking it on
-    // an absent unit simply returns `false`, so we always probe for symmetry.
-    let active = unit_active(unit);
+    let active = installed && unit_active(unit);
     TimerProbe {
         unit: unit.to_owned(),
         installed,
@@ -827,6 +841,49 @@ mod tests {
         if !probe.installed {
             assert!(!probe.active, "absent unit must not be active");
         }
+    }
+
+    /// ORACLE (F04 spawn threshold): probing an absent unit issues exactly ONE
+    /// `systemctl` spawn attempt (`cat`); the `is-active` spawn is
+    /// short-circuited because an absent unit can never read as active.
+    /// Deterministic on systemd and non-systemd hosts alike: the counter
+    /// records spawn ATTEMPTS, and either way `cat` resolving to
+    /// not-installed ends the probe.
+    #[test]
+    fn probe_timer_absent_unit_spawns_exactly_once() {
+        SYSTEMCTL_SPAWNS.with(|c| c.set(0));
+        let probe = probe_timer("toride-backup-oracle-absent-unit-xyz.timer");
+        let spawns = SYSTEMCTL_SPAWNS.with(std::cell::Cell::get);
+        assert_eq!(
+            spawns, 1,
+            "absent unit: `cat` only — is-active must be skipped"
+        );
+        assert!(!probe.installed);
+        assert!(
+            !probe.active,
+            "short-circuit must keep the absent-unit verdict false"
+        );
+    }
+
+    /// ORACLE (F04 spawn ceiling): enumerating the backup-timer landscape on
+    /// a systemd host stays within the structural budget — one `list-timers`
+    /// plus one `cat` per base unit (8), with `is-active` only for units that
+    /// resolved as installed. On a non-systemd host every spawn attempt fails
+    /// to resolve, so the same ceiling degenerates gracefully.
+    #[test]
+    fn enumerate_backup_timers_spawn_ceiling() {
+        SYSTEMCTL_SPAWNS.with(|c| c.set(0));
+        let probes = enumerate_backup_timers();
+        let spawns = SYSTEMCTL_SPAWNS.with(std::cell::Cell::get);
+        let base = BASE_BACKUP_TIMER_UNITS.len();
+        // 1 list-timers + 1 cat per base unit + 1 cat per discovered extra
+        // + (is-active only for installed units).
+        let installed = probes.iter().filter(|p| p.installed).count();
+        let ceiling = 1 + base + probes.len() + installed;
+        assert!(
+            spawns <= ceiling,
+            "enumerate spawned {spawns} times, over the structural ceiling {ceiling}"
+        );
     }
 
     // -----------------------------------------------------------------
