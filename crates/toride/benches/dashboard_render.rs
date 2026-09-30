@@ -14,15 +14,22 @@
 //! `App::view` itself is crate-private (`pub(super)`), so the bench drives
 //! the identical public dispatch target (`AppScreen::view`) with the same
 //! palette `App::view` bakes each frame (see `common::render_palette`).
+//!
+//! The `mouse_sweep` group extends the rig for the F01 draw-gating fix: a
+//! 100-event mouse sweep across the content pane now costs only the hover
+//! hit-tests (`AppScreen::handle_mouse` returning no action), while before
+//! the gating each motion event also paid the full `dashboard_render` frame
+//! below — compare 100 sweeps against 100x that per-frame number.
 
 mod common;
 
 use std::time::Duration;
 
 use criterion::{Criterion, criterion_group, criterion_main};
+use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{Terminal, backend::TestBackend};
 
-use common::{fixed_dashboard, render_palette};
+use common::{SIZES, fixed_dashboard, render_palette};
 use toride::ui::screens::AppScreen;
 
 fn dashboard_render(c: &mut Criterion) {
@@ -34,7 +41,7 @@ fn dashboard_render(c: &mut Criterion) {
         .measurement_time(Duration::from_secs(2))
         .sample_size(20);
 
-    for (width, height) in common::SIZES {
+    for (width, height) in SIZES {
         let mut screen = fixed_dashboard();
         let palette = render_palette();
         let mut terminal = Terminal::new(TestBackend::new(width, height))
@@ -52,9 +59,51 @@ fn dashboard_render(c: &mut Criterion) {
     group.finish();
 }
 
+fn dashboard_mouse_sweep(c: &mut Criterion) {
+    let mut group = c.benchmark_group("dashboard_mouse_sweep");
+    group
+        .warm_up_time(Duration::from_millis(500))
+        .measurement_time(Duration::from_secs(2))
+        .sample_size(20);
+
+    for (width, height) in SIZES {
+        let mut screen = fixed_dashboard();
+        let palette = render_palette();
+        // One frame so the shell's hit-test rects (header gauges, sidebar)
+        // exist — exactly the steady state a real session sweeps over.
+        let mut terminal = Terminal::new(TestBackend::new(width, height))
+            .expect("TestBackend terminal construction cannot fail");
+        terminal
+            .draw(|f| screen.view(f, palette))
+            .expect("TestBackend draw cannot fail");
+
+        group.bench_function(format!("no_change_sweep_{width}x{height}"), |b| {
+            b.iter(|| {
+                // A vertical sweep through the content pane (header rows
+                // skipped so no gauge hitbox is crossed, center column so
+                // the sidebar is never entered): motion events that change
+                // no hover state. After the F01 gating each event costs only
+                // the hit-tests (no action returned, no frame rendered);
+                // before it, every event ALSO paid the full frame measured
+                // by `dashboard_render` above.
+                for row in 4..height {
+                    let action = screen.handle_mouse(MouseEvent {
+                        kind: MouseEventKind::Moved,
+                        column: width / 2,
+                        row,
+                        modifiers: KeyModifiers::empty(),
+                    });
+                    std::hint::black_box(action);
+                }
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group! {
     name = benches;
     config = Criterion::default();
-    targets = dashboard_render
+    targets = dashboard_render, dashboard_mouse_sweep
 }
 criterion_main! { benches }

@@ -4,7 +4,7 @@
 //! trait, returning an [`Action`] when the screen requests navigation or quit.
 //! When a modal is open, all input is intercepted by the modal.
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
 
 use crate::action::Action;
 use crate::navigation::Screen;
@@ -82,7 +82,15 @@ impl App {
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         // Quit modal buttons get first dibs on mouse events
         if self.quit_visible {
-            return self.quit_modal.handle_mouse(&mouse);
+            let action = self.quit_modal.handle_mouse(&mouse);
+            // The modal's buttons track hover internally without reporting
+            // changes, so motion while the quit modal is open conservatively
+            // repaints (clicks already repaint unconditionally in the event
+            // loop).
+            if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
+                self.needs_redraw = true;
+            }
+            return action;
         }
 
         // Help modal: InteractiveModal handles click-outside.

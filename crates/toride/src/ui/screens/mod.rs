@@ -91,6 +91,19 @@ pub trait AppScreen {
     fn needs_animation(&self) -> bool {
         false
     }
+
+    /// Whether the screen's live animation needs full frame rate (~30fps).
+    ///
+    /// Spinners, fades, and colour-flow borders change every frame; slow
+    /// sweeps (the logo shimmer) do not. A screen whose only animation is
+    /// slow returns `false` here and `true` from
+    /// [`needs_animation`](Self::needs_animation) — the app loop then ticks
+    /// it at shimmer cadence (~4 draws/s) instead of ~30fps. Only consulted
+    /// while motion is enabled (never under `reduced_motion`). Default:
+    /// `false`.
+    fn needs_fast_frames(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]

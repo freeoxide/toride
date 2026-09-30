@@ -70,6 +70,12 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
         self.kb_focused
     }
 
+    /// Whether the cursor currently hovers this button.
+    #[must_use]
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+
     /// Set or clear keyboard focus (called by the screen's `FocusManager`).
     pub fn set_focused(&mut self, focused: bool) {
         self.kb_focused = focused;

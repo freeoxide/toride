@@ -81,6 +81,21 @@ impl<A: Copy + PartialEq> ButtonRow<A> {
             .find_map(|btn| btn.handle_mouse(mouse))
     }
 
+    /// Snapshot of which buttons are currently hovered.
+    ///
+    /// Mouse-motion change detection: callers diff this across a
+    /// [`handle_mouse`](Self::handle_mouse) call to decide whether a hover
+    /// highlight moved (and thus whether the frame needs a repaint) without
+    /// rendering. A three-`bool` snapshot per motion event is negligible
+    /// next to the frame rebuild it avoids.
+    #[must_use]
+    pub fn hovered_snapshot(&self) -> Vec<bool> {
+        self.buttons
+            .iter()
+            .map(InteractiveButton::is_hovered)
+            .collect()
+    }
+
     /// Cycle keyboard focus to the next button.
     pub fn cycle_focus_next(&mut self) {
         self.focus.next();

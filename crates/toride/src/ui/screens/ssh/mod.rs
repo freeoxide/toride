@@ -263,7 +263,11 @@ impl SshContent {
     }
 
     /// Provide diagnostic entries.
-    pub fn set_diagnostics(&mut self, entries: Vec<DiagnosticEntry>) {
+    ///
+    /// Takes the bundle's [`Arc`](std::sync::Arc)-shared diagnostics list
+    /// as-is — the collector, its cache, and this tab share one allocation
+    /// instead of deep-cloning the entries each tick.
+    pub fn set_diagnostics(&mut self, entries: std::sync::Arc<Vec<DiagnosticEntry>>) {
         self.diagnostics.set_entries(entries);
     }
 

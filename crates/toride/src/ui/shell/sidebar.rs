@@ -68,8 +68,16 @@ impl Sidebar {
     }
 
     /// Set (or clear) the hovered item.
-    pub fn set_hovered(&mut self, hovered: Option<usize>) {
+    ///
+    /// Returns whether the hovered item actually changed — the dashboard
+    /// shell uses this to change-gate mouse-motion redraws (a sweep that
+    /// stays within the same item repaints nothing).
+    pub fn set_hovered(&mut self, hovered: Option<usize>) -> bool {
+        if self.hovered == hovered {
+            return false;
+        }
         self.hovered = hovered;
+        true
     }
 
     /// Hit-test a screen coordinate against the last-rendered item rects.
@@ -445,6 +453,19 @@ mod tests {
         s.select_next();
         s.select_next();
         assert_eq!(s.selected(), 0, "should wrap to start");
+    }
+
+    #[test]
+    fn set_hovered_reports_whether_it_changed() {
+        // F01 change-gating contract: a motion sweep that stays within the
+        // same item (or over empty space) must not report a change, so the
+        // dashboard shell can skip the frame rebuild.
+        let mut s = Sidebar::new(3);
+        assert!(s.set_hovered(Some(1)), "first hover is a change");
+        assert!(!s.set_hovered(Some(1)), "same item again is not");
+        assert!(s.set_hovered(Some(2)), "different item is");
+        assert!(s.set_hovered(None), "clearing is");
+        assert!(!s.set_hovered(None), "clearing again is not");
     }
 
     #[test]

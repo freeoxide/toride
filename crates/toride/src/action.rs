@@ -26,6 +26,10 @@ pub enum Action {
     /// Cycle the animation preference (Auto → On → Off → Auto) and persist it
     /// (Ctrl+Shift+A). Lets a user on a laggy VPS disable animations mid-session.
     ToggleAnimations,
+    /// Repaint the screen: a screen changed interaction-visible state (a
+    /// hover highlight moved) without requesting navigation. Consumed by the
+    /// app event loop to flag a redraw; never forwarded to screens.
+    Redraw,
 }
 
 #[cfg(test)]
@@ -61,6 +65,7 @@ mod tests {
             Action::ScrollUp,
             Action::CycleTheme,
             Action::ToggleAnimations,
+            Action::Redraw,
         ];
 
         for v in &variants {
@@ -103,6 +108,7 @@ mod tests {
             Action::ScrollUp,
             Action::CycleTheme,
             Action::ToggleAnimations,
+            Action::Redraw,
         ];
         for v in &variants {
             let debug = format!("{v:?}");

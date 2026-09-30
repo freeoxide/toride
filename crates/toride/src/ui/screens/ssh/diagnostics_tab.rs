@@ -41,7 +41,11 @@ enum ActionModal {
 /// State for the Diagnostics sub-tab.
 pub struct DiagnosticsTab {
     /// Diagnostic entries to display.
-    entries: Vec<DiagnosticEntry>,
+    ///
+    /// Stored as an [`Arc`](std::sync::Arc) so the collector's cache, the
+    /// bundle, and this tab share one allocation (the per-tick refresh used
+    /// to deep-clone the list three to four times).
+    entries: std::sync::Arc<Vec<DiagnosticEntry>>,
     /// Index of the currently selected entry.
     selected: usize,
     /// Vertical scroll offset.
@@ -79,7 +83,7 @@ impl DiagnosticsTab {
             vec![1, 1, 1],
         );
         Self {
-            entries: Vec::new(),
+            entries: std::sync::Arc::new(Vec::new()),
             selected: 0,
             scroll: 0,
             detail_open: None,
@@ -95,7 +99,7 @@ impl DiagnosticsTab {
     }
 
     /// Replace the diagnostic entries with new data.
-    pub fn set_entries(&mut self, entries: Vec<DiagnosticEntry>) {
+    pub fn set_entries(&mut self, entries: std::sync::Arc<Vec<DiagnosticEntry>>) {
         self.entries = entries;
         if self.selected >= self.entries.len() && !self.entries.is_empty() {
             self.selected = self.entries.len() - 1;
@@ -524,8 +528,8 @@ impl DiagnosticsTab {
 mod tests {
     use super::*;
 
-    fn sample_entries() -> Vec<DiagnosticEntry> {
-        vec![
+    fn sample_entries() -> std::sync::Arc<Vec<DiagnosticEntry>> {
+        std::sync::Arc::new(vec![
             DiagnosticEntry {
                 id: "ssh_dir_permissions".into(),
                 severity: "ok".into(),
@@ -547,7 +551,7 @@ mod tests {
                 message: "SSH agent is not running".into(),
                 hint: Some("Start agent with eval $(ssh-agent)".into()),
             },
-        ]
+        ])
     }
 
     #[test]

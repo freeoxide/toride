@@ -62,7 +62,15 @@ impl AppScreen for WelcomeScreen {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        self.buttons.handle_mouse(&mouse)
+        // Buttons track hover internally; motion that only moves the hover
+        // between buttons still changed visible state, so report it as a
+        // [`Action::Redraw`] (the event loop change-gates mouse redraws).
+        let hover_before = self.buttons.hovered_snapshot();
+        let action = self.buttons.handle_mouse(&mouse);
+        if action.is_none() && hover_before != self.buttons.hovered_snapshot() {
+            return Some(Action::Redraw);
+        }
+        action
     }
 
     fn view(&mut self, frame: &mut Frame, palette: Palette) {
@@ -79,6 +87,13 @@ impl AppScreen for WelcomeScreen {
 
     fn needs_animation(&self) -> bool {
         true // shimmer always runs
+    }
+
+    fn needs_fast_frames(&self) -> bool {
+        // The animated border's colour flow moves ~12 cells/s and the logo
+        // shimmer rides along on the same frames, so the welcome screen
+        // always wants full-frame-rate ticks under full motion.
+        true
     }
 }
 

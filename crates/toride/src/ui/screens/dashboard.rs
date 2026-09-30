@@ -5,7 +5,7 @@
 //! an internal "active section"; only [`Section::Dashboard`] renders full
 //! content for now, other sections show a placeholder.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -1363,12 +1363,18 @@ impl DashboardScreen {
         }
 
         // ── Header gauge tooltip overlay ────────────────────────────────────
-        let dt = self.last_frame.elapsed();
+        let mut dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
 
         // Detect hover transitions and manage fade-in effect.
         if self.gauge_hover != self.prev_gauge_hover {
             self.prev_gauge_hover = self.gauge_hover;
+            // A freshly created effect must not fast-forward by the
+            // inter-frame gap: with gated redraws the previous frame may be
+            // up to a shimmer-cadence (250ms) old, which would nearly
+            // complete this 300ms fade on its first frame. Start it at zero
+            // so the fade is wall-clock-true at any draw cadence.
+            dt = Duration::ZERO;
             if self.gauge_hover.is_some() {
                 self.tooltip_fx = EffectManager::default();
                 // Under reduced motion skip the 300ms fade — render the tooltip
@@ -1405,6 +1411,18 @@ impl DashboardScreen {
                     .process_effects(dt.into(), frame.buffer_mut(), rect);
             }
         }
+    }
+
+    /// Whether any header gauge currently renders its braille spinner (an
+    /// animated "loading" glyph shown while a throughput label is unknown).
+    /// Mirrors the label logic in [`gauges`](Self::gauges): a `None` label
+    /// renders a spinner, so any unknown rate means a full-frame-rate
+    /// animation is live.
+    fn header_spinners_live(&self) -> bool {
+        self.net_rx_rate.is_none()
+            || self.net_tx_rate.is_none()
+            || self.disk_read_rate.is_none()
+            || self.disk_write_rate.is_none()
     }
 
     fn gauges(&self) -> (Option<f64>, Option<f64>, Option<String>, Option<String>) {
@@ -2035,9 +2053,17 @@ impl AppScreen for DashboardScreen {
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         use crossterm::event::MouseButton;
 
-        // Header gauge hover always works (even with modals open).
-        if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
-            self.gauge_hover = self.gauge_at(mouse.column, mouse.row);
+        let motion = matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_));
+
+        // Header gauge hover always works (even with modals open). Motion is
+        // change-gated (F01): the hover only requests a repaint when the
+        // hovered gauge actually changed, so a sweep across unchanged UI
+        // costs no frame rebuild.
+        let mut hover_changed = false;
+        if motion {
+            let gauge = self.gauge_at(mouse.column, mouse.row);
+            hover_changed |= gauge != self.gauge_hover;
+            self.gauge_hover = gauge;
         }
 
         // Module detail modal open: block all background interaction.
@@ -2049,6 +2075,13 @@ impl AppScreen for DashboardScreen {
                 }
                 ModalEvent::Consumed => {}
             }
+            // The modal's buttons track hover internally without reporting
+            // changes, so motion while a modal is open conservatively
+            // repaints (clicks and wheel already repaint unconditionally in
+            // the app event loop).
+            if motion {
+                return Some(Action::Redraw);
+            }
             return None;
         }
 
@@ -2056,11 +2089,19 @@ impl AppScreen for DashboardScreen {
             // Hover: highlight sidebar item under the cursor.
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 let idx = self.sidebar.item_at(mouse.column, mouse.row);
-                self.sidebar.set_hovered(idx);
+                hover_changed |= self.sidebar.set_hovered(idx);
                 // Delegate hover to content sections that track it. The
                 // Dashboard section has nothing to hover (no-op).
                 if let Some(panel) = self.active_panel_mut() {
                     panel.handle_mouse(mouse);
+                }
+                // The SSH section tracks tab/row/button hover internally
+                // without reporting changes, so motion over it conservatively
+                // repaints; every other section is scroll-only (no hover
+                // state). Otherwise the sweep only repaints when the gauge
+                // or sidebar hover actually moved.
+                if hover_changed || self.active_section() == Section::Ssh {
+                    return Some(Action::Redraw);
                 }
             }
             // Click: select + activate the clicked element.
@@ -2134,7 +2175,22 @@ impl AppScreen for DashboardScreen {
     }
 
     fn needs_animation(&self) -> bool {
-        self.sidebar.is_animating()
+        // The header logo shimmer is always live under full motion — it is
+        // painted on every Dashboard frame (`shell::header::render_header`)
+        // — so the Dashboard always wants animation frames when motion is
+        // enabled. The app loop rate-limits these to shimmer cadence
+        // (~4 draws/s) unless [`needs_fast_frames`](Self::needs_fast_frames)
+        // reports a full-frame-rate animation.
+        true
+    }
+
+    fn needs_fast_frames(&self) -> bool {
+        // Full-frame-rate animations — every frame visibly differs, so the
+        // app loop ticks these at ~30fps instead of shimmer cadence.
+        self.sidebar.is_animating() // selection/hover highlight fade
+            || self.header_spinners_live() // braille gauge spinners while a rate is unknown
+            || self.ssh_content.is_loading() // serialized write-op spinner overlay
+            || self.tooltip_fx.is_running() // gauge tooltip fade-in
     }
 
     fn has_modal(&self) -> bool {
@@ -2646,6 +2702,72 @@ mod tests {
     fn esc_from_sidebar_goes_back() {
         let mut s = DashboardScreen::new();
         assert_eq!(s.handle_key(KeyCode::Esc), Some(Action::Back));
+    }
+
+    #[test]
+    fn needs_animation_is_always_true_for_header_shimmer() {
+        // F01: the header logo shimmer is painted on every Dashboard frame
+        // under full motion, so the screen always wants animation frames; the
+        // app loop rate-limits them to shimmer cadence (~4 draws/s) unless a
+        // full-frame-rate animation is live.
+        let s = DashboardScreen::new();
+        assert!(s.needs_animation());
+    }
+
+    #[test]
+    fn needs_fast_frames_tracks_spinners_and_loading() {
+        // Cold start: throughput rates unknown → header gauge braille
+        // spinners animate at full frame rate.
+        let mut s = DashboardScreen::new();
+        assert!(
+            s.needs_fast_frames(),
+            "cold start renders header gauge spinners — full frame rate"
+        );
+
+        // Rates known → spinners gone; fresh sidebar highlight is settled and
+        // no tooltip is fading, so the screen is shimmer-only (slow cadence).
+        s.net_rx_rate = Some(1.0);
+        s.net_tx_rate = Some(1.0);
+        s.disk_read_rate = Some(1.0);
+        s.disk_write_rate = Some(1.0);
+        assert!(
+            !s.needs_fast_frames(),
+            "settled screen with known rates is shimmer-only"
+        );
+
+        // A serialized SSH write in flight spins the loading overlay.
+        s.set_ssh_loading(true, 1);
+        assert!(s.needs_fast_frames(), "SSH write spinner needs fast frames");
+        s.set_ssh_loading(false, 0);
+        assert!(!s.needs_fast_frames(), "spinner gone — slow cadence again");
+    }
+
+    #[test]
+    fn motion_over_unchanged_ui_requests_no_redraw() {
+        // F01 change-gating: mouse motion that changes no hover state returns
+        // no action, so the event loop skips the frame rebuild.
+        use crate::ui::theme::CHARM;
+        use crossterm::event::KeyModifiers;
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut s = DashboardScreen::new();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| s.view(f, CHARM)).unwrap();
+
+        // Sweep through the content pane: no gauge, no sidebar item, no panel
+        // hover changes (the Dashboard overview section has no hover rows).
+        for row in 6..22u16 {
+            let action = s.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 60,
+                row,
+                modifiers: KeyModifiers::empty(),
+            });
+            assert_eq!(
+                action, None,
+                "no-change motion at row {row} repaints nothing"
+            );
+        }
     }
 
     #[test]

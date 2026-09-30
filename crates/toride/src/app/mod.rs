@@ -10,7 +10,7 @@ mod render;
 use std::time::Instant;
 
 use color_eyre::eyre::Result;
-use crossterm::event::{Event, EventStream, KeyEventKind};
+use crossterm::event::{Event, EventStream, KeyEventKind, MouseEventKind};
 use futures::{FutureExt, StreamExt};
 use ratatui::DefaultTerminal;
 use tokio::select;
@@ -50,6 +50,14 @@ use crate::ui::transition::{TransitionCache, TransitionState};
 use crate::ui::widgets::InteractiveModal;
 use crate::virt_detect;
 
+/// Interval between shimmer-cadence frames in the `run` loop's draw gate.
+///
+/// The header logo sweep (`ui::shell::header`) crosses `LOGO_W = 10` columns
+/// in `3.0s` — one column every ~300ms — so a frame every 250ms captures
+/// every visible change (~4 draws/s). Any draw interval ≤ 300ms works; 250ms
+/// leaves margin so no column crossing can fall between two frames.
+const SHIMMER_FRAME_INTERVAL: std::time::Duration = std::time::Duration::from_millis(250);
+
 /// Top-level application orchestrator.
 ///
 /// Owns all screen instances, the navigation state, and drives the main
@@ -77,6 +85,10 @@ pub struct App {
     reduced_motion: bool,
     should_quit: bool,
     needs_redraw: bool,
+    /// When the last shimmer-cadence frame was drawn. The draw gate uses this
+    /// to rate-limit shimmer-only redraws to [`SHIMMER_FRAME_INTERVAL`] so a
+    /// slow logo sweep costs ~4 draws/s instead of one per event.
+    last_shimmer_draw: Instant,
     transition: Option<TransitionState>,
     transition_cache: TransitionCache,
     collector: StatusCollector,
@@ -276,6 +288,7 @@ impl App {
             reduced_motion,
             should_quit: false,
             needs_redraw: false,
+            last_shimmer_draw: Instant::now(),
             transition: None,
             transition_cache: TransitionCache::new(),
             collector: StatusCollector::new(),
@@ -386,6 +399,58 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Pure draw-gate truth table for the `run` loop (F01): would drawing now
+    /// paint a frame that differs from the last one?
+    ///
+    /// * `reduced_motion` — every cosmetic animation is neutralized, so with
+    ///   no state change (`needs_redraw`, checked by the caller) there is
+    ///   nothing new to paint. This is what keeps an idle session on a laggy
+    ///   VPS at zero draws.
+    /// * `transition` / `fast_animation` — the frame genuinely differs at
+    ///   ~30fps (gradient swap, braille spinner, highlight fade, tooltip
+    ///   fade, colour-flow border). These frames are NOT redundant.
+    /// * `slow_animation` — a shimmer-class sweep. The logo sweep covers
+    ///   `LOGO_W = 10` columns in `3.0s`, i.e. one column per ~300ms, so one
+    ///   frame per [`SHIMMER_FRAME_INTERVAL`] captures every visible change:
+    ///   ~4 draws/s instead of ~30.
+    #[expect(
+        clippy::fn_params_excessive_bools,
+        reason = "pure truth table: each bool mirrors one draw-gate clause"
+    )]
+    fn animation_frame_due(
+        reduced_motion: bool,
+        transition: bool,
+        fast_animation: bool,
+        slow_animation: bool,
+        since_last_frame: std::time::Duration,
+    ) -> bool {
+        if reduced_motion {
+            return false;
+        }
+        if transition || fast_animation {
+            return true;
+        }
+        slow_animation && since_last_frame >= SHIMMER_FRAME_INTERVAL
+    }
+
+    /// Whether the current screen has a live animation of any cadence
+    /// (consults [`AppScreen::needs_animation`]; never under reduced motion).
+    fn screen_needs_animation(&self) -> bool {
+        match self.nav.current() {
+            Screen::Welcome => self.welcome.needs_animation(),
+            Screen::Dashboard => self.dashboard.needs_animation(),
+        }
+    }
+
+    /// Whether the current screen runs a full-frame-rate (~30fps) animation
+    /// (consults [`AppScreen::needs_fast_frames`]).
+    fn screen_needs_fast_frames(&self) -> bool {
+        match self.nav.current() {
+            Screen::Welcome => self.welcome.needs_fast_frames(),
+            Screen::Dashboard => self.dashboard.needs_fast_frames(),
+        }
+    }
+
     fn update(&mut self, action: Action) {
         if self.transition.is_some() {
             return;
@@ -452,6 +517,12 @@ impl App {
                 // Defer the blocking config write off the event loop (see the
                 // CycleTheme arm above for the rationale).
                 self.pending_persist = Some(PersistOp::Animations(self.anim_pref));
+            }
+            Action::Redraw => {
+                // Pure repaint request (a hover highlight moved): flag the
+                // redraw directly so the action works no matter which path
+                // returned it.
+                self.needs_redraw = true;
             }
             // Scroll actions (and any future screen-local actions) are routed
             // to the current screen via `handle_action`.
@@ -635,12 +706,35 @@ impl App {
         let mut events = EventStream::new();
         let refresh_interval = tokio::time::interval(std::time::Duration::from_secs(2));
         let anim_tick = tokio::time::interval(std::time::Duration::from_millis(33)); // ~30fps
+        let shimmer_tick = tokio::time::interval(SHIMMER_FRAME_INTERVAL);
         tokio::pin!(refresh_interval);
         tokio::pin!(anim_tick);
+        tokio::pin!(shimmer_tick);
+
+        // Paint the very first frame: the gated draw below only repaints on
+        // state changes and live animations, neither of which has happened
+        // yet, so without this the app would start on a blank terminal.
+        self.needs_redraw = true;
 
         loop {
-            terminal.draw(|f| self.view(f))?;
-            self.needs_redraw = false;
+            // Draw gate (F01): repaint only when state changed or a live
+            // animation would produce a visibly different frame. The old
+            // loop drew unconditionally at the top of every iteration —
+            // every terminal event and every 33ms tick meant a full frame
+            // rebuild + flush, which over SSH is the latency lag.
+            if self.needs_redraw
+                || Self::animation_frame_due(
+                    self.reduced_motion,
+                    self.transition.is_some(),
+                    self.screen_needs_fast_frames(),
+                    self.screen_needs_animation(),
+                    self.last_shimmer_draw.elapsed(),
+                )
+            {
+                terminal.draw(|f| self.view(f))?;
+                self.needs_redraw = false;
+                self.last_shimmer_draw = Instant::now();
+            }
 
             select! {
                 // Prioritize terminal events and status results over timer
@@ -649,9 +743,31 @@ impl App {
                 Some(Ok(event)) = events.next() => {
                     let action = match event {
                         Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            self.handle_key(key)
+                            let action = self.handle_key(key);
+                            // Every keypress repaints: keys arrive at human
+                            // rate, and screen-local state changes (focus
+                            // cycling, sidebar selection) do not always
+                            // surface as an `Action`.
+                            self.needs_redraw = true;
+                            action
                         }
-                        Event::Mouse(mouse) => self.handle_mouse(mouse),
+                        Event::Mouse(mouse) => {
+                            let action = self.handle_mouse(mouse);
+                            // Clicks and wheel events mutate screen state
+                            // (selection, scroll, modal state) without
+                            // necessarily returning an `Action`, so they
+                            // always repaint. Pure motion is change-gated:
+                            // screens report hover changes as
+                            // [`Action::Redraw`], so a mouse sweep over
+                            // unchanged UI costs no frame rebuild.
+                            if !matches!(
+                                mouse.kind,
+                                MouseEventKind::Moved | MouseEventKind::Drag(_)
+                            ) {
+                                self.needs_redraw = true;
+                            }
+                            action
+                        }
                         Event::Resize(..) => {
                             self.invalidate_all_caches();
                             None
@@ -1060,21 +1176,35 @@ impl App {
                     }
                 }
 
-                // Animation tick (~30fps for shimmer, border, spinner, and
-                // transitions). Under reduced motion (high-latency VPS) the
-                // always-on transition/screen clauses are dropped so the tick
-                // arms ONLY on a real state change — `needs_redraw` stays
-                // outside the `reduced_motion` guard so input events and the 2s
-                // data refresh still drive redraws. This cuts redraws from ~30/s
-                // to a handful, which is the actual fix for SSH latency lag.
+                // Animation ticks, in two cadences (F01 draw gating):
+                //
+                // Fast (~30fps) — transitions, braille spinners, the sidebar
+                // highlight fade, the gauge tooltip fade, and the welcome
+                // border's colour flow. Every frame visibly differs, so these
+                // frames are NOT redundant and the draw gate above repaints
+                // on each wake.
+                //
+                // Slow (shimmer cadence, ~4fps) — armed only when no fast
+                // animation is live. This merely wakes the loop so the draw
+                // gate can repaint the slow logo sweep; the gate's own
+                // `SHIMMER_FRAME_INTERVAL` check rate-limits the draws.
+                //
+                // Under reduced motion (high-latency VPS) NEITHER arm fires:
+                // every cosmetic animation is neutralized, so with no state
+                // change there is nothing new to paint — the only redraws are
+                // the event/data-driven ones. Together with the
+                // change-gated mouse handling above, this cuts redraws from
+                // ~30/s plus one per event down to a handful, which is the
+                // actual fix for SSH latency lag.
                 _ = anim_tick.tick(),
-                    if self.needs_redraw
-                        || (!self.reduced_motion
-                            && (self.transition.is_some()
-                                || matches!(
-                                    self.nav.current(),
-                                    Screen::Welcome | Screen::Dashboard
-                                ))) => {}
+                    if !self.reduced_motion
+                        && (self.transition.is_some()
+                            || self.screen_needs_fast_frames()) => {}
+
+                _ = shimmer_tick.tick(),
+                    if !self.reduced_motion
+                        && !self.screen_needs_fast_frames()
+                        && self.screen_needs_animation() => {}
             }
 
             if self.should_quit {
@@ -1160,6 +1290,11 @@ fn panic_message(payload: &Box<dyn std::any::Any + Send>) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
+
+    use crossterm::event::{KeyModifiers, MouseEvent, MouseEventKind};
+    use ratatui::{Terminal, backend::TestBackend};
+
     use crate::action::Action;
     use crate::app::App;
     use crate::app::PersistOp;
@@ -1641,6 +1776,220 @@ mod tests {
         assert_eq!(
             outcome.expect("task completed without timeout").unwrap(),
             42
+        );
+    }
+
+    // ── F01: draw-gating truth table, cadence, and oracles ──────────────────
+
+    /// Move-to helper: a `Moved` event at (column, row).
+    fn moved_at(column: u16, row: u16) -> MouseEvent {
+        MouseEvent {
+            kind: MouseEventKind::Moved,
+            column,
+            row,
+            modifiers: KeyModifiers::empty(),
+        }
+    }
+
+    #[test]
+    fn animation_frame_due_truth_table() {
+        let interval = super::SHIMMER_FRAME_INTERVAL;
+
+        // Reduced motion neutralizes every cosmetic animation: without an
+        // explicit state change (`needs_redraw`, checked by the loop) there
+        // is nothing to paint — true even for an impossible
+        // reduced-motion+transition combination (reduced wins).
+        assert!(!App::animation_frame_due(
+            true, false, false, false, interval
+        ));
+        assert!(!App::animation_frame_due(true, true, true, true, interval));
+
+        // Transitions and fast animations differ every frame: they draw on
+        // every wake regardless of the last frame's age. These frames are
+        // NOT redundant.
+        assert!(App::animation_frame_due(
+            false,
+            true,
+            false,
+            false,
+            Duration::ZERO
+        ));
+        assert!(App::animation_frame_due(
+            false,
+            false,
+            true,
+            false,
+            Duration::ZERO
+        ));
+
+        // Shimmer-only draws are rate-limited to shimmer cadence: not due
+        // before the interval, due at it.
+        assert!(!App::animation_frame_due(
+            false,
+            false,
+            false,
+            true,
+            Duration::ZERO
+        ));
+        assert!(!App::animation_frame_due(
+            false,
+            false,
+            false,
+            true,
+            interval.saturating_sub(Duration::from_millis(1))
+        ));
+        assert!(App::animation_frame_due(
+            false, false, false, true, interval
+        ));
+
+        // Nothing live and no state change: never draw.
+        assert!(!App::animation_frame_due(
+            false,
+            false,
+            false,
+            false,
+            interval * 10
+        ));
+    }
+
+    #[test]
+    fn shimmer_only_draw_count_is_capped_at_shimmer_cadence() {
+        // F01 draw-count oracle. Simulate 3s of loop wakes every 10ms (the
+        // fast-tick cadence AND a 100Hz no-change mouse sweep on top): a
+        // shimmer-only Dashboard must still draw at ~4fps — 3.0s sweep across
+        // LOGO_W=10 columns means one column per ~300ms, so a 250ms frame
+        // interval loses nothing visible. The pre-gating loop drew on EVERY
+        // wake and EVERY event: 300 draws over the same window.
+        let mut draws = 0usize;
+        let mut last_frame = Duration::ZERO;
+        let mut t = Duration::ZERO;
+        while t < Duration::from_secs(3) {
+            if App::animation_frame_due(false, false, false, true, t.saturating_sub(last_frame)) {
+                draws += 1;
+                last_frame = t;
+            }
+            t += Duration::from_millis(10);
+        }
+        // 3000ms / 250ms = 12 expected; allow scheduling slack, cap far below
+        // the pre-gating 300.
+        assert!(
+            (10..=13).contains(&draws),
+            "expected ~12 shimmer frames in 3s, got {draws}"
+        );
+
+        // Contrast: a live fast animation (transition / spinner / fade) draws
+        // on every single wake — those frames are not redundant.
+        let mut fast_draws = 0usize;
+        let mut t = Duration::ZERO;
+        while t < Duration::from_secs(3) {
+            if App::animation_frame_due(false, false, true, false, Duration::ZERO) {
+                fast_draws += 1;
+            }
+            t += Duration::from_millis(10);
+        }
+        assert_eq!(fast_draws, 300, "fast animations draw on every wake");
+    }
+
+    #[test]
+    fn redraw_action_flags_needs_redraw() {
+        // The action screens use to report a hover-state change must land as
+        // a redraw flag, and must never be forwarded to a screen's
+        // handle_action.
+        let mut app = App::new_for_test(AnimPref::Off, true);
+        app.needs_redraw = false;
+        app.update(Action::Redraw);
+        assert!(app.needs_redraw, "Action::Redraw must flag a redraw");
+    }
+
+    #[test]
+    fn mouse_sweep_over_unchanged_ui_never_redraws() {
+        // F01 wiring oracle: a mouse sweep across the dashboard content area
+        // (no gauge, sidebar, or panel hover change) reports no action, so
+        // the event loop's change-gated motion handling leaves `needs_redraw`
+        // unset — zero frame rebuilds for the whole sweep. Before the gating,
+        // every motion event meant a full unconditional redraw.
+        let mut app = App::new_for_test(AnimPref::Off, true);
+        app.nav.commit_forward(Screen::Dashboard);
+        app.needs_redraw = false;
+
+        for row in 6..54u16 {
+            let action = app.handle_mouse(moved_at(120, row));
+            assert!(
+                action.is_none(),
+                "no-change motion at row {row} must not report an action"
+            );
+        }
+        assert!(
+            !app.needs_redraw,
+            "a no-change mouse sweep must not flag a redraw"
+        );
+    }
+
+    #[test]
+    fn mouse_sweep_crossing_a_gauge_reports_redraw() {
+        // The change-gate must still repaint on REAL state changes: crossing
+        // into a header gauge's hitbox changes the hovered gauge (tooltip +
+        // gauge highlight), which must surface as `Action::Redraw`.
+        let mut app = App::new_for_test(AnimPref::Off, true);
+        app.nav.commit_forward(Screen::Dashboard);
+
+        // Render one frame so the dashboard's gauge hitboxes exist.
+        let mut terminal = Terminal::new(TestBackend::new(200, 60)).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        app.needs_redraw = false;
+
+        // Sweep every header-row column; at least one crossing must report a
+        // hover change, and it must flag the redraw through `update`.
+        let mut redraws = 0;
+        for row in 0..4u16 {
+            for column in 0..200u16 {
+                if let Some(Action::Redraw) = app.handle_mouse(moved_at(column, row)) {
+                    redraws += 1;
+                    app.update(Action::Redraw);
+                    assert!(app.needs_redraw, "gauge hover change must flag a redraw");
+                    app.needs_redraw = false;
+                }
+            }
+        }
+        assert!(
+            redraws > 0,
+            "crossing header gauge hitboxes must report hover changes"
+        );
+    }
+
+    #[test]
+    fn gated_draw_skips_leave_the_screen_identical() {
+        // F01 parity oracle: on unchanged state, a FORCED draw (what the
+        // pre-gating loop did every iteration) must produce a byte-identical
+        // buffer to the previously drawn frame — proving the draws the gate
+        // skips are invisible. Reduced motion pins the render
+        // time-invariant (no shimmer phase, pinned spinner frame).
+        let mut app = App::new_for_test(AnimPref::Off, true);
+        app.nav.commit_forward(Screen::Dashboard);
+        assert!(app.transition.is_none());
+
+        let mut terminal = Terminal::new(TestBackend::new(200, 60)).unwrap();
+        terminal.draw(|f| app.view(f)).unwrap();
+        let drawn: ratatui::buffer::Buffer = terminal.backend().buffer().clone();
+        assert!(
+            terminal.backend().to_string().contains("toride"),
+            "fixture frame must contain real chrome (non-degenerate render)"
+        );
+
+        // The gate declines to draw: reduced motion, no state change.
+        assert!(!App::animation_frame_due(
+            app.reduced_motion,
+            app.transition.is_some(),
+            app.screen_needs_fast_frames(),
+            app.screen_needs_animation(),
+            Duration::MAX,
+        ));
+        // ...so the loop skips; forcing the draw anyway must not change a cell.
+        terminal.draw(|f| app.view(f)).unwrap();
+        assert_eq!(
+            &drawn,
+            terminal.backend().buffer(),
+            "forced draw on unchanged state must match the frame the gate kept"
         );
     }
 }
