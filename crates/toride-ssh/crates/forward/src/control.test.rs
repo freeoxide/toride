@@ -1209,3 +1209,92 @@ async fn list_sessions_rejects_files_with_extensions() {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// join_all_bounded oracles (forward fan-out semantics)
+// ---------------------------------------------------------------------------
+
+/// Futures spawned by the throttle test below.
+const THROTTLE_TASKS: usize = 24;
+/// Concurrency bound used by the throttle test below.
+const THROTTLE_LIMIT: usize = 4;
+
+/// The throttle itself: at most `limit` futures run between their start and
+/// completion, every future completes, and outputs keep input order.
+#[tokio::test]
+async fn join_all_bounded_caps_in_flight_and_preserves_order() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let in_flight = std::sync::Arc::new(AtomicUsize::new(0));
+    let max_in_flight = std::sync::Arc::new(AtomicUsize::new(0));
+
+    let futs = (0..THROTTLE_TASKS).map(|i| {
+        let in_flight = std::sync::Arc::clone(&in_flight);
+        let max_in_flight = std::sync::Arc::clone(&max_in_flight);
+        async move {
+            let cur = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            max_in_flight.fetch_max(cur, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            i
+        }
+    });
+
+    let out = join_all_bounded(THROTTLE_LIMIT, futs).await;
+    assert_eq!(
+        out,
+        (0..THROTTLE_TASKS).collect::<Vec<_>>(),
+        "input order must be preserved so callers can zip against sessions"
+    );
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) <= THROTTLE_LIMIT,
+        "concurrency cap violated: max in flight {} > {THROTTLE_LIMIT}",
+        max_in_flight.load(Ordering::SeqCst)
+    );
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) > 1,
+        "futures must actually overlap (sequential execution would defeat the fix)"
+    );
+}
+
+/// `join_all` semantics: one future's `Err` never cancels its siblings.
+#[tokio::test]
+async fn join_all_bounded_sibling_failure_does_not_cancel_siblings() {
+    let futs: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = bool>>>> = vec![
+        Box::pin(async { false }),
+        Box::pin(async { true }),
+        Box::pin(async { false }),
+        Box::pin(async { true }),
+    ];
+    let out = join_all_bounded(2, futs).await;
+    assert_eq!(out, vec![false, true, false, true]);
+}
+
+/// End-to-end fan-out: every bogus control socket yields its OWN `Err`
+/// result (a failing `ssh -O list` never cancels its siblings), and the
+/// results come back one per input in input order.
+///
+/// The sockets do not exist, so each spawn fails fast; whether `ssh` is
+/// installed or the spawn itself fails, every input must produce a result.
+///
+/// `#[serial]`: other tests in this file temporarily install a fake `ssh`
+/// on `PATH`; this assertion requires the real one (or none at all).
+#[tokio::test]
+#[serial]
+async fn list_forwards_bounded_yields_one_result_per_input_even_on_failure() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let paths: Vec<std::path::PathBuf> = (0..5)
+        .map(|i| dir.path().join(format!("no-such-control-socket-{i}")))
+        .collect();
+
+    let results = list_forwards_bounded(paths.clone()).await;
+    assert_eq!(
+        results.len(),
+        paths.len(),
+        "isolation: every input yields exactly one result"
+    );
+    assert!(
+        results.iter().all(std::result::Result::is_err),
+        "a nonexistent control socket must error, not hang or vanish: {results:?}"
+    );
+}

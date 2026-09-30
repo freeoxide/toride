@@ -8,7 +8,7 @@ repository.workspace = true
 
 [dependencies]
 toride-ssh-core = { path = "../core", version = "0.1.0" }
-tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
+tokio = { workspace = true, features = ["process", "fs", "rt", "sync", "time"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 duct = "1"

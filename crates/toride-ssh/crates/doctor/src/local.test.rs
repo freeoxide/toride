@@ -2294,3 +2294,42 @@ async fn join_all_bounded_sibling_failure_does_not_cancel_siblings() {
     assert_eq!(out[2], JoinItem::Ok(9));
     assert_eq!(out[3], JoinItem::Err("also failed"));
 }
+
+// ---------------------------------------------------------------------------
+// Shared config-read oracles (novel-finding fixes)
+// ---------------------------------------------------------------------------
+
+/// The doctor's config reads go through the shared mtime-keyed cache, not
+/// around it: a run of `run_all` must neither re-read the config nor
+/// replace the memoized content entry.
+///
+/// Populating the cache with a content-only load first (the raw-scanner
+/// path `VerifyHostKeyDnsCheck` now uses), running the whole check suite,
+/// and then re-loading the content must yield the SAME shared buffer — any
+/// check-side `read_to_string` that re-inserted a fresh entry would break
+/// the pointer identity.
+#[tokio::test]
+async fn run_all_shares_the_memoized_config_content() {
+    use std::sync::Arc;
+
+    let dir = tempfile::tempdir().unwrap();
+    let config_path = dir.path().join("config");
+    std::fs::write(&config_path, "Host a\n    VerifyHostKeyDNS yes\n").unwrap();
+
+    // Content-only population — the raw-scanner path.
+    let first = toride_ssh_config::cache::load_cached_content(&config_path).expect("content load");
+
+    let paths = SshPaths::with_dir(dir.path());
+    let runner = toride_ssh_core::MockCliRunner::new();
+    run_all(&paths, &runner).await.expect("run_all");
+
+    // The suite's AST consumers plus the raw scanner must all have gone
+    // through the same entry: the content buffer is neither re-read nor
+    // replaced by the run.
+    let second =
+        toride_ssh_config::cache::load_cached_content(&config_path).expect("content reload");
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "run_all must share the memoized config content, not re-read it"
+    );
+}

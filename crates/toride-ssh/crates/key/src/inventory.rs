@@ -62,10 +62,13 @@ struct CachedKey {
 ///
 /// Entries are small and keyed by path, so the map is bounded by the set of
 /// key files scanned during the process lifetime. Read errors are not
-/// cached (transient/permission failures retry on the next scan). This
-/// cache is deliberately shared with the doctor's key checks via
-/// [`crate::inspect_key_cached`], so both subsystems parse a given
-/// unchanged key file at most once between mutations.
+/// cached (transient/permission failures retry on the next scan).
+///
+/// Consumers: the periodic inventory scan (via [`inspect_private_key_cached`])
+/// and any external caller of [`crate::inspect_key_cached`]. The doctor's
+/// key checks do NOT go through this cache — its RSA bitsize check parses
+/// keys itself (once per diagnostics refresh), so a key file is parsed at
+/// most twice between mutations, not once.
 static KEY_PARSE_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedKey>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 

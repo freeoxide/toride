@@ -68,6 +68,16 @@ fn cached_ast(c: &mut Criterion) {
         });
     });
 
+    // Raw-content consumers (the doctor's VerifyHostKeyDNS line scan) hit
+    // the same entry: a stat plus a map hit, no read on the hot path.
+    group.bench_function("content_cached_hit", |b| {
+        b.iter(|| {
+            let content = toride_ssh_config::cache::load_cached_content(black_box(&path))
+                .expect("cached content");
+            black_box(content)
+        });
+    });
+
     group.finish();
 }
 

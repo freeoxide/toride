@@ -4,7 +4,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
-use super::{clear_cache_for_tests, load_cached_ast};
+use super::{clear_cache_for_tests, load_cached_ast, load_cached_content};
 
 /// Rewrite `path` with `content`, spinning until the file's mtime differs
 /// from `previous`.
@@ -122,4 +122,78 @@ fn distinct_paths_cache_independently() {
     let ast_a = load_cached_ast(&a).expect("parse a");
     let ast_b = load_cached_ast(&b).expect("parse b");
     assert!(!Arc::ptr_eq(&ast_a, &ast_b));
+}
+
+#[test]
+fn content_load_shares_one_buffer_for_unchanged_file() {
+    clear_cache_for_tests();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config");
+    std::fs::write(&path, "Host alpha\n    VerifyHostKeyDNS yes\n").expect("write fixture");
+
+    let first = load_cached_content(&path).expect("content load");
+    let second = load_cached_content(&path).expect("content load");
+    assert!(
+        Arc::ptr_eq(&first, &second),
+        "an unchanged file must serve the same shared content"
+    );
+    assert!(first.contains("VerifyHostKeyDNS yes"));
+}
+
+#[test]
+fn ast_after_content_parses_cached_bytes_without_reread() {
+    // A content-only consumer (the doctor's raw line scan) must not force a
+    // second read for a later AST consumer: the AST is parsed from the
+    // memoized bytes. Observable as: content and AST agree, and a second
+    // content load still shares the original Arc.
+    clear_cache_for_tests();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config");
+    std::fs::write(&path, "Host alpha\nHost beta\n").expect("write fixture");
+
+    let content = load_cached_content(&path).expect("content load");
+    let ast = load_cached_ast(&path).expect("ast load after content");
+    assert_eq!(
+        ast.nodes.len(),
+        2,
+        "AST must be parsed from the cached content"
+    );
+    let content_again = load_cached_content(&path).expect("content reload");
+    assert!(
+        Arc::ptr_eq(&content, &content_again),
+        "the AST fill must not replace the shared content buffer"
+    );
+    // And the AST is now itself shared.
+    let ast_again = load_cached_ast(&path).expect("ast reload");
+    assert!(Arc::ptr_eq(&ast, &ast_again));
+}
+
+#[test]
+fn content_after_ast_shares_the_same_entry() {
+    clear_cache_for_tests();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config");
+    std::fs::write(&path, "Host alpha\n").expect("write fixture");
+
+    let ast = load_cached_ast(&path).expect("ast load");
+    let content = load_cached_content(&path).expect("content load");
+    assert_eq!(ast.nodes.len(), 1);
+    assert_eq!(content.as_str(), "Host alpha\n");
+}
+
+#[test]
+fn changed_file_invalidates_content_too() {
+    clear_cache_for_tests();
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("config");
+    std::fs::write(&path, "Host alpha\n").expect("write fixture");
+    let first = load_cached_content(&path).expect("content load");
+
+    rewrite_with_new_stamp(&path, mtime_of(&path), "Host bravo\n");
+    let second = load_cached_content(&path).expect("content reload");
+    assert!(
+        !Arc::ptr_eq(&first, &second),
+        "a rewrite must invalidate the memoized content"
+    );
+    assert_eq!(second.as_str(), "Host bravo\n");
 }

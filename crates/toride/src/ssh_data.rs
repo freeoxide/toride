@@ -111,10 +111,22 @@ struct UserSshScan {
 /// plus the `authorized_keys` stamp.
 #[derive(PartialEq, Clone)]
 struct UserSshStamp {
-    /// Sorted `(file name, stamp)` pairs of the counted key files.
-    key_listing: Vec<(String, FileStamp)>,
+    /// Sorted `(file name, stamp)` pairs of the counted key files. A file
+    /// whose mtime cannot be determined carries `None`: it still COUNTS
+    /// (matching the pre-cache behavior of counting entries without a
+    /// stat), but its scan is never served from or stored in the cache —
+    /// see [`user_scan_cacheable`].
+    key_listing: Vec<(String, Option<FileStamp>)>,
     /// Stamp of `authorized_keys`, or `None` when absent.
     auth: Option<FileStamp>,
+}
+
+/// Whether a per-user scan may be cached: every counted key file and the
+/// `authorized_keys` file must have a comparable freshness stamp. Any
+/// `None` stamp means invalidation cannot be proven, so the scan is
+/// recomputed fresh every time instead of being served stale.
+fn user_scan_cacheable(stamp: &UserSshStamp) -> bool {
+    stamp.key_listing.iter().all(|(_, s)| s.is_some()) && stamp.auth.is_some()
 }
 
 /// Mtime-keyed caches for per-tick SSH state.
@@ -2766,7 +2778,10 @@ fn parse_system_users(
 /// is read at most once and both the entry count and the (capped) previews
 /// — including their SHA-256 fingerprints — are derived from that single
 /// content buffer.
-fn scan_user_ssh_dir(listing: &[(String, FileStamp)], ssh_dir: &std::path::Path) -> UserSshScan {
+fn scan_user_ssh_dir(
+    listing: &[(String, Option<FileStamp>)],
+    ssh_dir: &std::path::Path,
+) -> UserSshScan {
     use crate::ui::screens::ssh::AuthorizedKeyPreview;
 
     let ssh_key_count = listing.len();
@@ -2874,9 +2889,11 @@ fn user_scan_from_entries(entries: &[AuthorizedKeyEntry]) -> UserSshScan {
 ///
 /// The listing doubles as the `ssh_key_count` (its length) and one half of
 /// the per-user cache key; `None` means the directory cannot be read.
-fn user_key_listing(ssh_dir: &std::path::Path) -> Option<Vec<(String, FileStamp)>> {
-    let entries = std::fs::read_dir(ssh_dir).ok()?;
-    let mut listing: Vec<(String, FileStamp)> = Vec::new();
+fn user_key_listing(ssh_dir: &std::path::Path) -> Vec<(String, Option<FileStamp>)> {
+    let Ok(entries) = std::fs::read_dir(ssh_dir) else {
+        return Vec::new();
+    };
+    let mut listing: Vec<(String, Option<FileStamp>)> = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
@@ -2887,30 +2904,32 @@ fn user_key_listing(ssh_dir: &std::path::Path) -> Option<Vec<(String, FileStamp)
         {
             continue;
         }
+        // An unstampable file still counts — only its cacheability is lost.
         let stamp = stamp_path(&entry.path());
-        listing.push((name.into_owned(), stamp?));
+        listing.push((name.into_owned(), stamp));
     }
     listing.sort();
-    Some(listing)
+    listing
 }
 
 /// One user's `~/.ssh` scan behind the mtime-keyed cache.
 ///
 /// Unchanged listings (same `id_*` names/stamps and `authorized_keys`
 /// stamp) are served from the cache — no `authorized_keys` read, no
-/// fingerprinting. An unreadable `~/.ssh` yields zero counts (the caller
-/// has already verified the directory exists), matching the previous
-/// behavior.
+/// fingerprinting. Scans with any unstampable file bypass the cache in both
+/// directions (never stored, never served) but still count the files,
+/// matching the pre-cache counting behavior. An unreadable `~/.ssh` yields
+/// zero counts (the caller has already verified the directory exists).
 fn scan_user_ssh_cached(
     ssh_dir: &std::path::Path,
     current_ssh_dir: Option<&Path>,
     current_entries: Option<&[AuthorizedKeyEntry]>,
     cache: &SshStateCache,
 ) -> UserSshScan {
-    let listing = user_key_listing(ssh_dir).unwrap_or_default();
+    let listing = user_key_listing(ssh_dir);
     let auth = stamp_path(&ssh_dir.join("authorized_keys"));
     let stamp = UserSshStamp {
-        key_listing: listing,
+        key_listing: listing.clone(),
         auth,
     };
 
@@ -2924,32 +2943,36 @@ fn scan_user_ssh_cached(
         return scan;
     }
 
-    let hit = {
-        let scans = cache
-            .user_ssh_scans
-            .lock()
-            .expect("user ssh scan cache mutex poisoned");
-        scans
-            .get(ssh_dir)
-            .filter(|cached| cached.stamp == stamp)
-            .map(|cached| Arc::clone(&cached.value))
-    };
-    if let Some(cached) = hit {
-        return (*cached).clone();
+    if user_scan_cacheable(&stamp) {
+        let hit = {
+            let scans = cache
+                .user_ssh_scans
+                .lock()
+                .expect("user ssh scan cache mutex poisoned");
+            scans
+                .get(ssh_dir)
+                .filter(|cached| cached.stamp == stamp)
+                .map(|cached| Arc::clone(&cached.value))
+        };
+        if let Some(cached) = hit {
+            return (*cached).clone();
+        }
     }
 
-    let scan = scan_user_ssh_dir(&stamp.key_listing, ssh_dir);
-    cache
-        .user_ssh_scans
-        .lock()
-        .expect("user ssh scan cache mutex poisoned")
-        .insert(
-            ssh_dir.to_path_buf(),
-            Stamped {
-                stamp,
-                value: Arc::new(scan.clone()),
-            },
-        );
+    let scan = scan_user_ssh_dir(&listing, ssh_dir);
+    if user_scan_cacheable(&stamp) {
+        cache
+            .user_ssh_scans
+            .lock()
+            .expect("user ssh scan cache mutex poisoned")
+            .insert(
+                ssh_dir.to_path_buf(),
+                Stamped {
+                    stamp,
+                    value: Arc::new(scan.clone()),
+                },
+            );
+    }
     scan
 }
 
@@ -6052,6 +6075,90 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         let third = scan_user_ssh_cached(&ssh_dir, None, None, &cache);
         assert_eq!(third.authorized_key_count, 2, "miss must re-read the file");
+    }
+
+    #[test]
+    fn user_scan_cacheable_requires_stamps_for_every_file() {
+        // All files stampable + authorized_keys present -> cacheable.
+        let cacheable = UserSshStamp {
+            key_listing: vec![(
+                "id_rsa".into(),
+                Some(FileStamp {
+                    mtime_ns: 1,
+                    len: 10,
+                }),
+            )],
+            auth: Some(FileStamp {
+                mtime_ns: 2,
+                len: 5,
+            }),
+        };
+        assert!(user_scan_cacheable(&cacheable));
+
+        // One key file with an unmeasurable mtime -> never cached (its
+        // content could change without the stamp noticing), but the file
+        // still COUNTS in the scan.
+        let uncacheable = UserSshStamp {
+            key_listing: vec![
+                (
+                    "id_rsa".into(),
+                    Some(FileStamp {
+                        mtime_ns: 1,
+                        len: 10,
+                    }),
+                ),
+                ("id_ed25519".into(), None),
+            ],
+            auth: Some(FileStamp {
+                mtime_ns: 2,
+                len: 5,
+            }),
+        };
+        assert!(
+            !user_scan_cacheable(&uncacheable),
+            "an unstampable key file must disable caching for that user"
+        );
+
+        // Missing authorized_keys (no auth stamp) -> not cacheable.
+        let no_auth = UserSshStamp {
+            key_listing: vec![(
+                "id_rsa".into(),
+                Some(FileStamp {
+                    mtime_ns: 1,
+                    len: 10,
+                }),
+            )],
+            auth: None,
+        };
+        assert!(!user_scan_cacheable(&no_auth));
+    }
+
+    #[test]
+    fn user_key_listing_counts_entries_without_stamping_them_out() {
+        // Parity with the pre-cache counting: every id_* file (minus
+        // .pub/.old/.bak) is present in the listing, each with its stamp
+        // when the filesystem provides one.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ssh_dir = dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).expect("mkdir");
+        std::fs::write(ssh_dir.join("id_rsa"), b"key").expect("id_rsa");
+        std::fs::write(ssh_dir.join("id_ed25519"), b"key").expect("id_ed25519");
+        std::fs::write(ssh_dir.join("id_ed25519.pub"), b"pub").expect("pub");
+        std::fs::write(ssh_dir.join("id_backup.bak"), b"bak").expect("bak");
+        std::fs::write(ssh_dir.join("known_hosts"), b"").expect("known_hosts");
+
+        let listing = user_key_listing(&ssh_dir);
+        assert_eq!(
+            listing.len(),
+            2,
+            "only the two private keys count: {listing:?}"
+        );
+        assert_eq!(listing[0].0, "id_ed25519");
+        assert_eq!(listing[1].0, "id_rsa");
+        assert!(
+            listing.iter().all(|(_, s)| s.is_some()),
+            "on a stampable filesystem every entry carries its stamp"
+        );
     }
 
     #[test]

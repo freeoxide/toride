@@ -99,6 +99,42 @@ pub async fn list_forwards(control_path: &Path) -> Result<Vec<PortForward>> {
     Ok(parse_forward_output(&output))
 }
 
+/// One fan-out future, boxed to a concrete `Send` type.
+///
+/// Boxing sidesteps the rustc higher-ranked `Send` inference limitation
+/// ("Send is not general enough"): joining closure-produced async blocks
+/// through a generic combinator inside an `async fn` that itself borrows
+/// (e.g. [`list_sessions`] takes `&Path`) forces the compiler to prove
+/// `Send` for reference types across ALL lifetimes, which fails wherever
+/// the future is ultimately spawned (the tick collector's `tokio::spawn`).
+/// A concrete boxed item type is `Send` by declaration.
+type BoxedFanoutFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send>>;
+
+/// Join every future to completion under a bounded-concurrency throttle.
+///
+/// `join_all` semantics: every future runs to completion regardless of its
+/// siblings' outcomes (an `Err` output is a value, not a cancellation), and
+/// outputs come back in input order so callers can re-zip them against
+/// their inputs. The semaphore only caps how many futures run their
+/// awaited I/O at once; a permit is never required for progress, so a
+/// closed semaphore (never done here) degrades to unbounded execution
+/// rather than deadlocking.
+async fn join_all_bounded<I, T>(limit: usize, futs: I) -> Vec<T>
+where
+    I: IntoIterator,
+    I::Item: std::future::Future<Output = T>,
+{
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
+    let guarded = futs.into_iter().map(|fut| {
+        let semaphore = std::sync::Arc::clone(&semaphore);
+        async move {
+            let _permit = semaphore.acquire_owned().await.ok();
+            fut.await
+        }
+    });
+    futures::future::join_all(guarded).await
+}
+
 /// Run [`list_forwards`] for many control paths under bounded concurrency.
 ///
 /// At most [`MAX_CONCURRENT_CONTROL_CMDS`] `ssh -O list` spawns are in
@@ -110,17 +146,14 @@ pub async fn list_forwards_bounded<I>(paths: I) -> Vec<Result<Vec<PortForward>>>
 where
     I: IntoIterator<Item = PathBuf>,
 {
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONTROL_CMDS));
-    let futs = paths.into_iter().map(|path| {
-        let semaphore = std::sync::Arc::clone(&semaphore);
-        async move {
-            // A closed semaphore (never done here) degrades to unbounded
-            // rather than failing the listing.
-            let _permit = semaphore.acquire_owned().await.ok();
-            list_forwards(&path).await
-        }
-    });
-    futures::future::join_all(futs).await
+    let futs: Vec<BoxedFanoutFuture<Result<Vec<PortForward>>>> = paths
+        .into_iter()
+        .map(|path| {
+            let fut: BoxedFanoutFuture<_> = Box::pin(async move { list_forwards(&path).await });
+            fut
+        })
+        .collect();
+    join_all_bounded(MAX_CONCURRENT_CONTROL_CMDS, futs).await
 }
 
 /// Parse the output of `ssh -O list` into structured forward entries.
@@ -424,16 +457,16 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     // Verify candidates with bounded (not unbounded) concurrency — many
     // stale sockets must not burst the process table, but sequential
     // spawning is unnecessarily slow.
-    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONTROL_CMDS));
-    let checks = candidates.iter().map(|candidate| {
-        let semaphore = std::sync::Arc::clone(&semaphore);
-        let candidate = candidate.clone();
-        async move {
-            let _permit = semaphore.acquire_owned().await.ok();
-            check_alive(&candidate).await
-        }
-    });
-    let alive_flags = futures::future::join_all(checks).await;
+    let checks: Vec<BoxedFanoutFuture<bool>> = candidates
+        .iter()
+        .map(|candidate| {
+            let candidate = candidate.clone();
+            let fut: BoxedFanoutFuture<bool> =
+                Box::pin(async move { check_alive(&candidate).await });
+            fut
+        })
+        .collect();
+    let alive_flags = join_all_bounded(MAX_CONCURRENT_CONTROL_CMDS, checks).await;
 
     let alive = candidates
         .into_iter()

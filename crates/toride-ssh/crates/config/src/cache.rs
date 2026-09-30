@@ -1,16 +1,17 @@
-//! Process-wide, mtime-keyed memoization of parsed SSH config ASTs.
+//! Process-wide, mtime-keyed memoization of SSH config reads and parses.
 //!
-//! Several subsystems read and parse `~/.ssh/config` in the same collection
-//! pass — the config tab ([`crate::ConfigService::load`]), the key
-//! inventory's `IdentityFile` scan, and eleven doctor checks — so an
-//! unchanged config was being re-parsed up to thirteen times per pass.
-//! Parsing is a pure function of the file bytes, so the parsed AST is
-//! memoized per path.
+//! Several subsystems read `~/.ssh/config` in the same collection pass —
+//! the config tab ([`crate::ConfigService::load`]), the key inventory's
+//! `IdentityFile` scan, and the doctor checks — so an unchanged config was
+//! being re-read and re-parsed up to thirteen times per pass. Reading and
+//! parsing are pure functions of the file bytes, so both the raw content
+//! and the parsed AST are memoized per path: an unchanged config costs one
+//! read plus one parse per process, shared by every consumer.
 //!
 //! Invalidation is **content-keyed via the file's `(mtime, len)` stamp**,
 //! never a TTL: any write that changes the file length or its modification
 //! time (including every atomic temp-file + rename this crate performs on
-//! save) misses the cache and re-parses. If the modification time cannot be
+//! save) misses the cache and re-reads. If the modification time cannot be
 //! determined the cache is bypassed entirely so an unmeasurable file is
 //! never served stale.
 
@@ -23,12 +24,16 @@ use std::time::UNIX_EPOCH;
 
 use crate::ast;
 
-/// A cache entry: the stamp the AST was parsed at, plus the shared AST.
-struct CachedAst {
-    /// `(mtime_ns, len)` of the file when it was parsed.
+/// A cache entry: the stamp the content was read at, the shared content,
+/// and the AST parsed from it (filled on the first AST consumer).
+struct CachedConfig {
+    /// `(mtime_ns, len)` of the file when it was read.
     stamp: FileStamp,
-    /// The parsed AST shared by every consumer.
-    ast: Arc<ast::ConfigAst>,
+    /// The raw file content shared by every consumer (raw readers and the
+    /// lazy AST parse alike).
+    content: Arc<String>,
+    /// The parsed AST, parsed once from `content` on first demand.
+    ast: Option<Arc<ast::ConfigAst>>,
 }
 
 /// Freshness stamp for a config file: nanosecond mtime plus length.
@@ -55,15 +60,25 @@ fn stamp_of(metadata: &std::fs::Metadata) -> Option<FileStamp> {
     })
 }
 
-/// Memoized parse results, keyed by config path.
-static AST_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedAst>>> =
+/// Memoized reads/parses, keyed by config path.
+static CONFIG_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedConfig>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Outcome of a stamp-matched cache probe in [`load_cached_ast`].
+enum Probe {
+    /// The AST is already parsed for this stamp.
+    Parsed(Arc<ast::ConfigAst>),
+    /// Only the raw content is memoized; parse these cached bytes.
+    Content(Arc<String>),
+}
 
 /// Read and parse the SSH config at `path`, memoized on the file's
 /// `(mtime, len)` stamp.
 ///
 /// Concurrent callers for the same unchanged file share one
-/// [`Arc<ast::ConfigAst>`]; a changed file re-parses.
+/// [`Arc<ast::ConfigAst>`]; a changed file re-reads and re-parses. If only
+/// the raw content was memoized so far (see [`load_cached_content`]), the
+/// AST is parsed from those already-cached bytes — no second read.
 ///
 /// The cache is process-wide and grows with the set of distinct config
 /// paths parsed during the process lifetime (entries are small and keyed by
@@ -84,45 +99,118 @@ pub fn load_cached_ast(path: &Path) -> std::io::Result<Arc<ast::ConfigAst>> {
     // An unmeasurable mtime must never be cached: the stamp could collide
     // across different contents.
     let Some(stamp) = stamp_of(&metadata) else {
-        return read_and_parse(path).map(Arc::new);
+        return Ok(Arc::new(read_and_parse(path)?));
     };
 
-    {
-        let cache = AST_CACHE.lock().expect("config AST cache mutex poisoned");
-        if let Some(entry) = cache.get(path)
-            && entry.stamp == stamp
-        {
-            return Ok(Arc::clone(&entry.ast));
+    // Probe under the lock, then act with the lock released so it is never
+    // held across a parse or any I/O.
+    let probe = {
+        let cache = CONFIG_CACHE.lock().expect("config cache mutex poisoned");
+        cache
+            .get(path)
+            .filter(|entry| entry.stamp == stamp)
+            .map(|entry| match &entry.ast {
+                Some(ast) => Probe::Parsed(Arc::clone(ast)),
+                None => Probe::Content(Arc::clone(&entry.content)),
+            })
+    };
+    match probe {
+        Some(Probe::Parsed(ast)) => return Ok(ast),
+        Some(Probe::Content(content)) => {
+            let ast = Arc::new(ast::parse(&content));
+            // Re-check the stamp before filling: another thread may have
+            // replaced the entry while the lock was released.
+            if let Some(entry) = CONFIG_CACHE
+                .lock()
+                .expect("config cache mutex poisoned")
+                .get_mut(path)
+                && entry.stamp == stamp
+            {
+                entry.ast = Some(Arc::clone(&ast));
+            }
+            return Ok(ast);
         }
+        None => {}
     }
 
-    let ast = Arc::new(read_and_parse(path)?);
-    AST_CACHE
+    let content = Arc::new(std::fs::read_to_string(path)?);
+    let ast = Arc::new(ast::parse(&content));
+    CONFIG_CACHE
         .lock()
-        .expect("config AST cache mutex poisoned")
+        .expect("config cache mutex poisoned")
         .insert(
             path.to_path_buf(),
-            CachedAst {
+            CachedConfig {
                 stamp,
-                ast: Arc::clone(&ast),
+                content: Arc::clone(&content),
+                ast: Some(Arc::clone(&ast)),
             },
         );
     Ok(ast)
 }
 
-/// Read the file and parse it into an AST.
+/// Read the SSH config at `path` as raw content, memoized on the file's
+/// `(mtime, len)` stamp.
+///
+/// For consumers that scan raw lines rather than the AST (e.g. the
+/// doctor's `VerifyHostKeyDNS` line scan): an unchanged file is served
+/// from the cache, and a later [`load_cached_ast`] for the same stamp
+/// parses the very same shared content — the file is read at most once
+/// per mutation however it is consumed.
+///
+/// # Errors
+///
+/// Error semantics match `std::fs::read_to_string`: a missing or unreadable
+/// file returns `Err(io::Error)` with the same `ErrorKind`.
+///
+/// # Panics
+///
+/// Panics if the internal cache mutex is poisoned (a prior holder panicked
+/// while holding it); the cache is process-local so this is unrecoverable.
+pub fn load_cached_content(path: &Path) -> std::io::Result<Arc<String>> {
+    let metadata = std::fs::metadata(path)?;
+    let Some(stamp) = stamp_of(&metadata) else {
+        return Ok(Arc::new(std::fs::read_to_string(path)?));
+    };
+
+    {
+        let cache = CONFIG_CACHE.lock().expect("config cache mutex poisoned");
+        if let Some(entry) = cache.get(path)
+            && entry.stamp == stamp
+        {
+            return Ok(Arc::clone(&entry.content));
+        }
+    }
+
+    let content = Arc::new(std::fs::read_to_string(path)?);
+    CONFIG_CACHE
+        .lock()
+        .expect("config cache mutex poisoned")
+        .insert(
+            path.to_path_buf(),
+            CachedConfig {
+                stamp,
+                content: Arc::clone(&content),
+                ast: None,
+            },
+        );
+    Ok(content)
+}
+
+/// Read the file and parse it into an AST (cache-bypass path only).
 fn read_and_parse(path: &Path) -> std::io::Result<ast::ConfigAst> {
     let content = std::fs::read_to_string(path)?;
     Ok(ast::parse(&content))
 }
 
-/// Drop every cached AST. Test hook: benchmark and unit tests need a clean
-/// cache so a previous test's entry for the same path cannot serve as a hit.
+/// Drop every cached read/parse. Test hook: benchmark and unit tests need a
+/// clean cache so a previous test's entry for the same path cannot serve as
+/// a hit.
 #[cfg(test)]
 pub(crate) fn clear_cache_for_tests() {
-    AST_CACHE
+    CONFIG_CACHE
         .lock()
-        .expect("config AST cache mutex poisoned")
+        .expect("config cache mutex poisoned")
         .clear();
 }
 

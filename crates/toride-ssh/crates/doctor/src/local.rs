@@ -7,10 +7,40 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use crate::check::{Check, CheckFuture};
 use toride_ssh_config::ast::{self, ConfigNode};
-use toride_ssh_config::cache::load_cached_ast;
+use toride_ssh_config::cache::{load_cached_ast, load_cached_content};
 use toride_ssh_core::Result;
 use toride_ssh_core::paths::SshPaths;
 use toride_ssh_core::{Diagnostic, Severity};
+
+/// Load the config AST through the shared mtime-keyed cache, off the async
+/// worker.
+///
+/// `load_cached_ast` performs synchronous `std::fs` I/O on a cache miss;
+/// `ConfigService::load` wraps the same call in `spawn_blocking`, and the
+/// checks do the same here so a current-thread runtime is never stalled by
+/// a config read (the mutex inside the cache is only ever held for
+/// lookup/insert, never across the read).
+async fn cached_config_ast(
+    config_path: std::path::PathBuf,
+) -> std::io::Result<std::sync::Arc<ast::ConfigAst>> {
+    tokio::task::spawn_blocking(move || load_cached_ast(&config_path))
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?
+}
+
+/// Load the raw config content through the same cache, off the async worker.
+///
+/// Raw line scanners (e.g. `VerifyHostKeyDnsCheck`) share one buffered read
+/// with the AST consumers instead of issuing their own `read_to_string`,
+/// so an unchanged config is read once per doctor run however it is
+/// consumed.
+async fn cached_config_content(
+    config_path: std::path::PathBuf,
+) -> std::io::Result<std::sync::Arc<String>> {
+    tokio::task::spawn_blocking(move || load_cached_content(&config_path))
+        .await
+        .map_err(|e| std::io::Error::other(e.to_string()))?
+}
 
 /// Status of the `VerifyHostKeyDNS` SSH config directive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1104,7 +1134,7 @@ impl Check for CertificateFileExistsCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "certificate_file_exists",
                     severity: Severity::Info,
@@ -1202,7 +1232,7 @@ impl Check for IdentityFileExistsCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "identity_file_exists",
                     severity: Severity::Info,
@@ -1294,7 +1324,7 @@ impl Check for DuplicateHostCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "duplicate_host",
                     severity: Severity::Info,
@@ -1375,7 +1405,7 @@ impl Check for HostStarPlacementCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "host_star_placement",
                     severity: Severity::Info,
@@ -1503,7 +1533,7 @@ impl Check for UseKeychainPlatformCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "use_keychain_platform",
                     severity: Severity::Info,
@@ -1605,7 +1635,7 @@ impl Check for IdentityFilePubCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![]);
             };
             let mut diagnostics = Vec::new();
@@ -1685,7 +1715,7 @@ impl Check for IdentitiesOnlyCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![]);
             };
             let mut diagnostics = Vec::new();
@@ -1813,7 +1843,7 @@ impl Check for GssapiConfigCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "gssapi_config",
                     severity: Severity::Info,
@@ -1923,7 +1953,7 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            let Ok(content) = cached_config_content(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "verify_host_key_dns",
                     severity: Severity::Info,
@@ -2259,7 +2289,7 @@ impl Check for PreferredAuthenticationsCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "preferred_authentications",
                     severity: Severity::Info,
@@ -2359,7 +2389,7 @@ impl Check for ProxyJumpHostCheck<'_> {
         Box::pin(async move {
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "proxy_jump_host",
                     severity: Severity::Info,
@@ -2561,7 +2591,7 @@ impl Check for AgentIdentityCheck<'_> {
             // Read config to find IdentityFile directives.
             // Shared mtime-keyed AST: the first check to read the config this run
             // parses it; the rest reuse the cached Arc (one parse per run).
-            let Ok(ast) = load_cached_ast(&config_path) else {
+            let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
                     severity: Severity::Info,
