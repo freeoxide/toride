@@ -10,20 +10,28 @@
 //! optimistic updates, no cooldown gate, and no loading spinner. Every call to
 //! the backend is a pure read.
 //!
-//! Doctor findings are expensive (they shell out to `ufw`, `iptables`,
-//! `ip6tables`, …) and change slowly, so they are cached for 60s — exactly
-//! like the fail2ban / SSH diagnostics cache.
+//! ## Spawn cadence (F09)
+//!
+//! The collector owns ONE [`ufw_kit::Ufw`] client for its whole lifetime, so
+//! the client-layer read caches survive the 2s refresh tick: `ufw --version`
+//! is spawned once per app run (client-lifetime memo) and
+//! `ufw status verbose` once per 10s TTL window. Doctor findings keep their
+//! own 60s cache. The FIRST collection runs against a freshly constructed
+//! client and is therefore uncached; subsequent ticks reuse the TTL windows
+//! above. A firewall state change becomes visible at most 10s late — the
+//! F09-agreed freshness trade.
 //!
 //! ## macOS / construction
 //!
 //! [`ufw_kit::Ufw::system`] is used. Unlike fail2ban's `with_runner`, the
 //! `Ufw` constructor does not consult a config directory — it merely wraps a
-//! `DuctRunner`. On macOS where the `ufw` binary is absent, construction still
-//! succeeds; the first probe (`find_ufw` / `status` / doctor's binary check)
-//! then errors, the doctor surfaces the missing binary as a `Critical` finding,
-//! and the section stays `available == true` so the operator SEES the finding
-//! rather than a blank panel. `available == false` is reserved for the case
-//! where the construction task itself panicked.
+//! `DuctRunner` — so construction is infallible and happens once when the
+//! collector is created. On macOS where the `ufw` binary is absent, probes
+//! (`find_ufw` / `status` / doctor's binary check) error, the doctor surfaces
+//! the missing binary as a `Critical` finding, and the section stays
+//! `available == true` so the operator SEES the finding rather than a blank
+//! panel. `available == false` is reserved for the case where the collection
+//! task itself panicked.
 //!
 //! Caveat: the finding-surfacing guarantee above holds when `doctor()` itself
 //! returns `Ok` — `check_binaries` unconditionally pushes a `bin:ufw:missing`
@@ -40,6 +48,8 @@
 //!
 //! The `DuctRunner` shells out synchronously. All backend work is wrapped in
 //! [`tokio::task::spawn_blocking`] so the tokio worker is never stalled.
+
+use std::sync::Arc;
 
 use tokio::sync::oneshot;
 
@@ -87,7 +97,13 @@ pub struct FirewallDataBundle {
 /// Mirrors [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector): a
 /// oneshot channel for the in-flight result, plus a 60s TTL cache for the
 /// expensive doctor findings so they are not re-run on every 2s refresh tick.
+/// The owned [`ufw_kit::Ufw`] client additionally carries the client-layer
+/// read caches (version memo, 10s status TTL) across ticks — see the module
+/// docs for the resulting spawn cadence.
 pub struct FirewallCollector {
+    /// The single UFW client reused by every collection so the client-layer
+    /// read caches (version memo + status TTL) persist across 2s ticks.
+    client: Arc<ufw_kit::Ufw>,
     /// Carries the bundle AND whether the cached findings were reused for this
     /// poll. The freshness timestamp must only be advanced when the doctor was
     /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
@@ -105,9 +121,20 @@ const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl FirewallCollector {
     /// Create a new collector with no pending collection.
+    ///
+    /// The UFW client is constructed here, once: construction is an
+    /// infallible wrap of a `DuctRunner`, and holding it for the collector's
+    /// lifetime is what lets the client-layer read caches span ticks.
     #[must_use]
     pub fn new() -> Self {
+        Self::with_client(Arc::new(ufw_kit::Ufw::system()))
+    }
+
+    /// Create a collector around an injected client (test seam for
+    /// spawn-count oracles with a fake runner).
+    fn with_client(client: Arc<ufw_kit::Ufw>) -> Self {
         Self {
+            client,
             rx: None,
             cached_findings: None,
             findings_fresh_at: None,
@@ -135,13 +162,14 @@ impl FirewallCollector {
                 .findings_fresh_at
                 .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
         let cached_findings = self.cached_findings.clone();
+        let client = Arc::clone(&self.client);
         self.rx = Some(rx);
         tokio::spawn(async move {
             #[allow(
                 clippy::similar_names,
                 reason = "use_cache (input) vs used_cache (output) are distinct domain flags"
             )]
-            let (bundle, used_cache) = collect_real_ufw(use_cache, cached_findings).await;
+            let (bundle, used_cache) = collect_real_ufw(client, use_cache, cached_findings).await;
             let _ = tx.send((bundle, used_cache));
         });
     }
@@ -196,8 +224,12 @@ impl Default for FirewallCollector {
 ///
 /// All work runs on the blocking thread pool (the `DuctRunner` shells out
 /// synchronously). Doctor findings may be reused from the cache. On ANY error
-/// — construction failure, doctor error, every probe failing — returns
-/// [`empty_bundle`] with `available = false`.
+/// — doctor error, every probe failing — returns an empty/degraded bundle.
+///
+/// `client` is the collector's long-lived [`ufw_kit::Ufw`] (F09): its
+/// client-layer caches make the 2s tick cheap — `status verbose` re-spawns
+/// at most once per 10s TTL window and `--version` once per app run — while
+/// the very first collection on a fresh client is always uncached.
 ///
 /// `use_cache` / `cached_findings` mirror the fail2ban / SSH diagnostics cache:
 /// when the cache is fresh the doctor suite is skipped entirely.
@@ -207,35 +239,23 @@ impl Default for FirewallCollector {
 /// The caller advances the TTL clock ONLY when `used_cache == false`, so a
 /// cache-hit poll never resets the freshness timestamp with stale data.
 async fn collect_real_ufw(
+    client: Arc<ufw_kit::Ufw>,
     use_cache: bool,
     cached_findings: Option<Vec<FindingEntry>>,
 ) -> (FirewallDataBundle, bool) {
-    // Build the Ufw facade on the blocking pool. system() merely wraps a
-    // DuctRunner — it does not consult a config directory — so construction
-    // succeeds even on macOS where the `ufw` binary is absent.
-    let ufw = match tokio::task::spawn_blocking(ufw_kit::Ufw::system).await {
-        Ok(ufw) => ufw,
-        Err(e) => {
-            tracing::warn!("ufw construction task panicked: {e}");
-            return (
-                empty_bundle_with_reason(format!("ufw backend construction panicked: {e}")),
-                false,
-            );
-        }
-    };
-
-    // Run ALL blocking probes in a single spawn_blocking that owns `ufw`.
+    // Run ALL blocking probes in a single spawn_blocking that owns `client`.
     // This keeps every shell-out off the tokio worker (the `DuctRunner` is
     // synchronous) and sidesteps the 'static-borrow problem. Results are
     // returned as plain owned data so they cross the thread boundary cleanly.
     // Doctor findings are taken from the cache when fresh (`use_cache`),
     // otherwise re-run here.
     let result = tokio::task::spawn_blocking(move || {
+        let ufw = client.as_ref();
         // ── Doctor (unless cached) ─────────────────────────────────────────
         let findings: Vec<FindingEntry> = if use_cache {
             cached_findings.unwrap_or_default()
         } else {
-            match ufw_kit::doctor::doctor(&ufw, ufw_kit::spec::DoctorScope::All) {
+            match ufw_kit::doctor::doctor(ufw, ufw_kit::spec::DoctorScope::All) {
                 Ok(raw_findings) => ufw_kit_convert::convert_findings(raw_findings),
                 Err(e) => {
                     tracing::warn!("ufw doctor: {e}");
@@ -332,7 +352,7 @@ async fn collect_real_ufw(
     }
 }
 
-/// Empty bundle used when UFW could not be constructed at all.
+/// Empty bundle used as the base for degraded results.
 ///
 /// `available = false` signals the UI to render the degraded panel. No reason
 /// is attached because none is known at this point; collection-time panics use
@@ -451,6 +471,100 @@ mod tests {
         // Vec on a host where the doctor produced no findings).
         assert!(collector.cached_findings.is_some());
         assert!(collector.findings_fresh_at.is_some());
+    }
+
+    // ── F09 cadence oracle ─────────────────────────────────────────────
+
+    /// Counting wrapper around a `ufw_kit` fake runner so the test can read
+    /// the spawn count while the runner lives inside the collector's client.
+    struct CountingUfw {
+        inner: ufw_kit::command::FakeRunner,
+        spawns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl CountingUfw {
+        /// Build the runner and hand back a shared handle to its spawn
+        /// counter, so the test can read the count after the runner itself
+        /// moves into the collector's client.
+        fn new(
+            inner: ufw_kit::command::FakeRunner,
+        ) -> (Self, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+            let spawns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            (
+                Self {
+                    inner,
+                    spawns: std::sync::Arc::clone(&spawns),
+                },
+                spawns,
+            )
+        }
+    }
+
+    impl ufw_kit::command::CommandRunner for CountingUfw {
+        fn run(
+            &self,
+            spec: &ufw_kit::spec::CommandSpec,
+        ) -> ufw_kit::Result<ufw_kit::spec::CommandResult> {
+            self.spawns
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.inner.run(spec)
+        }
+
+        fn binary_exists(&self, name: &str) -> bool {
+            self.inner.binary_exists(name)
+        }
+    }
+
+    /// F09 cadence oracle: the collector's long-lived client makes the FIRST
+    /// collection spawn (uncached by construction) and every collection
+    /// inside the cache windows (60s findings, 10s status verbose,
+    /// lifetime version memo) spawn NOTHING. Pre-fix, every 2s tick paid
+    /// `status verbose` + `--version` fresh.
+    #[tokio::test]
+    async fn first_collect_spawns_second_collect_within_windows_spawns_nothing() {
+        let runner = CountingUfw::new(
+            ufw_kit::command::FakeRunner::new()
+                .respond_ok(
+                    "ufw",
+                    &["status", "verbose"],
+                    "Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing)\n",
+                )
+                .respond_ok("ufw", &["--version"], "ufw 0.36.2\n"),
+        );
+        let (runner, spawns) = runner;
+        let ufw = ufw_kit::Ufw::with_runner(runner);
+        let mut collector = FirewallCollector::with_client(std::sync::Arc::new(ufw));
+
+        // First collection: uncached — it must spawn.
+        collector.start();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let first = collector.poll().await.expect("first bundle");
+        let first_spawns = spawns.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(
+            first.available,
+            "canned verbose status keeps the section available"
+        );
+        assert!(
+            first_spawns > 0,
+            "the first collection on a fresh client must not be served from any cache"
+        );
+
+        // Second collection inside every cache window: zero new spawns and a
+        // byte-identical bundle.
+        collector.start();
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        let second = collector.poll().await.expect("second bundle");
+        assert_eq!(
+            spawns.load(std::sync::atomic::Ordering::Relaxed),
+            first_spawns,
+            "a collection inside the findings/status/version cache windows \
+             must not spawn any command (F09)"
+        );
+        assert_eq!(
+            format!("{first:?}"),
+            format!("{second:?}"),
+            "the cached collection must return the same bundle"
+        );
     }
 
     #[test]

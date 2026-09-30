@@ -17,23 +17,29 @@
 //!
 //! One caveat, inherited from the production code: `doctor` calls
 //! [`find_binary`](crate::command::find_binary) directly (outside the
-//! `Runner` trait) for `fail2ban-client` / `fail2ban-regex` / `journalctl`
-//! probes, and some spawns are gated on those lookups. Counts are therefore
-//! deterministic for a *fixed host* but may differ on machines with
-//! different `$PATH` contents. Pin thresholds on the campaign host.
+//! `Runner` trait) for `fail2ban-regex` / `journalctl` probes (`fail2ban-client`
+//! lookups are memoized once per run since F13), and some spawns are gated on
+//! those lookups. Counts are therefore deterministic for a *fixed host* but
+//! may differ on machines with different `$PATH` contents. Pin thresholds on
+//! the campaign host.
 
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::command::{CommandOutput, Runner};
 use crate::doctor::{Doctor, DoctorScope};
 
+/// One executed `(program, args)` pair, as recorded by [`CountingRunner`].
+type CallEntry = (String, Vec<String>);
+
 /// Command runner that counts spawns and always succeeds with empty output.
 #[derive(Clone)]
 pub struct CountingRunner {
     spawns: Arc<AtomicUsize>,
     dry_run: Arc<AtomicBool>,
+    calls: Arc<Mutex<Vec<CallEntry>>>,
 }
 
 impl CountingRunner {
@@ -42,6 +48,7 @@ impl CountingRunner {
         Self {
             spawns: Arc::new(AtomicUsize::new(0)),
             dry_run: Arc::new(AtomicBool::new(false)),
+            calls: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -51,8 +58,41 @@ impl CountingRunner {
         self.spawns.load(Ordering::Relaxed)
     }
 
+    /// Every executed `(program, args)` pair, in order, across all clones of
+    /// this runner — for asserting *which* documents were fetched how often.
+    ///
+    /// Best-effort on a poisoned lock (empty log) since this is a test oracle.
+    pub fn calls(&self) -> Vec<CallEntry> {
+        self.calls.lock().map(|c| c.clone()).unwrap_or_default()
+    }
+
+    /// How many commands whose program basename is `fail2ban-client` were
+    /// executed with exactly these args.
+    pub fn count_client_args(&self, args: &[&str]) -> usize {
+        self.calls()
+            .iter()
+            .filter(|(program, call_args)| {
+                program
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|base| base == "fail2ban-client")
+                    && call_args.len() == args.len()
+                    && call_args.iter().zip(args).all(|(a, b)| a == b)
+            })
+            .count()
+    }
+
     fn record_spawn(&self) {
         self.spawns.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn record_call(&self, program: &str, args: &[&str]) {
+        if let Ok(mut calls) = self.calls.lock() {
+            calls.push((
+                program.to_string(),
+                args.iter().map(|s| (*s).to_string()).collect(),
+            ));
+        }
     }
 
     fn ok_output() -> CommandOutput {
@@ -67,18 +107,20 @@ impl Default for CountingRunner {
 }
 
 impl Runner for CountingRunner {
-    fn run(&self, _program: &str, _args: &[&str]) -> crate::Result<CommandOutput> {
+    fn run(&self, program: &str, args: &[&str]) -> crate::Result<CommandOutput> {
         self.record_spawn();
+        self.record_call(program, args);
         Ok(Self::ok_output())
     }
 
     fn run_with_timeout(
         &self,
-        _program: &str,
-        _args: &[&str],
+        program: &str,
+        args: &[&str],
         _timeout: Duration,
     ) -> crate::Result<CommandOutput> {
         self.record_spawn();
+        self.record_call(program, args);
         Ok(Self::ok_output())
     }
 
@@ -178,10 +220,13 @@ mod tests {
     }
 
     /// doctor(All) spawns the same number of processes every run, and the
-    /// per-category breakdown sums to the All-run total (the All arm runs
-    /// exactly `DoctorScope::all_categories()`).
+    /// per-category breakdown is an upper bound on the All-run total: the All
+    /// arm runs exactly `DoctorScope::all_categories()`, but F13's per-run
+    /// shared fetch lets the All arm reuse one `fail2ban-client status`
+    /// spawn across its six jail-list consumers, so sharing can only remove
+    /// spawns, never add them.
     #[test]
-    fn doctor_all_spawn_report_is_deterministic_and_additive() {
+    fn doctor_all_spawn_report_is_deterministic_and_bounded_by_category_sum() {
         let first = doctor_all_spawn_report();
         let second = doctor_all_spawn_report();
 
@@ -195,9 +240,64 @@ mod tests {
         );
 
         let sum: usize = first.per_category.iter().map(|(_, n)| n).sum();
+        assert!(
+            sum >= first.all_run_total,
+            "sharing the jail-list fetch across the All arm must not exceed the \
+             sum of standalone category runs: {first:?}"
+        );
+    }
+
+    /// F13 spawn budget: one `doctor(All)` pass used to spawn the identical
+    /// `fail2ban-client status` six times (log-path, journal, regex, action,
+    /// safety, and proxy checks each re-fetched and re-parsed it), for a
+    /// baseline total of 21 spawns on this host. After the per-run shared
+    /// fetch the measured total is 16; the budget pins that. Host-sensitive:
+    /// requires `fail2ban-client` on `$PATH` (see the module docs).
+    #[test]
+    fn doctor_all_spawn_budget_is_bounded_after_f13() {
+        let report = doctor_all_spawn_report();
+        assert!(
+            report.all_run_total <= 16,
+            "doctor(All) must stay within the F13 spawn budget, got {report:?}"
+        );
+    }
+
+    /// F13 once-per-run oracle: within one `doctor(All)` pass the jail list
+    /// is fetched exactly once, however many checks consume it. No-op on a
+    /// host without `fail2ban-client` on `$PATH` (nothing to share).
+    #[test]
+    fn doctor_all_fetches_jail_list_once() {
+        let runner = CountingRunner::new();
+        let doctor = Doctor::new(&runner);
+        doctor
+            .run(&DoctorScope::All)
+            .expect("doctor(All) completes with always-ok responses");
+
+        let client_on_path = crate::command::find_binary("fail2ban-client").is_ok();
+        let expected = usize::from(client_on_path);
         assert_eq!(
-            sum, first.all_run_total,
-            "per-category spawns should sum to the doctor(All) total: {first:?}"
+            runner.count_client_args(&["status"]),
+            expected,
+            "the six jail-list consumers must share one `fail2ban-client status` run"
+        );
+    }
+
+    /// F13 per-run freshness oracle: two consecutive `doctor(All)` runs on
+    /// the same `Doctor` each fetch the jail list once — the memo is scoped
+    /// to a single run, never to the `Doctor` instance.
+    #[test]
+    fn doctor_run_resets_the_shared_fetch_per_run() {
+        let runner = CountingRunner::new();
+        let doctor = Doctor::new(&runner);
+        doctor.run(&DoctorScope::All).expect("first run");
+        doctor.run(&DoctorScope::All).expect("second run");
+
+        let client_on_path = crate::command::find_binary("fail2ban-client").is_ok();
+        let expected = if client_on_path { 2 } else { 0 };
+        assert_eq!(
+            runner.count_client_args(&["status"]),
+            expected,
+            "each doctor run must re-fetch the jail list exactly once"
         );
     }
 }

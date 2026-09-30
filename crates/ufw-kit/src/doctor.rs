@@ -1024,6 +1024,12 @@ fn check_logging(ufw: &Ufw) -> Vec<Finding> {
 }
 
 /// Check application profiles.
+///
+/// `ufw app list` is fetched once and shared with both cross-reference
+/// sub-checks (one spawn per doctor run instead of three). Deliberate
+/// semantic change from per-site fetching: when the fetch fails, the two
+/// sub-checks are skipped for this run rather than retrying independently —
+/// `app:list-fail` is the single reported failure arm.
 fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
     let mut findings = Vec::new();
 
@@ -1102,6 +1108,14 @@ fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
                     }
                 }
             }
+
+            // Cross-reference: check if any rules reference app profiles that
+            // do not exist (reusing the list fetched above).
+            check_app_profile_references(ufw, &list, &mut findings);
+
+            // Check if any app profiles have ports that conflict with each
+            // other (reusing the list fetched above).
+            check_app_profile_port_conflicts(ufw, &list, &mut findings);
         }
         Err(e) => findings.push(Finding {
             id: "app:list-fail",
@@ -1111,12 +1125,6 @@ fn check_app_profiles(ufw: &Ufw) -> Vec<Finding> {
             fix: None,
         }),
     }
-
-    // Cross-reference: check if any rules reference app profiles that do not exist
-    check_app_profile_references(ufw, &mut findings);
-
-    // Check if any app profiles have ports that conflict with each other
-    check_app_profile_port_conflicts(ufw, &mut findings);
 
     findings
 }
@@ -1589,21 +1597,21 @@ fn check_secrets_in_comments(ufw: &Ufw, findings: &mut Vec<Finding>) {
 }
 
 /// Cross-reference: check if any rules reference app profiles that do not exist.
-fn check_app_profile_references(ufw: &Ufw, findings: &mut Vec<Finding>) {
+///
+/// `list` is the `ufw app list` output already fetched by
+/// [`check_app_profiles`] — fetched once per doctor run and shared.
+fn check_app_profile_references(ufw: &Ufw, list: &str, findings: &mut Vec<Finding>) {
     // Get the list of known profiles
-    let known_profiles: Vec<String> = match ufw.app_list() {
-        Ok(list) => list
-            .lines()
-            .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
-            .map(|l| {
-                l.trim()
-                    .trim_start_matches(|c: char| c.is_whitespace() || c == '*')
-                    .to_string()
-            })
-            .filter(|l| !l.is_empty())
-            .collect(),
-        Err(_) => return,
-    };
+    let known_profiles: Vec<String> = list
+        .lines()
+        .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '*')
+                .to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect();
 
     // Check rules for app profile references (rules that don't match port patterns
     // but reference a profile name).
@@ -1660,21 +1668,21 @@ fn check_app_profile_references(ufw: &Ufw, findings: &mut Vec<Finding>) {
 }
 
 /// Check if any app profiles have ports that conflict with each other.
-fn check_app_profile_port_conflicts(ufw: &Ufw, findings: &mut Vec<Finding>) {
+///
+/// `list` is the `ufw app list` output already fetched by
+/// [`check_app_profiles`] — fetched once per doctor run and shared.
+fn check_app_profile_port_conflicts(ufw: &Ufw, list: &str, findings: &mut Vec<Finding>) {
     // Collect (profile_name, ports_string) from app info
-    let profiles = match ufw.app_list() {
-        Ok(list) => list
-            .lines()
-            .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
-            .map(|l| {
-                l.trim()
-                    .trim_start_matches(|c: char| c.is_whitespace() || c == '*')
-                    .to_string()
-            })
-            .filter(|l| !l.is_empty())
-            .collect::<Vec<_>>(),
-        Err(_) => return,
-    };
+    let profiles = list
+        .lines()
+        .filter(|l| !l.starts_with("Available") && !l.trim().is_empty())
+        .map(|l| {
+            l.trim()
+                .trim_start_matches(|c: char| c.is_whitespace() || c == '*')
+                .to_string()
+        })
+        .filter(|l| !l.is_empty())
+        .collect::<Vec<_>>();
 
     let mut profile_ports: Vec<(String, Vec<String>)> = Vec::new();
 

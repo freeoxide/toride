@@ -2363,3 +2363,160 @@ fn cidr_covers_range_supernet() {
     assert!(cidr_covers_range("10.0.0.0/8", "10.1.0.0/16"));
     assert!(!cidr_covers_range("10.1.0.0/16", "10.0.0.0/8"));
 }
+
+// ===========================================================================
+// Per-run shared jail-list fetch (F13)
+// ===========================================================================
+
+/// Shared fixture: a jail list with one jail (`testjail`) plus per-jail
+/// responses that make three of the six consumers produce identifiable
+/// findings. Host-gated: returns `None` when `fail2ban-client` or
+/// `fail2ban-regex` is not on `$PATH` (nothing to share).
+fn shared_fetch_fixture() -> Option<(FakeRunner, std::path::PathBuf)> {
+    let bin = find_binary("fail2ban-client").ok()?;
+    find_binary("fail2ban-regex").ok()?;
+    Some((FakeRunner::new(), bin))
+}
+
+/// Canned responses for [`shared_fetch_fixture`]: one jail whose backend is
+/// systemd, failregex contains `<HOST>`, and logpath points at `log`.
+fn seed_shared_jail(fake: &mut FakeRunner, bin: &str, log: &std::path::Path) {
+    fake.with_response(bin, &["status"], ok_output("`- Jail list:\ttestjail\n"));
+    fake.with_response(bin, &["get", "testjail", "backend"], ok_output("systemd\n"));
+    fake.with_response(
+        bin,
+        &["get", "testjail", "failregex"],
+        ok_output("^(?:.*)<HOST>.*$"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "testjail", "logpath"],
+        ok_output(log.to_str().unwrap_or("/dev/null")),
+    );
+    fake.with_response(bin, &["get", "testjail", "actions"], ok_output(""));
+    fake.with_response(
+        bin,
+        &["get", "testjail", "ignoreip"],
+        ok_output("127.0.0.1 ::1\n"),
+    );
+}
+
+/// How many `fail2ban-client status` (exact-args) executions the runner saw.
+fn client_status_calls(fake: &FakeRunner) -> usize {
+    fake.calls()
+        .iter()
+        .filter(|(program, args)| {
+            program
+                .rsplit('/')
+                .next()
+                .is_some_and(|b| b == "fail2ban-client")
+                && args.len() == 1
+                && args[0] == "status"
+        })
+        .count()
+}
+
+/// The six jail-list consumers of one `doctor(All)` run must all operate on
+/// ONE shared `fail2ban-client status` fetch while still producing their own
+/// findings (journal backend info, regex `<HOST>` ok, logpath existence).
+#[test]
+fn doctor_all_shares_one_jail_list_fetch_across_consumers() {
+    let Some((mut fake, bin)) = shared_fetch_fixture() else {
+        return;
+    };
+    let bin = bin.to_str().unwrap_or("fail2ban-client").to_string();
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("test.log");
+    std::fs::write(&log, "Failed password for root\n").unwrap();
+    seed_shared_jail(&mut fake, &bin, &log);
+
+    let doctor = Doctor::new(&fake);
+    let report = doctor.run(&DoctorScope::All).unwrap();
+
+    // Three different consumers produced their per-jail findings...
+    assert!(
+        has_finding(&report.findings, "jail.backend-systemd"),
+        "journal check must consume the shared jail list"
+    );
+    assert!(
+        has_finding(&report.findings, "regex.host-tag-present"),
+        "regex check must consume the shared jail list"
+    );
+    assert!(
+        has_finding(&report.findings, "logpath.exists"),
+        "log-path check must consume the shared jail list"
+    );
+    // ...from a single `fail2ban-client status` execution.
+    assert_eq!(
+        client_status_calls(&fake),
+        1,
+        "doctor(All) must fetch the jail list exactly once (F13)"
+    );
+}
+
+/// Degraded shared fetch: when `fail2ban-client status` runs but reports
+/// failure, `check_log_paths` keeps ITS OWN error finding while the five
+/// silently-skipping consumers keep skipping — the shared fetch does not let
+/// one failure poison the other checks.
+#[test]
+fn doctor_all_degraded_jail_list_keeps_per_check_failure_arms() {
+    let Some((mut fake, bin)) = shared_fetch_fixture() else {
+        return;
+    };
+    let bin = bin.to_str().unwrap_or("fail2ban-client").to_string();
+    // The shared document fetch fails (non-zero exit, no jail list parseable).
+    fake.with_response(
+        bin.as_str(),
+        &["status"],
+        fail_output("ERROR: Unable to contact server"),
+    );
+
+    let doctor = Doctor::new(&fake);
+    let report = doctor.run(&DoctorScope::All).unwrap();
+
+    assert!(
+        has_finding(&report.findings, "logpath.status-failed"),
+        "check_log_paths must report its own status-failure arm"
+    );
+    assert!(
+        !has_finding(&report.findings, "jail.backend-systemd"),
+        "journal check keeps skipping silently on a failed shared fetch"
+    );
+    assert!(
+        !has_finding(&report.findings, "regex.host-tag-present"),
+        "regex check keeps skipping silently on a failed shared fetch"
+    );
+    assert!(
+        !has_finding(&report.findings, "logpath.exists"),
+        "log-path per-jail probes must not run without a jail list"
+    );
+    // The failed fetch is still executed only once per run.
+    assert_eq!(client_status_calls(&fake), 1);
+}
+
+/// Cached-vs-fresh parity: two consecutive `doctor(All)` runs on the same
+/// `Doctor` produce identical findings even though the second run re-fetches
+/// the jail list (per-run memo, not a Doctor-lifetime cache).
+#[test]
+fn doctor_all_consecutive_runs_keep_findings_parity() {
+    let Some((mut fake, bin)) = shared_fetch_fixture() else {
+        return;
+    };
+    let bin = bin.to_str().unwrap_or("fail2ban-client").to_string();
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("test.log");
+    std::fs::write(&log, "Failed password for root\n").unwrap();
+    seed_shared_jail(&mut fake, &bin, &log);
+
+    let doctor = Doctor::new(&fake);
+    let first = doctor.run(&DoctorScope::All).unwrap();
+    let second = doctor.run(&DoctorScope::All).unwrap();
+
+    // `Finding` is not `PartialEq`; compare the Debug rendering instead.
+    assert_eq!(
+        format!("{:?}", first.findings),
+        format!("{:?}", second.findings),
+        "a re-run must not change findings (fresh fetch per run, same canned data)"
+    );
+    assert_eq!(client_status_calls(&fake), 2, "one fetch per run");
+}

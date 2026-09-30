@@ -874,3 +874,178 @@ fn status_numbered_should_parse_empty_numbered_output() {
     assert!(status.active);
     assert!(status.rules.is_empty());
 }
+
+// ---------------------------------------------------------------------------
+// Read-document caching (F09)
+// ---------------------------------------------------------------------------
+
+/// A parseable active-status document for cache tests.
+const ACTIVE_STATUS: &str = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\n";
+
+/// Wraps a runner and counts every command execution. The counter is shared
+/// with clones, so the runner can be moved into [`Ufw::with_runner`] while
+/// the test keeps reading the count.
+struct Counting<F> {
+    inner: std::sync::Arc<F>,
+    count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+// Manual impl: cloning shares the wrapped runner and counter without
+// requiring `F: Clone`.
+impl<F> Clone for Counting<F> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: std::sync::Arc::clone(&self.inner),
+            count: std::sync::Arc::clone(&self.count),
+        }
+    }
+}
+
+impl<F: CommandRunner> Counting<F> {
+    fn new(inner: F) -> Self {
+        Self {
+            inner: std::sync::Arc::new(inner),
+            count: std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        }
+    }
+
+    fn executions(&self) -> usize {
+        self.count.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl<F: CommandRunner> CommandRunner for Counting<F> {
+    fn run(&self, spec: &crate::spec::CommandSpec) -> Result<crate::spec::CommandResult> {
+        self.count
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.run(spec)
+    }
+
+    fn binary_exists(&self, name: &str) -> bool {
+        self.inner.binary_exists(name)
+    }
+}
+
+#[test]
+fn version_is_spawned_once_per_client() {
+    let runner = Counting::new(FakeRunner::new().respond_ok("ufw", &["--version"], "ufw 0.36.2\n"));
+    let ufw = Ufw::with_runner(runner.clone());
+
+    let first = ufw.version().expect("first version read");
+    let second = ufw.version().expect("memoized version read");
+
+    assert_eq!(first, "ufw 0.36.2");
+    assert_eq!(first, second);
+    assert_eq!(
+        runner.executions(),
+        1,
+        "the second read must be served from the client-lifetime memo"
+    );
+}
+
+#[test]
+fn version_failure_is_not_memoized() {
+    // No response registered: every `run` errors.
+    let runner = Counting::new(FakeRunner::new());
+    let ufw = Ufw::with_runner(runner.clone());
+
+    assert!(ufw.version().is_err());
+    assert!(ufw.version().is_err());
+    assert_eq!(
+        runner.executions(),
+        2,
+        "a failed version read must be retried, not memoized"
+    );
+}
+
+#[test]
+fn status_is_cached_within_the_ttl_window() {
+    let runner = Counting::new(FakeRunner::new().respond_ok("ufw", &["status"], ACTIVE_STATUS));
+    let ufw = Ufw::with_runner(runner.clone());
+
+    let first = ufw.status().expect("first status read");
+    let second = ufw.status().expect("cached status read");
+
+    assert_eq!(first, second);
+    assert!(second.active);
+    assert_eq!(
+        runner.executions(),
+        1,
+        "back-to-back status reads must share one fetch"
+    );
+}
+
+#[test]
+fn status_cache_expires_after_the_ttl() {
+    let runner = Counting::new(FakeRunner::new().respond_ok("ufw", &["status"], ACTIVE_STATUS));
+    let ufw = Ufw::with_runner(runner.clone());
+    ufw.set_status_ttl_for_test(std::time::Duration::from_millis(1));
+
+    let _ = ufw.status().expect("first status read");
+    std::thread::sleep(std::time::Duration::from_millis(3));
+    let _ = ufw.status().expect("post-expiry status read");
+
+    assert_eq!(
+        runner.executions(),
+        2,
+        "an expired cache entry must trigger a fresh fetch"
+    );
+}
+
+#[test]
+fn status_failure_is_not_cached() {
+    // No response registered: every attempt errors, and each call must
+    // re-attempt (the failure is never replayed from a cache).
+    let runner = Counting::new(FakeRunner::new());
+    let ufw = Ufw::with_runner(runner.clone());
+
+    assert!(ufw.status().is_err(), "unregistered command must fail");
+    assert!(ufw.status().is_err(), "second call must retry, not replay");
+    assert_eq!(runner.executions(), 2);
+}
+
+#[test]
+fn status_verbose_is_cached_independently_of_status() {
+    let runner = Counting::new(
+        FakeRunner::new()
+            .respond_ok("ufw", &["status"], ACTIVE_STATUS)
+            .respond_ok(
+                "ufw",
+                &["status", "verbose"],
+                "Status: active\nLogging: on (low)\nDefault: deny (incoming), allow (outgoing)\n",
+            ),
+    );
+    let ufw = Ufw::with_runner(runner.clone());
+
+    let _ = ufw.status().expect("status read");
+    let first = ufw.status_verbose().expect("verbose read");
+    let second = ufw.status_verbose().expect("cached verbose read");
+
+    assert_eq!(first, second);
+    assert_eq!(first.default_incoming, Some(Policy::Deny));
+    assert_eq!(
+        runner.executions(),
+        2,
+        "one status + one verbose fetch; the second verbose read is cached"
+    );
+}
+
+#[test]
+fn mutating_command_invalidates_the_status_cache() {
+    let runner = Counting::new(
+        FakeRunner::new()
+            .respond_ok("ufw", &["status"], ACTIVE_STATUS)
+            .respond_ok("ufw", &["reload"], ""),
+    );
+    let ufw = Ufw::with_runner(runner.clone());
+
+    let _ = ufw.status().expect("status read");
+    assert!(ufw.reload().is_ok(), "reload must succeed");
+    let _ = ufw.status().expect("post-mutation status read");
+
+    assert_eq!(
+        runner.executions(),
+        3,
+        "a mutating command must drop the cached status document"
+    );
+}

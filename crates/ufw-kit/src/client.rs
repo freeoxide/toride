@@ -1,8 +1,20 @@
 //! UFW client — typed wrapper around the `ufw` command.
 //!
 //! This is the primary API surface for the crate.
+//!
+//! # Read-document caching
+//!
+//! Read documents that cannot differ between back-to-back calls are cached
+//! inside the client (see [`Ufw`]): `ufw --version` is memoized for the
+//! lifetime of the client, and `ufw status` / `ufw status verbose` are reused
+//! for `STATUS_CACHE_TTL` (10 s). Only successful fetches are cached, and
+//! every mutating command invalidates the status caches, so each caller keeps
+//! independent failure reporting. Keep one `Ufw` alive to benefit from the
+//! caches; a freshly constructed client always fetches uncached (its first
+//! read is never stale).
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::command::{CommandRunner, DuctRunner};
 use crate::error::{Error, Result};
@@ -13,11 +25,52 @@ use crate::spec::{
 };
 use crate::status;
 
+/// How long a successful `ufw status` / `ufw status verbose` fetch is reused
+/// before the next call re-spawns `ufw`.
+///
+/// The TUI refreshes every 2 s and one `doctor(All)` pass re-reads these two
+/// documents 8× / 3× respectively; firewall state changes rarely, so a 10 s
+/// window collapses those spawns without observable staleness.
+const STATUS_CACHE_TTL: Duration = Duration::from_secs(10);
+
+/// Fetch-once memo state for [`Ufw`]'s read documents.
+#[derive(Debug, Default)]
+struct DocCache {
+    /// TTL override used by tests instead of [`STATUS_CACHE_TTL`].
+    status_ttl_override: Option<Duration>,
+    /// Memoized `ufw --version` output (client lifetime).
+    version: Option<String>,
+    /// Last successful `ufw status` and when it was fetched.
+    status: Option<(Instant, UfwStatus)>,
+    /// Last successful `ufw status verbose` and when it was fetched.
+    status_verbose: Option<(Instant, UfwStatus)>,
+}
+
+impl DocCache {
+    fn status_ttl(&self) -> Duration {
+        self.status_ttl_override.unwrap_or(STATUS_CACHE_TTL)
+    }
+
+    /// Return a cached document if it is still inside the TTL window.
+    fn fresh(doc: Option<&(Instant, UfwStatus)>, ttl: Duration) -> Option<UfwStatus> {
+        doc.filter(|(fetched_at, _)| fetched_at.elapsed() < ttl)
+            .map(|(_, status)| status.clone())
+    }
+}
+
+/// Which cached status document a cache helper operates on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CacheSlot {
+    Status,
+    StatusVerbose,
+}
+
 /// The main UFW client.
 ///
 /// Create with `Ufw::system()` for real usage, or `Ufw::with_runner()` for tests.
 pub struct Ufw {
     runner: Arc<dyn CommandRunner>,
+    cache: std::sync::Mutex<DocCache>,
 }
 
 impl Ufw {
@@ -25,6 +78,7 @@ impl Ufw {
     pub fn system() -> Self {
         Self {
             runner: Arc::new(DuctRunner::new()),
+            cache: std::sync::Mutex::new(DocCache::default()),
         }
     }
 
@@ -32,7 +86,58 @@ impl Ufw {
     pub fn with_runner(runner: impl CommandRunner + 'static) -> Self {
         Self {
             runner: Arc::new(runner),
+            cache: std::sync::Mutex::new(DocCache::default()),
         }
+    }
+
+    /// Lock the memo state; a poisoned lock is recovered rather than
+    /// propagated because the cache is advisory only.
+    fn lock_cache(&self) -> std::sync::MutexGuard<'_, DocCache> {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Return the cached document for `slot` if it is fresh, `None` otherwise.
+    fn cached_doc(&self, slot: CacheSlot) -> Option<UfwStatus> {
+        let cache = self.lock_cache();
+        let ttl = cache.status_ttl();
+        match slot {
+            CacheSlot::Status => DocCache::fresh(cache.status.as_ref(), ttl),
+            CacheSlot::StatusVerbose => DocCache::fresh(cache.status_verbose.as_ref(), ttl),
+        }
+    }
+
+    /// Store a successfully fetched document for `slot`; failures are never
+    /// cached so the next caller retries (and reports) independently.
+    fn store_doc(&self, slot: CacheSlot, result: &Result<UfwStatus>) {
+        if let Ok(status) = result {
+            let mut cache = self.lock_cache();
+            let slot_doc = match slot {
+                CacheSlot::Status => &mut cache.status,
+                CacheSlot::StatusVerbose => &mut cache.status_verbose,
+            };
+            *slot_doc = Some((Instant::now(), status.clone()));
+        }
+    }
+
+    /// Drop the cached `status` / `status verbose` documents.
+    ///
+    /// Called after every root-requiring (mutating) command — including
+    /// dry-runs, which may be followed by an apply — so a mutation never
+    /// leaves a stale status document behind. `version` is never invalidated:
+    /// mutating rules does not change the installed package version.
+    fn invalidate_status_cache(&self) {
+        let mut cache = self.lock_cache();
+        cache.status = None;
+        cache.status_verbose = None;
+    }
+
+    /// Shrink the status TTL so tests can exercise expiry without sleeping
+    /// for the production window.
+    #[cfg(test)]
+    fn set_status_ttl_for_test(&self, ttl: Duration) {
+        self.lock_cache().status_ttl_override = Some(ttl);
     }
 
     /// Find the UFW binary path.
@@ -46,21 +151,56 @@ impl Ufw {
     }
 
     /// Get UFW version.
+    ///
+    /// The first successful read is memoized for the lifetime of this client:
+    /// `ufw --version` only changes on package upgrades. Failures are never
+    /// memoized, so a transient error is retried on the next call.
     pub fn version(&self) -> Result<String> {
-        let result = self.run_ufw(&["--version"])?;
-        Ok(result.stdout.trim().to_string())
+        {
+            let cache = self.lock_cache();
+            if let Some(version) = &cache.version {
+                return Ok(version.clone());
+            }
+        }
+        let result = self
+            .run_ufw(&["--version"])
+            .map(|r| r.stdout.trim().to_string());
+        if let Ok(version) = &result {
+            self.lock_cache().version = Some(version.clone());
+        }
+        result
     }
 
     /// Get UFW status (non-verbose).
+    ///
+    /// A successful fetch is reused for `STATUS_CACHE_TTL` (10 s) before the
+    /// next call re-spawns `ufw`; a failed fetch is never cached. Mutating
+    /// commands invalidate the cache immediately.
     pub fn status(&self) -> Result<UfwStatus> {
-        let result = self.run_ufw(&["status"])?;
-        status::parse_status(&result.stdout)
+        if let Some(cached) = self.cached_doc(CacheSlot::Status) {
+            return Ok(cached);
+        }
+        let result = self
+            .run_ufw(&["status"])
+            .and_then(|r| status::parse_status(&r.stdout));
+        self.store_doc(CacheSlot::Status, &result);
+        result
     }
 
     /// Get UFW verbose status (includes defaults and logging).
+    ///
+    /// Cached independently of [`status`](Self::status) with the same
+    /// `STATUS_CACHE_TTL` semantics: successes reused for 10 s, failures
+    /// never cached, mutations invalidate immediately.
     pub fn status_verbose(&self) -> Result<UfwStatus> {
-        let result = self.run_ufw(&["status", "verbose"])?;
-        status::parse_status_verbose(&result.stdout)
+        if let Some(cached) = self.cached_doc(CacheSlot::StatusVerbose) {
+            return Ok(cached);
+        }
+        let result = self
+            .run_ufw(&["status", "verbose"])
+            .and_then(|r| status::parse_status_verbose(&r.stdout));
+        self.store_doc(CacheSlot::StatusVerbose, &result);
+        result
     }
 
     /// Get UFW numbered status.
@@ -519,9 +659,16 @@ impl Ufw {
     }
 
     /// Run a UFW command (root required).
+    ///
+    /// Root-requiring commands are the mutating surface of the client, so
+    /// every call — success or failure — drops the cached status documents
+    /// (see [`Self::invalidate_status_cache`]). Over-invalidating a failed
+    /// mutation is safe; serving a stale post-mutation status is not.
     fn run_ufw_root(&self, args: &[&str]) -> Result<crate::spec::CommandResult> {
         let spec = CommandSpec::ufw_root(args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>());
-        self.runner.run(&spec)
+        let result = self.runner.run(&spec);
+        self.invalidate_status_cache();
+        result
     }
 
     /// Check for SSH lockout risk before enabling.

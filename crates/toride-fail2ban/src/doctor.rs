@@ -46,10 +46,13 @@
 //! All commands go through the [`Runner`](crate::command::Runner) trait. No
 //! ad-hoc `std::process::Command` calls are made anywhere in this module.
 
+use std::cell::RefCell;
+use std::path::PathBuf;
+
 use serde::{Deserialize, Serialize};
 
 use crate::Result;
-use crate::command::{Runner, find_binary};
+use crate::command::{CommandOutput, Runner, find_binary};
 use crate::report::{DoctorReport, Finding, Severity};
 
 // ---------------------------------------------------------------------------
@@ -115,6 +118,42 @@ impl DoctorScope {
 // Doctor
 // ---------------------------------------------------------------------------
 
+/// Per-run fetch-once memo shared by every check of one [`Doctor::run`]
+/// invocation.
+///
+/// Two documents dominate the duplicate work of a `doctor(All)` pass: the
+/// resolved `fail2ban-client` path (a `$PATH` walk per site) and the
+/// `fail2ban-client status` output (a Python interpreter start per site,
+/// ~50-64 ms each). Both are fetched lazily on first use and reused by the
+/// other checks. Only *successful* fetches are memoized — errors are
+/// re-attempted per consumer, so each check keeps its own independent
+/// failure reporting.
+#[derive(Default)]
+struct RunCache {
+    /// Lazily resolved `fail2ban-client` path, shared across checks.
+    client_bin: ClientBin,
+    /// Memoized output of one successful `fail2ban-client status` run.
+    client_status: Option<CommandOutput>,
+}
+
+/// State of the per-run `fail2ban-client` binary resolution.
+#[derive(Clone, Default)]
+enum ClientBin {
+    /// Not looked up yet.
+    #[default]
+    Unfetched,
+    /// Looked up and not present on `$PATH`.
+    Missing,
+    /// Looked up and resolved.
+    Found(PathBuf),
+}
+
+impl RunCache {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
 /// Diagnostic engine that runs structured checks against a Fail2Ban
 /// installation.
 ///
@@ -126,12 +165,65 @@ impl DoctorScope {
 /// can be called in isolation or aggregated via [`Doctor::run`].
 pub struct Doctor<'a> {
     runner: &'a dyn Runner,
+    /// Fetch-once memo for the current [`Doctor::run`] invocation. The checks
+    /// run strictly sequentially, so a `RefCell` (single-threaded borrow
+    /// checking) is sufficient — no locking on the diagnostic path.
+    run_cache: RefCell<RunCache>,
 }
 
 impl<'a> Doctor<'a> {
     /// Create a new diagnostic engine backed by `runner`.
     pub fn new(runner: &'a dyn Runner) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            run_cache: RefCell::new(RunCache::default()),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Per-run shared fetches (F13)
+    // -----------------------------------------------------------------------
+
+    /// Resolve `fail2ban-client` once per doctor run, sharing the `$PATH`
+    /// walk across every check that needs the binary (ten call sites
+    /// otherwise re-walk `$PATH` within a single `doctor(All)` pass).
+    ///
+    /// Mirrors [`find_binary`] exactly: [`Error::NotFound`] when the binary is
+    /// missing. The resolution — hit or miss — is memoized for the run
+    /// (`$PATH` does not change mid-run) and reset on the next
+    /// [`Doctor::run`] call.
+    fn client_bin(&self) -> Result<PathBuf> {
+        let mut cache = self.run_cache.borrow_mut();
+        if matches!(cache.client_bin, ClientBin::Unfetched) {
+            cache.client_bin = match find_binary("fail2ban-client") {
+                Ok(path) => ClientBin::Found(path),
+                Err(_) => ClientBin::Missing,
+            };
+        }
+        match cache.client_bin.clone() {
+            // Unfetched is unreachable after the lookup above; treat it the
+            // same as missing for exhaustiveness.
+            ClientBin::Found(path) => Ok(path),
+            ClientBin::Missing | ClientBin::Unfetched => {
+                Err(crate::Error::NotFound("fail2ban-client".into()))
+            }
+        }
+    }
+
+    /// Run `fail2ban-client status` once per doctor run and memoize the
+    /// output for the other jail-list consumers (log-path, journal, regex,
+    /// action, safety, and proxy checks).
+    ///
+    /// Only a successful command execution is memoized; if the runner itself
+    /// errors, each consumer re-attempts the spawn and reports its own
+    /// failure arm, matching the pre-sharing behaviour.
+    fn run_client_status(&self, bin: &str) -> Result<CommandOutput> {
+        if let Some(cached) = self.run_cache.borrow().client_status.as_ref() {
+            return Ok(cached.clone());
+        }
+        let out = self.runner.run(bin, &["status"])?;
+        self.run_cache.borrow_mut().client_status = Some(out.clone());
+        Ok(out)
     }
 
     // -----------------------------------------------------------------------
@@ -144,6 +236,11 @@ impl<'a> Doctor<'a> {
     /// findings are merged into a single report. For a single category only
     /// that category's checks are performed.
     ///
+    /// The per-run fetch memo is reset at this boundary (not inside the
+    /// private per-scope dispatcher), so an `All` run shares one
+    /// `fail2ban-client status` spawn and one `$PATH` walk across all of its
+    /// categories, while consecutive `run` calls each start fresh.
+    ///
     /// # Errors
     ///
     /// Returns an error only if a fundamental failure occurs (e.g. the runner
@@ -151,53 +248,36 @@ impl<'a> Doctor<'a> {
     /// [`Severity::Error`] or [`Severity::Critical`] findings inside the
     /// report, not as `Err`.
     pub fn run(&self, scope: &DoctorScope) -> Result<DoctorReport> {
+        self.run_cache.borrow_mut().clear();
         let mut report = DoctorReport::empty();
+        self.run_scope(scope, &mut report)?;
+        Ok(report)
+    }
 
+    /// Execute one scope against `report` without resetting the per-run memo.
+    fn run_scope(&self, scope: &DoctorScope, report: &mut DoctorReport) -> Result<()> {
         match scope {
             DoctorScope::All => {
                 for cat in DoctorScope::all_categories() {
-                    // Recurse for each category. Jail-only scopes are skipped
+                    // Dispatch for each category. Jail-only scopes are skipped
                     // in All mode since they require a jail name.
-                    let sub_report = self.run(&cat)?;
-                    report.findings.extend(sub_report.findings);
+                    self.run_scope(&cat, report)?;
                 }
             }
-            DoctorScope::Binary => {
-                report.findings.extend(self.check_binaries());
-            }
-            DoctorScope::Service => {
-                report.findings.extend(self.check_service());
-            }
-            DoctorScope::Config => {
-                report.findings.extend(self.check_config());
-            }
-            DoctorScope::Jail(name) => {
-                report.findings.extend(self.check_jail(name));
-            }
-            DoctorScope::LogPath => {
-                report.findings.extend(self.check_log_paths());
-            }
-            DoctorScope::Journal => {
-                report.findings.extend(self.check_journal());
-            }
-            DoctorScope::Regex => {
-                report.findings.extend(self.check_regex());
-            }
-            DoctorScope::Action => {
-                report.findings.extend(self.check_actions());
-            }
-            DoctorScope::Permission => {
-                report.findings.extend(self.check_permissions());
-            }
-            DoctorScope::Safety => {
-                report.findings.extend(self.check_safety());
-            }
-            DoctorScope::Proxy => {
-                report.findings.extend(self.check_proxy());
-            }
+            DoctorScope::Binary => report.findings.extend(self.check_binaries()),
+            DoctorScope::Service => report.findings.extend(self.check_service()),
+            DoctorScope::Config => report.findings.extend(self.check_config()),
+            DoctorScope::Jail(name) => report.findings.extend(self.check_jail(name)),
+            DoctorScope::LogPath => report.findings.extend(self.check_log_paths()),
+            DoctorScope::Journal => report.findings.extend(self.check_journal()),
+            DoctorScope::Regex => report.findings.extend(self.check_regex()),
+            DoctorScope::Action => report.findings.extend(self.check_actions()),
+            DoctorScope::Permission => report.findings.extend(self.check_permissions()),
+            DoctorScope::Safety => report.findings.extend(self.check_safety()),
+            DoctorScope::Proxy => report.findings.extend(self.check_proxy()),
         }
 
-        Ok(report)
+        Ok(())
     }
 
     // =======================================================================
@@ -219,7 +299,7 @@ impl<'a> Doctor<'a> {
         let mut findings = Vec::new();
 
         // fail2ban-client
-        match find_binary("fail2ban-client") {
+        match self.client_bin() {
             Ok(path) => {
                 findings.push(
                     Finding::new(
@@ -482,7 +562,7 @@ impl<'a> Doctor<'a> {
         }
 
         // fail2ban-client ping.
-        match find_binary("fail2ban-client") {
+        match self.client_bin() {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-client");
                 match self.runner.run(bin, &["ping"]) {
@@ -777,7 +857,7 @@ impl<'a> Doctor<'a> {
         }
 
         // fail2ban-client --test passes.
-        match find_binary("fail2ban-client") {
+        match self.client_bin() {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-client");
                 match self.runner.run(bin, &["--test"]) {
@@ -934,7 +1014,7 @@ impl<'a> Doctor<'a> {
     fn check_jail(&self, jail: &str) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        match find_binary("fail2ban-client") {
+        match self.client_bin() {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-client");
 
@@ -1303,12 +1383,13 @@ impl<'a> Doctor<'a> {
         let mut findings = Vec::new();
 
         // Retrieve log paths from active jails.
-        match find_binary("fail2ban-client") {
+        match self.client_bin() {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-client");
 
-                // First get the list of jails.
-                match self.runner.run(bin, &["status"]) {
+                // Get the list of jails (shared with the other jail-list
+                // consumers of this run).
+                match self.run_client_status(bin) {
                     Ok(out) if out.success => {
                         let status = &out.stdout;
                         // Best-effort parse jail names from "Jail list: ..." line.
@@ -1686,9 +1767,9 @@ impl<'a> Doctor<'a> {
         }
 
         // Check active jails for systemd backend misuse.
-        if let Ok(path) = find_binary("fail2ban-client") {
+        if let Ok(path) = self.client_bin() {
             let bin = path.to_str().unwrap_or("fail2ban-client");
-            if let Ok(out) = self.runner.run(bin, &["status"]) {
+            if let Ok(out) = self.run_client_status(bin) {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
@@ -1965,9 +2046,9 @@ impl<'a> Doctor<'a> {
                 }
 
                 // Check active jails for <HOST> usage in their filters.
-                if let Ok(client_path) = find_binary("fail2ban-client") {
+                if let Ok(client_path) = self.client_bin() {
                     let client_bin = client_path.to_str().unwrap_or("fail2ban-client");
-                    if let Ok(out) = self.runner.run(client_bin, &["status"]) {
+                    if let Ok(out) = self.run_client_status(client_bin) {
                         if out.success {
                             let jail_names = parse_jail_list(&out.stdout);
                             for jail in &jail_names {
@@ -2330,9 +2411,9 @@ impl<'a> Doctor<'a> {
         }
 
         // Check active jail actions for firewall compatibility.
-        if let Ok(path) = find_binary("fail2ban-client") {
+        if let Ok(path) = self.client_bin() {
             let bin = path.to_str().unwrap_or("fail2ban-client");
-            if let Ok(out) = self.runner.run(bin, &["status"]) {
+            if let Ok(out) = self.run_client_status(bin) {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
@@ -3119,9 +3200,9 @@ impl<'a> Doctor<'a> {
         // -----------------------------------------------------------------
         // Self-ban protection: trusted IPs should be in ignoreip.
         // -----------------------------------------------------------------
-        if let Ok(path) = find_binary("fail2ban-client") {
+        if let Ok(path) = self.client_bin() {
             let bin = path.to_str().unwrap_or("fail2ban-client");
-            if let Ok(out) = self.runner.run(bin, &["status"]) {
+            if let Ok(out) = self.run_client_status(bin) {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
@@ -3262,9 +3343,9 @@ impl<'a> Doctor<'a> {
 
         // Check active jails for known proxy-related patterns in their
         // configuration or log paths.
-        if let Ok(path) = find_binary("fail2ban-client") {
+        if let Ok(path) = self.client_bin() {
             let bin = path.to_str().unwrap_or("fail2ban-client");
-            if let Ok(out) = self.runner.run(bin, &["status"]) {
+            if let Ok(out) = self.run_client_status(bin) {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
