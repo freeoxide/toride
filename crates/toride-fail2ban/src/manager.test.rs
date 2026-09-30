@@ -2,6 +2,7 @@ use super::*;
 use crate::config::{DefaultConfig, Fail2BanConfig, JailConfig};
 use crate::paths::Fail2BanPaths;
 use crate::types::ExecutionMode;
+use chrono::{Duration, Utc};
 use std::collections::HashMap;
 use std::io::Write;
 use tempfile::tempdir;
@@ -551,7 +552,6 @@ fn purge_expired_removes_expired_bans() {
     let manager = Fail2BanManager::new(config, paths).unwrap();
 
     // Manually inject an expired ban entry into the store to test purge.
-    use chrono::{Duration, Utc};
     let expired_entry = crate::types::BanEntry {
         ip: "10.0.0.99".parse().unwrap(),
         prefix: 32,
@@ -1002,8 +1002,6 @@ fn test_purge_expired_with_mixed_bans() {
     let config = make_config(&log_path);
     let paths = make_paths(&dir);
     let manager = Fail2BanManager::new(config, paths).unwrap();
-
-    use chrono::{Duration, Utc};
 
     let now = Utc::now();
 

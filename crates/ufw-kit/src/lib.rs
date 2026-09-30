@@ -71,6 +71,10 @@ pub mod async_client;
 #[path = "snapshots.test.rs"]
 mod snapshot_tests;
 
+/// Spawn-counting oracle for `doctor(DoctorScope::All)`; unit tests only.
+#[cfg(all(test, feature = "client", feature = "doctor"))]
+pub mod spawn_oracle;
+
 // Re-export the primary entry point at crate root.
 #[cfg(feature = "client")]
 pub use client::Ufw;

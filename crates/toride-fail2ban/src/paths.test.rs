@@ -4,6 +4,10 @@ use tempfile::TempDir;
 
 /// Helper: set XDG env vars to a temp dir so tests are hermetic.
 /// Returns the TempDir so it stays alive for the test's duration.
+#[allow(
+    unsafe_code,
+    reason = "edition 2024 makes set_var unsafe; tests mutate the env before spawning threads"
+)]
 fn with_custom_xdg() -> TempDir {
     let tmp = TempDir::new().expect("failed to create temp dir");
     let base = tmp.path();

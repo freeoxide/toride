@@ -43,7 +43,7 @@ fn firewall_partial_eq() {
 #[test]
 fn firewall_clone() {
     let original = Firewall::Firewalld;
-    let cloned = original.clone();
+    let cloned = original;
     assert_eq!(original, cloned);
 }
 
@@ -83,7 +83,7 @@ fn init_system_partial_eq() {
 #[test]
 fn init_system_clone() {
     let original = InitSystem::Systemd;
-    let cloned = original.clone();
+    let cloned = original;
     assert_eq!(original, cloned);
 }
 

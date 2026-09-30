@@ -25,14 +25,14 @@ fn detector_with_content(content: &str, pattern: &str) -> (LogDetector, NamedTem
 #[test]
 fn new_valid_pattern_compiles() {
     let tmp = NamedTempFile::new().unwrap();
-    let result = LogDetector::new("jail", tmp.path(), r#"Failed password from (?P<ip>\S+)"#);
+    let result = LogDetector::new("jail", tmp.path(), r"Failed password from (?P<ip>\S+)");
     assert!(result.is_ok(), "valid regex should compile");
 }
 
 #[test]
 fn new_invalid_regex_returns_error() {
     let tmp = NamedTempFile::new().unwrap();
-    let result = LogDetector::new("jail", tmp.path(), r#"(unclosed"#);
+    let result = LogDetector::new("jail", tmp.path(), r"(unclosed");
     assert!(result.is_err());
     match result.unwrap_err() {
         crate::Error::InvalidRegex(msg) => {
@@ -234,7 +234,7 @@ line three\n\
 fn scan_incremental_with_appended_content() {
     let tmp = NamedTempFile::new().unwrap();
     let mut file = tmp.reopen().unwrap();
-    write!(file, "line one\n").unwrap();
+    writeln!(file, "line one").unwrap();
     file.flush().unwrap();
 
     let mut detector = LogDetector::new("test-jail", tmp.path(), r"line \w+").unwrap();
@@ -246,7 +246,7 @@ fn scan_incremental_with_appended_content() {
         .append(true)
         .open(tmp.path())
         .unwrap();
-    write!(file, "line two\n").unwrap();
+    writeln!(file, "line two").unwrap();
     file.flush().unwrap();
 
     let second = detector.scan().unwrap();
@@ -514,7 +514,7 @@ fn edge_case_multiple_scans_accumulate_position() {
         .append(true)
         .open(tmp.path())
         .unwrap();
-    write!(file, "c\n").unwrap();
+    writeln!(file, "c").unwrap();
     file.flush().unwrap();
 
     // Scan again: should only read the new line.
@@ -545,6 +545,10 @@ fn new_with_empty_pattern() {
 }
 
 #[test]
+#[allow(
+    clippy::no_effect_underscore_binding,
+    reason = "the bindings are the type assertion itself"
+)]
 fn scan_result_types_are_correct() {
     let content = "match\n";
     let (mut detector, _tmp) = detector_with_content(content, "match");
@@ -744,7 +748,7 @@ fn scan_resets_offset_on_log_rotation() {
     let mut file = tmp.reopen().unwrap();
     file.set_len(0).unwrap();
     file.seek(std::io::SeekFrom::Start(0)).unwrap();
-    write!(file, "new line\n").unwrap();
+    writeln!(file, "new line").unwrap();
     file.flush().unwrap();
 
     let second = detector.scan().unwrap();

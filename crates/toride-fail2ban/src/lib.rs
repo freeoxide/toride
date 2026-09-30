@@ -62,6 +62,10 @@ pub mod service;
 #[cfg(feature = "doctor")]
 pub mod doctor;
 
+/// Spawn-counting oracle for `DoctorScope::All`; unit tests only.
+#[cfg(all(test, feature = "doctor"))]
+pub mod spawn_oracle;
+
 #[cfg(feature = "config")]
 pub mod action;
 #[cfg(feature = "config")]

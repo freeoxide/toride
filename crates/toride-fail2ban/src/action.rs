@@ -84,14 +84,14 @@ fn expand_template(template: &str, replacements: &[(&str, &str)]) -> String {
     let bytes = template.as_bytes();
 
     while pos < bytes.len() {
-        if bytes[pos] == b'<' {
-            if let Some(close) = template[pos..].find('>') {
-                let placeholder = &template[pos..pos + close + 1];
-                if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
-                    result.push_str(value);
-                    pos += placeholder.len();
-                    continue;
-                }
+        if bytes[pos] == b'<'
+            && let Some(close) = template[pos..].find('>')
+        {
+            let placeholder = &template[pos..=(pos + close)];
+            if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
+                result.push_str(value);
+                pos += placeholder.len();
+                continue;
             }
         }
         let ch = template[pos..]

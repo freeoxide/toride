@@ -18,7 +18,7 @@ fn sample_jail_config(log_path: std::path::PathBuf) -> JailConfig {
     JailConfig {
         enabled: true,
         log_path,
-        pattern: r#"Failed password for .* from <HOST>"#.into(),
+        pattern: r"Failed password for .* from <HOST>".into(),
         find_time: None,
         ban_time: None,
         max_retry: None,
@@ -36,10 +36,10 @@ fn sample_action_config() -> ActionConfig {
 }
 
 fn make_config_with_jail(
-    log_path: std::path::PathBuf,
+    log_path: &std::path::Path,
     jail_overrides: Option<JailConfig>,
 ) -> Fail2BanConfig {
-    let jail = jail_overrides.unwrap_or_else(|| sample_jail_config(log_path.clone()));
+    let jail = jail_overrides.unwrap_or_else(|| sample_jail_config(log_path.to_path_buf()));
     let mut jails = HashMap::new();
     jails.insert("sshd".to_string(), jail);
 
@@ -198,7 +198,7 @@ fn full_config_serialization_roundtrip() {
     let log_path = dir.path().join("auth.log");
     fs::write(&log_path, "").unwrap();
 
-    let config = make_config_with_jail(log_path, None);
+    let config = make_config_with_jail(&log_path, None);
     let json = serde_json::to_string_pretty(&config).unwrap();
     let restored: Fail2BanConfig = serde_json::from_str(&json).unwrap();
 
@@ -234,7 +234,7 @@ fn validate_rejects_zero_find_time() {
         find_time: Some(0),
         ..sample_jail_config(log_path)
     };
-    let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
+    let config = make_config_with_jail(&dir.path().join("auth.log"), Some(jail));
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
@@ -254,7 +254,7 @@ fn validate_rejects_zero_max_retry() {
         max_retry: Some(0),
         ..sample_jail_config(log_path)
     };
-    let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
+    let config = make_config_with_jail(&dir.path().join("auth.log"), Some(jail));
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
@@ -270,7 +270,7 @@ fn validate_rejects_missing_log_file() {
     let nonexistent = dir.path().join("does_not_exist.log");
 
     let jail = sample_jail_config(nonexistent);
-    let config = make_config_with_jail(dir.path().join("does_not_exist.log"), Some(jail));
+    let config = make_config_with_jail(&dir.path().join("does_not_exist.log"), Some(jail));
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
@@ -286,7 +286,7 @@ fn validate_passes_with_valid_jail() {
     let log_path = dir.path().join("auth.log");
     fs::write(&log_path, "some log content").unwrap();
 
-    let config = make_config_with_jail(log_path, None);
+    let config = make_config_with_jail(&log_path, None);
     assert!(config.validate().is_ok());
 }
 
@@ -341,7 +341,7 @@ fn resolve_jail_applies_defaults_for_none_fields() {
 
     // Jail has all optional fields as None.
     let jail = sample_jail_config(log_path.clone());
-    let config = make_config_with_jail(log_path, Some(jail));
+    let config = make_config_with_jail(&log_path, Some(jail));
 
     let resolved = config.resolve_jail("sshd").unwrap();
     assert_eq!(resolved.name, "sshd");
@@ -369,7 +369,7 @@ fn resolve_jail_uses_overrides_when_present() {
         unban_action: Some("custom_unban".into()),
         ..sample_jail_config(log_path.clone())
     };
-    let config = make_config_with_jail(log_path, Some(jail));
+    let config = make_config_with_jail(&log_path, Some(jail));
 
     let resolved = config.resolve_jail("sshd").unwrap();
     assert!(!resolved.enabled);
@@ -397,17 +397,14 @@ fn resolve_jail_preserves_log_path_and_pattern() {
 
     let jail = JailConfig {
         log_path: log_path.clone(),
-        pattern: r#"Invalid user .* from <HOST>"#.into(),
+        pattern: r"Invalid user .* from <HOST>".into(),
         ..sample_jail_config(log_path)
     };
-    let config = make_config_with_jail(dir.path().join("custom.log"), Some(jail));
+    let config = make_config_with_jail(&dir.path().join("custom.log"), Some(jail));
 
     let resolved = config.resolve_jail("sshd").unwrap();
-    assert_eq!(
-        resolved.log_path,
-        std::path::PathBuf::from(dir.path().join("custom.log"))
-    );
-    assert_eq!(resolved.pattern, r#"Invalid user .* from <HOST>"#);
+    assert_eq!(resolved.log_path, dir.path().join("custom.log"));
+    assert_eq!(resolved.pattern, r"Invalid user .* from <HOST>");
 }
 
 // ---------------------------------------------------------------------------
@@ -444,7 +441,7 @@ fn enabled_jails_returns_only_enabled_jails() {
     };
 
     let mut enabled = config.enabled_jails();
-    enabled.sort();
+    enabled.sort_unstable();
     assert_eq!(enabled, vec!["active"]);
 }
 
@@ -484,7 +481,7 @@ fn enabled_jails_returns_all_when_all_enabled() {
     };
 
     let mut enabled = config.enabled_jails();
-    enabled.sort();
+    enabled.sort_unstable();
     assert_eq!(enabled, vec!["jail1", "jail2"]);
 }
 
@@ -499,7 +496,7 @@ fn save_and_load_roundtrip() {
     fs::write(&log_path, "log content").unwrap();
 
     let config_path = dir.path().join("config.json");
-    let config = make_config_with_jail(log_path, None);
+    let config = make_config_with_jail(&log_path, None);
     config.save(&config_path).unwrap();
 
     let loaded = Fail2BanConfig::load(&config_path).unwrap();
@@ -602,7 +599,7 @@ fn create_default_loads_existing_file() {
     fs::write(&log_path, "").unwrap();
 
     let path = dir.path().join("config.json");
-    let original = make_config_with_jail(log_path, None);
+    let original = make_config_with_jail(&log_path, None);
     original.save(&path).unwrap();
 
     let loaded = Fail2BanConfig::create_default(&path).unwrap();
@@ -620,7 +617,7 @@ fn resolved_jail_clones_correctly() {
     let log_path = dir.path().join("auth.log");
     fs::write(&log_path, "").unwrap();
 
-    let config = make_config_with_jail(log_path, None);
+    let config = make_config_with_jail(&log_path, None);
     let resolved = config.resolve_jail("sshd").unwrap();
     let cloned = resolved.clone();
 
@@ -649,7 +646,7 @@ fn resolve_jail_partial_override_only_changes_specified_fields() {
         find_time: Some(999),
         ..sample_jail_config(log_path.clone())
     };
-    let config = make_config_with_jail(log_path, Some(jail));
+    let config = make_config_with_jail(&log_path, Some(jail));
 
     let resolved = config.resolve_jail("sshd").unwrap();
     assert_eq!(resolved.find_time, 999); // overridden
@@ -721,7 +718,7 @@ fn validate_rejects_zero_ban_time() {
         ban_time: Some(0),
         ..sample_jail_config(log_path)
     };
-    let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
+    let config = make_config_with_jail(&dir.path().join("auth.log"), Some(jail));
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
@@ -781,7 +778,7 @@ fn validate_rejects_invalid_regex_pattern() {
         pattern: "(((invalid".into(),
         ..sample_jail_config(log_path)
     };
-    let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
+    let config = make_config_with_jail(&dir.path().join("auth.log"), Some(jail));
     let result = config.validate();
     assert!(result.is_err());
     let msg = format!("{}", result.unwrap_err());
@@ -799,7 +796,7 @@ fn validate_rejects_zero_defaults_find_time() {
             find_time: 0,
             ..DefaultConfig::default()
         },
-        ..make_config_with_jail(log_path, None)
+        ..make_config_with_jail(&log_path, None)
     };
     let result = config.validate();
     assert!(result.is_err());
@@ -818,7 +815,7 @@ fn validate_rejects_zero_defaults_max_retry() {
             max_retry: 0,
             ..DefaultConfig::default()
         },
-        ..make_config_with_jail(log_path, None)
+        ..make_config_with_jail(&log_path, None)
     };
     let result = config.validate();
     assert!(result.is_err());
@@ -837,7 +834,7 @@ fn validate_rejects_zero_defaults_ban_time() {
             ban_time: 0,
             ..DefaultConfig::default()
         },
-        ..make_config_with_jail(log_path, None)
+        ..make_config_with_jail(&log_path, None)
     };
     let result = config.validate();
     assert!(result.is_err());
@@ -861,7 +858,7 @@ fn resolve_jail_with_all_overrides() {
         ignore_ips: vec!["10.0.0.0/8".into(), "::1".into()],
         ..sample_jail_config(log_path.clone())
     };
-    let config = make_config_with_jail(log_path, Some(jail));
+    let config = make_config_with_jail(&log_path, Some(jail));
 
     let resolved = config.resolve_jail("sshd").unwrap();
     assert!(!resolved.enabled);
@@ -906,7 +903,7 @@ fn save_load_preserves_ignore_ips() {
         ignore_ips: vec!["10.0.0.0/8".into(), "::1".into()],
         ..sample_jail_config(log_path)
     };
-    let config = make_config_with_jail(dir.path().join("auth.log"), Some(jail));
+    let config = make_config_with_jail(&dir.path().join("auth.log"), Some(jail));
     let config_path = dir.path().join("config.json");
     config.save(&config_path).unwrap();
 
