@@ -677,6 +677,59 @@ static SLOW_PROC_CACHE: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<u32, SlowProcFields>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+// ── Test-only cache serializer (round 5 audit) ──────────────────────────
+//
+// `SLOW_PROC_CACHE` is a process-global static and cargo test runs the lib's
+// tests on parallel threads in ONE process, so two hazards existed: (a) an
+// oracle reading `cache.len()` under the lock, releasing, then pruning — a
+// sibling insert in that window inflated the probe count past the exact
+// equality; (b) an oracle's prune (a tiny synthetic live set) wiping entries
+// a sibling oracle was mid-assertion on (e.g. between a seeding resolve and
+// its expected cache-hit resolve). Every cache access in the oracle fns and
+// every whole oracle body now runs under ONE mutex, closed against both.
+// Production compiles the identity — zero cost, zero behavior change.
+
+/// The test-only big lock serializing all `SLOW_PROC_CACHE` access between
+/// test threads. Poison-tolerant: one failing assertion must not cascade
+/// into every later slow-proc test.
+#[cfg(all(test, target_os = "linux"))]
+static SLOW_PROC_TEST_SERIAL: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+// Reentrancy depth for the holding thread (thread-local): oracles wrap their
+// WHOLE body in [`slow_proc_serialized`] and still call `slow_proc_fields` /
+// `prune_slow_proc_cache`, which take it again internally.
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    static SLOW_PROC_SERIAL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Run `f` with every test thread's `SLOW_PROC_CACHE` access serialized
+/// against this one. Reentrant on the holding thread; production compiles
+/// the identity.
+#[cfg(all(test, target_os = "linux"))]
+fn slow_proc_serialized<R>(f: impl FnOnce() -> R) -> R {
+    if SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get) > 0 {
+        return f();
+    }
+    let _guard = SLOW_PROC_TEST_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    SLOW_PROC_SERIAL_DEPTH.with(|d| d.set(d.get() + 1));
+    let out = f();
+    SLOW_PROC_SERIAL_DEPTH.with(|d| d.set(d.get() - 1));
+    out
+}
+
+/// Production identity of [`slow_proc_serialized`] (see its docs for why the
+/// test build serializes). Plain `#[inline]`: the trivial single-closure
+/// body optimizes away without the `always` hammer clippy warns about.
+#[cfg(all(not(test), target_os = "linux"))]
+#[inline]
+fn slow_proc_serialized<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
 /// Whether the slow-field TTL has elapsed for a sample taken at `sampled_at`.
 ///
 /// Test seam mirroring the collectors' round-0 pattern: outside `cfg(test)`
@@ -718,6 +771,18 @@ thread_local! {
 /// and counts ZERO /proc reads observed under the lock.
 #[cfg(target_os = "linux")]
 fn slow_proc_fields(
+    pid: u32,
+    start_time: Option<u64>,
+) -> (Option<String>, Option<u32>, Option<u32>) {
+    // Serialized in test builds so parallel test threads cannot interleave
+    // their cache accesses (see `slow_proc_serialized`); identity in
+    // production.
+    slow_proc_serialized(|| slow_proc_fields_inner(pid, start_time))
+}
+
+/// [`slow_proc_fields`] without the test-only serializer wrapper.
+#[cfg(target_os = "linux")]
+fn slow_proc_fields_inner(
     pid: u32,
     start_time: Option<u64>,
 ) -> (Option<String>, Option<u32>, Option<u32>) {
@@ -779,6 +844,15 @@ fn slow_proc_fields(
 /// count entries × live).
 #[cfg(target_os = "linux")]
 fn prune_slow_proc_cache(live_pids: &std::collections::HashSet<u32>) {
+    // Serialized in test builds so a prune cannot wipe entries a parallel
+    // oracle is mid-assertion on (see `slow_proc_serialized`); identity in
+    // production.
+    slow_proc_serialized(|| prune_slow_proc_cache_inner(live_pids));
+}
+
+/// [`prune_slow_proc_cache`] without the test-only serializer wrapper.
+#[cfg(target_os = "linux")]
+fn prune_slow_proc_cache_inner(live_pids: &std::collections::HashSet<u32>) {
     let mut cache = SLOW_PROC_CACHE
         .lock()
         .expect("slow-proc cache poisoned by a panicking sampler");
@@ -6515,173 +6589,197 @@ mod tests {
     /// ORACLE: within the TTL a repeat resolve for the SAME process performs
     /// zero fresh /proc samples and returns the cached values verbatim. Uses
     /// a pid that certainly exists on the test host — this test process.
+    /// Whole body under [`slow_proc_serialized`]: the resolve→resolve PAIR
+    /// must be atomic, or a sibling oracle's prune could wipe the entry
+    /// between the two resolves and force the second to re-sample.
     #[cfg(target_os = "linux")]
     #[test]
     fn slow_proc_fields_second_resolve_within_ttl_is_a_cache_hit() {
-        let pid = std::process::id();
-        let (samples_before, hits_before) = slow_proc_counters();
-        // Start-time 42 is unique to this test, so the first resolve cannot
-        // hit an entry another test left for this shared pid.
-        let (first_dir, first_fd, first_threads) = slow_proc_fields(pid, Some(42));
-        let (samples_after_first, _hits_after_first) = slow_proc_counters();
-        assert_eq!(
-            samples_after_first,
-            samples_before + 1,
-            "the first resolve must sample"
-        );
+        slow_proc_serialized(|| {
+            let pid = std::process::id();
+            let (samples_before, hits_before) = slow_proc_counters();
+            // Start-time 42 is unique to this test, so the first resolve cannot
+            // hit an entry another test left for this shared pid.
+            let (first_dir, first_fd, first_threads) = slow_proc_fields(pid, Some(42));
+            let (samples_after_first, _hits_after_first) = slow_proc_counters();
+            assert_eq!(
+                samples_after_first,
+                samples_before + 1,
+                "the first resolve must sample"
+            );
 
-        let (second_dir, second_fd, second_threads) = slow_proc_fields(pid, Some(42));
-        let (samples, hits) = slow_proc_counters();
-        assert_eq!(
-            samples, samples_after_first,
-            "a within-TTL resolve for the same process must NOT re-sample"
-        );
-        assert_eq!(
-            hits,
-            hits_before + 1,
-            "it must be served from the cache (the sampling first call did not hit)"
-        );
-        assert_eq!(second_dir, first_dir, "cwd served verbatim from the cache");
-        assert_eq!(
-            second_fd, first_fd,
-            "fd_count served verbatim from the cache"
-        );
-        assert_eq!(
-            second_threads, first_threads,
-            "thread_count served verbatim from the cache"
-        );
-        assert!(
-            second_threads.is_some(),
-            "the test process has at least one thread, so the sample is Some"
-        );
+            let (second_dir, second_fd, second_threads) = slow_proc_fields(pid, Some(42));
+            let (samples, hits) = slow_proc_counters();
+            assert_eq!(
+                samples, samples_after_first,
+                "a within-TTL resolve for the same process must NOT re-sample"
+            );
+            assert_eq!(
+                hits,
+                hits_before + 1,
+                "it must be served from the cache (the sampling first call did not hit)"
+            );
+            assert_eq!(second_dir, first_dir, "cwd served verbatim from the cache");
+            assert_eq!(
+                second_fd, first_fd,
+                "fd_count served verbatim from the cache"
+            );
+            assert_eq!(
+                second_threads, first_threads,
+                "thread_count served verbatim from the cache"
+            );
+            assert!(
+                second_threads.is_some(),
+                "the test process has at least one thread, so the sample is Some"
+            );
+        });
     }
 
     /// ORACLE: once the TTL has elapsed (cranked via the test-only clock) the
     /// entry is re-sampled — the visible-staleness window is bounded by the
-    /// TTL, not unbounded.
+    /// TTL, not unbounded. Whole body serialized so sibling cache traffic
+    /// cannot perturb the sample-count deltas.
     #[cfg(target_os = "linux")]
     #[test]
     fn slow_proc_fields_ttl_expiry_resamples() {
-        let pid = std::process::id();
-        slow_proc_fields(pid, Some(7));
-        let samples_before = slow_proc_counters().0;
+        slow_proc_serialized(|| {
+            let pid = std::process::id();
+            slow_proc_fields(pid, Some(7));
+            let samples_before = slow_proc_counters().0;
 
-        let _guard = SlowTtlOffsetGuard::past_ttl();
-        slow_proc_fields(pid, Some(7));
-        let (samples, _hits) = slow_proc_counters();
-        assert_eq!(
-            samples,
-            samples_before + 1,
-            "an expired entry must be re-sampled"
-        );
+            let _guard = SlowTtlOffsetGuard::past_ttl();
+            slow_proc_fields(pid, Some(7));
+            let (samples, _hits) = slow_proc_counters();
+            assert_eq!(
+                samples,
+                samples_before + 1,
+                "an expired entry must be re-sampled"
+            );
+        });
     }
 
     /// ORACLE: a pid whose `start_time` changed (pid reuse) never inherits the
     /// previous process's cached fields — the entry is invalidated even
-    /// within the TTL.
+    /// within the TTL. Whole body serialized (sample-count deltas).
     #[cfg(target_os = "linux")]
     #[test]
     fn slow_proc_fields_pid_reuse_invalidates_within_ttl() {
-        let pid = std::process::id();
-        slow_proc_fields(pid, Some(100));
-        let samples_before = slow_proc_counters().0;
+        slow_proc_serialized(|| {
+            let pid = std::process::id();
+            slow_proc_fields(pid, Some(100));
+            let samples_before = slow_proc_counters().0;
 
-        // Same pid, DIFFERENT start time: a new process took the pid.
-        slow_proc_fields(pid, Some(9001));
-        let (samples, hits) = slow_proc_counters();
-        assert_eq!(samples, samples_before + 1, "a reused pid must re-sample");
-        let _ = hits;
+            // Same pid, DIFFERENT start time: a new process took the pid.
+            slow_proc_fields(pid, Some(9001));
+            let (samples, hits) = slow_proc_counters();
+            assert_eq!(samples, samples_before + 1, "a reused pid must re-sample");
+            let _ = hits;
+        });
     }
 
     /// ORACLE: pruning drops exited pids so the cache tracks the live process
     /// table instead of growing unboundedly. The live set is the same
-    /// `HashSet` shape the per-collect prune builds.
+    /// `HashSet` shape the per-collect prune builds. Whole body serialized:
+    /// the seed→seed→prune sequence must be atomic against siblings.
     #[cfg(target_os = "linux")]
     #[test]
     fn prune_slow_proc_cache_drops_exited_pids() {
-        let live = std::process::id();
-        slow_proc_fields(live, Some(1));
-        // A pid that is not `live` simulates an exited process.
-        let dead = live.wrapping_add(1);
-        slow_proc_fields(dead, Some(1));
+        slow_proc_serialized(|| {
+            let live = std::process::id();
+            slow_proc_fields(live, Some(1));
+            // A pid that is not `live` simulates an exited process.
+            let dead = live.wrapping_add(1);
+            slow_proc_fields(dead, Some(1));
 
-        prune_slow_proc_cache(&std::iter::once(live).collect());
-        let cache = SLOW_PROC_CACHE.lock().unwrap();
-        assert!(cache.contains_key(&live), "the live pid is retained");
-        assert!(!cache.contains_key(&dead), "the exited pid is pruned");
+            prune_slow_proc_cache(&std::iter::once(live).collect());
+            let cache = SLOW_PROC_CACHE.lock().unwrap();
+            assert!(cache.contains_key(&live), "the live pid is retained");
+            assert!(!cache.contains_key(&dead), "the exited pid is pruned");
+        });
     }
 
     /// ORACLE (N3 lock discipline, count-gated): a forced MISS samples all
     /// three /proc reads, and NONE of them may observe the cache mutex
     /// held — pinning the `slow_proc_fields` locking-discipline claim with
-    /// a count (zero reads under the lock), not just code reading.
+    /// a count (zero reads under the lock), not just code reading. Whole
+    /// body serialized so the remove→resolve sequence is atomic.
     #[cfg(target_os = "linux")]
     #[test]
     fn slow_proc_miss_never_reads_proc_under_the_cache_lock() {
-        let pid = std::process::id();
-        // Force the miss: no cached entry for this pid, whatever a sibling
-        // test on this pooled thread may have left.
-        SLOW_PROC_CACHE.lock().unwrap().remove(&pid);
-        SLOW_READS_UNDER_LOCK.with(|c| c.set(0));
-        let samples_before = slow_proc_counters().0;
+        slow_proc_serialized(|| {
+            let pid = std::process::id();
+            // Force the miss: no cached entry for this pid, whatever a sibling
+            // test on this pooled thread may have left.
+            SLOW_PROC_CACHE.lock().unwrap().remove(&pid);
+            SLOW_READS_UNDER_LOCK.with(|c| c.set(0));
+            let samples_before = slow_proc_counters().0;
 
-        let _ = slow_proc_fields(pid, Some(4));
+            let _ = slow_proc_fields(pid, Some(4));
 
-        assert_eq!(
-            slow_proc_counters().0,
-            samples_before + 1,
-            "the forced miss actually sampled /proc"
-        );
-        assert_eq!(
-            SLOW_READS_UNDER_LOCK.with(std::cell::Cell::get),
-            0,
-            "no /proc read observed the cache mutex held — the lock is \
+            assert_eq!(
+                slow_proc_counters().0,
+                samples_before + 1,
+                "the forced miss actually sampled /proc"
+            );
+            assert_eq!(
+                SLOW_READS_UNDER_LOCK.with(std::cell::Cell::get),
+                0,
+                "no /proc read observed the cache mutex held — the lock is \
              never held across the reads"
-        );
+            );
+        });
     }
 
     /// ORACLE (N3 prune complexity, count-gated): the prune's `retain`
     /// performs exactly ONE live-set membership probe per cached entry —
     /// the `HashSet` shape the docs claim — never the naive
     /// `entries × live pids` nested scan (which would count 4 × 4 = 16
-    /// probes for the four synthetic entries seeded here).
+    /// probes for the four synthetic entries seeded here). Whole body
+    /// serialized: the seed→len→prune window is exactly where a parallel
+    /// sibling's insert would inflate the probe count past the exact
+    /// equality, and the tiny synthetic live set makes this prune wipe the
+    /// whole cache — atomicity keeps both sides safe.
     #[cfg(target_os = "linux")]
     #[test]
     fn prune_probes_each_cached_entry_exactly_once() {
-        // Seed four synthetic (nonexistent) pids through the real miss path
-        // — each insert is one cache entry, whatever the pooled thread's
-        // baseline already holds.
-        let seeded = [4_101_101_u32, 4_202_202, 4_303_303, 4_404_404];
-        for pid in seeded {
-            let _ = slow_proc_fields(pid, None);
-        }
-        // Expected probes = the cache size at prune time, read under the
-        // same lock the seeding inserts took.
-        let expected_probes = {
+        slow_proc_serialized(|| {
+            // Seed four synthetic (nonexistent) pids through the real miss path
+            // — each insert is one cache entry, whatever the pooled thread's
+            // baseline already holds.
+            let seeded = [4_101_101_u32, 4_202_202, 4_303_303, 4_404_404];
+            for pid in seeded {
+                let _ = slow_proc_fields(pid, None);
+            }
+            // Expected probes = the cache size at prune time, read under the
+            // same lock the seeding inserts took. Safe ONLY because the whole
+            // body holds the test serializer: with siblings serialized out,
+            // no insert can land between this len and the prune below.
+            let expected_probes = {
+                let cache = SLOW_PROC_CACHE.lock().unwrap();
+                u64::try_from(cache.len()).expect("a test cache fits in u64")
+            };
+            // Live set: two seeded pids plus two strangers.
+            let live: std::collections::HashSet<u32> =
+                [seeded[0], seeded[3], 9_001, 9_002].into_iter().collect();
+
+            PRUNE_MEMBERSHIP_PROBES.with(|c| c.set(0));
+            prune_slow_proc_cache(&live);
+
+            assert_eq!(
+                PRUNE_MEMBERSHIP_PROBES.with(std::cell::Cell::get),
+                expected_probes,
+                "one membership probe per cached entry, not entries × live pids"
+            );
             let cache = SLOW_PROC_CACHE.lock().unwrap();
-            u64::try_from(cache.len()).expect("a test cache fits in u64")
-        };
-        // Live set: two seeded pids plus two strangers.
-        let live: std::collections::HashSet<u32> =
-            [seeded[0], seeded[3], 9_001, 9_002].into_iter().collect();
-
-        PRUNE_MEMBERSHIP_PROBES.with(|c| c.set(0));
-        prune_slow_proc_cache(&live);
-
-        assert_eq!(
-            PRUNE_MEMBERSHIP_PROBES.with(std::cell::Cell::get),
-            expected_probes,
-            "one membership probe per cached entry, not entries × live pids"
-        );
-        let cache = SLOW_PROC_CACHE.lock().unwrap();
-        assert!(
-            cache.contains_key(&seeded[0]) && cache.contains_key(&seeded[3]),
-            "the live synthetic pids are retained"
-        );
-        assert!(
-            !cache.contains_key(&seeded[1]) && !cache.contains_key(&seeded[2]),
-            "the dead synthetic pids are pruned"
-        );
+            assert!(
+                cache.contains_key(&seeded[0]) && cache.contains_key(&seeded[3]),
+                "the live synthetic pids are retained"
+            );
+            assert!(
+                !cache.contains_key(&seeded[1]) && !cache.contains_key(&seeded[2]),
+                "the dead synthetic pids are pruned"
+            );
+        });
     }
 
     /// Read the (fresh samples, cache hits) counters.

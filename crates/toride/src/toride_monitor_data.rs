@@ -251,7 +251,11 @@ impl MonitorCollector {
         let (tx, rx) = oneshot::channel();
         let (use_findings, use_snapshot) = self.tier_decisions();
         // Arc bumps, not deep clones: a cache-hit tick costs O(1) here no
-        // matter how many connections/findings are cached.
+        // matter how many connections/findings are cached. (Honest-number
+        // label: the O(1)-vs-O(n) claim is structurally pinned — the
+        // `cache_hit_ticks_share_arc_allocations` ptr_eq oracle proves the
+        // hit tick's tables are the SAME allocations as the cache's, never
+        // copies — but the allocation-count delta itself is unmeasured.)
         let cached_findings = self.cached_findings.clone();
         let cached_snapshot = self.cached_snapshot.clone();
         self.rx = Some(rx);
