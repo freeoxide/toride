@@ -125,9 +125,10 @@ impl DoctorScope {
 /// resolved `fail2ban-client` path (a `$PATH` walk per site) and the
 /// `fail2ban-client status` output (a Python interpreter start per site,
 /// ~50-64 ms each). Both are fetched lazily on first use and reused by the
-/// other checks. Only *successful* fetches are memoized — errors are
-/// re-attempted per consumer, so each check keeps its own independent
-/// failure reporting.
+/// other checks. Only commands that actually *executed* are memoized: a
+/// non-zero exit is part of the run's shared snapshot (every consumer sees
+/// the same failed document, once), while runner errors are re-attempted per
+/// consumer so each check keeps its own independent failure reporting.
 #[derive(Default)]
 struct RunCache {
     /// Lazily resolved `fail2ban-client` path, shared across checks.
@@ -163,6 +164,12 @@ impl RunCache {
 ///
 /// Every check method returns a `Vec<Finding>` so that individual categories
 /// can be called in isolation or aggregated via [`Doctor::run`].
+///
+/// `Doctor` is `Send` but not `Sync`: the per-run fetch memo uses a
+/// `RefCell`, which is fine for the sequential check flow (construct, run,
+/// drop on one thread — how [`Client::doctor`](crate::Fail2Ban::doctor) uses
+/// it) but rules out sharing a `Doctor` across threads. Create one per run
+/// instead.
 pub struct Doctor<'a> {
     runner: &'a dyn Runner,
     /// Fetch-once memo for the current [`Doctor::run`] invocation. The checks
@@ -214,9 +221,13 @@ impl<'a> Doctor<'a> {
     /// output for the other jail-list consumers (log-path, journal, regex,
     /// action, safety, and proxy checks).
     ///
-    /// Only a successful command execution is memoized; if the runner itself
-    /// errors, each consumer re-attempts the spawn and reports its own
-    /// failure arm, matching the pre-sharing behaviour.
+    /// Any command that actually executed is memoized — including a non-zero
+    /// exit, which every consumer of the run then sees as the shared
+    /// snapshot (pinned by
+    /// `doctor_all_degraded_jail_list_keeps_per_check_failure_arms`). Only a
+    /// runner error (the command could not run at all) is never memoized;
+    /// each consumer re-attempts the spawn and reports its own failure arm,
+    /// matching the pre-sharing behaviour.
     fn run_client_status(&self, bin: &str) -> Result<CommandOutput> {
         if let Some(cached) = self.run_cache.borrow().client_status.as_ref() {
             return Ok(cached.clone());

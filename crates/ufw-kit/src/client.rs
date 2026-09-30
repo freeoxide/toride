@@ -8,8 +8,11 @@
 //! inside the client (see [`Ufw`]): `ufw --version` is memoized for the
 //! lifetime of the client, and `ufw status` / `ufw status verbose` are reused
 //! for `STATUS_CACHE_TTL` (10 s). Only successful fetches are cached, and
-//! every mutating command invalidates the status caches, so each caller keeps
-//! independent failure reporting. Keep one `Ufw` alive to benefit from the
+//! every root-requiring (mutating) command invalidates the status caches, so
+//! each caller keeps independent failure reporting. (`ufw app update` is the
+//! one mutating command that does NOT invalidate: it refreshes profile
+//! definitions and never changes the `status` / `status verbose` documents —
+//! see [`Ufw::app_update`].) Keep one `Ufw` alive to benefit from the
 //! caches; a freshly constructed client always fetches uncached (its first
 //! read is never stale).
 
@@ -495,6 +498,11 @@ impl Ufw {
     }
 
     /// Update an application profile.
+    ///
+    /// Does not invalidate the status caches: this refreshes the profile's
+    /// definition only — the `ufw status` / `status verbose` documents (rule
+    /// listing, policies, logging) are unchanged by it, unlike the
+    /// root-requiring mutations, which do invalidate.
     pub fn app_update(&self, name: &str) -> Result<()> {
         let result = self.run_ufw(&["app", "update", name])?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {
@@ -504,6 +512,9 @@ impl Ufw {
     }
 
     /// Update all application profiles.
+    ///
+    /// Like [`app_update`](Self::app_update), this does not invalidate the
+    /// status caches (profile refresh only).
     pub fn app_update_all(&self) -> Result<()> {
         let result = self.run_ufw(&["app", "update", "all"])?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {

@@ -1049,3 +1049,28 @@ fn mutating_command_invalidates_the_status_cache() {
         "a mutating command must drop the cached status document"
     );
 }
+
+/// Pins the documented app-update exception: `ufw app update` refreshes
+/// profile definitions only, so it must NOT drop the cached status document
+/// (unlike root-requiring mutations, which invalidate — see
+/// `mutating_command_invalidates_the_status_cache`).
+#[test]
+fn app_update_keeps_the_status_cache() {
+    let runner = Counting::new(
+        FakeRunner::new()
+            .respond_ok("ufw", &["status"], ACTIVE_STATUS)
+            .respond_ok("ufw", &["app", "update", "OpenSSH"], ""),
+    );
+    let ufw = Ufw::with_runner(runner.clone());
+
+    let _ = ufw.status().expect("status read");
+    assert!(ufw.app_update("OpenSSH").is_ok(), "app update must succeed");
+    let _ = ufw.status().expect("post-update status read");
+
+    assert_eq!(
+        runner.executions(),
+        2,
+        "1 status fetch + 1 app update: the post-update status read must be \
+         served from the cache"
+    );
+}
