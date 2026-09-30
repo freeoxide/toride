@@ -614,6 +614,137 @@ fn read_proc_fd_count(pid: u32) -> Option<u32> {
         .map(|entries| entries.filter_map(Result::ok).count() as u32)
 }
 
+// ── Slow per-PID field cache (Linux) ─────────────────────────────────────
+//
+// F12: `read_processes_from` used to pay 4 /proc operations per PID per
+// collect — /proc/<pid>/io, a read_dir of the whole fd dir, /proc/<pid>/status,
+// and a readlink of cwd. The three SLOWLY-CHANGING reads (cwd readlink, fd
+// read_dir, and the /proc/<pid>/status read that exists solely to count
+// threads) are served from a small TTL cache instead: within
+// [`SLOW_PROC_TTL`] a repeat collect for the same pid (validated by
+// start_time, so a recycled pid never inherits another process's fields)
+// reuses the cached values and performs zero /proc operations for them.
+// CPU/mem/state (from the sysinfo refresh) and the io counters stay fresh on
+// every collect — `status`/`cpu_usage`/`memory` come from sysinfo's process
+// refresh, NOT from the /proc/<pid>/status file, so caching that file's
+// thread count does not stale them.
+
+/// How long a cached `cwd`/`fd_count`/`thread_count` reading stays served
+/// before it is re-sampled. Deliberate freshness tradeoff (F12): the process
+/// table accepts up to this much staleness in its slowly-changing fields —
+/// the small-TTL bound the product constraint sets (10-20s) — while
+/// CPU/mem/state stay per-collect.
+const SLOW_PROC_TTL: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// One cached slow-field sample.
+#[cfg(target_os = "linux")]
+struct SlowProcFields {
+    /// `start_time` of the process the sample belongs to — a mismatch (pid
+    /// reuse) invalidates the sample.
+    start_time: Option<u64>,
+    /// Cached working directory (from readlink /proc/<pid>/cwd).
+    working_dir: Option<String>,
+    /// Cached fd/open-file count (from `read_dir` `/proc/<pid>/fd`).
+    fd_count: Option<u32>,
+    /// Cached thread count (from the `Threads:` line of /proc/<pid>/status).
+    thread_count: Option<u32>,
+    /// When the sample was taken.
+    sampled_at: std::time::Instant,
+}
+
+/// Process-wide slow-field cache. Lock contention is nil: one collection is
+/// in flight at a time (the collector shares a single snapshot per tick), and
+/// the critical section is a hashmap lookup.
+#[cfg(target_os = "linux")]
+static SLOW_PROC_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u32, SlowProcFields>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Whether the slow-field TTL has elapsed for a sample taken at `sampled_at`.
+///
+/// Test seam mirroring the collectors' round-0 pattern: outside `cfg(test)`
+/// this is exactly `sampled_at.elapsed() >= SLOW_PROC_TTL`; under `cfg(test)`
+/// a thread-local offset is folded in so oracles can observe expiry
+/// deterministically without sleeping.
+#[cfg(target_os = "linux")]
+fn slow_proc_ttl_expired(sampled_at: std::time::Instant) -> bool {
+    let elapsed = sampled_at.elapsed();
+    #[cfg(test)]
+    let elapsed = elapsed
+        + std::time::Duration::from_millis(SLOW_TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
+    elapsed >= SLOW_PROC_TTL
+}
+
+// Test-only extra milliseconds folded into `slow_proc_ttl_expired` (see it
+// for the rationale). Not compiled outside `cfg(test)`.
+#[cfg(test)]
+thread_local! {
+    static SLOW_TTL_TEST_OFFSET_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Resolve `(working_dir, fd_count, thread_count)` for a pid, sampling the
+/// three slowly-changing /proc reads only when the cache has no fresh entry
+/// for this exact process (same pid AND same `start_time`).
+///
+/// `start_time` is the sysinfo start time of the live process; `None` means
+/// unknown, in which case only the TTL validates the entry.
+#[cfg(target_os = "linux")]
+fn slow_proc_fields(
+    pid: u32,
+    start_time: Option<u64>,
+) -> (Option<String>, Option<u32>, Option<u32>) {
+    let mut cache = SLOW_PROC_CACHE
+        .lock()
+        .expect("slow-proc cache poisoned by a panicking sampler");
+    if let Some(entry) = cache.get(&pid)
+        && entry.start_time == start_time
+        && !slow_proc_ttl_expired(entry.sampled_at)
+    {
+        #[cfg(test)]
+        SLOW_CACHE_HITS.with(|c| c.set(c.get() + 1));
+        return (
+            entry.working_dir.clone(),
+            entry.fd_count,
+            entry.thread_count,
+        );
+    }
+    #[cfg(test)]
+    SLOW_SAMPLES.with(|c| c.set(c.get() + 1));
+    let sampled = SlowProcFields {
+        start_time,
+        working_dir: read_proc_working_dir(pid),
+        fd_count: read_proc_fd_count(pid),
+        thread_count: read_proc_thread_count(pid),
+        sampled_at: std::time::Instant::now(),
+    };
+    let out = (
+        sampled.working_dir.clone(),
+        sampled.fd_count,
+        sampled.thread_count,
+    );
+    cache.insert(pid, sampled);
+    out
+}
+
+/// Drop cache entries for pids that no longer exist, so the map tracks the
+/// live process table instead of growing without bound across a long session.
+#[cfg(target_os = "linux")]
+fn prune_slow_proc_cache(live_pids: &[u32]) {
+    let mut cache = SLOW_PROC_CACHE
+        .lock()
+        .expect("slow-proc cache poisoned by a panicking sampler");
+    cache.retain(|pid, _| live_pids.contains(pid));
+}
+
+// Test-only counters for the cadence oracles: fresh SAMPLES taken versus
+// cache HITS served. Thread-local so parallel test threads cannot perturb
+// each other's counts; production compiles neither.
+#[cfg(test)]
+thread_local! {
+    static SLOW_SAMPLES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SLOW_CACHE_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 // ── Sensor helpers (Linux) ──────────────────────────────────────────────
 
 /// Read fan RPM readings from /sys/class/hwmon/.
@@ -1639,19 +1770,27 @@ pub struct ProcessStatus {
     pub user: Option<String>,
     /// Virtual memory usage in bytes.
     pub virtual_memory: u64,
-    /// Number of threads.
+    /// Number of threads. Sampled at a 15s TTL (Linux), like
+    /// [`working_dir`](Self::working_dir) — the `/proc/<pid>/status` read this
+    /// comes from is one of the per-PID reads the process-table cadence
+    /// budget removes (see `SLOW_PROC_TTL`); CPU/mem/state do NOT come from
+    /// that file and stay fresh every collect.
     pub thread_count: Option<u32>,
     /// Full command line (argv joined with spaces).
     pub command_line: Option<String>,
-    /// Current working directory.
+    /// Current working directory. Sampled at a 15s TTL (Linux): cwd changes
+    /// rarely, and the readlink is one of the per-PID /proc reads the process
+    /// table cadence budget removes (see `SLOW_PROC_TTL`).
     pub working_dir: Option<String>,
     /// Disk bytes read, if available.
     pub disk_read_bytes: Option<u64>,
     /// Disk bytes written, if available.
     pub disk_write_bytes: Option<u64>,
-    /// Number of open files, if available.
+    /// Number of open files, if available. Sampled at a 15s TTL (Linux),
+    /// like [`working_dir`](Self::working_dir).
     pub open_files: Option<u32>,
-    /// Number of file descriptors, if available.
+    /// Number of file descriptors, if available. Sampled at a 15s TTL
+    /// (Linux), like [`working_dir`](Self::working_dir).
     pub fd_count: Option<u32>,
 }
 
@@ -2088,6 +2227,11 @@ impl SystemStatus {
                     .map(|c| c.to_string_lossy().to_string())
                     .collect::<Vec<_>>()
                     .join(" ");
+                let start_time = if p.start_time() > 0 {
+                    Some(p.start_time())
+                } else {
+                    None
+                };
                 #[cfg(target_os = "linux")]
                 let (disk_read_bytes, disk_write_bytes) = read_proc_io(pid_u32);
                 #[cfg(not(target_os = "linux"))]
@@ -2095,10 +2239,18 @@ impl SystemStatus {
                     Option<u64>,
                     Option<u64>,
                 ) = (None, None);
+                // Slowly-changing fields (cwd readlink + fd read_dir + the
+                // status-file thread count) come from the TTL cache; io
+                // counters stay fresh. See the SLOW_PROC_TTL docs for the
+                // freshness tradeoff.
                 #[cfg(target_os = "linux")]
-                let fd_count = read_proc_fd_count(pid_u32);
+                let (working_dir, fd_count, thread_count) = slow_proc_fields(pid_u32, start_time);
                 #[cfg(not(target_os = "linux"))]
-                let fd_count: Option<u32> = None;
+                let (working_dir, fd_count, thread_count): (
+                    Option<String>,
+                    Option<u32>,
+                    Option<u32>,
+                ) = (None, None, None);
                 ProcessStatus {
                     pid: pid_u32,
                     parent_pid: p.parent().map(sysinfo::Pid::as_u32),
@@ -2106,27 +2258,17 @@ impl SystemStatus {
                     cpu_usage: p.cpu_usage(),
                     memory_bytes: p.memory(),
                     status: format!("{}", p.status()),
-                    start_time: if p.start_time() > 0 {
-                        Some(p.start_time())
-                    } else {
-                        None
-                    },
+                    start_time,
                     executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
                     user: p.user_id().map(|uid| uid.to_string()),
                     virtual_memory: p.virtual_memory(),
-                    #[cfg(target_os = "linux")]
-                    thread_count: read_proc_thread_count(pid_u32),
-                    #[cfg(not(target_os = "linux"))]
-                    thread_count: None,
+                    thread_count,
                     command_line: if cmd_line.is_empty() {
                         None
                     } else {
                         Some(cmd_line)
                     },
-                    #[cfg(target_os = "linux")]
-                    working_dir: read_proc_working_dir(pid_u32),
-                    #[cfg(not(target_os = "linux"))]
-                    working_dir: None,
+                    working_dir,
                     disk_read_bytes,
                     disk_write_bytes,
                     open_files: fd_count,
@@ -2134,6 +2276,13 @@ impl SystemStatus {
                 }
             })
             .collect();
+        // Drop cache entries for pids that have exited so the slow-field
+        // cache tracks the live process table.
+        #[cfg(target_os = "linux")]
+        {
+            let live: Vec<u32> = processes.iter().map(|ps| ps.pid).collect();
+            prune_slow_proc_cache(&live);
+        }
         let total_count = processes.len();
         ProcessSnapshot {
             processes,
@@ -6275,5 +6424,141 @@ mod tests {
         assert!(p.gpus().unwrap().is_empty());
         assert!(p.battery().unwrap().is_none());
         assert!(p.sensors().unwrap().is_empty());
+    }
+
+    // ── Slow-field cache oracles (F12) ─────────────────────────────────────
+
+    /// ORACLE: within the TTL a repeat resolve for the SAME process performs
+    /// zero fresh /proc samples and returns the cached values verbatim. Uses
+    /// a pid that certainly exists on the test host — this test process.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_fields_second_resolve_within_ttl_is_a_cache_hit() {
+        let pid = std::process::id();
+        let (samples_before, hits_before) = slow_proc_counters();
+        // Start-time 42 is unique to this test, so the first resolve cannot
+        // hit an entry another test left for this shared pid.
+        let (first_dir, first_fd, first_threads) = slow_proc_fields(pid, Some(42));
+        let (samples_after_first, _hits_after_first) = slow_proc_counters();
+        assert_eq!(
+            samples_after_first,
+            samples_before + 1,
+            "the first resolve must sample"
+        );
+
+        let (second_dir, second_fd, second_threads) = slow_proc_fields(pid, Some(42));
+        let (samples, hits) = slow_proc_counters();
+        assert_eq!(
+            samples, samples_after_first,
+            "a within-TTL resolve for the same process must NOT re-sample"
+        );
+        assert_eq!(
+            hits,
+            hits_before + 1,
+            "it must be served from the cache (the sampling first call did not hit)"
+        );
+        assert_eq!(second_dir, first_dir, "cwd served verbatim from the cache");
+        assert_eq!(
+            second_fd, first_fd,
+            "fd_count served verbatim from the cache"
+        );
+        assert_eq!(
+            second_threads, first_threads,
+            "thread_count served verbatim from the cache"
+        );
+        assert!(
+            second_threads.is_some(),
+            "the test process has at least one thread, so the sample is Some"
+        );
+    }
+
+    /// ORACLE: once the TTL has elapsed (cranked via the test-only clock) the
+    /// entry is re-sampled — the visible-staleness window is bounded by the
+    /// TTL, not unbounded.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_fields_ttl_expiry_resamples() {
+        let pid = std::process::id();
+        slow_proc_fields(pid, Some(7));
+        let samples_before = slow_proc_counters().0;
+
+        let _guard = SlowTtlOffsetGuard::past_ttl();
+        slow_proc_fields(pid, Some(7));
+        let (samples, _hits) = slow_proc_counters();
+        assert_eq!(
+            samples,
+            samples_before + 1,
+            "an expired entry must be re-sampled"
+        );
+    }
+
+    /// ORACLE: a pid whose `start_time` changed (pid reuse) never inherits the
+    /// previous process's cached fields — the entry is invalidated even
+    /// within the TTL.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_fields_pid_reuse_invalidates_within_ttl() {
+        let pid = std::process::id();
+        slow_proc_fields(pid, Some(100));
+        let samples_before = slow_proc_counters().0;
+
+        // Same pid, DIFFERENT start time: a new process took the pid.
+        slow_proc_fields(pid, Some(9001));
+        let (samples, hits) = slow_proc_counters();
+        assert_eq!(samples, samples_before + 1, "a reused pid must re-sample");
+        let _ = hits;
+    }
+
+    /// ORACLE: pruning drops exited pids so the cache tracks the live process
+    /// table instead of growing unboundedly.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prune_slow_proc_cache_drops_exited_pids() {
+        let live = std::process::id();
+        slow_proc_fields(live, Some(1));
+        // A pid that is not `live` simulates an exited process.
+        let dead = live.wrapping_add(1);
+        slow_proc_fields(dead, Some(1));
+
+        prune_slow_proc_cache(&[live]);
+        let cache = SLOW_PROC_CACHE.lock().unwrap();
+        assert!(cache.contains_key(&live), "the live pid is retained");
+        assert!(!cache.contains_key(&dead), "the exited pid is pruned");
+    }
+
+    /// Read the (fresh samples, cache hits) counters.
+    #[cfg(target_os = "linux")]
+    fn slow_proc_counters() -> (u64, u64) {
+        (
+            SLOW_SAMPLES.with(std::cell::Cell::get),
+            SLOW_CACHE_HITS.with(std::cell::Cell::get),
+        )
+    }
+
+    /// Advances this thread's slow-field TTL test clock past the TTL,
+    /// resetting it on drop so a failing assertion cannot leak a cranked
+    /// clock into a later test on the same reused cargo-test thread.
+    #[cfg(target_os = "linux")]
+    struct SlowTtlOffsetGuard;
+
+    #[cfg(target_os = "linux")]
+    impl SlowTtlOffsetGuard {
+        fn past_ttl() -> Self {
+            SLOW_TTL_TEST_OFFSET_MS.with(|o| {
+                o.set(
+                    u64::try_from(SLOW_PROC_TTL.as_millis())
+                        .expect("a 15s TTL in milliseconds always fits in u64")
+                        + 10_000,
+                );
+            });
+            Self
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for SlowTtlOffsetGuard {
+        fn drop(&mut self) {
+            SLOW_TTL_TEST_OFFSET_MS.with(|o| o.set(0));
+        }
     }
 }

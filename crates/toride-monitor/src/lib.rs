@@ -6,10 +6,10 @@
 //!
 //! # High-level API
 //!
-//! The [`MonitorClient`] struct is the main entry point when the `client`
-//! feature is enabled. It composes a command runner and delegates to
-//! sub-modules for output chain management, conntrack parsing, anomaly
-//! detection, and alert dispatching.
+//! The [`MonitorClient`](crate::client::MonitorClient) struct is the main
+//! entry point when the `client` feature is enabled. It composes a command
+//! runner and delegates to sub-modules for output chain management,
+//! conntrack parsing, anomaly detection, and alert dispatching.
 //!
 //! ```ignore
 //! use toride_monitor::MonitorClient;

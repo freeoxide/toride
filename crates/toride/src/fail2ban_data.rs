@@ -178,19 +178,19 @@ impl Fail2banCollector {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
+                // Only write the cache (and advance the freshness clock)
+                // when the probes actually re-ran. On a cache-hit poll the
+                // bundle IS the data we already cached — identical by
+                // construction — so re-storing it would be a wasted deep
+                // clone per tick, and resetting the TTL here would let the
+                // cache live forever as long as the 2s refresh tick keeps
+                // firing inside the TTL window.
                 if let Some((ref bundle, used_cache)) = result
                     && bundle.available
+                    && !used_cache
                 {
                     self.cached_bundle = Some(bundle.clone());
-                    // Only advance the freshness clock when the probes
-                    // were actually re-run. On a cache-hit poll the bundle
-                    // is the SAME data we already cached, so resetting the
-                    // TTL here would let the cache live forever as long as
-                    // the 2s refresh tick keeps firing inside the TTL
-                    // window.
-                    if !used_cache {
-                        self.bundle_fresh_at = Some(std::time::Instant::now());
-                    }
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)

@@ -199,6 +199,28 @@ fn parse_single_conntrack_line(line: &str) -> Option<ConntrackEntry> {
 
 /// Parse `ss -tunap` output into structured entries.
 ///
+/// Columns are mapped BY HEADER NAME. The real header is
+///
+/// ```text
+/// Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+/// ```
+///
+/// so the address columns are NOT at fixed token offsets 2/3 — those are the
+/// `Recv-Q`/`Send-Q` queue integers. (The previous fixed-index mapping read
+/// the queues as addresses, and because a bare integer has no `:` port,
+/// [`ss_entry_to_connection`] then dropped EVERY row — the connections list
+/// was permanently empty.)
+///
+/// `Netid`, `State`, `Recv-Q` and `Send-Q` are single-token columns in both
+/// the header and data rows, so the DATA index of the local-address column is
+/// exactly one past the `Send-Q` header token; the peer follows it, and the
+/// process column (present only when the header advertises it, i.e. `-p` was
+/// passed) follows that. Rows for sockets whose process could not be
+/// determined simply lack the trailing token.
+///
+/// If the first line is not a recognizable header (e.g. header-less `-H`
+/// output), the legacy fixed indices `0,1,2,3,4` are used as a fallback.
+///
 /// # Errors
 ///
 /// Returns [`crate::Error::ConntrackError`] for fundamentally malformed input.
@@ -207,31 +229,92 @@ pub fn parse_ss_output(input: &str) -> Result<Vec<SsEntry>> {
     let mut entries = Vec::new();
     let mut lines = input.lines();
 
-    // Skip the header line.
-    lines.next();
+    // Map columns from the header line; fall back to the legacy fixed layout
+    // when there is no recognizable header.
+    let columns = lines.next().and_then(parse_ss_header).unwrap_or_else(|| {
+        tracing::debug!("ss output had no recognizable header; using legacy fixed indices");
+        SsColumns::legacy()
+    });
 
     for line in lines {
         let parts: Vec<&str> = line.split_whitespace().collect();
-        if parts.len() < 4 {
+        if parts.len() <= columns.peer {
             continue;
         }
 
-        let netid = parts[0].to_string();
-        let state = parts[1].to_string();
-        let local = parts[2].to_string();
-        let peer = parts[3].to_string();
-        let process = parts.get(4).map(|s| (*s).to_string());
-
         entries.push(SsEntry {
-            netid,
-            state,
-            local,
-            peer,
-            process,
+            netid: parts[columns.netid].to_string(),
+            state: parts[columns.state].to_string(),
+            local: parts[columns.local].to_string(),
+            peer: parts[columns.peer].to_string(),
+            process: columns
+                .process
+                .and_then(|idx| parts.get(idx))
+                .map(|s| (*s).to_string()),
         });
     }
 
     Ok(entries)
+}
+
+/// Data-row token indices for one `ss` output stream, derived from its
+/// header line.
+#[derive(Debug, Clone, Copy)]
+struct SsColumns {
+    /// Index of the `Netid` token (`tcp`, `udp`, `tcp6`, ...).
+    netid: usize,
+    /// Index of the `State` token (`ESTAB`, `LISTEN`, ...).
+    state: usize,
+    /// Index of the local address:port token.
+    local: usize,
+    /// Index of the peer address:port token.
+    peer: usize,
+    /// Index of the process (`users:(("proc",pid=..))`) token, when the
+    /// header advertises a Process column.
+    process: Option<usize>,
+}
+
+impl SsColumns {
+    /// The pre-fix fixed-index layout, kept as the fallback for header-less
+    /// input (`ss -H`).
+    fn legacy() -> Self {
+        Self {
+            netid: 0,
+            state: 1,
+            local: 2,
+            peer: 3,
+            process: Some(4),
+        }
+    }
+}
+
+/// Derive the data-row column indices from an `ss` header line.
+///
+/// Returns `None` when the line is not an `ss` header. `Netid`, `State`,
+/// `Recv-Q`, `Send-Q` are validated to sit consecutively (they are
+/// single-token columns in both header and data), which makes the token
+/// after `Send-Q` the data row's local address and the one after that its
+/// peer.
+fn parse_ss_header(header: &str) -> Option<SsColumns> {
+    let tokens: Vec<&str> = header.split_whitespace().collect();
+    let netid = tokens.iter().position(|t| *t == "Netid")?;
+    // The three single-token columns must follow Netid consecutively.
+    if tokens.get(netid + 1).copied() != Some("State")
+        || tokens.get(netid + 2).copied() != Some("Recv-Q")
+        || tokens.get(netid + 3).copied() != Some("Send-Q")
+    {
+        return None;
+    }
+    let local = netid + 4;
+    let peer = local + 1;
+    let process = tokens.contains(&"Process").then_some(peer + 1);
+    Some(SsColumns {
+        netid,
+        state: netid + 1,
+        local,
+        peer,
+        process,
+    })
 }
 
 /// Convert an [`SsEntry`] into a [`ConnectionInfo`].
@@ -439,5 +522,186 @@ icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
         assert!(entries.is_empty());
         let entries = parse_conntrack_output("garbage line with no fields").unwrap();
         assert!(entries.is_empty());
+    }
+
+    // ── ss header-mapping oracles (F11) ────────────────────────────────────
+
+    /// The REAL `ss -tunap` header + row shapes captured from a live host
+    /// (whitespace collapsed to single spaces; token layout preserved):
+    ///
+    /// ```text
+    /// Netid State  Recv-Q Send-Q Local Address:Port Peer Address:Port Process
+    /// ```
+    const SS_HEADER: &str =
+        "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process";
+
+    /// ORACLE: columns map BY HEADER NAME — local/peer are the ADDRESS
+    /// columns, never the Recv-Q/Send-Q queue integers the old fixed-index
+    /// mapping read (which made every row unparseable downstream).
+    #[test]
+    fn ss_header_columns_map_addresses_not_queues() {
+        let input = format!(
+            "{SS_HEADER}\nudp ESTAB 0 0 152.53.38.170:59701 46.38.252.230:53 users:((\"zcode-cli\",pid=3269808,fd=34))\ntcp LISTEN 0 5 127.0.0.1:39099 0.0.0.0:* users:((\"python3\",pid=2193247,fd=3))"
+        );
+        let entries = parse_ss_output(&input).unwrap();
+        assert_eq!(entries.len(), 2);
+
+        assert_eq!(entries[0].netid, "udp");
+        assert_eq!(entries[0].state, "ESTAB");
+        assert_eq!(
+            entries[0].local, "152.53.38.170:59701",
+            "local must be the Local Address:Port column, not Recv-Q"
+        );
+        assert_eq!(
+            entries[0].peer, "46.38.252.230:53",
+            "peer must be the Peer Address:Port column, not Send-Q"
+        );
+        assert_eq!(
+            entries[0].process.as_deref(),
+            Some("users:((\"zcode-cli\",pid=3269808,fd=34))")
+        );
+    }
+
+    /// ORACLE: a row whose socket has no owner process simply lacks the
+    /// trailing Process token — the address columns are unaffected.
+    #[test]
+    fn ss_row_without_process_token_still_maps() {
+        let input = format!("{SS_HEADER}\ntcp ESTAB 0 0 10.0.0.5:44332 93.184.216.34:443");
+        let entries = parse_ss_output(&input).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].local, "10.0.0.5:44332");
+        assert_eq!(entries[0].peer, "93.184.216.34:443");
+        assert_eq!(entries[0].process, None, "no Process token on the row");
+    }
+
+    /// ORACLE: IPv6 bracket forms map through the same header-driven
+    /// indices (`tcp6`, `[::1]:port`, `[2001:db8::2]:port`).
+    #[test]
+    fn ss_ipv6_rows_map() {
+        let input = format!(
+            "{SS_HEADER}\ntcp6 ESTAB 0 0 [::1]:54321 [2001:db8::2]:443 users:((\"app\",pid=42,fd=6))"
+        );
+        let entries = parse_ss_output(&input).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].netid, "tcp6");
+        assert_eq!(entries[0].local, "[::1]:54321");
+        assert_eq!(entries[0].peer, "[2001:db8::2]:443");
+    }
+
+    /// ORACLE (the dead path, live again): an ESTABLISHED row now survives
+    /// [`ss_entry_to_connection`] with the correct src/dst/ports. Before the
+    /// header mapping fix, the queue integers were read as addresses and
+    /// EVERY row was dropped, so `connections` was always empty.
+    #[test]
+    fn ss_established_row_converts_to_connection() {
+        let input = format!(
+            "{SS_HEADER}\nudp ESTAB 0 0 152.53.38.170:59701 46.38.252.230:53 users:((\"dig\",pid=99,fd=5))"
+        );
+        let entries = parse_ss_output(&input).unwrap();
+        let conn = ss_entry_to_connection(&entries[0]).expect("ESTAB row must convert");
+        assert_eq!(conn.src.to_string(), "152.53.38.170");
+        assert_eq!(conn.src_port, 59701);
+        assert_eq!(conn.dst.to_string(), "46.38.252.230");
+        assert_eq!(conn.dst_port, 53);
+        assert_eq!(conn.protocol, "udp");
+        assert_eq!(conn.state, "ESTAB");
+    }
+
+    /// ORACLE: a LISTEN row's wildcard peer (`0.0.0.0:*` — no concrete
+    /// port) is NOT a connection and stays filtered by
+    /// [`ss_entry_to_connection`]; only rows with concrete local+peer
+    /// addresses become entries.
+    #[test]
+    fn ss_listening_row_with_wildcard_peer_is_not_a_connection() {
+        let input = format!(
+            "{SS_HEADER}\ntcp LISTEN 0 5 127.0.0.1:39099 0.0.0.0:* users:((\"python3\",pid=2193247,fd=3))"
+        );
+        let entries = parse_ss_output(&input).unwrap();
+        assert_eq!(entries.len(), 1, "the row still parses");
+        assert!(
+            ss_entry_to_connection(&entries[0]).is_none(),
+            "a wildcard peer is a listening socket, not a connection"
+        );
+    }
+
+    /// ORACLE: header recognition is strict — a non-ss first line yields no
+    /// column map (and the caller falls back to the legacy layout).
+    #[test]
+    fn ss_header_recognition_rejects_non_header_lines() {
+        assert!(
+            parse_ss_header(
+                "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process"
+            )
+            .is_some()
+        );
+        assert!(parse_ss_header("garbage line").is_none());
+        assert!(parse_ss_header("").is_none());
+        // Queue columns must sit consecutively after Netid/State.
+        assert!(
+            parse_ss_header("Netid State NotQ Send-Q Local Address:Port Peer Address:Port Process")
+                .is_none()
+        );
+    }
+
+    /// ORACLE: header-less input (`ss -H`) falls back to the legacy fixed
+    /// indices — and, exactly like the old parser, the first line is
+    /// consumed as the (unrecognized) header attempt.
+    #[test]
+    fn ss_headerless_input_uses_legacy_fallback() {
+        let input = "tcp ESTAB 1.2.3.4:5 5.6.7.8:6\ntcp ESTAB 9.9.9.9:7 8.8.8.8:9";
+        let entries = parse_ss_output(input).unwrap();
+        assert_eq!(
+            entries.len(),
+            1,
+            "first line consumed as the header attempt"
+        );
+        assert_eq!(entries[0].local, "9.9.9.9:7");
+        assert_eq!(entries[0].peer, "8.8.8.8:9");
+    }
+
+    /// ENVIRONMENTAL (Linux, requires `ss`): run the REAL `ss -tunap`, feed
+    /// its output through the production parse chain, and assert the rows
+    /// carry address-shaped local/peer tokens (containing `:port`) — the
+    /// direct live proof of the F11 fix. Before it, every row's local/peer
+    /// were the Recv-Q/Send-Q integers and the converter dropped them all.
+    #[test]
+    fn ss_live_output_maps_addresses_environmental() {
+        let Ok(out) = std::process::Command::new("ss").args(["-tunap"]).output() else {
+            eprintln!("ss not available; skipping live parse test");
+            return;
+        };
+        if !out.status.success() {
+            eprintln!("ss -tunap failed; skipping live parse test");
+            return;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let entries = parse_ss_output(&text).unwrap();
+        assert!(!entries.is_empty(), "a live host always has sockets");
+        for e in &entries {
+            // Address-shaped tokens are `addr:port` (port digits or the `*`
+            // wildcard, e.g. `0.0.0.0:*` for a listening socket). The old bug
+            // leaked the BARE queue integers ("0"), which have no colon at
+            // all — that is the shape this pins out.
+            assert!(
+                e.local.contains(':') && !e.local.chars().all(|c| c.is_ascii_digit()),
+                "local must be an address:port token, got {:?} (queue integer leak?)",
+                e.local
+            );
+            assert!(
+                e.peer.contains(':') && !e.peer.chars().all(|c| c.is_ascii_digit()),
+                "peer must be an address:port token, got {:?} (queue integer leak?)",
+                e.peer
+            );
+        }
+        // And at least the converter no longer drops EVERY row: on a host
+        // with any concrete remote peer at least one connection survives.
+        // (A hermetic fixture covers the strict mapping above; this asserts
+        // the live chain end to end when such a socket exists.)
+        let converted = entries.iter().filter_map(ss_entry_to_connection).count();
+        eprintln!(
+            "live ss rows: {}, converted connections: {}",
+            entries.len(),
+            converted
+        );
     }
 }

@@ -89,7 +89,7 @@ impl Default for StatusCollector {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::status::{
         Capabilities, DaemonStatus, DiskIoSnapshot, DiskStatus, HardwareInventory, MemoryStatus,
@@ -114,7 +114,7 @@ mod tests {
         clippy::duration_suboptimal_units,
         reason = "stable std lacks larger-unit constructors"
     )]
-    fn test_status(hostname: &str) -> TorideStatus {
+    pub(crate) fn test_status(hostname: &str) -> TorideStatus {
         let now = SystemTime::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
         TorideStatus {
             system: SystemStatus {

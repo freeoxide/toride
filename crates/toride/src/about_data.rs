@@ -6,10 +6,16 @@
 //! 60s findings cache because the About screen has no doctor / findings
 //! concept — it is identity metadata, not a health check.
 //!
-//! This is the read-only counterpart to `StatusCollector`: it reuses
-//! [`crate::status::TorideStatus::collect`] (via `spawn_blocking`, exactly like
-//! `StatusCollector`) for the live host/system block, and layers the
-//! compile-time app build metadata + the runtime env block on top.
+//! This is the read-only counterpart to `StatusCollector`: the live
+//! host/system block comes from the SAME [`crate::status::TorideStatus`]
+//! snapshot the dashboard's status collector already gathered —
+//! [`AboutCollector::start_with_status`] is fed that shared result by the app's
+//! refresh tick, so the whole-host `TorideStatus::collect` (sysinfo refresh +
+//! daemon/SSH/capabilities probes + the ~200ms CPU-measurement sleep) runs
+//! ONCE per tick, not once per screen. The standalone
+//! [`AboutCollector::start`] (own collect) remains for callers outside the
+//! shared-tick path, and layers the compile-time app build metadata + the
+//! runtime env block on top.
 //!
 //! ## Blocking
 //!
@@ -20,9 +26,9 @@
 //!
 //! ## Availability
 //!
-//! `available == true` once [`collect_real_about`] returns. The only path to
+//! `available == true` once `collect_real_about` returns. The only path to
 //! `available == false` is a `spawn_blocking` `JoinError` (a panic inside
-//! `TorideStatus::collect`) — that yields [`empty_bundle_with_reason`] so the
+//! `TorideStatus::collect`) — that yields `empty_bundle_with_reason` so the
 //! UI renders a degraded panel with the reason. Individual field failures
 //! degrade that field (via the convert layer's placeholders) but keep
 //! `available == true`, mirroring the harden / tailscale graceful-degradation
@@ -33,7 +39,7 @@
 //! This collector does NOT carry the 60s findings cache used by the doctor-
 //! based collectors (`fail2ban` / `harden` / `tailscale` / etc.), because there
 //! is no expensive doctor suite to throttle. The simple oneshot shape mirrors
-//! [`StatusCollector`] exactly.
+//! [`StatusCollector`](crate::status_collector::StatusCollector) exactly.
 
 use tokio::sync::oneshot;
 
@@ -70,13 +76,13 @@ pub struct AboutDataBundle {
 
 /// Manages periodic async collection of About-toride data.
 ///
-/// Mirrors [`StatusCollector`]: a single oneshot channel for the in-flight
-/// result, no findings cache. The collection reuses
-/// [`TorideStatus::collect`] (the same call `StatusCollector` makes) so the
-/// two collectors do duplicate work on the blocking pool — but the About
-/// screen needs the structured identity fields in a different shape than the
-/// dashboard's gauges, so the dedicated collector keeps the two render paths
-/// decoupled.
+/// Mirrors [`StatusCollector`](crate::status_collector::StatusCollector): a
+/// single oneshot channel for the in-flight
+/// result, no findings cache. The dashboard's refresh tick drives
+/// [`AboutCollector::start_with_status`] with the snapshot the status
+/// collector just delivered, so the two screens share ONE
+/// [`TorideStatus::collect`] per tick instead of running duplicate
+/// whole-host collections.
 pub struct AboutCollector {
     /// Carries the bundle once the spawned collection completes. `None` when no
     /// collection is in-flight (after `poll()` consumes a result, or before the
@@ -101,6 +107,10 @@ impl AboutCollector {
     /// If a collection is already in-flight, this is a no-op. The blocking
     /// `TorideStatus::collect` runs on the tokio blocking pool; the cheap env /
     /// `dirs` reads and the convert assembly run inline on the async task.
+    ///
+    /// This is the standalone entry point (own collect). The dashboard tick
+    /// uses [`AboutCollector::start_with_status`] instead so the About block
+    /// reuses the status collector's snapshot.
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
@@ -109,6 +119,29 @@ impl AboutCollector {
         self.rx = Some(rx);
         tokio::spawn(async move {
             let bundle = collect_real_about().await;
+            let _ = tx.send(bundle);
+        });
+    }
+
+    /// Start a collection from an ALREADY-collected [`TorideStatus`] snapshot.
+    ///
+    /// This is the shared-result seam the dashboard's refresh tick drives: the
+    /// app feeds the SAME snapshot the status collector delivered here, so the
+    /// About screen's identity block costs zero extra probes — no second
+    /// sysinfo refresh, no second daemon/SSH/capabilities pass, no second
+    /// CPU-measurement sleep. Only the identity conversion (pure string work
+    /// over `status.system.*`) plus the compile-time app metadata and the
+    /// cheap env reads run, inline on the async task.
+    ///
+    /// If a collection is already in-flight, this is a no-op.
+    pub fn start_with_status(&mut self, status: TorideStatus) {
+        if self.rx.is_some() {
+            return;
+        }
+        let (tx, rx) = oneshot::channel();
+        self.rx = Some(rx);
+        tokio::spawn(async move {
+            let bundle = about_bundle_from_status(&status);
             let _ = tx.send(bundle);
         });
     }
@@ -167,6 +200,16 @@ async fn collect_real_about() -> AboutDataBundle {
         }
     };
 
+    about_bundle_from_status(&status)
+}
+
+/// Assemble the About bundle from an already-collected status snapshot.
+///
+/// Pure conversion — no probes, no blocking work. Shared by the standalone
+/// collect path (above) and the shared-snapshot seam
+/// ([`AboutCollector::start_with_status`]) the dashboard tick drives, so both
+/// produce byte-identical blocks from the same [`TorideStatus`].
+fn about_bundle_from_status(status: &TorideStatus) -> AboutDataBundle {
     // ── App build metadata (compile-time constants; always populated) ────
     let app = about_convert::convert_app();
 
@@ -174,7 +217,7 @@ async fn collect_real_about() -> AboutDataBundle {
     let runtime = about_convert::convert_runtime();
 
     // ── System identity (derived from the status snapshot) ───────────────
-    let system = about_convert::convert_system(&status);
+    let system = about_convert::convert_system(status);
 
     AboutDataBundle {
         available: true,
@@ -328,6 +371,50 @@ mod tests {
         assert_eq!(
             b.unavailable_reason.as_deref(),
             Some("about data collection panicked: boom")
+        );
+    }
+
+    // ── Shared-snapshot seam (F03) ────────────────────────────────────────────
+
+    /// ORACLE: the shared-result seam serves a bundle derived VERBATIM from
+    /// the INJECTED status snapshot — no second `TorideStatus::collect`, no
+    /// probes. The injected hostname is a sentinel no host carries, so it can
+    /// only arrive through the snapshot the caller fed in; if the collector
+    /// had re-collected, the hostname would be the real host's (or a
+    /// placeholder), never this string. The convert path is pure, so the
+    /// bundle resolves without a sleep.
+    #[tokio::test]
+    async fn start_with_status_serves_injected_snapshot_without_recollecting() {
+        let status = crate::status_collector::tests::test_status("f03-shared-snapshot-host");
+        let mut collector = AboutCollector::new();
+        collector.start_with_status(status);
+        let bundle = collector.poll().await.expect("pure conversion completes");
+
+        assert!(bundle.available, "conversion-only path is always available");
+        assert_eq!(
+            bundle.system.hostname, "f03-shared-snapshot-host",
+            "the identity block must derive from the INJECTED snapshot, never a re-collect"
+        );
+        assert!(
+            !bundle.app.name.is_empty(),
+            "compile-time app metadata still populated"
+        );
+    }
+
+    /// ORACLE: the shared seam is a no-op while a collection is in-flight
+    /// (mirrors `start`), so a tick storm cannot drop or duplicate a pending
+    /// conversion.
+    #[tokio::test]
+    async fn start_with_status_is_idempotent_while_pending() {
+        let mut collector = AboutCollector::new();
+        collector.start_with_status(crate::status_collector::tests::test_status("first"));
+        assert!(collector.is_pending());
+        // A second feed while pending must not replace the receiver.
+        collector.start_with_status(crate::status_collector::tests::test_status("second"));
+        let bundle = collector.poll().await.expect("first feed completes");
+        assert_eq!(
+            bundle.system.hostname, "first",
+            "the in-flight conversion wins; the second feed is a no-op"
         );
     }
 }

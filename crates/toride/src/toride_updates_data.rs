@@ -231,13 +231,15 @@ impl UpdatesCollector {
                     // leaving the panel degraded after recovery. Leave the
                     // existing cache intact on a degraded bundle so the next
                     // collection re-runs everything.
-                    if bundle.available {
+                    // And only write when the collection actually re-ran: on a
+                    // cache-hit poll the bundle IS the data we already cached
+                    // — identical by construction — so re-storing it would be
+                    // a wasted deep clone per tick.
+                    if bundle.available && !used_cache {
                         self.cached_bundle = Some(bundle.clone());
-                        // Only advance the freshness clock when the collection
-                        // was actually re-run (mirrors fail2ban / backup).
-                        if !used_cache {
-                            self.bundle_fresh_at = Some(std::time::Instant::now());
-                        }
+                        // Advance the freshness clock only on a real
+                        // re-derivation (mirrors fail2ban / backup).
+                        self.bundle_fresh_at = Some(std::time::Instant::now());
                     }
                 }
                 self.rx = None;

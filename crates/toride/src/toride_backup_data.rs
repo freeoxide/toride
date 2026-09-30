@@ -206,8 +206,14 @@ impl BackupCollector {
                     // underlying cause cleared on the next tick. Instead we
                     // invalidate so the very next refresh re-runs everything.
                     if bundle.available {
-                        self.cached_bundle = Some(bundle.clone());
+                        // Only write the cache (and advance the clock) when
+                        // the collection actually re-ran. On a cache-hit
+                        // poll the bundle IS the data we already cached —
+                        // identical by construction — so re-storing it would
+                        // be a wasted deep clone per tick, and resetting the
+                        // TTL would let the cache live forever.
                         if !used_cache {
+                            self.cached_bundle = Some(bundle.clone());
                             self.bundle_fresh_at = Some(std::time::Instant::now());
                         }
                     } else {

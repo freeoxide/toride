@@ -149,7 +149,7 @@ pub struct App {
     templates_collector: TemplatesCollector,
     /// Installed-tools catalogue (PATH scan of a curated CLI tool list)
     /// read-only data collector (no write path, no cooldown). Treats the
-    /// catalogue scan as the doctor; findings (one tools.missing.<name>
+    /// catalogue scan as the doctor; findings (one `tools.missing.<name>`
     /// warning per missing expected tool) are cached for 60s.
     tools_collector: ToolsCollector,
     /// Receiver for SSH write operation error messages.
@@ -707,9 +707,16 @@ impl App {
         let refresh_interval = tokio::time::interval(std::time::Duration::from_secs(2));
         let anim_tick = tokio::time::interval(std::time::Duration::from_millis(33)); // ~30fps
         let shimmer_tick = tokio::time::interval(SHIMMER_FRAME_INTERVAL);
+        // Toast-expiry wake: same coarse cadence as the shimmer tick, but
+        // armed only while the SSH error bar is actually visible. Delay
+        // (not Burst) so a long-disarmed interval re-arms one full period
+        // out instead of draining a backlog of missed ticks in a burst.
+        let mut toast_tick = tokio::time::interval(SHIMMER_FRAME_INTERVAL);
+        toast_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         tokio::pin!(refresh_interval);
         tokio::pin!(anim_tick);
         tokio::pin!(shimmer_tick);
+        tokio::pin!(toast_tick);
 
         // Paint the very first frame: the gated draw below only repaints on
         // state changes and live animations, neither of which has happened
@@ -792,6 +799,15 @@ impl App {
 
                 // Receive collected status data
                 Some(status) = self.collector.poll(), if self.collector.is_pending() => {
+                    // F03: this snapshot is the ONE whole-host collection of
+                    // the tick (sysinfo refresh + daemon/SSH/capabilities
+                    // probes + the ~200ms CPU-measurement sleep). Feed the
+                    // same RESULT to the About collector so the About screen's
+                    // identity block costs zero extra probes — sharing the
+                    // collected snapshot, never a System handle (sysinfo CPU
+                    // deltas corrupt when a handle is reused across
+                    // refreshes).
+                    self.about_collector.start_with_status(status.clone());
                     self.dashboard.set_status(status);
                     self.needs_redraw = true;
                 }
@@ -970,10 +986,10 @@ impl App {
                 }
                 // Receive collected installed-tools data (read-only: no
                 // cooldown, no optimistic-update reconciliation — every refresh
-                // cleanly overwrites the previous view). Same 60s findings cache
-                // as the other read-only sections. The PATH scan always runs so
-                // available stays true; only a collection panic flips the panel
-                // to the degraded state.
+                // cleanly overwrites the previous view). 60s whole-sweep cache:
+                // a cache-hit refresh serves the previous bundle verbatim (no
+                // PATH scan, no version probes); only a collection panic flips
+                // the panel to the degraded state.
                 Some(b) = self.tools_collector.poll(), if self.tools_collector.is_pending() => {
                     self.dashboard.set_tools_data(b);
                     self.needs_redraw = true;
@@ -1081,23 +1097,26 @@ impl App {
                             self.ssh_collector.start();
                         }
                         // Fail2ban is read-only: no cooldown, no optimistic
-                        // updates. The collector's internal 60s findings cache
-                        // throttles the expensive doctor suite.
+                        // updates. The collector's internal 60s whole-bundle
+                        // cache throttles the expensive doctor suite AND the
+                        // probe bundle (systemctl / fail2ban-client /
+                        // nft/iptables) — a cache hit spawns nothing.
                         self.fail2ban_collector.start();
                         // UFW firewall is read-only: no cooldown, no optimistic
-                        // updates. Same 60s findings cache as fail2ban.
+                        // updates. Same 60s findings cache as the other
+                        // findings-only sections.
                         self.ufw_kit_collector.start();
                         // Kernel-hardening is read-only: no cooldown, no
                         // optimistic updates. Same 60s findings cache as
-                        // fail2ban / ufw-kit.
+                        // ufw-kit.
                         self.toride_harden_collector.start();
                         // WireGuard is read-only: no cooldown, no optimistic
-                        // updates. Same 60s findings cache as fail2ban /
-                        // ufw-kit / harden.
+                        // updates. Same 60s findings cache as ufw-kit / harden.
                         self.toride_wireguard_collector.start();
                         // Updates is read-only: no cooldown, no optimistic
-                        // updates. Same 60s findings cache as the other
-                        // read-only sections.
+                        // updates. 60s whole-bundle cache (doctor findings,
+                        // apt-check/dnf update counts, and service status are
+                        // all served from cache on a hit).
                         self.toride_updates_collector.start();
                         // Users is read-only: no cooldown, no optimistic
                         // updates. Same 60s findings cache as the other
@@ -1110,21 +1129,27 @@ impl App {
                         // read-only sections.
                         self.toride_audit_collector.start();
                         // Monitor is read-only: no cooldown, no optimistic
-                        // updates. Same 60s findings cache as the other
-                        // read-only sections. Degrades to available=false on
-                        // macOS (iptables/conntrack/ss/journalctl missing).
+                        // updates. Two-tier cache: doctor findings at 60s, and
+                        // the ss/conntrack snapshot cluster at a short TTL so
+                        // anomaly detection keeps a bounded detection window
+                        // without re-spawning every tick. Degrades to
+                        // available=false on macOS
+                        // (iptables/conntrack/ss/journalctl missing).
                         self.toride_monitor_collector.start();
                         // Backup is read-only: no cooldown, no optimistic
-                        // updates. Same 60s findings cache as the other
-                        // read-only sections. Degrades per-field when binaries
+                        // updates. 60s whole-bundle cache (doctor findings AND
+                        // the schedule/timer systemctl fan-out are served from
+                        // cache on a hit). Degrades per-field when binaries
                         // are missing (surfaces as Critical doctor findings,
                         // keeping available == true).
                         self.toride_backup_collector.start();
                         // Reverse-proxy is read-only: no cooldown, no
-                        // optimistic updates. Same 60s findings cache as the
-                        // other read-only sections. Degrades to available=false
-                        // on macOS (nginx/certbot/systemctl missing) and to
-                        // Critical findings when only some binaries are absent.
+                        // optimistic updates. 60s whole-report cache (the
+                        // doctor IS the only probe path — status, server
+                        // blocks, certs and findings ride the same cached
+                        // report). Degrades to available=false on macOS
+                        // (nginx/certbot/systemctl missing) and to Critical
+                        // findings when only some binaries are absent.
                         self.toride_proxy_collector.start();
                         // Cloud is read-only: no cooldown, no optimistic
                         // updates. Same 60s findings cache as the other
@@ -1142,16 +1167,20 @@ impl App {
                         // than hanging the collector.
                         self.toride_tailscale_collector.start();
                         // Mise is read-only: no cooldown, no optimistic updates.
-                        // Same 60s findings cache as the other read-only sections.
-                        // The backend shells out to the local `mise` binary via its
-                        // async runner; each command is timeout-bounded so an absent
-                        // mise degrades to available == false rather than hanging.
+                        // 60s whole-bundle cache (all five mise probes, incl.
+                        // the network `outdated --json`, are served from cache
+                        // on a hit). The backend shells out to the local `mise`
+                        // binary via its async runner; each command is
+                        // timeout-bounded so an absent mise degrades to
+                        // available == false rather than hanging.
                         self.toride_mise_collector.start();
                         // About-toride is read-only: no cooldown, no optimistic
                         // updates. No findings cache (identity metadata, not a
-                        // health check). Reuses TorideStatus::collect via
-                        // spawn_blocking like StatusCollector.
-                        self.about_collector.start();
+                        // health check). F03: no own collect here either — the
+                        // About collector is fed the SAME TorideStatus snapshot
+                        // the status collector delivered (see the status poll
+                        // arm above), so the tick runs ONE whole-host
+                        // collection, not two.
                         // Logs is read-only: no cooldown, no optimistic updates.
                         // Simple oneshot collector; re-probes log sources fresh.
                         self.logs_collector.start();
@@ -1166,9 +1195,10 @@ impl App {
                         // readiness (which::which sweep) is live.
                         self.templates_collector.start();
                         // Tools is read-only: no cooldown, no optimistic
-                        // updates. Same 60s findings cache as the other
-                        // read-only sections. The catalogue scan resolves ~30
-                        // binaries on the blocking pool; a missing tool surfaces
+                        // updates. 60s whole-sweep cache (rows, counts and
+                        // findings — a cache hit performs zero $PATH scans and
+                        // zero version probes; a freshly installed tool
+                        // surfaces up to the TTL late). A missing tool surfaces
                         // as a tools.missing.<name> warning finding rather than
                         // degrading the panel.
                         self.tools_collector.start();
@@ -1205,6 +1235,23 @@ impl App {
                     if !self.reduced_motion
                         && !self.screen_needs_fast_frames()
                         && self.screen_needs_animation() => {}
+
+                // SSH error-toast expiry (F01 follow-up): the 5s TTL is
+                // enforced at draw time (`SshContent::view` →
+                // `clear_expired_error`), so with the draw gate a visible
+                // toast could otherwise linger past its TTL until the next
+                // event/data-driven draw (~2s, the refresh arm) — and under
+                // reduced motion, where no animation tick ever fires, even
+                // longer. While a toast is visible, wake at shimmer cadence
+                // and flag a redraw ONLY once the TTL has actually elapsed;
+                // the draw clears the toast, which disarms this arm. Total
+                // cost per toast: a handful of timer wakes plus one draw.
+                _ = toast_tick.tick(),
+                    if self.dashboard.ssh_error_showing() => {
+                    if self.dashboard.ssh_error_expired() {
+                        self.needs_redraw = true;
+                    }
+                }
             }
 
             if self.should_quit {

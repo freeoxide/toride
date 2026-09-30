@@ -250,7 +250,8 @@ impl MonitorClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
+    /// socket enumeration fails.
     pub fn list_listening_ports(&self) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).list_listening()
     }
@@ -259,7 +260,8 @@ impl MonitorClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
+    /// socket enumeration fails.
     pub fn list_all_ports(&self) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).list_all()
     }
@@ -268,7 +270,8 @@ impl MonitorClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
+    /// socket enumeration fails.
     pub fn find_port(&self, port: u16) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).find_by_port(port)
     }
@@ -278,7 +281,8 @@ impl MonitorClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
+    /// socket enumeration fails.
     pub fn find_ports_by_process(&self, name: &str) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).find_by_process(name)
     }
@@ -287,7 +291,8 @@ impl MonitorClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::PortsError`] if socket enumeration fails.
+    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
+    /// socket enumeration fails.
     pub fn is_port_free(&self, port: u16) -> Result<bool> {
         crate::ports::PortReader::new(&self.paths).is_port_free(port)
     }

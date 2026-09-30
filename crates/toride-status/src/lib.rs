@@ -227,8 +227,8 @@ impl TorideStatus {
 
     /// Zero out fields excluded by per-metric collection toggles.
     ///
-    /// Unlike [`apply_preset`](Self::apply_preset), these toggles are explicit
-    /// per-metric overrides set via [`Collector`](crate::collector::Collector)'s
+    /// Unlike `Self::apply_preset` (private), these toggles are explicit
+    /// per-metric overrides set via [`Collector`]'s
     /// builder. A toggle set to `false` drops the corresponding metric
     /// regardless of the preset. Core always-collected fields (hostname,
     /// `os_info`, uptime, load average) are never affected.
