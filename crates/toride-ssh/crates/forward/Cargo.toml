@@ -12,6 +12,8 @@ tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 duct = "1"
+# join_all semantics for bounded-concurrency check/forward fan-out (F10 lever).
+futures = "0.3"
 libc = "0.2"
 serde = { workspace = true }
 

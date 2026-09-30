@@ -40,22 +40,25 @@ impl<'a> ForwardService<'a> {
     /// `ControlMaster` sessions panics or is cancelled.
     pub async fn list(&self) -> Result<Vec<(ControlSession, Vec<PortForward>)>> {
         let sessions = self.list_sessions().await?;
-        let mut results = Vec::with_capacity(sessions.len());
-
-        for session in sessions {
-            match control::list_forwards(&session.control_path).await {
-                Ok(forwards) => results.push((session, forwards)),
+        // Per-session `ssh -O list` spawns run under bounded concurrency and
+        // are re-zipped in session order, matching the old sequential loop's
+        // output ordering.
+        let listings =
+            control::list_forwards_bounded(sessions.iter().map(|s| s.control_path.clone())).await;
+        Ok(sessions
+            .into_iter()
+            .zip(listings)
+            .map(|(session, result)| match result {
+                Ok(forwards) => (session, forwards),
                 Err(e) => {
                     tracing::warn!(
                         "failed to list forwards for {}: {e}",
                         session.control_path.display()
                     );
-                    results.push((session, Vec::new()));
+                    (session, Vec::new())
                 }
-            }
-        }
-
-        Ok(results)
+            })
+            .collect())
     }
 
     /// Discover active `ControlMaster` sessions.
@@ -128,10 +131,14 @@ impl<'a> ForwardService<'a> {
     /// fails due to a background task panic.
     pub async fn conflicting_local_ports(&self) -> Result<HashMap<u16, Vec<std::path::PathBuf>>> {
         let sessions = self.list_sessions().await?;
+        // Same bounded-concurrency fan-out as `list`; errors are logged and
+        // skip that session, exactly as the sequential loop did.
+        let listings =
+            control::list_forwards_bounded(sessions.iter().map(|s| s.control_path.clone())).await;
         let mut port_owners: HashMap<u16, Vec<std::path::PathBuf>> = HashMap::new();
 
-        for session in sessions {
-            match control::list_forwards(&session.control_path).await {
+        for (session, result) in sessions.iter().zip(listings) {
+            match result {
                 Ok(forwards) => {
                     for fwd in forwards {
                         port_owners

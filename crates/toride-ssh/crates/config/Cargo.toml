@@ -26,6 +26,11 @@ gethostname = "0.5"
 [dev-dependencies]
 tempfile = "3"
 proptest = "1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "cached_ast"
+harness = false
 
 [lints]
 workspace = true

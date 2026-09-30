@@ -8,7 +8,8 @@
 //! for unit tests.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use ratatui::style::Color;
 use tokio::sync::oneshot;
@@ -38,13 +39,127 @@ pub struct SshDataBundle {
     /// Active port forwarding sessions.
     pub forwarding: Vec<ForwardSessionEntry>,
     /// Diagnostic check results.
-    pub diagnostics: Vec<DiagnosticEntry>,
+    ///
+    /// Shared as an [`Arc`] between the bundle, the collector's diagnostics
+    /// cache, and the security pass — the entry list is deep-cloned zero
+    /// times per tick instead of three to four.
+    pub diagnostics: Arc<Vec<DiagnosticEntry>>,
     /// Authorized keys entries.
     pub authorized_keys: Vec<AuthorizedKeyEntry>,
     /// SSH certificate entries.
     pub certificates: Vec<CertificateEntry>,
     /// Security overview data.
     pub security: SshSecurityData,
+}
+
+// ── Freshness-keyed state cache ─────────────────────────────────────────────
+
+/// Freshness stamp for a file: nanosecond mtime plus length.
+///
+/// Cache invalidation throughout this module is keyed on these stamps,
+/// never a TTL: any write — including the atomic temp-file + rename every
+/// save path here performs — changes the mtime and forces a re-read, so key
+/// and config rotations can never lag behind.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+struct FileStamp {
+    /// Nanoseconds since the Unix epoch of the last modification.
+    mtime_ns: u128,
+    /// File length in bytes.
+    len: u64,
+}
+
+/// Stamp `path`, or `None` when its mtime cannot be determined (files with
+/// an unmeasurable mtime are never served from a cache).
+fn stamp_path(path: &Path) -> Option<FileStamp> {
+    let meta = std::fs::metadata(path).ok()?;
+    let mtime_ns = meta
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(FileStamp {
+        mtime_ns,
+        len: meta.len(),
+    })
+}
+
+/// A cached value plus the freshness key it was produced at.
+struct Stamped<K, T> {
+    /// The freshness key (`PartialEq`-comparable against a fresh probe).
+    stamp: K,
+    /// The shared value.
+    value: Arc<T>,
+}
+
+/// Per-user `~/.ssh` scan results used by the security pass.
+///
+/// The `authorized_keys` file is read at most once per scan (the count and
+/// the preview list are derived from the same content buffer), instead of
+/// the previous two independent reads plus a per-preview SHA-256 pass.
+#[derive(Clone)]
+struct UserSshScan {
+    /// Number of private key files (`id_*` minus `.pub`/`.old`/`.bak`).
+    ssh_key_count: usize,
+    /// Number of non-comment lines in `authorized_keys`.
+    authorized_key_count: usize,
+    /// Up to 10 preview entries for the user detail modal.
+    authorized_keys_preview: Vec<crate::ui::screens::ssh::AuthorizedKeyPreview>,
+}
+
+/// Freshness key for a per-user `~/.ssh` scan: the stamped `id_*` listing
+/// plus the `authorized_keys` stamp.
+#[derive(PartialEq, Clone)]
+struct UserSshStamp {
+    /// Sorted `(file name, stamp)` pairs of the counted key files.
+    key_listing: Vec<(String, FileStamp)>,
+    /// Stamp of `authorized_keys`, or `None` when absent.
+    auth: Option<FileStamp>,
+}
+
+/// Mtime-keyed caches for per-tick SSH state.
+///
+/// The 2-second collection tick used to re-parse `known_hosts`,
+/// `authorized_keys`, every certificate, and every system user's
+/// `authorized_keys` from scratch on each tick. Each field below memoizes
+/// one of those derived lists against the `(mtime, len)` stamp of the file
+/// (or file set) it was derived from; an unchanged stamp is a cache hit and
+/// any write is a miss. This is deliberately NOT a TTL cache.
+pub(crate) struct SshStateCache {
+    /// Converted known-hosts list keyed by the `known_hosts` file stamp.
+    known_hosts: Mutex<Option<Stamped<FileStamp, Vec<KnownHostEntry>>>>,
+    /// Converted authorized-keys list keyed by the `authorized_keys` stamp.
+    authorized_keys: Mutex<Option<Stamped<FileStamp, Vec<AuthorizedKeyEntry>>>>,
+    /// Parsed certificate infos keyed by the stamped `*-cert.pub` listing.
+    /// The stored [`toride_ssh::certificate::CertificateInfo`] values are
+    /// re-converted every tick so certificate *validity* (time-dependent)
+    /// is always recomputed fresh — only the parse is cached.
+    certificates: Mutex<Option<CertCacheSlot>>,
+    /// Security-pass per-user `~/.ssh` scans keyed by their listing stamps.
+    user_ssh_scans: Mutex<HashMap<PathBuf, Stamped<UserSshStamp, UserSshScan>>>,
+}
+
+/// Certificate cache slot: parsed `(path, info)` pairs plus the stamped
+/// `*-cert.pub` listing they were parsed at.
+type CertCacheSlot =
+    Stamped<Vec<(PathBuf, FileStamp)>, Vec<(PathBuf, toride_ssh::certificate::CertificateInfo)>>;
+
+impl SshStateCache {
+    /// Create an empty cache.
+    pub(crate) fn new() -> Self {
+        Self {
+            known_hosts: Mutex::new(None),
+            authorized_keys: Mutex::new(None),
+            certificates: Mutex::new(None),
+            user_ssh_scans: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
+impl Default for SshStateCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ── Collector ────────────────────────────────────────────────────────────────
@@ -59,9 +174,14 @@ pub struct SshDataCollector {
     /// app (identical to the fail2ban findings cache).
     rx: Option<oneshot::Receiver<(SshDataBundle, bool)>>,
     /// Cached diagnostics from the last collection (avoids re-running every 2s).
-    cached_diagnostics: Option<Vec<DiagnosticEntry>>,
+    cached_diagnostics: Option<Arc<Vec<DiagnosticEntry>>>,
     /// When the diagnostics cache was last refreshed.
     diagnostics_fresh_at: Option<std::time::Instant>,
+    /// Mtime-keyed caches for the per-tick file-derived lists
+    /// (`known_hosts` / `authorized_keys` / certificates / per-user scans).
+    /// Shared into every spawned collection so cache hits persist across
+    /// the 2s ticks.
+    state_cache: Arc<SshStateCache>,
 }
 
 /// How long to keep cached diagnostics before re-running the full suite.
@@ -75,6 +195,7 @@ impl SshDataCollector {
             rx: None,
             cached_diagnostics: None,
             diagnostics_fresh_at: None,
+            state_cache: Arc::new(SshStateCache::new()),
         }
     }
 
@@ -96,9 +217,11 @@ impl SshDataCollector {
                 .diagnostics_fresh_at
                 .is_some_and(|t| t.elapsed() < DIAGNOSTICS_TTL);
         let cached_diag = self.cached_diagnostics.clone();
+        let state_cache = Arc::clone(&self.state_cache);
         self.rx = Some(rx);
         tokio::spawn(async move {
-            let (bundle, cache_was_used) = collect_real_data(use_cache, cached_diag).await;
+            let (bundle, cache_was_used) =
+                collect_real_data(use_cache, cached_diag, &state_cache).await;
             let _ = tx.send((bundle, cache_was_used));
         });
     }
@@ -116,7 +239,7 @@ impl SshDataCollector {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, cache_was_used)) = result {
-                    self.cached_diagnostics = Some(bundle.diagnostics.clone());
+                    self.cached_diagnostics = Some(Arc::clone(&bundle.diagnostics));
                     // Only advance the freshness clock when the doctor was
                     // actually re-run. On a cache-hit poll the diagnostics are
                     // the SAME data we already cached, so resetting the TTL
@@ -1482,13 +1605,19 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
 /// When `use_cache` is true and `cached_diag` is provided, diagnostics are
 /// reused from the cache instead of re-running the full check suite.
 ///
+/// `cache` carries the mtime-keyed per-tick caches: `known_hosts`,
+/// `authorized_keys`, and certificates whose source files are unchanged since
+/// the previous tick are served from it (identical content, identical list
+/// order) instead of being re-read, re-parsed, and re-fingerprinted.
+///
 /// Returns `(bundle, used_cache)` where `used_cache` records whether the
 /// diagnostics were actually taken from the cache on a successful collection.
 /// The caller advances the TTL clock ONLY when `used_cache == false`, so a
 /// cache-hit poll never resets the freshness timestamp with stale data.
 async fn collect_real_data(
     use_cache: bool,
-    cached_diag: Option<Vec<DiagnosticEntry>>,
+    cached_diag: Option<Arc<Vec<DiagnosticEntry>>>,
+    cache: &Arc<SshStateCache>,
 ) -> (SshDataBundle, bool) {
     let mgr = match toride_ssh::SshManager::new() {
         Ok(m) => m,
@@ -1497,12 +1626,13 @@ async fn collect_real_data(
             return (empty_bundle(), false);
         }
     };
+    let paths = toride_ssh::SshPaths::new().ok();
 
     // All subsystems in parallel — diagnostics may be cached
     let (keys_r, known_hosts_r, auth_keys_r, config_r, diag_r, agent_r, forward_r, cert_r) = tokio::join!(
         collect_keys(&mgr),
-        collect_known_hosts(&mgr),
-        collect_authorized_keys(&mgr),
+        collect_known_hosts_cached(&mgr, paths.as_ref(), cache),
+        collect_authorized_keys_cached(&mgr, paths.as_ref(), cache),
         collect_config_hosts(&mgr),
         async {
             if use_cache {
@@ -1513,17 +1643,17 @@ async fn collect_real_data(
         },
         collect_agent(&mgr),
         collect_forwarding(&mgr),
-        collect_certificates(&mgr),
+        collect_certificates_cached(&mgr, cache),
     );
 
     let keys = keys_r.unwrap_or_default();
     let known_hosts = known_hosts_r.unwrap_or_default();
-    let authorized_keys = auth_keys_r.unwrap_or_default();
+    let authorized_keys = auth_keys_r.clone().unwrap_or_default();
     let config_hosts = config_r.unwrap_or_default();
     let diagnostics = if use_cache {
-        cached_diag.unwrap_or_default()
+        cached_diag.unwrap_or_else(|| Arc::new(Vec::new()))
     } else {
-        diag_r.and_then(std::result::Result::ok).unwrap_or_default()
+        Arc::new(diag_r.and_then(std::result::Result::ok).unwrap_or_default())
     };
 
     let (agent_status, agent_keys) = agent_r.unwrap_or_else(|()| {
@@ -1541,37 +1671,35 @@ async fn collect_real_data(
 
     // Security data involves blocking filesystem I/O (sshd_config, /etc/passwd).
     // Run it on the blocking thread pool to avoid stalling the tokio worker.
+    // The security pass folds over the data the join! already collected:
+    // the diagnostics vec is Arc-shared (no deep clone), and the current
+    // user's authorized_keys counts/previews are derived from the entries
+    // `collect_authorized_keys_cached` just produced instead of re-reading
+    // (and re-fingerprinting) the file.
     let security = {
         let known_hosts = known_hosts.clone();
         let authorized_keys = authorized_keys.clone();
-        let diagnostics = diagnostics.clone();
+        let diagnostics = Arc::clone(&diagnostics);
+        let current_ssh_dir = paths.as_ref().map(|p| p.ssh_dir().to_path_buf());
+        // Only fold the collected entries when that branch actually
+        // succeeded — on failure `authorized_keys` is the empty default and
+        // folding it would report zero keys for a file that may have them.
+        let current_entries = auth_keys_r.ok();
+        let cache = Arc::clone(cache);
         tokio::task::spawn_blocking(move || {
-            build_security_data(&known_hosts, &authorized_keys, &diagnostics)
+            build_security_data(
+                &known_hosts,
+                &authorized_keys,
+                &diagnostics,
+                current_ssh_dir.as_deref(),
+                current_entries.as_deref(),
+                &cache,
+            )
         })
         .await
         .unwrap_or_else(|e| {
             tracing::warn!("security data collection panicked: {e}");
-            SshSecurityData {
-                sshd_config: HashMap::new(),
-                authorized_key_count: 0,
-                authorized_key_labels: Vec::new(),
-                known_hosts_count: 0,
-                known_hosts_hashed_count: 0,
-                security_diagnostics: Vec::new(),
-                access_info: SshAccessInfo {
-                    available: true,
-                    allowed_users: vec![],
-                    denied_users: vec![],
-                    allowed_groups: vec![],
-                    denied_groups: vec![],
-                    auth_methods: vec![],
-                    password_auth: true,
-                    pubkey_auth: true,
-                    permit_root_login: "prohibit-password".to_string(),
-                },
-                system_users: Vec::new(),
-                is_root: toride_ssh::is_root(),
-            }
+            fallback_security_data()
         })
     };
 
@@ -1592,6 +1720,33 @@ async fn collect_real_data(
     )
 }
 
+/// Neutral security data used when the security pass panics: same shape as
+/// [`empty_bundle`]'s security block but with `available: true` (the tick's
+/// other subsystems did run), preserving the previous fallback behavior.
+fn fallback_security_data() -> SshSecurityData {
+    SshSecurityData {
+        sshd_config: HashMap::new(),
+        authorized_key_count: 0,
+        authorized_key_labels: Vec::new(),
+        known_hosts_count: 0,
+        known_hosts_hashed_count: 0,
+        security_diagnostics: Vec::new(),
+        access_info: SshAccessInfo {
+            available: true,
+            allowed_users: vec![],
+            denied_users: vec![],
+            allowed_groups: vec![],
+            denied_groups: vec![],
+            auth_methods: vec![],
+            password_auth: true,
+            pubkey_auth: true,
+            permit_root_login: "prohibit-password".to_string(),
+        },
+        system_users: Vec::new(),
+        is_root: toride_ssh::is_root(),
+    }
+}
+
 /// Empty bundle used when `SshManager` fails to initialize.
 fn empty_bundle() -> SshDataBundle {
     SshDataBundle {
@@ -1605,7 +1760,7 @@ fn empty_bundle() -> SshDataBundle {
         },
         agent_keys: Vec::new(),
         forwarding: Vec::new(),
-        diagnostics: Vec::new(),
+        diagnostics: Arc::new(Vec::new()),
         authorized_keys: Vec::new(),
         certificates: Vec::new(),
         security: SshSecurityData {
@@ -1646,6 +1801,49 @@ async fn collect_known_hosts(mgr: &toride_ssh::SshManager) -> Result<Vec<KnownHo
     }
 }
 
+/// [`collect_known_hosts`] behind the mtime-keyed cache.
+///
+/// An unchanged `known_hosts` file (same `(mtime, len)` stamp) is served
+/// from [`SshStateCache`] — skipping the per-line base64 decode and SHA-256
+/// fingerprint — with byte-identical entries in the same order as the
+/// fresh collection that populated the cache.
+async fn collect_known_hosts_cached(
+    mgr: &toride_ssh::SshManager,
+    paths: Option<&toride_ssh::SshPaths>,
+    cache: &SshStateCache,
+) -> Result<Vec<KnownHostEntry>, ()> {
+    let stamp = paths
+        .map(toride_ssh::SshPaths::known_hosts_path)
+        .and_then(stamp_path);
+    if let Some(stamp) = stamp {
+        let hit = {
+            let slot = cache
+                .known_hosts
+                .lock()
+                .expect("known_hosts cache mutex poisoned");
+            slot.as_ref()
+                .filter(|cached| cached.stamp == stamp)
+                .map(|cached| Arc::clone(&cached.value))
+        };
+        if let Some(entries) = hit {
+            return Ok((*entries).clone());
+        }
+    }
+
+    let entries = collect_known_hosts(mgr).await?;
+
+    if let Some(stamp) = stamp {
+        *cache
+            .known_hosts
+            .lock()
+            .expect("known_hosts cache mutex poisoned") = Some(Stamped {
+            stamp,
+            value: Arc::new(entries.clone()),
+        });
+    }
+    Ok(entries)
+}
+
 async fn collect_authorized_keys(
     mgr: &toride_ssh::SshManager,
 ) -> Result<Vec<AuthorizedKeyEntry>, ()> {
@@ -1657,6 +1855,48 @@ async fn collect_authorized_keys(
             Err(())
         }
     }
+}
+
+/// [`collect_authorized_keys`] behind the mtime-keyed cache.
+///
+/// An unchanged `authorized_keys` file is served from [`SshStateCache`]
+/// with identical entries in file order, skipping the per-key base64 parse
+/// and SHA-256 fingerprint.
+async fn collect_authorized_keys_cached(
+    mgr: &toride_ssh::SshManager,
+    paths: Option<&toride_ssh::SshPaths>,
+    cache: &SshStateCache,
+) -> Result<Vec<AuthorizedKeyEntry>, ()> {
+    let stamp = paths
+        .map(toride_ssh::SshPaths::authorized_keys_path)
+        .and_then(stamp_path);
+    if let Some(stamp) = stamp {
+        let hit = {
+            let slot = cache
+                .authorized_keys
+                .lock()
+                .expect("authorized_keys cache mutex poisoned");
+            slot.as_ref()
+                .filter(|cached| cached.stamp == stamp)
+                .map(|cached| Arc::clone(&cached.value))
+        };
+        if let Some(entries) = hit {
+            return Ok((*entries).clone());
+        }
+    }
+
+    let entries = collect_authorized_keys(mgr).await?;
+
+    if let Some(stamp) = stamp {
+        *cache
+            .authorized_keys
+            .lock()
+            .expect("authorized_keys cache mutex poisoned") = Some(Stamped {
+            stamp,
+            value: Arc::new(entries.clone()),
+        });
+    }
+    Ok(entries)
 }
 
 async fn collect_keys(mgr: &toride_ssh::SshManager) -> Result<Vec<SshKeyEntry>, ()> {
@@ -1744,13 +1984,27 @@ async fn collect_forwarding(mgr: &toride_ssh::SshManager) -> Result<Vec<ForwardS
     }
 }
 
-async fn collect_certificates(mgr: &toride_ssh::SshManager) -> Result<Vec<CertificateEntry>, ()> {
+/// [`collect_certificates`] behind an mtime-keyed cache over the
+/// `*-cert.pub` listing.
+///
+/// CERT VALIDITY IS TIME-DEPENDENT: the cache stores the parsed
+/// [`toride_ssh::certificate::CertificateInfo`] values, but
+/// [`ssh_convert::convert_certificates`] is re-run every tick against the
+/// current clock so `is_valid` never goes stale. Only the certificate
+/// parse is memoized, keyed on the `(mtime, len)` stamps of the cert
+/// files — a changed cert re-parses immediately.
+async fn collect_certificates_cached(
+    mgr: &toride_ssh::SshManager,
+    cache: &SshStateCache,
+) -> Result<Vec<CertificateEntry>, ()> {
     let ssh_dir = match toride_ssh::SshPaths::new() {
         Ok(p) => p.ssh_dir().to_path_buf(),
         Err(_) => return Ok(Vec::new()),
     };
 
-    let cert_files: Vec<std::path::PathBuf> = match std::fs::read_dir(&ssh_dir) {
+    // One enumeration produces both the candidate list (read_dir order,
+    // unchanged from the uncached path) and the per-file freshness stamps.
+    let cert_files: Vec<(PathBuf, Option<FileStamp>)> = match std::fs::read_dir(&ssh_dir) {
         Ok(entries) => entries
             .filter_map(std::result::Result::ok)
             .map(|e| e.path())
@@ -1758,6 +2012,10 @@ async fn collect_certificates(mgr: &toride_ssh::SshManager) -> Result<Vec<Certif
                 p.file_name()
                     .and_then(|n| n.to_str())
                     .is_some_and(|n| n.ends_with("-cert.pub"))
+            })
+            .map(|p| {
+                let stamp = stamp_path(&p);
+                (p, stamp)
             })
             .collect(),
         Err(_) => return Ok(Vec::new()),
@@ -1767,12 +2025,38 @@ async fn collect_certificates(mgr: &toride_ssh::SshManager) -> Result<Vec<Certif
         return Ok(Vec::new());
     }
 
+    // Sorted stamp key: order-stable regardless of read_dir order, and any
+    // add/remove/rewrite of a cert file changes it. An unstampable file
+    // (None) forces a permanent miss — its parse is never cached.
+    let mut key: Vec<(PathBuf, FileStamp)> = cert_files
+        .iter()
+        .filter_map(|(p, s)| s.map(|s| (p.clone(), s)))
+        .collect();
+    key.sort();
+
+    if cert_files.iter().all(|(_, s)| s.is_some()) {
+        let hit = {
+            let slot = cache
+                .certificates
+                .lock()
+                .expect("certificates cache mutex poisoned");
+            slot.as_ref()
+                .filter(|cached| cached.stamp == key)
+                .map(|cached| Arc::clone(&cached.value))
+        };
+        if let Some(raw) = hit {
+            // Recompute validity (and every display field) from the cached
+            // parses against the current clock.
+            return Ok(ssh_convert::convert_certificates((*raw).clone()));
+        }
+    }
+
     let cert_svc = mgr.certificate();
     let mut raw = Vec::new();
 
-    for path in cert_files {
-        match cert_svc.inspect(&path).await {
-            Ok(info) => raw.push((path, info)),
+    for (path, _) in &cert_files {
+        match cert_svc.inspect(path).await {
+            Ok(info) => raw.push((path.clone(), info)),
             Err(e) => {
                 tracing::debug!(
                     "certificate {}: {e}",
@@ -1780,6 +2064,16 @@ async fn collect_certificates(mgr: &toride_ssh::SshManager) -> Result<Vec<Certif
                 );
             }
         }
+    }
+
+    if cert_files.iter().all(|(_, s)| s.is_some()) {
+        *cache
+            .certificates
+            .lock()
+            .expect("certificates cache mutex poisoned") = Some(Stamped {
+            stamp: key,
+            value: Arc::new(raw.clone()),
+        });
     }
 
     Ok(ssh_convert::convert_certificates(raw))
@@ -1790,10 +2084,22 @@ async fn collect_certificates(mgr: &toride_ssh::SshManager) -> Result<Vec<Certif
 /// Reads `/etc/ssh/sshd_config` once and passes the content to both
 /// `parse_sshd_config` and `parse_sshd_access_info` to avoid a TOCTOU
 /// inconsistency from reading the file twice.
+///
+/// The system-user scan folds over the data the collection join already
+/// produced: when `current_ssh_dir` matches a scanned user's `~/.ssh` and
+/// `current_entries` carries the freshly collected authorized-key entries,
+/// that user's counts and previews are derived from the entries (whose
+/// fingerprints were already computed) instead of re-reading — and
+/// re-fingerprinting — the file. Other users' `~/.ssh` scans go through
+/// the mtime-keyed [`SshStateCache::user_ssh_scans`] memo, so unchanged
+/// users cost one `read_dir` + two stats instead of full re-reads.
 fn build_security_data(
     known_hosts: &[KnownHostEntry],
     authorized_keys: &[AuthorizedKeyEntry],
     diagnostics: &[DiagnosticEntry],
+    current_ssh_dir: Option<&Path>,
+    current_entries: Option<&[AuthorizedKeyEntry]>,
+    cache: &SshStateCache,
 ) -> SshSecurityData {
     // Read sshd_config once — shared by both parse_sshd_config and parse_sshd_access_info.
     let sshd_contents =
@@ -1822,7 +2128,7 @@ fn build_security_data(
         known_hosts_hashed_count,
         security_diagnostics,
         access_info: parse_sshd_access_info_from(&sshd_contents),
-        system_users: parse_system_users(),
+        system_users: parse_system_users(current_ssh_dir, current_entries, cache),
         is_root: toride_ssh::is_root(),
     }
 }
@@ -2434,16 +2740,225 @@ fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
 ///
 /// Only returns users who have SSH actually configured: a real login
 /// shell, an existing home directory, and a `.ssh/` directory.
-fn parse_system_users() -> Vec<SystemUserInfo> {
+///
+/// When a user's `~/.ssh` equals `current_ssh_dir` and `current_entries`
+/// is provided (the freshly collected authorized-keys list), that user's
+/// scan is folded out of the collected data instead of touching the
+/// filesystem again; all other per-user scans are memoized in `cache`
+/// keyed on the `~/.ssh` listing stamps.
+fn parse_system_users(
+    current_ssh_dir: Option<&Path>,
+    current_entries: Option<&[AuthorizedKeyEntry]>,
+    cache: &SshStateCache,
+) -> Vec<SystemUserInfo> {
     if cfg!(target_os = "macos") {
-        parse_system_users_macos()
+        parse_system_users_macos(current_ssh_dir, current_entries, cache)
     } else {
-        parse_system_users_linux()
+        parse_system_users_linux(current_ssh_dir, current_entries, cache)
     }
 }
 
+/// Scan one user's `~/.ssh` for the security pass, folding the previous
+/// two independent `authorized_keys` reads (count + preview) into one.
+///
+/// `listing` is the pre-stamped `id_*` file listing (the key count is its
+/// length, so no second `read_dir` is needed); the `authorized_keys` file
+/// is read at most once and both the entry count and the (capped) previews
+/// — including their SHA-256 fingerprints — are derived from that single
+/// content buffer.
+fn scan_user_ssh_dir(listing: &[(String, FileStamp)], ssh_dir: &std::path::Path) -> UserSshScan {
+    use crate::ui::screens::ssh::AuthorizedKeyPreview;
+
+    let ssh_key_count = listing.len();
+
+    let Ok(contents) = std::fs::read_to_string(ssh_dir.join("authorized_keys")) else {
+        return UserSshScan {
+            ssh_key_count,
+            authorized_key_count: 0,
+            authorized_keys_preview: Vec::new(),
+        };
+    };
+
+    let mut authorized_key_count = 0usize;
+    let mut previews: Vec<AuthorizedKeyPreview> = Vec::new();
+
+    for (idx, raw) in contents.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        authorized_key_count += 1;
+
+        if previews.len() >= USER_PREVIEW_CAP {
+            continue;
+        }
+        // An authorized_keys entry is: [options] type base64 [comment].
+        // Heuristic: if the first whitespace token parses as a known key type,
+        // there are no options; otherwise skip the leading options token.
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() < 2 {
+            continue;
+        }
+        let known_types = [
+            "ssh-rsa",
+            "ssh-dss",
+            "ssh-ed25519",
+            "ecdsa-sha2-nistp256",
+            "ecdsa-sha2-nistp384",
+            "ecdsa-sha2-nistp521",
+            "sk-ssh-ed25519@openssh.com",
+            "sk-ecdsa-sha2-nistp256@openssh.com",
+        ];
+        let (key_type, base64_idx, comment) =
+            if known_types.contains(&tokens[0]) || tokens[0].starts_with("ssh-") {
+                (tokens[0], 1, tokens.get(2).copied())
+            } else {
+                // Options present: type is the second token.
+                (tokens[1], 2, tokens.get(3).copied())
+            };
+
+        // Best-effort fingerprint from the openssh string "<type> <base64>".
+        let fingerprint = if base64_idx < tokens.len() {
+            let openssh = format!("{key_type} {}", tokens[base64_idx]);
+            ssh_key::PublicKey::from_openssh(&openssh).ok().map_or_else(
+                || "(unknown)".to_string(),
+                |k| k.fingerprint(ssh_key::HashAlg::Sha256).to_string(),
+            )
+        } else {
+            "(unknown)".to_string()
+        };
+
+        previews.push(AuthorizedKeyPreview {
+            key_type: key_type.to_string(),
+            comment: comment.map(str::to_owned),
+            fingerprint,
+            line: idx + 1,
+        });
+    }
+
+    UserSshScan {
+        ssh_key_count,
+        authorized_key_count,
+        authorized_keys_preview: previews,
+    }
+}
+
+/// Maximum number of `authorized_keys` preview entries kept per user for
+/// the user detail modal.
+const USER_PREVIEW_CAP: usize = 10;
+
+/// Derive a user's authorized-key count and previews from the entries the
+/// collection join already parsed and fingerprinted — no filesystem access.
+///
+/// Only used for the current user's own `~/.ssh`, whose `authorized_keys`
+/// the authorized-keys branch of the join just read.
+fn user_scan_from_entries(entries: &[AuthorizedKeyEntry]) -> UserSshScan {
+    let previews = entries
+        .iter()
+        .take(USER_PREVIEW_CAP)
+        .map(|e| crate::ui::screens::ssh::AuthorizedKeyPreview {
+            key_type: e.key_type.clone(),
+            comment: e.comment.clone(),
+            fingerprint: e.fingerprint.clone(),
+            line: e.line,
+        })
+        .collect();
+    UserSshScan {
+        ssh_key_count: 0, // filled by the caller from the key listing
+        authorized_key_count: entries.len(),
+        authorized_keys_preview: previews,
+    }
+}
+
+/// Probe/compute the stamped `id_*` listing of a user's `~/.ssh`.
+///
+/// The listing doubles as the `ssh_key_count` (its length) and one half of
+/// the per-user cache key; `None` means the directory cannot be read.
+fn user_key_listing(ssh_dir: &std::path::Path) -> Option<Vec<(String, FileStamp)>> {
+    let entries = std::fs::read_dir(ssh_dir).ok()?;
+    let mut listing: Vec<(String, FileStamp)> = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("id_")
+            || name.ends_with(".pub")
+            || name.ends_with(".old")
+            || name.ends_with(".bak")
+        {
+            continue;
+        }
+        let stamp = stamp_path(&entry.path());
+        listing.push((name.into_owned(), stamp?));
+    }
+    listing.sort();
+    Some(listing)
+}
+
+/// One user's `~/.ssh` scan behind the mtime-keyed cache.
+///
+/// Unchanged listings (same `id_*` names/stamps and `authorized_keys`
+/// stamp) are served from the cache — no `authorized_keys` read, no
+/// fingerprinting. An unreadable `~/.ssh` yields zero counts (the caller
+/// has already verified the directory exists), matching the previous
+/// behavior.
+fn scan_user_ssh_cached(
+    ssh_dir: &std::path::Path,
+    current_ssh_dir: Option<&Path>,
+    current_entries: Option<&[AuthorizedKeyEntry]>,
+    cache: &SshStateCache,
+) -> UserSshScan {
+    let listing = user_key_listing(ssh_dir).unwrap_or_default();
+    let auth = stamp_path(&ssh_dir.join("authorized_keys"));
+    let stamp = UserSshStamp {
+        key_listing: listing,
+        auth,
+    };
+
+    if current_ssh_dir == Some(ssh_dir)
+        && let Some(entries) = current_entries
+    {
+        // Fold over already-collected data: the fingerprints in the entries
+        // were computed by the authorized-keys branch this very tick.
+        let mut scan = user_scan_from_entries(entries);
+        scan.ssh_key_count = stamp.key_listing.len();
+        return scan;
+    }
+
+    let hit = {
+        let scans = cache
+            .user_ssh_scans
+            .lock()
+            .expect("user ssh scan cache mutex poisoned");
+        scans
+            .get(ssh_dir)
+            .filter(|cached| cached.stamp == stamp)
+            .map(|cached| Arc::clone(&cached.value))
+    };
+    if let Some(cached) = hit {
+        return (*cached).clone();
+    }
+
+    let scan = scan_user_ssh_dir(&stamp.key_listing, ssh_dir);
+    cache
+        .user_ssh_scans
+        .lock()
+        .expect("user ssh scan cache mutex poisoned")
+        .insert(
+            ssh_dir.to_path_buf(),
+            Stamped {
+                stamp,
+                value: Arc::new(scan.clone()),
+            },
+        );
+    scan
+}
+
 /// macOS: use `dscl` to query Directory Service for real users.
-fn parse_system_users_macos() -> Vec<SystemUserInfo> {
+fn parse_system_users_macos(
+    current_ssh_dir: Option<&Path>,
+    current_entries: Option<&[AuthorizedKeyEntry]>,
+    cache: &SshStateCache,
+) -> Vec<SystemUserInfo> {
     // dscl . -list /Users UniqueID
     let output = match std::process::Command::new("dscl")
         .args([".", "-list", "/Users", "UniqueID"])
@@ -2499,16 +3014,15 @@ fn parse_system_users_macos() -> Vec<SystemUserInfo> {
             .cloned()
             .unwrap_or_else(|| "/bin/zsh".to_string());
 
-        let (ssh_key_count, authorized_key_count) = count_ssh_keys(&ssh_dir);
-        let authorized_keys_preview = collect_authorized_keys_preview(&ssh_dir, 10);
+        let scan = scan_user_ssh_cached(&ssh_dir, current_ssh_dir, current_entries, cache);
 
         users.push(SystemUserInfo {
             username: username.to_string(),
             shell,
             home_dir,
-            ssh_key_count,
-            authorized_key_count,
-            authorized_keys_preview,
+            ssh_key_count: scan.ssh_key_count,
+            authorized_key_count: scan.authorized_key_count,
+            authorized_keys_preview: scan.authorized_keys_preview,
         });
     }
 
@@ -2545,7 +3059,11 @@ fn dscl_user_shell_map() -> std::collections::HashMap<String, String> {
 }
 
 /// Linux: read /etc/passwd for real users with SSH configured.
-fn parse_system_users_linux() -> Vec<SystemUserInfo> {
+fn parse_system_users_linux(
+    current_ssh_dir: Option<&Path>,
+    current_entries: Option<&[AuthorizedKeyEntry]>,
+    cache: &SshStateCache,
+) -> Vec<SystemUserInfo> {
     let Ok(contents) = std::fs::read_to_string("/etc/passwd") else {
         return vec![];
     };
@@ -2598,130 +3116,20 @@ fn parse_system_users_linux() -> Vec<SystemUserInfo> {
             continue;
         }
 
-        let (ssh_key_count, authorized_key_count) = count_ssh_keys(&ssh_dir);
-        let authorized_keys_preview = collect_authorized_keys_preview(&ssh_dir, 10);
+        let scan = scan_user_ssh_cached(&ssh_dir, current_ssh_dir, current_entries, cache);
 
         users.push(SystemUserInfo {
             username: username.to_string(),
             shell: shell.to_string(),
             home_dir: home_dir.to_string(),
-            ssh_key_count,
-            authorized_key_count,
-            authorized_keys_preview,
+            ssh_key_count: scan.ssh_key_count,
+            authorized_key_count: scan.authorized_key_count,
+            authorized_keys_preview: scan.authorized_keys_preview,
         });
     }
 
     users.sort_by(|a, b| a.username.cmp(&b.username));
     users
-}
-
-/// Count SSH key files and `authorized_keys` entries in a .ssh directory.
-///
-/// Returns `(ssh_key_count, authorized_key_count)`.
-/// SSH keys are private key files (`id_ed25519`, `id_rsa`, etc.) — files
-/// starting with "id_" that don't end in .pub, .old, or .bak.
-fn count_ssh_keys(ssh_dir: &std::path::Path) -> (usize, usize) {
-    // Count private key files (id_* without .pub/.old/.bak suffix).
-    let ssh_key_count = match std::fs::read_dir(ssh_dir) {
-        Ok(entries) => entries
-            .filter_map(std::result::Result::ok)
-            .filter(|e| {
-                let name = e.file_name();
-                let name = name.to_string_lossy();
-                name.starts_with("id_")
-                    && !name.ends_with(".pub")
-                    && !name.ends_with(".old")
-                    && !name.ends_with(".bak")
-            })
-            .count(),
-        Err(_) => 0,
-    };
-
-    // Count authorized_keys entries.
-    let authorized_key_count = match std::fs::read_to_string(ssh_dir.join("authorized_keys")) {
-        Ok(contents) => contents
-            .lines()
-            .filter(|l| {
-                let l = l.trim();
-                !l.is_empty() && !l.starts_with('#')
-            })
-            .count(),
-        Err(_) => 0,
-    };
-
-    (ssh_key_count, authorized_key_count)
-}
-
-/// Read up to `cap` `authorized_keys` entries from a .ssh directory as previews
-/// for the user detail modal.
-///
-/// Each entry captures key type, trailing comment, 1-based line number, and a
-/// best-effort SHA-256 fingerprint (computed via `ssh-key`; left as
-/// `"(unknown)"` if the key blob can't be parsed). Returns an empty vec when
-/// the file is absent or unreadable.
-fn collect_authorized_keys_preview(
-    ssh_dir: &std::path::Path,
-    cap: usize,
-) -> Vec<crate::ui::screens::ssh::AuthorizedKeyPreview> {
-    use crate::ui::screens::ssh::AuthorizedKeyPreview;
-
-    let Ok(contents) = std::fs::read_to_string(ssh_dir.join("authorized_keys")) else {
-        return Vec::new();
-    };
-
-    let mut previews = Vec::new();
-    for (idx, raw) in contents.lines().enumerate() {
-        if previews.len() >= cap {
-            break;
-        }
-        let line = raw.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        // An authorized_keys entry is: [options] type base64 [comment].
-        // Heuristic: if the first whitespace token parses as a known key type,
-        // there are no options; otherwise skip the leading options token.
-        let tokens: Vec<&str> = line.split_whitespace().collect();
-        if tokens.len() < 2 {
-            continue;
-        }
-        let known_types = [
-            "ssh-rsa",
-            "ssh-dss",
-            "ssh-ed25519",
-            "ecdsa-sha2-nistp256",
-            "ecdsa-sha2-nistp384",
-            "ecdsa-sha2-nistp521",
-            "sk-ssh-ed25519@openssh.com",
-            "sk-ecdsa-sha2-nistp256@openssh.com",
-        ];
-        let (key_type, base64_idx, comment) =
-            if known_types.contains(&tokens[0]) || tokens[0].starts_with("ssh-") {
-                (tokens[0], 1, tokens.get(2).copied())
-            } else {
-                // Options present: type is the second token.
-                (tokens[1], 2, tokens.get(3).copied())
-            };
-
-        // Best-effort fingerprint from the openssh string "<type> <base64>".
-        let fingerprint = if base64_idx < tokens.len() {
-            let openssh = format!("{key_type} {}", tokens[base64_idx]);
-            ssh_key::PublicKey::from_openssh(&openssh).ok().map_or_else(
-                || "(unknown)".to_string(),
-                |k| k.fingerprint(ssh_key::HashAlg::Sha256).to_string(),
-            )
-        } else {
-            "(unknown)".to_string()
-        };
-
-        previews.push(AuthorizedKeyPreview {
-            key_type: key_type.to_string(),
-            comment: comment.map(str::to_owned),
-            fingerprint,
-            line: idx + 1,
-        });
-    }
-    previews
 }
 
 // ── Mock Data (test only) ───────────────────────────────────────────────────
@@ -2738,7 +3146,7 @@ mod mock {
             agent_status: collect_mock_agent_status(),
             agent_keys: collect_mock_agent_keys(),
             forwarding: collect_mock_forwarding(),
-            diagnostics: collect_mock_diagnostics(),
+            diagnostics: Arc::new(collect_mock_diagnostics()),
             authorized_keys: collect_mock_authorized_keys(),
             certificates: collect_mock_certificates(),
             security: collect_mock_security(),
@@ -5201,13 +5609,22 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         path
     }
 
+    /// Folded per-user scan previews for a fixture `.ssh` dir (no `id_*`
+    /// key files, so an empty listing is passed — these fixtures target the
+    /// `authorized_keys` half).
+    fn scan_previews(
+        ssh_dir: &std::path::Path,
+    ) -> Vec<crate::ui::screens::ssh::AuthorizedKeyPreview> {
+        scan_user_ssh_dir(&[], ssh_dir).authorized_keys_preview
+    }
+
     #[test]
     fn collect_authorized_keys_preview_parses_valid_key_with_comment() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dir_path = dir.path().to_path_buf();
         write_authorized_keys(&dir_path, PREVIEW_PUB_KEY);
         let ssh_dir = dir_path.join(".ssh");
-        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        let previews = scan_previews(&ssh_dir);
         assert_eq!(previews.len(), 1, "one valid key → one preview");
         let p = &previews[0];
         assert_eq!(p.key_type, "ssh-ed25519", "key type from first token");
@@ -5237,7 +5654,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let dir_path = dir.path().to_path_buf();
         write_authorized_keys(&dir_path, &line);
         let ssh_dir = dir_path.join(".ssh");
-        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        let previews = scan_previews(&ssh_dir);
         assert_eq!(
             previews.len(),
             1,
@@ -5267,7 +5684,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         write_authorized_keys(&dir_path, &contents);
         let ssh_dir = dir_path.join(".ssh");
-        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        let previews = scan_previews(&ssh_dir);
         // Only the two full valid keys survive (comment, blank, and the
         // single-token `not-a-key` / `just-one-token` lines are filtered).
         assert_eq!(previews.len(), 2, "only full key lines parse: {previews:?}");
@@ -5281,15 +5698,27 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
     fn collect_authorized_keys_preview_enforces_cap() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dir_path = dir.path().to_path_buf();
-        // Three valid keys; cap at 2.
-        let contents = format!("{PREVIEW_PUB_KEY}\n{PREVIEW_PUB_KEY}\n{PREVIEW_PUB_KEY}\n");
+        // USER_PREVIEW_CAP + 1 valid keys: previews cap at the constant,
+        // while the entry COUNT (derived from the same single read) keeps
+        // counting past the preview cap.
+        let key = PREVIEW_PUB_KEY;
+        let mut contents = String::new();
+        for _ in 0..=(USER_PREVIEW_CAP + 1) {
+            contents.push_str(key);
+            contents.push('\n');
+        }
         write_authorized_keys(&dir_path, &contents);
         let ssh_dir = dir_path.join(".ssh");
-        let previews = collect_authorized_keys_preview(&ssh_dir, 2);
+        let scan = scan_user_ssh_dir(&[], &ssh_dir);
         assert_eq!(
-            previews.len(),
-            2,
-            "cap must truncate the preview list to the requested maximum"
+            scan.authorized_keys_preview.len(),
+            USER_PREVIEW_CAP,
+            "previews must cap at USER_PREVIEW_CAP"
+        );
+        assert_eq!(
+            scan.authorized_key_count,
+            USER_PREVIEW_CAP + 2,
+            "count counts every entry even past the preview cap"
         );
     }
 
@@ -5299,7 +5728,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let dir = tempfile::tempdir().expect("tempdir");
         let ssh_dir = dir.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).expect("create .ssh");
-        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        let previews = scan_previews(&ssh_dir);
         assert!(previews.is_empty(), "missing authorized_keys → empty vec");
     }
 
@@ -5311,10 +5740,351 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let dir_path = dir.path().to_path_buf();
         write_authorized_keys(&dir_path, "ssh-ed25519\n");
         let ssh_dir = dir_path.join(".ssh");
-        let previews = collect_authorized_keys_preview(&ssh_dir, 10);
+        let previews = scan_previews(&ssh_dir);
         assert!(
             previews.is_empty(),
             "a lone key-type token with no blob must be dropped, not panic"
+        );
+    }
+    // -----------------------------------------------------------------------
+    // F08 oracles: mtime-keyed per-tick state caches
+    // -----------------------------------------------------------------------
+
+    /// Read the current mtime of a fixture file.
+    fn mtime_of(path: &std::path::Path) -> std::time::SystemTime {
+        std::fs::metadata(path)
+            .expect("stat fixture")
+            .modified()
+            .expect("mtime")
+    }
+
+    /// Rewrite `path` with `content`, spinning until the mtime moves so the
+    /// `(mtime, len)` cache stamp is distinguishable from the previous one.
+    fn rewrite_with_new_stamp(
+        path: &std::path::Path,
+        previous: std::time::SystemTime,
+        content: &str,
+    ) {
+        loop {
+            std::fs::write(path, content).expect("rewrite fixture");
+            if mtime_of(path) != previous {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    /// Comparable projection of known-host entries (the UI type lacks
+    /// `PartialEq`).
+    fn known_host_summary(entries: &[KnownHostEntry]) -> Vec<(String, String, Vec<String>)> {
+        entries
+            .iter()
+            .map(|e| {
+                (
+                    e.hosts.join(","),
+                    e.key_type.clone(),
+                    e.fingerprints.clone(),
+                )
+            })
+            .collect()
+    }
+
+    /// Comparable projection of authorized-key entries.
+    fn auth_key_summary(entries: &[AuthorizedKeyEntry]) -> Vec<(String, Option<String>, String)> {
+        entries
+            .iter()
+            .map(|e| (e.key_type.clone(), e.comment.clone(), e.fingerprint.clone()))
+            .collect()
+    }
+
+    /// A valid `known_hosts` line for a real Ed25519 public key.
+    fn known_hosts_line(host: &str) -> String {
+        let (key_type, rest) = PREVIEW_PUB_KEY
+            .split_once(' ')
+            .expect("type + blob + comment");
+        let (blob, _comment) = rest.split_once(' ').unwrap_or((rest, ""));
+        format!("{host} {key_type} {blob}")
+    }
+
+    /// The Arc stored in the `known_hosts` cache slot, if populated.
+    fn known_hosts_slot(cache: &SshStateCache) -> Option<Arc<Vec<KnownHostEntry>>> {
+        cache
+            .known_hosts
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .map(|s| Arc::clone(&s.value))
+    }
+
+    #[tokio::test]
+    async fn known_hits_cache_until_file_changes() {
+        let _lock = acquire_home_lock().await;
+        let home = TempHome::new();
+        let mgr = toride_ssh::SshManager::new().expect("mgr");
+        let paths = toride_ssh::SshPaths::new().expect("paths");
+        let known_hosts_path = paths.known_hosts_path();
+        std::fs::write(known_hosts_path, known_hosts_line("example.com")).expect("write kh");
+
+        let cache = SshStateCache::new();
+        let first = collect_known_hosts_cached(&mgr, Some(&paths), &cache)
+            .await
+            .expect("first collect");
+        assert_eq!(first.len(), 1, "one host line → one grouped entry");
+        let stored = known_hosts_slot(&cache).expect("slot populated after miss");
+
+        // Second collect with an unchanged file: served from the cache
+        // (the slot Arc is NOT replaced) with byte-identical entries.
+        let second = collect_known_hosts_cached(&mgr, Some(&paths), &cache)
+            .await
+            .expect("second collect");
+        assert_eq!(
+            known_host_summary(&first),
+            known_host_summary(&second),
+            "cache hit must be value-identical"
+        );
+        let stored_after = known_hosts_slot(&cache).expect("slot still populated");
+        assert!(
+            Arc::ptr_eq(&stored, &stored_after),
+            "an unchanged file must not rebuild the cached list"
+        );
+
+        // Rewriting the file (new mtime) must invalidate: two hosts now.
+        let two_hosts = format!(
+            "{}\n{}",
+            known_hosts_line("example.com"),
+            known_hosts_line("other.com")
+        );
+        rewrite_with_new_stamp(known_hosts_path, mtime_of(known_hosts_path), &two_hosts);
+        let third = collect_known_hosts_cached(&mgr, Some(&paths), &cache)
+            .await
+            .expect("third collect after rewrite");
+        assert_eq!(third.len(), 2, "invalidation must re-parse the new content");
+        assert_ne!(known_host_summary(&third), known_host_summary(&first));
+        drop(home);
+    }
+
+    #[tokio::test]
+    async fn authorized_keys_hits_cache_until_file_changes() {
+        let _lock = acquire_home_lock().await;
+        let home = TempHome::new();
+        let mgr = toride_ssh::SshManager::new().expect("mgr");
+        let paths = toride_ssh::SshPaths::new().expect("paths");
+        let ak_path = paths.authorized_keys_path();
+        std::fs::write(ak_path, PREVIEW_PUB_KEY).expect("write ak");
+
+        let cache = SshStateCache::new();
+        let first = collect_authorized_keys_cached(&mgr, Some(&paths), &cache)
+            .await
+            .expect("first collect");
+        assert_eq!(first.len(), 1);
+        let stored = cache
+            .authorized_keys
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .map(|s| Arc::clone(&s.value))
+            .expect("slot populated after miss");
+
+        let second = collect_authorized_keys_cached(&mgr, Some(&paths), &cache)
+            .await
+            .expect("second collect");
+        assert_eq!(
+            auth_key_summary(&first),
+            auth_key_summary(&second),
+            "cache hit must be value-identical"
+        );
+        let stored_after = cache
+            .authorized_keys
+            .lock()
+            .expect("lock")
+            .as_ref()
+            .map(|s| Arc::clone(&s.value))
+            .expect("slot still populated");
+        assert!(
+            Arc::ptr_eq(&stored, &stored_after),
+            "unchanged authorized_keys must be served from the cache"
+        );
+
+        // Remove the key → the cache must notice (empty list), never serve
+        // the stale entry.
+        rewrite_with_new_stamp(ak_path, mtime_of(ak_path), "");
+        let third = collect_authorized_keys_cached(&mgr, Some(&paths), &cache)
+            .await
+            .expect("third collect");
+        assert!(third.is_empty(), "key removal must invalidate the cache");
+        drop(home);
+    }
+
+    #[tokio::test]
+    async fn certificates_serve_cached_parse_and_recompute_validity() {
+        let _lock = acquire_home_lock().await;
+        let home = TempHome::new();
+        let mgr = toride_ssh::SshManager::new().expect("mgr");
+        let ssh_dir = toride_ssh::SshPaths::new()
+            .expect("paths")
+            .ssh_dir()
+            .to_path_buf();
+        // A garbage cert file: a real inspect would fail (producing no
+        // entries), so if the converted output carries OUR injected parse,
+        // the hit path demonstrably skipped the inspect.
+        let cert_path = ssh_dir.join("id_test-cert.pub");
+        std::fs::write(&cert_path, "not a certificate").expect("write cert fixture");
+
+        let cache = SshStateCache::new();
+        let stamp = stamp_path(&cert_path).expect("stampable cert fixture");
+        let injected = vec![(
+            cert_path.clone(),
+            toride_ssh::certificate::CertificateInfo {
+                serial: 42,
+                key_type: "ssh-ed25519".into(),
+                key_id: "injected-key-id".into(),
+                valid_principals: vec!["alice".into()],
+                valid_after: 0,
+                valid_before: u64::MAX,
+                critical_options: Vec::new(),
+                extensions: Vec::new(),
+                ca_fingerprint: None,
+                is_host: false,
+            },
+        )];
+        *cache.certificates.lock().expect("lock") = Some(Stamped {
+            stamp: vec![(cert_path.clone(), stamp)],
+            value: Arc::new(injected),
+        });
+
+        let entries = collect_certificates_cached(&mgr, &cache)
+            .await
+            .expect("cached collect");
+        assert_eq!(entries.len(), 1, "cached parse must be served verbatim");
+        assert_eq!(entries[0].key_id, "injected-key-id");
+        assert_eq!(entries[0].serial, 42);
+        assert!(
+            entries[0].is_valid,
+            "validity is recomputed per read against the current clock"
+        );
+        drop(home);
+    }
+
+    #[tokio::test]
+    async fn security_fold_previews_match_file_scan() {
+        // The security pass's current-user fold must derive the SAME
+        // previews (including SHA-256 fingerprints) from the collected
+        // entries that a direct file scan produces.
+        let _lock = acquire_home_lock().await;
+        let _home = TempHome::new();
+        let ssh_dir = std::path::PathBuf::from(std::env::var("HOME").expect("TempHome sets HOME"))
+            .join(".ssh");
+        let contents =
+            format!("# comment\n\n{PREVIEW_PUB_KEY}\ncommand=\"/bin/date\" {PREVIEW_PUB_KEY}\n");
+        std::fs::write(ssh_dir.join("authorized_keys"), &contents).expect("write ak");
+
+        // Fresh file scan (the pre-fold code path shape).
+        let scan = scan_user_ssh_dir(&[], &ssh_dir);
+        assert_eq!(scan.authorized_key_count, 2);
+
+        // Collected entries: exactly the tick's authorized-keys branch.
+        let mgr = toride_ssh::SshManager::new().expect("mgr");
+        let entries = mgr
+            .authorized_keys()
+            .list()
+            .await
+            .map(ssh_convert::convert_authorized_keys)
+            .unwrap_or_default();
+        assert_eq!(entries.len(), 2, "fixture must parse into two entries");
+        let folded = user_scan_from_entries(&entries);
+
+        assert_eq!(folded.authorized_key_count, scan.authorized_key_count);
+        assert_eq!(
+            folded.authorized_keys_preview.len(),
+            scan.authorized_keys_preview.len()
+        );
+        for (f, s) in folded
+            .authorized_keys_preview
+            .iter()
+            .zip(scan.authorized_keys_preview.iter())
+        {
+            assert_eq!(f.key_type, s.key_type);
+            assert_eq!(f.comment, s.comment);
+            assert_eq!(f.line, s.line);
+            assert_eq!(
+                f.fingerprint, s.fingerprint,
+                "fold must reuse the entries' fingerprints, not recompute a different value"
+            );
+        }
+    }
+
+    #[test]
+    fn user_ssh_scan_cache_invalidates_on_authorized_keys_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ssh_dir = dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).expect("mkdir");
+        let ak = ssh_dir.join("authorized_keys");
+        std::fs::write(&ak, PREVIEW_PUB_KEY).expect("write ak");
+
+        let cache = SshStateCache::new();
+        let first = scan_user_ssh_cached(&ssh_dir, None, None, &cache);
+        assert_eq!(first.authorized_key_count, 1);
+        let stored = cache
+            .user_ssh_scans
+            .lock()
+            .expect("lock")
+            .get(&ssh_dir)
+            .map(|s| Arc::clone(&s.value))
+            .expect("stored after miss");
+
+        // Unchanged listing → cache hit, same Arc.
+        let second = scan_user_ssh_cached(&ssh_dir, None, None, &cache);
+        assert_eq!(second.authorized_key_count, 1);
+        let stored_after = cache
+            .user_ssh_scans
+            .lock()
+            .expect("lock")
+            .get(&ssh_dir)
+            .map(|s| Arc::clone(&s.value))
+            .expect("stored");
+        assert!(Arc::ptr_eq(&stored, &stored_after), "hit must not re-scan");
+
+        // Rewriting authorized_keys changes the stamp → re-scan.
+        rewrite_with_new_stamp(
+            &ak,
+            mtime_of(&ak),
+            &format!("{PREVIEW_PUB_KEY}\n{PREVIEW_PUB_KEY}"),
+        );
+        let third = scan_user_ssh_cached(&ssh_dir, None, None, &cache);
+        assert_eq!(third.authorized_key_count, 2, "miss must re-read the file");
+    }
+
+    #[test]
+    fn user_ssh_scan_fold_skips_file_reads_for_current_user() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let ssh_dir = dir.path().join(".ssh");
+        std::fs::create_dir_all(&ssh_dir).expect("mkdir");
+        std::fs::write(ssh_dir.join("authorized_keys"), PREVIEW_PUB_KEY).expect("write ak");
+
+        // Entries as the tick's authorized-keys branch would deliver them.
+        let entries = vec![AuthorizedKeyEntry {
+            key_type: "ssh-ed25519".into(),
+            public_key: String::new(),
+            comment: Some("folded@toride".into()),
+            fingerprint: "SHA256:folded".into(),
+            options: None,
+            line: 1,
+        }];
+
+        let cache = SshStateCache::new();
+        let scan = scan_user_ssh_cached(&ssh_dir, Some(&ssh_dir), Some(&entries), &cache);
+        assert_eq!(scan.authorized_key_count, 1);
+        assert_eq!(scan.authorized_keys_preview.len(), 1);
+        assert_eq!(
+            scan.authorized_keys_preview[0].comment.as_deref(),
+            Some("folded@toride")
+        );
+        assert_eq!(scan.authorized_keys_preview[0].fingerprint, "SHA256:folded");
+        // The fold must not populate the cache with folded data derived
+        // from another tick's collection.
+        assert!(
+            cache.user_ssh_scans.lock().expect("lock").is_empty(),
+            "folded scans must not poison the per-user cache"
         );
     }
 }

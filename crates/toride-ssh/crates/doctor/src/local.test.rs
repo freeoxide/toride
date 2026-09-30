@@ -2143,3 +2143,154 @@ async fn verify_host_key_dns_enabled_reports_dns_check() {
         "expected an SSHFP-related diagnostic, got: {matches:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// F10 oracles: bounded-concurrency run_all
+// ---------------------------------------------------------------------------
+
+/// A [`toride_ssh_core::CliRunner`] that counts every spawn it is asked for
+/// while delegating to the canned [`toride_ssh_core::MockCliRunner`].
+struct CountingRunner<'a> {
+    inner: &'a toride_ssh_core::MockCliRunner,
+    spawns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+
+#[async_trait::async_trait]
+impl toride_ssh_core::CliRunner for CountingRunner<'_> {
+    async fn run(&self, cmd: &str, args: Vec<String>) -> toride_ssh_core::Result<String> {
+        self.spawns
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.run(cmd, args).await
+    }
+    async fn run_with_env(
+        &self,
+        cmd: &str,
+        args: Vec<String>,
+        env: Vec<(String, String)>,
+    ) -> toride_ssh_core::Result<String> {
+        self.spawns
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.run_with_env(cmd, args, env).await
+    }
+    fn tool_exists(&self, name: &str) -> bool {
+        self.spawns
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.tool_exists(name)
+    }
+}
+
+/// The concurrency fan-out must not add CLI spawns: `run_all` still asks the
+/// runner for exactly the one `ssh-keygen` PATH probe the sequential loop
+/// made (`keygen_available`), and nothing else.
+#[tokio::test]
+async fn run_all_spawn_count_matches_sequential_baseline() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("config"), "Host a\n    User u\n").unwrap();
+    let paths = SshPaths::with_dir(dir.path());
+    let mock = toride_ssh_core::MockCliRunner::new();
+    let spawns = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let runner = CountingRunner {
+        inner: &mock,
+        spawns: std::sync::Arc::clone(&spawns),
+    };
+
+    run_all(&paths, &runner).await.expect("run_all");
+
+    assert_eq!(
+        spawns.load(std::sync::atomic::Ordering::Relaxed),
+        1,
+        "run_all must make exactly one runner probe (keygen_available)"
+    );
+}
+
+/// The diagnostic output order must stay stable across runs (and therefore
+/// across concurrent execution): the ids arrive grouped per check, in
+/// registration order.
+#[tokio::test]
+async fn run_all_diagnostic_order_is_stable_across_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(dir.path()).unwrap();
+    std::fs::write(
+        dir.path().join("config"),
+        "Host a\n    IdentityFile /no/such/key\n",
+    )
+    .unwrap();
+    let first = run_checks_with_dir(dir.path()).await;
+    let second = run_checks_with_dir(dir.path()).await;
+    let ids = |d: &[toride_ssh_core::Diagnostic]| d.iter().map(|x| x.id).collect::<Vec<_>>();
+    assert_eq!(
+        ids(&first),
+        ids(&second),
+        "concurrent execution must not reorder diagnostic output"
+    );
+    // And the order is registration order: ssh_dir_exists is the first
+    // registered check, so its diagnostic must come first.
+    assert_eq!(first.first().map(|d| d.id), Some("ssh_dir_exists"));
+}
+
+/// The throttle itself: at most `limit` futures run between their start and
+/// completion, every future completes, and outputs keep input order.
+/// Futures spawned by the throttle test below.
+const THROTTLE_TASKS: usize = 24;
+/// Concurrency bound used by the throttle test below.
+const THROTTLE_LIMIT: usize = 4;
+
+#[tokio::test]
+async fn join_all_bounded_caps_in_flight_and_preserves_order() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let in_flight = std::sync::Arc::new(AtomicUsize::new(0));
+    let max_in_flight = std::sync::Arc::new(AtomicUsize::new(0));
+
+    let futs = (0..THROTTLE_TASKS).map(|i| {
+        let in_flight = std::sync::Arc::clone(&in_flight);
+        let max_in_flight = std::sync::Arc::clone(&max_in_flight);
+        async move {
+            let cur = in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            max_in_flight.fetch_max(cur, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            in_flight.fetch_sub(1, Ordering::SeqCst);
+            i
+        }
+    });
+
+    let out = join_all_bounded(THROTTLE_LIMIT, futs).await;
+    assert_eq!(
+        out,
+        (0..THROTTLE_TASKS).collect::<Vec<_>>(),
+        "input order preserved"
+    );
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) <= THROTTLE_LIMIT,
+        "concurrency cap violated: max in flight {} > {THROTTLE_LIMIT}",
+        max_in_flight.load(Ordering::SeqCst)
+    );
+    assert!(
+        max_in_flight.load(Ordering::SeqCst) > 1,
+        "futures must actually overlap (sequential execution would defeat the fix)"
+    );
+}
+
+/// `join_all` semantics: one future's `Err` never cancels its siblings.
+/// Outcome token for the sibling-failure test below.
+#[derive(Debug, PartialEq, Eq)]
+enum JoinItem {
+    Err(&'static str),
+    Ok(u8),
+}
+
+#[tokio::test]
+async fn join_all_bounded_sibling_failure_does_not_cancel_siblings() {
+    let futs: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = JoinItem>>>> = vec![
+        Box::pin(async { JoinItem::Err("boom") }),
+        Box::pin(async { JoinItem::Ok(7) }),
+        Box::pin(async { JoinItem::Ok(9) }),
+        Box::pin(async { JoinItem::Err("also failed") }),
+    ];
+    let out = join_all_bounded(2, futs).await;
+    assert_eq!(out.len(), 4, "every future must complete");
+    assert_eq!(out[0], JoinItem::Err("boom"));
+    assert_eq!(out[1], JoinItem::Ok(7));
+    assert_eq!(out[2], JoinItem::Ok(9));
+    assert_eq!(out[3], JoinItem::Err("also failed"));
+}

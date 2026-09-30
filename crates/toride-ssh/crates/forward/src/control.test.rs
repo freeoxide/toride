@@ -495,40 +495,66 @@ fn cancel_spec_dynamic_forward() {
 }
 
 // ---------------------------------------------------------------------------
-// glob_matches tests
+// collect_matching_any tests (single-pass candidate enumeration)
 // ---------------------------------------------------------------------------
 
-#[test]
-fn glob_matches_prefix_wildcard() {
-    assert!(glob_matches("cm-*", "cm-user@host:22"));
-    assert!(glob_matches("ssh-*", "ssh-abc123"));
+/// Create a Unix socket file at `path` (a zero-length bind is enough for the
+/// candidate heuristic: sockets are detected by file type).
+fn make_socket_file(path: &std::path::Path) {
+    use std::os::unix::net::UnixListener;
+    let listener = UnixListener::bind(path).expect("bind test socket");
+    // Dropping the listener unlinks the socket on drop; keep the file by
+    // leaking the listener for the process lifetime of the test.
+    std::mem::forget(listener);
 }
 
 #[test]
-fn glob_matches_exact() {
-    assert!(glob_matches("cm-foo", "cm-foo"));
-    assert!(!glob_matches("cm-foo", "cm-bar"));
+fn collect_matching_any_finds_all_four_prefixes_in_one_pass() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    make_socket_file(&dir.path().join("cm-alice@host:22"));
+    make_socket_file(&dir.path().join("control-bob@host:22"));
+    make_socket_file(&dir.path().join("mux-carol@host:22"));
+    make_socket_file(&dir.path().join("ctrl-dave@host:22"));
+
+    let mut found = collect_matching_any(dir.path(), SSH_DIR_PREFIXES);
+    found.sort();
+    assert_eq!(found.len(), 4, "all four prefixes must match in one pass");
+    assert!(found.iter().all(|p| p.starts_with(dir.path())));
 }
 
 #[test]
-fn glob_matches_no_match() {
-    assert!(!glob_matches("cm-*", "ctrl-user@host"));
-    assert!(!glob_matches("mux-*", "cm-user@host"));
+fn collect_matching_any_excludes_non_candidates() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    make_socket_file(&dir.path().join("cm-keep@host:22"));
+    // Non-matching names and dot-less-but-non-socket junk are excluded.
+    make_socket_file(&dir.path().join("ssh-other-hash-1"));
+    std::fs::write(dir.path().join("known_hosts"), b"").expect("write junk");
+    std::fs::write(dir.path().join("id_ed25519"), b"not a socket").expect("write junk");
+
+    let found = collect_matching_any(dir.path(), SSH_DIR_PREFIXES);
+    assert_eq!(
+        found.len(),
+        1,
+        "only the cm- candidate may be returned: found {found:?}"
+    );
+    assert!(found[0].ends_with("cm-keep@host:22"));
 }
 
 #[test]
-fn glob_matches_empty_pattern() {
-    assert!(!glob_matches("", "cm-user@host"));
+fn collect_matching_any_missing_dir_is_empty() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let missing = dir.path().join("does-not-exist");
+    assert!(collect_matching_any(&missing, SSH_DIR_PREFIXES).is_empty());
 }
 
 #[test]
-fn glob_matches_empty_name() {
-    assert!(!glob_matches("cm-*", ""));
-}
+fn collect_matching_any_tmp_prefix() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    make_socket_file(&dir.path().join("ssh-abcdefghij-4242"));
 
-#[test]
-fn glob_matches_wildcard_only() {
-    assert!(glob_matches("*", "anything"));
+    let found = collect_matching_any(dir.path(), &["ssh-"]);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].ends_with("ssh-abcdefghij-4242"));
 }
 
 // ---------------------------------------------------------------------------

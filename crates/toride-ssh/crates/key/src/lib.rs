@@ -90,6 +90,23 @@ pub struct KeyService<'a> {
     runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
+/// Inspect a private key file, memoized on the file's `(mtime, len)` stamp.
+///
+/// Periodic scans call this for every discovered key file; an unchanged
+/// file is served from the process-wide memo instead of repeating the
+/// MPINT decode, key-type parse, and SHA-256 fingerprint. Rewriting the
+/// file (key rotation) changes the stamp and re-parses — invalidation is
+/// content-keyed, never a TTL.
+///
+/// # Errors
+///
+/// Returns the same errors as the uncached parse: [`Error::Io`]-style read
+/// failures are not memoized (the next call retries), so transient
+/// permission errors are not frozen in.
+pub fn inspect_key_cached(path: &std::path::Path) -> Result<SshKey> {
+    inventory::inspect_private_key_cached(path)
+}
+
 impl<'a> KeyService<'a> {
     pub fn new(paths: &'a SshPaths, runner: &'a dyn toride_ssh_core::CliRunner) -> Self {
         Self { paths, runner }

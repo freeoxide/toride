@@ -6,6 +6,7 @@
 //! directives, in-place editing, managed host blocks, parsing, and resolution.
 
 pub mod ast;
+pub mod cache;
 mod directives;
 mod editor;
 mod managed;
@@ -18,7 +19,7 @@ use std::path::{Path, PathBuf};
 
 use toride_ssh_core::Result;
 use toride_ssh_core::SshPaths;
-use toride_ssh_core::{Diagnostic, Severity};
+use toride_ssh_core::{Diagnostic, Error, Severity};
 
 pub use resolve::ResolvedHost;
 
@@ -37,6 +38,11 @@ impl<'a> ConfigService<'a> {
 
     /// Load and parse the SSH config into a lossless AST.
     ///
+    /// Parsing goes through the process-wide mtime-keyed cache
+    /// ([`cache::load_cached_ast`]), so repeat loads of an unchanged file
+    /// (once per collection tick, plus the key inventory's `IdentityFile`
+    /// scan and the doctor checks in the same pass) share a single parse.
+    ///
     /// If the config file does not exist, returns an empty AST.
     ///
     /// # Errors
@@ -47,8 +53,11 @@ impl<'a> ConfigService<'a> {
         if !path.exists() {
             return Ok(ast::ConfigAst { nodes: Vec::new() });
         }
-        let content = tokio::fs::read_to_string(&path).await?;
-        Ok(ast::parse(&content))
+        let path = path.to_path_buf();
+        let ast = tokio::task::spawn_blocking(move || cache::load_cached_ast(&path))
+            .await
+            .map_err(|e| Error::TaskFailed(e.to_string()))??;
+        Ok((*ast).clone())
     }
 
     /// Save the AST back to the config file.

@@ -99,6 +99,30 @@ pub async fn list_forwards(control_path: &Path) -> Result<Vec<PortForward>> {
     Ok(parse_forward_output(&output))
 }
 
+/// Run [`list_forwards`] for many control paths under bounded concurrency.
+///
+/// At most [`MAX_CONCURRENT_CONTROL_CMDS`] `ssh -O list` spawns are in
+/// flight at once (each is a process spawn, so unbounded fan-out would
+/// burst the process table), and results are returned in input order so
+/// callers can `zip` them against their session list. One session's failure
+/// does not cancel the others — every input yields its own `Result`.
+pub async fn list_forwards_bounded<I>(paths: I) -> Vec<Result<Vec<PortForward>>>
+where
+    I: IntoIterator<Item = PathBuf>,
+{
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONTROL_CMDS));
+    let futs = paths.into_iter().map(|path| {
+        let semaphore = std::sync::Arc::clone(&semaphore);
+        async move {
+            // A closed semaphore (never done here) degrades to unbounded
+            // rather than failing the listing.
+            let _permit = semaphore.acquire_owned().await.ok();
+            list_forwards(&path).await
+        }
+    });
+    futures::future::join_all(futs).await
+}
+
 /// Parse the output of `ssh -O list` into structured forward entries.
 ///
 /// Typical output looks like:
@@ -353,6 +377,14 @@ fn is_stale_socket(path: &Path) -> bool {
     }
 }
 
+/// Maximum number of concurrent `ssh -O` control-command spawns.
+///
+/// Each candidate socket verification spawns an `ssh` process; with many
+/// stale sockets an unbounded fan-out would burst the process table. The
+/// bound keeps the wall-clock win of overlapping the spawns without that
+/// burst.
+const MAX_CONCURRENT_CONTROL_CMDS: usize = 8;
+
 /// Discover active `ControlMaster` sessions by scanning common socket locations.
 ///
 /// Checks:
@@ -360,7 +392,10 @@ fn is_stale_socket(path: &Path) -> bool {
 /// 2. `/tmp/ssh-*` (default OpenSSH location)
 /// 3. Any socket file in `~/.ssh/` that looks like a control socket
 ///
-/// Each candidate is verified with `ssh -O check` to confirm it is alive.
+/// The `~/.ssh` prefixes are matched in a single directory enumeration
+/// (they share one `read_dir` pass), and each candidate is verified with a
+/// bounded-concurrency batch of `ssh -O check` spawns (at most
+/// [`MAX_CONCURRENT_CONTROL_CMDS`] in flight).
 ///
 /// # Errors
 ///
@@ -370,17 +405,13 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     let ssh_dir = ssh_dir.to_path_buf();
     let tmp_dir = std::path::PathBuf::from("/tmp");
 
-    let sessions = tokio::task::spawn_blocking(move || {
-        let mut candidates: Vec<PathBuf> = Vec::new();
-
-        // 1. ~/.ssh/cm-*, ~/.ssh/control-*, ~/.ssh/mux-*, ~/.ssh/ctrl-*
-        collect_matching(&ssh_dir, "cm-*", &mut candidates);
-        collect_matching(&ssh_dir, "control-*", &mut candidates);
-        collect_matching(&ssh_dir, "mux-*", &mut candidates);
-        collect_matching(&ssh_dir, "ctrl-*", &mut candidates);
+    let candidates = tokio::task::spawn_blocking(move || {
+        // 1. ~/.ssh/cm-*, ~/.ssh/control-*, ~/.ssh/mux-*, ~/.ssh/ctrl-* —
+        //    one enumeration shared by all four prefixes.
+        let mut candidates = collect_matching_any(&ssh_dir, SSH_DIR_PREFIXES);
 
         // 2. /tmp/ssh-*
-        collect_matching(&tmp_dir, "ssh-*", &mut candidates);
+        candidates.extend(collect_matching_any(&tmp_dir, &["ssh-"]));
 
         candidates.sort();
         candidates.dedup();
@@ -390,41 +421,49 @@ pub async fn list_sessions(ssh_dir: &Path) -> Result<Vec<ControlSession>> {
     .await
     .map_err(|e| Error::TaskFailed(e.to_string()))?;
 
-    // Verify candidates sequentially to avoid overwhelming the system
-    // with concurrent ssh processes when many stale sockets are present.
-    let mut alive = Vec::new();
-    for candidate in sessions {
-        if check_alive(&candidate).await {
-            let session = build_session(&candidate);
-            alive.push(session);
+    // Verify candidates with bounded (not unbounded) concurrency — many
+    // stale sockets must not burst the process table, but sequential
+    // spawning is unnecessarily slow.
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_CONTROL_CMDS));
+    let checks = candidates.iter().map(|candidate| {
+        let semaphore = std::sync::Arc::clone(&semaphore);
+        let candidate = candidate.clone();
+        async move {
+            let _permit = semaphore.acquire_owned().await.ok();
+            check_alive(&candidate).await
         }
-    }
+    });
+    let alive_flags = futures::future::join_all(checks).await;
+
+    let alive = candidates
+        .into_iter()
+        .zip(alive_flags)
+        .filter_map(|(candidate, alive)| alive.then(|| build_session(&candidate)))
+        .collect();
 
     Ok(alive)
 }
 
-/// Collect paths matching a glob pattern inside a directory.
-fn collect_matching(dir: &Path, pattern: &str, out: &mut Vec<PathBuf>) {
-    if let Ok(entries) = std::fs::read_dir(dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
-                continue;
-            };
-            if glob_matches(pattern, name) && is_socket_or_candidate(&path) {
-                out.push(path);
-            }
+/// Control-socket filename prefixes scanned inside `~/.ssh`.
+const SSH_DIR_PREFIXES: &[&str] = &["cm-", "control-", "mux-", "ctrl-"];
+
+/// Collect socket-or-candidate paths whose filename starts with any of
+/// `prefixes`, in a single `read_dir` pass over `dir`.
+fn collect_matching_any(dir: &Path, prefixes: &[&str]) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        if prefixes.iter().any(|p| name.starts_with(p)) && is_socket_or_candidate(&path) {
+            out.push(path);
         }
     }
-}
-
-/// Simple glob matching supporting only `*` wildcard at the end of a prefix.
-fn glob_matches(pattern: &str, name: &str) -> bool {
-    if let Some(prefix) = pattern.strip_suffix('*') {
-        name.starts_with(prefix)
-    } else {
-        name == pattern
-    }
+    out
 }
 
 /// Check if a path is a Unix socket or a candidate control socket file.

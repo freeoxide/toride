@@ -3,6 +3,7 @@
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
+use std::sync::{LazyLock, Mutex};
 
 use base64::Engine;
 
@@ -31,6 +32,101 @@ fn algorithm_to_key_type(algo: &ssh_key::Algorithm) -> Option<KeyType> {
             None
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Mtime-keyed parse memoization
+// ---------------------------------------------------------------------------
+
+/// Freshness stamp for a key file: nanosecond mtime plus length.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileStamp {
+    mtime_ns: u128,
+    len: u64,
+}
+
+/// One memoized [`SshKey`] parse.
+struct CachedKey {
+    stamp: FileStamp,
+    key: SshKey,
+}
+
+/// Process-wide memo of per-file key parses, keyed by path.
+///
+/// The periodic inventory scan re-decodes every private key (MPINT decode,
+/// key-type parse, SHA-256 fingerprint) on each collection tick even when
+/// nothing changed. Parsing is a pure function of the file bytes, so the
+/// result is memoized on the file's `(mtime, len)` stamp: any rotation or
+/// edit changes the stamp and re-parses — invalidation is content-keyed,
+/// never a TTL. Files whose mtime cannot be determined bypass the cache.
+///
+/// Entries are small and keyed by path, so the map is bounded by the set of
+/// key files scanned during the process lifetime. Read errors are not
+/// cached (transient/permission failures retry on the next scan). This
+/// cache is deliberately shared with the doctor's key checks via
+/// [`crate::inspect_key_cached`], so both subsystems parse a given
+/// unchanged key file at most once between mutations.
+static KEY_PARSE_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedKey>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Compute a file's freshness stamp, or `None` when the mtime is
+/// unavailable (such files are never cached).
+fn key_stamp(metadata: &std::fs::Metadata) -> Option<FileStamp> {
+    let mtime_ns = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_nanos();
+    Some(FileStamp {
+        mtime_ns,
+        len: metadata.len(),
+    })
+}
+
+/// Parse a private key file, memoized on its `(mtime, len)` stamp.
+///
+/// Returns the same data [`inspect_private_key`] would, skipping the
+/// MPINT/fingerprint work when the file is unchanged since the last scan.
+pub(crate) fn inspect_private_key_cached(path: &Path) -> Result<SshKey> {
+    let metadata = std::fs::metadata(path).map_err(|e| Error::KeyParseFailed(format!("{e}")))?;
+    let Some(stamp) = key_stamp(&metadata) else {
+        return inspect_private_key(path);
+    };
+
+    {
+        let cache = KEY_PARSE_CACHE
+            .lock()
+            .expect("key parse cache mutex poisoned");
+        if let Some(entry) = cache.get(path)
+            && entry.stamp == stamp
+        {
+            return Ok(entry.key.clone());
+        }
+    }
+
+    let key = inspect_private_key(path)?;
+    KEY_PARSE_CACHE
+        .lock()
+        .expect("key parse cache mutex poisoned")
+        .insert(
+            path.to_path_buf(),
+            CachedKey {
+                stamp,
+                key: key.clone(),
+            },
+        );
+    Ok(key)
+}
+
+/// Drop every memoized key parse. Test hook so suites observe cold-cache
+/// behavior on reused paths.
+#[cfg(test)]
+pub(crate) fn clear_key_cache_for_tests() {
+    KEY_PARSE_CACHE
+        .lock()
+        .expect("key parse cache mutex poisoned")
+        .clear();
 }
 
 /// Try to parse a private key file and determine its metadata.
@@ -256,15 +352,16 @@ struct ConfigKeyScan {
 /// [`scan_keys`] can populate [`SshKey::used_by_hosts`].
 fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
     let config_path = ssh_dir.join("config");
-    let Ok(content) = std::fs::read_to_string(&config_path) else {
+    // Share the mtime-keyed cached AST with the config-tab load and the
+    // doctor checks in the same collection pass — one parse per pass for an
+    // unchanged config instead of one per consumer.
+    let Ok(ast) = toride_ssh_config::cache::load_cached_ast(&config_path) else {
         return ConfigKeyScan {
             identity_paths: Vec::new(),
             pkcs11_providers: Vec::new(),
             identity_host_map: HashMap::new(),
         };
     };
-
-    let ast = toride_ssh_config::ast::parse(&content);
     let mut identity_paths = Vec::new();
     let mut seen_identity = HashSet::new();
     let mut pkcs11_providers = Vec::new();
@@ -603,9 +700,10 @@ fn scan_filesystem_keys(
     // Sort for deterministic output.
     private_key_paths.sort();
 
-    // Inspect each private key.
+    // Inspect each private key (memoized on mtime+size so unchanged keys
+    // skip the MPINT decode and SHA-256 fingerprint on re-scan).
     for path in &private_key_paths {
-        match inspect_private_key(path) {
+        match inspect_private_key_cached(path) {
             Ok(mut key) => {
                 // Populate used_by_hosts from the config host map.
                 if let Some(hosts) = config_scan.identity_host_map.get(path) {
@@ -909,9 +1007,9 @@ mod tests {
         assert!(is_likely_encrypted(data));
     }
 
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // Key inventory with config-sourced keys
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
     #[tokio::test]
     async fn scan_keys_discovers_identity_file_from_config() {
@@ -1090,9 +1188,9 @@ Host personal
         assert!(keys.is_empty());
     }
 
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // Standalone .pub file scanning
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
     #[tokio::test]
     async fn scan_keys_discovers_standalone_pub_file() {
@@ -1156,9 +1254,9 @@ Host personal
         );
     }
 
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // SSH v1 key detection
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
     #[tokio::test]
     async fn scan_keys_handles_ssh_v1_keys_without_panic() {
@@ -1193,9 +1291,9 @@ Host personal
         );
     }
 
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // PKCS#11 detection
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
     #[tokio::test]
     async fn scan_keys_detects_pkcs11_provider() {
@@ -1251,9 +1349,9 @@ Host hsm2
         );
     }
 
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // Config-sourced keys outside ~/.ssh
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
     #[tokio::test]
     async fn scan_keys_discovers_config_identity_outside_ssh_dir() {
@@ -1295,14 +1393,160 @@ Host hsm2
         assert!(found.fingerprint.is_some());
     }
 
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
     // Agent-only keys — tested in agent/client.test.rs
     // (agent::client is a private module, so we test parse_ssh_add_line there)
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
+    // Mtime-keyed parse cache (F08)
+    // ---------------------------------------------------------------------------
+
+    /// Generate a fresh Ed25519 key pair at `dir/name`.
+    fn gen_ed25519(dir: &Path, name: &str, comment: &str) -> PathBuf {
+        let key_path = dir.join(name);
+        let output = std::process::Command::new("ssh-keygen")
+            .args([
+                "-t",
+                "ed25519",
+                "-f",
+                key_path.to_str().unwrap(),
+                "-N",
+                "",
+                "-C",
+                comment,
+            ])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "ssh-keygen failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        key_path
+    }
+
+    /// Rewrite `path` with `content`, spinning until its mtime moves past
+    /// `previous` so the (mtime, len) stamp is distinguishable.
+    fn rewrite_with_new_stamp(path: &Path, previous: std::time::SystemTime, content: &str) {
+        loop {
+            std::fs::write(path, content).expect("rewrite key fixture");
+            let now = std::fs::metadata(path)
+                .expect("stat key fixture")
+                .modified()
+                .expect("mtime");
+            if now != previous {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    fn mtime_of(path: &Path) -> std::time::SystemTime {
+        std::fs::metadata(path)
+            .expect("stat key fixture")
+            .modified()
+            .expect("mtime")
+    }
+
+    #[test]
+    fn cached_inspect_matches_fresh_parse() {
+        clear_key_cache_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = gen_ed25519(dir.path(), "id_cache_parity", "parity-test");
+
+        let fresh = inspect_private_key(&key_path).expect("fresh parse");
+        let cached = crate::inspect_key_cached(&key_path).expect("cached parse");
+        // Cached-vs-fresh parity: every observable field must match.
+        assert_eq!(cached.path, fresh.path);
+        assert_eq!(cached.key_type, fresh.key_type);
+        assert_eq!(cached.encrypted, fresh.encrypted);
+        assert_eq!(cached.comment, fresh.comment);
+        assert_eq!(
+            cached.fingerprint.as_ref().map(|f| f.hash.as_str()),
+            fresh.fingerprint.as_ref().map(|f| f.hash.as_str())
+        );
+    }
+
+    #[test]
+    fn cache_hit_returns_identical_fingerprint_without_reparse() {
+        clear_key_cache_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = gen_ed25519(dir.path(), "id_cache_hit", "hit-test");
+
+        let first = crate::inspect_key_cached(&key_path).expect("first parse");
+        let second = crate::inspect_key_cached(&key_path).expect("second (cached) parse");
+        assert_eq!(
+            first.fingerprint.expect("fingerprint").hash,
+            second.fingerprint.expect("fingerprint").hash
+        );
+    }
+
+    #[test]
+    fn rewritten_key_reparses() {
+        clear_key_cache_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = gen_ed25519(dir.path(), "id_cache_inval", "before-rotation");
+        let before = crate::inspect_key_cached(&key_path).expect("parse before");
+        assert_eq!(before.comment.as_deref(), Some("before-rotation"));
+
+        // Rotate: generate a different key and copy it over the cached path.
+        let rotated = gen_ed25519(dir.path(), "id_cache_rotated", "after-rotation");
+        let content = std::fs::read_to_string(&rotated).unwrap();
+        rewrite_with_new_stamp(&key_path, mtime_of(&key_path), &content);
+
+        let after = crate::inspect_key_cached(&key_path).expect("parse after");
+        assert_eq!(
+            after.comment.as_deref(),
+            Some("after-rotation"),
+            "a rewritten key must be re-parsed, never served stale"
+        );
+        assert_ne!(
+            before.fingerprint.expect("fp").hash,
+            after.fingerprint.expect("fp").hash
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_keys_order_is_deterministic_for_cache_stability() {
+        // Pin the keys list ordering: private keys sorted by path, then
+        // standalone .pub entries — the cache must return hits in the same
+        // order as a fresh scan.
+        clear_key_cache_for_tests();
+        let dir = tempfile::tempdir().unwrap();
+        let ssh_dir = dir.path();
+        let a = gen_ed25519(ssh_dir, "id_alpha", "a");
+        let b = gen_ed25519(ssh_dir, "id_beta", "b");
+        let c = gen_ed25519(ssh_dir, "id_gamma", "c");
+
+        let paths = toride_ssh_core::SshPaths::with_dir(ssh_dir);
+        let first = scan_keys(&paths, None).await.unwrap();
+        let private_paths: Vec<_> = first
+            .iter()
+            .map(|k| k.path.clone())
+            .filter(|p| p.extension().is_none())
+            .collect();
+        // The scan discovers id_* files via read_dir but sorts before
+        // inspecting, so the private-key prefix of the list is sorted.
+        let mut sorted = private_paths.clone();
+        sorted.sort();
+        assert_eq!(private_paths, sorted);
+        assert!(private_paths.contains(&a));
+        assert!(private_paths.contains(&b));
+        assert!(private_paths.contains(&c));
+
+        // Second scan (all cache hits) yields the identical order.
+        let second = scan_keys(&paths, None).await.unwrap();
+        assert_eq!(
+            first.iter().map(|k| k.path.clone()).collect::<Vec<_>>(),
+            second.iter().map(|k| k.path.clone()).collect::<Vec<_>>(),
+            "cache hits must be order-stable"
+        );
+    }
+
+    // ---------------------------------------------------------------------------
     // filter_new_agent_keys — agent key deduplication by fingerprint
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
 
     /// Helper: build an `SshKey` with the given fingerprint hash and source.
     #[cfg(feature = "agent-integration")]

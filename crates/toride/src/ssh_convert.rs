@@ -663,4 +663,50 @@ mod tests {
         assert_eq!(entries[0].port, Some(2222));
         assert_eq!(entries[0].directive_count, 3);
     }
+    // ── List-ordering pins (F08 precondition for memoizing fingerprints) ─────
+
+    #[test]
+    fn convert_known_hosts_output_is_sorted_by_host_group() {
+        // Entries are grouped into a BTreeMap keyed by the sorted
+        // comma-joined hosts, so the converted list order is the host-key
+        // order — independent of input line order. Memoized lists must keep
+        // returning this exact order on cache hits.
+        let line = |host: &str| toride_ssh::known_hosts::KnownHostEntry {
+            markers: vec![],
+            hosts: vec![host.to_owned()],
+            key_type: "ssh-ed25519".into(),
+            public_key: "AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5U"
+                .into(),
+            comment: None,
+            line_number: 1,
+        };
+        let entries = vec![
+            line("zeta.example"),
+            line("alpha.example"),
+            line("mid.example"),
+        ];
+        let out = convert_known_hosts(&entries);
+        let hosts: Vec<&str> = out.iter().map(|e| e.hosts[0].as_str()).collect();
+        assert_eq!(hosts, ["alpha.example", "mid.example", "zeta.example"]);
+    }
+
+    #[test]
+    fn convert_authorized_keys_preserves_file_line_order() {
+        let mk = |comment: &str, line: usize| toride_ssh::authorized_keys::Entry {
+            options: None,
+            key_type: "ssh-ed25519".into(),
+            public_key: "AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5U"
+                .into(),
+            comment: Some(comment.to_owned()),
+            line_number: line,
+            raw_line: String::new(),
+        };
+        let entries = vec![mk("third", 3), mk("first", 1), mk("second", 2)];
+        let out = convert_authorized_keys(entries);
+        let comments: Vec<&str> = out.iter().map(|e| e.comment.as_deref().unwrap()).collect();
+        // Conversion keeps the input (file) order verbatim — the memoized
+        // list must be byte-stable in this order.
+        assert_eq!(comments, ["third", "first", "second"]);
+        assert_eq!(out.iter().map(|e| e.line).collect::<Vec<_>>(), [3, 1, 2]);
+    }
 }

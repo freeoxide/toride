@@ -7,6 +7,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use crate::check::{Check, CheckFuture};
 use toride_ssh_config::ast::{self, ConfigNode};
+use toride_ssh_config::cache::load_cached_ast;
 use toride_ssh_core::Result;
 use toride_ssh_core::paths::SshPaths;
 use toride_ssh_core::{Diagnostic, Severity};
@@ -1101,7 +1102,9 @@ impl Check for CertificateFileExistsCheck<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "certificate_file_exists",
                     severity: Severity::Info,
@@ -1113,8 +1116,6 @@ impl Check for CertificateFileExistsCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
             let mut cert_files: Vec<String> = Vec::new();
 
             // Collect CertificateFile directives from top-level and Host blocks.
@@ -1199,7 +1200,9 @@ impl Check for IdentityFileExistsCheck<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "identity_file_exists",
                     severity: Severity::Info,
@@ -1211,8 +1214,6 @@ impl Check for IdentityFileExistsCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
             let mut identity_files: Vec<String> = Vec::new();
 
             // Collect IdentityFile directives from top-level and Host blocks.
@@ -1291,7 +1292,9 @@ impl Check for DuplicateHostCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "duplicate_host",
                     severity: Severity::Info,
@@ -1303,8 +1306,6 @@ impl Check for DuplicateHostCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
 
             // Track each pattern and the first Host block header it appeared in.
             let mut seen: HashMap<String, String> = HashMap::new();
@@ -1372,7 +1373,9 @@ impl Check for HostStarPlacementCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "host_star_placement",
                     severity: Severity::Info,
@@ -1384,8 +1387,6 @@ impl Check for HostStarPlacementCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
 
             // Find the index of the first Host * and the last specific Host block.
             let mut star_index: Option<usize> = None;
@@ -1500,7 +1501,9 @@ impl Check for UseKeychainPlatformCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "use_keychain_platform",
                     severity: Severity::Info,
@@ -1512,8 +1515,6 @@ impl Check for UseKeychainPlatformCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
             let mut use_keychain_contexts: Vec<String> = Vec::new();
 
             // Collect UseKeychain directives from top-level and Host blocks.
@@ -1602,11 +1603,11 @@ impl Check for IdentityFilePubCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![]);
             };
-
-            let ast = ast::parse(&content);
             let mut diagnostics = Vec::new();
 
             let check_value = |raw: &str, diags: &mut Vec<Diagnostic>| {
@@ -1682,11 +1683,11 @@ impl Check for IdentitiesOnlyCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![]);
             };
-
-            let ast = ast::parse(&content);
             let mut diagnostics = Vec::new();
 
             for node in &ast.nodes {
@@ -1810,7 +1811,9 @@ impl Check for GssapiConfigCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "gssapi_config",
                     severity: Severity::Info,
@@ -1822,8 +1825,6 @@ impl Check for GssapiConfigCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
 
             // Collect GSSAPI directives with their context (top-level or Host block).
             let mut findings: Vec<(String, String, String)> = Vec::new();
@@ -2256,7 +2257,9 @@ impl Check for PreferredAuthenticationsCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "preferred_authentications",
                     severity: Severity::Info,
@@ -2268,8 +2271,6 @@ impl Check for PreferredAuthenticationsCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
             let mut preferred: Vec<(String, String)> = Vec::new(); // (context, value)
 
             // Collect PreferredAuthentications from top-level and Host blocks.
@@ -2356,7 +2357,9 @@ impl Check for ProxyJumpHostCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "proxy_jump_host",
                     severity: Severity::Info,
@@ -2368,8 +2371,6 @@ impl Check for ProxyJumpHostCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
 
             // Collect all Host block patterns for lookup.
             let mut host_patterns: Vec<String> = Vec::new();
@@ -2558,7 +2559,9 @@ impl Check for AgentIdentityCheck<'_> {
             }
 
             // Read config to find IdentityFile directives.
-            let Ok(content) = tokio::fs::read_to_string(&config_path).await else {
+            // Shared mtime-keyed AST: the first check to read the config this run
+            // parses it; the rest reuse the cached Arc (one parse per run).
+            let Ok(ast) = load_cached_ast(&config_path) else {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
                     severity: Severity::Info,
@@ -2570,8 +2573,6 @@ impl Check for AgentIdentityCheck<'_> {
                     module: "local",
                 }]);
             };
-
-            let ast = ast::parse(&content);
             let mut identity_files: Vec<String> = Vec::new();
 
             for node in &ast.nodes {
@@ -3050,7 +3051,54 @@ impl Check for SELinuxContextCheck<'_> {
 // run_all — execute every local check
 // ---------------------------------------------------------------------------
 
+/// Maximum number of checks running their I/O concurrently.
+///
+/// Checks are independent read-only diagnostics, but several spawn CLI
+/// helpers (`restorecon`, `ssh -O`, `host`); an unbounded fan-out would
+/// burst the process table when many stale sockets or keys exist. The bound
+/// keeps the wall-clock win of overlapping the checks' await points without
+/// that burst (`join_all` semantics — one check failing or hanging never
+/// cancels its siblings).
+const MAX_CONCURRENT_CHECKS: usize = 8;
+
+/// One check's boxed outcome future.
+///
+/// Boxing gives the joined collection a concrete `Send` item type (see the
+/// comment at the collection site in [`run_all`]).
+type BoxedCheckFuture<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + 'a>>;
+
+/// Join every future to completion under a bounded-concurrency throttle.
+///
+/// `join_all` semantics: every future runs to completion regardless of its
+/// siblings' outcomes (an `Err` output is a value, not a cancellation), and
+/// outputs come back in input order so callers can re-zip them against
+/// their inputs. The semaphore only caps how many futures hold a permit —
+/// i.e. run their awaited I/O — at once; a permit is never required to make
+/// progress, so a closed semaphore (never done here) degrades to unbounded
+/// execution rather than deadlock.
+async fn join_all_bounded<I, T>(limit: usize, futs: I) -> Vec<T>
+where
+    I: IntoIterator,
+    I::Item: std::future::Future<Output = T>,
+{
+    let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(limit));
+    let guarded = futs.into_iter().map(|fut| {
+        let semaphore = std::sync::Arc::clone(&semaphore);
+        async move {
+            let _permit = semaphore.acquire_owned().await.ok();
+            fut.await
+        }
+    });
+    futures::future::join_all(guarded).await
+}
+
 /// Run all local diagnostic checks.
+///
+/// The checks are awaited under [`futures::future::join_all`] with a
+/// bounded-concurrency throttle, and results are collected in registration
+/// order so the diagnostic output ordering is identical to the previous
+/// sequential loop.
 pub async fn run_all<'a>(
     paths: &'a SshPaths,
     runner: &'a dyn toride_ssh_core::CliRunner,
@@ -3096,9 +3144,25 @@ pub async fn run_all<'a>(
     checks.push(Box::new(HomeDirPermissionsCheck));
     checks.push(Box::new(PlatformCheck));
 
+    // Box the per-check futures so the joined collection has a concrete
+    // `Send` item type. Joining closure-produced async blocks through a
+    // generic combinator would force rustc to prove `Send` for
+    // `&dyn CliRunner` for ALL lifetimes ("Send is not general enough")
+    // wherever `run_all` is awaited inside a spawned future
+    // (`SshOp::DoctorRunChecks` / the tick collector); the box gives it the
+    // concrete lifetime it can prove.
+    let futs: Vec<BoxedCheckFuture<'_>> = checks
+        .iter()
+        .map(|check| {
+            let fut: BoxedCheckFuture<'_> = Box::pin(async move { check.run().await });
+            fut
+        })
+        .collect();
+    let results = join_all_bounded(MAX_CONCURRENT_CHECKS, futs).await;
+
     let mut all_diagnostics = Vec::new();
-    for check in &checks {
-        match check.run().await {
+    for (check, result) in checks.iter().zip(results) {
+        match result {
             Ok(diagnostics) => all_diagnostics.extend(diagnostics),
             Err(e) => all_diagnostics.push(Diagnostic {
                 id: check.id(),
