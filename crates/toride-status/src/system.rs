@@ -567,9 +567,22 @@ fn detect_first_dns() -> Option<String> {
 
 // ── Process helpers (Linux) ──────────────────────────────────────────────
 
+/// Count one /proc read for the lock-discipline oracle: if the slow-proc
+/// cache mutex is held on this thread right now, the read is (wrongly)
+/// under the lock and [`SLOW_READS_UNDER_LOCK`] increments. Production
+/// compiles nothing.
+#[cfg(test)]
+fn note_proc_read() {
+    if SLOW_LOCK_HELD.with(std::cell::Cell::get) {
+        SLOW_READS_UNDER_LOCK.with(|c| c.set(c.get() + 1));
+    }
+}
+
 /// Read thread count from /proc/<pid>/status.
 #[cfg(target_os = "linux")]
 fn read_proc_thread_count(pid: u32) -> Option<u32> {
+    #[cfg(test)]
+    note_proc_read();
     let content = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("Threads:") {
@@ -582,6 +595,8 @@ fn read_proc_thread_count(pid: u32) -> Option<u32> {
 /// Read working directory from /proc/<pid>/cwd symlink.
 #[cfg(target_os = "linux")]
 fn read_proc_working_dir(pid: u32) -> Option<String> {
+    #[cfg(test)]
+    note_proc_read();
     std::fs::read_link(format!("/proc/{pid}/cwd"))
         .ok()
         .map(|p| p.to_string_lossy().to_string())
@@ -609,6 +624,8 @@ fn read_proc_io(pid: u32) -> (Option<u64>, Option<u64>) {
 #[cfg(target_os = "linux")]
 #[allow(clippy::cast_possible_truncation)] // fd count fits in u32 for any real process
 fn read_proc_fd_count(pid: u32) -> Option<u32> {
+    #[cfg(test)]
+    note_proc_read();
     std::fs::read_dir(format!("/proc/{pid}/fd"))
         .ok()
         .map(|entries| entries.filter_map(Result::ok).count() as u32)
@@ -695,6 +712,10 @@ thread_local! {
 /// concurrent misses for the same pid both sample; the last insert wins with
 /// equivalent data) cannot happen in-app — one collection is in flight per
 /// tick — and would be harmless if it did.
+///
+/// Count-oracle-pinned, not just structural: the
+/// `slow_proc_miss_never_reads_proc_under_the_cache_lock` test forces a miss
+/// and counts ZERO /proc reads observed under the lock.
 #[cfg(target_os = "linux")]
 fn slow_proc_fields(
     pid: u32,
@@ -706,6 +727,8 @@ fn slow_proc_fields(
         let cache = SLOW_PROC_CACHE
             .lock()
             .expect("slow-proc cache poisoned by a panicking sampler");
+        #[cfg(test)]
+        let _held = SlowLockHeld::raise();
         if let Some(entry) = cache.get(&pid)
             && entry.start_time == start_time
             && !slow_proc_ttl_expired(entry.sampled_at)
@@ -734,10 +757,14 @@ fn slow_proc_fields(
         sampled.fd_count,
         sampled.thread_count,
     );
-    SLOW_PROC_CACHE
-        .lock()
-        .expect("slow-proc cache poisoned by a panicking sampler")
-        .insert(pid, sampled);
+    {
+        let mut cache = SLOW_PROC_CACHE
+            .lock()
+            .expect("slow-proc cache poisoned by a panicking sampler");
+        #[cfg(test)]
+        let _held = SlowLockHeld::raise();
+        cache.insert(pid, sampled);
+    }
     out
 }
 
@@ -746,22 +773,60 @@ fn slow_proc_fields(
 ///
 /// The live set is a `HashSet` so the `retain` is O(live pids), not
 /// O(cache entries × live pids) — the whole-process-table prune runs once per
-/// collect.
+/// collect. Count-oracle-pinned, not just structural: the
+/// `prune_probes_each_cached_entry_exactly_once` test counts exactly ONE
+/// live-set membership probe per cached entry (a naive nested scan would
+/// count entries × live).
 #[cfg(target_os = "linux")]
 fn prune_slow_proc_cache(live_pids: &std::collections::HashSet<u32>) {
     let mut cache = SLOW_PROC_CACHE
         .lock()
         .expect("slow-proc cache poisoned by a panicking sampler");
-    cache.retain(|pid, _| live_pids.contains(pid));
+    #[cfg(test)]
+    let _held = SlowLockHeld::raise();
+    cache.retain(|pid, _| {
+        #[cfg(test)]
+        PRUNE_MEMBERSHIP_PROBES.with(|c| c.set(c.get() + 1));
+        live_pids.contains(pid)
+    });
 }
 
 // Test-only counters for the cadence oracles: fresh SAMPLES taken versus
-// cache HITS served. Thread-local so parallel test threads cannot perturb
-// each other's counts; production compiles neither.
+// cache HITS served, plus the N3 discipline gates — READS_UNDER_LOCK (how
+// many /proc reads observed the cache mutex held; must stay zero) and
+// PRUNE_MEMBERSHIP_PROBES (one per cached entry; never entries × live).
+// Thread-local so parallel test threads cannot perturb each other's
+// counts; production compiles neither.
 #[cfg(test)]
 thread_local! {
     static SLOW_SAMPLES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static SLOW_CACHE_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SLOW_LOCK_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SLOW_READS_UNDER_LOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PRUNE_MEMBERSHIP_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Test-only RAII marker that the slow-proc cache mutex is held on this
+/// thread: raises [`SLOW_LOCK_HELD`] until drop, so `note_proc_read` can
+/// count /proc reads that (wrongly) happen inside a critical section.
+/// Production compiles neither the type nor its uses.
+#[cfg(test)]
+struct SlowLockHeld;
+
+#[cfg(test)]
+impl SlowLockHeld {
+    /// Mark the mutex held on this thread until the returned guard drops.
+    fn raise() -> Self {
+        SLOW_LOCK_HELD.with(|held| held.set(true));
+        Self
+    }
+}
+
+#[cfg(test)]
+impl Drop for SlowLockHeld {
+    fn drop(&mut self) {
+        SLOW_LOCK_HELD.with(|held| held.set(false));
+    }
 }
 
 // ── Sensor helpers (Linux) ──────────────────────────────────────────────
@@ -6544,6 +6609,79 @@ mod tests {
         let cache = SLOW_PROC_CACHE.lock().unwrap();
         assert!(cache.contains_key(&live), "the live pid is retained");
         assert!(!cache.contains_key(&dead), "the exited pid is pruned");
+    }
+
+    /// ORACLE (N3 lock discipline, count-gated): a forced MISS samples all
+    /// three /proc reads, and NONE of them may observe the cache mutex
+    /// held — pinning the `slow_proc_fields` locking-discipline claim with
+    /// a count (zero reads under the lock), not just code reading.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_miss_never_reads_proc_under_the_cache_lock() {
+        let pid = std::process::id();
+        // Force the miss: no cached entry for this pid, whatever a sibling
+        // test on this pooled thread may have left.
+        SLOW_PROC_CACHE.lock().unwrap().remove(&pid);
+        SLOW_READS_UNDER_LOCK.with(|c| c.set(0));
+        let samples_before = slow_proc_counters().0;
+
+        let _ = slow_proc_fields(pid, Some(4));
+
+        assert_eq!(
+            slow_proc_counters().0,
+            samples_before + 1,
+            "the forced miss actually sampled /proc"
+        );
+        assert_eq!(
+            SLOW_READS_UNDER_LOCK.with(std::cell::Cell::get),
+            0,
+            "no /proc read observed the cache mutex held — the lock is \
+             never held across the reads"
+        );
+    }
+
+    /// ORACLE (N3 prune complexity, count-gated): the prune's `retain`
+    /// performs exactly ONE live-set membership probe per cached entry —
+    /// the `HashSet` shape the docs claim — never the naive
+    /// `entries × live pids` nested scan (which would count 4 × 4 = 16
+    /// probes for the four synthetic entries seeded here).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prune_probes_each_cached_entry_exactly_once() {
+        // Seed four synthetic (nonexistent) pids through the real miss path
+        // — each insert is one cache entry, whatever the pooled thread's
+        // baseline already holds.
+        let seeded = [4_101_101_u32, 4_202_202, 4_303_303, 4_404_404];
+        for pid in seeded {
+            let _ = slow_proc_fields(pid, None);
+        }
+        // Expected probes = the cache size at prune time, read under the
+        // same lock the seeding inserts took.
+        let expected_probes = {
+            let cache = SLOW_PROC_CACHE.lock().unwrap();
+            u64::try_from(cache.len()).expect("a test cache fits in u64")
+        };
+        // Live set: two seeded pids plus two strangers.
+        let live: std::collections::HashSet<u32> =
+            [seeded[0], seeded[3], 9_001, 9_002].into_iter().collect();
+
+        PRUNE_MEMBERSHIP_PROBES.with(|c| c.set(0));
+        prune_slow_proc_cache(&live);
+
+        assert_eq!(
+            PRUNE_MEMBERSHIP_PROBES.with(std::cell::Cell::get),
+            expected_probes,
+            "one membership probe per cached entry, not entries × live pids"
+        );
+        let cache = SLOW_PROC_CACHE.lock().unwrap();
+        assert!(
+            cache.contains_key(&seeded[0]) && cache.contains_key(&seeded[3]),
+            "the live synthetic pids are retained"
+        );
+        assert!(
+            !cache.contains_key(&seeded[1]) && !cache.contains_key(&seeded[2]),
+            "the dead synthetic pids are pruned"
+        );
     }
 
     /// Read the (fresh samples, cache hits) counters.
