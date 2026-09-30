@@ -101,6 +101,36 @@ pub struct UpdatesCollector {
 /// How long to keep cached findings before re-running the doctor suite.
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// Whether the findings-cache TTL has already elapsed for a cache that was
+/// last refreshed at `fresh_at`.
+///
+/// Round-0 instrumentation seam, ZERO behavior change: outside `cfg(test)`
+/// this is exactly the negation of the `t.elapsed() < FINDINGS_TTL` check
+/// `start` always evaluated inline. Under `cfg(test)` the thread-local
+/// [`TTL_TEST_OFFSET_MS`] is folded into the elapsed time so the cadence
+/// oracles can observe TTL expiry deterministically — no 60s sleeps and no
+/// dependence on host uptime (the `Instant::now() - TTL` backdating trick
+/// fails on a machine whose monotonic clock started less than the TTL ago).
+/// The offset is thread-local, so concurrently running tests on other cargo
+/// test threads cannot perturb this module's cadence.
+fn ttl_expired(fresh_at: std::time::Instant) -> bool {
+    let elapsed = fresh_at.elapsed();
+    #[cfg(test)]
+    let elapsed =
+        elapsed + std::time::Duration::from_millis(TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
+    elapsed >= FINDINGS_TTL
+}
+
+// Extra milliseconds folded into `ttl_expired`'s elapsed time by the
+// cadence oracles. Test-only: zero unless a test on this thread advances it
+// (and resets it on drop), and not compiled at all outside `cfg(test)`.
+// (Plain comments: rustdoc does not generate documentation for macro
+// invocations, so a doc comment here warns as unused.)
+#[cfg(test)]
+thread_local! {
+    static TTL_TEST_OFFSET_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 /// Hard deadline for the entire probe closure. `check_updates` shells out to
 /// `apt-check` / `dnf check-update`, which can take minutes on a slow network.
 /// The `DuctRunner` already enforces a 60s per-command timeout; this wraps the
@@ -135,9 +165,7 @@ impl UpdatesCollector {
         }
         let (tx, rx) = oneshot::channel();
         let use_cache = self.cached_findings.is_some()
-            && self
-                .findings_fresh_at
-                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
+            && self.findings_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         tokio::spawn(async move {
@@ -583,5 +611,152 @@ mod tests {
         collector.invalidate_findings_cache();
         assert!(collector.cached_findings.is_none());
         assert!(collector.findings_fresh_at.is_none());
+    }
+}
+
+// ── Cadence oracles (round 0) ───────────────────────────────────────────────
+
+/// Round-0 cadence oracles for the 60s findings cache.
+///
+/// These pin the CURRENT cache behavior with sentinel findings whose id the
+/// real updates doctor can never emit: "findings came back verbatim" proves
+/// the doctor was not re-run, and "freshness timestamp untouched" proves the
+/// TTL is not re-armed on a cache hit.
+///
+/// The lifecycle goes through the REAL `start()` / spawned collection. On a
+/// host with apt/dnf (the campaign host) the bundle is `available` and the
+/// strong arm of each oracle runs; on a host where
+/// [`UpdatesClient::new`] fails package detection (e.g. macOS) the degraded
+/// arm pins that side of the current behavior instead. Both arms are
+/// deterministic for the host they run on.
+///
+/// No spawn-counting seam is added at this layer: `collect_real_updates`
+/// hardcodes its `DuctRunner`, and threading an injectable runner through
+/// `start()` would change production signatures — the sentinel already
+/// answers "was the doctor re-run?".
+#[cfg(test)]
+mod cadence_oracle {
+    use super::*;
+
+    /// Sentinel id no real doctor finding can carry.
+    const SENTINEL_ID: &str = "oracle-sentinel.updates.findings-cache";
+
+    /// One sentinel finding — enough to distinguish cache passthrough from
+    /// any real derivation.
+    fn sentinel_findings() -> Vec<FindingEntry> {
+        vec![FindingEntry {
+            id: SENTINEL_ID.to_string(),
+            severity: "ok".to_string(),
+            title: "cadence-oracle sentinel".to_string(),
+            detail: String::new(),
+            fix: None,
+        }]
+    }
+
+    /// Advances this thread's TTL test clock past the TTL, resetting it on
+    /// drop so a failing assertion cannot leak a cranked clock into a later
+    /// test scheduled on the same reused cargo-test thread.
+    struct TtlOffsetGuard;
+
+    impl TtlOffsetGuard {
+        /// Set the thread-local offset to `FINDINGS_TTL` + 10s.
+        fn past_ttl() -> Self {
+            TTL_TEST_OFFSET_MS.with(|o| {
+                o.set(
+                    u64::try_from(FINDINGS_TTL.as_millis())
+                        .expect("a 60s TTL in milliseconds always fits in u64")
+                        + 10_000,
+                );
+            });
+            Self
+        }
+    }
+
+    impl Drop for TtlOffsetGuard {
+        fn drop(&mut self) {
+            TTL_TEST_OFFSET_MS.with(|o| o.set(0));
+        }
+    }
+
+    /// ORACLE (current behavior): a fresh cache serves its cached findings
+    /// verbatim on the next collection — the doctor is NOT re-run — and the
+    /// freshness timestamp is NOT re-armed by the cache-hit poll.
+    #[tokio::test]
+    async fn cache_hit_returns_cached_findings_without_rederiving() {
+        let mut collector = UpdatesCollector::new();
+        collector.cached_findings = Some(sentinel_findings());
+        let primed = std::time::Instant::now();
+        collector.findings_fresh_at = Some(primed);
+
+        collector.start();
+        let bundle = collector.poll().await.expect("collection completes");
+
+        if bundle.available {
+            // Package manager detected (the campaign host): the cache must be
+            // served verbatim.
+            assert_eq!(
+                bundle.findings.len(),
+                1,
+                "a cache hit must serve the cached findings verbatim"
+            );
+            assert_eq!(
+                bundle.findings[0].id, SENTINEL_ID,
+                "the sentinel id can only come from the cache, never from a real doctor run"
+            );
+            assert_eq!(
+                collector.findings_fresh_at,
+                Some(primed),
+                "a cache-hit poll must not advance (re-arm) the freshness timestamp"
+            );
+        } else {
+            // No apt/dnf: construction failed BEFORE the cache arm, so the
+            // degraded bundle carries no findings and poll()'s availability
+            // gate leaves both the cache and the clock untouched.
+            assert!(
+                bundle.findings.is_empty(),
+                "construction failure bypasses the cache arm entirely"
+            );
+            assert_eq!(
+                collector.findings_fresh_at,
+                Some(primed),
+                "a degraded bundle must not advance the freshness timestamp"
+            );
+        }
+    }
+
+    /// ORACLE (current behavior): once the TTL has elapsed the cache is
+    /// bypassed — the sentinel is NOT served — and (on an available bundle)
+    /// the freshness timestamp advances past its primed value after the real
+    /// re-derivation.
+    #[tokio::test]
+    async fn ttl_expiry_bypasses_cache_and_rederives() {
+        let mut collector = UpdatesCollector::new();
+        collector.cached_findings = Some(sentinel_findings());
+        let primed = std::time::Instant::now();
+        collector.findings_fresh_at = Some(primed);
+
+        let _ttl = TtlOffsetGuard::past_ttl();
+        collector.start();
+        let bundle = collector.poll().await.expect("collection completes");
+
+        assert!(
+            bundle.findings.iter().all(|f| f.id != SENTINEL_ID),
+            "an expired cache must not serve the sentinel"
+        );
+        if bundle.available {
+            // poll() gates the clock write on `available`, and an available
+            // re-derived bundle must have re-armed it.
+            assert!(
+                collector.findings_fresh_at.is_some_and(|t| t > primed),
+                "an expired cache must be re-derived and the freshness clock advanced"
+            );
+        } else {
+            // Degraded bundle: the gate keeps the primed clock untouched.
+            assert_eq!(
+                collector.findings_fresh_at,
+                Some(primed),
+                "a degraded bundle must not advance the freshness timestamp"
+            );
+        }
     }
 }

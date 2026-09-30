@@ -117,6 +117,35 @@ pub struct MiseCollector {
 /// How long to keep cached findings before re-running the doctor suite.
 const FINDINGS_TTL: Duration = Duration::from_secs(60);
 
+/// Whether the findings-cache TTL has already elapsed for a cache that was
+/// last refreshed at `fresh_at`.
+///
+/// Round-0 instrumentation seam, ZERO behavior change: outside `cfg(test)`
+/// this is exactly the negation of the `t.elapsed() < FINDINGS_TTL` check
+/// `start` always evaluated inline. Under `cfg(test)` the thread-local
+/// [`TTL_TEST_OFFSET_MS`] is folded into the elapsed time so the cadence
+/// oracles can observe TTL expiry deterministically — no 60s sleeps and no
+/// dependence on host uptime (the `Instant::now() - TTL` backdating trick
+/// fails on a machine whose monotonic clock started less than the TTL ago).
+/// The offset is thread-local, so concurrently running tests on other cargo
+/// test threads cannot perturb this module's cadence.
+fn ttl_expired(fresh_at: std::time::Instant) -> bool {
+    let elapsed = fresh_at.elapsed();
+    #[cfg(test)]
+    let elapsed = elapsed + Duration::from_millis(TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
+    elapsed >= FINDINGS_TTL
+}
+
+// Extra milliseconds folded into `ttl_expired`'s elapsed time by the
+// cadence oracles. Test-only: zero unless a test on this thread advances it
+// (and resets it on drop), and not compiled at all outside `cfg(test)`.
+// (Plain comments: rustdoc does not generate documentation for macro
+// invocations, so a doc comment here warns as unused.)
+#[cfg(test)]
+thread_local! {
+    static TTL_TEST_OFFSET_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
 impl MiseCollector {
     /// Create a new collector with no pending collection.
     #[must_use]
@@ -156,9 +185,7 @@ impl MiseCollector {
         }
         let (tx, rx) = oneshot::channel();
         let use_cache = self.cached_findings.is_some()
-            && self
-                .findings_fresh_at
-                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
+            && self.findings_fresh_at.is_some_and(|t| !ttl_expired(t));
         let cached_findings = self.cached_findings.clone();
         self.rx = Some(rx);
         // Two-spawn JoinError pattern (mirrors toride_tailscale_data.rs). The
@@ -968,6 +995,144 @@ mod tests {
             "a populated outdated list must keep the section available even \
              when every other probe failed — the heuristic unions over all \
              five data sources: {reason:?}"
+        );
+    }
+}
+
+// ── Cadence oracles (round 0) ───────────────────────────────────────────────
+
+/// Round-0 cadence oracles for the 60s findings cache.
+///
+/// These pin the CURRENT cache behavior with sentinel findings whose message
+/// the real mise doctor can never emit: "findings came back verbatim" proves
+/// `mise doctor` was not re-run, and "freshness timestamp untouched" proves
+/// the TTL is not re-armed on a cache hit.
+///
+/// The lifecycle goes through the REAL `start()` / spawned collection. With
+/// a non-empty sentinel in the cache, a successful construction keeps the
+/// section `available` (the availability heuristic unions over non-empty
+/// findings), so `available == true` ⟺ the cache arm ran — the strong arm
+/// of each oracle. On a host without `mise` on `$PATH`, construction fails
+/// BEFORE the cache arm and the degraded arm pins that side of the current
+/// behavior instead (`poll()` is ungated here: it caches the empty findings
+/// and advances the clock because `used_cache == false`). Both arms are
+/// deterministic for the host they run on.
+///
+/// No spawn-counting seam is added at this layer: `collect_real_mise`
+/// hardcodes `Mise::builder().build()`, and threading an injectable runner
+/// through `start()` would change production signatures — the sentinel
+/// already answers "was the doctor re-run?".
+#[cfg(test)]
+mod cadence_oracle {
+    use super::*;
+
+    /// Sentinel message no real mise diagnostic can carry.
+    const SENTINEL_MSG: &str = "oracle-sentinel mise findings-cache";
+
+    /// One sentinel finding — enough to distinguish cache passthrough from
+    /// any real derivation.
+    fn sentinel_findings() -> Vec<MiseFindingEntry> {
+        vec![MiseFindingEntry {
+            severity: "ok".to_string(),
+            message: SENTINEL_MSG.to_string(),
+            detail: None,
+        }]
+    }
+
+    /// Advances this thread's TTL test clock past the TTL, resetting it on
+    /// drop so a failing assertion cannot leak a cranked clock into a later
+    /// test scheduled on the same reused cargo-test thread.
+    struct TtlOffsetGuard;
+
+    impl TtlOffsetGuard {
+        /// Set the thread-local offset to `FINDINGS_TTL` + 10s.
+        fn past_ttl() -> Self {
+            TTL_TEST_OFFSET_MS.with(|o| {
+                o.set(
+                    u64::try_from(FINDINGS_TTL.as_millis())
+                        .expect("a 60s TTL in milliseconds always fits in u64")
+                        + 10_000,
+                );
+            });
+            Self
+        }
+    }
+
+    impl Drop for TtlOffsetGuard {
+        fn drop(&mut self) {
+            TTL_TEST_OFFSET_MS.with(|o| o.set(0));
+        }
+    }
+
+    /// ORACLE (current behavior): a fresh cache serves its cached findings
+    /// verbatim on the next collection — `mise doctor` is NOT re-run — and
+    /// the freshness timestamp is NOT re-armed by the cache-hit poll.
+    #[tokio::test]
+    async fn cache_hit_returns_cached_findings_without_rederiving() {
+        let mut collector = MiseCollector::new();
+        collector.cached_findings = Some(sentinel_findings());
+        let primed = std::time::Instant::now();
+        collector.findings_fresh_at = Some(primed);
+
+        collector.start();
+        let bundle = collector.poll().await.expect("collection completes");
+
+        if bundle.available {
+            // Construction succeeded (mise present): the cache must be
+            // served verbatim.
+            assert_eq!(
+                bundle.findings.len(),
+                1,
+                "a cache hit must serve the cached findings verbatim"
+            );
+            assert_eq!(
+                bundle.findings[0].message, SENTINEL_MSG,
+                "the sentinel message can only come from the cache, never from a real doctor run"
+            );
+            assert_eq!(
+                collector.findings_fresh_at,
+                Some(primed),
+                "a cache-hit poll must not advance (re-arm) the freshness timestamp"
+            );
+        } else {
+            // mise absent: construction failed before the cache arm. poll()
+            // here is ungated — it caches the empty findings and ADVANCES the
+            // clock, because the failed construction reports
+            // `used_cache == false`.
+            assert!(
+                bundle.findings.is_empty(),
+                "construction failure bypasses the cache arm entirely"
+            );
+            assert!(
+                collector.findings_fresh_at.is_some_and(|t| t > primed),
+                "ungated poll() advances the clock on a !used_cache result"
+            );
+        }
+    }
+
+    /// ORACLE (current behavior): once the TTL has elapsed the cache is
+    /// bypassed — the sentinel is NOT served — and the freshness timestamp
+    /// advances past its primed value after the real re-derivation.
+    #[tokio::test]
+    async fn ttl_expiry_bypasses_cache_and_rederives() {
+        let mut collector = MiseCollector::new();
+        collector.cached_findings = Some(sentinel_findings());
+        let primed = std::time::Instant::now();
+        collector.findings_fresh_at = Some(primed);
+
+        let _ttl = TtlOffsetGuard::past_ttl();
+        collector.start();
+        let bundle = collector.poll().await.expect("collection completes");
+
+        assert!(
+            bundle.findings.iter().all(|f| f.message != SENTINEL_MSG),
+            "an expired cache must not serve the sentinel"
+        );
+        // poll() is ungated in this module: every !used_cache result (real
+        // re-derivation OR construction failure) re-arms the clock.
+        assert!(
+            collector.findings_fresh_at.is_some_and(|t| t > primed),
+            "an expired cache must be re-derived and the freshness clock advanced"
         );
     }
 }

@@ -68,6 +68,17 @@ clap = { version = "4", features = ["derive"], optional = true }
 insta = "1"
 assert_fs = "1"
 proptest = "1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+# parse_kernels: the restic/borg output parsers over committed fixtures
+# (snapshots text table / check / borg list). Hermetic — no restic/borg
+# binaries, no repository access. Builds under plain default features: the
+# JSON parse arm needs the non-default `serde` feature and is deliberately
+# NOT benched (enabling it would change default build behavior).
+[[bench]]
+name = "parse_kernels"
+harness = false
+test = false
 
 [lints]
 workspace = true
