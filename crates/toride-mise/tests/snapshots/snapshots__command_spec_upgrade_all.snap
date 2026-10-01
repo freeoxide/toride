@@ -18,4 +18,8 @@ CommandSpec {
     output_mode: Capture,
     redact: false,
     output_limit: None,
+    env_precedence: ExplicitWins,
+    path_resolution: OsSearch,
+    argv_policy: Allow,
+    output_cap: OptIn,
 }
