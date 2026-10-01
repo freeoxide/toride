@@ -71,6 +71,26 @@ pub enum Error {
         detail: String,
     },
 
+    /// The argv was rejected by [`ArgvPolicy::RejectShellMetachars`](crate::policy::ArgvPolicy::RejectShellMetachars)
+    /// before spawn. Offending values are identified by position, never echoed.
+    #[error("argv rejected for '{program}': {detail}")]
+    ArgvRejected {
+        /// Program name.
+        program: String,
+        /// Which position failed and which metacharacter triggered it.
+        detail: String,
+    },
+
+    /// The program was refused or could not be resolved under
+    /// [`PathResolution::ChildEnvNoCwd`](crate::policy::PathResolution::ChildEnvNoCwd) before spawn.
+    #[error("program rejected for '{program}': {detail}")]
+    ProgramRejected {
+        /// Program name as spelled in the spec.
+        program: String,
+        /// Why the program was refused or left unresolved.
+        detail: String,
+    },
+
     /// Failed to wait for a child process.
     #[error("failed to wait for '{program}': {detail}")]
     WaitFailed {

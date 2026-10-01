@@ -641,4 +641,56 @@ mod tests {
             sink.total_bytes
         );
     }
+
+    #[tokio::test]
+    async fn streaming_rejects_shell_metachar_argv() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("echo")
+            .arg("a;b")
+            .argv_policy(crate::policy::ArgvPolicy::RejectShellMetachars);
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+
+        match result {
+            Err(crate::error::Error::ArgvRejected { program, .. }) => assert_eq!(program, "echo"),
+            other => panic!("expected ArgvRejected, got {other:?}"),
+        }
+        assert!(
+            sink.events.is_empty(),
+            "no events may be emitted for a rejected spec"
+        );
+    }
+
+    #[tokio::test]
+    async fn streaming_rejects_cwd_relative_program_under_path_policy() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("./nope")
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd);
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::ProgramRejected { .. })
+        ));
+        assert!(sink.events.is_empty());
+    }
+
+    #[tokio::test]
+    async fn streaming_output_cap_always_enforces() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line; done"])
+            .output_cap(crate::policy::OutputCap::Always(64));
+        let mut sink = CollectingSink::default();
+
+        let result = runner.run_streaming(&spec, &mut sink).await;
+
+        assert!(matches!(
+            result,
+            Err(crate::error::Error::OutputLimitExceeded { .. })
+        ));
+    }
 }
