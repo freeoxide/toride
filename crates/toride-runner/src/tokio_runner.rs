@@ -1324,18 +1324,13 @@ mod tests {
         );
     }
 
-    /// Verify that stdin write errors surface as `StdinFailed`.
-    ///
-    /// We pipe stdin to a command that exits immediately — the stdin write
-    /// should succeed because the child accepted the pipe. The real test
-    /// for stdin failure is covered by the normal path. Here we verify the
-    /// error variant exists and is classified correctly.
     #[tokio::test]
     async fn stdin_to_exiting_command_succeeds() {
         let runner = TokioRunner;
-        // `true` exits immediately with 0 — stdin is written but ignored.
+        // The child drains stdin before exiting, so the write cannot race
+        // the exit into a broken pipe.
         let spec = CommandSpec::new("bash")
-            .args(["-c", "exit 0"])
+            .args(["-c", "cat > /dev/null"])
             .stdin("data");
         let output = runner.run(&spec).await.unwrap();
         assert!(output.success);
