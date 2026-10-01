@@ -550,6 +550,7 @@ async fn ssh_v1_key_detected() {
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
+#[serial]
 async fn agent_available_returns_valid_diagnostic() {
     let dir = tempfile::tempdir().unwrap();
     let diags = run_checks_with_dir(dir.path()).await;
@@ -1079,6 +1080,7 @@ async fn max_auth_tries_skips_when_auth_sock_unset() {
 }
 
 #[tokio::test]
+#[serial]
 async fn max_auth_tries_info_when_ssh_add_fails() {
     // Point to a non-existent socket — ssh-add -l will fail.
     let diags =
@@ -1095,6 +1097,7 @@ async fn max_auth_tries_info_when_ssh_add_fails() {
 }
 
 #[tokio::test]
+#[serial]
 async fn max_auth_tries_classifies_key_count() {
     // Runs against the real SSH agent (if present) and verifies the
     // diagnostic severity matches the key count thresholds:
@@ -1151,6 +1154,7 @@ async fn max_auth_tries_classifies_key_count() {
 }
 
 #[tokio::test]
+#[serial]
 async fn max_auth_tries_warns_when_above_threshold() {
     // Verifies the Warning branch (>= 6 keys) produces correct message
     // and hint.  When the real agent has fewer keys this is a no-op —
@@ -1253,6 +1257,7 @@ async fn run_agent_identity_check(ssh_dir: &std::path::Path) -> Vec<toride_ssh_c
 }
 
 #[tokio::test]
+#[serial]
 async fn agent_identity_info_when_no_agent() {
     let orig = std::env::var("SSH_AUTH_SOCK").ok();
     // SAFETY: save/restore pattern; window is limited to this test scope.
@@ -1280,6 +1285,7 @@ async fn agent_identity_info_when_no_agent() {
 }
 
 #[tokio::test]
+#[serial]
 async fn agent_identity_ok_when_agent_holds_matching_key() {
     if !agent_is_reachable() {
         return;
@@ -1320,6 +1326,7 @@ async fn agent_identity_ok_when_agent_holds_matching_key() {
 }
 
 #[tokio::test]
+#[serial]
 async fn agent_identity_info_when_pub_file_missing() {
     if !agent_is_reachable() {
         return;
@@ -1366,6 +1373,7 @@ async fn agent_identity_info_when_pub_file_missing() {
 }
 
 #[tokio::test]
+#[serial]
 async fn agent_identity_warns_when_key_not_in_agent() {
     if !agent_is_reachable() || !agent_has_keys() {
         // The check needs the agent to have at least one key loaded so it
