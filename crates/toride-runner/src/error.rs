@@ -72,7 +72,8 @@ pub enum Error {
     },
 
     /// The argv was rejected by [`ArgvPolicy::RejectShellMetachars`](crate::policy::ArgvPolicy::RejectShellMetachars)
-    /// before spawn. Offending values are identified by position, never echoed.
+    /// before spawn. Offending arguments are identified by position, never
+    /// echoed; an offending program name is carried verbatim in `program`.
     #[error("argv rejected for '{program}': {detail}")]
     ArgvRejected {
         /// Program name.

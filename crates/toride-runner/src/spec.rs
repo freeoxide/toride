@@ -23,7 +23,8 @@ use crate::policy::{ArgvPolicy, EnvPrecedence, OutputCap, PathResolution};
 /// ```
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
-    /// The program to execute (looked up via `$PATH` unless absolute).
+    /// The program to execute; bare names follow [`PathResolution`] (the
+    /// default searches the parent's `$PATH`).
     pub program: String,
     /// Positional arguments to pass to the program.
     pub args: Vec<String>,
@@ -46,9 +47,8 @@ pub struct CommandSpec {
     /// Extra environment variables (`(key, value)` pairs).
     pub env: Vec<(String, String)>,
     /// Environment variables to remove from the child process environment.
-    ///
-    /// Explicit values in [`CommandSpec::env`] are applied after removals, so
-    /// an explicitly-added variable wins if the same key appears in both lists.
+    /// An explicitly-added variable with the same key survives removal only
+    /// under the default [`EnvPrecedence::ExplicitWins`].
     pub env_remove: Vec<String>,
     /// Whether the child should start from a clean environment.
     ///
@@ -67,8 +67,9 @@ pub struct CommandSpec {
     /// When set, runners enforce the cap *while* capturing (not after) by
     /// killing and reaping the child as soon as the limit is breached, and
     /// return [`Error::OutputLimitExceeded`](crate::error::Error::OutputLimitExceeded).
-    /// `None` preserves the default unlimited capture behavior. Accounted in
-    /// bytes — UTF-8 decoding happens after the byte-limit decision.
+    /// `None` leaves capture unlimited unless [`CommandSpec::output_cap`]
+    /// enforces one. Accounted in bytes — UTF-8 decoding happens after the
+    /// byte-limit decision.
     ///
     /// This is a runtime safety policy, not command construction: it is
     /// excluded from [`FakeRunner`](crate::fake::FakeRunner) exact matching,

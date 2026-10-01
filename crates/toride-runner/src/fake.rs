@@ -119,7 +119,9 @@ impl FakeRunner {
     ///
     /// When a call matches the spec, this response takes priority over the
     /// FIFO queue. Matching compares `program`, `args`, `stdin`, `stdin_null`,
-    /// `env`, `env_remove`, `clear_env`, `cwd`, and `output_mode`.
+    /// `env`, `env_remove`, `clear_env`, `cwd`, `output_mode`, `redact`,
+    /// `env_precedence`, and `path_resolution`; `timeout`, `output_limit`,
+    /// `argv_policy`, and `output_cap` are ignored as runtime policy.
     #[must_use]
     pub fn respond(self, spec: CommandSpec, output: CommandOutput) -> Self {
         self.exact_responses
