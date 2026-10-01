@@ -500,6 +500,7 @@ fn cancel_spec_dynamic_forward() {
 
 /// Create a Unix socket file at `path` (a zero-length bind is enough for the
 /// candidate heuristic: sockets are detected by file type).
+#[cfg(unix)]
 fn make_socket_file(path: &std::path::Path) {
     use std::os::unix::net::UnixListener;
     let listener = UnixListener::bind(path).expect("bind test socket");
@@ -508,6 +509,7 @@ fn make_socket_file(path: &std::path::Path) {
     std::mem::forget(listener);
 }
 
+#[cfg(unix)]
 #[test]
 fn collect_matching_any_finds_all_four_prefixes_in_one_pass() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -522,6 +524,7 @@ fn collect_matching_any_finds_all_four_prefixes_in_one_pass() {
     assert!(found.iter().all(|p| p.starts_with(dir.path())));
 }
 
+#[cfg(unix)]
 #[test]
 fn collect_matching_any_excludes_non_candidates() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -547,6 +550,7 @@ fn collect_matching_any_missing_dir_is_empty() {
     assert!(collect_matching_any(&missing, SSH_DIR_PREFIXES).is_empty());
 }
 
+#[cfg(unix)]
 #[test]
 fn collect_matching_any_tmp_prefix() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1279,6 +1283,7 @@ async fn join_all_bounded_sibling_failure_does_not_cancel_siblings() {
 ///
 /// `#[serial]`: other tests in this file temporarily install a fake `ssh`
 /// on `PATH`; this assertion requires the real one (or none at all).
+#[cfg(unix)]
 #[tokio::test]
 #[serial]
 async fn list_forwards_bounded_yields_one_result_per_input_even_on_failure() {

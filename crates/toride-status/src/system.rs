@@ -571,7 +571,7 @@ fn detect_first_dns() -> Option<String> {
 /// cache mutex is held on this thread right now, the read is (wrongly)
 /// under the lock and [`SLOW_READS_UNDER_LOCK`] increments. Production
 /// compiles nothing.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 fn note_proc_read() {
     if SLOW_LOCK_HELD.with(std::cell::Cell::get) {
         SLOW_READS_UNDER_LOCK.with(|c| c.set(c.get() + 1));
@@ -651,6 +651,7 @@ fn read_proc_fd_count(pid: u32) -> Option<u32> {
 /// table accepts up to this much staleness in its slowly-changing fields —
 /// the small-TTL bound the product constraint sets (10-20s) — while
 /// CPU/mem/state stay per-collect.
+#[cfg(target_os = "linux")]
 const SLOW_PROC_TTL: std::time::Duration = std::time::Duration::from_secs(15);
 
 /// One cached slow-field sample.
@@ -895,7 +896,7 @@ fn prune_slow_proc_cache_inner(live_pids: &std::collections::HashSet<u32>) {
 // PRUNE_MEMBERSHIP_PROBES (one per cached entry; never entries × live).
 // Thread-local so parallel test threads cannot perturb each other's
 // counts; production compiles neither.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 thread_local! {
     static SLOW_SAMPLES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static SLOW_CACHE_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -908,10 +909,10 @@ thread_local! {
 /// thread: raises [`SLOW_LOCK_HELD`] until drop, so `note_proc_read` can
 /// count /proc reads that (wrongly) happen inside a critical section.
 /// Production compiles neither the type nor its uses.
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 struct SlowLockHeld;
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 impl SlowLockHeld {
     /// Mark the mutex held on this thread until the returned guard drops.
     fn raise() -> Self {
@@ -920,7 +921,7 @@ impl SlowLockHeld {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "linux"))]
 impl Drop for SlowLockHeld {
     fn drop(&mut self) {
         SLOW_LOCK_HELD.with(|held| held.set(false));
