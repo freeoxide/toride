@@ -1,7 +1,7 @@
 //! Real async command execution via `tokio::process`.
 //!
 //! [`TokioRunner`] is the async production implementation of
-//! [`AsyncRunner`](crate::AsyncRunner). It spawns subprocesses via
+//! [`AsyncRunner`]. It spawns subprocesses via
 //! `tokio::process::Command`, captures stdout/stderr, and respects timeouts
 //! without blocking runtime worker threads.
 //!

@@ -1,6 +1,6 @@
 //! Ruby helper for mise.
 //!
-//! [`RubyHelper`] wraps a [`Mise`](crate::Mise) reference and provides async
+//! [`RubyHelper`] wraps a [`Mise`] reference and provides async
 //! methods for installing Ruby versions, setting global/local defaults,
 //! listing available versions, resolving the `ruby` binary path, and
 //! toggling precompiled binaries.
@@ -16,7 +16,7 @@ use crate::error::MiseResult;
 
 /// Typed helper for interacting with Ruby via mise.
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example
@@ -35,7 +35,7 @@ pub struct RubyHelper<'a> {
 }
 
 impl<'a> RubyHelper<'a> {
-    /// Create a new [`RubyHelper`] borrowing the given [`Mise`](crate::Mise) client.
+    /// Create a new [`RubyHelper`] borrowing the given [`Mise`] client.
     pub fn new(mise: &'a Mise) -> Self {
         Self { mise }
     }

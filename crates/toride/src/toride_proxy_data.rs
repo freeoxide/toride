@@ -22,13 +22,13 @@
 //!
 //! ## macOS / construction
 //!
-//! [`toride_proxy::ProxyClient::system`] is the construction entry point. It
+//! `toride_proxy::ProxyClient::system` is the construction entry point. It
 //! builds a `DuctRunner` and resolves default `ProxyPaths` but does NOT shell
 //! out and does NOT check for `nginx` — construction therefore never fails on
 //! macOS (its rustdoc claim of "Returns an error if the nginx binary cannot be
 //! found" is aspirational). The only way construction returns an error is a
 //! genuine I/O failure, in which case the collector returns
-//! [`empty_bundle_with_reason`] with `available = false`.
+//! `empty_bundle_with_reason` with `available = false`.
 //!
 //! Missing binaries (`systemctl`, `nginx`) are instead surfaced by the doctor:
 //! each per-check method catches runner errors and emits a `Critical` finding
@@ -72,7 +72,7 @@ pub struct ProxyDataBundle {
     /// Which proxy backend the report is for (e.g. "nginx").
     pub backend: String,
     /// Proxy server status as a lowercase string: "running" | "stopped" |
-    /// "unknown: <reason>". Mirrors `ProxyStatus::Display`.
+    /// `unknown: <reason>`. Mirrors `ProxyStatus::Display`.
     pub status: String,
     /// Configured server blocks (virtual hosts).
     pub server_blocks: Vec<ServerBlockEntry>,

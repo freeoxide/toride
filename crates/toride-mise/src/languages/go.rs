@@ -1,6 +1,6 @@
 //! Go helper for mise.
 //!
-//! [`GoHelper`] wraps a [`Mise`](crate::Mise) reference and provides async
+//! [`GoHelper`] wraps a [`Mise`] reference and provides async
 //! methods for installing Go versions, setting global/local defaults,
 //! listing available versions, resolving the `go` binary path, and installing
 //! CLI tools built from Go modules.
@@ -16,7 +16,7 @@ use crate::error::MiseResult;
 
 /// Typed helper for interacting with Go via mise.
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example
@@ -35,7 +35,7 @@ pub struct GoHelper<'a> {
 }
 
 impl<'a> GoHelper<'a> {
-    /// Create a new [`GoHelper`] borrowing the given [`Mise`](crate::Mise) client.
+    /// Create a new [`GoHelper`] borrowing the given [`Mise`] client.
     pub fn new(mise: &'a Mise) -> Self {
         Self { mise }
     }

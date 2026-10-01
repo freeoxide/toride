@@ -154,7 +154,7 @@ impl<'a> NginxManager<'a> {
     /// Enable a site by creating a symlink in sites-enabled.
     ///
     /// `domain` is validated as a single, safe path segment before joining onto
-    /// the sites directory, mirroring [`ConfigManager`](crate::config::ConfigManager)
+    /// the sites directory, mirroring `ConfigManager`
     /// — defense-in-depth against traversal-shaped inputs reaching the
     /// `symlink` primitive.
     ///

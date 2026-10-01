@@ -1,4 +1,4 @@
-//! Builder for constructing configured [`Mise`](crate::Mise) instances.
+//! Builder for constructing configured [`Mise`] instances.
 //!
 //! [`MiseBuilder`] follows the consume-and-return builder pattern: each setter
 //! consumes `self`, applies the configuration, and returns a new `Self`.
@@ -120,7 +120,7 @@ impl MiseBuilder {
 
     /// Set the mise binary from a path string.
     ///
-    /// Convenience method that constructs a [`MiseBinary`] from the given path
+    /// Convenience method that constructs a [`MiseBinary`](crate::binary::MiseBinary) from the given path
     /// and delegates to [`MiseBuilder::binary`].
     #[must_use]
     pub fn binary_path(mut self, path: impl Into<camino::Utf8PathBuf>) -> Self {

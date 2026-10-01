@@ -284,7 +284,7 @@ pub enum DoctorScope {
 /// [`WireguardReport`].
 ///
 /// All subprocess invocations (`wg show`, binary discovery) go through the
-/// [`Runner`](toride_runner::Runner) trait, so diagnostics are fully testable
+/// [`Runner`] trait, so diagnostics are fully testable
 /// with [`FakeRunner`](toride_runner::FakeRunner).
 pub struct Doctor<R: Runner + Send + Sync = toride_runner::DuctRunner> {
     runner: std::sync::Arc<R>,

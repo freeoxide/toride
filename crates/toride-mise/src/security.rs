@@ -28,7 +28,7 @@ use crate::client::{LoadPolicy, MiseMode};
 /// Security policy applied to every mise invocation.
 ///
 /// Fields translate directly to CLI flags and trust mode settings on the
-/// [`Mise`](crate::Mise) client.
+/// [`Mise`] client.
 #[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SecurityPolicy {

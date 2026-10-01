@@ -1,7 +1,7 @@
 //! Data types describing WireGuard interfaces and peers.
 //!
-//! [`WireguardSpec`] holds the full specification for a WireGuard interface
-//! (address, listen port, DNS, private key, peers). [`PeerSpec`] describes a
+//! [`WireguardSpec`](crate::spec::WireguardSpec) holds the full specification for a WireGuard interface
+//! (address, listen port, DNS, private key, peers). [`PeerSpec`](crate::spec::PeerSpec) describes a
 //! single peer with its public key, allowed IPs, endpoint, and keepalive.
 
 // ---------------------------------------------------------------------------

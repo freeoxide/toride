@@ -57,8 +57,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn tasks_list(&self) -> MiseResult<Vec<TaskInfo>> {
         self.run_json(["tasks", "ls", "--json"]).await
     }
@@ -69,8 +69,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn task_info(&self, name: &str) -> MiseResult<TaskInfo> {
         self.run_json(["tasks", "info", name, "--json"]).await
     }
@@ -81,7 +81,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn task_edit_path(&self, name: &str) -> MiseResult<Utf8PathBuf> {
         let output = self.run_checked(["tasks", "edit", name, "--path"]).await?;
         Ok(Utf8PathBuf::from(output.stdout_trimmed().to_owned()))
@@ -93,7 +93,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn task_deps(&self, tasks: &[&str]) -> MiseResult<Vec<String>> {
         let mut args: Vec<&str> = vec!["tasks", "deps"];
         args.extend_from_slice(tasks);
@@ -112,7 +112,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn task_run(&self, req: &TaskRunRequest) -> MiseResult<()> {
         let mut args: Vec<String> = vec!["run".into()];
 
@@ -142,8 +142,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn tasks_validate(&self) -> MiseResult<String> {
         let output = self.run_checked(["tasks", "validate", "--json"]).await?;
         Ok(output.stdout_trimmed().to_owned())
@@ -155,7 +155,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn task_add(&self, name: &str, run_cmd: Vec<String>) -> MiseResult<()> {
         let mut args: Vec<String> = vec!["tasks".into(), "add".into(), name.into(), "--".into()];
         args.extend(run_cmd);

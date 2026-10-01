@@ -1,6 +1,6 @@
 //! Spec and configuration validation.
 //!
-//! [`validate_spec`] checks an [`UpdateSpec`] for common misconfigurations
+//! [`validate_spec`](crate::validate::validate_spec) checks an [`UpdateSpec`] for common misconfigurations
 //! and returns a list of diagnostic findings. This is called before rendering
 //! or applying any configuration changes.
 

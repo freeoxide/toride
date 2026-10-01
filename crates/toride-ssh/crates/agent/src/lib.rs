@@ -17,7 +17,7 @@ use toride_ssh_core::SshPaths;
 
 /// SSH agent operations.
 ///
-/// Obtained from [`SshManager::agent()`](crate::SshManager::agent).
+/// Obtained from `SshManager::agent()`.
 pub struct AgentService<'a> {
     paths: &'a SshPaths,
     runner: &'a dyn toride_ssh_core::CliRunner,

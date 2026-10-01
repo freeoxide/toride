@@ -1,6 +1,6 @@
 //! Node.js helper for mise.
 //!
-//! [`NodeHelper`] wraps a [`Mise`](crate::Mise) reference and provides async
+//! [`NodeHelper`] wraps a [`Mise`] reference and provides async
 //! methods for installing Node.js versions, setting global/local defaults,
 //! listing available versions, and resolving the `node` binary path.
 
@@ -15,7 +15,7 @@ use crate::error::MiseResult;
 
 /// Typed helper for interacting with Node.js via mise.
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example
@@ -33,7 +33,7 @@ pub struct NodeHelper<'a> {
 }
 
 impl<'a> NodeHelper<'a> {
-    /// Create a new [`NodeHelper`] borrowing the given [`Mise`](crate::Mise) client.
+    /// Create a new [`NodeHelper`] borrowing the given [`Mise`] client.
     pub fn new(mise: &'a Mise) -> Self {
         Self { mise }
     }

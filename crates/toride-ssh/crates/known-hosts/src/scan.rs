@@ -24,7 +24,7 @@ pub struct ScannedHostKey {
 impl ScannedHostKey {
     /// Compute the SHA-256 fingerprint of this scanned key's public key.
     ///
-    /// See [`super::parse::compute_key_fingerprint`] for details.
+    /// See `super::parse::compute_key_fingerprint` for details.
     ///
     /// # Errors
     ///

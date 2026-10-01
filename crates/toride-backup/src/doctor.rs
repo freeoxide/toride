@@ -22,11 +22,11 @@
 //! - [`Doctor::run`] takes a [`DoctorScope`] (string-named categories) and
 //!   runs the binary check for real; the per-job categories surface an
 //!   informational finding pointing at [`Doctor::run_spec`] when no
-//!   [`BackupSpec`](crate::spec::BackupSpec) is available.
-//! - [`Doctor::run_spec`] takes a full [`BackupSpec`](crate::spec::BackupSpec)
+//!   [`BackupSpec`] is available.
+//! - [`Doctor::run_spec`] takes a full [`BackupSpec`]
 //!   and runs *real* probes — constructing typed
-//!   [`CommandSpec`](toride_runner::CommandSpec)s for `restic`/`borg` and
-//!   executing them through the injected [`Runner`](toride_runner::Runner).
+//!   [`CommandSpec`]s for `restic`/`borg` and
+//!   executing them through the injected [`Runner`].
 //!
 //! # Secrets / redaction
 //!

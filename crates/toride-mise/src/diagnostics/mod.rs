@@ -5,7 +5,7 @@
 //! - [`Diagnostic`] and [`DiagnosticKind`] for classifying mise health issues.
 //! - [`DoctorReport`] summarising the result of a `mise doctor` invocation.
 //! - Trust-management methods ([`Mise::doctor`], [`Mise::doctor_path`],
-//!   [`Mise::trust`], [`Mise::untrust`]) on the [`Mise`](crate::Mise) client.
+//!   [`Mise::trust`], [`Mise::untrust`]) on the [`Mise`] client.
 //!
 //! # Example
 //!
@@ -270,7 +270,7 @@ impl<'a> DiagnosticsBuilder<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError`] if any underlying mise command fails in a way
+    /// Returns [`MiseError`](crate::error::MiseError) if any underlying mise command fails in a way
     /// that prevents building the report.
     #[allow(clippy::too_many_lines)]
     pub async fn run(self) -> MiseResult<DoctorReport> {
@@ -508,9 +508,9 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero in a
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero in a
     /// way that does not produce output.
-    /// Returns [`MiseError::BinaryNotFound`] if the binary cannot be found.
+    /// Returns [`MiseError::BinaryNotFound`](crate::error::MiseError::BinaryNotFound) if the binary cannot be found.
     pub async fn doctor(&self) -> MiseResult<DoctorReport> {
         // Try JSON first, fall back to text parsing.
         // `mise doctor --json` may not be supported in all versions, so we
@@ -543,7 +543,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::BinaryNotFound`] if the binary cannot be found.
+    /// Returns [`MiseError::BinaryNotFound`](crate::error::MiseError::BinaryNotFound) if the binary cannot be found.
     pub async fn doctor_path(&self) -> MiseResult<String> {
         let output = self.run(["doctor", "--path"]).await?;
         Ok(output.stdout_trimmed().to_owned())
@@ -555,8 +555,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::BinaryNotFound`] if the binary cannot be found.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::BinaryNotFound`](crate::error::MiseError::BinaryNotFound) if the binary cannot be found.
     pub async fn trust(&self, path: impl AsRef<str>) -> MiseResult<()> {
         self.run_checked(["trust", path.as_ref()]).await?;
         Ok(())
@@ -568,8 +568,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::BinaryNotFound`] if the binary cannot be found.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::BinaryNotFound`](crate::error::MiseError::BinaryNotFound) if the binary cannot be found.
     pub async fn untrust(&self, path: impl AsRef<str>) -> MiseResult<()> {
         self.run_checked(["trust", "--untrust", path.as_ref()])
             .await?;

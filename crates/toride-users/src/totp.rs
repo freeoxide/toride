@@ -18,7 +18,7 @@ use crate::{Error, Result, paths::UserPaths};
 /// - [`Debug`](fmt::Debug) renders as `TotpSecret { **REDACTED** }`, so a stray
 ///   `{:?}` (or a struct deriving `Debug` over a field of this type, or a
 ///   `tracing` macro that captures the value by debug) never prints the seed.
-/// - The buffer is [`zeroize`](::zeroize)d on drop, so the secret is not left
+/// - The buffer is [`zeroize`]d on drop, so the secret is not left
 ///   in freed heap memory longer than necessary.
 /// - [`Display`](fmt::Display) intentionally renders the underlying value, and
 ///   [`expose_secret`](Self::expose_secret) hands out a `&str`, because the

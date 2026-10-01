@@ -49,7 +49,7 @@ pub struct FindingEntry {
 /// Updates management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`UpdatesContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `UpdatesContent::set_*` setters
 /// driven by [`UpdatesCollector`](crate::toride_updates_data::UpdatesCollector).
 pub struct UpdatesContent {
     /// Whether the updates backend was reachable at all (package manager

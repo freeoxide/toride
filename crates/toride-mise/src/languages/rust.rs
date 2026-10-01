@@ -1,6 +1,6 @@
 //! Rust helper for mise.
 //!
-//! [`RustHelper`] wraps a [`Mise`](crate::Mise) reference and provides async
+//! [`RustHelper`] wraps a [`Mise`] reference and provides async
 //! methods for installing Rust toolchains, setting global/local defaults,
 //! listing available versions, resolving the `rustc` binary path, and
 //! installing Rust with specific components.
@@ -16,7 +16,7 @@ use crate::error::MiseResult;
 
 /// Typed helper for interacting with Rust via mise.
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example
@@ -35,7 +35,7 @@ pub struct RustHelper<'a> {
 }
 
 impl<'a> RustHelper<'a> {
-    /// Create a new [`RustHelper`] borrowing the given [`Mise`](crate::Mise) client.
+    /// Create a new [`RustHelper`] borrowing the given [`Mise`] client.
     pub fn new(mise: &'a Mise) -> Self {
         Self { mise }
     }

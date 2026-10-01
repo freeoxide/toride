@@ -1109,7 +1109,7 @@ pub struct SshCheckResult {
 pub struct EnableOptions {
     /// Require an SSH allow rule to exist before enabling.
     pub require_ssh_allow_rule: bool,
-    /// SSH ports to check (default: [22]).
+    /// SSH ports to check (default: \[22\]).
     pub ssh_ports: Vec<u16>,
     /// Trusted source IPs (if any).
     pub trusted_sources: Vec<IpAddr>,
@@ -1363,7 +1363,7 @@ pub fn validate_comment_for_secrets_doctor(comment: &str) -> bool {
 pub struct ListeningPort {
     /// Protocol (tcp/udp).
     pub proto: String,
-    /// Address (e.g. "0.0.0.0:22" or "[::]:22").
+    /// Address (e.g. "0.0.0.0:22" or "\[::\]:22").
     pub address: String,
 }
 

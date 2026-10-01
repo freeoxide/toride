@@ -75,7 +75,7 @@ pub struct MiseFindingEntry {
 /// Mise management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`MiseContent::set_*`] setters driven
+/// spinner, no cooldown. Data arrives via `MiseContent::set_*` setters driven
 /// by [`MiseCollector`](crate::toride_mise_data::MiseCollector).
 pub struct MiseContent {
     /// Whether the mise backend was reachable at all (binary present). `false`

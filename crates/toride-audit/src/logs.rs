@@ -33,7 +33,7 @@ impl<'a> LogManager<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if the log directory cannot be read.
+    /// Returns [`Error::Io`](crate::error::Error::Io) if the log directory cannot be read.
     pub fn list_log_files(&self) -> Result<Vec<String>> {
         let log_dir = std::path::Path::new("/var/log/audit");
         if !log_dir.exists() {
@@ -56,7 +56,7 @@ impl<'a> LogManager<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the check cannot be performed.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if the check cannot be performed.
     pub fn is_rsyslog_available(&self) -> Result<bool> {
         if which::which("rsyslogd").is_err() {
             return Ok(false);
@@ -70,7 +70,7 @@ impl<'a> LogManager<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the check cannot be performed.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if the check cannot be performed.
     pub fn is_journald_available(&self) -> Result<bool> {
         if which::which("systemd-journald").is_err() && which::which("journalctl").is_err() {
             return Ok(false);

@@ -4,7 +4,7 @@
 //! construction and error mapping so that the rest of the crate does not need
 //! to import `toride_runner` directly.
 //!
-//! - [`adapter`] — builds [`CommandSpec`] values and parses JSON output.
+//! - [`adapter`] — builds `CommandSpec` values and parses JSON output.
 //! - [`mapping`] — converts [`toride_runner::Error`] into [`MiseError`](crate::MiseError).
 
 pub mod adapter;

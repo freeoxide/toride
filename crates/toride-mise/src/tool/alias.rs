@@ -41,7 +41,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn tool_aliases_list(&self, tool: Option<&str>) -> MiseResult<Vec<ToolAlias>> {
         let mut args: Vec<String> = vec!["tool-alias".into(), "ls".into()];
         if let Some(t) = tool {
@@ -72,7 +72,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn tool_alias_get(&self, tool: &str, alias: &str) -> MiseResult<String> {
         let output = self.run_checked(["tool-alias", "get", tool, alias]).await?;
         Ok(output.stdout_trimmed().to_owned())
@@ -84,7 +84,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn tool_alias_set(&self, tool: &str, alias: &str, version: &str) -> MiseResult<()> {
         self.run_checked(["tool-alias", "set", tool, alias, version])
             .await?;
@@ -97,7 +97,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn tool_alias_unset(&self, tool: &str, alias: &str) -> MiseResult<()> {
         self.run_checked(["tool-alias", "unset", tool, alias])
             .await?;

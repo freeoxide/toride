@@ -1,7 +1,7 @@
 //! Convert `logs_data` tail results to UI presentation types.
 //!
-//! This is the single boundary between the [`logs_data`] collection layer and
-//! the [`ui::screens::logs`] presentation layer — mirroring
+//! This is the single boundary between the `logs_data` collection layer and
+//! the `ui::screens::logs` presentation layer — mirroring
 //! `toride_harden_convert.rs`'s role for harden. The logs section is the one
 //! read-only screen whose "backend" is already plain owned strings (decoded
 //! UTF-8 file tails + journalctl output), so there is almost nothing to map:
@@ -11,10 +11,10 @@
 //!
 //! Every function degrades gracefully: a source with an empty name gets a
 //! placeholder, an oversized line list is trimmed to
-//! [`MAX_VIEW_LINES`](self::MAX_VIEW_LINES), and no function ever returns
+//! `MAX_VIEW_LINES`, and no function ever returns
 //! `Err` (the read-only section must never crash the TUI). The
 //! [`LogSource`] type is re-exported here so the screen module never imports
-//! [`logs_data`] directly, preserving the boundary.
+//! `logs_data` directly, preserving the boundary.
 
 // Re-export the per-source tail type so the screen module imports it from
 // the convert layer (single boundary), matching how the other convert
@@ -30,13 +30,13 @@ pub use crate::logs_data::{LogSource, LogSource as LogsSourceEntry};
 /// data-layer cap so the convert layer is a no-op in the common case.
 const MAX_VIEW_LINES: usize = 200;
 
-/// Convert the raw per-source tails from [`logs_data`] into presentation
+/// Convert the raw per-source tails from `logs_data` into presentation
 /// entries ready for the Logs viewer.
 ///
 /// Each source is normalized:
 /// * an empty `name` is replaced with `"(unknown)"`;
 /// * an empty `path` is replaced with `"(no path)"`;
-/// * `lines` longer than [`MAX_VIEW_LINES`] is trimmed to its tail and
+/// * `lines` longer than `MAX_VIEW_LINES` is trimmed to its tail and
 ///   `line_count` is recomputed to match;
 /// * sources are kept in input order (the data layer lists toride's own log
 ///   first, then platform logs, then journalctl — that order is the viewer's

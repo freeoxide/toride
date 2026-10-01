@@ -268,7 +268,7 @@ pub struct HostInfo {
 impl HostInfo {
     /// Honest empty host info: every field is the `—` placeholder so the system
     /// card never shows fabricated hostname / OS / CPU / memory values at cold
-    /// start. [`DashboardScreen::set_status`] overlays live values once the
+    /// start. `DashboardScreen::set_status` overlays live values once the
     /// first [`TorideStatus`](crate::status::TorideStatus) lands.
     #[must_use]
     pub fn empty() -> Self {

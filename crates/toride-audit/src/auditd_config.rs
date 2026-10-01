@@ -39,7 +39,7 @@ impl AuditdConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ConfigParse`] if the content cannot be parsed.
+    /// Returns [`Error::ConfigParse`](crate::error::Error::ConfigParse) if the content cannot be parsed.
     pub fn parse(content: &str) -> Result<Self> {
         let mut config = Self {
             max_log_file: None,

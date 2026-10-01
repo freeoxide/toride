@@ -1,6 +1,6 @@
 //! Python helper for mise.
 //!
-//! [`PythonHelper`] wraps a [`Mise`](crate::Mise) reference and provides async
+//! [`PythonHelper`] wraps a [`Mise`] reference and provides async
 //! methods for installing Python versions, setting global/local defaults,
 //! listing available versions, resolving the `python` binary path, and setting
 //! multiple global Python versions simultaneously.
@@ -16,7 +16,7 @@ use crate::error::MiseResult;
 
 /// Typed helper for interacting with Python via mise.
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example
@@ -35,7 +35,7 @@ pub struct PythonHelper<'a> {
 }
 
 impl<'a> PythonHelper<'a> {
-    /// Create a new [`PythonHelper`] borrowing the given [`Mise`](crate::Mise) client.
+    /// Create a new [`PythonHelper`] borrowing the given [`Mise`] client.
     pub fn new(mise: &'a Mise) -> Self {
         Self { mise }
     }

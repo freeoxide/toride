@@ -1,6 +1,6 @@
 //! WireGuard client wrapping `wg` CLI commands.
 //!
-//! [`WireguardClient`] provides methods for interacting with the WireGuard
+//! [`WireguardClient`](crate::client::WireguardClient) provides methods for interacting with the WireGuard
 //! kernel module via the `wg` CLI tool. It handles command execution, output
 //! parsing, and error translation.
 //!
@@ -44,7 +44,7 @@ impl WireguardClient<toride_runner::DuctRunner> {
     /// `wg` binary. Binary availability is surfaced separately — by the
     /// caller's own `which::which("wg")` probe and by the doctor suite — so
     /// that a handle can be built on any host (e.g. to inspect config/paths)
-    /// and operations fail with a clear [`Error::Runner`] only if `wg` is
+    /// and operations fail with a clear [`Error::Runner`](crate::error::Error::Runner) only if `wg` is
     /// actually invoked while absent. Probing here would short-circuit the
     /// app's "cheap probes run on every poll, even cache-hit" design.
     pub fn new() -> Result<Self> {
@@ -85,7 +85,7 @@ impl<R: Runner> WireguardClient<R> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the command fails.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if the command fails.
     pub fn show(&self) -> Result<Vec<WgShowEntry>> {
         tracing::debug!("running `wg show all dump`");
         let output = self.runner.run_checked(&Self::show_spec())?;
@@ -105,7 +105,7 @@ impl<R: Runner> WireguardClient<R> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the command fails (including when
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if the command fails (including when
     /// the interface does not exist).
     pub fn showconf(&self, interface: &str) -> Result<String> {
         tracing::debug!("running `wg showconf {interface}`");
@@ -134,7 +134,7 @@ impl<R: Runner> WireguardClient<R> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the command fails.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if the command fails.
     pub fn setconf(&self, interface: &str, config: &str) -> Result<()> {
         tracing::debug!("running `wg setconf {interface}`");
         let _ = self
@@ -163,7 +163,7 @@ impl<R: Runner> WireguardClient<R> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the command fails.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if the command fails.
     pub fn syncconf(&self, interface: &str, config: &str) -> Result<()> {
         tracing::debug!("running `wg syncconf {interface}`");
         let _ = self

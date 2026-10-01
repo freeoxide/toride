@@ -2,7 +2,7 @@
 //!
 //! [`ServiceManager`] provides a typed interface for controlling the Fail2Ban
 //! systemd service.  Every operation goes through the centralised [`Runner`]
-//! trait so that the entire call stack remains testable via [`FakeRunner`] and
+//! trait so that the entire call stack remains testable via [`FakeRunner`](crate::command::FakeRunner) and
 //! respects dry-run mode automatically.
 //!
 //! # Quick start
@@ -37,7 +37,7 @@
 //! # Non-systemd environments
 //!
 //! In v1 the service manager targets `systemctl` exclusively.  For non-systemd
-//! hosts the caller can supply a [`FakeRunner`] that translates calls to the
+//! hosts the caller can supply a [`FakeRunner`](crate::command::FakeRunner) that translates calls to the
 //! local service manager, or simply avoid using this module altogether -- many
 //! applications should only manage config and let the deploy system handle
 //! restarts.

@@ -1,4 +1,4 @@
-//! Config mutation operations on [`Mise`](crate::Mise).
+//! Config mutation operations on [`Mise`].
 //!
 //! This module contains `impl Mise` methods that modify mise configuration:
 //!
@@ -27,8 +27,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the underlying `mise config set`
-    /// exits non-zero. Returns [`MiseError::Config`] if the file cannot be
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the underlying `mise config set`
+    /// exits non-zero. Returns [`MiseError::Config`](crate::error::MiseError::Config) if the file cannot be
     /// written when creating a new config.
     pub async fn config_set(
         &self,
@@ -71,7 +71,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn settings_set(
         &self,
         key: &str,
@@ -99,7 +99,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn settings_add(&self, key: &str, value: &str) -> MiseResult<ConfigWriteResult> {
         self.run_checked(["settings", "add", key, value]).await?;
 
@@ -122,7 +122,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero for
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero for
     /// a reason other than a missing key.
     pub async fn settings_unset(&self, key: &str) -> MiseResult<ConfigWriteResult> {
         let result = self.run_checked(["settings", "unset", key]).await;

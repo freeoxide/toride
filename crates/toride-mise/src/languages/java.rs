@@ -1,6 +1,6 @@
 //! Java helper for mise.
 //!
-//! [`JavaHelper`] wraps a [`Mise`](crate::Mise) reference and provides async
+//! [`JavaHelper`] wraps a [`Mise`] reference and provides async
 //! methods for installing Java versions, setting global/local defaults,
 //! listing available versions, resolving the `java` binary path, and
 //! querying the `JAVA_HOME` directory.
@@ -16,7 +16,7 @@ use crate::error::MiseResult;
 
 /// Typed helper for interacting with Java via mise.
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example
@@ -35,7 +35,7 @@ pub struct JavaHelper<'a> {
 }
 
 impl<'a> JavaHelper<'a> {
-    /// Create a new [`JavaHelper`] borrowing the given [`Mise`](crate::Mise) client.
+    /// Create a new [`JavaHelper`] borrowing the given [`Mise`] client.
     pub fn new(mise: &'a Mise) -> Self {
         Self { mise }
     }

@@ -14,7 +14,7 @@
 //!
 //! Unlike fail2ban/cloud (which shell out synchronously and so use `spawn_blocking`), the
 //! Tailscale backend talks to the local daemon over HTTP (`localhost:41642`) via async
-//! `reqwest`. So [`TailscaleClient::new`] (a sync ctor — it only builds the HTTP client,
+//! `reqwest`. So `TailscaleClient::new` (a sync ctor — it only builds the HTTP client,
 //! no network) is built ONCE per collection and its async methods are awaited directly
 //! inside the spawned `tokio::spawn(async move { ... })` task — NOT inside
 //! `spawn_blocking`. This mirrors `ssh_data`'s direct-async pattern (the SSH services are

@@ -116,8 +116,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_remote(&self, tool: &str) -> MiseResult<Vec<RemoteVersion>> {
         self.run_json(["ls-remote", tool, "--json"]).await
     }
@@ -129,8 +129,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_remote_with(
         &self,
         req: &ListRemoteRequest,
@@ -174,7 +174,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn latest(&self, tool: &str) -> MiseResult<String> {
         let output = self.run_checked(["latest", tool]).await?;
         Ok(output.stdout_trimmed().to_owned())
@@ -186,7 +186,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn latest_installed(&self, tool: &str) -> MiseResult<String> {
         let output = self.run_checked(["latest", "--installed", tool]).await?;
         Ok(output.stdout_trimmed().to_owned())
@@ -199,8 +199,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn list_remote_prefix(
         &self,
         tool: &str,

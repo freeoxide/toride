@@ -47,7 +47,7 @@ pub struct FindingEntry {
 /// Backup management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`BackupContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `BackupContent::set_*` setters
 /// driven by [`BackupCollector`](crate::toride_backup_data::BackupCollector).
 pub struct BackupContent {
     /// Whether the backup backend was reachable at all. `false` means the

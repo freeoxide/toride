@@ -2,12 +2,12 @@
 //!
 //! Each function takes raw command output and returns a structured result:
 //!
-//! - [`parse_unattended_upgrades_status`] -- parses the real
+//! - [`parse_unattended_upgrades_status`](crate::parse::parse_unattended_upgrades_status) -- parses the real
 //!   `/var/log/unattended-upgrades/unattended-upgrades.log` format (Python
 //!   `logging` lines: `YYYY-MM-DD HH:MM:SS,mmm LEVEL message`).
-//! - [`parse_apt_check`] -- parses `ubuntu-advantage security-status` or `apt-check` output
-//! - [`parse_dnf_check`] -- parses `dnf check-update` output
-//! - [`parse_dnf_automatic_journal`] -- parses `journalctl -u dnf-automatic`
+//! - [`parse_apt_check`](crate::parse::parse_apt_check) -- parses `ubuntu-advantage security-status` or `apt-check` output
+//! - [`parse_dnf_check`](crate::parse::parse_dnf_check) -- parses `dnf check-update` output
+//! - [`parse_dnf_automatic_journal`](crate::parse::parse_dnf_automatic_journal) -- parses `journalctl -u dnf-automatic`
 //!   output (the dnf-automatic stdio/motd emitter messages).
 
 use crate::error::{Error, Result};

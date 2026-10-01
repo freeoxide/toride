@@ -103,7 +103,7 @@ pub struct FindingEntry {
 /// `WireGuard` management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`WireguardContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `WireguardContent::set_*` setters
 /// driven by
 /// [`WireguardCollector`](crate::toride_wireguard_data::WireguardCollector).
 pub struct WireguardContent {

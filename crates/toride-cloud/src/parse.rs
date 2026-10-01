@@ -2,8 +2,8 @@
 //!
 //! Each cloud provider CLI tool produces structured JSON output. This module
 //! provides standalone parser functions that convert raw CLI output into typed
-//! [`FirewallRule`](crate::spec::FirewallRule) and
-//! [`SecurityGroup`](crate::spec::SecurityGroup) values, without needing to
+//! [`FirewallRule`] and
+//! [`SecurityGroup`] values, without needing to
 //! construct a provider client or shell out.
 //!
 //! [`parse_auto`] detects the provider from the JSON shape and delegates to the

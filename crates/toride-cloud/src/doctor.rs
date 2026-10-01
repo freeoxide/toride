@@ -2,7 +2,7 @@
 //!
 //! [`Doctor`] runs structured diagnostic checks across a cloud provider
 //! installation and returns a [`CloudReport`] containing typed
-//! [`Finding`](crate::report::Finding) values with severity levels,
+//! [`Finding`] values with severity levels,
 //! human-readable descriptions, and suggested fixes.
 //!
 //! # Categories

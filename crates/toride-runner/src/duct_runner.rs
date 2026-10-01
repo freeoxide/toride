@@ -1,6 +1,6 @@
 //! Real command execution via the `duct` crate.
 //!
-//! [`DuctRunner`] is the production implementation of [`Runner`](crate::Runner).
+//! [`DuctRunner`] is the production implementation of [`Runner`].
 //! It spawns subprocesses, captures stdout/stderr, and respects timeouts.
 
 use std::sync::Arc;

@@ -54,7 +54,7 @@ impl AideConfig {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ConfigParse`] if the content cannot be parsed.
+    /// Returns [`Error::ConfigParse`](crate::error::Error::ConfigParse) if the content cannot be parsed.
     pub fn parse(content: &str) -> Result<Self> {
         let mut config = Self {
             database: None,

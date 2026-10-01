@@ -7,7 +7,7 @@
 //!   `ConfigWriteResult`, `SettingsEntry`).
 //! - [`read`] — read-only operations: `config_ls`, `config_get`, `settings`,
 //!   `settings_get`.
-//! - [`write`] — mutation operations: `config_set`, `settings_set`,
+//! - [`mod@write`] — mutation operations: `config_set`, `settings_set`,
 //!   `settings_unset`.
 //! - [`path`] — path resolution: `config_path`.
 

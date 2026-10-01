@@ -52,7 +52,7 @@
 //! 3. **Fetch** — the client returns raw body text, so live payloads and
 //!    the fixture flow through the same parse signature. All requests
 //!    share one rate-limit gate; payloads and resolutions are cached for
-//!    [`CACHE_TTL`] (≥ 1 day, DESIGN.md §5).
+//!    `CACHE_TTL` (≥ 1 day, DESIGN.md §5).
 
 use crate::error::{Error, Result};
 use crate::model::{DistroFamily, Version};
@@ -168,7 +168,7 @@ struct RepologyEntry {
 /// slots are set — the fixture's `arch` entry (`srcname brave-browser` +
 /// `binname brave`) is ONE candidate; the alias index later picks a single
 /// id per candidate via [`select_source_id`]. Each candidate's
-/// [`Version`](crate::model::Version) carries `version` as
+/// [`Version`] carries `version` as
 /// `Version::value` and `origversion` as `Version::original`
 /// (`Version::published_unix` stays `None` — repology publishes no
 /// per-entry timestamps).
@@ -471,8 +471,8 @@ type CacheMap<T> = Mutex<HashMap<String, CacheEntry<T>>>;
 /// Returns raw body text — never deserialized values — so live payloads
 /// and the frozen fixture flow through the same parse signature
 /// ([`parse_repology_project`]). All requests are serialized behind one
-/// rate-limit gate ([`MIN_REQUEST_INTERVAL`]) and every payload/resolution
-/// is cached for [`CACHE_TTL`]; both are fair-use policy, not optimization.
+/// rate-limit gate (`MIN_REQUEST_INTERVAL`) and every payload/resolution
+/// is cached for `CACHE_TTL`; both are fair-use policy, not optimization.
 ///
 /// The client follows redirects (`Policy::limited(10)`, DESIGN.md §3.2):
 /// repology's reverse oracle is a redirect endpoint whose
@@ -510,7 +510,7 @@ impl RepologyClient {
     ///
     /// `project` is a canonical repology project name (lowercase slug);
     /// unknown names yield upstream 404 → [`Error::Http`]. Cached for
-    /// [`CACHE_TTL`].
+    /// `CACHE_TTL`.
     ///
     /// # Errors
     ///
@@ -545,7 +545,7 @@ impl RepologyClient {
     /// the client follows redirects, upstream's 302 surfaces as a `200`
     /// whose final URL names the project ([`ProjectResolution::Resolved`]);
     /// 300 surfaces as [`ProjectResolution::Ambiguous`] and 404 as
-    /// [`ProjectResolution::Unknown`]. Cached for [`CACHE_TTL`].
+    /// [`ProjectResolution::Unknown`]. Cached for `CACHE_TTL`.
     ///
     /// # Errors
     ///

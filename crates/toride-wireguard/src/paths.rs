@@ -1,6 +1,6 @@
 //! WireGuard system path layout.
 //!
-//! [`WireguardPaths`] resolves the standard WireGuard configuration directory
+//! [`WireguardPaths`](crate::paths::WireguardPaths) resolves the standard WireGuard configuration directory
 //! (`/etc/wireguard/`) and provides helpers for building interface config paths,
 //! key file paths, and backup locations.
 

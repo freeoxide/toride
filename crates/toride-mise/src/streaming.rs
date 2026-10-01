@@ -1,6 +1,6 @@
 //! Streaming support for long-running mise operations.
 //!
-//! This module provides streaming variants of [`Mise`](crate::Mise) methods
+//! This module provides streaming variants of [`Mise`] methods
 //! that deliver real-time [`CommandEvent`](toride_runner::CommandEvent)s to a
 //! [`CommandEventSink`](toride_runner::CommandEventSink). This is useful for
 //! operations like `mise install` that may take a long time and produce
@@ -53,7 +53,7 @@ impl Mise {
     /// arrive. This is the streaming counterpart to calling
     /// [`Mise::run_checked`] with `["install", tool_spec]`.
     ///
-    /// If no [`streaming_runner`](MiseBuilder::streaming_runner) was
+    /// If no `streaming_runner` was
     /// configured, falls back to non-streaming execution.
     ///
     /// # Errors
@@ -95,7 +95,7 @@ impl Mise {
     /// streams [`CommandEvent`](toride_runner::CommandEvent)s to `sink` as
     /// they arrive.
     ///
-    /// If no [`streaming_runner`](MiseBuilder::streaming_runner) was
+    /// If no `streaming_runner` was
     /// configured, falls back to non-streaming execution.
     ///
     /// # Errors
@@ -147,7 +147,7 @@ impl Mise {
     /// [`install_streaming`](Mise::install_streaming) or
     /// [`exec_streaming`](Mise::exec_streaming) for those specific operations.
     ///
-    /// If no [`streaming_runner`](MiseBuilder::streaming_runner) was
+    /// If no `streaming_runner` was
     /// configured, falls back to non-streaming [`Mise::run_checked`].
     ///
     /// # Errors

@@ -98,7 +98,7 @@ pub struct UserFindingEntry {
 /// User & access-control content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`UsersContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `UsersContent::set_*` setters
 /// driven by [`UsersCollector`](crate::toride_users_data::UsersCollector).
 #[expect(
     clippy::struct_excessive_bools,

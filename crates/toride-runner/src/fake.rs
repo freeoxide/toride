@@ -219,7 +219,7 @@ impl Default for FakeRunner {
 /// Clone a [`FakeRunner`].
 ///
 /// All state (`responses`, `exact_responses`, `calls`, `strict`) is held
-/// behind [`Arc`]`<`[`Mutex`](std::sync::Mutex)`<..>>`, so cloning produces a
+/// behind [`Arc`]`<`[`Mutex`]`<..>>`, so cloning produces a
 /// second handle to the *same* shared state. This is the desired behavior for
 /// tests that hand the runner to an owning subsystem (which moves it) but
 /// still want to inspect the recorded calls afterward via the clone.

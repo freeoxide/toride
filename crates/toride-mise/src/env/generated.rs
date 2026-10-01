@@ -4,7 +4,7 @@
 //! holds the resolved environment snapshot returned by `mise env`. [`EnvEntry`]
 //! is a single key-value pair inside that snapshot.
 //!
-//! The [`Mise`](crate::client::Mise) methods [`env`](crate::client::Mise::env)
+//! The [`Mise`] methods [`env`]
 //! and [`env_for`](crate::client::Mise::env_for) live here as trait-extension
 //! style methods on `Mise`.
 

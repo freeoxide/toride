@@ -5,7 +5,7 @@
 //!
 //! # High-level API
 //!
-//! The [`CloudClient`] struct is the main entry point when the `client` feature
+//! The [`CloudClient`](crate::client::CloudClient) struct is the main entry point when the `client` feature
 //! is enabled. It composes a command runner and delegates to provider-specific
 //! modules for security group operations.
 //!

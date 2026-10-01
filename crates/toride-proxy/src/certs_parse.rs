@@ -6,7 +6,7 @@
 //! ## Real expiry from scan-discovered certs
 //!
 //! [`read_cert_expiry`] shells out to `openssl x509 -enddate -noout -in <path>`
-//! via the [`Runner`](toride_runner::Runner) abstraction and parses the
+//! via the [`Runner`] abstraction and parses the
 //! resulting `notAfter=...` line into a real expiry. This lets scan-discovered
 //! certificate files (e.g. the certbot live-directory scan performed by the TUI)
 //! carry a genuine `not_after` / `days_remaining` / `is_valid` rather than the
@@ -57,7 +57,7 @@ impl ParsedCert {
 /// Produced by [`read_cert_expiry`]. This is the "promotion" of a
 /// scan-discovered cert file from a placeholder (unknown expiry) to a cert with
 /// genuine expiry data. It deliberately mirrors the expiry-related fields of
-/// [`CertInfo`] (`not_after`, `days_remaining`, `is_valid`) so a caller can
+/// [`CertInfo`](crate::report::CertInfo) (`not_after`, `days_remaining`, `is_valid`) so a caller can
 /// populate those fields directly.
 ///
 /// # Degradation
@@ -131,7 +131,7 @@ impl CertExpiry {
 /// Read real expiry for a discovered certificate file by shelling out to
 /// `openssl x509 -enddate -noout -in <path>`.
 ///
-/// The probe runs under a bounded timeout (see [`OPENSSL_ENDDATE_TIMEOUT`]).
+/// The probe runs under a bounded timeout (see `OPENSSL_ENDDATE_TIMEOUT`).
 /// On any failure — `openssl` not on `$PATH`, the runner returning an error,
 /// a non-zero exit, a timeout, or an unparseable `notAfter=` line — this
 /// returns [`CertExpiry::unknown`] (degraded, NOT `is_valid = true`).

@@ -121,7 +121,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the uninstallation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the uninstallation fails.
     pub async fn uninstall(&self, tool_spec: &str) -> MiseResult<()> {
         self.run_checked(["uninstall", tool_spec]).await?;
         Ok(())
@@ -134,7 +134,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the uninstallation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the uninstallation fails.
     pub async fn uninstall_with(&self, req: &UninstallRequest) -> MiseResult<()> {
         let mut args: Vec<String> = Vec::new();
         args.push("uninstall".into());
@@ -160,7 +160,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command fails.
     pub async fn unuse(&self, req: &UnuseRequest) -> MiseResult<()> {
         let mut args: Vec<String> = Vec::new();
         args.push("unset".into());

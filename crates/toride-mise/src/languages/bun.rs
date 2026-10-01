@@ -1,6 +1,6 @@
 //! Bun helper for mise.
 //!
-//! [`BunHelper`] wraps a [`Mise`](crate::Mise) reference and provides async
+//! [`BunHelper`] wraps a [`Mise`] reference and provides async
 //! methods for installing Bun versions, setting global/local defaults,
 //! listing available versions, and resolving the `bun` binary path.
 
@@ -15,7 +15,7 @@ use crate::error::MiseResult;
 
 /// Typed helper for interacting with Bun via mise.
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example
@@ -33,7 +33,7 @@ pub struct BunHelper<'a> {
 }
 
 impl<'a> BunHelper<'a> {
-    /// Create a new [`BunHelper`] borrowing the given [`Mise`](crate::Mise) client.
+    /// Create a new [`BunHelper`] borrowing the given [`Mise`] client.
     pub fn new(mise: &'a Mise) -> Self {
         Self { mise }
     }

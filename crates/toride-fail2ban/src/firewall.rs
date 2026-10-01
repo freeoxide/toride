@@ -13,19 +13,19 @@
 //! - Existence of the expected iptables chains (`iptables -n -L <chain>`)
 //! - IPv6 ban support when IPv6 addresses are in use
 //!
-//! All commands go through the [`Runner`](crate::command::Runner) trait. No
+//! All commands go through the [`Runner`] trait. No
 //! direct `std::process::Command` calls are made anywhere in this module.
 //!
 //! # Feature flags (planned deep-inspection backends)
 //!
 //! - **`firewall-nft`**: Enables native nftables JSON ruleset inspection.  When
-//!   implemented, [`FirewallChecker::inspect_nft_ruleset_json`] will parse the
+//!   implemented, `FirewallChecker::inspect_nft_ruleset_json` will parse the
 //!   full nftables ruleset returned by `nft -j list ruleset` into structured
 //!   Rust types, allowing programmatic verification of ban rules without shelling
 //!   out to `nft` for each individual query.  **Not yet implemented.**
 //!
 //! - **`firewall-iptables`**: Enables native iptables rules parsing.  When
-//!   implemented, [`FirewallChecker::inspect_iptables_rules`] will parse
+//!   implemented, `FirewallChecker::inspect_iptables_rules` will parse
 //!   `iptables-save` output (or equivalent) into structured rule representations,
 //!   enabling offline analysis of ban chains and jump targets.  **Not yet
 //!   implemented.**

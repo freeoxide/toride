@@ -1,6 +1,6 @@
 //! Resolved filesystem paths for automatic update configuration files.
 //!
-//! [`UpdatePaths`] centralizes all paths that the updates subsystem reads from
+//! [`UpdatePaths`](crate::paths::UpdatePaths) centralizes all paths that the updates subsystem reads from
 //! or writes to, including APT's `50unattended-upgrades`, `20auto-upgrades`,
 //! DNF's `automatic.conf`, and their parent directories.
 

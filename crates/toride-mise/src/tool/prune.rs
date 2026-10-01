@@ -117,7 +117,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the prune operation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the prune operation fails.
     pub async fn prune_tools(&self, tools: &[&str]) -> MiseResult<()> {
         let mut args: Vec<&str> = vec!["prune", "--only-tools"];
         args.extend_from_slice(tools);
@@ -131,7 +131,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the prune operation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the prune operation fails.
     pub async fn prune_configs(&self) -> MiseResult<()> {
         self.run_checked(["prune", "--only-configs"]).await?;
         Ok(())
@@ -146,7 +146,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the prune operation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the prune operation fails.
     pub async fn prune(&self, tools: &[&str]) -> MiseResult<()> {
         let mut args: Vec<&str> = vec!["prune"];
         args.extend_from_slice(tools);
@@ -161,7 +161,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the prune operation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the prune operation fails.
     pub async fn prune_with(&self, req: &PruneRequest) -> MiseResult<()> {
         let mut args: Vec<String> = Vec::new();
         args.push("prune".into());
@@ -191,7 +191,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn prune_dry_run(&self, tools: &[&str]) -> MiseResult<PrunePlan> {
         let mut args: Vec<&str> = vec!["prune", "--dry-run"];
         args.extend_from_slice(tools);

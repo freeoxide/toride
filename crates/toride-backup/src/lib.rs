@@ -8,7 +8,7 @@
 //!
 //! # High-level API
 //!
-//! The [`BackupClient`] struct is the main entry point when the `client`
+//! The [`BackupClient`](crate::client::BackupClient) struct is the main entry point when the `client`
 //! feature is enabled. It composes a command runner, system paths, and
 //! delegates to sub-modules for backup operations, restore workflows,
 //! scheduling, and doctor diagnostics.

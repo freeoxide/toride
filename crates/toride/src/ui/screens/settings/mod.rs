@@ -76,7 +76,7 @@ pub struct SettingsRuntime {
 /// Settings management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`SettingsContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `SettingsContent::set_*` setters
 /// driven by [`SettingsCollector`](crate::settings_data::SettingsCollector).
 ///
 /// In addition to the bundle's `config`/`runtime`, the screen carries the

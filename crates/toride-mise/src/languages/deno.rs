@@ -1,6 +1,6 @@
 //! Deno helper for mise.
 //!
-//! [`DenoHelper`] wraps a [`Mise`](crate::Mise) reference and provides async
+//! [`DenoHelper`] wraps a [`Mise`] reference and provides async
 //! methods for installing Deno versions, setting global/local defaults,
 //! listing available versions, and resolving the `deno` binary path.
 
@@ -15,7 +15,7 @@ use crate::error::MiseResult;
 
 /// Typed helper for interacting with Deno via mise.
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example
@@ -33,7 +33,7 @@ pub struct DenoHelper<'a> {
 }
 
 impl<'a> DenoHelper<'a> {
-    /// Create a new [`DenoHelper`] borrowing the given [`Mise`](crate::Mise) client.
+    /// Create a new [`DenoHelper`] borrowing the given [`Mise`] client.
     pub fn new(mise: &'a Mise) -> Self {
         Self { mise }
     }

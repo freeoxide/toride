@@ -1,9 +1,9 @@
 //! Reusable application "shell": a top header bar, a left sidebar, a main
 //! content area, and a bottom footer key-bar.
 //!
-//! [`shell_layout`] splits a full-frame [`Rect`] into the four regions; the
-//! [`header`], [`sidebar`] and [`footer`] submodules render the chrome, while
-//! the calling screen fills [`ShellAreas::content`].
+//! [`shell_layout`](crate::ui::shell::shell_layout) splits a full-frame `Rect` into the four regions; the
+//! `header`, `sidebar` and `footer` submodules render the chrome, while
+//! the calling screen fills [`ShellAreas::content`](crate::ui::shell::ShellAreas::content).
 
 pub mod footer;
 pub mod header;

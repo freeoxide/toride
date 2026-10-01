@@ -118,7 +118,7 @@ pub struct SshfpRecord {
 
 /// `known_hosts` file management.
 ///
-/// Obtained from [`SshManager::known_hosts()`](crate::SshManager::known_hosts).
+/// Obtained from `SshManager::known_hosts()`.
 pub struct KnownHostsService<'a> {
     paths: &'a SshPaths,
     runner: &'a dyn toride_ssh_core::CliRunner,
@@ -486,7 +486,7 @@ impl<'a> KnownHostsService<'a> {
     ///
     /// This performs a lightweight config scan — it does **not** follow
     /// `Include` chains or evaluate `Match` blocks.  For full config
-    /// resolution use [`ConfigService::resolve_host`](crate::config::ConfigService::resolve_host).
+    /// resolution use `ConfigService::resolve_host`.
     ///
     /// # Errors
     ///

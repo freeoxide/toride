@@ -15,7 +15,7 @@
 //!    config/data dir, log path).
 //!
 //! The data has no "findings" concept (it is identity metadata, not a health
-//! check), so the [`SectionOverview`] impl reports `findings_count == 0` and the
+//! check), so the [`SectionOverview`](crate::ui::screens::section_overview::SectionOverview) impl reports `findings_count == 0` and the
 //! collector uses the SIMPLE variant (no 60s findings cache).
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
@@ -114,7 +114,7 @@ pub struct AboutRuntime {
 /// About-toride content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`AboutContent::set_*`] setters driven
+/// spinner, no cooldown. Data arrives via `AboutContent::set_*` setters driven
 /// by [`AboutCollector`](crate::about_data::AboutCollector).
 pub struct AboutContent {
     /// Whether the About bundle was collected at all. `false` means the section

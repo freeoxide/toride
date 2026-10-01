@@ -91,7 +91,7 @@ pub struct HardenProfileEntry {
 /// area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`HardenContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `HardenContent::set_*` setters
 /// driven by [`HardenCollector`](crate::toride_harden_data::HardenCollector).
 pub struct HardenContent {
     /// Whether the harden backend was reachable at all (`sysctl` binary

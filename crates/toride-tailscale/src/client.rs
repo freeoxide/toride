@@ -39,8 +39,8 @@ use crate::report::TailscaleReport;
 /// handle:
 ///
 /// - [`api`](TailscaleClient::api) -- raw HTTP API client
-/// - [`status`](TailscaleClient::status) -- node status queries
-/// - [`dns`](TailscaleClient::dns) -- DNS configuration
+/// - `status` -- node status queries
+/// - `dns` -- DNS configuration
 /// - [`netcheck`](TailscaleClient::netcheck) -- connectivity checks
 pub struct TailscaleClient {
     /// The underlying HTTP API client.

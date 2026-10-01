@@ -1,6 +1,6 @@
 //! Diagnostic and status reports for WireGuard.
 //!
-//! [`WireguardReport`] provides a snapshot of the WireGuard subsystem status,
+//! [`WireguardReport`](crate::report::WireguardReport) provides a snapshot of the WireGuard subsystem status,
 //! including active interfaces, peer counts, and health findings.
 
 use std::path::PathBuf;

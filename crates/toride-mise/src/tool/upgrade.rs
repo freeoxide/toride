@@ -146,7 +146,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the upgrade fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the upgrade fails.
     pub async fn upgrade(&self, tool: Option<&str>) -> MiseResult<()> {
         match tool {
             Some(t) => {
@@ -166,7 +166,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the upgrade fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the upgrade fails.
     pub async fn upgrade_with(&self, req: &UpgradeRequest) -> MiseResult<()> {
         let mut args: Vec<String> = Vec::new();
         args.push("upgrade".into());
@@ -220,8 +220,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn outdated(&self) -> MiseResult<Vec<OutdatedTool>> {
         self.run_json(["outdated", "--json"]).await
     }
@@ -235,7 +235,7 @@ impl Mise {
     /// {"node":{"requested":"22","current":"22.0.0","latest":"22.1.0"}}
     /// ```
     ///
-    /// This is the [`OutdatedOutput`] = `BTreeMap<String, OutdatedToolEntry>`
+    /// This is the [`OutdatedOutput`](crate::serde_utils::json_outputs::OutdatedOutput) = `BTreeMap<String, OutdatedToolEntry>`
     /// canonical type, which deserialises correctly where a `Vec` would fail
     /// with "invalid type: map, expected a sequence". Prefer this over
     /// [`Mise::outdated`] when consuming the live `mise outdated --json`
@@ -243,9 +243,9 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised
-    /// into [`OutdatedOutput`].
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised
+    /// into [`OutdatedOutput`](crate::serde_utils::json_outputs::OutdatedOutput).
     pub async fn outdated_map(
         &self,
     ) -> MiseResult<crate::serde_utils::json_outputs::OutdatedOutput> {
@@ -258,8 +258,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn outdated_tool(&self, tool: &str) -> MiseResult<Vec<OutdatedTool>> {
         self.run_json(["outdated", tool, "--json"]).await
     }
@@ -270,8 +270,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn outdated_local(&self) -> MiseResult<Vec<OutdatedTool>> {
         self.run_json(["outdated", "--local", "--json"]).await
     }
@@ -282,8 +282,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn outdated_inactive(&self) -> MiseResult<Vec<OutdatedTool>> {
         self.run_json(["outdated", "--inactive", "--json"]).await
     }
@@ -295,7 +295,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the upgrade fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the upgrade fails.
     pub async fn upgrade_tools(&self, tools: Vec<String>) -> MiseResult<()> {
         let req = UpgradeRequest::new(tools);
         self.upgrade_with(&req).await
@@ -307,7 +307,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the upgrade fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the upgrade fails.
     pub async fn upgrade_bump(&self) -> MiseResult<()> {
         let req = UpgradeRequest::new([] as [String; 0]).bump();
         self.upgrade_with(&req).await
@@ -319,7 +319,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the upgrade fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the upgrade fails.
     pub async fn upgrade_dry_run(&self) -> MiseResult<()> {
         let req = UpgradeRequest::new([] as [String; 0]).dry_run();
         self.upgrade_with(&req).await

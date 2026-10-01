@@ -7,7 +7,7 @@
 //!
 //! The [`CliRunner`] trait abstracts over command execution for testability.
 //! Production code uses [`DefaultCliRunner`] which delegates to
-//! [`toride_runner::TokioRunner`]; tests swap in [`MockCliRunner`].
+//! `toride_runner::TokioRunner`; tests swap in [`MockCliRunner`].
 
 use std::collections::{HashMap, VecDeque};
 use std::path::Path;

@@ -3,8 +3,8 @@
 //! Provides [`DoctorService`], which orchestrates local and remote checks
 //! covering directory structure, file permissions, key strength, agent
 //! availability, config validity, and remote connectivity. Sub-modules
-//! define the [`Check`](check::Check) trait, the local/remote check
-//! implementations, and the [`CheckRegistry`](registry::CheckRegistry).
+//! define the `Check` trait, the local/remote check
+//! implementations, and the `CheckRegistry`.
 
 mod check;
 mod local;
@@ -36,8 +36,8 @@ impl<'a> DoctorService<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::Io`] if the SSH directory cannot be read, or
-    /// [`Error::CheckFailed`] if an individual check encounters an
+    /// Returns `Error::Io` if the SSH directory cannot be read, or
+    /// `Error::CheckFailed` if an individual check encounters an
     /// unrecoverable error.
     pub async fn run_local_checks(&self) -> Result<Vec<Diagnostic>> {
         local::run_all(self.paths, self.runner).await
@@ -50,8 +50,8 @@ impl<'a> DoctorService<'a> {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the SSH connection fails, or
-    /// [`Error::CheckFailed`] if an individual check encounters an
+    /// Returns `Error::CommandFailed` if the SSH connection fails, or
+    /// `Error::CheckFailed` if an individual check encounters an
     /// unrecoverable error.
     pub async fn run_remote_checks(&self, host: &str) -> Result<Vec<Diagnostic>> {
         remote::run_all(self.paths, host, self.runner).await

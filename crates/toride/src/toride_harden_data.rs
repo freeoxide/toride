@@ -17,7 +17,7 @@
 //!
 //! ## macOS / construction
 //!
-//! [`toride_harden::HardenClient::system`] is used. The constructor probes for
+//! `toride_harden::HardenClient::system` is used. The constructor probes for
 //! the `sysctl` binary via `which`; on macOS (where BSD `sysctl` semantics
 //! differ from Linux's and the Linux keys the profiles reference do not exist)
 //! the constructor still succeeds on macOS dev machines that happen to have a
@@ -26,7 +26,7 @@
 //! `sysctl` is genuinely absent the constructor returns
 //! `Err(BinaryNotFound("sysctl"))`; that path yields `available = false` and
 //! the degraded panel renders instead. The profile selector is ALWAYS populated
-//! (via [`HardenProfile::all_names`]) so the desired state is described even
+//! (via `HardenProfile::all_names`) so the desired state is described even
 //! when the live state is unreadable.
 //!
 //! ## Blocking

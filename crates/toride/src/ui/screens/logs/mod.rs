@@ -39,7 +39,7 @@ use crate::ui::widgets::render_titled_panel;
 /// spinner, no cooldown. Data arrives via [`LogsContent::set_logs`] driven by
 /// [`LogsCollector`](crate::logs_data::LogsCollector).
 ///
-/// The active source is selected by index ([`LogsContent::selected_source`]);
+/// The active source is selected by index (`LogsContent::selected_source`);
 /// Left/Right cycle it (wrapping). Scroll is a manual `usize` offset over the
 /// active source's `lines`, clamped against the visible row count during
 /// render (mirrors every other scrollable pane in the app — no ratatui
@@ -89,7 +89,7 @@ impl LogsContent {
 
     // ── Data setters ─────────────────────────────────────────────────────────
 
-    /// Replace the source list. [`LogsContent::selected_source`] is PRESERVED
+    /// Replace the source list. `LogsContent::selected_source` is PRESERVED
     /// when possible (clamped to the new `sources.len()` so it never points
     /// past the end), and `scroll` is clamped to the new active source's line
     /// count. This is what makes Left/Right + the 2s refresh tick feel stable:

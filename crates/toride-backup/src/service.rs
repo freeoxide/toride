@@ -1,7 +1,7 @@
 //! Service management layer for backup scheduling.
 //!
 //! Manages systemd services and timers related to backup operations.
-//! Delegates to the [`toride_service`] crate for systemd interactions when
+//! Delegates to the `toride_service` crate for systemd interactions when
 //! available.
 
 use crate::Result;
@@ -52,7 +52,7 @@ impl BackupServiceManager {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if systemctl fails.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if systemctl fails.
     pub fn start_timer(&self, name: &str) -> Result<()> {
         let unit = self.timer_unit(name);
         tracing::info!(unit = %unit, "starting backup timer");
@@ -63,7 +63,7 @@ impl BackupServiceManager {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if systemctl fails.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if systemctl fails.
     pub fn stop_timer(&self, name: &str) -> Result<()> {
         let unit = self.timer_unit(name);
         tracing::info!(unit = %unit, "stopping backup timer");
@@ -74,7 +74,7 @@ impl BackupServiceManager {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if systemctl fails.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if systemctl fails.
     pub fn enable_timer(&self, name: &str) -> Result<()> {
         let unit = self.timer_unit(name);
         tracing::info!(unit = %unit, "enabling backup timer");
@@ -93,7 +93,7 @@ impl BackupServiceManager {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if systemctl fails.
+    /// Returns [`Error::CommandFailed`](crate::error::Error::CommandFailed) if systemctl fails.
     pub fn is_timer_active(&self, name: &str) -> Result<bool> {
         let unit = self.timer_unit(name);
         tracing::debug!(unit = %unit, "checking timer status");

@@ -1,7 +1,7 @@
 //! # Homebrew adapter
 //!
 //! Normalizes formulae.brew.sh casks (GUI apps) and formulae (CLI tools)
-//! into [`App`](crate::model::App)s. Grounded in
+//! into [`App`]s. Grounded in
 //! `docs/survey/homebrew.md` (§1–§2 endpoints, §3–§5 cask fields,
 //! §7 formula fields) and DESIGN.md §4.1–§4.2 (field mappings).
 //!
@@ -10,7 +10,7 @@
 //!
 //! - **Parse half (pure, always compiled, offline-fixture-tested):**
 //!   [`parse_cask_json`] and [`parse_formula_json`] take the raw JSON body
-//!   text and return a normalized [`App`](crate::model::App). The wire
+//!   text and return a normalized [`App`]. The wire
 //!   structs below are `#[serde(default)]` end to end — formulae.brew.sh
 //!   promises no stability guarantees (homebrew.md §1), so any key going
 //!   missing or `null` upstream must degrade to `None`, never error.
@@ -20,7 +20,7 @@
 //!   body text, and [`HomebrewAdapter`] implements
 //!   [`Adapter`](crate::adapter::Adapter) over them. Wave 1 is per-item
 //!   only: the full cask/formula catalogs are tens of MB (homebrew.md
-//!   §1–§2), so [`HomebrewAdapter::search`] always returns an empty hit
+//!   §1–§2), so `HomebrewAdapter::search` always returns an empty hit
 //!   list rather than downloading a catalog.
 //!
 //! ## Cask `variations` contract (DESIGN.md §4.1)
@@ -30,7 +30,7 @@
 //! (e.g. `sonoma`, `arm64_big_sur`, `x86_64_linux`) whose object
 //! shallow-merges over the top-level triple. This parser is **pure** — it
 //! takes no host parameter — and collapses every available platform into
-//! one [`Artifact`](crate::model::Artifact) per **distinct
+//! one [`Artifact`] per **distinct
 //! (os, arch, url, sha256) tuple**:
 //!
 //! - an **absent** override key inherits the top-level value;
@@ -462,7 +462,7 @@ fn parse_wire<T: serde::de::DeserializeOwned>(payload: &str, id_keys: &[&str]) -
 // ---------------------------------------------------------------------------
 
 /// Normalizes one formulae.brew.sh cask payload (`/api/cask/{token}.json`,
-/// homebrew.md §3) into an [`App`](crate::model::App).
+/// homebrew.md §3) into an [`App`].
 ///
 /// Implements the §4.1 variations contract: the top-level
 /// `url`/`sha256` become the default-platform `ArtifactKind::Package`
@@ -588,7 +588,7 @@ pub fn parse_cask_json(payload: &str) -> Result<App> {
 
 /// Normalizes one formulae.brew.sh formula payload
 /// (`/api/formula/{name}.json`, homebrew.md §7) into an
-/// [`App`](crate::model::App).
+/// [`App`].
 ///
 /// `bottle.stable.files` platform tags decode to one
 /// [`ArtifactKind::Bottle`] artifact each (ghcr.io blob + published
