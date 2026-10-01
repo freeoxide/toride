@@ -76,7 +76,9 @@ use camino::Utf8PathBuf;
 use toride_registry::model::{App, InstallMethod, SourceRef};
 use toride_registry::{Adapter, TorideId};
 
-use crate::backend::{Backend, BackendId, InstallRequest, UninstallRequest};
+use crate::backend::{
+    Backend, BackendId, BackendStatus, InstallRequest, StatusQuery, UninstallRequest,
+};
 use crate::backends::distro::detect_host_family;
 use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::BrewKind;
@@ -766,9 +768,12 @@ impl Apps {
                 if backend.family() != *family {
                     return Ok(Presence::Absent);
                 }
-                match backend.installed_version(package).await? {
-                    Some(version) => Ok(Presence::Present(Some(version))),
-                    None => Ok(Presence::Absent),
+                // Presence, not version: apk's listing reports installed
+                // packages with no version, so `installed_version`'s
+                // Ok(None) would read a successful install as absent.
+                match backend.status(StatusQuery::new(package)).await? {
+                    BackendStatus::Installed { version } => Ok(Presence::Present(version)),
+                    BackendStatus::NotInstalled => Ok(Presence::Absent),
                 }
             }
         }
@@ -940,8 +945,7 @@ impl AppsBuilder {
     /// their PATH checks, distro via os-release(5) detection plus its PATH
     /// checks. A backend whose binary is simply absent is skipped (no
     /// brew on a Linux box is normal, not an error); a distro host with
-    /// no known family, or one whose family has no wave-1 executor
-    /// (Arch/Alpine), is skipped the same way. No command executes.
+    /// no known family is skipped the same way. No command executes.
     ///
     /// The seam the detection shares is kept as the builder's runner, so
     /// the built facade and its backends ride one seam.
@@ -949,8 +953,7 @@ impl AppsBuilder {
     /// # Errors
     ///
     /// [`AppsError::Backend`] when a detection fails for a reason other
-    /// than the skip modes above (absent binary, unknown family,
-    /// executor-less family).
+    /// than the skip modes above (absent binary, unknown family).
     pub fn detect_backends(self) -> AppsResult<Self> {
         let runner = self
             .runner
@@ -970,10 +973,9 @@ impl AppsBuilder {
         }
         match DistroBackend::detect(runner.clone()) {
             Ok(backend) => builder = builder.distro(backend),
-            // Absent binaries, no known family on this host, or a
-            // detected family without a wave-1 executor (Arch/Alpine
-            // route pacman/apk) — every mode here is "this host has no
-            // distro backend to attach", not a failure worth surfacing.
+            // Absent binaries or no known family on this host — every mode
+            // here is "this host has no distro backend to attach", not a
+            // failure worth surfacing.
             Err(BackendError::Command(
                 toride_runner::Error::BinaryNotFound(_) | toride_runner::Error::Other(_),
             )) => {}

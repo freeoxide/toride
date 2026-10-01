@@ -38,8 +38,10 @@
 //! - homebrew records probe [`HomebrewBackend::installed_version`] with
 //!   the recorded cask/formula kind — `Ok(None)` is the documented
 //!   not-installed signal (exit-gated silent failure or marker line);
-//! - distro records probe [`DistroBackend::installed_version`] — same
-//!   `Ok(None)` contract (not installed, or an `rc` leftover);
+//! - distro records probe [`Backend::status`] presence — apk's listing
+//!   reports installed packages with no version, so
+//!   [`DistroBackend::installed_version`]'s `Ok(None)` cannot distinguish
+//!   absent from present-without-a-version;
 //! - flatpak records deliberately probe the **scoped listing**
 //!   ([`FlatpakBackend::list_entries`]) rather than
 //!   [`FlatpakBackend::installed_version`]: flatpak reports apps without
@@ -250,14 +252,16 @@ async fn toride_recorded_status(
             if backend.family() != *family {
                 return Ok(AppStatus::NotInstalled);
             }
-            // The A4 contract: Ok(None) = not installed (or an rc
-            // leftover of a removed package — not an install).
-            Ok(match backend.installed_version(package).await? {
-                Some(version) => AppStatus::Installed {
+            // Presence, not version: apk's listing reports installed
+            // packages with no version at all, so `installed_version`'s
+            // Ok(None) cannot distinguish absent from present-without-a-
+            // version — the same reason the flatpak arm reads the row.
+            Ok(match backend.status(StatusQuery::new(package)).await? {
+                BackendStatus::Installed { version } => AppStatus::Installed {
                     backend: BackendId::Distro(*family),
-                    version: Some(version),
+                    version,
                 },
-                None => AppStatus::NotInstalled,
+                BackendStatus::NotInstalled => AppStatus::NotInstalled,
             })
         }
     }
@@ -484,6 +488,16 @@ mod tests {
                 package,
             ],
         )
+    }
+
+    /// The exact pacman query spec the single-package probe runs.
+    fn pacman_query_spec(package: &str) -> toride_runner::CommandSpec {
+        command("pacman", ["--query", package])
+    }
+
+    /// The exact apk listing spec the single-package probe runs.
+    fn apk_query_spec(package: &str) -> toride_runner::CommandSpec {
+        command("apk", ["list", "--installed", package])
     }
 
     /// The `brew info` document carrying one installed cask.
@@ -732,6 +746,53 @@ mod tests {
             DistroFamily::Debian,
         ));
         let status = app_status(&app_id("firefox-esr"), None, &manifest, &backends)
+            .await
+            .unwrap();
+        assert_eq!(status, AppStatus::NotInstalled);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn manifest_hit_apk_record_without_a_version_still_reports_installed() {
+        // apk's listing carries no version at all (src/app_list.c) — the
+        // exact case that rules out `installed_version` for distro records.
+        let fake = FakeRunner::new().strict().respond(
+            apk_query_spec("brave-browser"),
+            CommandOutput::from_stdout("brave-browser\n"),
+        );
+        let distro = distro_backend(DistroFamily::Alpine, &fake);
+        let backends = BackendSet::new().distro(&distro);
+        let mut manifest = empty_manifest();
+        manifest.record(distro_record(
+            "brave",
+            "brave-browser",
+            DistroFamily::Alpine,
+        ));
+        let status = app_status(&app_id("brave"), None, &manifest, &backends)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            AppStatus::Installed {
+                backend: BackendId::Distro(DistroFamily::Alpine),
+                version: None,
+            }
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn manifest_hit_pacman_record_when_the_package_is_missing_reports_not_installed() {
+        // pacman's not-found answer: exit 1 with the marker line on stderr.
+        let fake = FakeRunner::new().strict().respond(
+            pacman_query_spec("firefox"),
+            CommandOutput::from_stderr("error: package 'firefox' was not found\n", 1),
+        );
+        let distro = distro_backend(DistroFamily::Arch, &fake);
+        let backends = BackendSet::new().distro(&distro);
+        let mut manifest = empty_manifest();
+        manifest.record(distro_record("firefox", "firefox", DistroFamily::Arch));
+        let status = app_status(&app_id("firefox"), None, &manifest, &backends)
             .await
             .unwrap();
         assert_eq!(status, AppStatus::NotInstalled);

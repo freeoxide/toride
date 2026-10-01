@@ -1,0 +1,4 @@
+bash 5.2.037-1
+brave-browser 1:1.4.2-1
+filesystem 2025.07-1
+firefox 141.0.2-1

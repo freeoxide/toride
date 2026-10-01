@@ -288,6 +288,22 @@ fn rpm_query_spec(package: &str) -> CommandSpec {
     )
 }
 
+fn pacman_spec(verb: &str, package: &str) -> CommandSpec {
+    command("pacman", [verb, "--noconfirm", package])
+}
+
+fn pacman_query_spec(package: &str) -> CommandSpec {
+    command("pacman", ["--query", package])
+}
+
+fn apk_spec(verb: &str, package: &str) -> CommandSpec {
+    command("apk", [verb, package])
+}
+
+fn apk_query_spec(package: &str) -> CommandSpec {
+    command("apk", ["list", "--installed", package])
+}
+
 // --- canned outputs -------------------------------------------------------------
 
 /// An empty `brew info --json=v2 --installed` envelope: nothing installed.
@@ -313,6 +329,17 @@ fn dpkg_not_found(package: &str) -> CommandOutput {
 /// rpm's not-found answer: a nonzero exit + the marker line on stderr.
 fn rpm_not_found(package: &str) -> CommandOutput {
     CommandOutput::from_stderr(format!("package {package} is not installed"), 1)
+}
+
+/// pacman's not-found answer: exit 1 + `error: package '<pkg>' was not
+/// found` on stderr (`src/pacman/query.c`).
+fn pacman_not_found(package: &str) -> CommandOutput {
+    CommandOutput::from_stderr(format!("error: package '{package}' was not found"), 1)
+}
+
+/// apk's not-found answer: an empty exit-0 listing (`src/app_list.c`).
+fn apk_not_found() -> CommandOutput {
+    CommandOutput::from_stdout("")
 }
 
 /// flatpak's typed absent-uninstall answer for an app id: exit 1 + the
@@ -929,6 +956,133 @@ async fn ensure_installed_dnf_with_the_grant_installs_and_post_verifies_via_rpm(
     assert_eq!(version.as_deref(), Some("1.4.2"));
     assert!(verified);
     fake.assert_called_with(&dnf_spec("install", "brave-browser"));
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn ensure_installed_pacman_with_the_grant_installs_and_post_verifies_via_pacman_query() {
+    let path = temp_manifest_path("pacman-grant");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            pacman_query_spec("brave-browser"),
+            pacman_not_found("brave-browser"),
+        )
+        .respond(
+            pacman_spec("--sync", "brave-browser"),
+            CommandOutput::from_stdout(""),
+        )
+        // Backend post-verify + facade verify.
+        .respond(
+            pacman_query_spec("brave-browser"),
+            CommandOutput::from_stdout("brave-browser 1.4.2-1\n"),
+        )
+        .respond(
+            pacman_query_spec("brave-browser"),
+            CommandOutput::from_stdout("brave-browser 1.4.2-1\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::Distro,
+        vec![brave_distro_app(DistroFamily::Arch)],
+    );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(linux(DistroFamily::Arch))
+        .manifest_path(&path)
+        .homebrew(HomebrewBackend::new(seam.clone()))
+        .flatpak(FlatpakBackend::new(seam.clone()))
+        .distro(DistroBackend::new(DistroFamily::Arch, seam))
+        .adapter(adapter)
+        .build()
+        .expect("facade builds");
+
+    let outcome = apps
+        .ensure_installed(&id("brave"), AppInstallOptions::new().elevated(true))
+        .await
+        .expect("granted pacman install succeeds");
+    let EnsureAppOutcome::Installed {
+        backend,
+        ids,
+        version,
+        verified,
+        warning,
+    } = outcome
+    else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(backend, BackendId::Distro(DistroFamily::Arch));
+    assert_eq!(
+        ids,
+        NativeIds::Distro {
+            package: "brave-browser".to_owned(),
+            family: DistroFamily::Arch,
+        }
+    );
+    assert_eq!(version.as_deref(), Some("1.4.2-1"));
+    assert!(verified);
+    assert_eq!(warning, None);
+    fake.assert_called_with(&pacman_spec("--sync", "brave-browser"));
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn ensure_installed_apk_with_the_grant_installs_and_records_without_a_version() {
+    let path = temp_manifest_path("apk-grant");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(apk_query_spec("brave-browser"), apk_not_found())
+        .respond(
+            apk_spec("add", "brave-browser"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            apk_query_spec("brave-browser"),
+            CommandOutput::from_stdout("brave-browser\n"),
+        )
+        .respond(
+            apk_query_spec("brave-browser"),
+            CommandOutput::from_stdout("brave-browser\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::Distro,
+        vec![brave_distro_app(DistroFamily::Alpine)],
+    );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(linux(DistroFamily::Alpine))
+        .manifest_path(&path)
+        .homebrew(HomebrewBackend::new(seam.clone()))
+        .flatpak(FlatpakBackend::new(seam.clone()))
+        .distro(DistroBackend::new(DistroFamily::Alpine, seam))
+        .adapter(adapter)
+        .build()
+        .expect("facade builds");
+
+    let outcome = apps
+        .ensure_installed(&id("brave"), AppInstallOptions::new().elevated(true))
+        .await
+        .expect("granted apk install succeeds");
+    let EnsureAppOutcome::Installed {
+        backend,
+        version,
+        verified,
+        ..
+    } = outcome
+    else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(backend, BackendId::Distro(DistroFamily::Alpine));
+    assert_eq!(
+        version, None,
+        "apk's listing carries no version — present, not failed"
+    );
+    assert!(
+        verified,
+        "the post-verify confirms presence even without a version"
+    );
+    fake.assert_called_with(&apk_spec("add", "brave-browser"));
     fake.assert_no_unmatched_calls();
 }
 
