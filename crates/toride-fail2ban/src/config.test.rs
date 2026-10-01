@@ -2,10 +2,6 @@ use super::*;
 use std::fs;
 use tempfile::tempdir;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 fn sample_platform_commands() -> PlatformCommands {
     PlatformCommands::new(
         vec!["iptables -A INPUT -s <ip> -j DROP".into()],
@@ -54,10 +50,6 @@ fn make_config_with_jail(
     }
 }
 
-// ---------------------------------------------------------------------------
-// DefaultConfig tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn default_config_has_expected_values() {
     let dc = DefaultConfig::default();
@@ -82,17 +74,12 @@ fn default_config_serialization_roundtrip() {
 
 #[test]
 fn default_config_deserializes_from_partial_json() {
-    // Missing fields should be filled by serde defaults.
     let json = r#"{"find_time": 300}"#;
     let dc: DefaultConfig = serde_json::from_str(json).unwrap();
     assert_eq!(dc.find_time, 300);
     assert_eq!(dc.ban_time, 3600);
     assert_eq!(dc.max_retry, 5);
 }
-
-// ---------------------------------------------------------------------------
-// GlobalConfig tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn global_config_has_expected_defaults() {
@@ -122,13 +109,8 @@ fn global_config_serialization_roundtrip() {
     assert_eq!(restored.max_history, 500);
 }
 
-// ---------------------------------------------------------------------------
-// JailConfig tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn jail_config_enabled_defaults_to_true() {
-    // `enabled` is absent in JSON -- serde should default it to true.
     let json = r#"{
         "log_path": "/var/log/auth.log",
         "pattern": "Failed password"
@@ -164,10 +146,6 @@ fn jail_config_serialization_roundtrip() {
     assert_eq!(restored.ignore_ips, vec!["10.0.0.0/8"]);
 }
 
-// ---------------------------------------------------------------------------
-// ActionConfig tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn action_config_serialization_roundtrip() {
     let ac = sample_action_config();
@@ -187,10 +165,6 @@ fn action_config_deserializes_with_empty_validate() {
     assert!(ac.validation_commands.is_empty());
     assert!(ac.commands.linux.is_empty());
 }
-
-// ---------------------------------------------------------------------------
-// Fail2BanConfig tests -- serialization roundtrip
-// ---------------------------------------------------------------------------
 
 #[test]
 fn full_config_serialization_roundtrip() {
@@ -219,10 +193,6 @@ fn empty_config_deserializes_with_all_defaults() {
     assert_eq!(config.defaults.find_time, 600);
     assert_eq!(config.global.scan_interval, 10);
 }
-
-// ---------------------------------------------------------------------------
-// Fail2BanConfig::validate() tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn validate_rejects_zero_find_time() {
@@ -298,7 +268,6 @@ fn validate_passes_for_empty_config() {
 
 #[test]
 fn validate_reports_first_error() {
-    // Two jails, both invalid -- should report whichever is iterated first.
     let dir = tempdir().unwrap();
     let log1 = dir.path().join("a.log");
     let log2 = dir.path().join("b.log");
@@ -329,17 +298,12 @@ fn validate_reports_first_error() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Fail2BanConfig::resolve_jail() tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn resolve_jail_applies_defaults_for_none_fields() {
     let dir = tempdir().unwrap();
     let log_path = dir.path().join("auth.log");
     fs::write(&log_path, "").unwrap();
 
-    // Jail has all optional fields as None.
     let jail = sample_jail_config(log_path.clone());
     let config = make_config_with_jail(&log_path, Some(jail));
 
@@ -406,10 +370,6 @@ fn resolve_jail_preserves_log_path_and_pattern() {
     assert_eq!(resolved.log_path, dir.path().join("custom.log"));
     assert_eq!(resolved.pattern, r"Invalid user .* from <HOST>");
 }
-
-// ---------------------------------------------------------------------------
-// Fail2BanConfig::enabled_jails() tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn enabled_jails_returns_only_enabled_jails() {
@@ -485,10 +445,6 @@ fn enabled_jails_returns_all_when_all_enabled() {
     assert_eq!(enabled, vec!["jail1", "jail2"]);
 }
 
-// ---------------------------------------------------------------------------
-// Fail2BanConfig::save() / load() roundtrip tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn save_and_load_roundtrip() {
     let dir = tempdir().unwrap();
@@ -541,7 +497,6 @@ fn load_returns_error_for_invalid_json() {
 fn load_validates_after_deserialization() {
     let dir = tempdir().unwrap();
     let log_path = dir.path().join("auth.log");
-    // Deliberately do NOT create the log file so validation fails.
 
     let json = serde_json::json!({
         "jails": {
@@ -571,14 +526,9 @@ fn save_produces_valid_json() {
     config.save(&config_path).unwrap();
 
     let content = fs::read_to_string(&config_path).unwrap();
-    // Should be parseable JSON.
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert!(parsed.is_object());
 }
-
-// ---------------------------------------------------------------------------
-// Fail2BanConfig::create_default() tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn create_default_writes_new_file() {
@@ -607,10 +557,6 @@ fn create_default_loads_existing_file() {
     assert!(loaded.jails.contains_key("sshd"));
 }
 
-// ---------------------------------------------------------------------------
-// ResolvedJail tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn resolved_jail_clones_correctly() {
     let dir = tempdir().unwrap();
@@ -631,17 +577,12 @@ fn resolved_jail_clones_correctly() {
     assert_eq!(resolved.ignore_ips, cloned.ignore_ips);
 }
 
-// ---------------------------------------------------------------------------
-// Edge case: partial overrides leave other defaults intact
-// ---------------------------------------------------------------------------
-
 #[test]
 fn resolve_jail_partial_override_only_changes_specified_fields() {
     let dir = tempdir().unwrap();
     let log_path = dir.path().join("auth.log");
     fs::write(&log_path, "").unwrap();
 
-    // Only override find_time; everything else should come from defaults.
     let jail = JailConfig {
         find_time: Some(999),
         ..sample_jail_config(log_path.clone())
@@ -649,16 +590,12 @@ fn resolve_jail_partial_override_only_changes_specified_fields() {
     let config = make_config_with_jail(&log_path, Some(jail));
 
     let resolved = config.resolve_jail("sshd").unwrap();
-    assert_eq!(resolved.find_time, 999); // overridden
-    assert_eq!(resolved.ban_time, 3600); // default
-    assert_eq!(resolved.max_retry, 5); // default
-    assert_eq!(resolved.ban_action, "ban"); // default
-    assert_eq!(resolved.unban_action, "unban"); // default
+    assert_eq!(resolved.find_time, 999);
+    assert_eq!(resolved.ban_time, 3600);
+    assert_eq!(resolved.max_retry, 5);
+    assert_eq!(resolved.ban_action, "ban");
+    assert_eq!(resolved.unban_action, "unban");
 }
-
-// ---------------------------------------------------------------------------
-// Multiple jails coexistence
-// ---------------------------------------------------------------------------
 
 #[test]
 fn multiple_jails_resolve_independently() {
@@ -697,16 +634,12 @@ fn multiple_jails_resolve_independently() {
 
     assert_eq!(sshd.find_time, 300);
     assert_eq!(sshd.max_retry, 3);
-    assert_eq!(sshd.ban_action, "ban"); // default
+    assert_eq!(sshd.ban_action, "ban");
 
     assert_eq!(nginx.find_time, 60);
     assert_eq!(nginx.max_retry, 10);
-    assert_eq!(nginx.ban_action, "nginx_block"); // override
+    assert_eq!(nginx.ban_action, "nginx_block");
 }
-
-// ---------------------------------------------------------------------------
-// Edge case: ban_time of 0 is rejected (would create instantly-expiring bans)
-// ---------------------------------------------------------------------------
 
 #[test]
 fn validate_rejects_zero_ban_time() {
@@ -728,10 +661,6 @@ fn validate_rejects_zero_ban_time() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Edge case: create_default on an existing file with corrupt JSON
-// ---------------------------------------------------------------------------
-
 #[test]
 fn create_default_with_corrupt_existing_file() {
     let dir = tempdir().unwrap();
@@ -742,15 +671,10 @@ fn create_default_with_corrupt_existing_file() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Edge case: load with wrong field types in JSON
-// ---------------------------------------------------------------------------
-
 #[test]
 fn load_with_malformed_field_types() {
     let dir = tempdir().unwrap();
     let path = dir.path().join("config.json");
-    // find_time is a string instead of a number.
     let json = r#"{
         "defaults": {
             "find_time": "not_a_number",
@@ -763,10 +687,6 @@ fn load_with_malformed_field_types() {
     let result = Fail2BanConfig::load(&path);
     assert!(result.is_err());
 }
-
-// ===========================================================================
-// Additional edge-case tests
-// ===========================================================================
 
 #[test]
 fn validate_rejects_invalid_regex_pattern() {
@@ -916,7 +836,6 @@ fn save_load_preserves_ignore_ips() {
 fn config_with_extra_unknown_fields_is_ignored() {
     let dir = tempdir().unwrap();
     let config_path = dir.path().join("config.json");
-    // Serde ignores unknown fields by default (no deny_unknown_fields attribute).
     let json = r#"{"unknown_field": "value", "another_extra": 42}"#;
     fs::write(&config_path, json).unwrap();
 

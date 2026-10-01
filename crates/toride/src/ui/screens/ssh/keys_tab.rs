@@ -1,8 +1,5 @@
-//! Keys sub-tab for the SSH management screen.
-//!
-//! Displays all SSH keys found in `~/.ssh/` as a scrollable list with type,
-//! fingerprint, encryption status, permissions, and badge indicators. Supports
-//! keyboard navigation, selection, and a detail modal.
+//! The SSH keys tab: list, detail modal, and create/rename/delete/install
+//! actions.
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -25,75 +22,44 @@ use crate::ui::widgets::{
 
 use super::{SshKeyEntry, SshTab, char_to_keycode};
 
-// ── ActionModal ──────────────────────────────────────────────────────────────
-
-/// Which action modal is currently open (if any).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActionModal {
-    /// Generate new key form.
     New,
-    /// Delete confirmation.
     Delete,
-    /// Rename key form.
     Rename,
-    /// Test passphrase form.
     TestPassphrase,
-    /// Install public key to remote host form.
     Install,
 }
 
-// ── KeysTab ──────────────────────────────────────────────────────────────────
-
-/// State for the Keys sub-tab.
+/// The SSH keys tab: key list plus its action modals and pending ops.
 pub struct KeysTab {
-    /// Key entries to display.
     keys: Vec<SshKeyEntry>,
-    /// Index of the currently selected key.
     selected: usize,
-    /// Vertical scroll offset.
     scroll: usize,
-    /// Which key index is shown in the detail modal (if open).
     detail_key_idx: Option<usize>,
-    /// Interactive detail modal (manages visibility + rect + click-outside).
     detail_modal: InteractiveModal<Action>,
-    /// Hitbox rects for list rows (rebuilt each frame).
     row_hitboxes: Vec<Rect>,
-    /// Which row is hovered by the mouse.
     hovered_row: Option<usize>,
-    /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
-    /// Which action modal is open (if any).
     action_modal: Option<ActionModal>,
-    /// Form modal for new key / rename / passphrase test operations.
     form: FormModal,
-    /// Confirm modal for delete operations.
     confirm: ConfirmModal,
-    /// Pending write operations to be forwarded to `SshContent`.
     pending_ops: Vec<SshOp>,
-    /// Key name being tested for passphrase (set when `TestPassphrase` modal opens).
     test_passphrase_key: Option<String>,
-    /// Result of the last passphrase test: Ok(label) or Err(msg).
     passphrase_test_result: Option<Result<String, String>>,
-    /// Reference instant for spinner animation (keys still generating).
     anim_start: std::time::Instant,
-    /// Key name for the install-to-remote operation (set when Install modal opens).
     install_key_name: Option<String>,
 }
 
 impl KeysTab {
-    /// Whether any key row still shows the braille "generating…" spinner
-    /// (an empty fingerprint awaiting the post-write refresh).
-    ///
-    /// The dashboard's full-frame-rate tick consults this: after a `KeyCreate`
-    /// batch drains, the 5s write cooldown delays the refresh that fills
-    /// fingerprints, and without this clause the visible spinner would drop
-    /// to shimmer cadence (~4fps) for that window.
+    /// Whether any key row still awaits its fingerprint; the dashboard's
+    /// full-frame-rate tick consults this for the "generating…" spinners.
     #[must_use]
     pub fn has_pending_fingerprints(&self) -> bool {
         self.keys.iter().any(|k| k.fingerprint.is_empty())
     }
 
-    /// Create a new empty keys tab.
+    /// Create an empty keys tab with its action button row.
     #[must_use]
     pub fn new() -> Self {
         let buttons = ButtonRow::new(
@@ -128,7 +94,7 @@ impl KeysTab {
         }
     }
 
-    /// Replace the key list with new data.
+    /// Replace the key list, clamping selection and scroll.
     pub fn set_keys(&mut self, keys: Vec<SshKeyEntry>) {
         self.keys = keys;
         if self.selected >= self.keys.len() && !self.keys.is_empty() {
@@ -137,7 +103,7 @@ impl KeysTab {
         self.clamp_scroll();
     }
 
-    /// Whether a modal is currently open.
+    /// Whether any modal or result overlay is open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
         self.detail_modal.is_visible()
@@ -145,27 +111,22 @@ impl KeysTab {
             || self.passphrase_test_result.is_some()
     }
 
-    /// Clamp scroll so the selected item is visible.
     fn clamp_scroll(&mut self) {
         if self.keys.is_empty() {
             self.scroll = 0;
             return;
         }
-        // Ensure selected is within bounds
         if self.selected >= self.keys.len() {
             self.selected = self.keys.len() - 1;
         }
     }
 
-    /// Handle a mouse event for the key list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Passphrase test result banner: click anywhere to dismiss.
         if self.passphrase_test_result.is_some() {
             self.passphrase_test_result = None;
             return None;
         }
 
-        // Confirm modal open: delegate mouse clicks to its buttons.
         if self.action_modal == Some(ActionModal::Delete) {
             if let Some(result) = self.confirm.handle_mouse(&mouse) {
                 return match result {
@@ -178,7 +139,6 @@ impl KeysTab {
             }
             return None;
         }
-        // Form modal open: delegate mouse to form buttons.
         if self.action_modal.is_some() && self.action_modal != Some(ActionModal::Delete) {
             if let Some(result) = self.form.handle_mouse(&mouse) {
                 return match result {
@@ -193,7 +153,6 @@ impl KeysTab {
             return None;
         }
 
-        // Detail modal open: delegate to InteractiveModal for click-outside.
         if self.detail_modal.is_visible() {
             if let ModalEvent::Closed = self.detail_modal.handle_mouse(&mouse) {
                 self.detail_key_idx = None;
@@ -201,7 +160,6 @@ impl KeysTab {
             return None;
         }
 
-        // Footer buttons (always process for hover tracking).
         if let Some(c) = self.buttons.handle_mouse(&mouse) {
             return self.handle_key(char_to_keycode(c));
         }
@@ -232,7 +190,6 @@ impl KeysTab {
         None
     }
 
-    /// Check if a screen coordinate falls within a list row hitbox.
     fn row_at(&self, col: u16, row: u16) -> Option<usize> {
         self.row_hitboxes.iter().position(|rect| {
             col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
@@ -252,7 +209,6 @@ impl SshTab for KeysTab {
         reason = "keyboard dispatch table kept whole for clarity"
     )]
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
-        // If detail modal is open, delegate to InteractiveModal.
         if self.detail_modal.is_visible() {
             match self.detail_modal.handle_key(code) {
                 ModalEvent::Closed => self.detail_key_idx = None,
@@ -261,152 +217,133 @@ impl SshTab for KeysTab {
             return None;
         }
 
-        // If passphrase test result banner is showing, dismiss on any key.
         if self.passphrase_test_result.is_some() {
             self.passphrase_test_result = None;
             return None;
         }
 
-        // If an action modal is open, delegate to it.
         if let Some(action) = self.action_modal {
             match action {
-                ActionModal::New => {
-                    match self.form.handle_key(code) {
-                        FormResult::Submitted => {
-                            let name = self
+                ActionModal::New => match self.form.handle_key(code) {
+                    FormResult::Submitted => {
+                        let name = self
+                            .form
+                            .text_value(0)
+                            .map(std::string::ToString::to_string)
+                            .unwrap_or_default();
+                        let key_type = self.form.select_value(1).unwrap_or("Ed25519");
+                        let comment = self
+                            .form
+                            .text_value(2)
+                            .map(std::string::ToString::to_string)
+                            .unwrap_or_default();
+                        let passphrase = self.form.text_value(3).and_then(|s| {
+                            if s.is_empty() {
+                                None
+                            } else {
+                                Some(s.to_string())
+                            }
+                        });
+                        let has_passphrase = passphrase.is_some();
+                        let display_name = if name.is_empty() {
+                            "id_new".to_string()
+                        } else if name.starts_with("id_") {
+                            name.clone()
+                        } else {
+                            format!("id_{name}")
+                        };
+                        self.pending_ops.push(SshOp::KeyCreate {
+                            name: display_name.clone(),
+                            key_type: key_type.to_string(),
+                            comment,
+                            passphrase,
+                        });
+                        self.keys.push(SshKeyEntry {
+                            name: display_name,
+                            key_type: key_type.to_string(),
+                            fingerprint: String::new(),
+                            encrypted: has_passphrase,
+                            permissions: "0600".into(),
+                            has_public: false,
+                            has_cert: false,
+                            used_by_hosts: vec![],
+                        });
+                        self.selected = self.keys.len() - 1;
+                        self.clamp_scroll();
+                        self.action_modal = None;
+                    }
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                    }
+                    FormResult::Pending => {}
+                },
+                ActionModal::Delete => match self.confirm.handle_key(code) {
+                    Some(ConfirmResult::Confirmed) => {
+                        if !self.keys.is_empty() {
+                            let name = self.keys[self.selected].name.clone();
+                            self.pending_ops.push(SshOp::KeyDelete { name });
+                            self.keys.remove(self.selected);
+                            if self.selected >= self.keys.len() && !self.keys.is_empty() {
+                                self.selected = self.keys.len() - 1;
+                            }
+                            self.clamp_scroll();
+                        }
+                        self.action_modal = None;
+                    }
+                    Some(ConfirmResult::Cancelled) => self.action_modal = None,
+                    None => {}
+                },
+                ActionModal::Rename => match self.form.handle_key(code) {
+                    FormResult::Submitted => {
+                        if let Some(key) = self.keys.get_mut(self.selected) {
+                            let old_name = key.name.clone();
+                            let raw_name = self
                                 .form
                                 .text_value(0)
                                 .map(std::string::ToString::to_string)
                                 .unwrap_or_default();
-                            let key_type = self.form.select_value(1).unwrap_or("Ed25519");
-                            let comment = self
-                                .form
-                                .text_value(2)
-                                .map(std::string::ToString::to_string)
-                                .unwrap_or_default();
-                            let passphrase = self.form.text_value(3).and_then(|s| {
-                                if s.is_empty() {
-                                    None
-                                } else {
-                                    Some(s.to_string())
-                                }
-                            });
-                            let has_passphrase = passphrase.is_some();
-                            let display_name = if name.is_empty() {
-                                "id_new".to_string()
-                            } else if name.starts_with("id_") {
-                                name.clone()
+                            let new_name = if raw_name.starts_with("id_") {
+                                raw_name
                             } else {
-                                format!("id_{name}")
+                                format!("id_{raw_name}")
                             };
-                            // Persist to disk
-                            self.pending_ops.push(SshOp::KeyCreate {
-                                name: display_name.clone(),
-                                key_type: key_type.to_string(),
-                                comment,
+                            if !new_name.is_empty() && new_name != old_name {
+                                self.pending_ops.push(SshOp::KeyRename {
+                                    old_name,
+                                    new_name: new_name.clone(),
+                                });
+                                key.name = new_name;
+                            }
+                        }
+                        self.action_modal = None;
+                    }
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                    }
+                    FormResult::Pending => {}
+                },
+                ActionModal::TestPassphrase => match self.form.handle_key(code) {
+                    FormResult::Submitted => {
+                        let passphrase = self
+                            .form
+                            .text_value(0)
+                            .map(std::string::ToString::to_string)
+                            .unwrap_or_default();
+                        if let Some(name) = self.test_passphrase_key.take() {
+                            self.pending_ops.push(SshOp::KeyTestPassphrase {
+                                name: name.clone(),
                                 passphrase,
                             });
-                            // Optimistic in-memory update
-                            self.keys.push(SshKeyEntry {
-                                name: display_name,
-                                key_type: key_type.to_string(),
-                                fingerprint: String::new(),
-                                encrypted: has_passphrase,
-                                permissions: "0600".into(),
-                                has_public: false,
-                                has_cert: false,
-                                used_by_hosts: vec![],
-                            });
-                            // Select the newly added key
-                            self.selected = self.keys.len() - 1;
-                            self.clamp_scroll();
-                            self.action_modal = None;
+                            self.passphrase_test_result = Some(Ok(format!("testing '{name}'...")));
                         }
-                        FormResult::Cancelled => {
-                            self.action_modal = None;
-                        }
-                        FormResult::Pending => {}
+                        self.action_modal = None;
                     }
-                }
-                ActionModal::Delete => {
-                    match self.confirm.handle_key(code) {
-                        Some(ConfirmResult::Confirmed) => {
-                            if !self.keys.is_empty() {
-                                let name = self.keys[self.selected].name.clone();
-                                // Persist to disk
-                                self.pending_ops.push(SshOp::KeyDelete { name });
-                                // Optimistic in-memory update
-                                self.keys.remove(self.selected);
-                                if self.selected >= self.keys.len() && !self.keys.is_empty() {
-                                    self.selected = self.keys.len() - 1;
-                                }
-                                self.clamp_scroll();
-                            }
-                            self.action_modal = None;
-                        }
-                        Some(ConfirmResult::Cancelled) => self.action_modal = None,
-                        None => {}
+                    FormResult::Cancelled => {
+                        self.action_modal = None;
+                        self.test_passphrase_key = None;
                     }
-                }
-                ActionModal::Rename => {
-                    match self.form.handle_key(code) {
-                        FormResult::Submitted => {
-                            if let Some(key) = self.keys.get_mut(self.selected) {
-                                let old_name = key.name.clone();
-                                let raw_name = self
-                                    .form
-                                    .text_value(0)
-                                    .map(std::string::ToString::to_string)
-                                    .unwrap_or_default();
-                                let new_name = if raw_name.starts_with("id_") {
-                                    raw_name
-                                } else {
-                                    format!("id_{raw_name}")
-                                };
-                                if !new_name.is_empty() && new_name != old_name {
-                                    // Persist to disk
-                                    self.pending_ops.push(SshOp::KeyRename {
-                                        old_name,
-                                        new_name: new_name.clone(),
-                                    });
-                                    // Optimistic in-memory update
-                                    key.name = new_name;
-                                }
-                            }
-                            self.action_modal = None;
-                        }
-                        FormResult::Cancelled => {
-                            self.action_modal = None;
-                        }
-                        FormResult::Pending => {}
-                    }
-                }
-                ActionModal::TestPassphrase => {
-                    match self.form.handle_key(code) {
-                        FormResult::Submitted => {
-                            let passphrase = self
-                                .form
-                                .text_value(0)
-                                .map(std::string::ToString::to_string)
-                                .unwrap_or_default();
-                            if let Some(name) = self.test_passphrase_key.take() {
-                                self.pending_ops.push(SshOp::KeyTestPassphrase {
-                                    name: name.clone(),
-                                    passphrase,
-                                });
-                                // Show a pending result that will be replaced by the async pipeline
-                                self.passphrase_test_result =
-                                    Some(Ok(format!("testing '{name}'...")));
-                            }
-                            self.action_modal = None;
-                        }
-                        FormResult::Cancelled => {
-                            self.action_modal = None;
-                            self.test_passphrase_key = None;
-                        }
-                        FormResult::Pending => {}
-                    }
-                }
+                    FormResult::Pending => {}
+                },
                 ActionModal::Install => match self.form.handle_key(code) {
                     FormResult::Submitted => {
                         let key_name = self.install_key_name.take().unwrap_or_default();
@@ -453,7 +390,6 @@ impl SshTab for KeysTab {
                 }
                 None
             }
-            // CRUD shortcuts
             KeyCode::Char('n') => {
                 self.form = FormModal::new(40)
                     .text_field(
@@ -549,14 +485,12 @@ impl SshTab for KeysTab {
             self.render_list(frame, area, p);
         }
 
-        // Render detail modal if open
         if let Some(idx) = self.detail_key_idx
             && let Some(key) = self.keys.get(idx).cloned()
         {
             self.render_detail_modal(frame, p, &key);
         }
 
-        // Render action modal on top of everything
         match self.action_modal {
             Some(ActionModal::New) => {
                 self.form.render_in_modal_with_hint(
@@ -602,7 +536,6 @@ impl SshTab for KeysTab {
                 );
             }
             None => {
-                // Show passphrase test result as a temporary banner
                 let result_copy = self.passphrase_test_result.clone();
                 if let Some(ref result) = result_copy {
                     Self::render_passphrase_result(frame, area, p, result);
@@ -631,8 +564,6 @@ impl SshTab for KeysTab {
         std::mem::take(&mut self.pending_ops)
     }
 }
-
-// ── Rendering ────────────────────────────────────────────────────────────────
 
 impl KeysTab {
     fn render_empty(frame: &mut Frame, area: Rect, p: Palette) {
@@ -680,7 +611,6 @@ impl KeysTab {
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
         }
-        // Ensure selected item is visible
         if self.selected < self.scroll {
             self.scroll = self.selected;
         } else if self.selected >= self.scroll + visible {
@@ -698,10 +628,8 @@ impl KeysTab {
             let y = inner.y + row as u16;
             let row_area = Rect::new(inner.x, y, inner.width, 1);
 
-            // Store hitbox for mouse detection.
             self.row_hitboxes.push(row_area);
 
-            // Selection or hover highlight.
             if is_selected || is_hovered {
                 for x in row_area.x..row_area.right() {
                     if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
@@ -712,7 +640,6 @@ impl KeysTab {
 
             let mut spans = Vec::new();
 
-            // Icon — accent when selected or hovered.
             spans.push(Span::styled(
                 "◆ ",
                 Style::new().fg(if is_selected || is_hovered {
@@ -722,7 +649,6 @@ impl KeysTab {
                 }),
             ));
 
-            // Key name (truncated to fit)
             let name_w = 18.min(inner.width.saturating_sub(4) as usize);
             let name = truncate_str(&key.name, name_w);
             let name_chars = name.chars().count();
@@ -731,17 +657,14 @@ impl KeysTab {
                 Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ));
 
-            // Padding
             let padded = format!("{:width$}", "", width = name_w.saturating_sub(name_chars));
             spans.push(Span::raw(padded));
 
-            // Key type
             spans.push(Span::styled(
                 format!(" {} ", key.key_type),
                 Style::new().fg(p.info),
             ));
 
-            // Fingerprint — show braille spinner while generating
             let fp_w = 16.min(inner.width.saturating_sub(40) as usize);
             if key.fingerprint.is_empty() {
                 use rattles::Rattle;
@@ -761,12 +684,10 @@ impl KeysTab {
                 spans.push(Span::styled(fp, Style::new().fg(p.text_dim)));
             }
 
-            // Encrypted badge
             if key.encrypted {
                 spans.push(Span::styled(" 🔒", Style::new().fg(p.warn)));
             }
 
-            // Permissions
             spans.push(Span::styled(
                 format!(" {} ", key.permissions),
                 Style::new().fg(if key.permissions == "0600" || key.permissions == "0400" {
@@ -776,19 +697,15 @@ impl KeysTab {
                 }),
             ));
 
-            // Public key — show spinner while generating, then badge
             if key.fingerprint.is_empty() {
-                // Still generating, skip the pub badge
             } else if key.has_public {
                 spans.push(Span::styled("✓pub ", Style::new().fg(p.ok)));
             }
 
-            // Certificate check
             if key.has_cert {
                 spans.push(Span::styled("✓cert", Style::new().fg(p.accent2)));
             }
 
-            // Host count badge
             if key.host_count() > 0 {
                 spans.push(Span::styled(
                     format!(" →{}", key.host_count()),
@@ -800,7 +717,6 @@ impl KeysTab {
             frame.render_widget(Paragraph::new(line), row_area);
         }
 
-        // Footer with key count and action hints
         self.render_footer(frame, area, p);
     }
 
@@ -890,7 +806,6 @@ impl KeysTab {
                 ]),
             ];
 
-            // Host referencing section
             if key.used_by_hosts.is_empty() {
                 lines.push(Line::from(vec![
                     Span::styled("Hosts: ", Style::new().fg(p.text_dim)),
@@ -948,11 +863,7 @@ impl KeysTab {
     }
 }
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
-// (truncate_str is imported from crate::ui::responsive)
-
 impl KeysTab {
-    /// Render the passphrase test result as a small overlay banner.
     fn render_passphrase_result(
         frame: &mut Frame,
         _area: Rect,
@@ -984,12 +895,12 @@ impl KeysTab {
         });
     }
 
-    /// Update the passphrase test result from the async pipeline.
+    /// Store a completed passphrase-test result for display.
     pub fn set_passphrase_result(&mut self, result: Result<String, String>) {
         self.passphrase_test_result = Some(result);
     }
 
-    /// Clear the passphrase test result banner.
+    /// Dismiss the passphrase-test result.
     pub fn clear_passphrase_result(&mut self) {
         self.passphrase_test_result = None;
     }
@@ -1150,7 +1061,6 @@ mod tests {
 
     #[test]
     fn truncate_str_long() {
-        // responsive::truncate_str reserves 2 chars for ".." suffix
         assert_eq!(truncate_str("abcdefgh", 5), "abc..");
     }
 
@@ -1163,7 +1073,7 @@ mod tests {
     fn set_keys_clamps_selected() {
         let mut tab = KeysTab::new();
         tab.selected = 5;
-        tab.set_keys(sample_keys()); // 2 items
+        tab.set_keys(sample_keys());
         assert!(tab.selected < 2);
     }
 
@@ -1173,7 +1083,6 @@ mod tests {
         use ratatui::{Terminal, backend::TestBackend};
 
         let mut tab = KeysTab::new();
-        // Open the "New Key" form by pressing 'n'
         tab.handle_key(KeyCode::Char('n'));
         assert_eq!(tab.action_modal, Some(ActionModal::New));
 
@@ -1262,31 +1171,24 @@ mod tests {
         );
     }
 
-    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
-
-    /// Drive the New Key form (4 fields: Name, Type, Comment, Passphrase) to
-    /// Submitted. Tabs through Name, Type (left default), Comment, Passphrase
-    /// and the button row, then submits. Optionally types into the name and
-    /// passphrase fields first.
     fn submit_new_key_form(tab: &mut KeysTab, name: &str, passphrase: &str) {
-        // Field 0: Name
         for ch in name.chars() {
             tab.handle_key(KeyCode::Char(ch));
         }
-        tab.handle_key(KeyCode::Tab); // → Type
-        tab.handle_key(KeyCode::Tab); // → Comment
-        tab.handle_key(KeyCode::Tab); // → Passphrase
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Tab);
         for ch in passphrase.chars() {
             tab.handle_key(KeyCode::Char(ch));
         }
-        tab.handle_key(KeyCode::Tab); // → buttons
-        tab.handle_key(KeyCode::Enter); // submit
+        tab.handle_key(KeyCode::Tab);
+        tab.handle_key(KeyCode::Enter);
     }
 
     #[test]
     fn create_key_submit_pushes_key_create_op_with_passphrase() {
         let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys()); // 2 keys
+        tab.set_keys(sample_keys());
 
         tab.handle_key(KeyCode::Char('n'));
         assert_eq!(tab.action_modal, Some(ActionModal::New));
@@ -1303,7 +1205,6 @@ mod tests {
                 comment,
                 passphrase,
             } => {
-                // Bare name is prefixed with "id_".
                 assert_eq!(name, "id_deploy");
                 assert_eq!(key_type, "Ed25519");
                 assert!(comment.is_empty());
@@ -1311,8 +1212,6 @@ mod tests {
             }
             other => panic!("expected KeyCreate, got {other:?}"),
         }
-        // Optimistic in-memory update: a new encrypted key was appended and
-        // selected.
         assert_eq!(tab.keys.len(), 3);
         assert_eq!(tab.selected, 2);
         assert_eq!(tab.keys[2].name, "id_deploy");
@@ -1342,15 +1241,13 @@ mod tests {
     #[test]
     fn delete_key_submit_pushes_key_delete_op() {
         let mut tab = KeysTab::new();
-        tab.set_keys(sample_keys()); // [id_ed25519, id_rsa]
-        tab.selected = 1; // id_rsa
+        tab.set_keys(sample_keys());
+        tab.selected = 1;
 
-        // 'd' opens the delete confirm modal.
         tab.handle_key(KeyCode::Char('d'));
         assert_eq!(tab.action_modal, Some(ActionModal::Delete));
         assert!(tab.drain_ops().is_empty(), "no op before confirm");
 
-        // 'y' confirms.
         tab.handle_key(KeyCode::Char('y'));
         assert!(tab.action_modal.is_none());
 
@@ -1360,7 +1257,6 @@ mod tests {
             SshOp::KeyDelete { name } => assert_eq!(name, "id_rsa"),
             other => panic!("expected KeyDelete, got {other:?}"),
         }
-        // Optimistic in-memory update: removed + selection clamped.
         assert_eq!(tab.keys.len(), 1);
         assert_eq!(tab.selected, 0);
         assert_eq!(tab.keys[0].name, "id_ed25519");
@@ -1374,7 +1270,6 @@ mod tests {
         tab.handle_key(KeyCode::Char('d'));
         assert_eq!(tab.action_modal, Some(ActionModal::Delete));
 
-        // Cancel with Esc.
         tab.handle_key(KeyCode::Esc);
         assert!(tab.action_modal.is_none());
         assert!(tab.drain_ops().is_empty(), "cancel must not queue an op");

@@ -1,40 +1,7 @@
-//! Async backup data collection (LIVE READ-ONLY).
+//! Async backup data collection (read-only) via a tokio oneshot channel.
 //!
-//! [`BackupCollector`] manages background collection of backup subsystem state
-//! via a tokio oneshot channel, following the exact same pattern as
-//! [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector) and
-//! [`SshDataCollector`](crate::ssh_data::SshDataCollector).
-//!
-//! This is a pure read-only integration: there are no write operations, no
-//! optimistic updates, no cooldown gate, and no loading spinner. Every call to
-//! the backend is a read.
-//!
-//! Doctor findings are the primary live signal — they shell out to `which` to
-//! detect restic/borg, and (once implemented) will probe repositories,
-//! schedules, integrity, encryption, retention, and free space. The ENTIRE
-//! collection — doctor findings AND the schedule/timer probe cluster (the
-//! `systemctl cat` / `is-active` / `list-timers` fan-out, ~38-42 spawns per
-//! tick before the cache) — is cached for 60s between collections, mirroring
-//! the proxy collector's whole-report cache. Freshness caveat (deliberate
-//! cadence decision): a newly installed/removed backup timer surfaces up to
-//! 60s late.
-//!
-//! ## macOS / construction
-//!
-//! [`toride_backup::BackupClient::system`] resolves XDG directories; it
-//! succeeds even when no backup binary is present (the doctor then surfaces
-//! the missing binary as a `Critical` finding rather than the whole collector
-//! erroring out). `ScheduleManager::timer_status` probes the real systemd
-//! timer landscape in one pass (installed + active + note from a single
-//! detect/probe/enumeration) and honestly reports `false` with a
-//! `"systemd not detected"` note on hosts without systemd.
-//!
-//! ## Blocking
-//!
-//! All backend work (`BackupClient::system`, `doctor`, schedule/timer probes,
-//! `paths()`) runs synchronously. It is wrapped in a single
-//! [`tokio::task::spawn_blocking`] so the tokio worker is never stalled,
-//! exactly like `collect_real_fail2ban`.
+//! The whole bundle (doctor findings + schedule/timer probes) is cached
+//! for 60s: a newly installed/removed backup timer surfaces up to 60s late.
 
 use tokio::sync::oneshot;
 
@@ -44,10 +11,8 @@ use crate::ui::screens::toride_backup::FindingEntry;
 /// Aggregated backup data for the read-only section.
 #[derive(Clone, Debug)]
 pub struct BackupDataBundle {
-    /// Whether the backup backend was reachable at all. `false` only when the
-    /// collection task panicked (`JoinError`) — a host missing restic/borg
-    /// still yields `available == true` so the operator SEES the Critical
-    /// doctor finding instead of a blank panel.
+    /// Whether the backup backend was reachable; `false` only on a
+    /// collection panic (missing restic/borg still yields `true`).
     pub available: bool,
     /// Whether dry-run mode is active on the constructed client.
     pub dry_run: bool,
@@ -57,9 +22,8 @@ pub struct BackupDataBundle {
     pub data_dir: Option<String>,
     /// Resolved schedule directory, if known.
     pub schedule_dir: Option<String>,
-    /// restic binary availability inferred from doctor findings
-    /// (`binary.restic.found`/`.missing`). `None` when the Binary scope was
-    /// not run.
+    /// restic availability inferred from doctor findings; `None` when the
+    /// Binary scope was not run.
     pub restic_available: Option<bool>,
     /// borg binary availability inferred from doctor findings. `None` when the
     /// Binary scope was not run.
@@ -70,11 +34,8 @@ pub struct BackupDataBundle {
     /// Whether the systemd timer for the default `toride-backup` job is active
     /// (real probe via `ScheduleManager::timer_status`).
     pub timer_active: Option<bool>,
-    /// Informational note explaining a negative schedule reading (e.g.
-    /// `"systemd not detected"` on a host without systemd). Populated by the
-    /// backend's `ScheduleManager::schedule_note()` so the UI can surface WHY
-    /// the schedule read as false, distinguishing "no schedule configured"
-    /// from "systemd absent". `None` when the note is empty or unavailable.
+    /// Note explaining a negative schedule reading (e.g. `"systemd not
+    /// detected"`); `None` when empty or unavailable.
     pub schedule_note: Option<String>,
     /// Doctor findings (cached for 60s between collections).
     pub findings: Vec<FindingEntry>,
@@ -83,46 +44,17 @@ pub struct BackupDataBundle {
     pub unavailable_reason: Option<String>,
 }
 
-// ── Collector ───────────────────────────────────────────────────────────────
-
 /// Manages periodic async collection of backup data.
 ///
-/// Mirrors the proxy collector's whole-report cache: a oneshot channel for
-/// the in-flight result, plus a 60s TTL cache over the ENTIRE bundle (doctor
-/// findings AND the schedule/timer probe cluster) so the systemctl fan-out
-/// does not repeat on every 2s refresh tick.
+/// A 60s TTL cache covers the whole bundle (doctor + schedule/timer probes).
 pub struct BackupCollector {
-    /// Carries the bundle AND whether the cached bundle was reused for this
-    /// poll. See [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector)
-    /// for why the freshness timestamp must only advance when the collection
-    /// was actually re-run.
     rx: Option<oneshot::Receiver<(BackupDataBundle, bool)>>,
-    /// Cached bundle (doctor findings + schedule/timer probes) from the last
-    /// collection.
     cached_bundle: Option<BackupDataBundle>,
-    /// When the bundle cache was last refreshed.
     bundle_fresh_at: Option<std::time::Instant>,
 }
 
-/// How long to keep the cached bundle before re-running the doctor suite and
-/// the schedule/timer probes.
-///
-/// Deliberate freshness semantics: a newly installed/removed backup timer
-/// surfaces up to this TTL late (see the module docs).
 const BUNDLE_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
-/// Whether the bundle-cache TTL has already elapsed for a cache that was
-/// last refreshed at `fresh_at`.
-///
-/// Round-0 instrumentation seam, ZERO behavior change: outside `cfg(test)`
-/// this is exactly the negation of the `t.elapsed() < BUNDLE_TTL` check
-/// `start` always evaluated inline. Under `cfg(test)` the thread-local
-/// [`TTL_TEST_OFFSET_MS`] is folded into the elapsed time so the cadence
-/// oracles can observe TTL expiry deterministically — no 60s sleeps and no
-/// dependence on host uptime (the `Instant::now() - TTL` backdating trick
-/// fails on a machine whose monotonic clock started less than the TTL ago).
-/// The offset is thread-local, so concurrently running tests on other cargo
-/// test threads cannot perturb this module's cadence.
 fn ttl_expired(fresh_at: std::time::Instant) -> bool {
     let elapsed = fresh_at.elapsed();
     #[cfg(test)]
@@ -131,21 +63,11 @@ fn ttl_expired(fresh_at: std::time::Instant) -> bool {
     elapsed >= BUNDLE_TTL
 }
 
-// Extra milliseconds folded into `ttl_expired`'s elapsed time by the
-// cadence oracles. Test-only: zero unless a test on this thread advances it
-// (and resets it on drop), and not compiled at all outside `cfg(test)`.
-// (Plain comments: rustdoc does not generate documentation for macro
-// invocations, so a doc comment here warns as unused.)
 #[cfg(test)]
 thread_local! {
     static TTL_TEST_OFFSET_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// The default backup job name probed for schedule/timer status.
-///
-/// The backend does not yet enumerate configured jobs, so a single canonical
-/// name is queried. When job discovery lands this can fan out over all known
-/// specs.
 const DEFAULT_JOB_NAME: &str = "toride-backup";
 
 impl BackupCollector {
@@ -166,10 +88,8 @@ impl BackupCollector {
 
     /// Start a new background collection.
     ///
-    /// If a collection is already in-flight, this is a no-op. The 60s
-    /// whole-bundle cache is consulted: when fresh, the spawned task serves
-    /// the cached bundle verbatim — the doctor AND the schedule/timer probes
-    /// do not run at all.
+    /// If a collection is already in-flight, this is a no-op; a fresh cache
+    /// is served verbatim without running any probe.
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
@@ -187,31 +107,14 @@ impl BackupCollector {
 
     /// Poll for a completed collection result.
     ///
-    /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. On success the whole bundle is
-    /// cached, but the freshness timestamp is only advanced when the
-    /// collection was actually re-run (not on a cache-hit poll) — otherwise
-    /// the 60s TTL would be re-armed forever with the same cached data on
-    /// every 2s refresh.
+    /// Returns `Some(bundle)` on completion, `None` while pending or failed.
+    /// A degraded (panic) bundle never populates the cache.
     pub async fn poll(&mut self) -> Option<BackupDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, used_cache)) = result {
-                    // On a collection panic the bundle is empty and marked
-                    // `available == false`. We must NOT poison the bundle
-                    // cache with it (and must NOT advance the freshness
-                    // timestamp): doing so would keep the section in its
-                    // degraded state for the full 60s TTL even if the
-                    // underlying cause cleared on the next tick. Instead we
-                    // invalidate so the very next refresh re-runs everything.
                     if bundle.available {
-                        // Only write the cache (and advance the clock) when
-                        // the collection actually re-ran. On a cache-hit
-                        // poll the bundle IS the data we already cached —
-                        // identical by construction — so re-storing it would
-                        // be a wasted deep clone per tick, and resetting the
-                        // TTL would let the cache live forever.
                         if !used_cache {
                             self.cached_bundle = Some(bundle.clone());
                             self.bundle_fresh_at = Some(std::time::Instant::now());
@@ -240,34 +143,14 @@ impl Default for BackupCollector {
     }
 }
 
-// ── Real data collection ────────────────────────────────────────────────────
-
-/// Collect backup data by constructing the real client and running the doctor.
-///
-/// When `use_cache` is set and a cached bundle is present, the cached bundle
-/// is served verbatim and NOTHING runs — the doctor AND the schedule/timer
-/// probe cluster are skipped entirely.
-///
-/// Otherwise all work runs on the blocking thread pool (`BackupClient::system`
-/// resolves XDG dirs, `doctor` shells out to `which`, and the schedule/timer
-/// snapshot shells out to `systemctl`). On ANY error — construction failure,
-/// doctor error — returns [`empty_bundle`] with `available = false`.
-///
-/// Returns `(bundle, used_cache)` where `used_cache` records whether the
-/// bundle was served verbatim from the cache.
 async fn collect_real_backup(
     use_cache: bool,
     cached_bundle: Option<BackupDataBundle>,
 ) -> (BackupDataBundle, bool) {
-    // Cache hit: serve the whole bundle verbatim. Neither the doctor nor any
-    // schedule/timer probe spawns a subprocess.
     if use_cache && let Some(bundle) = cached_bundle {
         return (bundle, true);
     }
 
-    // Build the BackupClient facade on the blocking pool. system() resolves
-    // XDG dirs (no shell-out), so construction succeeds even on macOS where
-    // no backup binary is installed.
     let client =
         match tokio::task::spawn_blocking(toride_backup::client::BackupClient::system).await {
             Ok(Ok(client)) => client,
@@ -287,13 +170,7 @@ async fn collect_real_backup(
             }
         };
 
-    // Run ALL blocking probes in a single spawn_blocking that owns `client`.
-    // This keeps every shell-out off the tokio worker and sidesteps the
-    // 'static-borrow problem (the doctor + schedule + timer probes all borrow
-    // `&client`). Results are returned as plain owned data so they cross the
-    // thread boundary cleanly.
     let result = tokio::task::spawn_blocking(move || {
-        // ── Doctor ──────────────────────────────────────────────────────────
         let findings: Vec<FindingEntry> =
             match client.doctor(&toride_backup::doctor::DoctorScope::All) {
                 Ok(report) => toride_backup_convert::convert_findings(report.findings),
@@ -303,7 +180,6 @@ async fn collect_real_backup(
                 }
             };
 
-        // ── Binary availability (derived from findings, no extra shell-out) ──
         let restic_available = toride_backup_convert::derive_binary_availability(
             &findings,
             toride_backup_convert::BackupBinary::Restic,
@@ -313,10 +189,8 @@ async fn collect_real_backup(
             toride_backup_convert::BackupBinary::Borg,
         );
 
-        // ── Dry-run flag ──────────────────────────────────────────────────
         let dry_run = client.is_dry_run();
 
-        // ── Resolved paths ────────────────────────────────────────────────
         let paths = client.paths();
         let config_dir = paths
             .config_dir
@@ -331,15 +205,6 @@ async fn collect_real_backup(
             .to_str()
             .map(std::string::ToString::to_string);
 
-        // ── Schedule / timer status (best-effort, ONE pass) ────────────────
-        // `ScheduleManager::timer_status` answers the installed question, the
-        // timer-active question, AND the explanatory note from a single
-        // detect + single per-unit probe + (only when needed) a single
-        // enumeration fan-out — replacing the previous pair of independent
-        // manager calls that each paid their own detect/probe/full fan-out
-        // (~38-42 systemctl spawns per 2s tick before the whole-bundle cache).
-        // The note lets the UI surface WHY a negative reading occurred (e.g.
-        // "systemd not detected" on non-systemd hosts). Empty note → None.
         let snapshot =
             toride_backup::schedule::ScheduleManager::new().timer_status(DEFAULT_JOB_NAME);
         let schedule_installed = Some(snapshot.installed);
@@ -349,13 +214,6 @@ async fn collect_real_backup(
             if note.is_empty() { None } else { Some(note) }
         };
 
-        // ── Availability heuristic ────────────────────────────────────────
-        // The section is "available" if the client constructed AND the doctor
-        // produced any findings (even on a host missing both binaries, the
-        // doctor emits `binary.none-available` as a Critical finding). An empty
-        // findings vec with no binaries is still available — the panel simply
-        // shows "no findings" — because the backend is reachable. Only a panic
-        // (handled above) or a construction failure flips available to false.
         let available = true;
 
         BackupDataBundle {
@@ -376,8 +234,6 @@ async fn collect_real_backup(
     .await;
 
     match result {
-        // Reaching this point means the probes DID run (a cache hit returned
-        // above), so the truthful provenance is "not from cache".
         Ok(bundle) => (bundle, false),
         Err(e) => {
             tracing::warn!("backup collection task panicked: {e}");
@@ -389,9 +245,6 @@ async fn collect_real_backup(
     }
 }
 
-/// Empty bundle used when backup could not be constructed at all.
-///
-/// `available = false` signals the UI to render the degraded panel.
 fn empty_bundle() -> BackupDataBundle {
     BackupDataBundle {
         available: false,
@@ -409,16 +262,11 @@ fn empty_bundle() -> BackupDataBundle {
     }
 }
 
-/// Empty bundle carrying the reason collection failed. Used when a
-/// `spawn_blocking` task panicked (`JoinError`) — the reason string is rendered
-/// by the UI's degraded panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> BackupDataBundle {
     let mut b = empty_bundle();
     b.unavailable_reason = Some(reason);
     b
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -451,7 +299,7 @@ mod tests {
         let mut collector = BackupCollector::new();
         collector.start();
         assert!(collector.is_pending());
-        collector.start(); // no-op
+        collector.start();
         assert!(collector.is_pending());
     }
 
@@ -465,7 +313,6 @@ mod tests {
     async fn poll_clears_pending() {
         let mut collector = BackupCollector::new();
         collector.start();
-        // Let the spawned task complete.
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         let _ = collector.poll().await;
         assert!(!collector.is_pending(), "poll should clear pending state");
@@ -473,9 +320,6 @@ mod tests {
 
     #[tokio::test]
     async fn poll_returns_bundle_after_collection() {
-        // On any host (including macOS without restic/borg) the collector must
-        // return Some(bundle) after start() + enough time. The bundle's
-        // `available` flag reflects whether the backend was reachable.
         let mut collector = BackupCollector::new();
         collector.start();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -512,9 +356,6 @@ mod tests {
         collector.start();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let _ = collector.poll().await;
-        // The success path is always `available`, so after a successful poll
-        // the whole-bundle cache is populated (even with an empty findings Vec
-        // on a host where the doctor produced no findings).
         assert!(collector.cached_bundle.is_some());
         assert!(collector.bundle_fresh_at.is_some());
     }
@@ -529,19 +370,8 @@ mod tests {
         assert!(collector.bundle_fresh_at.is_none());
     }
 
-    // ── Cache-poisoning edge case (finding 1) ────────────────────────────────
-    //
-    // A panicked collection returns an empty bundle with `available == false`.
-    // poll() must NOT write that empty bundle into cached_bundle (nor advance
-    // bundle_fresh_at), otherwise the degraded panel is pinned for the full
-    // 60s TTL even once the underlying cause clears. We drive `rx` directly so
-    // the test does not depend on a real panic.
-
     #[tokio::test]
     async fn poll_does_not_poison_cache_on_unavailable_bundle() {
-        // Seed the collector with a prior good cache to prove it is dropped on
-        // a panic rather than preserved (or replaced by the empty panicked
-        // bundle).
         let mut collector = BackupCollector::new();
         collector.cached_bundle = Some(available_bundle_with_finding());
         collector.bundle_fresh_at = Some(std::time::Instant::now());
@@ -566,8 +396,6 @@ mod tests {
         );
     }
 
-    /// An available bundle with one restic finding — the prior-good cache
-    /// shape for the poisoning test.
     fn available_bundle_with_finding() -> BackupDataBundle {
         BackupDataBundle {
             available: true,
@@ -593,8 +421,6 @@ mod tests {
 
     #[tokio::test]
     async fn poll_populates_cache_on_available_bundle() {
-        // Counter-test: a healthy (available) bundle DOES populate the cache
-        // and advance freshness, so the TTL re-arms normally on success.
         let mut collector = BackupCollector::new();
         let (tx, rx) = oneshot::channel();
         let bundle = BackupDataBundle {
@@ -625,44 +451,14 @@ mod tests {
     }
 }
 
-// ── Cadence oracles (round 0, extended round 1) ──────────────────────────────
-
-/// Cadence oracles for the 60s whole-bundle cache.
-///
-/// Round 1 (F04) extended these from a findings-only cache to the whole
-/// bundle: sentinel data now covers the schedule/timer snapshot fields as
-/// well as the findings. The sentinel finding id (`binary.*` is the real
-/// shape) and the sentinel schedule note (real notes are `""` or
-/// `"systemd not detected"`) are values no real probe can emit, so "the
-/// bundle came back verbatim" proves the doctor AND the schedule/timer
-/// systemctl fan-out did not spawn a single subprocess.
-///
-/// The lifecycle goes through the REAL `start()` / spawned collection.
-/// `BackupClient::system` resolves XDG dirs without a shell-out, so
-/// construction always succeeds and the success-path bundle is always
-/// `available == true` — the strong arm of each oracle is deterministic on
-/// any host (including ones without restic/borg, where the re-derived
-/// doctor simply emits the missing-binary findings, and non-systemd hosts,
-/// where the re-derived note is `"systemd not detected"`).
-///
-/// No spawn-counting seam is added at this layer: `collect_real_backup`
-/// hardcodes `BackupClient::system`, and threading an injectable client
-/// through `start()` would change production signatures — the sentinel
-/// bundle already answers "did anything re-run?". (A spawn-count seam for
-/// the backend's own systemctl calls exists in toride-backup's systemd
-/// module tests.)
 #[cfg(test)]
 mod cadence_oracle {
     use super::*;
 
-    /// Sentinel id no real doctor finding can carry.
     const SENTINEL_ID: &str = "oracle-sentinel.backup.findings-cache";
 
-    /// Sentinel schedule note no real `systemd::detect` can emit (real notes
-    /// are empty or exactly "systemd not detected").
     const SENTINEL_NOTE: &str = "oracle-sentinel backup schedule-note";
 
-    /// A sentinel bundle with `available == true` so `poll()` caches it.
     fn sentinel_bundle() -> BackupDataBundle {
         BackupDataBundle {
             available: true,
@@ -686,13 +482,9 @@ mod cadence_oracle {
         }
     }
 
-    /// Advances this thread's TTL test clock past the TTL, resetting it on
-    /// drop so a failing assertion cannot leak a cranked clock into a later
-    /// test scheduled on the same reused cargo-test thread.
     struct TtlOffsetGuard;
 
     impl TtlOffsetGuard {
-        /// Set the thread-local offset to `BUNDLE_TTL` + 10s.
         fn past_ttl() -> Self {
             TTL_TEST_OFFSET_MS.with(|o| {
                 o.set(
@@ -711,10 +503,6 @@ mod cadence_oracle {
         }
     }
 
-    /// ORACLE: a fresh cache serves the WHOLE cached bundle verbatim on the
-    /// next collection — the doctor AND the schedule/timer probes are skipped
-    /// (zero subprocess spawns) — and the freshness timestamp is NOT re-armed
-    /// by the cache-hit poll.
     #[tokio::test]
     async fn cache_hit_returns_cached_bundle_without_reprobing() {
         let mut collector = BackupCollector::new();
@@ -752,10 +540,6 @@ mod cadence_oracle {
         );
     }
 
-    /// ORACLE: once the TTL has elapsed the cache is bypassed — no sentinel
-    /// survives in the findings OR the schedule/timer fields — and the
-    /// freshness timestamp advances past its primed value after the real
-    /// re-derivation.
     #[tokio::test]
     async fn ttl_expiry_bypasses_cache_and_rederives() {
         let mut collector = BackupCollector::new();
@@ -776,9 +560,6 @@ mod cadence_oracle {
             Some(SENTINEL_NOTE),
             "an expired cache must not serve the sentinel note"
         );
-        // The success path is always `available`, and poll() advances the
-        // clock for every available !used_cache result, so the
-        // re-derivation must have re-armed it.
         assert!(
             collector.bundle_fresh_at.is_some_and(|t| t > primed),
             "an expired cache must be re-derived and the freshness clock advanced"

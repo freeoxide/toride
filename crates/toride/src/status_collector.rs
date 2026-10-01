@@ -41,19 +41,6 @@ impl StatusCollector {
         });
     }
 
-    /// Start a background collection whose result is the provided `status`.
-    ///
-    /// This is the test seam for [`StatusCollector`]: it exercises the exact
-    /// `start` → `poll` channel plumbing (pending flag, idempotent start, poll
-    /// clears pending, poll delivers the result) WITHOUT invoking the real
-    /// OS-probing [`TorideStatus::collect`] or relying on a wall-clock sleep
-    /// for the probe to finish. The value is delivered through the same tokio
-    /// oneshot as [`StatusCollector::start`], so production and test paths share
-    /// the receive logic.
-    ///
-    /// Use [`StatusCollector::start_with`] in unit tests to keep them
-    /// deterministic and immune to host load (a loaded CI box can make the
-    /// real probe exceed any fixed sleep and flake the test).
     #[cfg(test)]
     fn start_with(&mut self, status: TorideStatus) {
         if self.rx.is_some() {
@@ -98,14 +85,6 @@ pub(crate) mod tests {
     };
     use std::time::{Duration, SystemTime};
 
-    /// Build a minimal, fully-populated [`TorideStatus`] for the collector
-    /// plumbing tests.
-    ///
-    /// This is the hermetic fixture that lets [`StatusCollector::start_with`]
-    /// deliver a value WITHOUT invoking the real OS-probing
-    /// [`TorideStatus::collect`] (and without a wall-clock sleep waiting for
-    /// the probe to finish on a loaded host). Mirrors the `sample_status`
-    /// fixture in `about_convert.rs`.
     #[expect(
         clippy::too_many_lines,
         reason = "fixture builds a fully-populated status"
@@ -256,18 +235,12 @@ pub(crate) mod tests {
         let mut collector = StatusCollector::new();
         collector.start();
         assert!(collector.is_pending());
-        // Second start should be a no-op (doesn't replace the receiver)
         collector.start();
         assert!(collector.is_pending());
     }
 
     #[tokio::test]
     async fn poll_returns_status_after_collection() {
-        // Inject a fixed status instead of invoking the real OS-probing
-        // TorideStatus::collect (and instead of relying on a hard-coded sleep
-        // for the probe to finish). The plumbing under test — the oneshot
-        // channel from start→poll, the pending flag, result delivery — is
-        // identical to the production path.
         let mut collector = StatusCollector::new();
         collector.start_with(test_status("toride-test-host"));
         let result = collector.poll().await;
@@ -284,8 +257,6 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn poll_clears_pending() {
-        // Same test seam as poll_returns_status_after_collection: inject a
-        // fixed status so the test does not depend on the OS probe or a sleep.
         let mut collector = StatusCollector::new();
         collector.start_with(test_status("toride-test-host"));
         let _ = collector.poll().await;

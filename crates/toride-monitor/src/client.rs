@@ -1,8 +1,5 @@
-//! High-level monitoring client.
-//!
-//! [`MonitorClient`] is the main entry point for outbound traffic monitoring.
-//! It composes the output chain, conntrack reader, anomaly detector, and
-//! alert dispatcher into a unified API.
+//! High-level monitoring client: [`MonitorClient`] composes the output
+//! chain, conntrack reader, anomaly detector, and alert dispatcher.
 
 use crate::Result;
 use crate::alert::AlertDispatcher;
@@ -15,40 +12,18 @@ use crate::report::{AnomalyReport, MonitorReport};
 use crate::spec::{AlertTarget, LoggingRule, MonitorSpec};
 
 /// High-level client for outbound traffic monitoring.
-///
-/// Owns a boxed [`toride_runner::Runner`] and resolved [`MonitorPaths`], and
-/// provides convenience methods that compose the lower-level modules
-/// (`output`, `conntrack`, `anomaly`, `alert`) into common workflows.
-///
-/// # Construction
-///
-/// - [`MonitorClient::system`] -- production defaults with paths resolved from `$PATH`.
-/// - [`MonitorClient::with_paths`] -- explicit paths with the production `DuctRunner`.
-/// - [`MonitorClient::with_runner`] -- inject a custom runner (for testing).
-///
-/// # Example
-///
-/// ```ignore
-/// let client = MonitorClient::system()?;
-/// client.setup_logging(&spec.logging_rules)?;
-/// let snapshot = client.snapshot()?;
-/// let anomalies = client.detect(&snapshot)?;
-/// client.alert(&anomalies, &spec.alert_targets)?;
-/// ```
+/// Owns a boxed [`toride_runner::Runner`] and resolved [`MonitorPaths`].
 pub struct MonitorClient {
     runner: Box<dyn toride_runner::Runner>,
     paths: MonitorPaths,
 }
 
 impl MonitorClient {
-    /// Create a `MonitorClient` with paths resolved from `$PATH`.
-    ///
-    /// Uses the production [`toride_runner::DuctRunner`] for command execution.
+    /// Create a `MonitorClient` with paths resolved from `$PATH` and the
+    /// production [`toride_runner::DuctRunner`].
     ///
     /// # Errors
-    ///
-    /// Returns [`crate::Error::BinaryNotFound`] if any required binary cannot be
-    /// found on `$PATH`.
+    /// [`crate::Error::BinaryNotFound`] if a required binary is not on `$PATH`.
     pub fn system() -> Result<Self> {
         let paths = MonitorPaths::resolve_from_path()?;
         Ok(Self {
@@ -66,22 +41,20 @@ impl MonitorClient {
         }
     }
 
-    /// Create a `MonitorClient` with a custom runner and explicit paths.
-    ///
-    /// Intended for tests: pass a [`toride_runner::FakeRunner`] to assert on
-    /// command construction and feed canned CLI output.
+    /// Create a `MonitorClient` with a custom runner and explicit paths
+    /// (intended for tests, e.g. a fake runner with canned output).
     #[must_use]
     pub fn with_runner(runner: Box<dyn toride_runner::Runner>, paths: MonitorPaths) -> Self {
         Self { runner, paths }
     }
 
-    /// Return a reference to the resolved paths.
+    /// Resolved paths to the required system binaries.
     #[must_use]
     pub fn paths(&self) -> &MonitorPaths {
         &self.paths
     }
 
-    /// Return a reference to the command runner.
+    /// The command runner used to execute system binaries.
     #[must_use]
     pub fn runner(&self) -> &dyn toride_runner::Runner {
         self.runner.as_ref()
@@ -89,11 +62,8 @@ impl MonitorClient {
 
     /// Set up iptables OUTPUT chain logging rules.
     ///
-    /// Validates each rule and adds it to the OUTPUT chain.
-    ///
     /// # Errors
-    ///
-    /// Returns an error if validation fails or any iptables command fails.
+    /// If rule validation or any iptables command fails.
     pub fn setup_logging(&self, rules: &[LoggingRule]) -> Result<()> {
         let chain = OutputChain::new(&self.paths, self.runner.as_ref());
         for rule in rules {
@@ -105,26 +75,21 @@ impl MonitorClient {
     /// Remove all iptables OUTPUT chain logging rules.
     ///
     /// # Errors
-    ///
-    /// Returns an error if the iptables commands fail.
+    /// If the iptables commands fail.
     pub fn teardown_logging(&self) -> Result<()> {
         let chain = OutputChain::new(&self.paths, self.runner.as_ref());
         chain.remove_all()
     }
 
-    /// Take a snapshot of current outbound connections.
-    ///
-    /// Queries `ss` for socket state and `conntrack` for connection tracking
-    /// data, then aggregates into a [`MonitorReport`].
+    /// Take a snapshot of current outbound connections: `ss` for socket state,
+    /// `conntrack` for byte/packet counters, aggregated into a [`MonitorReport`].
     ///
     /// # Errors
-    ///
-    /// Returns an error if system commands fail.
+    /// If the `ss` system command fails; conntrack failures are logged,
+    /// not propagated.
     pub fn snapshot(&self) -> Result<MonitorReport> {
-        // Collect connections from ss output.
         let connections = self.collect_ss_connections()?;
 
-        // Aggregate statistics.
         let total_connections = connections.len() as u64;
 
         let unique_destinations = {
@@ -146,7 +111,6 @@ impl MonitorClient {
             *by_state.entry(conn.state.clone()).or_insert(0u64) += 1;
         }
 
-        // Try to get bandwidth data from conntrack.
         let (total_bytes, total_packets) = self.collect_conntrack_stats();
 
         Ok(MonitorReport {
@@ -165,18 +129,18 @@ impl MonitorClient {
     /// Run anomaly detection on a monitoring snapshot.
     ///
     /// # Errors
-    ///
-    /// Does not return errors under normal operation.
+    /// Does not return errors; detection always produces a report
+    /// (see [`AnomalyDetector::detect`]).
     pub fn detect(&self, report: &MonitorReport) -> Result<AnomalyReport> {
         let detector = AnomalyDetector::default_detector();
         detector.detect(report)
     }
 
-    /// Run anomaly detection with custom thresholds.
+    /// Run anomaly detection with explicit thresholds instead of the defaults.
     ///
     /// # Errors
-    ///
-    /// Does not return errors under normal operation.
+    /// Does not return errors; detection always produces a report
+    /// (see [`AnomalyDetector::detect`]).
     pub fn detect_with_thresholds(
         &self,
         report: &MonitorReport,
@@ -186,12 +150,8 @@ impl MonitorClient {
         detector.detect(report)
     }
 
-    /// Dispatch anomaly alerts to configured targets.
-    ///
-    /// # Errors
-    ///
-    /// Does not return errors; individual dispatch failures appear in the
-    /// returned reports.
+    /// Dispatch anomaly alerts to configured targets; individual dispatch
+    /// failures appear in the returned reports rather than as errors.
     pub fn alert(
         &self,
         anomaly_report: &AnomalyReport,
@@ -206,14 +166,12 @@ impl MonitorClient {
         all_reports
     }
 
-    /// Apply a complete monitoring specification.
-    ///
-    /// Sets up logging rules, runs a snapshot, detects anomalies, and
-    /// dispatches alerts.
+    /// Apply a complete monitoring specification: set up logging rules, run a
+    /// snapshot, detect anomalies, dispatch alerts.
     ///
     /// # Errors
-    ///
-    /// Returns an error if logging setup or snapshot collection fails.
+    /// If logging setup or snapshot collection fails; alert dispatch
+    /// failures are reported, not propagated.
     pub fn apply(&self, spec: &MonitorSpec) -> Result<AnomalyReport> {
         if !spec.enabled {
             tracing::info!("Monitoring disabled in spec; skipping.");
@@ -240,18 +198,11 @@ impl MonitorClient {
         Ok(anomalies)
     }
 
-    // -----------------------------------------------------------------------
-    // Port inspection convenience methods
-    // -----------------------------------------------------------------------
-
-    /// List all listening TCP/UDP ports with process info.
-    ///
-    /// Uses native OS APIs via `netstat2` — no `lsof` or `ss` required.
+    /// List all listening TCP/UDP ports with process info, via native OS
+    /// APIs (`netstat2`) — no `lsof` or `ss` required.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
-    /// socket enumeration fails.
+    /// [`Error::PortsError`](crate::error::Error::PortsError) on failure.
     pub fn list_listening_ports(&self) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).list_listening()
     }
@@ -259,9 +210,7 @@ impl MonitorClient {
     /// List all network connections (every TCP/UDP socket in any state).
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
-    /// socket enumeration fails.
+    /// [`Error::PortsError`](crate::error::Error::PortsError).
     pub fn list_all_ports(&self) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).list_all()
     }
@@ -269,9 +218,7 @@ impl MonitorClient {
     /// Find what process is using a specific port.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
-    /// socket enumeration fails.
+    /// [`Error::PortsError`](crate::error::Error::PortsError).
     pub fn find_port(&self, port: u16) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).find_by_port(port)
     }
@@ -280,9 +227,7 @@ impl MonitorClient {
     /// (case-insensitive).
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
-    /// socket enumeration fails.
+    /// [`Error::PortsError`](crate::error::Error::PortsError).
     pub fn find_ports_by_process(&self, name: &str) -> Result<Vec<crate::ports::PortEntry>> {
         crate::ports::PortReader::new(&self.paths).find_by_process(name)
     }
@@ -290,18 +235,11 @@ impl MonitorClient {
     /// Check whether a port is free (nothing listening on it).
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::PortsError`](crate::error::Error::PortsError) if
-    /// socket enumeration fails.
+    /// [`Error::PortsError`](crate::error::Error::PortsError).
     pub fn is_port_free(&self, port: u16) -> Result<bool> {
         crate::ports::PortReader::new(&self.paths).is_port_free(port)
     }
 
-    // -----------------------------------------------------------------------
-    // Private helpers
-    // -----------------------------------------------------------------------
-
-    /// Collect outbound connections from `ss` output.
     fn collect_ss_connections(&self) -> Result<Vec<crate::report::ConnectionInfo>> {
         let spec = toride_runner::CommandSpec::new(self.paths.ss.to_string_lossy().into_owned())
             .args(["-tunap"]);
@@ -318,7 +256,6 @@ impl MonitorClient {
         Ok(entries.iter().filter_map(ss_entry_to_connection).collect())
     }
 
-    /// Collect total bytes and packets from conntrack.
     fn collect_conntrack_stats(&self) -> (Option<u64>, Option<u64>) {
         let reader = ConntrackReader::new(&self.paths, self.runner.as_ref());
         match reader.list_all() {

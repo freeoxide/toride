@@ -1,50 +1,6 @@
-//! Comprehensive diagnostic engine for Fail2Ban installations.
-//!
-//! [`Doctor`] is the most important differentiator module. It runs structured
-//! diagnostic checks across a Fail2Ban installation and returns a
-//! [`DoctorReport`] containing typed [`Finding`] values with severity levels,
-//! human-readable descriptions, and suggested fixes.
-//!
-//! # Categories
-//!
-//! Each category corresponds to a [`DoctorScope`] variant and a `check_*`
-//! method on [`Doctor`]:
-//!
-//! | Scope | Method | What it checks |
-//! |-------|--------|---------------|
-//! | `Binary` | [`check_binaries`] | fail2ban-client, fail2ban-regex, systemctl, nft/iptables |
-//! | `Service` | [`check_service`] | service active/enabled, ping, log target, database |
-//! | `Config` | [`check_config`] | config dir, generated files, --test, managed header |
-//! | `Jail(name)` | [`check_jail`] | jail exists/enabled, filter, action, sane timing |
-//! | `LogPath` | [`check_log_paths`] | log files exist, readable, glob patterns |
-//! | `Journal` | [`check_journal`] | systemd backend, journalmatch, journal access |
-//! | `Regex` | [`check_regex`] | failregex compiles, `<HOST>` usage |
-//! | `Action` | [`check_actions`] | action file exists, ban/unban, firewall compat |
-//! | `Permission` | [`check_permissions`] | world-writable checks, ownership, socket |
-//! | `Safety` | [`check_safety`] | dry-run, backup, rollback path |
-//! | `Proxy` | [`check_proxy`] | proxy-only IPs, Cloudflare/Traefik warnings |
-//!
-//! # Example
-//!
-//! ```ignore
-//! use toride_fail2ban::command::DuctRunner;
-//! use toride_fail2ban::doctor::{Doctor, DoctorScope};
-//!
-//! let runner = DuctRunner::new();
-//! let doctor = Doctor::new(&runner);
-//!
-//! let report = doctor.run(&DoctorScope::All)?;
-//! if report.has_critical() {
-//!     for f in &report.findings {
-//!         if f.severity >= Severity::Critical {
-//!             eprintln!("[{}] {}", f.severity, f.title);
-//!         }
-//!     }
-//! }
-//! ```
-//!
-//! All commands go through the [`Runner`](crate::command::Runner) trait. No
-//! ad-hoc `std::process::Command` calls are made anywhere in this module.
+//! Structured diagnostics for Fail2Ban installations: [`Doctor`] runs scoped
+//! checks and returns a [`DoctorReport`] of typed [`Finding`]s. All commands
+//! go through the [`Runner`] trait.
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -55,15 +11,8 @@ use crate::Result;
 use crate::command::{CommandOutput, Runner, find_binary};
 use crate::report::{DoctorReport, Finding, Severity};
 
-// ---------------------------------------------------------------------------
-// DoctorScope
-// ---------------------------------------------------------------------------
-
-/// Selects which diagnostic category (or categories) to run.
-///
-/// Pass [`DoctorScope::All`] to run every category, or choose a specific
-/// category for targeted checks. [`DoctorScope::Jail`] takes a jail name so
-/// that only that jail is inspected.
+/// Selects which diagnostic category (or categories) to run; `Jail(name)`
+/// inspects only that named jail.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DoctorScope {
@@ -94,10 +43,7 @@ pub enum DoctorScope {
 }
 
 impl DoctorScope {
-    /// Return all non-`All` scope variants as a list.
-    ///
-    /// Useful for callers that want to iterate over individual categories
-    /// (for example, to build a UI where each category is a separate tab).
+    /// Return all non-`All` scope variants.
     pub fn all_categories() -> Vec<DoctorScope> {
         vec![
             DoctorScope::Binary,
@@ -114,38 +60,17 @@ impl DoctorScope {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Doctor
-// ---------------------------------------------------------------------------
-
-/// Per-run fetch-once memo shared by every check of one [`Doctor::run`]
-/// invocation.
-///
-/// Two documents dominate the duplicate work of a `doctor(All)` pass: the
-/// resolved `fail2ban-client` path (a `$PATH` walk per site) and the
-/// `fail2ban-client status` output (a Python interpreter start per site,
-/// ~50-64 ms each). Both are fetched lazily on first use and reused by the
-/// other checks. Only commands that actually *executed* are memoized: a
-/// non-zero exit is part of the run's shared snapshot (every consumer sees
-/// the same failed document, once), while runner errors are re-attempted per
-/// consumer so each check keeps its own independent failure reporting.
 #[derive(Default)]
 struct RunCache {
-    /// Lazily resolved `fail2ban-client` path, shared across checks.
     client_bin: ClientBin,
-    /// Memoized output of one successful `fail2ban-client status` run.
     client_status: Option<CommandOutput>,
 }
 
-/// State of the per-run `fail2ban-client` binary resolution.
 #[derive(Clone, Default)]
 enum ClientBin {
-    /// Not looked up yet.
     #[default]
     Unfetched,
-    /// Looked up and not present on `$PATH`.
     Missing,
-    /// Looked up and resolved.
     Found(PathBuf),
 }
 
@@ -155,26 +80,10 @@ impl RunCache {
     }
 }
 
-/// Diagnostic engine that runs structured checks against a Fail2Ban
-/// installation.
-///
-/// Borrows a [`Runner`] so that it can be used with either the production
-/// [`DuctRunner`](crate::command::DuctRunner) or the test
-/// [`FakeRunner`](crate::command::FakeRunner).
-///
-/// Every check method returns a `Vec<Finding>` so that individual categories
-/// can be called in isolation or aggregated via [`Doctor::run`].
-///
-/// `Doctor` is `Send` but not `Sync`: the per-run fetch memo uses a
-/// `RefCell`, which is fine for the sequential check flow (construct, run,
-/// drop on one thread — how [`Client::doctor`](crate::Fail2Ban::doctor) uses
-/// it) but rules out sharing a `Doctor` across threads. Create one per run
-/// instead.
+/// Diagnostic engine that runs structured checks against a Fail2Ban installation.
+/// `Send` but not `Sync` (per-run memo uses a `RefCell`): create one per run.
 pub struct Doctor<'a> {
     runner: &'a dyn Runner,
-    /// Fetch-once memo for the current [`Doctor::run`] invocation. The checks
-    /// run strictly sequentially, so a `RefCell` (single-threaded borrow
-    /// checking) is sufficient — no locking on the diagnostic path.
     run_cache: RefCell<RunCache>,
 }
 
@@ -187,18 +96,6 @@ impl<'a> Doctor<'a> {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Per-run shared fetches (F13)
-    // -----------------------------------------------------------------------
-
-    /// Resolve `fail2ban-client` once per doctor run, sharing the `$PATH`
-    /// walk across every check that needs the binary (ten call sites
-    /// otherwise re-walk `$PATH` within a single `doctor(All)` pass).
-    ///
-    /// Mirrors [`find_binary`] exactly: [`Error::NotFound`] when the binary is
-    /// missing. The resolution — hit or miss — is memoized for the run
-    /// (`$PATH` does not change mid-run) and reset on the next
-    /// [`Doctor::run`] call.
     fn client_bin(&self) -> Result<PathBuf> {
         let mut cache = self.run_cache.borrow_mut();
         if matches!(cache.client_bin, ClientBin::Unfetched) {
@@ -208,8 +105,6 @@ impl<'a> Doctor<'a> {
             };
         }
         match cache.client_bin.clone() {
-            // Unfetched is unreachable after the lookup above; treat it the
-            // same as missing for exhaustiveness.
             ClientBin::Found(path) => Ok(path),
             ClientBin::Missing | ClientBin::Unfetched => {
                 Err(crate::Error::NotFound("fail2ban-client".into()))
@@ -217,17 +112,6 @@ impl<'a> Doctor<'a> {
         }
     }
 
-    /// Run `fail2ban-client status` once per doctor run and memoize the
-    /// output for the other jail-list consumers (log-path, journal, regex,
-    /// action, safety, and proxy checks).
-    ///
-    /// Any command that actually executed is memoized — including a non-zero
-    /// exit, which every consumer of the run then sees as the shared
-    /// snapshot (pinned by
-    /// `doctor_all_degraded_jail_list_keeps_per_check_failure_arms`). Only a
-    /// runner error (the command could not run at all) is never memoized;
-    /// each consumer re-attempts the spawn and reports its own failure arm,
-    /// matching the pre-sharing behaviour.
     fn run_client_status(&self, bin: &str) -> Result<CommandOutput> {
         if let Some(cached) = self.run_cache.borrow().client_status.as_ref() {
             return Ok(cached.clone());
@@ -237,27 +121,9 @@ impl<'a> Doctor<'a> {
         Ok(out)
     }
 
-    // -----------------------------------------------------------------------
-    // Dispatch
-    // -----------------------------------------------------------------------
-
-    /// Run the selected diagnostic scope and return a complete report.
-    ///
-    /// When `scope` is [`DoctorScope::All`], every category is run and the
-    /// findings are merged into a single report. For a single category only
-    /// that category's checks are performed.
-    ///
-    /// The per-run fetch memo is reset at this boundary (not inside the
-    /// private per-scope dispatcher), so an `All` run shares one
-    /// `fail2ban-client status` spawn and one `$PATH` walk across all of its
-    /// categories, while consecutive `run` calls each start fresh.
-    ///
+    /// Run the selected scope; `All` merges every category into one report.
     /// # Errors
-    ///
-    /// Returns an error only if a fundamental failure occurs (e.g. the runner
-    /// itself is broken). Individual check failures are reported as
-    /// [`Severity::Error`] or [`Severity::Critical`] findings inside the
-    /// report, not as `Err`.
+    /// Only on fundamental failures (broken runner); check failures become findings.
     pub fn run(&self, scope: &DoctorScope) -> Result<DoctorReport> {
         self.run_cache.borrow_mut().clear();
         let mut report = DoctorReport::empty();
@@ -265,13 +131,10 @@ impl<'a> Doctor<'a> {
         Ok(report)
     }
 
-    /// Execute one scope against `report` without resetting the per-run memo.
     fn run_scope(&self, scope: &DoctorScope, report: &mut DoctorReport) -> Result<()> {
         match scope {
             DoctorScope::All => {
                 for cat in DoctorScope::all_categories() {
-                    // Dispatch for each category. Jail-only scopes are skipped
-                    // in All mode since they require a jail name.
                     self.run_scope(&cat, report)?;
                 }
             }
@@ -291,25 +154,10 @@ impl<'a> Doctor<'a> {
         Ok(())
     }
 
-    // =======================================================================
-    // Binary checks
-    // =======================================================================
-
-    /// Verify that all required binaries are present and detect the Fail2Ban
-    /// version.
-    ///
-    /// Checks:
-    ///
-    /// - `fail2ban-client` exists on `$PATH`
-    /// - `fail2ban-regex` exists on `$PATH`
-    /// - Fail2Ban version can be detected via `fail2ban-client --version`
-    /// - `systemctl` exists on `$PATH`
-    /// - `nft` / `iptables` availability based on configured actions
     #[allow(clippy::too_many_lines, reason = "sequential binary/version probes")]
     fn check_binaries(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // fail2ban-client
         match self.client_bin() {
             Ok(path) => {
                 findings.push(
@@ -321,7 +169,6 @@ impl<'a> Doctor<'a> {
                     .detail(format!("Located at {}", path.display())),
                 );
 
-                // Try to detect the version.
                 match self
                     .runner
                     .run(path.to_str().unwrap_or("fail2ban-client"), &["--version"])
@@ -379,7 +226,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // fail2ban-regex
         match find_binary("fail2ban-regex") {
             Ok(path) => {
                 findings.push(
@@ -407,7 +253,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // systemctl
         match find_binary("systemctl") {
             Ok(path) => {
                 findings.push(
@@ -436,7 +281,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // nft availability
         match self.runner.run("nft", &["--version"]) {
             Ok(out) if out.success => {
                 findings.push(Finding::new(
@@ -460,7 +304,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // iptables availability
         match self.runner.run("iptables", &["--version"]) {
             Ok(out) if out.success => {
                 findings.push(Finding::new(
@@ -487,24 +330,10 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Service checks
-    // =======================================================================
-
-    /// Verify that the Fail2Ban service is active, enabled, and responsive.
-    ///
-    /// Checks:
-    ///
-    /// - Fail2Ban service is active (running)
-    /// - Fail2Ban service is enabled (starts at boot)
-    /// - `fail2ban-client ping` succeeds
-    /// - log target is accessible
-    /// - database file path is readable
     #[allow(clippy::too_many_lines, reason = "sequential service health probes")]
     fn check_service(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // Service active.
         match self.runner.run("systemctl", &["is-active", "fail2ban"]) {
             Ok(out) => {
                 if out.success {
@@ -540,7 +369,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // Service enabled.
         match self.runner.run("systemctl", &["is-enabled", "fail2ban"]) {
             Ok(out) => {
                 if out.success {
@@ -572,7 +400,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // fail2ban-client ping.
         match self.client_bin() {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-client");
@@ -614,7 +441,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // Log target accessible.
                 match self.runner.run(bin, &["get", "logtarget"]) {
                     Ok(out) if out.success => {
                         let target = out.stdout.trim().to_string();
@@ -653,7 +479,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // Database file readable.
                 match self.runner.run(bin, &["get", "dbfile"]) {
                     Ok(out) if out.success => {
                         let db_path = out.stdout.trim().to_string();
@@ -706,7 +531,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // Socket file check.
                 match self.runner.run(bin, &["get", "socket"]) {
                     Ok(out) if out.success => {
                         let socket_path_str = out.stdout.trim().to_string();
@@ -761,7 +585,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // PID file check.
                 match self.runner.run(bin, &["get", "pidfile"]) {
                     Ok(out) if out.success => {
                         let pid_path_str = out.stdout.trim().to_string();
@@ -817,7 +640,6 @@ impl<'a> Doctor<'a> {
                 }
             }
             Err(_) => {
-                // Already reported in check_binaries; add a service-level note.
                 findings.push(Finding::new(
                     "service.no-client",
                     Severity::Critical,
@@ -829,24 +651,11 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Config checks
-    // =======================================================================
-
-    /// Verify Fail2Ban configuration integrity.
-    ///
-    /// Checks:
-    ///
-    /// - `/etc/fail2ban` directory exists
-    /// - `fail2ban-client --test` passes
-    /// - generated files contain the managed header
-    /// - no stock `.conf` files were modified
     #[allow(clippy::too_many_lines, reason = "sequential config integrity probes")]
     fn check_config(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
         let config_dir = std::path::Path::new("/etc/fail2ban");
 
-        // Config directory exists.
         if config_dir.exists() {
             findings.push(Finding::new(
                 "config.directory.exists",
@@ -863,11 +672,9 @@ impl<'a> Doctor<'a> {
                 .detail("Expected /etc/fail2ban to exist.")
                 .fix("Install Fail2Ban or create /etc/fail2ban."),
             );
-            // Early return: nothing else can be checked.
             return findings;
         }
 
-        // fail2ban-client --test passes.
         match self.client_bin() {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-client");
@@ -906,7 +713,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // Check that generated files contain the managed header.
                 let jail_d = config_dir.join("jail.d");
                 if jail_d.exists()
                     && let Ok(entries) = std::fs::read_dir(&jail_d)
@@ -954,7 +760,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // Check no stock .conf files were modified.
                 let dirs_to_check = ["jail.d", "filter.d", "action.d"];
                 for subdir in &dirs_to_check {
                     let dir = config_dir.join(subdir);
@@ -1004,20 +809,6 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Jail checks
-    // =======================================================================
-
-    /// Run diagnostic checks for a single named jail.
-    ///
-    /// Checks:
-    ///
-    /// - jail exists
-    /// - jail is enabled
-    /// - jail status is readable
-    /// - jail has a filter
-    /// - jail has at least one action
-    /// - `bantime`, `findtime`, and `maxretry` have sane values
     #[allow(
         clippy::too_many_lines,
         reason = "per-jail multi-aspect diagnostic chain"
@@ -1029,7 +820,6 @@ impl<'a> Doctor<'a> {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-client");
 
-                // Jail status readable (implies existence).
                 match self.runner.run(bin, &["status", jail]) {
                     Ok(out) if out.success => {
                         findings.push(
@@ -1043,7 +833,6 @@ impl<'a> Doctor<'a> {
 
                         let status = &out.stdout;
 
-                        // Check if jail appears enabled.
                         if status.contains("Currently banned") || status.contains("File list") {
                             findings.push(Finding::new(
                                 "jail.enabled",
@@ -1061,7 +850,6 @@ impl<'a> Doctor<'a> {
                             );
                         }
 
-                        // Check filter presence (best-effort parsing).
                         if status.contains("Filter") || status.contains("filter") {
                             findings.push(Finding::new(
                                 "jail.has-filter",
@@ -1079,7 +867,6 @@ impl<'a> Doctor<'a> {
                             );
                         }
 
-                        // Check action presence.
                         if status.contains("Actions")
                             || status.contains("actions")
                             || status.contains("action")
@@ -1131,12 +918,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // Sane timing parameters (best-effort via status output).
-                // We cannot directly query bantime/findtime/maxretry via
-                // fail2ban-client in all versions, so we check get operations.
-                // Collect parsed values for cross-validation below.
-
-                // bantime
                 let mut bantime_secs: Option<u64> = None;
                 match self.runner.run(bin, &["get", jail, "bantime"]) {
                     Ok(out) if out.success => {
@@ -1146,8 +927,6 @@ impl<'a> Doctor<'a> {
                             Severity::Info,
                             format!("Jail '{jail}' ban time: {val}"),
                         ));
-                        // Try to parse as plain seconds first, then as a
-                        // humantime duration string (e.g. "10m", "1h").
                         bantime_secs = val
                             .parse::<u64>()
                             .ok()
@@ -1162,7 +941,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // findtime
                 let mut findtime_secs: Option<u64> = None;
                 match self.runner.run(bin, &["get", jail, "findtime"]) {
                     Ok(out) if out.success => {
@@ -1186,7 +964,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // maxretry
                 match self.runner.run(bin, &["get", jail, "maxretry"]) {
                     Ok(out) if out.success => {
                         let val = out.stdout.trim();
@@ -1231,7 +1008,6 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // bantime / findtime cross-validation.
                 if let Some(bt) = bantime_secs {
                     if bt < 60 {
                         findings.push(
@@ -1288,7 +1064,6 @@ impl<'a> Doctor<'a> {
                     );
                 }
 
-                // usedns check.
                 match self.runner.run(bin, &["get", jail, "usedns"]) {
                     Ok(out) if out.success => {
                         let val = out.stdout.trim().to_lowercase();
@@ -1318,12 +1093,9 @@ impl<'a> Doctor<'a> {
                             ));
                         }
                     }
-                    _ => {
-                        // usedns not queryable -- skip silently.
-                    }
+                    _ => {}
                 }
 
-                // ignoreip check.
                 match self.runner.run(bin, &["get", jail, "ignoreip"]) {
                     Ok(out) if out.success => {
                         let val = out.stdout.trim();
@@ -1360,9 +1132,7 @@ impl<'a> Doctor<'a> {
                             ));
                         }
                     }
-                    _ => {
-                        // ignoreip not queryable -- skip silently.
-                    }
+                    _ => {}
                 }
             }
             Err(_) => {
@@ -1377,33 +1147,16 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Log path checks
-    // =======================================================================
-
-    /// Verify that configured log paths are accessible and valid.
-    ///
-    /// Checks:
-    ///
-    /// - log path exists on disk
-    /// - parent directory exists
-    /// - log path is readable
-    /// - log file is not empty when activity is expected
-    /// - glob patterns are warned about
     fn check_log_paths(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // Retrieve log paths from active jails.
         match self.client_bin() {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-client");
 
-                // Get the list of jails (shared with the other jail-list
-                // consumers of this run).
                 match self.run_client_status(bin) {
                     Ok(out) if out.success => {
                         let status = &out.stdout;
-                        // Best-effort parse jail names from "Jail list: ..." line.
                         let jail_names = parse_jail_list(status);
                         if jail_names.is_empty() {
                             findings.push(Finding::new(
@@ -1415,7 +1168,6 @@ impl<'a> Doctor<'a> {
                         }
 
                         for jail in &jail_names {
-                            // Get log path for this jail.
                             match self.runner.run(bin, &["get", jail, "logpath"]) {
                                 Ok(out) if out.success => {
                                     let log_paths = out.stdout.trim();
@@ -1478,7 +1230,6 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    /// Check a single log path and append findings.
     #[allow(
         clippy::too_many_lines,
         reason = "multi-aspect single-path diagnostic chain"
@@ -1486,7 +1237,6 @@ impl<'a> Doctor<'a> {
     fn check_single_log_path(log_path: &str, jail: &str, findings: &mut Vec<Finding>) {
         let path = std::path::Path::new(log_path);
 
-        // Warn about glob patterns.
         if log_path.contains('*') || log_path.contains('?') || log_path.contains('[') {
             findings.push(
                 Finding::new(
@@ -1499,12 +1249,9 @@ impl<'a> Doctor<'a> {
                      New files created later will not be picked up until a reload.",
                 ),
             );
-            // For glob patterns, we cannot check individual files; skip the
-            // rest of the checks for this entry.
             return;
         }
 
-        // Path exists.
         if path.exists() {
             findings.push(Finding::new(
                 "logpath.exists",
@@ -1512,7 +1259,6 @@ impl<'a> Doctor<'a> {
                 format!("Log path for jail '{jail}' exists: {log_path}"),
             ));
         } else {
-            // Check parent directory.
             if let Some(parent) = path.parent() {
                 if parent.exists() {
                     findings.push(
@@ -1550,7 +1296,6 @@ impl<'a> Doctor<'a> {
             return;
         }
 
-        // Readable.
         if std::fs::metadata(path).is_err() {
             findings.push(
                 Finding::new(
@@ -1563,7 +1308,6 @@ impl<'a> Doctor<'a> {
             return;
         }
 
-        // Not empty.
         if let Ok(meta) = std::fs::metadata(path)
             && meta.len() == 0
         {
@@ -1580,7 +1324,6 @@ impl<'a> Doctor<'a> {
             );
         }
 
-        // Docker path detection.
         let lp_lower = log_path.to_lowercase();
         if lp_lower.contains("/var/lib/docker/")
             || lp_lower.contains("/containers/") && lp_lower.contains("/docker/")
@@ -1609,8 +1352,6 @@ impl<'a> Doctor<'a> {
             );
         }
 
-        // Real IP detection in log content.
-        // Only check if the file is non-empty and we haven't already flagged it.
         if path.exists() {
             let mut already_flagged = false;
             for f in findings.iter() {
@@ -1619,10 +1360,6 @@ impl<'a> Doctor<'a> {
                     break;
                 }
             }
-            // Stream only the first few lines instead of reading the whole file
-            // into memory. `read_to_string` would slurp a multi-hundred-MB
-            // auth.log on every diagnostic run; BufReader bounds memory to the
-            // first `PROXY_IP_SAMPLE_LINES` lines regardless of file size.
             if !already_flagged && let Ok(file) = std::fs::File::open(path) {
                 use std::io::BufRead;
                 let reader = std::io::BufReader::new(file);
@@ -1635,7 +1372,6 @@ impl<'a> Doctor<'a> {
                     let mut all_private = true;
                     let mut any_ip_found = false;
                     for line in &lines {
-                        // Extract potential IP addresses from the line.
                         let ips = extract_ips_from_line(line);
                         for ip_str in &ips {
                             any_ip_found = true;
@@ -1678,18 +1414,6 @@ impl<'a> Doctor<'a> {
         }
     }
 
-    // =======================================================================
-    // Journal checks
-    // =======================================================================
-
-    /// Verify systemd journal configuration and accessibility.
-    ///
-    /// Checks:
-    ///
-    /// - backend is `systemd` when expected
-    /// - `journalmatch` is configured (not `logpath`)
-    /// - journal query returns recent rows
-    /// - Fail2Ban has access to the journal
     #[allow(clippy::too_many_lines, reason = "sequential journal backend probes")]
     #[allow(
         clippy::collapsible_if,
@@ -1698,7 +1422,6 @@ impl<'a> Doctor<'a> {
     fn check_journal(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // Check if journalctl is available at all.
         match self.runner.run("journalctl", &["--version"]) {
             Ok(out) if out.success => {
                 findings.push(Finding::new(
@@ -1723,7 +1446,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // Try to query the journal for Fail2Ban's own service unit.
         match self
             .runner
             .run("journalctl", &["-u", "fail2ban", "-n", "1", "--no-pager"])
@@ -1777,14 +1499,12 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // Check active jails for systemd backend misuse.
         if let Ok(path) = self.client_bin() {
             let bin = path.to_str().unwrap_or("fail2ban-client");
             if let Ok(out) = self.run_client_status(bin) {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
-                        // Check backend.
                         match self.runner.run(bin, &["get", jail, "backend"]) {
                             Ok(out) if out.success => {
                                 let backend = out.stdout.trim().to_lowercase();
@@ -1795,7 +1515,6 @@ impl<'a> Doctor<'a> {
                                         format!("Jail '{jail}' uses systemd backend"),
                                     ));
 
-                                    // 1. No logpath with systemd backend.
                                     match self.runner.run(bin, &["get", jail, "logpath"]) {
                                         Ok(lp_out) if lp_out.success => {
                                             let logpath = lp_out.stdout.trim();
@@ -1826,7 +1545,6 @@ impl<'a> Doctor<'a> {
                                         _ => {}
                                     }
 
-                                    // Check that journalmatch is set, not logpath.
                                     let mut journalmatch_value: Option<String> = None;
                                     match self.runner.run(bin, &["get", jail, "journalmatch"]) {
                                         Ok(jm_out) if jm_out.success => {
@@ -1853,7 +1571,6 @@ impl<'a> Doctor<'a> {
                                         _ => {}
                                     }
 
-                                    // 2. Unit existence check.
                                     if let Some(ref jm) = journalmatch_value {
                                         let units = extract_systemd_units(jm);
                                         for unit in &units {
@@ -1933,7 +1650,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // 3. Journal access check.
         match self.runner.run("journalctl", &["-n", "1", "--no-pager"]) {
             Ok(out) => {
                 if out.success {
@@ -1994,17 +1710,6 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Regex checks
-    // =======================================================================
-
-    /// Verify that failregex patterns compile and use `<HOST>` correctly.
-    ///
-    /// Checks:
-    ///
-    /// - `fail2ban-regex` is available
-    /// - failregex compiles via `fail2ban-regex`
-    /// - `<HOST>` appears in the regex pattern
     #[allow(
         clippy::too_many_lines,
         reason = "per-jail per-regex attack/safe-line probing"
@@ -2020,7 +1725,6 @@ impl<'a> Doctor<'a> {
             Ok(path) => {
                 let bin = path.to_str().unwrap_or("fail2ban-regex");
 
-                // Verify fail2ban-regex is functional.
                 match self.runner.run(bin, &["--version"]) {
                     Ok(out) if out.success => {
                         findings.push(Finding::new(
@@ -2056,14 +1760,12 @@ impl<'a> Doctor<'a> {
                     }
                 }
 
-                // Check active jails for <HOST> usage in their filters.
                 if let Ok(client_path) = self.client_bin() {
                     let client_bin = client_path.to_str().unwrap_or("fail2ban-client");
                     if let Ok(out) = self.run_client_status(client_bin) {
                         if out.success {
                             let jail_names = parse_jail_list(&out.stdout);
                             for jail in &jail_names {
-                                // Get the failregex for this jail.
                                 let failregex_val: Option<String> = match self
                                     .runner
                                     .run(client_bin, &["get", jail, "failregex"])
@@ -2130,7 +1832,6 @@ impl<'a> Doctor<'a> {
                                     }
                                 };
 
-                                // 4. Malicious line matching.
                                 if let Some(ref failregex) = failregex_val {
                                     let attack_lines = [
                                         "Failed password for root from \
@@ -2143,7 +1844,6 @@ impl<'a> Doctor<'a> {
                                             self.runner.run(bin, &[attack_line, failregex])
                                         {
                                             if out.success && out.stdout.contains("Lines:") {
-                                                // Attack matched - good.
                                             } else {
                                                 findings.push(
                                                     Finding::new(
@@ -2169,7 +1869,6 @@ impl<'a> Doctor<'a> {
                                         }
                                     }
 
-                                    // 5. Safe line non-matching.
                                     let safe_lines = [
                                         "Accepted password for user from \
                                          192.168.1.1 port 22 ssh2",
@@ -2207,7 +1906,6 @@ impl<'a> Doctor<'a> {
                                         }
                                     }
 
-                                    // 7. maxlines check.
                                     let is_multiline = failregex.contains('\n');
                                     let maxlines_val = match self
                                         .runner
@@ -2256,8 +1954,6 @@ impl<'a> Doctor<'a> {
                                         ));
                                     }
 
-                                    // 8. False IP detection - check if <HOST>
-                                    //    is anchored.
                                     if !is_host_anchored(failregex) {
                                         findings.push(
                                             Finding::new(
@@ -2284,7 +1980,6 @@ impl<'a> Doctor<'a> {
                                     }
                                 }
 
-                                // 6. datepattern check.
                                 let datepattern_val = match self
                                     .runner
                                     .run(client_bin, &["get", jail, "datepattern"])
@@ -2377,18 +2072,6 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Action checks
-    // =======================================================================
-
-    /// Verify that configured actions are valid and compatible with the
-    /// system firewall.
-    ///
-    /// Checks:
-    ///
-    /// - action file exists
-    /// - action has ban and unban definitions
-    /// - action is compatible with system firewall backend
     #[allow(
         clippy::too_many_lines,
         reason = "per-jail multi-aspect action probing"
@@ -2401,7 +2084,6 @@ impl<'a> Doctor<'a> {
         let mut findings = Vec::new();
         let action_dir = std::path::Path::new("/etc/fail2ban/action.d");
 
-        // Check the action directory exists.
         if action_dir.exists() {
             findings.push(Finding::new(
                 "action.directory.exists",
@@ -2421,14 +2103,12 @@ impl<'a> Doctor<'a> {
             return findings;
         }
 
-        // Check active jail actions for firewall compatibility.
         if let Ok(path) = self.client_bin() {
             let bin = path.to_str().unwrap_or("fail2ban-client");
             if let Ok(out) = self.run_client_status(bin) {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
-                        // Get actions for this jail.
                         match self.runner.run(bin, &["get", jail, "actions"]) {
                             Ok(out) if out.success => {
                                 let actions_str = out.stdout.trim();
@@ -2437,7 +2117,6 @@ impl<'a> Doctor<'a> {
                                     .map(str::trim)
                                     .filter(|s| !s.is_empty())
                                 {
-                                    // Check that the action file exists.
                                     let conf_path = action_dir.join(format!("{action_name}.conf"));
                                     let local_path =
                                         action_dir.join(format!("{action_name}.local"));
@@ -2452,7 +2131,6 @@ impl<'a> Doctor<'a> {
                                             ),
                                         ));
 
-                                        // Check firewall compatibility.
                                         let action_lower = action_name.to_ascii_lowercase();
                                         if action_lower.contains("nftables") {
                                             match self.runner.run("nft", &["--version"]) {
@@ -2498,9 +2176,6 @@ impl<'a> Doctor<'a> {
                                             }
                                         }
 
-                                        // Read the action file content for
-                                        // deeper checks. Prefer .local over
-                                        // .conf as .local overrides.
                                         let action_content = if local_path.exists() {
                                             std::fs::read_to_string(&local_path)
                                         } else {
@@ -2508,7 +2183,6 @@ impl<'a> Doctor<'a> {
                                         };
 
                                         if let Ok(content) = action_content {
-                                            // 9. ban/unban behavior check.
                                             let has_actionban = content.contains("actionban")
                                                 || content.contains("banaction");
                                             let has_actionunban = content.contains("actionunban");
@@ -2561,7 +2235,6 @@ impl<'a> Doctor<'a> {
                                                 );
                                             }
 
-                                            // 10. actioncheck verification.
                                             let has_actioncheck = content.contains("actioncheck");
                                             if has_actioncheck {
                                                 findings.push(Finding::new(
@@ -2590,7 +2263,6 @@ impl<'a> Doctor<'a> {
                                                 );
                                             }
 
-                                            // 11. timeout check.
                                             if let Some(timeout_val) =
                                                 extract_ini_value(&content, "timeout")
                                             {
@@ -2631,7 +2303,6 @@ impl<'a> Doctor<'a> {
                                                 ));
                                             }
 
-                                            // 12. Email/webhook parameter check.
                                             let name_lower = action_name.to_ascii_lowercase();
                                             if name_lower.contains("mail")
                                                 || name_lower.contains("send")
@@ -2680,7 +2351,6 @@ impl<'a> Doctor<'a> {
                                                 }
                                             }
 
-                                            // 13. Cloudflare/API credential check.
                                             if name_lower.contains("cloudflare")
                                                 || name_lower.contains("cf")
                                             {
@@ -2785,17 +2455,6 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Permission checks
-    // =======================================================================
-
-    /// Verify file permissions are safe across the Fail2Ban installation.
-    ///
-    /// Checks:
-    ///
-    /// - `/etc/fail2ban` is not world-writable
-    /// - generated config files are not world-writable
-    /// - socket path permissions are sane
     #[allow(
         clippy::too_many_lines,
         reason = "sequential filesystem permission probes"
@@ -2821,7 +2480,6 @@ impl<'a> Doctor<'a> {
             return findings;
         }
 
-        // /etc/fail2ban not world-writable.
         match std::fs::metadata(config_dir) {
             Ok(meta) => {
                 let mode = permission_mode(&meta.permissions());
@@ -2859,7 +2517,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // Generated files not world-writable.
         let subdirs = ["jail.d", "filter.d", "action.d"];
         for subdir in &subdirs {
             let dir = config_dir.join(subdir);
@@ -2886,9 +2543,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // -----------------------------------------------------------------
-        // Ownership checks: managed files should be root-owned.
-        // -----------------------------------------------------------------
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -2929,7 +2583,6 @@ impl<'a> Doctor<'a> {
                 }
             }
 
-            // Check /etc/fail2ban itself.
             if let Ok(meta) = std::fs::metadata(config_dir) {
                 let uid = meta.uid();
                 if uid != 0 {
@@ -2955,9 +2608,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // -----------------------------------------------------------------
-        // Secrets in config check.
-        // -----------------------------------------------------------------
         let secret_patterns = [
             ("api_key", "API key"),
             ("token", "token"),
@@ -2982,7 +2632,6 @@ impl<'a> Doctor<'a> {
 
                         let content_lower = content.to_lowercase();
                         let mut found_secrets: Vec<&str> = Vec::new();
-                        // Look for patterns like "api_key=", "token=", etc.
                         for line in content_lower.lines() {
                             let trimmed = line.trim();
                             if trimmed.starts_with('#') || trimmed.starts_with(';') {
@@ -3000,7 +2649,6 @@ impl<'a> Doctor<'a> {
                         }
 
                         if !found_secrets.is_empty() {
-                            // Check if file is world-readable.
                             let is_world_readable = std::fs::metadata(&path).is_ok_and(|meta| {
                                 let mode = permission_mode(&meta.permissions());
                                 mode & 0o004 != 0
@@ -3051,8 +2699,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // Socket path permissions.
-        // Default socket: /var/run/fail2ban/fail2ban.sock
         let socket_path = std::path::Path::new("/var/run/fail2ban/fail2ban.sock");
         if socket_path.exists() {
             match std::fs::metadata(socket_path) {
@@ -3102,17 +2748,6 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Safety checks
-    // =======================================================================
-
-    /// Verify that safe operational practices are in place.
-    ///
-    /// Checks:
-    ///
-    /// - dry-run mode is available before applying changes
-    /// - backup files exist before destructive updates
-    /// - rollback path is available
     #[allow(clippy::too_many_lines, reason = "sequential safety/backup probes")]
     #[allow(
         clippy::collapsible_if,
@@ -3121,7 +2756,6 @@ impl<'a> Doctor<'a> {
     fn check_safety(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // Dry-run is a library feature -- verify the runner supports it.
         let dry_run_available = !self.runner.dry_run();
         findings.push(
             Finding::new(
@@ -3136,7 +2770,6 @@ impl<'a> Doctor<'a> {
         );
 
         if !dry_run_available {
-            // Currently in dry-run mode; note that.
             findings.push(Finding::new(
                 "safety.currently-dry-run",
                 Severity::Info,
@@ -3144,7 +2777,6 @@ impl<'a> Doctor<'a> {
             ));
         }
 
-        // Check for backup files in jail.d.
         let jail_d = std::path::Path::new("/etc/fail2ban/jail.d");
         if jail_d.exists() {
             if let Ok(entries) = std::fs::read_dir(jail_d) {
@@ -3175,11 +2807,8 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // Rollback path: verify that the config directory is writable
-        // (needed for restoring backups).
         let config_dir = std::path::Path::new("/etc/fail2ban");
         if config_dir.exists() {
-            // Check if we can write to jail.d (best-effort test).
             let test_path = config_dir.join("jail.d/.doctor-write-test");
             match std::fs::write(&test_path, b"") {
                 Ok(()) => {
@@ -3208,16 +2837,12 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // -----------------------------------------------------------------
-        // Self-ban protection: trusted IPs should be in ignoreip.
-        // -----------------------------------------------------------------
         if let Ok(path) = self.client_bin() {
             let bin = path.to_str().unwrap_or("fail2ban-client");
             if let Ok(out) = self.run_client_status(bin) {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
-                        // Get the ignoreip list for this jail.
                         let ignoreip_str = match self.runner.run(bin, &["get", jail, "ignoreip"]) {
                             Ok(ign_out) if ign_out.success => ign_out.stdout.trim().to_string(),
                             _ => continue,
@@ -3229,8 +2854,6 @@ impl<'a> Doctor<'a> {
                             .filter(|s| !s.is_empty())
                             .collect();
 
-                        // Check for trusted IPs that are NOT in ignoreip.
-                        // Common trusted IPs that should be protected.
                         let trusted_ips = ["127.0.0.1", "::1"];
                         let mut unprotected: Vec<&str> = Vec::new();
                         for trusted in &trusted_ips {
@@ -3238,7 +2861,6 @@ impl<'a> Doctor<'a> {
                                 let entry_lower = entry.to_lowercase();
                                 entry_lower == *trusted
                                     || entry_lower.contains(&trusted.to_lowercase())
-                                    // Check if the entry is a CIDR that covers the trusted IP.
                                     || cidr_covers_ip(entry, trusted)
                             });
                             if !is_protected {
@@ -3268,9 +2890,6 @@ impl<'a> Doctor<'a> {
                             );
                         }
 
-                        // -------------------------------------------------
-                        // Private network awareness check.
-                        // -------------------------------------------------
                         let rfc1918_ranges = [
                             "10.0.0.0/8",
                             "172.16.0.0/12",
@@ -3282,7 +2901,6 @@ impl<'a> Doctor<'a> {
                         for range in &rfc1918_ranges {
                             for entry in &ignoreip_entries {
                                 let entry_lower = entry.to_lowercase();
-                                // Direct match of the CIDR range in ignoreip.
                                 if entry_lower.contains(range) || cidr_covers_range(entry, range) {
                                     found_private = true;
                                     break;
@@ -3326,17 +2944,6 @@ impl<'a> Doctor<'a> {
         findings
     }
 
-    // =======================================================================
-    // Proxy checks
-    // =======================================================================
-
-    /// Detect proxy-related misconfigurations that would cause Fail2Ban to
-    /// ban the proxy instead of the attacker.
-    ///
-    /// Checks:
-    ///
-    /// - detect whether logs contain proxy IPs only
-    /// - warn if Fail2Ban would ban Cloudflare/Traefik instead of attacker
     #[allow(clippy::too_many_lines, reason = "per-jail multi-aspect proxy probing")]
     #[allow(
         clippy::collapsible_if,
@@ -3345,27 +2952,22 @@ impl<'a> Doctor<'a> {
     fn check_proxy(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
 
-        // Common proxy / CDN IP ranges to warn about.
         let proxy_indicators = [
             ("Cloudflare", "cloudflare"),
             ("Traefik", "traefik"),
             ("NGINX reverse proxy", "nginx"),
         ];
 
-        // Check active jails for known proxy-related patterns in their
-        // configuration or log paths.
         if let Ok(path) = self.client_bin() {
             let bin = path.to_str().unwrap_or("fail2ban-client");
             if let Ok(out) = self.run_client_status(bin) {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
-                        // Check the jail's log path for proxy indicators.
                         if let Ok(log_out) = self.runner.run(bin, &["get", jail, "logpath"]) {
                             if log_out.success {
                                 let log_path = log_out.stdout.trim().to_lowercase();
 
-                                // Check for common proxy log patterns.
                                 if log_path.contains("traefik") || log_path.contains("access.log") {
                                     findings.push(
                                         Finding::new(
@@ -3393,7 +2995,6 @@ impl<'a> Doctor<'a> {
                             }
                         }
 
-                        // Check for Cloudflare-specific actions.
                         if let Ok(action_out) = self.runner.run(bin, &["get", jail, "actions"]) {
                             if action_out.success {
                                 let actions = action_out.stdout.trim().to_lowercase();
@@ -3417,11 +3018,9 @@ impl<'a> Doctor<'a> {
                             }
                         }
 
-                        // Track proxy detections for post-loop findings.
                         let mut detected_traefik_log = false;
                         let mut detected_cloudflare = false;
 
-                        // Re-check log path for Traefik and Cloudflare indicators.
                         if let Ok(log_out) = self.runner.run(bin, &["get", jail, "logpath"]) {
                             if log_out.success {
                                 let log_path_lower = log_out.stdout.trim().to_lowercase();
@@ -3431,7 +3030,6 @@ impl<'a> Doctor<'a> {
                             }
                         }
 
-                        // Check for Cloudflare-related actions.
                         if let Ok(action_out) = self.runner.run(bin, &["get", jail, "actions"]) {
                             if action_out.success {
                                 let actions_lower = action_out.stdout.trim().to_lowercase();
@@ -3443,16 +3041,12 @@ impl<'a> Doctor<'a> {
                             }
                         }
 
-                        // Also check action.d directory for Cloudflare files.
                         let cf_action_path =
                             std::path::Path::new("/etc/fail2ban/action.d/cloudflare.conf");
                         if cf_action_path.exists() {
                             detected_cloudflare = true;
                         }
 
-                        // 5. Real-IP documentation finding.
-                        // Detect if any proxy indicator was found across all
-                        // checks and emit a single documentation finding.
                         let has_proxy_indicator = detected_traefik_log || detected_cloudflare || {
                             if let Ok(log_out) = self.runner.run(bin, &["get", jail, "logpath"]) {
                                 if log_out.success {
@@ -3492,7 +3086,6 @@ impl<'a> Doctor<'a> {
                             );
                         }
 
-                        // 6. Traefik filter suggestions.
                         if detected_traefik_log {
                             findings.push(
                                 Finding::new(
@@ -3512,7 +3105,6 @@ impl<'a> Doctor<'a> {
                             );
                         }
 
-                        // 7. Cloudflare action suggestions.
                         if detected_cloudflare {
                             findings.push(
                                 Finding::new(
@@ -3539,7 +3131,6 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        // General proxy warning if no specific findings were added.
         if findings.is_empty() {
             findings.push(Finding::new(
                 "proxy.no-issues",
@@ -3552,14 +3143,6 @@ impl<'a> Doctor<'a> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Private helpers
-// ---------------------------------------------------------------------------
-
-/// Best-effort parse of jail names from `fail2ban-client status` output.
-///
-/// Looks for a line containing "Jail list:" and extracts the comma-separated
-/// names that follow.
 fn parse_jail_list(status: &str) -> Vec<String> {
     for line in status.lines() {
         let lower = line.to_ascii_lowercase();
@@ -3577,14 +3160,6 @@ fn parse_jail_list(status: &str) -> Vec<String> {
     Vec::new()
 }
 
-// ---------------------------------------------------------------------------
-// CIDR helpers (for safety checks)
-// ---------------------------------------------------------------------------
-
-/// Check whether a CIDR entry in an ignoreip list covers a specific IP address.
-///
-/// Handles entries like "10.0.0.0/8" or plain IPs like "127.0.0.1". Returns
-/// `false` if the entry cannot be parsed as a CIDR or IP.
 fn cidr_covers_ip(cidr_entry: &str, ip: &str) -> bool {
     use std::net::Ipv4Addr;
     use std::str::FromStr;
@@ -3595,12 +3170,10 @@ fn cidr_covers_ip(cidr_entry: &str, ip: &str) -> bool {
 
     let entry = cidr_entry.trim();
 
-    // Try parsing as a CIDR network first.
     if let Ok(net) = ipnet::Ipv4Net::from_str(entry) {
         return net.contains(&addr);
     }
 
-    // Try parsing as a plain IP (exact match).
     if let Ok(entry_addr) = Ipv4Addr::from_str(entry) {
         return entry_addr == addr;
     }
@@ -3608,29 +3181,20 @@ fn cidr_covers_ip(cidr_entry: &str, ip: &str) -> bool {
     false
 }
 
-/// Check whether a CIDR entry in an ignoreip list covers (or equals) a given
-/// RFC1918 range.
-///
-/// Returns `true` if the entry is exactly the given range, or if the entry is
-/// a supernet that encompasses it.
 fn cidr_covers_range(cidr_entry: &str, range: &str) -> bool {
     use std::str::FromStr;
 
     let entry = cidr_entry.trim();
 
-    // Direct string equality check first.
     if entry == range {
         return true;
     }
 
-    // Parse both as networks and check containment.
     let Ok(range_net) = ipnet::Ipv4Net::from_str(range) else {
         return false;
     };
 
     if let Ok(entry_net) = ipnet::Ipv4Net::from_str(entry) {
-        // Check if the entry network contains the entire range network.
-        // This means the entry must be the same or a supernet.
         let entry_start = entry_net.network();
         let entry_end = entry_net.broadcast();
         let range_start = range_net.network();
@@ -3641,67 +3205,29 @@ fn cidr_covers_range(cidr_entry: &str, range: &str) -> bool {
     false
 }
 
-// ---------------------------------------------------------------------------
-// Unix permissions helper
-// ---------------------------------------------------------------------------
-
-/// Extract the Unix permission mode bits from `std::fs::Permissions`.
-///
-/// On Unix this reads the `mode()` field via `PermissionsExt`. On non-Unix
-/// platforms it returns `0` (no permissions checks possible).
 #[cfg(unix)]
 fn permission_mode(permissions: &std::fs::Permissions) -> u32 {
     use std::os::unix::fs::PermissionsExt;
     permissions.mode()
 }
 
-/// Extract the Unix permission mode bits from `std::fs::Permissions`.
-///
-/// Non-Unix fallback: always returns `0`.
 #[cfg(not(unix))]
 fn permission_mode(_permissions: &std::fs::Permissions) -> u32 {
     0
 }
 
-// ---------------------------------------------------------------------------
-// IP address helpers (for log path checks)
-// ---------------------------------------------------------------------------
-
-/// Number of leading log lines inspected when detecting a reverse-proxy /
-/// private-IP situation in [`Doctor::check_single_log_path`].
-///
-/// Kept small on purpose: we only ever need a representative sample of the
-/// newest entries, and streaming this many lines bounds the memory of the
-/// diagnostic regardless of the underlying log file size (e.g. a multi-hundred
-/// MB `auth.log`).
 const PROXY_IP_SAMPLE_LINES: usize = 10;
 
-/// Extract IP address strings from a single log line.
-///
-/// Uses a simple regex to find dotted-quad IPv4 patterns. IPv6 is not
-/// extracted since private-IP detection in this module only applies to
-/// IPv4 reverse-proxy scenarios.
 fn extract_ips_from_line(line: &str) -> Vec<String> {
     use std::str::FromStr;
 
     let re = regex::Regex::new(r"(?:\d{1,3}\.){3}\d{1,3}").unwrap();
     re.find_iter(line)
-        .filter(|m| {
-            // Validate that it actually parses as an IP so we don't
-            // match things like "999.999.999.999".
-            std::net::Ipv4Addr::from_str(m.as_str()).is_ok()
-        })
+        .filter(|m| std::net::Ipv4Addr::from_str(m.as_str()).is_ok())
         .map(|m| m.as_str().to_string())
         .collect()
 }
 
-/// Check whether an IP address string is a private / loopback address.
-///
-/// Returns `true` for addresses in:
-/// - 10.0.0.0/8
-/// - 172.16.0.0/12
-/// - 192.168.0.0/16
-/// - 127.0.0.0/8
 fn is_private_ip(ip_str: &str) -> bool {
     use std::net::Ipv4Addr;
     use std::str::FromStr;
@@ -3710,7 +3236,6 @@ fn is_private_ip(ip_str: &str) -> bool {
         return false;
     };
 
-    // Check against well-known private ranges using ipnet.
     let private_networks: &[&str] = &[
         "10.0.0.0/8",
         "172.16.0.0/12",
@@ -3729,15 +3254,6 @@ fn is_private_ip(ip_str: &str) -> bool {
     false
 }
 
-// ---------------------------------------------------------------------------
-// Journal helper
-// ---------------------------------------------------------------------------
-
-/// Extract systemd unit names from a journalmatch string.
-///
-/// Parses patterns like `_SYSTEMD_UNIT=sshd.service` and extracts the unit
-/// name (`sshd.service`). Handles multiple space-separated journalmatch
-/// entries (e.g. from `journalmatch = _SYSTEMD_UNIT=sshd.service + _COMM=sshd`).
 fn extract_systemd_units(journalmatch: &str) -> Vec<String> {
     let mut units = Vec::new();
     for entry in journalmatch.split([' ', '+']) {
@@ -3745,7 +3261,6 @@ fn extract_systemd_units(journalmatch: &str) -> Vec<String> {
         if entry.is_empty() {
             continue;
         }
-        // Look for _SYSTEMD_UNIT=<unit> patterns.
         if let Some(eq_pos) = entry.find('=') {
             let key = &entry[..eq_pos];
             if key.contains("SYSTEMD_UNIT") || key.contains("systemd_unit") {
@@ -3759,29 +3274,14 @@ fn extract_systemd_units(journalmatch: &str) -> Vec<String> {
     units
 }
 
-// ---------------------------------------------------------------------------
-// Regex anchor helper
-// ---------------------------------------------------------------------------
-
-/// Check whether `<HOST>` appears to be properly anchored in a failregex.
-///
-/// "Properly anchored" means `<HOST>` is preceded by a non-word character,
-/// a start-of-group, or the beginning of the pattern, and is followed by a
-/// non-word character, end-of-group, or end-of-pattern. If `<HOST>` is
-/// surrounded by characters that could form arbitrary words, it is
-/// considered unanchored.
 fn is_host_anchored(failregex: &str) -> bool {
-    // Check each occurrence of <HOST> in the regex.
     let mut search_from = 0;
     while let Some(pos) = failregex[search_from..].find("<HOST>") {
         let abs_pos = search_from + pos;
         let host_end = abs_pos + "<HOST>".len();
 
-        // Check the character before <HOST>.
         if abs_pos > 0 {
             let prev = failregex.as_bytes()[abs_pos - 1];
-            // Allow: whitespace, brackets, parens, pipes, anchors (^),
-            // backslash (for \b etc.), comma, colon, equals.
             if prev != b' '
                 && prev != b'\t'
                 && prev != b'['
@@ -3798,7 +3298,6 @@ fn is_host_anchored(failregex: &str) -> bool {
             }
         }
 
-        // Check the character after <HOST>.
         if host_end < failregex.len() {
             let next = failregex.as_bytes()[host_end];
             if next != b' '
@@ -3821,18 +3320,9 @@ fn is_host_anchored(failregex: &str) -> bool {
     true
 }
 
-// ---------------------------------------------------------------------------
-// INI value extraction helper
-// ---------------------------------------------------------------------------
-
-/// Best-effort extraction of a key value from an INI-style file content.
-///
-/// Looks for `key = value` or `key=value` at the start of a line (ignoring
-/// leading whitespace). Returns `None` if the key is not found.
 fn extract_ini_value(content: &str, key: &str) -> Option<String> {
     for line in content.lines() {
         let trimmed = line.trim();
-        // Skip comments.
         if trimmed.starts_with('#') || trimmed.starts_with(';') {
             continue;
         }

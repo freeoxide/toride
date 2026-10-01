@@ -1,9 +1,4 @@
 //! SSH config file parsing, editing, and host resolution.
-//!
-//! Provides [`ConfigService`] for reading and writing `~/.ssh/config` via a
-//! lossless AST, plus [`ResolvedHost`] for merging config directives into a
-//! final per-host configuration. Sub-modules cover the AST types, individual
-//! directives, in-place editing, managed host blocks, parsing, and resolution.
 
 pub mod ast;
 pub mod cache;
@@ -24,8 +19,6 @@ use toride_ssh_core::{Diagnostic, Error, Severity};
 pub use resolve::ResolvedHost;
 
 /// SSH config file operations.
-///
-/// Obtained from [`SshManager::config()`](crate::SshManager::config).
 pub struct ConfigService<'a> {
     paths: &'a SshPaths,
 }
@@ -36,18 +29,11 @@ impl<'a> ConfigService<'a> {
         Self { paths }
     }
 
-    /// Load and parse the SSH config into a lossless AST.
-    ///
-    /// Parsing goes through the process-wide mtime-keyed cache
-    /// ([`cache::load_cached_ast`]), so repeat loads of an unchanged file
-    /// (once per collection tick, plus the key inventory's `IdentityFile`
-    /// scan and the doctor checks in the same pass) share a single parse.
-    ///
-    /// If the config file does not exist, returns an empty AST.
+    /// Load and parse the SSH config into a lossless AST (cached); returns an
+    /// empty AST when the file is missing.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::Io`] if the config file exists but cannot be read.
+    /// [`Error::Io`] when the file is unreadable.
     pub async fn load(&self) -> Result<ast::ConfigAst> {
         let path = self.paths.config_path();
         if !path.exists() {
@@ -60,22 +46,14 @@ impl<'a> ConfigService<'a> {
         Ok((*ast).clone())
     }
 
-    /// Save the AST back to the config file.
-    ///
-    /// Writes the lossless string representation and ensures the file
-    /// has appropriate permissions (0o600 — owner read/write only).
-    /// OpenSSH requires user config not be writable by others; 0o600 is
-    /// the strictest correct permission.
+    /// Save the AST atomically with `0o600` permissions.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ConfigWriteFailed`] if the atomic write (temp
-    /// file + rename) fails, or [`Error::Io`] if permissions cannot be set.
+    /// [`Error::ConfigWriteFailed`] (write/rename) or [`Error::Io`] (chmod).
     pub async fn save(&self, ast: &ast::ConfigAst) -> Result<()> {
         let path = self.paths.config_path();
         let content = ast.to_string_lossless();
 
-        // Create a backup of the existing config before overwriting.
         if path.exists() {
             let backup_path = path.with_extension("config.bak");
             if let Err(e) = std::fs::copy(path, &backup_path) {
@@ -83,7 +61,6 @@ impl<'a> ConfigService<'a> {
             }
         }
 
-        // Atomic write: write to temp file, then rename.
         let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
         let tmp_path = parent.join(format!(
             ".config.tmp.{}.{}",
@@ -103,7 +80,6 @@ impl<'a> ConfigService<'a> {
         }
 
         tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-            // Clean up temp file on rename failure.
             let _ = std::fs::remove_file(&tmp_path);
             toride_ssh_core::Error::ConfigWriteFailed(format!("failed to rename config: {e}"))
         })?;
@@ -111,36 +87,25 @@ impl<'a> ConfigService<'a> {
         Ok(())
     }
 
-    /// Get a resolved [`ResolvedHost`] for the given alias.
-    ///
-    /// Performs full resolution including Include expansion and token expansion.
-    /// If `CanonicalizeHostname` is enabled, a second resolution pass is
-    /// performed using the resolved `HostName` as the lookup key.
+    /// Resolve a host alias to a [`ResolvedHost`], expanding Includes and
+    /// tokens.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ConfigIncludeCycle`] if an Include chain forms a
-    /// cycle, or [`Error::Io`] if the config file cannot be read.
+    /// [`Error::ConfigIncludeCycle`] or [`Error::Io`].
     pub async fn resolve_host(&self, host: &str) -> Result<ResolvedHost> {
         resolve::resolve(self.paths.ssh_dir(), host, None).await
     }
 
-    /// Parse the SSH config using ssh2-config-rs for typed access.
-    ///
-    /// Returns the ssh2-config-rs [`ssh2_config_rs::SshConfig`] which supports
-    /// `.query(host)` for resolving parameters.
+    /// Parse the config into an [`ssh2_config_rs::SshConfig`] (supports
+    /// `.query(host)`).
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ConfigParseFailed`] if the config file cannot be
-    /// parsed, or [`Error::Io`] if it cannot be read.
+    /// [`Error::ConfigParseFailed`] or [`Error::Io`].
     pub async fn parse_typed(&self) -> Result<ssh2_config_rs::SshConfig> {
         parse::parse_config(self.paths.config_path()).await
     }
 
-    /// Get a directive value for a host from the AST.
-    ///
-    /// Uses first-match-wins semantics.
+    /// Get a directive value for a host from the AST; first match wins.
     #[must_use]
     pub fn get_host_directive(ast: &ast::ConfigAst, host: &str, key: &str) -> Option<String> {
         directives::get_directive(ast, host, key)
@@ -152,12 +117,10 @@ impl<'a> ConfigService<'a> {
         directives::get_all_directives(ast, host)
     }
 
-    /// Add a new Host block to the AST.
+    /// Add a new Host block.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::DuplicateHost`] if a Host block with the given
-    /// name already exists.
+    /// [`Error::DuplicateHost`] if one with the given name already exists.
     pub fn add_host(
         ast: &mut ast::ConfigAst,
         name: &str,
@@ -166,11 +129,10 @@ impl<'a> ConfigService<'a> {
         editor::add_host(ast, name, directives)
     }
 
-    /// Remove a Host block from the AST by name.
+    /// Remove a Host block by name.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::HostNotFound`] if no Host block matches the given name.
+    /// [`Error::HostNotFound`] if absent.
     pub fn remove_host(ast: &mut ast::ConfigAst, name: &str) -> Result<()> {
         editor::remove_host(ast, name)
     }
@@ -178,9 +140,8 @@ impl<'a> ConfigService<'a> {
     /// Rename a Host block.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::HostNotFound`] if no Host block matches `old_name`,
-    /// or [`Error::DuplicateHost`] if a block with `new_name` already exists.
+    /// [`Error::HostNotFound`] if `old_name` is absent, or
+    /// [`Error::DuplicateHost`] if `new_name` exists.
     pub fn rename_host(ast: &mut ast::ConfigAst, old_name: &str, new_name: &str) -> Result<()> {
         editor::rename_host(ast, old_name, new_name)
     }
@@ -197,9 +158,7 @@ impl<'a> ConfigService<'a> {
     /// Remove a managed block by name.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ManagedBlockNotFound`] if no managed block with
-    /// the given name exists.
+    /// [`Error::ManagedBlockNotFound`] if absent.
     pub fn remove_managed_block(ast: &mut ast::ConfigAst, name: &str) -> Result<()> {
         managed::remove_managed_block(ast, name)
     }
@@ -210,19 +169,13 @@ impl<'a> ConfigService<'a> {
         managed::list_managed_blocks(ast)
     }
 
-    /// Ensure the config file exists (touch it if not).
-    ///
-    /// Creates the `~/.ssh` directory and an empty config file if either
-    /// is missing.  On Unix, sets directory permissions to `0o700` and
-    /// file permissions to `0o600`.
+    /// Create `~/.ssh` (`0o700`) and the config file (`0o600`) if missing.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::Io`] if directory creation or file writing fails.
+    /// [`Error::Io`] on failure.
     pub async fn ensure_config_file(&self) -> Result<()> {
         let path = self.paths.config_path();
         if !path.exists() {
-            // Ensure ~/.ssh directory exists.
             tokio::fs::create_dir_all(self.paths.ssh_dir()).await?;
             tokio::fs::write(&path, "").await?;
 
@@ -246,14 +199,10 @@ impl<'a> ConfigService<'a> {
         self.paths.config_path()
     }
 
-    /// Load, modify, and save the config atomically.
-    ///
-    /// Takes a closure that mutates the AST. Loads before, saves after.
+    /// Load, mutate via `f`, then save.
     ///
     /// # Errors
-    ///
-    /// Returns any error from loading, from the mutation closure, or from
-    /// saving.  See [`Self::load`] and [`Self::save`] for specifics.
+    /// From any step: ensure, load, `f`, or save.
     pub async fn edit<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&mut ast::ConfigAst) -> Result<()>,
@@ -264,27 +213,18 @@ impl<'a> ConfigService<'a> {
         self.save(&ast).await
     }
 
-    /// Run config-specific diagnostics on the loaded SSH config.
-    ///
-    /// Checks for:
-    /// 1. `ProxyCommand` / `ProxyJump` conflicts in the same Host block.
-    /// 2. Duplicate Host aliases across blocks.
-    /// 3. `Host *` placed before specific Host blocks.
-    /// 4. `IdentityFile` paths that do not exist on disk.
-    /// 5. `IdentityFile` paths pointing to `.pub` files (should be the private key).
+    /// Diagnose the config: proxy conflicts, duplicate aliases, `Host *`
+    /// placement, and missing or `.pub` `IdentityFile`s.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::Io`] if the config file cannot be read.
+    /// [`Error::Io`].
     pub async fn diagnose(&self) -> Result<Vec<Diagnostic>> {
         let ast = self.load().await?;
         let ssh_dir = self.paths.ssh_dir();
         let mut diagnostics = Vec::new();
 
-        // Tracks first-seen header for each host pattern (duplicate detection).
         let mut seen_patterns: HashMap<String, String> = HashMap::new();
 
-        // Tracks `Host *` ordering relative to specific blocks.
         let mut star_index: Option<usize> = None;
         let mut last_specific_index: Option<usize> = None;
 
@@ -296,7 +236,6 @@ impl<'a> ConfigService<'a> {
             check_proxy_conflict(&b.header, &b.nodes, &mut diagnostics);
             check_duplicate_aliases(&b.header, &b.patterns, &mut seen_patterns, &mut diagnostics);
 
-            // Track Host * ordering.
             if b.patterns.iter().any(|p| p == "*") {
                 if star_index.is_none() {
                     star_index = Some(i);
@@ -314,7 +253,6 @@ impl<'a> ConfigService<'a> {
     }
 }
 
-/// Check for ProxyCommand/ProxyJump conflict in a Host block.
 fn check_proxy_conflict(
     header: &str,
     nodes: &[ast::ConfigNode],
@@ -349,7 +287,6 @@ fn check_proxy_conflict(
     }
 }
 
-/// Check for duplicate Host aliases.
 fn check_duplicate_aliases(
     header: &str,
     patterns: &[String],
@@ -376,7 +313,6 @@ fn check_duplicate_aliases(
     }
 }
 
-/// Check `IdentityFile` directives for .pub references and missing files.
 fn check_identity_files(
     header: &str,
     nodes: &[ast::ConfigNode],
@@ -387,7 +323,6 @@ fn check_identity_files(
         if let ast::ConfigNode::Directive(d) = child
             && d.keyword.eq_ignore_ascii_case("IdentityFile")
         {
-            // Points to a .pub file?
             if d.value.to_lowercase().ends_with(".pub") {
                 diagnostics.push(Diagnostic {
                     id: "config_identity_pub",
@@ -406,7 +341,6 @@ fn check_identity_files(
                 });
             }
 
-            // Does the file exist?
             let expanded = expand_identity_path(&d.value, ssh_dir);
             if !expanded.exists() {
                 diagnostics.push(Diagnostic {
@@ -429,7 +363,6 @@ fn check_identity_files(
     }
 }
 
-/// Emit Host * placement diagnostic if it appears before specific blocks.
 fn check_host_star_placement(
     star_index: Option<usize>,
     last_specific_index: Option<usize>,
@@ -454,18 +387,13 @@ fn check_host_star_placement(
     }
 }
 
-/// Expand an `IdentityFile` value to an absolute path on disk.
-///
-/// Handles `~` expansion and relative paths (resolved against the SSH
-/// directory, matching OpenSSH behaviour).  Delegates to
-/// [`toride_ssh_core::paths::expand_path`].
+/// Expand `~` and resolve a relative `IdentityFile` value against `ssh_dir`.
 #[must_use]
 pub fn expand_identity_path(raw: &str, ssh_dir: &Path) -> PathBuf {
     toride_ssh_core::paths::expand_path(raw, ssh_dir)
 }
 
 /// Check if a hostname matches any of the given SSH config patterns.
-/// Public re-export for use in other modules.
 pub fn host_matches(host: &str, patterns: &[impl AsRef<str>]) -> bool {
     directives::host_matches_patterns(host, patterns)
 }

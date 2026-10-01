@@ -2,9 +2,7 @@ pub mod about;
 pub mod base;
 pub mod dashboard;
 pub mod fail2ban;
-/// Shared severity styling + findings-grouping helpers.
 pub mod findings;
-/// Help modal overlay content renderer.
 pub mod help;
 pub mod logs;
 pub mod quit;
@@ -25,7 +23,6 @@ pub mod toride_updates;
 pub mod toride_users;
 pub mod toride_wireguard;
 pub mod ufw_kit;
-/// Welcome splash screen.
 pub mod welcome;
 
 pub use crate::ssh_data::{SecurityCheck, SecurityGrade, SshSecurityData};
@@ -45,27 +42,19 @@ use ratatui::Frame;
 use crate::action::Action;
 use crate::ui::theme::Palette;
 
-/// Shared interface for all TUI screens.
-///
-/// Each screen implements this trait so that [`App`](crate::app::App) can
-/// dispatch input events, rendering, and lifecycle calls through a single
-/// consistent API instead of scattered `match` blocks.
-///
-/// The name `AppScreen` avoids collision with [`crate::navigation::Screen`]
-/// (the routing enum).
+/// A full application screen: input handling plus rendering.
 pub trait AppScreen {
     /// Handle a key press, returning an [`Action`] if the screen requests
     /// navigation or a global behaviour.
     fn handle_key(&mut self, code: KeyCode) -> Option<Action>;
 
-    /// Handle a mouse event. Default: ignore.
+    /// Handle a mouse event; default: no-op.
     fn handle_mouse(&mut self, _mouse: MouseEvent) -> Option<Action> {
         None
     }
 
-    /// Handle an action that was *not* consumed by [`App::update`](crate::app::App::update).
-    /// Screens use this to route internally-handled actions like [`Action::ScrollDown`]
-    /// / [`Action::ScrollUp`]. Default: no-op.
+    /// Handle an action not consumed by `App::update`;
+    /// default: no-op.
     fn handle_action(&mut self, _action: Action) {}
 
     /// Render the full screen (background gradient + content).
@@ -75,32 +64,21 @@ pub trait AppScreen {
     /// Used during animated transitions.
     fn view_foreground(&mut self, frame: &mut Frame, palette: Palette);
 
-    /// Invalidate cached rendering data (e.g. gradient background).
+    /// Drop any cached render state (called when the theme or size changes).
     fn invalidate_cache(&mut self);
 
-    /// Whether this screen has a modal open (form, confirm, detail, etc.).
-    /// Used by the global input handler to suppress shortcuts like `q` and `?`
-    /// while the user is interacting with a modal.
+    /// Whether a modal is open; `true` suppresses global shortcuts (`q`, `?`).
     fn has_modal(&self) -> bool {
         false
     }
 
-    /// Whether this screen currently needs animation ticks.
-    /// Return `true` when the screen has an active animation (shimmer,
-    /// spinner, etc.). Default: `false`.
+    /// Whether the screen animates and needs redraw ticks; default: `false`.
     fn needs_animation(&self) -> bool {
         false
     }
 
-    /// Whether the screen's live animation needs full frame rate (~30fps).
-    ///
-    /// Spinners, fades, and colour-flow borders change every frame; slow
-    /// sweeps (the logo shimmer) do not. A screen whose only animation is
-    /// slow returns `false` here and `true` from
-    /// [`needs_animation`](Self::needs_animation) — the app loop then ticks
-    /// it at shimmer cadence (~4 draws/s) instead of ~30fps. Only consulted
-    /// while motion is enabled (never under `reduced_motion`). Default:
-    /// `false`.
+    /// Whether the active animation needs full frame rate (~30fps) instead of
+    /// shimmer cadence (~4 draws/s); never consulted under `reduced_motion`.
     fn needs_fast_frames(&self) -> bool {
         false
     }
@@ -114,20 +92,16 @@ mod tests {
     use crate::ui::screens::AppScreen;
     use crate::ui::theme::CHARM;
 
-    /// Helper: create a test terminal with the given viewport size.
     fn test_terminal(w: u16, h: u16) -> Terminal<TestBackend> {
         let backend = TestBackend::new(w, h);
         Terminal::new(backend).unwrap()
     }
 
-    /// Render a screen into a test terminal and return the buffer as a string.
     fn render_to_string<S: AppScreen>(screen: &mut S, w: u16, h: u16) -> String {
         let mut terminal = test_terminal(w, h);
         terminal.draw(|f| screen.view(f, CHARM)).unwrap();
         terminal.backend().to_string()
     }
-
-    // ── WelcomeScreen snapshot ──────────────────────────────────────────────
 
     #[test]
     fn welcome_screen_snapshot() {
@@ -140,7 +114,6 @@ mod tests {
     fn welcome_screen_too_small() {
         let mut screen = super::welcome::WelcomeScreen::new();
         let output = render_to_string(&mut screen, 20, 8);
-        // Should show "Terminal too small" message
         assert!(
             output.contains("too small"),
             "expected 'too small' message, got: {output}"
@@ -153,8 +126,6 @@ mod tests {
         let output = render_to_string(&mut screen, 30, 10);
         insta::assert_snapshot!("welcome_screen_30x10", output);
     }
-
-    // ── HelpScreen modal snapshot ────────────────────────────────────────────
 
     #[test]
     fn help_screen_snapshot() {
@@ -192,8 +163,6 @@ mod tests {
         insta::assert_snapshot!("help_screen_35x12", output);
     }
 
-    // ── DashboardScreen snapshots ───────────────────────────────────────────
-
     #[test]
     fn dashboard_screen_full_snapshot() {
         let mut screen = super::dashboard::DashboardScreen::new();
@@ -212,9 +181,6 @@ mod tests {
     fn dashboard_screen_has_chrome_and_content() {
         let mut screen = super::dashboard::DashboardScreen::new();
         let output = render_to_string(&mut screen, 160, 44);
-        // Real chrome: header logo, sidebar, and the three panel titles. The
-        // dashboard no longer carries fabricated module cards ("ssh hardening")
-        // or a "RECENTLY INSTALLED" panel at cold start — those were mock data.
         assert!(output.contains("toride"), "header logo: {output}");
         assert!(output.contains("MODULES"), "modules panel title/label");
         assert!(
@@ -225,7 +191,6 @@ mod tests {
             output.contains("TOP PROCESSES"),
             "activity->top processes panel"
         );
-        // Honest cold-start sentinel (replaces the fabricated "ssh hardening" card).
         assert!(
             output.contains("collecting system status"),
             "cold-start sentinel module: {output}"
@@ -256,9 +221,6 @@ mod tests {
         };
         use std::time::{Duration, SystemTime};
 
-        // Minimal live status: one disk with high usage, a couple of processes,
-        // memory/load populated. Mirrors the construction pattern at
-        // toride-status/src/doctor.rs (snapshot_toride_status_display test).
         let mk_proc = |pid: u32, name: &str, cpu: f32, mem: u64| ProcessStatus {
             pid,
             parent_pid: None,
@@ -431,20 +393,17 @@ mod tests {
         };
 
         let mut screen = super::dashboard::DashboardScreen::new();
-        // Set twice so net throughput rates are computed from the delta.
         screen.set_status(status.clone());
         status.system.network.bytes_received = 1_050_000_000;
         status.system.network.bytes_transmitted = 520_000_000;
         status.collected_at = now + Duration::from_secs(2);
         screen.set_status(status);
 
-        // Mark a few sections available so the managed grid shows live badges.
         screen.fail2ban_set_available_for_test(true);
         screen.toride_updates_set_available_for_test(true, 7, 2);
         screen.ufw_kit_set_available_for_test(true);
 
         let output = render_to_string(&mut screen, 160, 44);
-        // Sanity assertions on the live path before snapshotting.
         assert!(output.contains("MANAGED"), "live stat card label: {output}");
         assert!(output.contains("FINDINGS"), "findings stat card: {output}");
         assert!(
@@ -461,7 +420,6 @@ mod tests {
         );
         assert!(output.contains("firefox"), "top process row: {output}");
         assert!(output.contains("edge-prod-01"), "live hostname: {output}");
-        // Compact daemon/ssh health glyphs appear on the uptime line.
         assert!(
             output.contains('d') && output.contains("✓"),
             "health glyphs: {output}"
@@ -476,9 +434,6 @@ mod tests {
     )]
     #[expect(clippy::too_many_lines, reason = "test fixture")]
     fn dashboard_screen_live_empty_disks_and_processes_does_not_panic() {
-        // Adversarial edge case: live status with no disks, no processes, no
-        // network rates (macOS degradation / preset-gated empty fields). The
-        // live panels must render their "no data" placeholders without panicking.
         use crate::status::{
             DaemonStatus, DiskIoSnapshot, HardwareInventory, MemoryStatus, NetworkStatus, OsInfo,
             ProcessSnapshot, SensorSnapshot, SshStatus, StaticInfo, SystemStatus, TorideStatus,
@@ -623,7 +578,6 @@ mod tests {
 
         let mut screen = super::dashboard::DashboardScreen::new();
         screen.set_status(status);
-        // Must not panic: empty disks → placeholder, empty processes → placeholder.
         let output = render_to_string(&mut screen, 160, 44);
         assert!(
             output.contains("no storage/network data"),

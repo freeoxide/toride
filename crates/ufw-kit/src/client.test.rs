@@ -19,20 +19,12 @@ fn make_ufw_with_verbose(verbose_output: &str) -> Ufw {
     Ufw::with_runner(runner)
 }
 
-// ---------------------------------------------------------------------------
-// Version
-// ---------------------------------------------------------------------------
-
 #[test]
 fn version_should_return_version_string() {
     let ufw = make_ufw("ufw 0.36.1\n");
     let ver = ufw.version().unwrap();
     assert_eq!(ver, "ufw 0.36.1");
 }
-
-// ---------------------------------------------------------------------------
-// Status
-// ---------------------------------------------------------------------------
 
 #[test]
 fn status_should_parse_active() {
@@ -48,10 +40,6 @@ fn status_should_parse_inactive() {
     assert!(!status.active);
 }
 
-// ---------------------------------------------------------------------------
-// Status verbose
-// ---------------------------------------------------------------------------
-
 #[test]
 fn status_verbose_should_parse_defaults() {
     let output = "\
@@ -65,10 +53,6 @@ Default: deny (incoming), allow (outgoing)
     assert_eq!(status.default_incoming, Some(Policy::Deny));
     assert_eq!(status.logging_level, Some(LoggingLevel::Low));
 }
-
-// ---------------------------------------------------------------------------
-// Enable
-// ---------------------------------------------------------------------------
 
 #[test]
 fn enable_should_succeed_when_already_active() {
@@ -130,8 +114,6 @@ fn enable_should_pass_when_ssh_rule_exists() {
 
 #[test]
 fn force_enable_should_succeed_when_inactive() {
-    // force_enable() must STILL perform the SSH lockout safety check, so we
-    // provide an incoming SSH allow rule in the status output.
     let runner = FakeRunner::new()
         .respond_ok(
             "ufw",
@@ -156,10 +138,6 @@ fn force_enable_should_succeed_when_already_active() {
 
 #[test]
 fn force_enable_should_still_trigger_lockout_check() {
-    // Regression: force_enable() must NOT bypass the SSH lockout check.
-    // With no incoming SSH allow rule, it must fail with SshLockoutRisk even
-    // though allow_force is true (the --force flag only skips UFW's
-    // interactive prompt, not this library's lockout protection).
     let runner = FakeRunner::new().respond_ok("ufw", &["status"], "Status: inactive\n");
     let ufw = Ufw::with_runner(runner);
     let result = ufw.force_enable();
@@ -172,13 +150,9 @@ fn force_enable_should_still_trigger_lockout_check() {
 
 #[test]
 fn enable_should_fail_when_stdout_lacks_marker_and_stderr_empty() {
-    // Regression: an empty stderr used to be reported as Ok even when the
-    // command clearly did nothing (no "active"/"enabled" marker). The fix
-    // treats the missing success marker as a failure so a silent no-op is
-    // surfaced to the caller.
     let runner = FakeRunner::new()
         .respond_ok("ufw", &["status"], "Status: inactive\n")
-        .respond_ok("ufw", &["enable"], ""); // empty stdout, empty stderr, exit 0
+        .respond_ok("ufw", &["enable"], "");
     let ufw = Ufw::with_runner(runner);
     let opts = EnableOptions {
         require_ssh_allow_rule: false,
@@ -215,8 +189,6 @@ fn enable_should_fail_on_nonzero_exit_with_stderr() {
 
 #[test]
 fn enable_should_fail_on_nonzero_exit_even_with_empty_stderr() {
-    // A non-zero exit is a failure regardless of stderr; previously it would
-    // have been masked as Ok because stderr was empty.
     let runner = FakeRunner::new()
         .respond_ok("ufw", &["status"], "Status: inactive\n")
         .respond_err("ufw", &["enable"], "", 1);
@@ -232,10 +204,6 @@ fn enable_should_fail_on_nonzero_exit_even_with_empty_stderr() {
     );
     assert!(matches!(result.unwrap_err(), Error::EnableFailed(_)));
 }
-
-// ---------------------------------------------------------------------------
-// Disable
-// ---------------------------------------------------------------------------
 
 #[test]
 fn disable_should_fail_without_confirmation() {
@@ -273,10 +241,6 @@ fn disable_should_fail_with_default_options() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Reset
-// ---------------------------------------------------------------------------
-
 #[test]
 fn reset_should_fail_without_force() {
     let ufw = make_ufw("");
@@ -294,10 +258,6 @@ fn reset_should_succeed_with_force() {
     let runner =
         FakeRunner::new().respond_ok("ufw", &["--force", "reset"], "Resetting all rules\n");
     let ufw = Ufw::with_runner(runner);
-    // backup_first disabled here so the test is hermetic: reset() backs up via
-    // UfwPaths::default() (real /etc/ufw), whose root-owned files are unreadable
-    // by a non-root test process. Backup behaviour itself is covered in
-    // backup.test.rs against temp paths.
     let opts = ResetOptions {
         force: true,
         backup_first: false,
@@ -309,10 +269,6 @@ fn reset_should_succeed_with_force() {
         result.err()
     );
 }
-
-// ---------------------------------------------------------------------------
-// Set default policy
-// ---------------------------------------------------------------------------
 
 #[test]
 fn set_default_policy_should_call_ufw() {
@@ -365,20 +321,12 @@ fn set_default_policy_should_allow_allow_incoming_without_ssh_check() {
     assert!(ufw.set_default_policy(Direction::In, Policy::Allow).is_ok());
 }
 
-// ---------------------------------------------------------------------------
-// Set logging
-// ---------------------------------------------------------------------------
-
 #[test]
 fn set_logging_should_call_ufw() {
     let runner = FakeRunner::new().respond_ok("ufw", &["logging", "low"], "Logging enabled\n");
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.set_logging(LoggingLevel::Low).is_ok());
 }
-
-// ---------------------------------------------------------------------------
-// Add rule
-// ---------------------------------------------------------------------------
 
 #[test]
 fn add_rule_should_call_ufw() {
@@ -391,10 +339,6 @@ fn add_rule_should_call_ufw() {
         .unwrap();
     assert!(ufw.add_rule(&spec).is_ok());
 }
-
-// ---------------------------------------------------------------------------
-// Delete rule
-// ---------------------------------------------------------------------------
 
 #[test]
 fn delete_rule_should_call_ufw() {
@@ -428,20 +372,12 @@ fn delete_rule_number_should_succeed_with_opt_in() {
     assert!(ufw.delete_rule_number(1, &opts).is_ok());
 }
 
-// ---------------------------------------------------------------------------
-// Reload
-// ---------------------------------------------------------------------------
-
 #[test]
 fn reload_should_call_ufw() {
     let runner = FakeRunner::new().respond_ok("ufw", &["reload"], "Reloaded\n");
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.reload().is_ok());
 }
-
-// ---------------------------------------------------------------------------
-// Show report
-// ---------------------------------------------------------------------------
 
 #[test]
 fn show_should_return_report_output() {
@@ -454,10 +390,6 @@ fn show_should_return_report_output() {
     let output = ufw.show(UfwReport::Listening).unwrap();
     assert!(output.contains("sshd"));
 }
-
-// ---------------------------------------------------------------------------
-// App operations
-// ---------------------------------------------------------------------------
 
 #[test]
 fn app_list_should_return_output() {
@@ -494,10 +426,6 @@ fn app_update_all_should_call_ufw() {
     assert!(ufw.app_update_all().is_ok());
 }
 
-// ---------------------------------------------------------------------------
-// Edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn find_ufw_should_error_when_not_found() {
     struct NoBinaryRunner;
@@ -514,10 +442,6 @@ fn find_ufw_should_error_when_not_found() {
     assert!(ufw.find_ufw().is_err());
 }
 
-// ---------------------------------------------------------------------------
-// Weird edge-case tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn enable_should_handle_stderr_gracefully() {
     let runner = FakeRunner::new()
@@ -532,10 +456,6 @@ fn enable_should_handle_stderr_gracefully() {
     let result = ufw.enable(&opts);
     assert!(result.is_err());
 }
-
-// ---------------------------------------------------------------------------
-// Production-grade weird edge cases
-// ---------------------------------------------------------------------------
 
 #[test]
 fn add_route_rule_should_call_ufw() {
@@ -572,10 +492,6 @@ fn app_default_should_call_ufw() {
     assert!(ufw.app_default(AppDefaultPolicy::Skip).is_ok());
 }
 
-// ---------------------------------------------------------------------------
-// Dry-run tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn dry_run_should_return_output() {
     let runner = FakeRunner::new().respond_ok("ufw", &[], "Dry run output\n");
@@ -592,10 +508,6 @@ fn dry_run_should_fail_on_error() {
     assert!(result.is_err());
 }
 
-// ---------------------------------------------------------------------------
-// apply_rule tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn apply_rule_should_dry_run_then_execute() {
     let runner = FakeRunner::new().respond_ok("ufw", &[], "Rules updated\n");
@@ -609,10 +521,6 @@ fn apply_rule_should_dry_run_then_execute() {
     assert!(report.success);
     assert!(report.dry_run_output.is_some());
 }
-
-// ---------------------------------------------------------------------------
-// ensure_rule tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn ensure_rule_should_add_when_no_existing() {
@@ -662,15 +570,10 @@ fn ensure_rule_should_add_when_no_comment() {
 
 #[test]
 fn ensure_rule_should_replace_when_comment_matches_but_rule_differs() {
-    // Existing rule allows port 80 with comment "managed:web",
-    // but we want port 443. Should delete old and add new.
     let runner = FakeRunner::new()
-        // status numbered — one existing rule with port 80
         .respond_ok("ufw", &["status", "numbered"],
             "Status: active\n\nTo                         Action      From\n--                         ------      ----\n[ 1] 80/tcp ALLOW IN Anywhere comment managed:web\n")
-        // delete rule 1
         .respond_ok("ufw", &["delete", "1"], "Deleting:\n allow 80/tcp\nRule deleted\n")
-        // dry-run + add new rule
         .respond_ok("ufw", &[], "Rule added\n");
     let ufw = Ufw::with_runner(runner);
     let spec = RuleSpec::builder(Action::Allow)
@@ -684,22 +587,15 @@ fn ensure_rule_should_replace_when_comment_matches_but_rule_differs() {
     assert!(report.action.contains("replaced rule"));
 }
 
-// ---------------------------------------------------------------------------
-// delete_rules_by_comment tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn delete_rules_by_comment_should_delete_matching_rules_bottom_to_top() {
-    // Three rules, two with comment "managed:staging"
     let runner = FakeRunner::new()
         .respond_ok("ufw", &["status", "numbered"],
             "Status: active\n\nTo                         Action      From\n--                         ------      ----\n\
              [ 1] 22/tcp ALLOW IN Anywhere comment managed:ssh\n\
              [ 2] 80/tcp ALLOW IN Anywhere comment managed:staging\n\
              [ 3] 443/tcp ALLOW IN Anywhere comment managed:staging\n")
-        // Delete rule 3 first (highest number)
         .respond_ok("ufw", &["delete", "3"], "Deleting:\n allow 443/tcp\nRule deleted\n")
-        // Then delete rule 2
         .respond_ok("ufw", &["delete", "2"], "Deleting:\n allow 80/tcp\nRule deleted\n");
     let ufw = Ufw::with_runner(runner);
     let count = ufw.delete_rules_by_comment("managed:staging").unwrap();
@@ -716,10 +612,6 @@ fn delete_rules_by_comment_should_return_zero_when_no_matches() {
     let count = ufw.delete_rules_by_comment("managed:nonexistent").unwrap();
     assert_eq!(count, 0);
 }
-
-// ---------------------------------------------------------------------------
-// check_ssh_lockout_structured tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn check_ssh_structured_should_find_incoming_ssh_allow() {
@@ -738,7 +630,6 @@ fn check_ssh_structured_should_not_match_outgoing_ssh() {
         .respond_ok("ufw", &["status"], "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW OUT   Anywhere\n");
     let ufw = Ufw::with_runner(runner);
     let result = ufw.check_ssh_lockout_structured(&[22]);
-    // OUT direction should not count as incoming SSH
     assert!(!result.has_incoming_ssh_allow);
 }
 
@@ -797,10 +688,6 @@ fn check_ssh_structured_should_return_empty_on_status_failure() {
     assert_eq!(result.checked_ports, vec![22]);
 }
 
-// ---------------------------------------------------------------------------
-// insert_rule tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn insert_rule_should_call_ufw_with_insert_position() {
     let runner = FakeRunner::new().respond_ok("ufw", &[], "Rule inserted\n");
@@ -825,10 +712,6 @@ fn insert_rule_should_set_position_to_insert_n() {
     assert!(ufw.insert_rule(3, &spec).is_ok());
 }
 
-// ---------------------------------------------------------------------------
-// app_update tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn app_update_should_call_ufw_with_app_update_name() {
     let runner =
@@ -848,10 +731,6 @@ fn app_update_should_fail_on_error() {
     let ufw = Ufw::with_runner(runner);
     assert!(ufw.app_update("NonExistent").is_err());
 }
-
-// ---------------------------------------------------------------------------
-// status_numbered tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn status_numbered_should_parse_numbered_output() {
@@ -875,23 +754,13 @@ fn status_numbered_should_parse_empty_numbered_output() {
     assert!(status.rules.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Read-document caching (F09)
-// ---------------------------------------------------------------------------
-
-/// A parseable active-status document for cache tests.
 const ACTIVE_STATUS: &str = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\n";
 
-/// Wraps a runner and counts every command execution. The counter is shared
-/// with clones, so the runner can be moved into [`Ufw::with_runner`] while
-/// the test keeps reading the count.
 struct Counting<F> {
     inner: std::sync::Arc<F>,
     count: std::sync::Arc<std::sync::atomic::AtomicUsize>,
 }
 
-// Manual impl: cloning shares the wrapped runner and counter without
-// requiring `F: Clone`.
 impl<F> Clone for Counting<F> {
     fn clone(&self) -> Self {
         Self {
@@ -945,7 +814,6 @@ fn version_is_spawned_once_per_client() {
 
 #[test]
 fn version_failure_is_not_memoized() {
-    // No response registered: every `run` errors.
     let runner = Counting::new(FakeRunner::new());
     let ufw = Ufw::with_runner(runner.clone());
 
@@ -994,8 +862,6 @@ fn status_cache_expires_after_the_ttl() {
 
 #[test]
 fn status_failure_is_not_cached() {
-    // No response registered: every attempt errors, and each call must
-    // re-attempt (the failure is never replayed from a cache).
     let runner = Counting::new(FakeRunner::new());
     let ufw = Ufw::with_runner(runner.clone());
 
@@ -1050,10 +916,6 @@ fn mutating_command_invalidates_the_status_cache() {
     );
 }
 
-/// Pins the documented app-update exception: `ufw app update` refreshes
-/// profile definitions only, so it must NOT drop the cached status document
-/// (unlike root-requiring mutations, which invalidate — see
-/// `mutating_command_invalidates_the_status_cache`).
 #[test]
 fn app_update_keeps_the_status_cache() {
     let runner = Counting::new(

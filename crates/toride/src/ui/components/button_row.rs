@@ -1,9 +1,5 @@
-//! A reusable row of interactive buttons with focus cycling, mouse hit-testing,
-//! and automatic centering.
-//!
-//! Extracts the duplicated button-layout logic that was previously shared between
-//! [`WelcomeScreen`](crate::ui::screens::WelcomeScreen) and
-//! [`QuitModal`](crate::ui::screens::QuitModal).
+//! A reusable row of interactive buttons with focus cycling, mouse
+//! hit-testing, and automatic centering.
 
 use crossterm::event::MouseEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
@@ -13,12 +9,8 @@ use crate::ui::components::interactive_button::InteractiveButton;
 use crate::ui::responsive::Viewport;
 use crate::ui::theme::Palette;
 
-/// A horizontally arranged row of interactive buttons with automatic centering,
-/// keyboard focus cycling, and mouse hit-testing.
-///
-/// Owns the [`FocusManager`] and all [`InteractiveButton`] instances, so the
-/// containing screen only needs to call [`render`](Self::render) and forward
-/// input events.
+/// A horizontally arranged row of interactive buttons, centered and
+/// focus-cycled; screens call [`render`](Self::render) and forward input.
 pub struct ButtonRow<A: Copy + PartialEq> {
     buttons: Vec<InteractiveButton<A>>,
     focus: FocusManager<usize>,
@@ -26,14 +18,9 @@ pub struct ButtonRow<A: Copy + PartialEq> {
 }
 
 impl<A: Copy + PartialEq> ButtonRow<A> {
-    /// Create a new button row.
-    ///
-    /// `gaps` specifies the horizontal gap *after* each button (the last entry
-    /// is unused but must be present so `gaps.len() == buttons.len()`).
-    ///
+    /// Create a new row; `gaps` is the spacing *after* each button (last unused).
     /// # Panics
-    ///
-    /// Panics if `gaps.len() != buttons.len()`.
+    /// If `gaps.len() != buttons.len()`.
     #[must_use]
     pub fn new(buttons: Vec<InteractiveButton<A>>, gaps: Vec<u16>) -> Self {
         assert_eq!(gaps.len(), buttons.len(), "gaps must match buttons count");
@@ -81,13 +68,8 @@ impl<A: Copy + PartialEq> ButtonRow<A> {
             .find_map(|btn| btn.handle_mouse(mouse))
     }
 
-    /// Snapshot of which buttons are currently hovered.
-    ///
-    /// Mouse-motion change detection: callers diff this across a
-    /// [`handle_mouse`](Self::handle_mouse) call to decide whether a hover
-    /// highlight moved (and thus whether the frame needs a repaint) without
-    /// rendering. A three-`bool` snapshot per motion event is negligible
-    /// next to the frame rebuild it avoids.
+    /// Snapshot of hovered buttons; diff across a
+    /// [`handle_mouse`](Self::handle_mouse) call to detect hover moves.
     #[must_use]
     pub fn hovered_snapshot(&self) -> Vec<bool> {
         self.buttons
@@ -133,7 +115,6 @@ impl<A: Copy + PartialEq> ButtonRow<A> {
         self.buttons.is_empty()
     }
 
-    /// Propagate the [`FocusManager`] state to each button's visual focus flag.
     fn sync_focus(&mut self) {
         let focused = self.focus.current().copied();
         for (i, btn) in self.buttons.iter_mut().enumerate() {

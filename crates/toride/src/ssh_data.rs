@@ -1,11 +1,7 @@
-//! Async SSH data collection.
+//! Async SSH data collection via a tokio oneshot channel.
 //!
-//! [`SshDataCollector`] manages background collection of all SSH subsystem data
-//! via a tokio oneshot channel, following the same pattern as [`StatusCollector`].
-//!
-//! Reads real SSH files via the `toride-ssh` library. Falls back to empty data
-//! when files are missing or unreadable. Mock data is available behind `#[cfg(test)]`
-//! for unit tests.
+//! Reads real SSH files via the `toride-ssh` library and falls back to empty
+//! data when files are missing or unreadable. Mock data is `#[cfg(test)]`-only.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -39,10 +35,6 @@ pub struct SshDataBundle {
     /// Active port forwarding sessions.
     pub forwarding: Vec<ForwardSessionEntry>,
     /// Diagnostic check results.
-    ///
-    /// Shared as an [`Arc`] between the bundle, the collector's diagnostics
-    /// cache, and the security pass — the entry list is deep-cloned zero
-    /// times per tick instead of three to four.
     pub diagnostics: Arc<Vec<DiagnosticEntry>>,
     /// Authorized keys entries.
     pub authorized_keys: Vec<AuthorizedKeyEntry>,
@@ -52,24 +44,12 @@ pub struct SshDataBundle {
     pub security: SshSecurityData,
 }
 
-// ── Freshness-keyed state cache ─────────────────────────────────────────────
-
-/// Freshness stamp for a file: nanosecond mtime plus length.
-///
-/// Cache invalidation throughout this module is keyed on these stamps,
-/// never a TTL: any write — including the atomic temp-file + rename every
-/// save path here performs — changes the mtime and forces a re-read, so key
-/// and config rotations can never lag behind.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 struct FileStamp {
-    /// Nanoseconds since the Unix epoch of the last modification.
     mtime_ns: u128,
-    /// File length in bytes.
     len: u64,
 }
 
-/// Stamp `path`, or `None` when its mtime cannot be determined (files with
-/// an unmeasurable mtime are never served from a cache).
 fn stamp_path(path: &Path) -> Option<FileStamp> {
     let meta = std::fs::metadata(path).ok()?;
     let mtime_ns = meta
@@ -84,80 +64,39 @@ fn stamp_path(path: &Path) -> Option<FileStamp> {
     })
 }
 
-/// A cached value plus the freshness key it was produced at.
 struct Stamped<K, T> {
-    /// The freshness key (`PartialEq`-comparable against a fresh probe).
     stamp: K,
-    /// The shared value.
     value: Arc<T>,
 }
 
-/// Per-user `~/.ssh` scan results used by the security pass.
-///
-/// The `authorized_keys` file is read at most once per scan (the count and
-/// the preview list are derived from the same content buffer), instead of
-/// the previous two independent reads plus a per-preview SHA-256 pass.
 #[derive(Clone)]
 struct UserSshScan {
-    /// Number of private key files (`id_*` minus `.pub`/`.old`/`.bak`).
     ssh_key_count: usize,
-    /// Number of non-comment lines in `authorized_keys`.
     authorized_key_count: usize,
-    /// Up to 10 preview entries for the user detail modal.
     authorized_keys_preview: Vec<crate::ui::screens::ssh::AuthorizedKeyPreview>,
 }
 
-/// Freshness key for a per-user `~/.ssh` scan: the stamped `id_*` listing
-/// plus the `authorized_keys` stamp.
 #[derive(PartialEq, Clone)]
 struct UserSshStamp {
-    /// Sorted `(file name, stamp)` pairs of the counted key files. A file
-    /// whose mtime cannot be determined carries `None`: it still COUNTS
-    /// (matching the pre-cache behavior of counting entries without a
-    /// stat), but its scan is never served from or stored in the cache —
-    /// see [`user_scan_cacheable`].
     key_listing: Vec<(String, Option<FileStamp>)>,
-    /// Stamp of `authorized_keys`, or `None` when absent.
     auth: Option<FileStamp>,
 }
 
-/// Whether a per-user scan may be cached: every counted key file and the
-/// `authorized_keys` file must have a comparable freshness stamp. Any
-/// `None` stamp means invalidation cannot be proven, so the scan is
-/// recomputed fresh every time instead of being served stale.
 fn user_scan_cacheable(stamp: &UserSshStamp) -> bool {
     stamp.key_listing.iter().all(|(_, s)| s.is_some()) && stamp.auth.is_some()
 }
 
-/// Mtime-keyed caches for per-tick SSH state.
-///
-/// The 2-second collection tick used to re-parse `known_hosts`,
-/// `authorized_keys`, every certificate, and every system user's
-/// `authorized_keys` from scratch on each tick. Each field below memoizes
-/// one of those derived lists against the `(mtime, len)` stamp of the file
-/// (or file set) it was derived from; an unchanged stamp is a cache hit and
-/// any write is a miss. This is deliberately NOT a TTL cache.
 pub(crate) struct SshStateCache {
-    /// Converted known-hosts list keyed by the `known_hosts` file stamp.
     known_hosts: Mutex<Option<Stamped<FileStamp, Vec<KnownHostEntry>>>>,
-    /// Converted authorized-keys list keyed by the `authorized_keys` stamp.
     authorized_keys: Mutex<Option<Stamped<FileStamp, Vec<AuthorizedKeyEntry>>>>,
-    /// Parsed certificate infos keyed by the stamped `*-cert.pub` listing.
-    /// The stored [`toride_ssh::certificate::CertificateInfo`] values are
-    /// re-converted every tick so certificate *validity* (time-dependent)
-    /// is always recomputed fresh — only the parse is cached.
     certificates: Mutex<Option<CertCacheSlot>>,
-    /// Security-pass per-user `~/.ssh` scans keyed by their listing stamps.
     user_ssh_scans: Mutex<HashMap<PathBuf, Stamped<UserSshStamp, UserSshScan>>>,
 }
 
-/// Certificate cache slot: parsed `(path, info)` pairs plus the stamped
-/// `*-cert.pub` listing they were parsed at.
 type CertCacheSlot =
     Stamped<Vec<(PathBuf, FileStamp)>, Vec<(PathBuf, toride_ssh::certificate::CertificateInfo)>>;
 
 impl SshStateCache {
-    /// Create an empty cache.
     pub(crate) fn new() -> Self {
         Self {
             known_hosts: Mutex::new(None),
@@ -174,29 +113,14 @@ impl Default for SshStateCache {
     }
 }
 
-// ── Collector ────────────────────────────────────────────────────────────────
-
 /// Manages periodic async collection of SSH data.
 pub struct SshDataCollector {
-    /// Carries the bundle AND whether the cached diagnostics were reused for
-    /// this poll. The freshness timestamp must only be advanced when the doctor
-    /// was actually re-run (`used_cache == false`); otherwise every cache-hit
-    /// poll would reset the TTL clock with the SAME (already-cached)
-    /// diagnostics and the cache would never expire for the lifetime of the
-    /// app (identical to the fail2ban findings cache).
     rx: Option<oneshot::Receiver<(SshDataBundle, bool)>>,
-    /// Cached diagnostics from the last collection (avoids re-running every 2s).
     cached_diagnostics: Option<Arc<Vec<DiagnosticEntry>>>,
-    /// When the diagnostics cache was last refreshed.
     diagnostics_fresh_at: Option<std::time::Instant>,
-    /// Mtime-keyed caches for the per-tick file-derived lists
-    /// (`known_hosts` / `authorized_keys` / certificates / per-user scans).
-    /// Shared into every spawned collection so cache hits persist across
-    /// the 2s ticks.
     state_cache: Arc<SshStateCache>,
 }
 
-/// How long to keep cached diagnostics before re-running the full suite.
 const DIAGNOSTICS_TTL: std::time::Duration = std::time::Duration::from_secs(60);
 
 impl SshDataCollector {
@@ -240,23 +164,13 @@ impl SshDataCollector {
 
     /// Poll for a completed collection result.
     ///
-    /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. On success the cached diagnostics
-    /// are updated to the freshly-returned diagnostics, but the freshness
-    /// timestamp is only advanced when the doctor was actually re-run (not on a
-    /// cache-hit poll) — otherwise the 60s TTL would be re-armed forever with
-    /// the same cached data on every 2s refresh.
+    /// Returns `Some(bundle)` on completion, `None` while pending or failed.
     pub async fn poll(&mut self) -> Option<SshDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
                 if let Some((ref bundle, cache_was_used)) = result {
                     self.cached_diagnostics = Some(Arc::clone(&bundle.diagnostics));
-                    // Only advance the freshness clock when the doctor was
-                    // actually re-run. On a cache-hit poll the diagnostics are
-                    // the SAME data we already cached, so resetting the TTL
-                    // here would let the cache live forever as long as the 2s
-                    // refresh tick keeps firing inside the TTL window.
                     if !cache_was_used {
                         self.diagnostics_fresh_at = Some(std::time::Instant::now());
                     }
@@ -280,8 +194,6 @@ impl Default for SshDataCollector {
         Self::new()
     }
 }
-
-// ── Real Data Collection ────────────────────────────────────────────────────
 
 /// A pending write operation to be executed asynchronously via `SshManager`.
 #[derive(Debug)]
@@ -441,24 +353,8 @@ pub enum SshOp {
 
 /// A typed error from a write operation.
 ///
-/// `revert_optimistic` tells the app whether the optimistic in-memory UI
-/// update is now a lie that must be reverted right away (by forcing an
-/// immediate SSH data refresh) rather than waiting out the write cooldown.
-///
-/// It is set to `true` when the optimistic UI update is known to **disagree**
-/// with on-disk truth after the failed op, so the cooldown must not be used to
-/// reconcile it — the UI should refresh immediately. This covers both:
-///
-/// - **Disk untouched**: a validation failure
-///   ([`toride_ssh::Error::SshdConfigInvalid`] / [`SshdNotFound`]) means the
-///   privileged write path never installed anything; a privilege failure
-///   ([`toride_ssh::Error::SudoFailed`]) means `sudo -n` could not run; and a
-///   staging/backup/install [`ConfigWriteFailed`] aborts before the live config
-///   is replaced. In all of these the UI applied a change disk never saw.
-///   It is `false` for other / transient errors where disk state is uncertain
-///   (the regular cooldown will reconcile it).
-///
-/// [`SshdNotFound`]: toride_ssh::Error::SshdNotFound
+/// `revert_optimistic`: revert the optimistic UI update immediately (refresh)
+/// rather than waiting out the write cooldown — disk truth is known to differ.
 #[derive(Debug, Clone)]
 pub struct SshOpError {
     /// Human-readable error message (also surfaced to the user as a toast).
@@ -469,7 +365,6 @@ pub struct SshOpError {
 }
 
 impl SshOpError {
-    /// Build a non-reverting (transient) error wrapping the given message.
     #[allow(dead_code)]
     fn transient(message: String) -> Self {
         Self {
@@ -478,8 +373,6 @@ impl SshOpError {
         }
     }
 
-    /// Build a reverting error: the optimistic update is stale and should be
-    /// overwritten by disk truth right away.
     fn reverting(message: String) -> Self {
         Self {
             message,
@@ -488,35 +381,6 @@ impl SshOpError {
     }
 }
 
-/// Map a backend `sshd_config` write error to a [`SshOpError`].
-///
-/// Returns `revert_optimistic = true` (refresh immediately) whenever the
-/// optimistic UI update is known to **disagree** with disk truth — so the
-/// cooldown is never used to reconcile a stale view. Every error variant that
-/// reaches here leaves the live `/etc/ssh/sshd_config` **untouched**:
-///
-/// - **Validation/binary/privilege failures** (`SshdConfigInvalid`,
-///   `SshdNotFound`, `SudoFailed`) abort before any write.
-/// - **`ConfigWriteFailed`** from the staging/fsync/backup/install steps of
-///   the hardened write path. This **includes** the chmod step: the backend
-///   (privilege.rs `install_temp`) chmods the staged TEMP to 0o644 *before*
-///   the `rename(2)` into place, so a chmod failure aborts with nothing
-///   installed — the live config is never replaced at the wrong mode.
-///   (F7: the old annotation "the config was installed but its mode could not
-///   be set to 0644" was inverted — under the chmod-before-rename invariant a
-///   chmod failure can NEVER co-occur with a successful install, so the
-///   annotation was unreachable in practice and, if it ever fired, would have
-///   lied. It is dropped entirely; the generic revert on `ConfigWriteFailed`
-///   is sufficient and correct.)
-/// - **`Io`** on the edit path can originate from the pre-write `load()`,
-///   the cross-process edit lock (F2), or a critical-section failure re-wrapped
-///   by `with_edit_lock`'s error bridge — but the staging/atomic-install
-///   pipeline never partially replaces the live config, so disk is unchanged
-///   in every case.
-///
-/// Because the live config is untouched in every one of these cases, the
-/// optimistic UI update is a lie and must be overwritten with disk truth right
-/// away rather than waiting for the 5s cooldown.
 fn map_sshd_error(verb: &str, who: &str, e: &toride_ssh::Error) -> SshOpError {
     let message = format!("failed to {verb} '{who}': {e}");
     tracing::error!("sshd: {message}");
@@ -525,19 +389,7 @@ fn map_sshd_error(verb: &str, who: &str, e: &toride_ssh::Error) -> SshOpError {
         toride_ssh::Error::SshdConfigInvalid(_)
             | toride_ssh::Error::SshdNotFound(_)
             | toride_ssh::Error::SudoFailed(_)
-            // ConfigWriteFailed spans staging/fsync/backup/install/chmod
-            // failures. Under the chmod-before-rename invariant (see F7 doc
-            // above) NONE of these leave the live config changed, so the
-            // optimistic UI update always disagrees with disk truth and must
-            // be reverted now.
             | toride_ssh::Error::ConfigWriteFailed(_)
-            // On the edit path, Io can come from load(), the cross-process
-            // lock (F2), or a re-wrapped critical-section failure — but the
-            // staging/atomic-install pipeline never partially replaces the
-            // live config, so disk is unchanged in every case.
-            // The optimistic UI update is therefore a lie and must be reverted
-            // now rather than left to the 5s refresh — identical semantics to
-            // the other disk-untouched variants above.
             | toride_ssh::Error::Io(_)
     );
     if revert {
@@ -547,26 +399,13 @@ fn map_sshd_error(verb: &str, who: &str, e: &toride_ssh::Error) -> SshOpError {
     }
 }
 
-/// Privilege-inversion guard: refuse to lock the operator out.
-///
-/// Returns `Some(err)` when denying or resetting `username` would be
-/// self-destructive — i.e. it targets the literal `root`, any account with
-/// UID 0, or the account currently running toride. This is defense-in-depth
-/// (the UI may also guard); [`execute_op`] MUST refuse regardless.
-///
-/// `verb` is "deny" or "reset" for the error message.
-///
-/// Best-effort but correct for the common cases: literal "root", current
-/// effective user, and a `/etc/passwd` (Linux) / `dscl` (macOS) UID lookup.
 #[allow(dead_code)]
 fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
-    // Always refuse the literal root account.
     if username == "root" {
         return Some(SshOpError::reverting(format!(
             "refusing to {verb} '{username}': would lock out root / your own account"
         )));
     }
-    // Refuse if this is the account running toride.
     if let Some(current) = current_username()
         && current == username
     {
@@ -574,62 +413,22 @@ fn would_lock_out(verb: &str, username: &str) -> Option<SshOpError> {
             "refusing to {verb} '{username}': would lock out root / your own account"
         )));
     }
-    // UID-based fallback: current_username() resolves the euid via a reverse
-    // lookup (`dscl -search` on macOS, /etc/passwd scan on Linux) which can
-    // return None on odd/unknown euids (containers, auto-allocated UIDs, a
-    // stripped-down macOS Directory Service). In that case the name check
-    // above is skipped entirely, narrowing the guard. Close that gap by
-    // comparing the raw euid against the *forward* lookup
-    // (uid_for_username(username)) — which uses a different lookup path
-    // (`dscl -read` / /etc/passwd) and can succeed where the reverse one
-    // failed. If they are equal, denying/resetting `username` would target the
-    // operator even though we couldn't resolve the euid to a name.
-    //
-    // The forward lookup is bound ONCE and reused for the UID-0 check below —
-    // uid_for_username spawns `dscl` (macOS) / reads /etc/passwd (Linux)
-    // synchronously, so the redundant second spawn was pure waste.
     let euid = current_euid();
     let resolved_uid = uid_for_username(username);
     would_lock_out_with_uid(verb, username, euid, resolved_uid)
 }
 
-/// Async entry point for [`would_lock_out`] that does NOT block the tokio
-/// worker.
-///
-/// `execute_op` runs on a tokio task, and the synchronous `would_lock_out`
-/// shells out to `dscl` (macOS) / `getent`/`id` and reads `/etc/passwd` via
-/// `current_username()` (reverse lookup) and `uid_for_username(target)`
-/// (forward lookup). Each of those is a blocking call that would stall the
-/// async worker thread (F19). The operator's own identity (`current_username`
-/// + `geteuid`) never changes during the process, but resolving the TARGET
-///   user's UID is inherently per-op.
-///
-/// This wrapper performs the cheap literal-root check inline, then runs all
-/// blocking lookups (`current_username` + `uid_for_username`) on the blocking
-/// thread pool via [`tokio::task::spawn_blocking`], so the async worker stays
-/// free. The synchronous [`would_lock_out`] is retained for direct/test use
-/// (tests do not run on an async worker, so blocking there is fine).
-///
-/// Returns the same `Option<SshOpError>` as [`would_lock_out`].
 async fn would_lock_out_async(verb: &str, username: &str) -> Option<SshOpError> {
-    // Cheap inline short-circuit: no blocking lookup needed for literal root.
     if username == "root" {
         return Some(SshOpError::reverting(format!(
             "refusing to {verb} '{username}': would lock out root / your own account"
         )));
     }
-    // Run every blocking lookup (reverse + forward) off the async worker. The
-    // owned `verb`/`username` are moved into the blocking closure; the inner
-    // logic is identical to the sync `would_lock_out` body (just without the
-    // redundant literal-root branch, already handled above). Clones are kept
-    // for the JoinError fallback (the originals are consumed by spawn_blocking).
     let verb = verb.to_string();
     let username = username.to_string();
     let verb_fallback = verb.clone();
     let username_fallback = username.clone();
     tokio::task::spawn_blocking(move || {
-        // Re-check literal root defensively (the closure is a separate trust
-        // boundary), then the name + UID lookups.
         if username == "root" {
             return Some(SshOpError::reverting(format!(
                 "refusing to {verb} '{username}': would lock out root / your own account"
@@ -648,8 +447,6 @@ async fn would_lock_out_async(verb: &str, username: &str) -> Option<SshOpError> 
     })
     .await
     .unwrap_or_else(move |e| {
-        // The blocking task panicked. Treat it as refuse-by-default (same
-        // posture as the unresolvable branch) — never risk a self-lockout.
         tracing::error!(
             "would_lock_out blocking task panicked for '{username_fallback}': {e}; refusing"
         );
@@ -659,48 +456,22 @@ async fn would_lock_out_async(verb: &str, username: &str) -> Option<SshOpError> 
     })
 }
 
-/// Core of [`would_lock_out`] with the current euid and the forward-lookup UID
-/// injected as parameters. [`would_lock_out`] performs the (blocking) lookups
-/// and the name check, then delegates the UID-equality, UID-0, and
-/// unresolvable-target decisions here. Split out so the backstop branches can
-/// be exercised deterministically in tests without forging `geteuid` or `dscl`.
-///
-/// - `euid` is the process effective UID.
-/// - `resolved_uid` is what `uid_for_username(username)` returned (`None` if
-///   the user is unknown to every lookup path — NSS, `dscl /Search`, `id`,
-///   `/etc/passwd`).
-///
-/// **Refuse-by-default (F10 fix).** When `resolved_uid` is `None` we cannot
-/// positively identify the target account. The old behavior allowed the
-/// operation in that case, which meant an operator on a network account
-/// (OD/LDAP/sssd) that the *local-only* lookup couldn't resolve could deny or
-/// reset *themselves* and get locked out. A lockout guard's safe default when
-/// uncertain is to **refuse**: the operator can resolve the lookup (e.g.
-/// ensure NSS/sssd is reachable) and retry. The only operations routed through
-/// here are `deny`/`reset` (privilege-inversion guards in [`execute_op`]); a
-/// false refusal is a harmless retry, a false allow is an SSH lockout.
 fn would_lock_out_with_uid(
     verb: &str,
     username: &str,
     euid: u32,
     resolved_uid: Option<u32>,
 ) -> Option<SshOpError> {
-    // Refuse if the username resolves to the operator's own UID (the
-    // forward-lookup fallback for an unresolvable reverse lookup).
     if resolved_uid == Some(euid) {
         return Some(SshOpError::reverting(format!(
             "refusing to {verb} '{username}': would lock out root / your own account"
         )));
     }
-    // Refuse if the username resolves to UID 0.
     if resolved_uid == Some(0) {
         return Some(SshOpError::reverting(format!(
             "refusing to {verb} '{username}': would lock out root / your own account"
         )));
     }
-    // Refuse-by-default: the target could not be positively identified by any
-    // lookup path. For a lockout guard, uncertainty must err on the side of
-    // refusal — see the F10 doc comment above.
     if resolved_uid.is_none() {
         return Some(SshOpError::reverting(format!(
             "refusing to {verb} '{username}': cannot resolve account to a UID \
@@ -710,12 +481,6 @@ fn would_lock_out_with_uid(
     None
 }
 
-/// Best-effort name of the account running this process.
-///
-/// Resolves the effective UID through the same lookup chain as
-/// [`uid_to_username`]. On targets without POSIX UIDs there is no identity to
-/// resolve, so this returns `None` (and the lockout guards degrade to their
-/// refuse-by-default posture).
 #[cfg(unix)]
 fn current_username() -> Option<String> {
     // SAFETY: geteuid is a trivial read with no preconditions.
@@ -723,49 +488,22 @@ fn current_username() -> Option<String> {
     uid_to_username(euid)
 }
 
-/// Non-Unix fallback: no effective UID, so no account name to resolve.
 #[cfg(not(unix))]
 fn current_username() -> Option<String> {
     None
 }
 
-/// Process effective UID.
-///
-/// `(uid_t)-1` is not a valid UID on any target, so the non-Unix sentinel can
-/// never equal a resolved account UID — the lockout guards simply skip the
-/// euid-equality branch there.
 #[cfg(unix)]
 fn current_euid() -> u32 {
     // SAFETY: geteuid is a trivial read with no preconditions.
     unsafe { libc::geteuid() }
 }
 
-/// Non-Unix fallback sentinel: see [`current_euid`].
 #[cfg(not(unix))]
 fn current_euid() -> u32 {
     u32::MAX
 }
 
-/// F11: self-lockout guard for per-key `authorized_keys` removal.
-///
-/// The `authorized_keys` file the `AuthorizedKeysService` writes is the
-/// OPERATOR's own (`SshPaths::authorized_keys_path()` → `~/.ssh/authorized_keys`),
-/// so deleting the operator's last authorized key removes their only SSH pubkey
-/// and locks them out. This mirrors the `sshd_config` `would_lock_out` invariant
-/// for the per-key removal path, which previously had NO guard (the deny/reset
-/// guards only cover `sshd_config` access control).
-///
-/// Refuses `Some(err)` (reverting) when removing every key whose fingerprint
-/// matches `fingerprint` would drop the operator's `authorized_keys` count to
-/// zero. Reads the current entry list once via `svc.list()` and counts both the
-/// total entries and the matching ones; if `matches >= total` (the removal
-/// would empty the file), it is refused. A lookup error is treated as refuse-
-/// by-default (same posture as `would_lock_out_with_uid`'s unresolvable branch)
-/// — the operator can resolve the file state and retry.
-///
-/// Returns `None` (allow) when the file has no entries at all (there is nothing
-/// to remove and nothing to lock out) or when at least one key would remain
-/// after the removal.
 async fn would_lock_out_authorized_key(
     svc: &toride_ssh::authorized_keys::AuthorizedKeysService<'_>,
     fingerprint: &str,
@@ -773,8 +511,6 @@ async fn would_lock_out_authorized_key(
     let entries = match svc.list().await {
         Ok(e) => e,
         Err(e) => {
-            // Refuse-by-default: we cannot confirm a key would remain, so do
-            // not risk a self-lockout. The operator can fix the file and retry.
             tracing::warn!(
                 "authorized_keys self-lockout guard: refusing removal of \
                  '{fingerprint}' because the current entry list could not be \
@@ -787,9 +523,6 @@ async fn would_lock_out_authorized_key(
         }
     };
     let total = entries.len();
-    // An empty file means nothing to remove — allow (the backend `remove` will
-    // no-op and return 0). The guard only protects against emptying a non-empty
-    // file down to zero.
     if total == 0 {
         return None;
     }
@@ -807,25 +540,6 @@ async fn would_lock_out_authorized_key(
     }
 }
 
-/// Look up the UID for a username.
-///
-/// Resolution order (so network accounts — OD/LDAP/sssd — resolve, not just
-/// local `/etc/passwd` / Directory Service entries):
-/// 1. **NSS** in-process via `getpwnam_r` (covers `/etc/passwd`, LDAP, sssd,
-///    OD — whatever NSS is configured to consult). This is the F10 fix: the
-///    old implementation only consulted the **local** `dscl .` node (macOS)
-///    or `/etc/passwd` (Linux), so a network-account operator could not be
-///    resolved and `would_lock_out` would silently permit a self-lockout.
-/// 2. **`dscl /Search`** (macOS) — the system search path, not just the local
-///    `.` node.
-/// 3. **Portable command fallback** (`id -u <name>`) — used if the in-process
-///    NSS call is unavailable or fails unexpectedly.
-/// 4. **`/etc/passwd`** scan — last resort, local files only.
-///
-/// Returns `None` if every path fails or the user is unknown. Note this is a
-/// **forward** lookup, distinct from the reverse [`uid_to_username`]; the two
-/// can disagree on the same account, so [`would_lock_out`] uses this forward
-/// lookup as a fallback when the reverse lookup returns `None`.
 fn uid_for_username(username: &str) -> Option<u32> {
     if let Some(uid) = nss_uid_for_username(username) {
         return Some(uid);
@@ -834,7 +548,6 @@ fn uid_for_username(username: &str) -> Option<u32> {
         if let Some(uid) = dscl_uid_for_username(username, "/Search") {
             return Some(uid);
         }
-        // Fall back to the local node for setups where /Search is empty.
         if let Some(uid) = dscl_uid_for_username(username, ".") {
             return Some(uid);
         }
@@ -845,11 +558,6 @@ fn uid_for_username(username: &str) -> Option<u32> {
     passwd_uid_for_username(username)
 }
 
-/// Resolve a UID back to a username.
-///
-/// Same resolution order as [`uid_for_username`] (NSS primary, then `dscl
-/// /Search`, then `getent`/`id`, then `/etc/passwd`), so the forward and
-/// reverse lookups consult the same databases.
 fn uid_to_username(uid: u32) -> Option<String> {
     if let Some(name) = nss_username_for_uid(uid) {
         return Some(name);
@@ -868,10 +576,6 @@ fn uid_to_username(uid: u32) -> Option<String> {
     passwd_username_for_uid(uid)
 }
 
-/// NSS forward lookup via `getpwnam_r`. Available on all Unix targets that the
-/// `libc` crate supports; consults whatever NSS is configured with (files,
-/// ldap, sss, compat, …). Returns `None` if the user is unknown or the call
-/// fails. Empty usernames short-circuit (`getpwnam_r("")` is unspecified).
 #[cfg(unix)]
 fn nss_uid_for_username(username: &str) -> Option<u32> {
     // SAFETY: getpwnam_r is thread-safe and reads `name` as a NUL-terminated
@@ -885,9 +589,6 @@ fn nss_uid_for_username(username: &str) -> Option<u32> {
     let c_name = CString::new(username).ok()?;
     let mut pwd: libc::passwd = unsafe { std::mem::zeroed() };
     let mut result: *mut libc::passwd = ptr::null_mut();
-    // Start at 2 KiB (ample for files/sss); grow on ERANGE for very long LDAP
-    // directory entries, capping at 64 KiB so a pathological NSS module can't
-    // make us allocate unbounded memory.
     let mut buflen: usize = 2048;
     loop {
         let mut buf = vec![0u8; buflen];
@@ -910,22 +611,16 @@ fn nss_uid_for_username(username: &str) -> Option<u32> {
         if rc != 0 || result.is_null() {
             return None;
         }
-        // pw_uid is only valid while `result` (== &pwd here) is non-null.
         let uid = unsafe { (*result).pw_uid };
         return Some(uid);
     }
 }
 
-/// Non-Unix fallback: there is no NSS/passwd database to consult.
 #[cfg(not(unix))]
 fn nss_uid_for_username(_username: &str) -> Option<u32> {
     None
 }
 
-/// NSS reverse lookup via `getpwuid_r`. Returns `None` if the UID is unknown
-/// or the call fails. The name is copied into an owned `String` before the C
-/// buffer is dropped. Retries with a larger buffer on ERANGE (long LDAP
-/// entries), capped at 64 KiB.
 #[cfg(unix)]
 fn nss_username_for_uid(uid: u32) -> Option<String> {
     use std::ffi::CStr;
@@ -969,14 +664,11 @@ fn nss_username_for_uid(uid: u32) -> Option<String> {
     }
 }
 
-/// Non-Unix fallback: there is no NSS/passwd database to consult.
 #[cfg(not(unix))]
 fn nss_username_for_uid(_uid: u32) -> Option<String> {
     None
 }
 
-/// macOS Directory Service forward lookup against a specific node (e.g.
-/// `/Search` for the system search path, `.` for the local node only).
 fn dscl_uid_for_username(username: &str, node: &str) -> Option<u32> {
     let out = std::process::Command::new("dscl")
         .args([node, "-read", &format!("/Users/{username}"), "UniqueID"])
@@ -991,7 +683,6 @@ fn dscl_uid_for_username(username: &str, node: &str) -> Option<u32> {
         .and_then(|v| v.trim().parse::<u32>().ok())
 }
 
-/// macOS Directory Service reverse lookup against a specific node.
 fn dscl_username_for_uid(uid: u32, node: &str) -> Option<String> {
     let out = std::process::Command::new("dscl")
         .args([node, "-search", "/Users", "UniqueID", &uid.to_string()])
@@ -1007,9 +698,6 @@ fn dscl_username_for_uid(uid: u32, node: &str) -> Option<String> {
         .map(str::to_owned)
 }
 
-/// Portable command forward fallback: `id -u <name>`. Works on both macOS and
-/// Linux and consults NSS (so it sees LDAP/sssd users). Returns `None` if
-/// `id` is missing or reports failure for an unknown user.
 fn id_uid_for_username(username: &str) -> Option<u32> {
     if username.is_empty() {
         return None;
@@ -1025,9 +713,6 @@ fn id_uid_for_username(username: &str) -> Option<u32> {
     s.trim().parse::<u32>().ok()
 }
 
-/// Portable command reverse fallback via `getent passwd <uid>` (Linux/BSD).
-/// Skipped on macOS (dscl already ran there). Parses the username field of
-/// the first matching passwd line.
 fn getent_username_for_uid(uid: u32) -> Option<String> {
     if cfg!(target_os = "macos") {
         return None;
@@ -1045,7 +730,6 @@ fn getent_username_for_uid(uid: u32) -> Option<String> {
         .and_then(|line| line.split(':').next().map(std::borrow::ToOwned::to_owned))
 }
 
-/// `/etc/passwd` forward scan. Local files only — the last resort.
 fn passwd_uid_for_username(username: &str) -> Option<u32> {
     let contents = std::fs::read_to_string("/etc/passwd").ok()?;
     contents.lines().find_map(|line| {
@@ -1057,7 +741,6 @@ fn passwd_uid_for_username(username: &str) -> Option<u32> {
     })
 }
 
-/// `/etc/passwd` reverse scan. Local files only.
 fn passwd_username_for_uid(uid: u32) -> Option<String> {
     let contents = std::fs::read_to_string("/etc/passwd").ok()?;
     contents.lines().find_map(|line| {
@@ -1069,33 +752,10 @@ fn passwd_username_for_uid(uid: u32) -> Option<String> {
     })
 }
 
-/// Execute a pending write operation using the given `SshManager`.
-///
-/// Returns `Ok(label)` on success (e.g. `"added host 'myserver'"`) or
-/// `Err(SshOpError)` on failure. On error, `revert_optimistic` signals
-/// whether the optimistic UI update is known-stale and should be reverted
-/// immediately. Both outcomes are also logged via tracing.
-///
-/// Build the `ssh-keygen` argv used to derive the public key from a private
-/// key (the operation behind passphrase verification).
-///
-/// Deliberately OMITS `-P <passphrase>`: the secret is fed to the child via a
-/// temporary `SSH_ASKPASS` helper (see [`check_key_passphrase`]) so it never
-/// reaches the child argv or `/proc/<pid>/cmdline`, where it would be readable
-/// by every local user for the whole lifetime of the subprocess.
 fn keygen_read_public_argv(key_path: &str) -> Vec<String> {
     vec!["-y".to_owned(), "-f".to_owned(), key_path.to_owned()]
 }
 
-/// Verify a private-key passphrase WITHOUT leaking it onto the argv.
-///
-/// Spawns `ssh-keygen -y -f <key>` (no `-P`!) and answers the passphrase prompt
-/// via a temporary `SSH_ASKPASS` script (created mode `0o700`, removed on drop),
-/// so the secret is visible only in this task's memory — never in `ps`,
-/// `/proc/<pid>/cmdline`, a child env var, or on disk after the call returns.
-///
-/// Returns `Ok(true)` if the key decrypts with `passphrase` (or is not
-/// passphrase-protected at all), `Ok(false)` if the passphrase is wrong.
 fn check_key_passphrase(key_path: &Path, passphrase: &str) -> std::io::Result<bool> {
     let askpass = toride_ssh::agent::AskpassHandler::new(passphrase)
         .map_err(|e| std::io::Error::other(format!("askpass setup failed: {e}")))?;
@@ -1109,20 +769,9 @@ fn check_key_passphrase(key_path: &Path, passphrase: &str) -> std::io::Result<bo
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()?;
-    // `askpass` is dropped here -> the on-disk script is removed.
     Ok(status.success())
 }
 
-/// Map a backend `Result` into the standard `execute_op` outcome.
-///
-/// Nearly every arm of [`execute_op`] finishes with the same shape: on `Ok`
-/// log an `info!` line and return a human-readable success message; on `Err`
-/// build a `failed to ... : <error>` message, log it at `error!`, and wrap it
-/// in a non-reverting [`SshOpError::transient`]. This helper centralizes that
-/// boilerplate so each arm only describes WHAT it did (`success`) and HOW to
-/// phrase its failure (`fail_prefix`), keeping the tracing + error mapping in
-/// one place. Behavior — log levels, message text, the transient (non-reverting)
-/// verdict — is byte-identical to the per-arm hand-written version it replaces.
 fn finish_outcome<T, E: std::fmt::Display>(
     section: &str,
     success: String,
@@ -1146,10 +795,7 @@ fn finish_outcome<T, E: std::fmt::Display>(
 ///
 /// # Errors
 ///
-/// Returns `Err(SshOpError)` when the backend reports a write/validation
-/// failure or when `SshManager::new()` cannot initialize. Each arm maps its
-/// backend error to a [`SshOpError`] whose `revert_optimistic` flag tells the
-/// caller whether to refresh the optimistic UI view immediately.
+/// `Err(SshOpError)` on a write/validation failure or on `SshManager::new()` failure.
 #[expect(
     clippy::too_many_lines,
     reason = "one match arm per SshOp variant; naturally large"
@@ -1213,7 +859,6 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 format!("edited host '{old_name}' → '{new_name}'"),
                 &format!("failed to edit host '{old_name}'"),
                 svc.edit(|ast| {
-                    // Remove old block, add new one
                     let _ = toride_ssh::config::ConfigService::remove_host(ast, &old_name);
                     let mut directives = Vec::new();
                     if let Some(hn) = &host_name {
@@ -1341,17 +986,6 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
         }
         SshOp::AuthorizedKeyRemove { fingerprint } => {
             let svc = mgr.authorized_keys();
-            // F11: self-lockout guard. The authorized_keys file written here is
-            // the OPERATOR's own (~/.ssh/authorized_keys via
-            // `SshPaths::authorized_keys_path`), so removing the operator's last
-            // authorized key would lock them out of SSH (no pubkey left to auth
-            // with). The deny/reset guards above cover sshd_config access
-            // control; this mirrors that invariant for per-key authorized_keys
-            // removal. Refuse BEFORE deleting if the removal would drop the
-            // operator's authorized_keys count to zero. (The sshd_config
-            // would_lock_out guard covers root/uid-0/current-user; here the
-            // target is always the operator's own file, so the zero-count check
-            // is the load-bearing one.)
             if let Some(err) = would_lock_out_authorized_key(&svc, &fingerprint).await {
                 return Err(err);
             }
@@ -1500,10 +1134,6 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
                 }
             };
             let key_path = ssh_dir.join(&name);
-            // SECURITY: the passphrase is fed to ssh-keygen through a temporary
-            // SSH_ASKPASS helper, NOT as `-P <passphrase>` on the argv — see
-            // [`check_key_passphrase`]. This keeps the secret out of
-            // `ps`/`/proc/<pid>/cmdline` for the whole subprocess lifetime.
             let pw = passphrase;
             let path_for_task = key_path.clone();
             let result =
@@ -1532,8 +1162,6 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             }
         }
         SshOp::SshdAllowUser { username } => {
-            // No privilege-inversion guard: allowing login can never lock the
-            // operator out. (Deny/reset carry the guard; allow is always safe.)
             let is_root = toride_ssh::is_root();
             let result = toride_ssh::config::sshd::edit(is_root, |ast| {
                 toride_ssh::config::sshd::add_user_to_allow(ast, &username)?;
@@ -1550,25 +1178,12 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             }
         }
         SshOp::SshdDenyUser { username } => {
-            // Privilege-inversion guard: refuse BEFORE touching anything if
-            // denying this user would lock the operator out (literal root,
-            // UID 0, or the current account). execute_op MUST refuse regardless
-            // of any UI-side guard — defense in depth. Run off the async worker
-            // via would_lock_out_async — the lookup shells out to dscl/getent
-            // and reads /etc/passwd (F19).
             if let Some(err) = would_lock_out_async("deny", &username).await {
                 return Err(err);
             }
             let is_root = toride_ssh::is_root();
             let result = toride_ssh::config::sshd::edit(is_root, |ast| {
                 toride_ssh::config::sshd::add_user_to_deny(ast, &username)?;
-                // Mirror SshdAllowUser: a user who is being denied must also be
-                // removed from AllowUsers, otherwise the persisted config can
-                // carry the user in BOTH lists (OpenSSH resolves DenyUsers
-                // last, so the outcome is still a lockout, but the file is
-                // contradictory and confuses operators/other tooling).
-                // remove_user_from_allow is a documented safe no-op when the
-                // user is absent.
                 toride_ssh::config::sshd::remove_user_from_allow(ast, &username)?;
                 Ok(())
             })
@@ -1582,12 +1197,6 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
             }
         }
         SshOp::SshdResetUserAccess { username } => {
-            // Privilege-inversion guard: refuse BEFORE touching anything if
-            // resetting this user would lock the operator out. Reset removes an
-            // explicit allow; if the operator depended on it (group-only
-            // setups), they could be stranded. Refuse the dangerous cases. Run
-            // off the async worker via would_lock_out_async — the lookup shells
-            // out to dscl/getent and reads /etc/passwd (F19).
             if let Some(err) = would_lock_out_async("reset", &username).await {
                 return Err(err);
             }
@@ -1609,23 +1218,6 @@ pub async fn execute_op(op: SshOp) -> Result<String, SshOpError> {
     }
 }
 
-/// Collect SSH data by reading real files and calling real services.
-///
-/// All subsystems run in parallel via `tokio::join!`. Individual failures are
-/// logged and produce empty data — the app never crashes from a bad subsystem.
-///
-/// When `use_cache` is true and `cached_diag` is provided, diagnostics are
-/// reused from the cache instead of re-running the full check suite.
-///
-/// `cache` carries the mtime-keyed per-tick caches: `known_hosts`,
-/// `authorized_keys`, and certificates whose source files are unchanged since
-/// the previous tick are served from it (identical content, identical list
-/// order) instead of being re-read, re-parsed, and re-fingerprinted.
-///
-/// Returns `(bundle, used_cache)` where `used_cache` records whether the
-/// diagnostics were actually taken from the cache on a successful collection.
-/// The caller advances the TTL clock ONLY when `used_cache == false`, so a
-/// cache-hit poll never resets the freshness timestamp with stale data.
 async fn collect_real_data(
     use_cache: bool,
     cached_diag: Option<Arc<Vec<DiagnosticEntry>>>,
@@ -1640,7 +1232,6 @@ async fn collect_real_data(
     };
     let paths = toride_ssh::SshPaths::new().ok();
 
-    // All subsystems in parallel — diagnostics may be cached
     let (keys_r, known_hosts_r, auth_keys_r, config_r, diag_r, agent_r, forward_r, cert_r) = tokio::join!(
         collect_keys(&mgr),
         collect_known_hosts_cached(&mgr, paths.as_ref(), cache),
@@ -1681,21 +1272,11 @@ async fn collect_real_data(
     let forwarding = forward_r.unwrap_or_default();
     let certificates = cert_r.unwrap_or_default();
 
-    // Security data involves blocking filesystem I/O (sshd_config, /etc/passwd).
-    // Run it on the blocking thread pool to avoid stalling the tokio worker.
-    // The security pass folds over the data the join! already collected:
-    // the diagnostics vec is Arc-shared (no deep clone), and the current
-    // user's authorized_keys counts/previews are derived from the entries
-    // `collect_authorized_keys_cached` just produced instead of re-reading
-    // (and re-fingerprinting) the file.
     let security = {
         let known_hosts = known_hosts.clone();
         let authorized_keys = authorized_keys.clone();
         let diagnostics = Arc::clone(&diagnostics);
         let current_ssh_dir = paths.as_ref().map(|p| p.ssh_dir().to_path_buf());
-        // Only fold the collected entries when that branch actually
-        // succeeded — on failure `authorized_keys` is the empty default and
-        // folding it would report zero keys for a file that may have them.
         let current_entries = auth_keys_r.ok();
         let cache = Arc::clone(cache);
         tokio::task::spawn_blocking(move || {
@@ -1732,9 +1313,6 @@ async fn collect_real_data(
     )
 }
 
-/// Neutral security data used when the security pass panics: same shape as
-/// [`empty_bundle`]'s security block but with `available: true` (the tick's
-/// other subsystems did run), preserving the previous fallback behavior.
 fn fallback_security_data() -> SshSecurityData {
     SshSecurityData {
         sshd_config: HashMap::new(),
@@ -1759,7 +1337,6 @@ fn fallback_security_data() -> SshSecurityData {
     }
 }
 
-/// Empty bundle used when `SshManager` fails to initialize.
 fn empty_bundle() -> SshDataBundle {
     SshDataBundle {
         keys: Vec::new(),
@@ -1783,13 +1360,12 @@ fn empty_bundle() -> SshDataBundle {
             known_hosts_hashed_count: 0,
             security_diagnostics: Vec::new(),
             access_info: SshAccessInfo {
-                available: false, // no sshd_config read
+                available: false,
                 allowed_users: vec![],
                 denied_users: vec![],
                 allowed_groups: vec![],
                 denied_groups: vec![],
                 auth_methods: vec![],
-                // Use OpenSSH defaults when sshd_config is unavailable.
                 password_auth: true,
                 pubkey_auth: true,
                 permit_root_login: "prohibit-password".to_string(),
@@ -1799,8 +1375,6 @@ fn empty_bundle() -> SshDataBundle {
         },
     }
 }
-
-// ── Individual Collectors ────────────────────────────────────────────────────
 
 async fn collect_known_hosts(mgr: &toride_ssh::SshManager) -> Result<Vec<KnownHostEntry>, ()> {
     let svc = mgr.known_hosts();
@@ -1813,12 +1387,6 @@ async fn collect_known_hosts(mgr: &toride_ssh::SshManager) -> Result<Vec<KnownHo
     }
 }
 
-/// [`collect_known_hosts`] behind the mtime-keyed cache.
-///
-/// An unchanged `known_hosts` file (same `(mtime, len)` stamp) is served
-/// from [`SshStateCache`] — skipping the per-line base64 decode and SHA-256
-/// fingerprint — with byte-identical entries in the same order as the
-/// fresh collection that populated the cache.
 async fn collect_known_hosts_cached(
     mgr: &toride_ssh::SshManager,
     paths: Option<&toride_ssh::SshPaths>,
@@ -1869,11 +1437,6 @@ async fn collect_authorized_keys(
     }
 }
 
-/// [`collect_authorized_keys`] behind the mtime-keyed cache.
-///
-/// An unchanged `authorized_keys` file is served from [`SshStateCache`]
-/// with identical entries in file order, skipping the per-key base64 parse
-/// and SHA-256 fingerprint.
 async fn collect_authorized_keys_cached(
     mgr: &toride_ssh::SshManager,
     paths: Option<&toride_ssh::SshPaths>,
@@ -1996,15 +1559,6 @@ async fn collect_forwarding(mgr: &toride_ssh::SshManager) -> Result<Vec<ForwardS
     }
 }
 
-/// [`collect_certificates`] behind an mtime-keyed cache over the
-/// `*-cert.pub` listing.
-///
-/// CERT VALIDITY IS TIME-DEPENDENT: the cache stores the parsed
-/// [`toride_ssh::certificate::CertificateInfo`] values, but
-/// [`ssh_convert::convert_certificates`] is re-run every tick against the
-/// current clock so `is_valid` never goes stale. Only the certificate
-/// parse is memoized, keyed on the `(mtime, len)` stamps of the cert
-/// files — a changed cert re-parses immediately.
 async fn collect_certificates_cached(
     mgr: &toride_ssh::SshManager,
     cache: &SshStateCache,
@@ -2014,8 +1568,6 @@ async fn collect_certificates_cached(
         Err(_) => return Ok(Vec::new()),
     };
 
-    // One enumeration produces both the candidate list (read_dir order,
-    // unchanged from the uncached path) and the per-file freshness stamps.
     let cert_files: Vec<(PathBuf, Option<FileStamp>)> = match std::fs::read_dir(&ssh_dir) {
         Ok(entries) => entries
             .filter_map(std::result::Result::ok)
@@ -2037,9 +1589,6 @@ async fn collect_certificates_cached(
         return Ok(Vec::new());
     }
 
-    // Sorted stamp key: order-stable regardless of read_dir order, and any
-    // add/remove/rewrite of a cert file changes it. An unstampable file
-    // (None) forces a permanent miss — its parse is never cached.
     let mut key: Vec<(PathBuf, FileStamp)> = cert_files
         .iter()
         .filter_map(|(p, s)| s.map(|s| (p.clone(), s)))
@@ -2057,8 +1606,6 @@ async fn collect_certificates_cached(
                 .map(|cached| Arc::clone(&cached.value))
         };
         if let Some(raw) = hit {
-            // Recompute validity (and every display field) from the cached
-            // parses against the current clock.
             return Ok(ssh_convert::convert_certificates((*raw).clone()));
         }
     }
@@ -2091,20 +1638,6 @@ async fn collect_certificates_cached(
     Ok(ssh_convert::convert_certificates(raw))
 }
 
-/// Build security overview data from already-collected real data.
-///
-/// Reads `/etc/ssh/sshd_config` once and passes the content to both
-/// `parse_sshd_config` and `parse_sshd_access_info` to avoid a TOCTOU
-/// inconsistency from reading the file twice.
-///
-/// The system-user scan folds over the data the collection join already
-/// produced: when `current_ssh_dir` matches a scanned user's `~/.ssh` and
-/// `current_entries` carries the freshly collected authorized-key entries,
-/// that user's counts and previews are derived from the entries (whose
-/// fingerprints were already computed) instead of re-reading — and
-/// re-fingerprinting — the file. Other users' `~/.ssh` scans go through
-/// the mtime-keyed [`SshStateCache::user_ssh_scans`] memo, so unchanged
-/// users cost one `read_dir` + two stats instead of full re-reads.
 fn build_security_data(
     known_hosts: &[KnownHostEntry],
     authorized_keys: &[AuthorizedKeyEntry],
@@ -2113,7 +1646,6 @@ fn build_security_data(
     current_entries: Option<&[AuthorizedKeyEntry]>,
     cache: &SshStateCache,
 ) -> SshSecurityData {
-    // Read sshd_config once — shared by both parse_sshd_config and parse_sshd_access_info.
     let sshd_contents =
         std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
 
@@ -2144,8 +1676,6 @@ fn build_security_data(
         is_root: toride_ssh::is_root(),
     }
 }
-
-// ── Security Overview Types ──────────────────────────────────────────────────
 
 /// Security grade computed from `sshd_config` and diagnostic results.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2224,16 +1754,6 @@ pub struct SshSecurityData {
     pub is_root: bool,
 }
 
-/// Parse an `sshd_config` boolean value case-insensitively.
-///
-/// `sshd_config` values are matched case-insensitively by OpenSSH, so
-/// `PermitRootLogin Yes`, `YES`, and `yes` are all equivalent. The parser
-/// ([`parse_sshd_config_from`]) preserves the original case of `d.value`, so
-/// any exact-case comparison (`== "yes"`) silently mis-grades a capitalized
-/// value. This helper is the single source of truth for that parsing: it
-/// trims surrounding whitespace and accepts `yes`/`true`/`1` as true,
-/// `no`/`false`/`0` as false, and returns `None` for anything else (including
-/// an unset/empty value, which callers handle with OpenSSH defaults).
 fn sshd_bool(v: &str) -> Option<bool> {
     match v.trim().to_ascii_lowercase().as_str() {
         "yes" | "true" | "1" => Some(true),
@@ -2242,17 +1762,6 @@ fn sshd_bool(v: &str) -> Option<bool> {
     }
 }
 
-/// Test whether a stored `sshd_config` value is the boolean `want`.
-///
-/// This replaces the old exact-case comparisons in [`SshSecurityData::grade`]
-/// and [`SshSecurityData::checks`]. Callers must supply the **default**
-/// semantics explicitly (the third arg) so that an unset or non-boolean value
-/// is handled deliberately, never silently:
-///
-/// - returns the parsed value's comparison to `want` when the value parses
-///   as a boolean;
-/// - otherwise returns `default_when_unset` (which encodes the OpenSSH
-///   default or the "absent == treat as" choice for that check).
 fn sshd_bool_is(stored: Option<&String>, want: bool, default_when_unset: bool) -> bool {
     match stored.and_then(|v| sshd_bool(v)) {
         Some(b) => b == want,
@@ -2267,29 +1776,18 @@ impl SshSecurityData {
         let mut score = 100u32;
         let cfg = &self.sshd_config;
 
-        // Major deductions for insecure settings
         if !sshd_bool_is(cfg.get("passwordauthentication"), false, false) {
-            // PasswordAuthentication defaults to "yes" (OpenSSH), so deduct
-            // whenever it is NOT explicitly disabled (falsey) — i.e. enabled
-            // or unset. Case-insensitive on the stored value.
             score -= 25;
         }
         if sshd_bool_is(cfg.get("permitrootlogin"), true, false) {
-            // PermitRootLogin defaults to "prohibit-password"; a literal
-            // truthy value ("yes"/"true"/"1") is the only insecure form.
             score -= 20;
         }
         if sshd_bool_is(cfg.get("permitemptypasswords"), true, false) {
-            // PermitEmptyPasswords defaults to "no"; only deduct on an explicit
-            // truthy value.
             score -= 15;
         }
         if sshd_bool_is(cfg.get("pubkeyauthentication"), false, false) {
-            // PubkeyAuthentication defaults to "yes"; deduct only when it is
-            // explicitly disabled (a falsey value).
             score -= 15;
         }
-        // Minor deductions for warnings
         let warn_count = u32::try_from(
             self.security_diagnostics
                 .iter()
@@ -2319,9 +1817,6 @@ impl SshSecurityData {
                     .get("passwordauthentication")
                     .cloned()
                     .unwrap_or_else(|| "yes (default)".into()),
-                // Passing only when explicitly disabled (falsey). Defaults to
-                // "yes" (OpenSSH), so an unset or non-boolean value is NOT
-                // passing — case-insensitively now.
                 passing: sshd_bool_is(cfg.get("passwordauthentication"), false, false),
                 informational: false,
             },
@@ -2331,8 +1826,6 @@ impl SshSecurityData {
                     .get("permitrootlogin")
                     .cloned()
                     .unwrap_or_else(|| "prohibit-password (default)".into()),
-                // Passing unless explicitly set truthy ("yes"/"true"/"1"). The
-                // default and any non-boolean (e.g. "prohibit-password") pass.
                 passing: !sshd_bool_is(cfg.get("permitrootlogin"), true, false),
                 informational: false,
             },
@@ -2351,8 +1844,6 @@ impl SshSecurityData {
                     .get("pubkeyauthentication")
                     .cloned()
                     .unwrap_or_else(|| "yes (default)".into()),
-                // Passing unless explicitly disabled (falsey). Defaults to
-                // "yes", so unset / non-boolean passes.
                 passing: !sshd_bool_is(cfg.get("pubkeyauthentication"), false, false),
                 informational: false,
             },
@@ -2371,8 +1862,6 @@ impl SshSecurityData {
                     .get("allowagentforwarding")
                     .cloned()
                     .unwrap_or_else(|| "yes (default)".into()),
-                // Passing only when explicitly disabled (falsey). Defaults to
-                // "yes", so unset / non-boolean is NOT passing.
                 passing: sshd_bool_is(cfg.get("allowagentforwarding"), false, false),
                 informational: false,
             },
@@ -2382,7 +1871,6 @@ impl SshSecurityData {
                     .get("x11forwarding")
                     .cloned()
                     .unwrap_or_else(|| "no (default)".into()),
-                // Passing unless explicitly set truthy. Defaults to "no".
                 passing: !sshd_bool_is(cfg.get("x11forwarding"), true, false),
                 informational: false,
             },
@@ -2392,7 +1880,6 @@ impl SshSecurityData {
                     .get("permitemptypasswords")
                     .cloned()
                     .unwrap_or_else(|| "no (default)".into()),
-                // Passing unless explicitly set truthy. Defaults to "no".
                 passing: !sshd_bool_is(cfg.get("permitemptypasswords"), true, false),
                 informational: false,
             },
@@ -2400,53 +1887,19 @@ impl SshSecurityData {
     }
 }
 
-/// Parse `/etc/ssh/sshd_config` for key-value pairs.
-///
-/// Returns an empty map if the file doesn't exist or isn't readable.
 #[allow(dead_code)]
 fn parse_sshd_config() -> HashMap<String, String> {
     let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
     parse_sshd_config_from(&contents)
 }
 
-/// Parse `sshd_config` content (already read from disk) into key-value pairs.
-///
-/// This builds the map from the lossless AST
-/// ([`toride_ssh::config::ast::parse`]), iterating ONLY top-level
-/// [`ConfigNode::Directive`] nodes. Anything nested inside a `Match` or `Host`
-/// block is structurally invisible here, and comments/blank lines are skipped
-/// — so `Match`/`Host`-scoped overrides (e.g. an indented
-/// `PasswordAuthentication yes` inside a `Match Address ...` block) can never
-/// leak into the global values. This keeps [`SshSecurityReport::grade`] and
-/// [`SshSecurityReport::checks`] consistent with the sibling
-/// [`parse_sshd_access_info_from`], which is already Match-immune.
-///
-/// **`Include` expansion.** A top-level `Include` directive (used by stock
-/// Debian/Ubuntu/RHEL/Fedora to pull in `/etc/ssh/sshd_config.d/*.conf`) is
-/// now followed: paths are resolved relative to `/etc/ssh` (the conventional
-/// sshd config dir) when relative, glob-expanded (sorted), and merged with
-/// **first-occurrence-wins** semantics — matching OpenSSH, where the first
-/// global-scope value set for a directive is the effective one. This is a
-/// READ-ONLY walk (no privilege needed). `Include` directives inside a
-/// `Match`/`Host` block are skipped along with the rest of the block.
-///
-/// The AST's `d.value` already strips trailing inline comments, and the key is
-/// lowercased to match how [`grade`] / [`checks`] look directives up.
 fn parse_sshd_config_from(contents: &str) -> HashMap<String, String> {
     parse_sshd_config_from_dir(contents, Path::new("/etc/ssh"))
 }
 
-/// Same as [`parse_sshd_config_from`] but with an explicit base directory used
-/// to resolve relative `Include` patterns. Split out so the Include-expansion
-/// path can be exercised against a tempfile tree in tests without touching
-/// `/etc/ssh`.
 fn parse_sshd_config_from_dir(contents: &str, base_dir: &Path) -> HashMap<String, String> {
     use toride_ssh::config::ast::{ConfigNode, parse};
 
-    // Recursively walk a parsed file's top-level directives, expanding
-    // Includes inline and applying first-occurrence-wins. `seen` guards
-    // against include cycles (a file including itself, directly or
-    // transitively) — OpenSSH treats such cycles as an error; we just stop.
     fn walk(
         ast_nodes: &[ConfigNode],
         base_dir: &Path,
@@ -2455,28 +1908,17 @@ fn parse_sshd_config_from_dir(contents: &str, base_dir: &Path) -> HashMap<String
     ) {
         for node in ast_nodes {
             let ConfigNode::Directive(d) = node else {
-                // Skip MatchBlock / HostBlock (and their nested directives),
-                // Comment, and BlankLine — only top-level directives are
-                // global.
                 continue;
             };
             let key = d.keyword.to_lowercase();
             if key == "include" {
                 expand_include(&d.value, base_dir, config, seen);
-                // The Include directive itself never enters the map (it has
-                // no security-relevant value), matching the old behavior.
                 continue;
             }
-            // First-occurrence-wins: only set a key the first time it is seen
-            // in source order (main file before its includes, includes in
-            // sorted glob order). OpenSSH: "the first obtained value for a
-            // global directive is used".
             config.entry(key).or_insert_with(|| d.value.clone());
         }
     }
 
-    /// Expand a single `Include` argument (which may list multiple
-    /// whitespace-separated glob patterns) into matching files and merge them.
     fn expand_include(
         args: &str,
         base_dir: &Path,
@@ -2486,8 +1928,6 @@ fn parse_sshd_config_from_dir(contents: &str, base_dir: &Path) -> HashMap<String
         for pattern in args.split_whitespace() {
             let resolved = resolve_include_path(pattern, base_dir);
             for file in glob_include(&resolved) {
-                // Canonicalize for cycle detection; fall back to the raw path
-                // if canonicalization fails (file may still be readable).
                 let canon = std::fs::canonicalize(&file).unwrap_or_else(|_| file.clone());
                 if !seen.insert(canon.clone()) {
                     continue;
@@ -2508,14 +1948,6 @@ fn parse_sshd_config_from_dir(contents: &str, base_dir: &Path) -> HashMap<String
     config
 }
 
-/// Resolve an `Include` pattern to an absolute path.
-///
-/// OpenSSH: if the path does not start with `/` or `~/`, it is taken relative
-/// to the directory of the main config file. Here `base_dir` is that directory
-/// (conventionally `/etc/ssh`). `~`-expansion is intentionally not performed
-/// — `sshd_config` drop-ins under `/etc/ssh/sshd_config.d/` are always absolute
-/// or relative to the config dir, and tilde expansion would require the
-/// operator's home which a system service does not have.
 fn resolve_include_path(pattern: &str, base_dir: &Path) -> std::path::PathBuf {
     let p = Path::new(pattern);
     if p.is_absolute() {
@@ -2525,32 +1957,18 @@ fn resolve_include_path(pattern: &str, base_dir: &Path) -> std::path::PathBuf {
     }
 }
 
-/// Glob-expand an Include pattern into matching files (sorted).
-///
-/// Supports `*` and `?` within a single path segment (the common
-/// `sshd_config.d/*.conf` case) and a leading `**/` for recursive matches,
-/// mirroring the include logic in `toride_ssh::config::resolve` (which is
-/// `pub(crate)` and so cannot be reused directly from this crate). Only
-/// regular files are returned; directories are skipped. Missing directories
-/// yield an empty result (matching OpenSSH, which silently ignores a pattern
-/// that matches nothing). Sort order is deterministic so grading is stable.
 fn glob_include(pattern: &Path) -> Vec<std::path::PathBuf> {
     let pattern_str = pattern.to_string_lossy().into_owned();
     let mut out = Vec::new();
 
-    // Recursive `**/` support. Only `**/` (zero-or-more directory levels)
-    // triggers recursive matching; a bare `**` without a following slash is
-    // left to the single-segment matcher below (where it behaves like `*`).
     if let Some(idx) = pattern_str.find("**/") {
         let prefix = Path::new(&pattern_str[..idx]);
-        // Skip past "**/" (3 chars); drop any redundant leading slashes.
         let suffix = pattern_str[idx + 3..].trim_start_matches('/');
         collect_glob_recursive(prefix, suffix, &mut out);
         out.sort();
         return out;
     }
 
-    // Single-segment glob: split into parent dir + file-pattern.
     let parent = pattern.parent().unwrap_or_else(|| Path::new("."));
     let file_pattern = pattern
         .file_name()
@@ -2574,8 +1992,6 @@ fn glob_include(pattern: &Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// Recursively apply `suffix` (a glob, possibly with `/`-separated segments)
-/// under `dir`, matching `**` semantics (zero or more directory levels).
 fn collect_glob_recursive(dir: &Path, suffix: &str, out: &mut Vec<std::path::PathBuf>) {
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
@@ -2597,16 +2013,11 @@ fn collect_glob_recursive(dir: &Path, suffix: &str, out: &mut Vec<std::path::Pat
         }
 
         if path.is_dir() {
-            // `**` matches zero or more levels: re-apply the full suffix at
-            // every nested directory.
             collect_glob_recursive(&path, suffix, out);
         }
     }
 }
 
-/// Minimal case-sensitive glob for a single path segment: supports `*`
-/// (zero or more chars) and `?` (exactly one char). Delegates the recursive
-/// matching to a small state machine rather than pulling in a glob crate.
 fn name_glob_match(name: &str, pattern: &str) -> bool {
     glob_match_inner(name.as_bytes(), pattern.as_bytes())
 }
@@ -2638,39 +2049,12 @@ fn glob_match_inner(text: &[u8], pattern: &[u8]) -> bool {
     pi == pattern.len()
 }
 
-/// Parse access control information from `/etc/ssh/sshd_config`.
-///
-/// Extracts `AllowUsers`, `DenyUsers`, `AllowGroups`, `DenyGroups`,
-/// `AuthenticationMethods`, and auth booleans from **global** scope only —
-/// directives nested inside a `Match` block are read through the lossless AST
-/// and excluded from the global values, so the security dashboard never
-/// reflects conditional Match-scoped overrides.
-///
-/// **Note:** On macOS, `/etc/ssh/sshd_config` may not exist or may not reflect
-/// the actual sshd configuration, which is managed by launchd. Additionally,
-/// system users are parsed from `/etc/passwd`, which is not the primary user
-/// database on macOS (Directory Service is). Results on macOS may be incomplete.
 #[allow(dead_code)]
 fn parse_sshd_access_info() -> SshAccessInfo {
     let contents = std::fs::read_to_string(Path::new("/etc/ssh/sshd_config")).unwrap_or_default();
     parse_sshd_access_info_from(&contents)
 }
 
-/// Parse access control information from pre-read `sshd_config` content.
-///
-/// This uses the lossless AST ([`toride_ssh::config::sshd`] getters) so that:
-/// - `AllowUsers`/`DenyUsers`/`AllowGroups`/`DenyGroups` are read from
-///   **global** scope only — directives nested inside a `Match` block never
-///   leak into the global list (a previous last-wins scanner had this bug).
-/// - Multiple global occurrences are **concatenated** (OpenSSH treats them as
-///   additive), matching what the editor (`sshd::add_user_to_allow`, etc.)
-///   produces. Read and write now agree.
-///
-/// The remaining scalar directives (`AuthenticationMethods`, the auth booleans,
-/// `PermitRootLogin`) are scanned from top-level [`ConfigNode::Directive`]
-/// nodes only — which, by construction, excludes anything inside a
-/// `Match`/`Host` block — so Match-scoped overrides never reach the global
-/// values the security dashboard reports.
 fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
     use toride_ssh::config::ast::{ConfigNode, parse};
     use toride_ssh::config::sshd::{
@@ -2684,24 +2068,15 @@ fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
         ..SshAccessInfo::default()
     };
 
-    // The list directives: populate from the global-only, concatenating
-    // getters. This is the same view the editor mutates, so read == write.
     info.allowed_users = get_allow_users(&ast);
     info.denied_users = get_deny_users(&ast);
     info.allowed_groups = get_allow_groups(&ast);
     info.denied_groups = get_deny_groups(&ast);
 
-    // Track which scalar directives were explicitly seen so we can apply
-    // OpenSSH defaults only when the directive is absent.
     let mut seen_pubkey = false;
     let mut seen_password = false;
     let mut seen_permit_root = false;
 
-    // Scalar fields: iterate top-level Directive nodes only. The AST nests the
-    // contents of `Match`/`Host` blocks under their block node, so anything
-    // inside a block is structurally invisible here — Match-scoped overrides
-    // (e.g. `Match Address ...` → `PasswordAuthentication yes`) cannot leak
-    // into the global value.
     for node in &ast.nodes {
         let ConfigNode::Directive(d) = node else {
             continue;
@@ -2727,16 +2102,12 @@ fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
         }
     }
 
-    // Apply OpenSSH defaults when directives are absent.
-    // PubkeyAuthentication defaults to "yes" per OpenSSH spec.
     if !seen_pubkey {
         info.pubkey_auth = true;
     }
-    // PasswordAuthentication defaults to "yes" in OpenSSH.
     if !seen_password {
         info.password_auth = true;
     }
-    // PermitRootLogin defaults to "prohibit-password" since OpenSSH 7.0.
     if !seen_permit_root {
         info.permit_root_login = "prohibit-password".to_string();
     }
@@ -2744,20 +2115,6 @@ fn parse_sshd_access_info_from(contents: &str) -> SshAccessInfo {
     info
 }
 
-/// Discover real SSH users on the system.
-///
-/// On macOS, uses Directory Service (`dscl`) to enumerate real user
-/// accounts — `/etc/passwd` only contains system daemons on macOS.
-/// On Linux, reads `/etc/passwd` directly.
-///
-/// Only returns users who have SSH actually configured: a real login
-/// shell, an existing home directory, and a `.ssh/` directory.
-///
-/// When a user's `~/.ssh` equals `current_ssh_dir` and `current_entries`
-/// is provided (the freshly collected authorized-keys list), that user's
-/// scan is folded out of the collected data instead of touching the
-/// filesystem again; all other per-user scans are memoized in `cache`
-/// keyed on the `~/.ssh` listing stamps.
 fn parse_system_users(
     current_ssh_dir: Option<&Path>,
     current_entries: Option<&[AuthorizedKeyEntry]>,
@@ -2770,14 +2127,6 @@ fn parse_system_users(
     }
 }
 
-/// Scan one user's `~/.ssh` for the security pass, folding the previous
-/// two independent `authorized_keys` reads (count + preview) into one.
-///
-/// `listing` is the pre-stamped `id_*` file listing (the key count is its
-/// length, so no second `read_dir` is needed); the `authorized_keys` file
-/// is read at most once and both the entry count and the (capped) previews
-/// — including their SHA-256 fingerprints — are derived from that single
-/// content buffer.
 fn scan_user_ssh_dir(
     listing: &[(String, Option<FileStamp>)],
     ssh_dir: &std::path::Path,
@@ -2807,9 +2156,6 @@ fn scan_user_ssh_dir(
         if previews.len() >= USER_PREVIEW_CAP {
             continue;
         }
-        // An authorized_keys entry is: [options] type base64 [comment].
-        // Heuristic: if the first whitespace token parses as a known key type,
-        // there are no options; otherwise skip the leading options token.
         let tokens: Vec<&str> = line.split_whitespace().collect();
         if tokens.len() < 2 {
             continue;
@@ -2828,11 +2174,9 @@ fn scan_user_ssh_dir(
             if known_types.contains(&tokens[0]) || tokens[0].starts_with("ssh-") {
                 (tokens[0], 1, tokens.get(2).copied())
             } else {
-                // Options present: type is the second token.
                 (tokens[1], 2, tokens.get(3).copied())
             };
 
-        // Best-effort fingerprint from the openssh string "<type> <base64>".
         let fingerprint = if base64_idx < tokens.len() {
             let openssh = format!("{key_type} {}", tokens[base64_idx]);
             ssh_key::PublicKey::from_openssh(&openssh).ok().map_or_else(
@@ -2858,15 +2202,8 @@ fn scan_user_ssh_dir(
     }
 }
 
-/// Maximum number of `authorized_keys` preview entries kept per user for
-/// the user detail modal.
 const USER_PREVIEW_CAP: usize = 10;
 
-/// Derive a user's authorized-key count and previews from the entries the
-/// collection join already parsed and fingerprinted — no filesystem access.
-///
-/// Only used for the current user's own `~/.ssh`, whose `authorized_keys`
-/// the authorized-keys branch of the join just read.
 fn user_scan_from_entries(entries: &[AuthorizedKeyEntry]) -> UserSshScan {
     let previews = entries
         .iter()
@@ -2879,16 +2216,12 @@ fn user_scan_from_entries(entries: &[AuthorizedKeyEntry]) -> UserSshScan {
         })
         .collect();
     UserSshScan {
-        ssh_key_count: 0, // filled by the caller from the key listing
+        ssh_key_count: 0,
         authorized_key_count: entries.len(),
         authorized_keys_preview: previews,
     }
 }
 
-/// Probe/compute the stamped `id_*` listing of a user's `~/.ssh`.
-///
-/// The listing doubles as the `ssh_key_count` (its length) and one half of
-/// the per-user cache key; `None` means the directory cannot be read.
 fn user_key_listing(ssh_dir: &std::path::Path) -> Vec<(String, Option<FileStamp>)> {
     let Ok(entries) = std::fs::read_dir(ssh_dir) else {
         return Vec::new();
@@ -2904,7 +2237,6 @@ fn user_key_listing(ssh_dir: &std::path::Path) -> Vec<(String, Option<FileStamp>
         {
             continue;
         }
-        // An unstampable file still counts — only its cacheability is lost.
         let stamp = stamp_path(&entry.path());
         listing.push((name.into_owned(), stamp));
     }
@@ -2912,14 +2244,6 @@ fn user_key_listing(ssh_dir: &std::path::Path) -> Vec<(String, Option<FileStamp>
     listing
 }
 
-/// One user's `~/.ssh` scan behind the mtime-keyed cache.
-///
-/// Unchanged listings (same `id_*` names/stamps and `authorized_keys`
-/// stamp) are served from the cache — no `authorized_keys` read, no
-/// fingerprinting. Scans with any unstampable file bypass the cache in both
-/// directions (never stored, never served) but still count the files,
-/// matching the pre-cache counting behavior. An unreadable `~/.ssh` yields
-/// zero counts (the caller has already verified the directory exists).
 fn scan_user_ssh_cached(
     ssh_dir: &std::path::Path,
     current_ssh_dir: Option<&Path>,
@@ -2936,8 +2260,6 @@ fn scan_user_ssh_cached(
     if current_ssh_dir == Some(ssh_dir)
         && let Some(entries) = current_entries
     {
-        // Fold over already-collected data: the fingerprints in the entries
-        // were computed by the authorized-keys branch this very tick.
         let mut scan = user_scan_from_entries(entries);
         scan.ssh_key_count = stamp.key_listing.len();
         return scan;
@@ -2976,13 +2298,11 @@ fn scan_user_ssh_cached(
     scan
 }
 
-/// macOS: use `dscl` to query Directory Service for real users.
 fn parse_system_users_macos(
     current_ssh_dir: Option<&Path>,
     current_entries: Option<&[AuthorizedKeyEntry]>,
     cache: &SshStateCache,
 ) -> Vec<SystemUserInfo> {
-    // dscl . -list /Users UniqueID
     let output = match std::process::Command::new("dscl")
         .args([".", "-list", "/Users", "UniqueID"])
         .output()
@@ -2991,11 +2311,6 @@ fn parse_system_users_macos(
         _ => return vec![],
     };
 
-    // Batch the per-user shell lookup: one `dscl . -list /Users UserShell`
-    // fork builds a name→shell map instead of spawning a fresh
-    // `dscl . -read /Users/<name> UserShell` per candidate (O(N) forks → O(1)).
-    // Falls back to /bin/zsh per-entry when the batch is unavailable or a name
-    // is missing, matching the prior single-query fallback behavior.
     let shells = dscl_user_shell_map();
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -3012,26 +2327,21 @@ fn parse_system_users_macos(
             Err(_) => continue,
         };
 
-        // Skip system accounts and underscore-prefixed daemons.
         if uid < 500 || username.starts_with('_') {
             continue;
         }
 
-        // macOS home dirs are /Users/<name>.
         let home_dir = format!("/Users/{username}");
         let home = std::path::Path::new(&home_dir);
         if !home.is_dir() {
             continue;
         }
 
-        // Only include users who have .ssh/ configured.
         let ssh_dir = home.join(".ssh");
         if !ssh_dir.is_dir() {
             continue;
         }
 
-        // Look up the user's shell from the batched map (one fork total, not
-        // one per candidate). Missing entry → /bin/zsh, the prior default.
         let shell = shells
             .get(username)
             .cloned()
@@ -3053,13 +2363,6 @@ fn parse_system_users_macos(
     users
 }
 
-/// Build a `username → login shell` map from a single batched `dscl` query.
-///
-/// `dscl . -list /Users UserShell` emits one `<name> <shell>` line per account
-/// (e.g. `alice /bin/zsh`), so one fork resolves every candidate's shell. Used
-/// by [`parse_system_users_macos`] to avoid an O(N) `dscl . -read` fork per
-/// user. Returns an empty map when `dscl` is unavailable (macOS only); callers
-/// fall back to the documented per-user default.
 fn dscl_user_shell_map() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
     let output = match std::process::Command::new("dscl")
@@ -3071,8 +2374,6 @@ fn dscl_user_shell_map() -> std::collections::HashMap<String, String> {
     };
     let stdout = String::from_utf8_lossy(&output.stdout);
     for line in stdout.lines() {
-        // Each line is `<username> <shell>` (whitespace-separated). The shell
-        // path contains no spaces on macOS, so split_whitespace is safe.
         let mut parts = line.split_whitespace();
         if let (Some(name), Some(shell)) = (parts.next(), parts.next()) {
             map.insert(name.to_string(), shell.to_string());
@@ -3081,7 +2382,6 @@ fn dscl_user_shell_map() -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Linux: read /etc/passwd for real users with SSH configured.
 fn parse_system_users_linux(
     current_ssh_dir: Option<&Path>,
     current_entries: Option<&[AuthorizedKeyEntry]>,
@@ -3117,23 +2417,19 @@ fn parse_system_users_linux(
         let home_dir = parts[5];
         let shell = parts[6];
 
-        // Skip system accounts.
         if uid < 500 {
             continue;
         }
 
-        // Skip users with invalid / non-interactive shells.
         if invalid_shells.contains(&shell) || shell.is_empty() {
             continue;
         }
 
-        // Only include users whose home directory actually exists.
         let home = std::path::Path::new(home_dir);
         if !home.is_dir() {
             continue;
         }
 
-        // Only include users who have .ssh/ set up.
         let ssh_dir = home.join(".ssh");
         if !ssh_dir.is_dir() {
             continue;
@@ -3154,8 +2450,6 @@ fn parse_system_users_linux(
     users.sort_by(|a, b| a.username.cmp(&b.username));
     users
 }
-
-// ── Mock Data (test only) ───────────────────────────────────────────────────
 
 #[cfg(test)]
 mod mock {
@@ -3631,15 +2925,10 @@ mod mock {
     }
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// An encrypted ed25519 key (passphrase `"toride-test-passphrase"`) generated
-    /// once via `ssh-keygen` and embedded so the test is hermetic — no network.
-    /// Only ever used as a throwaway fixture.
     const ENCRYPTED_ED25519_PEM: &str = r"-----BEGIN OPENSSH PRIVATE KEY-----
 b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABCCl+BJeR
 6fh9cjkIDA+Xy9AAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAILgUYeqGhLirfiaY
@@ -3650,9 +2939,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 -----END OPENSSH PRIVATE KEY-----
 ";
 
-    /// The `ssh-keygen` argv for passphrase verification must derive the public
-    /// key ONLY — never `-P`/`-N` with the secret. This is the structural
-    /// guarantee that the passphrase cannot leak via argv/proc.
     #[test]
     fn keygen_read_public_argv_omits_passphrase_flag() {
         let argv = keygen_read_public_argv("/home/u/.ssh/id_ed25519");
@@ -3666,10 +2952,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
     }
 
-    /// End-to-end: `check_key_passphrase` feeds the secret via `SSH_ASKPASS`
-    /// (never `-P`), so the embedded encrypted fixture decrypts with the right
-    /// passphrase and is rejected with the wrong one. Requires `ssh-keygen` on
-    /// PATH, as the existing `toride-ssh-key` integration tests do.
     #[test]
     fn check_key_passphrase_uses_askpass_not_argv() {
         let probe = std::process::Command::new("ssh-keygen")
@@ -3684,7 +2966,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let dir = tempfile::tempdir().expect("tempdir");
         let key = dir.path().join("enc_ed25519");
         std::fs::write(&key, ENCRYPTED_ED25519_PEM).expect("write fixture");
-        // ssh-keygen refuses world/group-readable private keys.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -3701,8 +2982,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
     }
 
-    /// Numeric score for a [`SecurityGrade`] so tests can assert ordering
-    /// (worse grade => lower score) without reaching into the enum's repr.
     fn grade_score(g: SecurityGrade) -> u8 {
         match g {
             SecurityGrade::A => 5,
@@ -3751,8 +3030,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let result = collector.poll().await;
         assert!(result.is_some());
         let bundle = result.unwrap();
-        // Real data — just verify it doesn't crash and returns a bundle
-        // Verify the bundle is well-formed: security data is present.
         assert!(
             bundle.security.access_info.pubkey_auth,
             "pubkey_auth should default to true"
@@ -3834,39 +3111,26 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn security_grade_b_with_password_auth() {
-        // Start with a clean slate (no warnings) to test B in isolation.
         let mut security = mock::collect_mock_security();
-        security.security_diagnostics = vec![]; // Clear warnings
+        security.security_diagnostics = vec![];
         security
             .sshd_config
             .insert("passwordauthentication".into(), "yes".into());
-        // 100 - 25 (password) = 75 => B
         assert_eq!(security.grade(), SecurityGrade::B);
     }
 
     #[test]
     fn security_grade_c_with_password_and_root_login() {
-        // Start with a clean slate (no warnings) to test C in isolation.
         let mut security = mock::collect_mock_security();
-        security.security_diagnostics = vec![]; // Clear warnings
+        security.security_diagnostics = vec![];
         security
             .sshd_config
             .insert("passwordauthentication".into(), "yes".into());
         security
             .sshd_config
             .insert("permitrootlogin".into(), "yes".into());
-        // 100 - 25 (password) - 20 (root) = 55 => C
         assert_eq!(security.grade(), SecurityGrade::C);
     }
-
-    // ── F8: case-insensitive sshd booleans ───────────────────────────────────
-    // sshd_config values are matched case-insensitively by OpenSSH, but the
-    // parser preserves the original case in `d.value`. Before the fix, grade()
-    // and checks() used exact `== "yes"` / `!= "no"` comparisons, so a
-    // capitalized `PermitRootLogin Yes` (common in hand-edited configs) scored
-    // as PASSING while the access card showed root login enabled — grade and
-    // access card disagreed. These tests pin the case-insensitive behavior;
-    // reverting sshd_bool_is restores the silent disagreement.
 
     #[test]
     fn sshd_bool_parses_yes_no_true_false_one_zero_case_insensitively() {
@@ -3876,7 +3140,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         for no in &["no", "No", "NO", "nO", "false", "False", "FALSE", "0"] {
             assert_eq!(sshd_bool(no), Some(false), "{no:?} must be false");
         }
-        // Whitespace is tolerated; non-boolean / unset is None.
         assert_eq!(sshd_bool("  yes  "), Some(true));
         assert_eq!(sshd_bool("  no\t"), Some(false));
         assert_eq!(sshd_bool("prohibit-password"), None);
@@ -3886,10 +3149,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn grade_deducts_root_login_for_capitalized_yes() {
-        // The F8 regression: `PermitRootLogin Yes` (capital Y) was NOT scored
-        // by the old exact `== "yes"` test, so the grade stayed high while the
-        // access card showed root login enabled. With sshd_bool_is the grade
-        // must match the lowercase case exactly.
         let mut lower = mock::collect_mock_security();
         lower.security_diagnostics = vec![];
         lower
@@ -3907,7 +3166,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             upper.grade(),
             "capitalized 'Yes' must grade identically to lowercase 'yes'"
         );
-        // And both must be WORSE than the secure baseline (root disabled).
         let secure = mock::collect_mock_security();
         assert!(
             grade_score(upper.grade()) < grade_score(secure.grade()),
@@ -3917,8 +3175,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn grade_treats_all_capitalizations_consistently() {
-        // Run the full deduction matrix across casing variants and confirm
-        // grade() is invariant under case for every boolean check.
         let mk = |pw: &str, root: &str, empty: &str, pubkey: &str| {
             let mut s = mock::collect_mock_security();
             s.security_diagnostics = vec![];
@@ -3940,9 +3196,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn checks_capitalized_yes_is_flagged_insecure() {
-        // The checks() companion: `PermitRootLogin Yes` must show passing=false
-        // exactly like lowercase, resolving the disagreement with the access
-        // card (which already used eq_ignore_ascii_case).
         let mut security = mock::collect_mock_security();
         security
             .sshd_config
@@ -3962,8 +3215,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn checks_pubkey_no_capitalized_is_flagged() {
-        // PubkeyAuthentication No must mark the public-key check as not
-        // passing, case-insensitively.
         let mut security = mock::collect_mock_security();
         security
             .sshd_config
@@ -3982,8 +3233,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn checks_password_authentication_no_capitalized_is_passing() {
-        // A capitalized disabling value must still register as passing (secure)
-        // for the password-auth check, matching the lowercase behavior.
         let mut security = mock::collect_mock_security();
         security
             .sshd_config
@@ -3999,8 +3248,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "PasswordAuthentication No (capitalized) must be passing"
         );
     }
-
-    // ── parse_sshd_config_from tests ─────────────────────────────────────────
 
     #[test]
     fn parse_sshd_config_from_empty() {
@@ -4025,11 +3272,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_sshd_config_from_skips_match_blocks() {
-        // The parser builds the map from the lossless AST, iterating only
-        // top-level Directive nodes. `Match` blocks are skipped wholesale
-        // (their nested directives never reach the map), and a top-level
-        // `Include` that matches no files leaves nothing in the map (the
-        // Include directive itself never becomes a key).
         let contents =
             "Port 2222\nMatch Address 192.168.0.0/16\nInclude /nonexistent/nowhere/*.conf\n";
         let config = parse_sshd_config_from(contents);
@@ -4047,12 +3289,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_sshd_config_from_expands_include_relative_to_base_dir() {
-        // Stock Debian/Ubuntu/RHEL/Fedora put overrides in
-        // sshd_config.d/*.conf. The parser must follow `Include` (resolved
-        // against the config dir) so grade/checks reflect the EFFECTIVE
-        // config, not the defaults. This is the F9 regression: before the
-        // fix, the drop-in's `PermitRootLogin no` was invisible and grading
-        // silently used the default.
         let dir = tempfile::tempdir().expect("tempdir");
         let dropdir = dir.path().join("sshd_config.d");
         std::fs::create_dir_all(&dropdir).expect("mkdir dropin");
@@ -4070,10 +3306,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_sshd_config_from_include_first_occurrence_wins() {
-        // OpenSSH global-scope: the first obtained value wins. The main file's
-        // directive appears before the Include, so the drop-in must NOT
-        // override it. (Reverting the fix flips this: last-wins via HashMap
-        // insert would let the drop-in win.)
         let dir = tempfile::tempdir().expect("tempdir");
         let dropdir = dir.path().join("sshd_config.d");
         std::fs::create_dir_all(&dropdir).expect("mkdir dropin");
@@ -4091,7 +3323,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_sshd_config_from_include_absolute_pattern() {
-        // Absolute Include patterns are used as-is (no base-dir join).
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("custom.conf");
         std::fs::write(&target, "PasswordAuthentication no\n").expect("write");
@@ -4107,13 +3338,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_sshd_config_from_production_entry_expands_absolute_include() {
-        // F9 production wiring: the five Include tests above call the `_dir`
-        // seam directly. This one drives the PRODUCTION entry point
-        // `parse_sshd_config_from` (hardcoded base dir `/etc/ssh`) so a revert
-        // of the one-line `parse_sshd_config_from -> parse_sshd_config_from_dir`
-        // delegation back to the old line-scanner — which skipped `Include `
-        // lines — fails here. An absolute pattern sidesteps the hardcoded base
-        // dir; a drop-in setting a key the main file omits must surface.
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("dropin.conf");
         std::fs::write(&target, "PermitRootLogin no\n").expect("write dropin");
@@ -4129,9 +3353,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_sshd_config_from_include_sorted_glob_order() {
-        // Multiple drop-ins matching the glob are applied in sorted order;
-        // first-occurrence-wins means the lexicographically-first file's value
-        // sticks for a given key.
         let dir = tempfile::tempdir().expect("tempdir");
         let dropdir = dir.path().join("sshd_config.d");
         std::fs::create_dir_all(&dropdir).expect("mkdir dropin");
@@ -4149,11 +3370,8 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_sshd_config_from_include_cycle_safe() {
-        // A self-including file must not loop forever. The cycle guard
-        // canonicalizes each file and skips already-seen paths.
         let dir = tempfile::tempdir().expect("tempdir");
         let target = dir.path().join("loopy.conf");
-        // Include itself (absolute) plus a real directive.
         let body = format!("Port 9999\nInclude {}\n", target.display());
         std::fs::write(&target, &body).expect("write");
 
@@ -4179,15 +3397,11 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_sshd_config_from_various_whitespace() {
-        // Note: split_once(char::is_whitespace) splits on the first space only,
-        // so leading spaces in the value portion are preserved.
         let contents = "Port 2222\nMaxAuthTries 3\n";
         let config = parse_sshd_config_from(contents);
         assert_eq!(config.get("port"), Some(&"2222".to_string()));
         assert_eq!(config.get("maxauthtries"), Some(&"3".to_string()));
     }
-
-    // ── parse_sshd_access_info_from tests ────────────────────────────────────
 
     #[test]
     fn parse_access_info_defaults_when_empty() {
@@ -4237,11 +3451,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_access_info_skips_match_scoped_directives() {
-        // A directive inside a Match block must NOT leak into the global value.
-        // The global PasswordAuthentication=no must be preserved, and the
-        // Match-scoped PasswordAuthentication=yes must be ignored. The body
-        // line is genuinely indented (4 spaces) so the AST nests it inside the
-        // Match block rather than treating it as a top-level directive.
         let contents = concat!(
             "PasswordAuthentication no\n",
             "Match Address 192.168.0.0/16\n",
@@ -4256,9 +3465,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_access_info_match_scoped_allow_users_does_not_leak() {
-        // Regression: the old line-scanner only skipped the literal 'Match'
-        // header, so the indented AllowUsers inside the block OVERWROTE the
-        // global list (last-wins), producing the wrong login_status.
         let contents = concat!(
             "AllowUsers alice\n",
             "Match User carol\n",
@@ -4278,8 +3484,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_access_info_concatenates_multiple_global_allow_users() {
-        // OpenSSH treats multiple global AllowUsers lines as additive. The read
-        // path must concatenate them, not take the last one.
         let contents = concat!("AllowUsers alice\n", "Port 22\n", "AllowUsers bob carol\n",);
         let info = parse_sshd_access_info_from(contents);
         assert_eq!(
@@ -4288,7 +3492,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "multiple global AllowUsers lines must concatenate in order"
         );
 
-        // Same goes for DenyUsers / AllowGroups / DenyGroups.
         let contents = concat!(
             "DenyUsers dan\n",
             "DenyUsers eve\n",
@@ -4305,16 +3508,11 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn parse_access_info_read_matches_editor_getters() {
-        // The read path and the editor must agree on what the global
-        // Allow/Deny lists are. This is the property the fix is built on:
-        // parse_sshd_access_info_from now uses the same sshd getters the
-        // editor's add/remove helpers operate against.
         use toride_ssh::config::ast::parse;
         use toride_ssh::config::sshd::{
             get_allow_groups, get_allow_users, get_deny_groups, get_deny_users,
         };
 
-        // The Match body lines are genuinely indented so the AST nests them.
         let contents = concat!(
             "AllowUsers alice\n",
             "DenyUsers mallory\n",
@@ -4326,40 +3524,22 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         let info = parse_sshd_access_info_from(contents);
 
-        // The AST the editor would load for the same content.
         let ast = parse(contents);
         assert_eq!(info.allowed_users, get_allow_users(&ast));
         assert_eq!(info.denied_users, get_deny_users(&ast));
         assert_eq!(info.allowed_groups, get_allow_groups(&ast));
         assert_eq!(info.denied_groups, get_deny_groups(&ast));
-        // Match-scoped values must be absent from both views.
         assert_eq!(info.allowed_users, vec!["alice"]);
         assert_eq!(info.denied_users, vec!["mallory"]);
     }
 
-    // ── Write-path integration tests ─────────────────────────────────────────
-    //
-    // These tests override $HOME to a temp dir so SshManager writes there
-    // instead of the real ~/.ssh. They must run serially because env-var
-    // mutation is process-global. The `serial_test` pattern is achieved by
-    // a mutex — we don't need the crate, just a static Mutex<usize>.
-
     use tokio::sync::Mutex;
     static HOME_LOCK: Mutex<usize> = Mutex::const_new(0);
 
-    /// Acquire the HOME lock, held across `.await` points to serialize the
-    /// write-path integration tests (they mutate the process-global `$HOME`).
-    ///
-    /// Uses an async-aware `tokio::sync::Mutex` so the guard is `Send` and safe
-    /// to hold across `.await` (a `std::sync::MutexGuard` held across an await
-    /// risks a deadlock and is flagged by `clippy::await_holding_lock`).
     async fn acquire_home_lock() -> tokio::sync::MutexGuard<'static, usize> {
-        // `tokio::sync::Mutex` cannot be poisoned, so there is no recovery
-        // branch needed (unlike the previous std Mutex).
         HOME_LOCK.lock().await
     }
 
-    /// Temp HOME override for safe write-path tests.
     struct TempHome {
         original: Option<std::path::PathBuf>,
         _dir: tempfile::TempDir,
@@ -4407,7 +3587,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         };
         let result = execute_op(op).await;
         assert!(result.is_ok(), "config add failed: {:?}", result.err());
-        // Verify the file was actually written
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let ast = mgr.config().load().await.expect("load");
         let content = ast.to_string_lossless();
@@ -4415,7 +3594,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             content.contains("test-toride-host"),
             "host not in config: {content}"
         );
-        // Clean up: remove the host
         let op2 = SshOp::ConfigRemoveHost {
             name: "test-toride-host".into(),
         };
@@ -4503,7 +3681,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         };
         let result = execute_op(op).await;
         assert!(result.is_ok(), "key create failed: {:?}", result.err());
-        // Verify file exists
         let home = std::env::var("HOME").expect("HOME");
         let key_path = std::path::Path::new(&home).join(".ssh/toride-test-key");
         assert!(
@@ -4511,7 +3688,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "private key file should exist at {}",
             key_path.display()
         );
-        // Clean up
         let op2 = SshOp::KeyDelete {
             name: "toride-test-key".into(),
         };
@@ -4520,12 +3696,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         assert!(!key_path.exists(), "key file should be deleted");
     }
 
-    // ── Full CRUD Lifecycle Tests ──────────────────────────────────────────
-    //
-    // These tests exercise the toride-ssh backend directly (outside the TUI)
-    // to isolate whether CRUD operations actually persist to disk.
-
-    /// SSH Key full lifecycle: Create → Verify → List → Rename → Delete.
     #[tokio::test]
     async fn key_full_crud_lifecycle() {
         let _lock = acquire_home_lock().await;
@@ -4533,7 +3703,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let mgr = toride_ssh::SshManager::new().expect("SshManager init");
         let home = std::env::var("HOME").expect("HOME");
 
-        // Step 1: CREATE (use id_ prefix — inventory scan only finds id_* files)
         let params = toride_ssh::KeyCreateParams::ed25519("id_crud_test_key".to_owned());
         mgr.keys()
             .create(params)
@@ -4541,7 +3710,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             .expect("Step 1 CREATE: key generation failed");
         eprintln!("✓ Step 1: CREATE key 'id_crud_test_key'");
 
-        // Step 2: VERIFY files exist
         let private = std::path::Path::new(&home).join(".ssh/id_crud_test_key");
         let public = std::path::Path::new(&home).join(".ssh/id_crud_test_key.pub");
         assert!(
@@ -4554,7 +3722,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 2: VERIFY files exist");
 
-        // Step 3: LIST includes the key
         let keys = mgr.keys().list().await.expect("Step 3 LIST: scan failed");
         let found = keys
             .iter()
@@ -4566,14 +3733,12 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 3: LIST returns the key");
 
-        // Step 4: RENAME
         mgr.keys()
             .rename("id_crud_test_key", "id_crud_test_v2")
             .await
             .expect("Step 4 RENAME: rename failed");
         eprintln!("✓ Step 4: RENAME to 'id_crud_test_v2'");
 
-        // Step 5: VERIFY rename — old gone, new exists
         let new_private = std::path::Path::new(&home).join(".ssh/id_crud_test_v2");
         assert!(
             !private.exists(),
@@ -4585,7 +3750,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 5: VERIFY old gone, new exists");
 
-        // Step 6: DELETE
         let del_params = toride_ssh::KeyDeleteParams {
             name: "id_crud_test_v2".to_owned(),
             remove_public: true,
@@ -4600,7 +3764,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             .expect("Step 6 DELETE: deletion failed");
         eprintln!("✓ Step 6: DELETE 'id_crud_test_v2'");
 
-        // Step 7: VERIFY deletion
         assert!(
             !new_private.exists(),
             "Step 7 VERIFY: private key still exists after delete"
@@ -4614,7 +3777,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         eprintln!("✅ key_full_crud_lifecycle PASSED");
     }
 
-    /// Config host full lifecycle: Add → Verify → Edit → Verify → Remove → Verify.
     #[tokio::test]
     async fn config_host_full_crud_lifecycle() {
         let _lock = acquire_home_lock().await;
@@ -4622,7 +3784,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let mgr = toride_ssh::SshManager::new().expect("SshManager init");
         let svc = mgr.config();
 
-        // Step 1: ADD
         svc.edit(|ast| {
             toride_ssh::config::ConfigService::add_host(
                 ast,
@@ -4638,7 +3799,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         .expect("Step 1 ADD: config add_host failed");
         eprintln!("✓ Step 1: ADD host 'test-server'");
 
-        // Step 2: VERIFY
         let ast = svc.load().await.expect("Step 2 VERIFY: config load failed");
         let content = ast.to_string_lossless();
         assert!(
@@ -4651,7 +3811,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 2: VERIFY host block in config");
 
-        // Step 3: EDIT (remove + re-add with new values)
         svc.edit(|ast| {
             let _ = toride_ssh::config::ConfigService::remove_host(ast, "test-server");
             toride_ssh::config::ConfigService::add_host(
@@ -4668,7 +3827,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         .expect("Step 3 EDIT: config edit failed");
         eprintln!("✓ Step 3: EDIT host with new values");
 
-        // Step 4: VERIFY edit
         let ast = svc.load().await.expect("Step 4 VERIFY: config load failed");
         let content = ast.to_string_lossless();
         assert!(
@@ -4681,13 +3839,11 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 4: VERIFY new values present, old gone");
 
-        // Step 5: REMOVE
         svc.edit(|ast| toride_ssh::config::ConfigService::remove_host(ast, "test-server"))
             .await
             .expect("Step 5 REMOVE: config remove failed");
         eprintln!("✓ Step 5: REMOVE host 'test-server'");
 
-        // Step 6: VERIFY removal
         let ast = svc.load().await.expect("Step 6 VERIFY: config load failed");
         let content = ast.to_string_lossless();
         assert!(
@@ -4698,23 +3854,19 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         eprintln!("✅ config_host_full_crud_lifecycle PASSED");
     }
 
-    /// Authorized keys full lifecycle: Add → List → Remove.
     #[tokio::test]
     async fn authorized_keys_full_crud_lifecycle() {
-        // Real Ed25519 public key for testing (generated locally, not a real credential).
         const TEST_PUB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI crud-test@toride";
         let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("SshManager init");
         let svc = mgr.authorized_keys();
 
-        // Step 1: ADD
         svc.add(TEST_PUB_KEY, Some("crud-test"), None)
             .await
             .expect("Step 1 ADD: authorized_keys add failed");
         eprintln!("✓ Step 1: ADD key to authorized_keys");
 
-        // Step 2: VERIFY via list
         let entries = svc.list().await.expect("Step 2 VERIFY: list failed");
         assert!(
             !entries.is_empty(),
@@ -4732,7 +3884,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             entries.len()
         );
 
-        // Step 3: REMOVE via fingerprint
         let entry = matched.expect("entry must exist");
         let fp = entry
             .fingerprint()
@@ -4747,7 +3898,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 3: REMOVE key (fingerprint: {fp})");
 
-        // Step 4: VERIFY removal
         let entries = svc.list().await.expect("Step 4 VERIFY: list failed");
         let still_exists = entries
             .iter()
@@ -4760,9 +3910,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         eprintln!("✅ authorized_keys_full_crud_lifecycle PASSED");
     }
 
-    /// Known hosts full lifecycle: Add → Verify → Remove.
-    ///
-    /// Gracefully skips if `ssh-keyscan` fails (e.g. no local SSH server).
     #[tokio::test]
     async fn known_hosts_crud_lifecycle() {
         let _lock = acquire_home_lock().await;
@@ -4770,7 +3917,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         let mgr = toride_ssh::SshManager::new().expect("SshManager init");
         let svc = mgr.known_hosts();
 
-        // Step 1: ADD (may fail if no SSHD on localhost — that's okay)
         let add_result = svc.add("localhost").await;
         if add_result.is_err() {
             eprintln!(
@@ -4782,7 +3928,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         }
         eprintln!("✓ Step 1: ADD localhost to known_hosts");
 
-        // Step 2: VERIFY
         let kh_file =
             std::path::Path::new(&std::env::var("HOME").expect("HOME")).join(".ssh/known_hosts");
         assert!(kh_file.exists(), "Step 2 VERIFY: known_hosts file missing");
@@ -4793,16 +3938,12 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 2: VERIFY known_hosts file has content");
 
-        // Step 3: REMOVE
         svc.remove("localhost")
             .await
             .expect("Step 3 REMOVE: known_hosts remove failed");
         eprintln!("✓ Step 3: REMOVE localhost from known_hosts");
 
-        // Step 4: VERIFY removal (file may still exist but without localhost entries)
         let content_after = std::fs::read_to_string(&kh_file).unwrap_or_default();
-        // After removal the file may contain hashed entries or be empty.
-        // The key test is that remove() succeeded.
         eprintln!(
             "✓ Step 4: VERIFY remove succeeded (known_hosts now has {} bytes)",
             content_after.len()
@@ -4810,17 +3951,12 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         eprintln!("✅ known_hosts_crud_lifecycle PASSED");
     }
 
-    /// Execute-op pipeline round-trip: tests the same `SshOp` → `execute_op` path
-    /// the TUI uses for Keys and Config CRUD.
     #[tokio::test]
     async fn execute_op_pipeline_round_trip() {
         let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let home = std::env::var("HOME").expect("HOME");
 
-        // ── Key lifecycle via SshOp ──
-
-        // Step 1: CREATE via execute_op
         let op = SshOp::KeyCreate {
             name: "pipeline-key".into(),
             key_type: "Ed25519".into(),
@@ -4835,7 +3971,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 1: execute_op(KeyCreate) — {}", result.unwrap());
 
-        // Step 2: VERIFY file exists
         let key_path = std::path::Path::new(&home).join(".ssh/pipeline-key");
         assert!(
             key_path.exists(),
@@ -4843,7 +3978,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 2: VERIFY key file on disk");
 
-        // Step 3: RENAME via execute_op
         let op = SshOp::KeyRename {
             old_name: "pipeline-key".into(),
             new_name: "pipeline-renamed".into(),
@@ -4856,13 +3990,11 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 3: execute_op(KeyRename) — {}", result.unwrap());
 
-        // Step 4: VERIFY rename
         assert!(!key_path.exists(), "Step 4 VERIFY: old key still exists");
         let renamed_path = std::path::Path::new(&home).join(".ssh/pipeline-renamed");
         assert!(renamed_path.exists(), "Step 4 VERIFY: renamed key missing");
         eprintln!("✓ Step 4: VERIFY old gone, renamed exists");
 
-        // Step 5: DELETE via execute_op
         let op = SshOp::KeyDelete {
             name: "pipeline-renamed".into(),
         };
@@ -4874,16 +4006,12 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 5: execute_op(KeyDelete) — {}", result.unwrap());
 
-        // Step 6: VERIFY deletion
         assert!(
             !renamed_path.exists(),
             "Step 6 VERIFY: key still exists after delete"
         );
         eprintln!("✓ Step 6: VERIFY key file gone");
 
-        // ── Config lifecycle via SshOp ──
-
-        // Step 7: ADD HOST via execute_op
         let op = SshOp::ConfigAddHost {
             name: "pipeline-host".into(),
             host_name: Some("192.168.1.50".into()),
@@ -4898,7 +4026,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 7: execute_op(ConfigAddHost) — {}", result.unwrap());
 
-        // Step 8: VERIFY in config
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let ast = mgr.config().load().await.expect("load config");
         let content = ast.to_string_lossless();
@@ -4908,7 +4035,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
         eprintln!("✓ Step 8: VERIFY host in config");
 
-        // Step 9: REMOVE HOST via execute_op
         let op = SshOp::ConfigRemoveHost {
             name: "pipeline-host".into(),
         };
@@ -4923,7 +4049,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             result.unwrap()
         );
 
-        // Step 10: VERIFY removal
         let ast = mgr.config().load().await.expect("load config");
         let content = ast.to_string_lossless();
         assert!(
@@ -4934,11 +4059,8 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         eprintln!("✅ execute_op_pipeline_round_trip PASSED");
     }
 
-    // ── would_lock_out / map_sshd_error tests ────────────────────────────────
-
     #[test]
     fn would_lock_out_refuses_literal_root() {
-        // The literal-"root" guard must refuse regardless of host environment.
         let err = would_lock_out("deny", "root").expect("must refuse root");
         assert!(err.revert_optimistic, "lockout refusal must revert");
         assert!(
@@ -4954,16 +4076,11 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn would_lock_out_refuses_current_user_by_name() {
-        // If we can resolve the current account name, targeting it must be
-        // refused (this exercises the name-comparison branch on whoever runs
-        // the test — typically a CI user or the local developer).
         let Some(current) = current_username() else {
-            // Reverse lookup unavailable on this host; the name branch is
-            // skipped, and the UID fallback is covered by the next test.
             return;
         };
         if current == "root" {
-            return; // already covered by the literal-root test
+            return;
         }
         let err = would_lock_out("deny", &current).expect("must refuse to deny the current user");
         assert!(err.revert_optimistic);
@@ -4971,30 +4088,13 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn would_lock_out_refuses_current_user_by_uid_fallback() {
-        // The UID-based fallback closes the gap when current_username() is
-        // None. Build a scenario independent of the reverse lookup: look up the
-        // UID of a *known* local account via the forward lookup, then confirm
-        // that if that UID equals the process euid the guard refuses. We can't
-        // forge geteuid, so instead verify the property structurally: for the
-        // actual current euid, the forward lookup of any account that maps to
-        // that UID must trigger a refusal.
         let euid = unsafe { libc::geteuid() };
-        // The literal-root check happens first; if euid is 0 the root test
-        // already covers it. Otherwise find a name that resolves to euid via
-        // the forward lookup. current_username() is the reverse lookup; if it
-        // also returns that name the name-branch covers it. The fallback
-        // matters when the name differs or is unknown, which we can't force
-        // here — so assert the fallback at least doesn't false-negative on the
-        // current user when the forward lookup agrees.
         if euid == 0 {
             return;
         }
         if let Some(name) = current_username()
             && name != "root"
         {
-            // Forward lookup of the resolved name must yield euid, and the
-            // guard must refuse it (whether via the name branch or the UID
-            // fallback).
             assert_eq!(
                 uid_for_username(&name),
                 Some(euid),
@@ -5009,11 +4109,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn would_lock_out_refuses_unresolvable_user() {
-        // F10: a username that cannot be resolved to a UID by any lookup path
-        // (NSS, dscl /Search, id, /etc/passwd) must be REFUSED. The old behavior
-        // allowed it, which let a network-account operator (OD/LDAP/sssd) whose
-        // account the local-only lookup couldn't see deny/reset THEMSELVES and
-        // get locked out. For a lockout guard, uncertainty refuses.
         let result = would_lock_out("deny", "definitely-not-a-real-user-xyzzy");
         assert!(
             result.is_some(),
@@ -5029,7 +4124,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn map_sshd_error_reverts_on_validation_failure() {
-        // SshdConfigInvalid → disk untouched → revert the optimistic update.
         let err = map_sshd_error(
             "deny",
             "alice",
@@ -5061,8 +4155,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn map_sshd_error_reverts_on_pre_install_config_write_failure() {
-        // A staging/install failure (disk untouched) must still revert, because
-        // the optimistic update is stale relative to disk.
         let err = map_sshd_error(
             "deny",
             "alice",
@@ -5072,8 +4164,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             err.revert_optimistic,
             "pre-install ConfigWriteFailed must revert"
         );
-        // The (now-removed) chmod annotation must not be attached to any
-        // ConfigWriteFailed variant.
         assert!(
             !err.message.contains("mode could not be set"),
             "ConfigWriteFailed must not carry the dropped chmod annotation: {}",
@@ -5083,15 +4173,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn map_sshd_error_chmod_failure_reverts_without_false_installed_annotation() {
-        // F7: the backend chmods the staged TEMP before the rename into place
-        // (privilege.rs `install_temp`), so a "failed to chmod sshd_config"
-        // failure leaves the LIVE config untouched (nothing was installed).
-        // The optimistic UI update disagrees with disk truth (the change did
-        // NOT take effect), so it must revert. The message must NOT claim the
-        // config was installed — that was the inverted annotation the old code
-        // emitted, which lied about a state that can never happen under the
-        // chmod-before-rename invariant. Reverting the fix brings back the
-        // false "installed but mode could not be set" suffix, failing this.
         let err = map_sshd_error(
             "deny",
             "alice",
@@ -5111,7 +4192,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "chmod failure must not carry the dropped false annotation: {}",
             err.message
         );
-        // The operator-facing message still names the failing step.
         assert!(
             err.message.contains("chmod"),
             "message must still surface the underlying chmod step: {}",
@@ -5119,20 +4199,8 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
     }
 
-    // ── T4: MATCH-LEAK REGRESSION ────────────────────────────────────────────
-    // A global `PasswordAuthentication no` followed by a `Match Address ...`
-    // block whose INDENTED body sets `PasswordAuthentication yes` must NOT leak
-    // the Match-scoped override into the global value the security grade sees.
-    // (Previously the line scanner only skipped lines *starting with* `match `,
-    // so the indented directive leaked via last-write-wins and overwrote the
-    // global — making the headline grade silently wrong while the sibling AST
-    // scanner reported the correct value on the same screen.)
     #[test]
     fn parse_sshd_config_from_excludes_match_scoped_directives() {
-        // NOTE: the Match-body lines MUST be genuinely indented (the AST nests
-        // indented body lines under the MatchBlock). A `\` line-continuation in
-        // the string literal would strip the leading spaces, so use explicit
-        // `\n` joins to preserve the 4-space indent on the body directives.
         let contents = [
             "PasswordAuthentication no",
             "Match Address 10.0.0.0/8",
@@ -5153,7 +4221,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
                 .is_none_or(|v| v != "yes"),
             "Match-scoped PermitRootLogin must not appear in the global map: {config:?}"
         );
-        // Only the single global directive should be present.
         assert_eq!(
             config.len(),
             1,
@@ -5161,11 +4228,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
     }
 
-    // ── T5: IO REVERTS ───────────────────────────────────────────────────────
-    // On the edit path, Error::Io can come from the pre-write load(), the
-    // cross-process lock (F2), or a re-wrapped critical-section failure — in
-    // every case the staging/atomic-install pipeline leaves disk unchanged, so
-    // the optimistic UI update is a lie and must be classified reverting.
     #[test]
     fn map_sshd_error_reverts_on_io_failure() {
         let err = map_sshd_error(
@@ -5187,18 +4249,8 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
     }
 
-    // ── T6: UID-FALLBACK BRANCH REAL COVERAGE ────────────────────────────────
-    // would_lock_out_refuses_current_user_by_uid_fallback is a tautology: it
-    // returns early whenever current_username() is Some (so the name branch
-    // fires before the uid-fallback) and whenever euid is 0. would_lock_out_with_uid
-    // is the seam split out of would_lock_out specifically so the two backstop
-    // branches can be exercised deterministically without forging geteuid or
-    // spawning dscl.
     #[test]
     fn would_lock_out_with_uid_refuses_resolved_euid() {
-        // Forward lookup of `username` resolves to the operator's euid, but the
-        // reverse lookup that feeds the name-branch returned None (odd/unknown
-        // euid). The uid-equality backstop must still refuse.
         let err = would_lock_out_with_uid("deny", "weird-uid-account", 501, Some(501))
             .expect("uid == euid must be refused even when name lookup failed");
         assert!(err.revert_optimistic);
@@ -5207,8 +4259,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn would_lock_out_with_uid_refuses_uid_zero() {
-        // Defense-in-depth: a username that resolves to UID 0 must be refused
-        // regardless of the operator's euid.
         let err =
             would_lock_out_with_uid("reset", "toor", 1000, Some(0)).expect("uid 0 must be refused");
         assert!(err.revert_optimistic);
@@ -5217,7 +4267,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn would_lock_out_with_uid_allows_unrelated() {
-        // A real-looking uid that is neither euid nor 0 must not be refused.
         let result = would_lock_out_with_uid("deny", "someone-else", 1000, Some(501));
         assert!(
             result.is_none(),
@@ -5227,11 +4276,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn would_lock_out_with_uid_refuses_unresolvable_uid() {
-        // F10: when resolved_uid is None the target could not be positively
-        // identified. A lockout guard refuses by default — the operator can
-        // resolve the lookup (ensure NSS/sssd is reachable) and retry.
-        // Reverting the fix flips this back to `is_none()` (allows), which is
-        // the self-lockout hole.
         let result = would_lock_out_with_uid("deny", "ghost", 1000, None);
         assert!(
             result.is_some(),
@@ -5247,8 +4291,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn would_lock_out_with_uid_refuses_unresolvable_on_reset() {
-        // The refuse-by-default branch applies to BOTH verbs routed through the
-        // guard (deny and reset), since either can lock the operator out.
         let result = would_lock_out_with_uid("reset", "ghost", 1000, None);
         assert!(
             result.is_some(),
@@ -5256,16 +4298,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
     }
 
-    // ── F11: authorized_keys removal self-lockout guard ─────────────────────
-    // Removing the operator's last authorized key would lock them out of SSH
-    // (no pubkey left to authenticate with). The guard must refuse that case.
-    // These tests use a temp HOME so the AuthorizedKeysService reads/writes the
-    // operator's own ~/.ssh/authorized_keys; they run under HOME_LOCK for the
-    // same serial-execution reason as the other write-path tests.
-
-    /// Write `lines` to `~/.ssh/authorized_keys` in the current HOME, returning
-    /// nothing. Used to seed a known `authorized_keys` state before each guard
-    /// assertion.
     fn seed_authorized_keys(lines: &[&str]) {
         let home = std::env::var("HOME").expect("HOME set");
         let path = std::path::Path::new(&home).join(".ssh/authorized_keys");
@@ -5275,7 +4307,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn would_lock_out_authorized_key_refuses_removing_last_key() {
-        // A real Ed25519 public key (generated locally, not a real credential).
         const TEST_PUB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI last-key@toride";
         let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
@@ -5284,9 +4315,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
         seed_authorized_keys(&[TEST_PUB_KEY]);
 
-        // Compute the fingerprint of the sole key, then ask the guard whether
-        // removing it is safe. It must refuse (reverting) — this is the exact
-        // self-lockout case F11 targets.
         let entries = svc.list().await.expect("list");
         assert_eq!(entries.len(), 1, "seeded one key");
         let fp = entries[0].fingerprint().expect("fingerprint").clone();
@@ -5307,9 +4335,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn would_lock_out_authorized_key_allows_when_a_key_remains() {
-        // Two distinct real keys; removing one leaves the other, so the guard
-        // must allow (return None). Reverting the fix would refuse any removal
-        // of the only matching key, which would also wrongly block this.
         const KEY_A: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI keep-a@toride";
         const KEY_B: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIP9fG4eJ8kL3mN6oQ2rS5tU7vWxYzAbCdEfGhIjKlMnO remove-b@toride";
         let _lock = acquire_home_lock().await;
@@ -5321,7 +4346,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
         let entries = svc.list().await.expect("list");
         assert_eq!(entries.len(), 2, "seeded two keys");
-        // Find the fingerprint of KEY_B (the one to remove).
         let target_pk = ssh_key::PublicKey::from_openssh(KEY_B).expect("parse B");
         let fp = target_pk.fingerprint(ssh_key::HashAlg::Sha256).to_string();
 
@@ -5334,15 +4358,10 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn would_lock_out_authorized_key_allows_empty_file() {
-        // An empty authorized_keys has nothing to remove — the guard must allow
-        // (the backend `remove` will no-op). This pins that the guard only
-        // protects against emptying a NON-EMPTY file down to zero.
         let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let svc = mgr.authorized_keys();
-        // TempHome already created .ssh but no authorized_keys file → list is
-        // empty. Use a fingerprint that matches nothing.
         let guard = would_lock_out_authorized_key(&svc, "SHA256:nonexistent").await;
         assert!(
             guard.is_none(),
@@ -5352,9 +4371,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn would_lock_out_authorized_key_refuses_when_all_keys_match() {
-        // Multiple copies of the SAME key (same fingerprint): removing by that
-        // fingerprint would drop the count to zero even though there were
-        // several entries. The guard must refuse.
         const DUP_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI dup@toride";
         let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
@@ -5376,15 +4392,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn execute_op_authorized_key_remove_refuses_self_lockout() {
-        // F11 PRODUCTION WIRING: the four guard tests above call
-        // `would_lock_out_authorized_key` directly; none drove the
-        // `SshOp::AuthorizedKeyRemove` arm of `execute_op`. This pins that the
-        // guard is actually invoked in production: seed the operator's
-        // (temp-HOME) authorized_keys with a SINGLE key and attempt to remove
-        // it via `execute_op`. It must return a reverting Err and leave the
-        // file byte-for-byte intact. Deleting the production invocation
-        // (ssh_data.rs `if let Some(err) = would_lock_out_authorized_key(...)`)
-        // would make this remove the sole key and return Ok — failing the test.
         const TEST_PUB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI last-key@toride";
         let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
@@ -5397,7 +4404,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         assert_eq!(entries.len(), 1, "seeded one key");
         let fp = entries[0].fingerprint().expect("fingerprint").clone();
 
-        // Snapshot the file so we can prove the guard fires BEFORE any deletion.
         let home = std::env::var("HOME").expect("HOME");
         let ak_path = std::path::Path::new(&home).join(".ssh/authorized_keys");
         let before = std::fs::read_to_string(&ak_path).expect("read before");
@@ -5412,7 +4418,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "self-lockout refusal must revert, got {err:?}"
         );
 
-        // The sole key must survive untouched — the guard ran before `svc.remove`.
         let after = std::fs::read_to_string(&ak_path).expect("read after");
         assert_eq!(
             before, after,
@@ -5426,11 +4431,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn nss_uid_for_username_resolves_real_local_user() {
-        // F10: the NSS path (getpwnam_r) is now the PRIMARY lookup. It must
-        // resolve a real local user — root is guaranteed to exist on every
-        // Unix. Reverting the fix makes nss_uid_for_username not exist, so this
-        // test fails to compile; if someone stubs it to return None, the
-        // assertion fails. This proves the NSS path is wired and returns Some.
         let uid = nss_uid_for_username("root")
             .expect("NSS must resolve the 'root' account on any Unix system");
         assert_eq!(uid, 0, "root's UID via getpwnam_r must be 0; got {uid}");
@@ -5438,7 +4438,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn nss_username_for_uid_resolves_uid_zero_to_root() {
-        // The reverse NSS path (getpwuid_r) must map UID 0 back to "root".
         let name = nss_username_for_uid(0).expect("NSS must resolve UID 0 on any Unix system");
         assert_eq!(
             name, "root",
@@ -5448,8 +4447,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn nss_uid_for_username_returns_none_for_nonexistent() {
-        // Sanity: a guaranteed-nonexistent account resolves to None via NSS,
-        // so the refuse-by-default branch is reachable (not a panic).
         let uid = nss_uid_for_username("toride-definitely-no-such-user-zyxw");
         assert!(
             uid.is_none(),
@@ -5459,44 +4456,16 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn uid_for_username_resolves_root_via_full_chain() {
-        // End-to-end: the public uid_for_username (NSS + dscl + id + passwd)
-        // must resolve root to UID 0 on every platform.
         let uid = uid_for_username("root").expect("uid_for_username must resolve 'root'");
         assert_eq!(uid, 0);
     }
 
-    // ── F13: execute_op SshdDeny/Reset backend lockout guard ────────────────
-    //
-    // The privilege-inversion guard in execute_op's SshdDenyUser /
-    // SshdResetUserAccess arms MUST refuse a root target BEFORE the edit path
-    // is reached — independent of any UI-side guard (defense in depth). These
-    // tests pin that: targeting "root" returns a reverting Err and never reaches
-    // the privileged sshd_config write (so disk is untouched regardless of
-    // whether the test runs as root or not). The guard is in ssh_data.rs, the
-    // same process boundary as execute_op, so it is the load-bearing backstop.
-    //
-    // NOTE on the L1 install integration (F13 part b): verifying that denying a
-    // user in AllowUsers ends up in DenyUsers and NOT AllowUsers requires a
-    // real write to /etc/ssh/sshd_config (root/sudo -n), which a non-privileged
-    // test cannot perform. That invariant is exercised by the sshd editor's own
-    // tests (add_user_to_deny + remove_user_from_allow) in the config crate; it
-    // is not duplicated here because execute_op hardcodes /etc/ssh/sshd_config.
-    // See open_questions for the flush_ssh_ops test (lives in app/mod.rs).
-
-    /// Snapshot `/etc/ssh/sshd_config` if it is readable, else None. Used to prove
-    /// the lockout guard leaves the live config byte-for-byte unchanged.
     fn snapshot_sshd_config() -> Option<Vec<u8>> {
         std::fs::read("/etc/ssh/sshd_config").ok()
     }
 
     #[tokio::test]
     async fn execute_op_sshd_deny_root_refused_with_revert_and_disk_unchanged() {
-        // F13 (a): denying root must be refused by the backend guard BEFORE any
-        // edit, returning a reverting error (the optimistic UI update is a lie
-        // and must be refreshed), and /etc/ssh/sshd_config must be byte-identical
-        // before and after. Reverting the would_lock_out guard makes this return
-        // Ok (or a privilege error from attempting the real edit), failing the
-        // Err + revert assertions.
         let before = snapshot_sshd_config();
         let result = execute_op(SshOp::SshdDenyUser {
             username: "root".into(),
@@ -5515,7 +4484,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             err.message.contains("root"),
             "refusal message must name root: {err:?}"
         );
-        // Disk untouched: the guard fired before the edit path.
         assert_eq!(
             before, after,
             "/etc/ssh/sshd_config must be unchanged after a refused root denial"
@@ -5524,7 +4492,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn execute_op_sshd_reset_root_refused_with_revert_and_disk_unchanged() {
-        // Same as above for the Reset arm — both routed through would_lock_out.
         let before = snapshot_sshd_config();
         let result = execute_op(SshOp::SshdResetUserAccess {
             username: "root".into(),
@@ -5545,19 +4512,8 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
     }
 
-    // ── F19: would_lock_out_async runs blocking lookups off the worker ──────
-    //
-    // execute_op runs on a tokio task, and the lockout guard shells out to
-    // dscl/getent and reads /etc/passwd — all blocking. would_lock_out_async
-    // routes those lookups through spawn_blocking so the async worker is never
-    // stalled. These tests pin that the async path produces the SAME refusals
-    // as the sync path (the production arms now call the async version), so a
-    // regression that reverts the production call sites back to the blocking
-    // sync version fails them.
-
     #[tokio::test]
     async fn would_lock_out_async_refuses_root_like_sync() {
-        // The async wrapper must refuse root identically to the sync version.
         let sync_err = would_lock_out("deny", "root").expect("sync refuses root");
         let async_err = would_lock_out_async("deny", "root")
             .await
@@ -5575,8 +4531,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn would_lock_out_async_refuses_unresolvable_user() {
-        // The forward-lookup refuse-by-default branch must fire through the
-        // spawn_blocking path too: a guaranteed-unresolvable user is refused.
         let result =
             would_lock_out_async("deny", "toride-definitely-no-such-user-async-zyxw").await;
         let err = result.expect("async must refuse an unresolvable user");
@@ -5589,11 +4543,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn would_lock_out_async_denial_matches_sync_for_current_user() {
-        // For whoever runs the test (a CI user or the local developer), denying
-        // their own account must be refused by BOTH paths with the same verdict.
-        // This proves the async wiring resolves the operator identity the same
-        // way the sync path does. Skipped when the operator is root (covered
-        // above) or when the reverse lookup is unavailable.
         let Some(current) = current_username() else {
             return;
         };
@@ -5612,18 +4561,9 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         );
     }
 
-    // ── collect_authorized_keys_preview: direct unit coverage of the
-    // authorized_keys parser (options-vs-key-type heuristic, comment capture,
-    // 1-based line numbering, fingerprint best-effort, cap enforcement). The
-    // audit noted this security-relevant parser was only exercised indirectly
-    // via the system_users happy path; these tests pin each branch directly.
-
-    /// A valid OpenSSH ed25519 public key whose fingerprint `ssh_key` can
-    /// actually compute (matches the fixture used elsewhere in this module).
     const PREVIEW_PUB_KEY: &str = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIImjsW+mcxW23mD3eIRMOibeBrsz/KOg6NIefuhgc5uI \
          alice@toride";
 
-    /// Write `contents` to `<dir>/.ssh/authorized_keys` and return that path.
     fn write_authorized_keys(dir: &std::path::Path, contents: &str) -> std::path::PathBuf {
         let ssh_dir = dir.join(".ssh");
         std::fs::create_dir_all(&ssh_dir).expect("create .ssh");
@@ -5632,9 +4572,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         path
     }
 
-    /// Folded per-user scan previews for a fixture `.ssh` dir (no `id_*`
-    /// key files, so an empty listing is passed — these fixtures target the
-    /// `authorized_keys` half).
     fn scan_previews(
         ssh_dir: &std::path::Path,
     ) -> Vec<crate::ui::screens::ssh::AuthorizedKeyPreview> {
@@ -5670,8 +4607,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn collect_authorized_keys_preview_handles_options_prefixed_key() {
-        // options field first, then the key. The heuristic must skip the
-        // leading options token and still identify the key type + comment.
         let line = format!("no-port-forwarding,no-agent-forwarding {PREVIEW_PUB_KEY}");
         let dir = tempfile::tempdir().expect("tempdir");
         let dir_path = dir.path().to_path_buf();
@@ -5688,7 +4623,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             p.key_type, "ssh-ed25519",
             "options token skipped → key type is the second token"
         );
-        // The comment is the token AFTER the base64 blob (4th token here).
         assert_eq!(p.comment.as_deref(), Some("alice@toride"));
         assert_eq!(p.line, 1);
     }
@@ -5697,7 +4631,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
     fn collect_authorized_keys_preview_skips_malformed_and_single_field_lines() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dir_path = dir.path().to_path_buf();
-        // Mix: a comment, a blank line, a single-token line, and two valid keys.
         let contents = format!(
             "# a comment line\n\n\
              not-a-key\n\
@@ -5708,11 +4641,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         write_authorized_keys(&dir_path, &contents);
         let ssh_dir = dir_path.join(".ssh");
         let previews = scan_previews(&ssh_dir);
-        // Only the two full valid keys survive (comment, blank, and the
-        // single-token `not-a-key` / `just-one-token` lines are filtered).
         assert_eq!(previews.len(), 2, "only full key lines parse: {previews:?}");
-        // 1-based line numbers reflect the ORIGINAL file position: the first
-        // valid key is on line 4, the second on line 6.
         assert_eq!(previews[0].line, 4, "first valid key is on file line 4");
         assert_eq!(previews[1].line, 6, "second valid key is on file line 6");
     }
@@ -5721,9 +4650,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
     fn collect_authorized_keys_preview_enforces_cap() {
         let dir = tempfile::tempdir().expect("tempdir");
         let dir_path = dir.path().to_path_buf();
-        // USER_PREVIEW_CAP + 1 valid keys: previews cap at the constant,
-        // while the entry COUNT (derived from the same single read) keeps
-        // counting past the preview cap.
         let key = PREVIEW_PUB_KEY;
         let mut contents = String::new();
         for _ in 0..=(USER_PREVIEW_CAP + 1) {
@@ -5747,7 +4673,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn collect_authorized_keys_preview_missing_file_is_empty() {
-        // No authorized_keys at all → empty preview list, no panic.
         let dir = tempfile::tempdir().expect("tempdir");
         let ssh_dir = dir.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).expect("create .ssh");
@@ -5757,8 +4682,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn collect_authorized_keys_preview_single_field_key_type_falls_back_gracefully() {
-        // A line whose ONLY token is a known key type (no base64 blob): the
-        // tokens.len() < 2 guard drops it entirely (it cannot be a real key).
         let dir = tempfile::tempdir().expect("tempdir");
         let dir_path = dir.path().to_path_buf();
         write_authorized_keys(&dir_path, "ssh-ed25519\n");
@@ -5769,11 +4692,7 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "a lone key-type token with no blob must be dropped, not panic"
         );
     }
-    // -----------------------------------------------------------------------
-    // F08 oracles: mtime-keyed per-tick state caches
-    // -----------------------------------------------------------------------
 
-    /// Read the current mtime of a fixture file.
     fn mtime_of(path: &std::path::Path) -> std::time::SystemTime {
         std::fs::metadata(path)
             .expect("stat fixture")
@@ -5781,8 +4700,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             .expect("mtime")
     }
 
-    /// Rewrite `path` with `content`, spinning until the mtime moves so the
-    /// `(mtime, len)` cache stamp is distinguishable from the previous one.
     fn rewrite_with_new_stamp(
         path: &std::path::Path,
         previous: std::time::SystemTime,
@@ -5797,8 +4714,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         }
     }
 
-    /// Comparable projection of known-host entries (the UI type lacks
-    /// `PartialEq`).
     fn known_host_summary(entries: &[KnownHostEntry]) -> Vec<(String, String, Vec<String>)> {
         entries
             .iter()
@@ -5812,7 +4727,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             .collect()
     }
 
-    /// Comparable projection of authorized-key entries.
     fn auth_key_summary(entries: &[AuthorizedKeyEntry]) -> Vec<(String, Option<String>, String)> {
         entries
             .iter()
@@ -5820,7 +4734,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             .collect()
     }
 
-    /// A valid `known_hosts` line for a real Ed25519 public key.
     fn known_hosts_line(host: &str) -> String {
         let (key_type, rest) = PREVIEW_PUB_KEY
             .split_once(' ')
@@ -5829,7 +4742,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         format!("{host} {key_type} {blob}")
     }
 
-    /// The Arc stored in the `known_hosts` cache slot, if populated.
     fn known_hosts_slot(cache: &SshStateCache) -> Option<Arc<Vec<KnownHostEntry>>> {
         cache
             .known_hosts
@@ -5855,8 +4767,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         assert_eq!(first.len(), 1, "one host line → one grouped entry");
         let stored = known_hosts_slot(&cache).expect("slot populated after miss");
 
-        // Second collect with an unchanged file: served from the cache
-        // (the slot Arc is NOT replaced) with byte-identical entries.
         let second = collect_known_hosts_cached(&mgr, Some(&paths), &cache)
             .await
             .expect("second collect");
@@ -5871,7 +4781,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "an unchanged file must not rebuild the cached list"
         );
 
-        // Rewriting the file (new mtime) must invalidate: two hosts now.
         let two_hosts = format!(
             "{}\n{}",
             known_hosts_line("example.com"),
@@ -5928,8 +4837,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "unchanged authorized_keys must be served from the cache"
         );
 
-        // Remove the key → the cache must notice (empty list), never serve
-        // the stale entry.
         rewrite_with_new_stamp(ak_path, mtime_of(ak_path), "");
         let third = collect_authorized_keys_cached(&mgr, Some(&paths), &cache)
             .await
@@ -5947,9 +4854,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             .expect("paths")
             .ssh_dir()
             .to_path_buf();
-        // A garbage cert file: a real inspect would fail (producing no
-        // entries), so if the converted output carries OUR injected parse,
-        // the hit path demonstrably skipped the inspect.
         let cert_path = ssh_dir.join("id_test-cert.pub");
         std::fs::write(&cert_path, "not a certificate").expect("write cert fixture");
 
@@ -5990,9 +4894,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[tokio::test]
     async fn security_fold_previews_match_file_scan() {
-        // The security pass's current-user fold must derive the SAME
-        // previews (including SHA-256 fingerprints) from the collected
-        // entries that a direct file scan produces.
         let _lock = acquire_home_lock().await;
         let _home = TempHome::new();
         let ssh_dir = std::path::PathBuf::from(std::env::var("HOME").expect("TempHome sets HOME"))
@@ -6001,11 +4902,9 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             format!("# comment\n\n{PREVIEW_PUB_KEY}\ncommand=\"/bin/date\" {PREVIEW_PUB_KEY}\n");
         std::fs::write(ssh_dir.join("authorized_keys"), &contents).expect("write ak");
 
-        // Fresh file scan (the pre-fold code path shape).
         let scan = scan_user_ssh_dir(&[], &ssh_dir);
         assert_eq!(scan.authorized_key_count, 2);
 
-        // Collected entries: exactly the tick's authorized-keys branch.
         let mgr = toride_ssh::SshManager::new().expect("mgr");
         let entries = mgr
             .authorized_keys()
@@ -6055,7 +4954,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             .map(|s| Arc::clone(&s.value))
             .expect("stored after miss");
 
-        // Unchanged listing → cache hit, same Arc.
         let second = scan_user_ssh_cached(&ssh_dir, None, None, &cache);
         assert_eq!(second.authorized_key_count, 1);
         let stored_after = cache
@@ -6067,7 +4965,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             .expect("stored");
         assert!(Arc::ptr_eq(&stored, &stored_after), "hit must not re-scan");
 
-        // Rewriting authorized_keys changes the stamp → re-scan.
         rewrite_with_new_stamp(
             &ak,
             mtime_of(&ak),
@@ -6079,7 +4976,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn user_scan_cacheable_requires_stamps_for_every_file() {
-        // All files stampable + authorized_keys present -> cacheable.
         let cacheable = UserSshStamp {
             key_listing: vec![(
                 "id_rsa".into(),
@@ -6095,9 +4991,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         };
         assert!(user_scan_cacheable(&cacheable));
 
-        // One key file with an unmeasurable mtime -> never cached (its
-        // content could change without the stamp noticing), but the file
-        // still COUNTS in the scan.
         let uncacheable = UserSshStamp {
             key_listing: vec![
                 (
@@ -6119,7 +5012,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             "an unstampable key file must disable caching for that user"
         );
 
-        // Missing authorized_keys (no auth stamp) -> not cacheable.
         let no_auth = UserSshStamp {
             key_listing: vec![(
                 "id_rsa".into(),
@@ -6135,9 +5027,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
 
     #[test]
     fn user_key_listing_counts_entries_without_stamping_them_out() {
-        // Parity with the pre-cache counting: every id_* file (minus
-        // .pub/.old/.bak) is present in the listing, each with its stamp
-        // when the filesystem provides one.
         let dir = tempfile::tempdir().expect("tempdir");
         let ssh_dir = dir.path().join(".ssh");
         std::fs::create_dir_all(&ssh_dir).expect("mkdir");
@@ -6168,7 +5057,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         std::fs::create_dir_all(&ssh_dir).expect("mkdir");
         std::fs::write(ssh_dir.join("authorized_keys"), PREVIEW_PUB_KEY).expect("write ak");
 
-        // Entries as the tick's authorized-keys branch would deliver them.
         let entries = vec![AuthorizedKeyEntry {
             key_type: "ssh-ed25519".into(),
             public_key: String::new(),
@@ -6187,8 +5075,6 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
             Some("folded@toride")
         );
         assert_eq!(scan.authorized_keys_preview[0].fingerprint, "SHA256:folded");
-        // The fold must not populate the cache with folded data derived
-        // from another tick's collection.
         assert!(
             cache.user_ssh_scans.lock().expect("lock").is_empty(),
             "folded scans must not poison the per-user cache"

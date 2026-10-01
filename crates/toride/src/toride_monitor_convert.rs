@@ -1,19 +1,10 @@
-//! Convert `toride-monitor` library types to UI presentation types.
-//!
-//! This is the ONLY module in the `toride` crate that imports
-//! `toride_monitor` types — mirroring `fail2ban_convert.rs`'s role as the
-//! single boundary between backend and presentation. Each function handles
-//! errors gracefully: malformed input is skipped with a `tracing::warn!` and a
-//! placeholder, never propagated (the read-only section must never crash the
-//! TUI).
+//! Convert `toride_monitor` library types to UI presentation types. Malformed
+//! input is skipped with a `tracing::warn!` and a placeholder, never propagated.
 
 use crate::ui::screens::toride_monitor::{
     AnomalyEntry, ConnectionEntry, FindingEntry, PortEntry, SnapshotSummary,
 };
 
-/// Map a backend [`toride_monitor::report::AnomalySeverity`] to a lowercase
-/// string used by the presentation layer: `"info" | "warning" | "error" |
-/// "critical"`. Kept here so the TUI never imports the Severity enum directly.
 fn severity_str(s: toride_monitor::report::AnomalySeverity) -> &'static str {
     use toride_monitor::report::AnomalySeverity;
     match s {
@@ -24,11 +15,7 @@ fn severity_str(s: toride_monitor::report::AnomalySeverity) -> &'static str {
     }
 }
 
-/// Convert a backend snapshot [`toride_monitor::report::MonitorReport`] into
-/// the presentation [`SnapshotSummary`].
-///
-/// Connection / destination counts are taken directly from the backend's
-/// aggregated fields. Bytes/packets are forwarded as-is (already `Option`).
+/// Convert backend snapshot totals 1:1.
 pub fn convert_snapshot(report: &toride_monitor::report::MonitorReport) -> SnapshotSummary {
     SnapshotSummary {
         total_connections: report.total_connections,
@@ -38,12 +25,8 @@ pub fn convert_snapshot(report: &toride_monitor::report::MonitorReport) -> Snaps
     }
 }
 
-/// Convert backend outbound connections into presentation rows.
-///
-/// Each [`ConnectionInfo`](toride_monitor::report::ConnectionInfo) maps 1:1.
-/// Source/destination are formatted as `ip:port`; an unset port renders as
-/// just the IP. Protocol/state are cloned verbatim (the backend already
-/// lower-cases protocol and upper-cases state).
+/// Convert backend outbound connections 1:1. An unset port renders as just
+/// the IP; empty protocol/state render as `"?"` / `"—"` placeholders.
 pub fn convert_connections(
     conns: &[toride_monitor::report::ConnectionInfo],
 ) -> Vec<ConnectionEntry> {
@@ -67,9 +50,6 @@ pub fn convert_connections(
         .collect()
 }
 
-/// Format an `IpAddr:port` pair, mirroring the backend's own `format_addr`
-/// (IPv6 wrapped in brackets). A zero port renders without a port suffix so a
-/// UDP socket with no remote peer doesn't show a misleading `:0`.
 fn format_addr_port(addr: std::net::IpAddr, port: u16) -> String {
     if port == 0 {
         addr.to_string()
@@ -81,12 +61,8 @@ fn format_addr_port(addr: std::net::IpAddr, port: u16) -> String {
     }
 }
 
-/// Convert backend port entries into presentation rows.
-///
-/// Each backend [`toride_monitor::ports::PortEntry`] maps 1:1. Protocol / IP
-/// version / state become lowercase / `IPv4`/`IPv6` / upper-case labels via the
-/// backend's own `Display` impls (rendered through `to_string`). Process name
-/// and PID are forwarded as-is.
+/// Convert backend port entries 1:1; protocol / IP version / state render
+/// through the backend's `Display` impls, process name and PID as-is.
 pub fn convert_ports(ports: &[toride_monitor::ports::PortEntry]) -> Vec<PortEntry> {
     ports
         .iter()
@@ -102,10 +78,8 @@ pub fn convert_ports(ports: &[toride_monitor::ports::PortEntry]) -> Vec<PortEntr
         .collect()
 }
 
-/// Convert backend anomaly findings to UI entries (from `detect()`).
-///
-/// Every finding maps 1:1. An empty `id` or `title` is logged and the entry is
-/// still produced with a placeholder so the row count matches the backend.
+/// Convert backend anomaly findings 1:1; an empty `id`/`title` is logged and
+/// still produces a placeholder row so counts match the backend.
 pub fn convert_anomalies(
     findings: Vec<toride_monitor::report::AnomalyFinding>,
 ) -> Vec<AnomalyEntry> {
@@ -139,13 +113,8 @@ pub fn convert_anomalies(
         .collect()
 }
 
-/// Convert backend doctor findings (the same `AnomalyFinding` type) to UI
-/// finding entries.
-///
-/// Every finding maps 1:1. The doctor's `observed_value` / `threshold` fields
-/// carry the contextual detail (e.g. "Expected at: /usr/sbin/iptables"), so
-/// they are merged into the `detail` string. An empty `id` or `title` is
-/// logged and the entry is still produced with a placeholder.
+/// Convert backend doctor findings 1:1, merging `observed_value`/`threshold`
+/// into `detail`; empty `id`/`title` still produce placeholder rows.
 pub fn convert_findings(
     findings: Vec<toride_monitor::report::AnomalyFinding>,
 ) -> Vec<FindingEntry> {
@@ -159,8 +128,6 @@ pub fn convert_findings(
                     f.title
                 );
             }
-            // Merge observed/threshold into a single detail line, eliding
-            // empty halves so we don't render a bare separator.
             let detail = match (f.observed_value.as_str(), f.threshold.as_str()) {
                 ("", "") => String::new(),
                 ("", t) => format!("threshold: {t}"),
@@ -186,8 +153,6 @@ pub fn convert_findings(
         .collect()
 }
 
-// ── Tests ───────────────────────────────────────────────────────────────────
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,8 +163,6 @@ mod tests {
     fn ip(s: &str) -> IpAddr {
         s.parse().unwrap()
     }
-
-    // ── convert_snapshot ──────────────────────────────────────────────────────
 
     #[test]
     fn convert_snapshot_empty_report() {
@@ -224,8 +187,6 @@ mod tests {
         assert_eq!(summary.total_bytes, Some(1234));
         assert_eq!(summary.total_packets, Some(56));
     }
-
-    // ── convert_connections ───────────────────────────────────────────────────
 
     #[test]
     fn convert_connections_empty() {
@@ -262,10 +223,8 @@ mod tests {
         assert_eq!(rows[0].dst, "93.184.216.34:443");
         assert_eq!(rows[0].state, "ESTABLISHED");
         assert_eq!(rows[0].bytes, Some(100));
-        // IPv6: zero src port renders without suffix, IPv6 dst wrapped in [].
         assert_eq!(rows[1].src, "::1");
         assert_eq!(rows[1].dst, "[2001:db8::1]:53");
-        // Empty state renders as a placeholder dash (never blank).
         assert_eq!(rows[1].state, "—");
     }
 
@@ -287,10 +246,6 @@ mod tests {
 
     #[test]
     fn convert_connections_zero_dst_port_renders_bare_ip() {
-        // A zero dst_port (e.g. a UDP socket with no remote peer) must render
-        // the destination WITHOUT a misleading `:0` suffix. The port is no
-        // longer carried as a separate field — it lives only inside the `dst`
-        // string — so this pins the bare-IP contract directly.
         let conn = ConnectionInfo {
             src: ip("10.0.0.2"),
             src_port: 54321,
@@ -307,8 +262,6 @@ mod tests {
         assert!(!rows[0].dst.ends_with(":0"));
         assert!(!rows[0].dst.ends_with("]:0"));
     }
-
-    // ── convert_ports ─────────────────────────────────────────────────────────
 
     #[test]
     fn convert_ports_maps_protocol_and_state_labels() {
@@ -341,12 +294,6 @@ mod tests {
 
     #[test]
     fn convert_ports_maps_one_to_one_no_filter() {
-        // Pins the documented contract: convert_ports maps every backend
-        // PortEntry 1:1 with NO defensive filter, mirroring the fail2ban
-        // convert. This is safe because `PortEntry.local_addr` is a typed
-        // `IpAddr` whose `Display` is always well-formed (no placeholder/empty
-        // rows are possible from the structured netstat2 source). A row count
-        // mismatch would be a regression of that contract.
         let ports = vec![
             toride_monitor::ports::PortEntry {
                 protocol: PortProtocol::Tcp,
@@ -373,14 +320,9 @@ mod tests {
         ];
         let rows = convert_ports(&ports);
         assert_eq!(rows.len(), ports.len(), "1:1 mapping — no rows filtered");
-        // IPv6 local_addr Display is well-formed (no brackets, no port) — the
-        // asymmetry with convert_connections (which guards empty
-        // protocol/state) is harmless because the typed IpAddr cannot be empty.
         assert_eq!(rows[1].local_addr, "::");
         assert_eq!(rows[1].ip_version, "IPv6");
     }
-
-    // ── convert_anomalies ─────────────────────────────────────────────────────
 
     #[test]
     fn convert_anomalies_empty() {
@@ -421,8 +363,6 @@ mod tests {
         assert_eq!(entries[0].title, "(no title)");
     }
 
-    // ── convert_findings ──────────────────────────────────────────────────────
-
     #[test]
     fn convert_findings_empty() {
         assert!(convert_findings(Vec::new()).is_empty());
@@ -446,17 +386,14 @@ mod tests {
 
     #[test]
     fn convert_findings_detail_omits_empty_halves() {
-        // Only observed, no threshold.
         let f = AnomalyFinding::new("id", AnomalySeverity::Info, "title", "observed", "");
         let entries = convert_findings(vec![f]);
         assert_eq!(entries[0].detail, "observed");
 
-        // Only threshold, no observed.
         let f = AnomalyFinding::new("id", AnomalySeverity::Info, "title", "", "thresh");
         let entries = convert_findings(vec![f]);
         assert_eq!(entries[0].detail, "threshold: thresh");
 
-        // Neither.
         let f = AnomalyFinding::new("id", AnomalySeverity::Info, "title", "", "");
         let entries = convert_findings(vec![f]);
         assert!(entries[0].detail.is_empty());
@@ -469,8 +406,6 @@ mod tests {
         assert_eq!(entries[0].id, "(unknown)");
         assert_eq!(entries[0].title, "(no title)");
     }
-
-    // ── format_addr_port ──────────────────────────────────────────────────────
 
     #[test]
     fn format_addr_port_zero_port_omits_suffix() {

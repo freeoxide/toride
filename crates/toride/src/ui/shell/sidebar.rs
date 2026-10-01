@@ -1,9 +1,5 @@
-//! Left sidebar: a numbered, collapsible module navigation list with an SSH
-//! connection footer.
-//!
-//! [`Sidebar`] owns only interaction state (selection index + collapsed flag);
-//! the item list is passed at [`render`](Sidebar::render) time so the screen
-//! remains the single owner of the data.
+//! Sidebar module navigation list. [`Sidebar`] owns only interaction state;
+//! the item list is passed at [`render`](Sidebar::render) time.
 
 use ratatui::{
     Frame,
@@ -18,33 +14,25 @@ use crate::ui::helpers::anim::AnimatedFloats;
 use crate::ui::helpers::color::lerp_color;
 use crate::ui::theme::Palette;
 
-/// Expanded sidebar width.
+/// Sidebar width in columns when expanded.
 pub const SIDEBAR_W: u16 = 30;
-/// Collapsed (icon-rail) sidebar width.
+/// Sidebar width in columns when collapsed to icons.
 pub const SIDEBAR_W_COLLAPSED: u16 = 6;
-/// Rows consumed per expanded item (one content row + one padding row).
 const ROW_STEP: u16 = 2;
-/// Seconds for a highlight to fully fade in / out.
 const ANIM_SECS: f32 = 0.15;
-/// Highlight strength applied to a hovered (but unselected) item.
 const HOVER_STRENGTH: f32 = 0.5;
-/// Below this strength the pill / border are skipped (effectively invisible).
 const VISIBLE_EPS: f32 = 0.01;
 
-/// Sidebar interaction state.
+/// Sidebar navigation list; owns interaction state only, the item list is
+/// supplied at render time.
 pub struct Sidebar {
     selected: usize,
     collapsed: bool,
     len: usize,
-    /// Index of the item currently under the mouse, if any.
     hovered: Option<usize>,
-    /// Per-item highlight strength (0 = none, 1 = fully selected), animated.
     anim: AnimatedFloats,
-    /// Clickable rect for each item, refreshed every render (index = item).
     hitboxes: Vec<Rect>,
-    /// Topmost visible item index (scroll viewport offset).
     scroll_offset: usize,
-    /// Number of items visible in the last render (cached for scroll methods).
     last_visible: usize,
 }
 
@@ -67,11 +55,7 @@ impl Sidebar {
         }
     }
 
-    /// Set (or clear) the hovered item.
-    ///
-    /// Returns whether the hovered item actually changed — the dashboard
-    /// shell uses this to change-gate mouse-motion redraws (a sweep that
-    /// stays within the same item repaints nothing).
+    /// Set (or clear) the hovered item; returns whether it actually changed.
     pub fn set_hovered(&mut self, hovered: Option<usize>) -> bool {
         if self.hovered == hovered {
             return false;
@@ -89,9 +73,6 @@ impl Sidebar {
             .map(|visible_idx| self.scroll_offset + visible_idx)
     }
 
-    /// Per-item highlight target strengths (1.0 selected, hover-strength
-    /// hovered, 0 otherwise). Shared by [`tick_anim`](Self::tick_anim),
-    /// [`snap_anim`](Self::snap_anim), and [`is_animating`](Self::is_animating).
     fn highlight_targets(&self) -> Vec<f32> {
         (0..self.anim.len())
             .map(|i| {
@@ -106,40 +87,36 @@ impl Sidebar {
             .collect()
     }
 
-    /// Advance the per-item highlight animation toward each item's target.
     fn tick_anim(&mut self) {
         let targets = self.highlight_targets();
         self.anim.tick(&targets, ANIM_SECS);
     }
 
-    /// Snap every highlight to its target in one step (reduced motion). The
-    /// selection pill lands on the newly-selected item immediately on the
-    /// single redraw a keypress triggers, instead of being frozen mid-fade.
     fn snap_anim(&mut self) {
         let targets = self.highlight_targets();
         self.anim.snap_to_targets(&targets);
     }
 
-    /// Whether any highlight animation is still in progress.
+    /// Whether the highlight animation is still settling.
     #[must_use]
     pub fn is_animating(&self) -> bool {
         let targets = self.highlight_targets();
         !self.anim.is_settled(&targets, VISIBLE_EPS)
     }
 
-    /// Currently selected item index.
+    /// The selected item index.
     #[must_use]
     pub fn selected(&self) -> usize {
         self.selected
     }
 
-    /// Whether the sidebar is collapsed to an icon rail.
+    /// Whether the sidebar is collapsed to icons.
     #[must_use]
     pub fn is_collapsed(&self) -> bool {
         self.collapsed
     }
 
-    /// Current rendered width.
+    /// Current sidebar width in columns.
     #[must_use]
     pub fn width(&self) -> u16 {
         if self.collapsed {
@@ -167,16 +144,14 @@ impl Sidebar {
         self.clamp_scroll_to_selection(self.last_visible);
     }
 
-    /// Scroll the viewport by `delta` items (positive = down, negative = up).
-    /// Does not change the selection. Used for mouse wheel scrolling.
+    /// Scroll the viewport by `delta` items (positive = down); does not move
+    /// the selection.
     pub fn scroll(&mut self, delta: i32) {
         let visible = self.last_visible;
         if visible == 0 || self.len <= visible {
             return;
         }
         let max_offset = self.len - visible;
-        // Compute the new offset in `usize` to avoid cross-width sign/truncation
-        // casts; saturating arith keeps the result within the legal range.
         let new = if delta >= 0 {
             let up = u32::try_from(delta).unwrap_or(u32::MAX);
             self.scroll_offset.saturating_add(up as usize)
@@ -188,15 +163,11 @@ impl Sidebar {
     }
 
     /// Current viewport scroll offset (index of the topmost visible item).
-    /// Exposed so tests can assert that mouse-wheel routing scrolls the
-    /// sidebar list rather than the focused content pane.
     #[must_use]
     pub fn scroll_offset(&self) -> usize {
         self.scroll_offset
     }
 
-    /// Clamp scroll offset so the selected item is visible in the viewport.
-    /// `visible` is the number of items that fit in the list area.
     fn clamp_scroll_to_selection(&mut self, visible: usize) {
         if visible == 0 {
             return;
@@ -209,9 +180,6 @@ impl Sidebar {
         }
     }
 
-    /// Clamp scroll offset to the legal viewport range without anchoring it to
-    /// the current selection. Used during render so mouse-wheel scrolling can
-    /// freely move the selected item off-screen.
     fn clamp_scroll_bounds(&mut self, visible: usize) {
         if visible == 0 || self.len <= visible {
             self.scroll_offset = 0;
@@ -221,23 +189,18 @@ impl Sidebar {
         self.scroll_offset = self.scroll_offset.min(max_offset);
     }
 
-    /// Toggle the collapsed icon-rail state.
+    /// Toggle the collapsed state.
     pub fn toggle_collapse(&mut self) {
         self.collapsed = !self.collapsed;
     }
 
-    /// Force the collapsed state (used for responsive auto-collapse).
+    /// Force the collapsed state to `collapsed`.
     pub fn set_collapsed(&mut self, collapsed: bool) {
         self.collapsed = collapsed;
     }
 
-    /// Render the sidebar.
-    ///
-    /// `active` is the index of the currently active section (highlighted even
-    /// when not selected); `focused` controls whether the selection uses the
-    /// strong selection background. `collapsed` is the *effective* collapsed
-    /// state for this frame (manual toggle OR responsive auto-collapse), passed
-    /// in so the screen can override the manual flag on narrow terminals.
+    /// Render the sidebar; `collapsed` is the effective state for this frame,
+    /// overriding the manual toggle.
     #[expect(clippy::too_many_arguments, reason = "shell render needs full context")]
     pub fn render(
         &mut self,
@@ -260,7 +223,6 @@ impl Sidebar {
             return;
         }
 
-        // Header label "MODULES" (only when expanded and there's room).
         let mut list_top = inner.y;
         if !collapsed {
             let header = Line::from(Span::styled(
@@ -274,15 +236,12 @@ impl Sidebar {
             list_top = inner.y + 2;
         }
 
-        // No footer reserved at the bottom (the SSH-connected indicator was removed).
         let footer_h: u16 = 0;
         let list_bottom = inner.bottom().saturating_sub(footer_h + 1);
         let foot_y = inner.bottom().saturating_sub(footer_h);
 
-        // Each item gets a blank row beneath it for vertical breathing room.
         let step: u16 = if collapsed { 1 } else { ROW_STEP };
 
-        // Compute number of visible items and keep the viewport in range.
         let list_rows = list_bottom.saturating_sub(list_top) as usize;
         let visible = if step > 0 {
             list_rows / step as usize
@@ -292,8 +251,6 @@ impl Sidebar {
         self.last_visible = visible;
         self.clamp_scroll_bounds(visible);
 
-        // Advance the highlight animation and refresh hit-test rects. Under
-        // reduced motion snap to targets so the selection lands immediately.
         if p.reduced_motion {
             self.snap_anim();
         } else {
@@ -301,13 +258,11 @@ impl Sidebar {
         }
         self.hitboxes.clear();
 
-        // Highlight target colours (depend on focus state).
         let h_bg = if focused { p.sel_bg } else { p.bg_inset };
         let h_text = if focused { p.accent } else { p.text };
         let h_border = if focused { p.accent } else { p.text_muted };
 
         for (i, item) in items.iter().enumerate() {
-            // Skip items above the scroll viewport.
             if i < self.scroll_offset {
                 continue;
             }
@@ -321,12 +276,10 @@ impl Sidebar {
             let row = Rect::new(inner.x, y, inner.width, 1);
             self.hitboxes.push(row);
 
-            // Interpolated colours for this item's current highlight strength.
             let s = self.anim.get(i);
             let row_bg = lerp_color(p.bg_alt, h_bg, s);
             let border = lerp_color(p.bg_alt, h_border, s);
 
-            // Padded pill caps fade in along with the background.
             if s > VISIBLE_EPS && !collapsed {
                 Self::render_pill_caps(frame, inner, p, row_bg, border, y, foot_y);
             }
@@ -335,7 +288,6 @@ impl Sidebar {
                     .style(Style::new().bg(row_bg)),
                 row,
             );
-            // Left border = first cell recoloured toward the accent.
             if s > VISIBLE_EPS {
                 frame.render_widget(
                     Paragraph::new(Span::styled(" ", Style::new().bg(border))),
@@ -345,13 +297,6 @@ impl Sidebar {
         }
     }
 
-    /// Render the quarter-cell "caps" above and below a selected item so the
-    /// highlight reads as a padded pill rather than a thin one-row band.
-    ///
-    /// The cap above fills the bottom quarter of its cell; the cap below fills
-    /// the top quarter — both in the selection background `bg`. The first cell
-    /// of each cap is recoloured to `bar` so the left border keeps the same
-    /// rounded silhouette as the highlight.
     fn render_pill_caps(
         frame: &mut Frame,
         inner: Rect,
@@ -394,12 +339,6 @@ impl Sidebar {
         }
     }
 
-    /// Build the styled line for a single sidebar item.
-    ///
-    /// Icon and label colours are interpolated from their base toward `accent`
-    /// by the highlight `strength`, giving an animated fade. Column 0 is left
-    /// blank — the selection border is painted separately by recolouring that
-    /// cell (see `render` / `render_pill_caps`).
     fn item_line(
         i: usize,
         item: &SidebarItem,
@@ -457,9 +396,6 @@ mod tests {
 
     #[test]
     fn set_hovered_reports_whether_it_changed() {
-        // F01 change-gating contract: a motion sweep that stays within the
-        // same item (or over empty space) must not report a change, so the
-        // dashboard shell can skip the frame rebuild.
         let mut s = Sidebar::new(3);
         assert!(s.set_hovered(Some(1)), "first hover is a change");
         assert!(!s.set_hovered(Some(1)), "same item again is not");
@@ -532,8 +468,6 @@ mod tests {
         assert_eq!(s.scroll_offset(), 6);
     }
 
-    // ── render-driven coverage of visible-window + hitbox computation ───────
-
     fn sidebar_items(n: usize) -> Vec<SidebarItem> {
         use crate::data::Section;
         let sections = [
@@ -561,9 +495,6 @@ mod tests {
 
     #[test]
     fn render_computes_visible_window_and_hitboxes() {
-        // Drive render() through a TestBackend instead of assigning state by
-        // hand, exercising the visible = list_rows/step computation and the
-        // per-item hitbox push.
         use ratatui::{Terminal, backend::TestBackend};
 
         use crate::ui::theme::CHARM;
@@ -571,7 +502,6 @@ mod tests {
         let items = sidebar_items(20);
         let mut s = Sidebar::new(items.len());
 
-        // Tall enough to show several items; sidebar is SIDEBAR_W wide.
         let area = Rect::new(0, 0, SIDEBAR_W, 20);
         let mut terminal = Terminal::new(TestBackend::new(SIDEBAR_W, 20)).unwrap();
         terminal
@@ -580,9 +510,6 @@ mod tests {
             })
             .unwrap();
 
-        // The block consumes the right border; the "MODULES" header + blank
-        // row push list_top (inner.y + 2) down, and list_bottom is
-        // inner.bottom() - 1, so visible = (list_bottom - list_top) / 2.
         let block = Block::default().borders(Borders::RIGHT);
         let inner = block.inner(area);
         let list_top = inner.y + 2;
@@ -590,8 +517,6 @@ mod tests {
         let expected_visible = usize::from(list_bottom.saturating_sub(list_top)) / 2;
         assert_eq!(s.last_visible, expected_visible);
 
-        // Every pushed hitbox must lie inside inner, be 1 row tall, and sit
-        // on an even step from list_top.
         assert!(!s.hitboxes.is_empty(), "render should push hitboxes");
         for (i, r) in s.hitboxes.iter().enumerate() {
             assert_eq!(r.height, 1, "hitbox[{i}] height");
@@ -602,16 +527,12 @@ mod tests {
             );
         }
 
-        // item_at should resolve the first hitbox to scroll_offset (0 here).
         let first = s.hitboxes[0];
         assert_eq!(s.item_at(first.x, first.y), Some(0));
     }
 
     #[test]
     fn render_collapsed_uses_step_one() {
-        // In collapsed mode each item occupies a single row (step == 1), so
-        // visible should be roughly double the expanded count and hitboxes
-        // should be packed one row apart.
         use ratatui::{Terminal, backend::TestBackend};
 
         use crate::ui::theme::CHARM;
@@ -629,14 +550,11 @@ mod tests {
 
         let block = Block::default().borders(Borders::RIGHT);
         let inner = block.inner(area);
-        // Collapsed: no "MODULES" header, step == 1; list_bottom is
-        // inner.bottom() - 1, so visible = list_bottom - list_top (= inner.y).
         let list_top = inner.y;
         let list_bottom = inner.bottom().saturating_sub(1);
         let expected_visible = usize::from(list_bottom.saturating_sub(list_top));
         assert_eq!(s.last_visible, expected_visible);
         assert!(s.hitboxes.len() >= 2);
-        // Consecutive hitboxes are exactly 1 row apart.
         for w in s.hitboxes.windows(2) {
             assert_eq!(w[1].y - w[0].y, 1, "collapsed hitboxes must be 1 row apart");
         }
@@ -644,8 +562,6 @@ mod tests {
 
     #[test]
     fn render_scroll_offset_skips_top_items() {
-        // After scrolling, render() must skip items above scroll_offset and
-        // the first hitbox must map back to the scrolled-to item.
         use ratatui::{Terminal, backend::TestBackend};
 
         use crate::ui::theme::CHARM;
@@ -655,7 +571,6 @@ mod tests {
 
         let area = Rect::new(0, 0, SIDEBAR_W, 14);
         let mut terminal = Terminal::new(TestBackend::new(SIDEBAR_W, 14)).unwrap();
-        // First render to populate last_visible.
         terminal
             .draw(|f| {
                 s.render(f, area, CHARM, &items, 0, true, false);
@@ -672,7 +587,6 @@ mod tests {
             })
             .unwrap();
 
-        // First hitbox maps to scroll_offset (item 3).
         let first = s.hitboxes[0];
         assert_eq!(s.item_at(first.x, first.y), Some(3));
     }

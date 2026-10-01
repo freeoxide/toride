@@ -1,48 +1,24 @@
-//! Criterion benchmarks for the toride-mise JSON deserialization kernels.
-//!
-//! Inputs are committed, deterministic fixtures (no host binaries, no
-//! network, no `mise` invocation): a 500-tool `mise ls --json` map
-//! (`benches/fixtures/ls/installed_500.json`, every fifth tool carrying a
-//! second version) and a 200-tool `mise outdated --json` map
-//! (`benches/fixtures/outdated/entries_200.json`). These are the exact
-//! `Deserialize` types the collector's probes feed
-//! (`LsOutput` / `OutdatedOutput` in `serde_utils::json_outputs`).
-//!
-//! Run scoped:
-//!
-//! ```text
-//! cargo bench -p toride-mise --bench serde_parse
-//! ```
-
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use toride_mise::serde_utils::json_outputs::{LsOutput, OutdatedOutput};
 
-/// Path to the committed `mise ls --json` fixture.
 const FIXTURE_LS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/benches/fixtures/ls/installed_500.json"
 );
 
-/// Path to the committed `mise outdated --json` fixture.
 const FIXTURE_OUTDATED: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/benches/fixtures/outdated/entries_200.json"
 );
 
-/// Tool names in the ls fixture.
 const EXPECTED_LS_TOOLS: usize = 500;
 
-/// Version entries in the ls fixture (one per tool, plus one more for every
-/// fifth tool).
 const EXPECTED_LS_VERSIONS: usize = 600;
 
-/// Entries in the outdated fixture.
 const EXPECTED_OUTDATED: usize = 200;
 
-/// One-time validation that the committed fixtures still have the shape the
-/// expected constants above describe.
 fn assert_fixture_shape(ls_raw: &str, outdated_raw: &str) {
     let ls: LsOutput = serde_json::from_str(ls_raw).expect("ls fixture deserializes");
     assert_eq!(ls.len(), EXPECTED_LS_TOOLS);
@@ -51,7 +27,6 @@ fn assert_fixture_shape(ls_raw: &str, outdated_raw: &str) {
         EXPECTED_LS_VERSIONS,
         "every fifth tool carries a second version"
     );
-    // Every tool's first version is the active one.
     assert!(ls.values().all(|v| v[0].active.unwrap_or(false)));
 
     let outdated: OutdatedOutput =

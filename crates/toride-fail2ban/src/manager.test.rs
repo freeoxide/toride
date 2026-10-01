@@ -7,7 +7,6 @@ use std::collections::HashMap;
 use std::io::Write;
 use tempfile::tempdir;
 
-/// Create a log file with SSH-like auth failure lines at the given path.
 fn write_sample_log(log_path: &std::path::Path) {
     let mut file = std::fs::File::create(log_path).unwrap();
     writeln!(
@@ -32,7 +31,6 @@ fn write_sample_log(log_path: &std::path::Path) {
     .unwrap();
 }
 
-/// Build a `Fail2BanPaths` rooted under a temp directory.
 fn make_paths(dir: &tempfile::TempDir) -> Fail2BanPaths {
     let base = dir.path();
     Fail2BanPaths {
@@ -46,7 +44,6 @@ fn make_paths(dir: &tempfile::TempDir) -> Fail2BanPaths {
     }
 }
 
-/// Build a `Fail2BanConfig` with a single jail pointing at the given log path.
 fn make_config(log_path: &std::path::Path) -> Fail2BanConfig {
     let mut jails = HashMap::new();
     jails.insert(
@@ -71,7 +68,6 @@ fn make_config(log_path: &std::path::Path) -> Fail2BanConfig {
     }
 }
 
-/// Helper: create a temp directory with a log file, config, paths, and manager.
 fn setup() -> (tempfile::TempDir, Fail2BanManager) {
     let dir = tempdir().unwrap();
     let log_path = dir.path().join("auth.log");
@@ -82,12 +78,9 @@ fn setup() -> (tempfile::TempDir, Fail2BanManager) {
     (dir, manager)
 }
 
-// ---------- new() ----------
-
 #[test]
 fn new_creates_manager_successfully() {
     let (_dir, manager) = setup();
-    // The manager was created without error and the sshd jail is loaded.
     let status = manager.status().unwrap();
     assert!(status.running);
     assert_eq!(status.jails.len(), 1);
@@ -115,7 +108,6 @@ fn new_loads_only_enabled_jails() {
             ignore_ips: Vec::new(),
         },
     );
-    // This jail is disabled.
     jails.insert(
         "nginx".to_string(),
         JailConfig {
@@ -144,8 +136,6 @@ fn new_loads_only_enabled_jails() {
     assert_eq!(status.jails.len(), 1);
     assert_eq!(status.jails[0].name, "sshd");
 }
-
-// ---------- add_jail() ----------
 
 #[test]
 fn add_jail_inserts_new_jail() {
@@ -203,8 +193,6 @@ fn add_jail_duplicate_returns_already_exists() {
     }
 }
 
-// ---------- remove_jail() ----------
-
 #[test]
 fn remove_jail_removes_existing_jail() {
     let (_dir, mut manager) = setup();
@@ -226,8 +214,6 @@ fn remove_jail_nonexistent_returns_not_found() {
         other => panic!("Expected JailNotFound, got: {:?}", other),
     }
 }
-
-// ---------- scan_all() ----------
 
 #[test]
 fn scan_all_returns_results_for_each_jail() {
@@ -295,8 +281,6 @@ fn scan_all_empty_jails_returns_empty_map() {
     assert!(results.is_empty());
 }
 
-// ---------- scan_jail() ----------
-
 #[test]
 fn scan_jail_returns_result_for_existing_jail() {
     let dir = tempdir().unwrap();
@@ -307,7 +291,6 @@ fn scan_jail_returns_result_for_existing_jail() {
     let mut manager = Fail2BanManager::new(config, paths).unwrap();
 
     let result = manager.scan_jail("sshd", ExecutionMode::DryRun).unwrap();
-    // The sample log has "Failed password" lines with IPs, so there should be matches.
     assert!(result.lines_scanned > 0);
 }
 
@@ -323,14 +306,11 @@ fn scan_jail_nonexistent_returns_not_found() {
     }
 }
 
-// ---------- ban_ip() ----------
-
 #[test]
 fn ban_ip_succeeds_for_existing_jail() {
     let (_dir, mut manager) = setup();
     let ip: std::net::IpAddr = "192.168.1.100".parse().unwrap();
 
-    // ban_ip with dry_run should succeed without running any commands.
     manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
 }
 
@@ -360,8 +340,6 @@ fn ban_ip_duplicate_returns_already_banned() {
         other => panic!("Expected AlreadyBanned, got: {:?}", other),
     }
 }
-
-// ---------- unban_ip() ----------
 
 #[test]
 fn unban_ip_succeeds_for_banned_ip() {
@@ -409,8 +387,6 @@ fn unban_ip_not_banned_returns_not_banned() {
         other => panic!("Expected NotBanned, got: {:?}", other),
     }
 }
-
-// ---------- status() ----------
 
 #[test]
 fn status_returns_correct_jail_count() {
@@ -474,8 +450,6 @@ fn status_config_path_matches_paths() {
     );
 }
 
-// ---------- jail_status() ----------
-
 #[test]
 fn jail_status_returns_status_for_existing_jail() {
     let (_dir, manager) = setup();
@@ -510,8 +484,6 @@ fn jail_status_nonexistent_returns_not_found() {
     }
 }
 
-// ---------- purge_expired() ----------
-
 #[test]
 fn purge_expired_returns_empty_when_no_expired_bans() {
     let (_dir, manager) = setup();
@@ -526,7 +498,6 @@ fn purge_expired_removes_expired_bans() {
     let log_path = dir.path().join("auth.log");
     write_sample_log(&log_path);
 
-    // Use a very short ban_time so the ban expires quickly.
     let mut jails = HashMap::new();
     jails.insert(
         "sshd".to_string(),
@@ -551,7 +522,6 @@ fn purge_expired_removes_expired_bans() {
     let paths = make_paths(&dir);
     let manager = Fail2BanManager::new(config, paths).unwrap();
 
-    // Manually inject an expired ban entry into the store to test purge.
     let expired_entry = crate::types::BanEntry {
         ip: "10.0.0.99".parse().unwrap(),
         prefix: 32,
@@ -563,7 +533,6 @@ fn purge_expired_removes_expired_bans() {
         reason: Some("test".to_string()),
     };
 
-    // Write the expired entry directly into the store file.
     let store_data = crate::store::StoreData {
         active_bans: vec![expired_entry],
         history: Vec::new(),
@@ -580,19 +549,13 @@ fn purge_expired_removes_expired_bans() {
     );
 }
 
-// ---------- firewall() ----------
-
 #[test]
 fn firewall_returns_detected_firewall() {
     let (_dir, manager) = setup();
 
-    // On macOS this will be Pf, on Linux it will be Iptables or Nftables.
     let fw = manager.firewall();
-    // Just verify it returns a valid variant (does not panic).
     let _ = format!("{:?}", fw);
 }
-
-// ---------- config() ----------
 
 #[test]
 fn config_returns_reference_to_config() {
@@ -607,8 +570,6 @@ fn config_returns_reference_to_config() {
     assert!(cfg.jails.contains_key("sshd"));
 }
 
-// ---------- paths() ----------
-
 #[test]
 fn paths_returns_reference_to_paths() {
     let dir = tempdir().unwrap();
@@ -622,8 +583,6 @@ fn paths_returns_reference_to_paths() {
     assert_eq!(p.ban_db, dir.path().join("data").join("bans.json"));
     assert_eq!(p.config_file, dir.path().join("config").join("config.json"));
 }
-
-// ---------- Integration-style tests ----------
 
 #[test]
 fn ban_then_unban_reflects_in_status() {
@@ -694,8 +653,6 @@ fn remove_jail_then_add_again_succeeds() {
     assert_eq!(status.jails.len(), 1);
     assert_eq!(status.jails[0].name, "sshd");
 }
-
-// ---------- Edge-case tests ----------
 
 #[test]
 fn test_manager_many_jails() {
@@ -795,7 +752,6 @@ fn test_ban_then_scan_does_not_duplicate() {
     let dir = tempdir().unwrap();
     let log_path = dir.path().join("auth.log");
     let mut file = std::fs::File::create(&log_path).unwrap();
-    // Write enough lines with the same IP to exceed max_retry (default 5).
     for _ in 0..6 {
         writeln!(
             file,
@@ -830,22 +786,18 @@ fn test_ban_then_scan_does_not_duplicate() {
 
     let ip: std::net::IpAddr = "10.10.10.10".parse().unwrap();
 
-    // Manually ban the IP first.
     manager.ban_ip("sshd", ip, ExecutionMode::DryRun).unwrap();
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.banned_ips.len(), 1);
 
-    // Now scan the log file -- the IP is already banned so it should be skipped.
     let results = manager.scan_all(ExecutionMode::DryRun).unwrap();
     let scan_result = results.get("sshd").unwrap();
-    // The scan should not produce a new ban for the already-banned IP.
     assert!(
         scan_result.new_bans.is_empty(),
         "Expected no new bans, got {}",
         scan_result.new_bans.len()
     );
 
-    // The ban count should still be 1.
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.banned_ips.len(), 1);
 }
@@ -859,7 +811,6 @@ fn test_add_jail_then_scan_new_jail() {
     let paths = make_paths(&dir);
     let mut manager = Fail2BanManager::new(config, paths).unwrap();
 
-    // Create a new jail at runtime.
     let log_path2 = dir.path().join("custom.log");
     let mut file = std::fs::File::create(&log_path2).unwrap();
     writeln!(
@@ -882,7 +833,6 @@ fn test_add_jail_then_scan_new_jail() {
     };
     manager.add_jail("custom", resolved).unwrap();
 
-    // Scan only the newly added jail.
     let result = manager.scan_jail("custom", ExecutionMode::DryRun).unwrap();
     assert!(result.lines_scanned > 0);
 }
@@ -896,11 +846,9 @@ fn test_remove_then_add_same_name_succeeds() {
     let paths = make_paths(&dir);
     let mut manager = Fail2BanManager::new(config, paths).unwrap();
 
-    // Remove the existing jail.
     manager.remove_jail("sshd").unwrap();
     assert!(manager.status().unwrap().jails.is_empty());
 
-    // Add a new jail with the same name but different pattern and log file.
     let log_path2 = dir.path().join("new_auth.log");
     write_sample_log(&log_path2);
 
@@ -922,7 +870,6 @@ fn test_remove_then_add_same_name_succeeds() {
     assert_eq!(status.jails.len(), 1);
     assert_eq!(status.jails[0].name, "sshd");
 
-    // Verify the jail uses the new config.
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.log_path, log_path2);
     assert_eq!(
@@ -935,7 +882,6 @@ fn test_remove_then_add_same_name_succeeds() {
 fn test_status_shows_correct_total_bans() {
     let (_dir, mut manager) = setup();
 
-    // Ban 3 IPs.
     manager
         .ban_ip("sshd", "1.1.1.1".parse().unwrap(), ExecutionMode::DryRun)
         .unwrap();
@@ -946,15 +892,12 @@ fn test_status_shows_correct_total_bans() {
         .ban_ip("sshd", "3.3.3.3".parse().unwrap(), ExecutionMode::DryRun)
         .unwrap();
 
-    // Unban 1 IP -- this moves it to history.
     manager
         .unban_ip("sshd", "2.2.2.2".parse().unwrap(), ExecutionMode::DryRun)
         .unwrap();
 
     let js = manager.jail_status("sshd").unwrap();
-    // 2 active bans remain.
     assert_eq!(js.banned_ips.len(), 2);
-    // total_bans reflects history count (1 unbanned entry moved to history).
     assert_eq!(js.total_bans, 1);
 }
 
@@ -1005,7 +948,6 @@ fn test_purge_expired_with_mixed_bans() {
 
     let now = Utc::now();
 
-    // Create an expired ban.
     let expired_entry = crate::types::BanEntry {
         ip: "10.0.0.1".parse().unwrap(),
         prefix: 32,
@@ -1017,7 +959,6 @@ fn test_purge_expired_with_mixed_bans() {
         reason: Some("expired".to_string()),
     };
 
-    // Create a non-expired ban.
     let active_entry = crate::types::BanEntry {
         ip: "10.0.0.2".parse().unwrap(),
         prefix: 32,
@@ -1029,7 +970,6 @@ fn test_purge_expired_with_mixed_bans() {
         reason: Some("active".to_string()),
     };
 
-    // Create another expired ban.
     let expired_entry2 = crate::types::BanEntry {
         ip: "10.0.0.3".parse().unwrap(),
         prefix: 32,
@@ -1041,7 +981,6 @@ fn test_purge_expired_with_mixed_bans() {
         reason: Some("expired2".to_string()),
     };
 
-    // Write the mixed bans directly into the store file.
     let store_data = crate::store::StoreData {
         active_bans: vec![expired_entry, active_entry.clone(), expired_entry2],
         history: Vec::new(),
@@ -1051,13 +990,11 @@ fn test_purge_expired_with_mixed_bans() {
     std::fs::write(dir.path().join("data").join("bans.json"), store_json).unwrap();
 
     let purged = manager.purge_expired().unwrap();
-    // Only the 2 expired entries should be purged.
     assert_eq!(purged.len(), 2);
     let purged_ips: Vec<std::net::IpAddr> = purged.iter().map(|e| e.ip).collect();
     assert!(purged_ips.contains(&"10.0.0.1".parse::<std::net::IpAddr>().unwrap()));
     assert!(purged_ips.contains(&"10.0.0.3".parse::<std::net::IpAddr>().unwrap()));
 
-    // The non-expired ban should still be active.
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.banned_ips.len(), 1);
     assert_eq!(js.banned_ips[0].ip, active_entry.ip);
@@ -1106,7 +1043,6 @@ fn test_scan_jail_then_ban_ip_then_unban_ip_full_cycle() {
     let dir = tempdir().unwrap();
     let log_path = dir.path().join("auth.log");
     let mut file = std::fs::File::create(&log_path).unwrap();
-    // Write enough lines with distinct IPs to trigger bans (max_retry default is 5).
     for i in 0..6 {
         writeln!(
             file,
@@ -1119,33 +1055,27 @@ fn test_scan_jail_then_ban_ip_then_unban_ip_full_cycle() {
     let paths = make_paths(&dir);
     let mut manager = Fail2BanManager::new(config, paths).unwrap();
 
-    // Step 1: Scan the jail.
     let scan_result = manager.scan_jail("sshd", ExecutionMode::DryRun).unwrap();
     assert!(scan_result.lines_scanned > 0);
 
-    // Step 2: Manually ban a distinct IP.
     let ban_ip: std::net::IpAddr = "10.0.0.100".parse().unwrap();
     manager
         .ban_ip("sshd", ban_ip, ExecutionMode::DryRun)
         .unwrap();
 
-    // Step 3: Verify both the scan-triggered and manual bans appear in status.
     let js = manager.jail_status("sshd").unwrap();
     assert!(!js.banned_ips.is_empty(), "Expected at least 1 banned IP");
     let has_manual = js.banned_ips.iter().any(|b| b.ip == ban_ip);
     assert!(has_manual, "Manual ban IP should be in banned_ips");
 
-    // Step 4: Unban the manual IP.
     manager
         .unban_ip("sshd", ban_ip, ExecutionMode::DryRun)
         .unwrap();
 
-    // Step 5: Verify the manual IP is no longer in active bans.
     let js = manager.jail_status("sshd").unwrap();
     let has_manual = js.banned_ips.iter().any(|b| b.ip == ban_ip);
     assert!(!has_manual, "Manual ban IP should have been unbanned");
 
-    // Step 6: Verify the unban moved the entry to history.
     assert!(
         js.total_bans >= 1,
         "History should contain at least 1 entry"

@@ -1,27 +1,5 @@
-//! Test-only spawn-counting oracle for the fail2ban doctor.
-//!
-//! Compiled only under `cfg(test)` (with the `doctor` feature, which is
-//! default). It provides:
-//!
-//! - [`CountingRunner`] — a [`Runner`](crate::command::Runner) that never
-//!   spawns a process, answers every command with a generic success (empty
-//!   stdout, exit 0), and counts each `run` / `run_with_timeout` call as one
-//!   "spawn". Cheaply cloneable: the clone shares the counter, so a test can
-//!   hand one clone to [`Doctor::new`](crate::doctor::Doctor::new) and read
-//!   the count from the other.
-//! - [`doctor_all_spawn_report`] — runs [`DoctorScope::All`] plus every
-//!   individual category against fresh runners and returns the spawn counts,
-//!   so a fixed implementation can pin exact per-category and total spawn
-//!   budgets. The smoke tests at the bottom of this file pin the invariants
-//!   the harness itself guarantees (determinism, additivity).
-//!
-//! One caveat, inherited from the production code: `doctor` calls
-//! [`find_binary`](crate::command::find_binary) directly (outside the
-//! `Runner` trait) for `fail2ban-regex` / `journalctl` probes (`fail2ban-client`
-//! lookups are memoized once per run since F13), and some spawns are gated on
-//! those lookups. Counts are therefore deterministic for a *fixed host* but
-//! may differ on machines with different `$PATH` contents. Pin thresholds on
-//! the campaign host.
+//! Test-only spawn-counting oracle: [`CountingRunner`] answers every command
+//! with success and counts spawns; [`doctor_all_spawn_report`] reports per-scope counts.
 
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -31,7 +9,6 @@ use std::time::Duration;
 use crate::command::{CommandOutput, Runner};
 use crate::doctor::{Doctor, DoctorScope};
 
-/// One executed `(program, args)` pair, as recorded by [`CountingRunner`].
 type CallEntry = (String, Vec<String>);
 
 /// Command runner that counts spawns and always succeeds with empty output.
@@ -58,9 +35,7 @@ impl CountingRunner {
         self.spawns.load(Ordering::Relaxed)
     }
 
-    /// Every executed `(program, args)` pair, in order, across all clones of
-    /// this runner — for asserting *which* documents were fetched how often.
-    ///
+    /// Every executed `(program, args)` pair, in order, across all clones.
     /// Best-effort on a poisoned lock (empty log) since this is a test oracle.
     pub fn calls(&self) -> Vec<CallEntry> {
         self.calls.lock().map(|c| c.clone()).unwrap_or_default()
@@ -146,14 +121,8 @@ pub struct DoctorSpawnReport {
 /// Run `DoctorScope::All` and every individual category against fresh
 /// [`CountingRunner`]s and report the spawn counts.
 ///
-/// `all_run_total` is what a fixed implementation should pin as the budget
-/// for one doctor pass; `per_category` shows where those spawns come from.
-///
 /// # Panics
-///
-/// Panics if any doctor scope fails against the always-ok counting runner,
-/// which would indicate a doctor regression rather than a test-environment
-/// problem.
+/// If any doctor scope fails against the always-ok runner.
 #[must_use]
 pub fn doctor_all_spawn_report() -> DoctorSpawnReport {
     let all_runner = CountingRunner::new();
@@ -198,8 +167,6 @@ pub fn doctor_all_spawn_report() -> DoctorSpawnReport {
 mod tests {
     use super::*;
 
-    /// The harness counts one spawn per `run` call (across clones); dry-run
-    /// state is carried but never counted as a spawn.
     #[test]
     fn counting_runner_counts_runs_not_dry_run_queries() {
         let runner = CountingRunner::new();
@@ -219,12 +186,6 @@ mod tests {
         assert_eq!(via_clone.spawn_count(), 3, "clones share the counter");
     }
 
-    /// doctor(All) spawns the same number of processes every run, and the
-    /// per-category breakdown is an upper bound on the All-run total: the All
-    /// arm runs exactly `DoctorScope::all_categories()`, but F13's per-run
-    /// shared fetch lets the All arm reuse one `fail2ban-client status`
-    /// spawn across its six jail-list consumers, so sharing can only remove
-    /// spawns, never add them.
     #[test]
     fn doctor_all_spawn_report_is_deterministic_and_bounded_by_category_sum() {
         let first = doctor_all_spawn_report();
@@ -247,12 +208,6 @@ mod tests {
         );
     }
 
-    /// F13 spawn budget: one `doctor(All)` pass used to spawn the identical
-    /// `fail2ban-client status` six times (log-path, journal, regex, action,
-    /// safety, and proxy checks each re-fetched and re-parsed it), for a
-    /// baseline total of 21 spawns on this host. After the per-run shared
-    /// fetch the measured total is 16; the budget pins that. Host-sensitive:
-    /// requires `fail2ban-client` on `$PATH` (see the module docs).
     #[test]
     fn doctor_all_spawn_budget_is_bounded_after_f13() {
         let report = doctor_all_spawn_report();
@@ -262,9 +217,6 @@ mod tests {
         );
     }
 
-    /// F13 once-per-run oracle: within one `doctor(All)` pass the jail list
-    /// is fetched exactly once, however many checks consume it. No-op on a
-    /// host without `fail2ban-client` on `$PATH` (nothing to share).
     #[test]
     fn doctor_all_fetches_jail_list_once() {
         let runner = CountingRunner::new();
@@ -282,9 +234,6 @@ mod tests {
         );
     }
 
-    /// F13 per-run freshness oracle: two consecutive `doctor(All)` runs on
-    /// the same `Doctor` each fetch the jail list once — the memo is scoped
-    /// to a single run, never to the `Doctor` instance.
     #[test]
     fn doctor_run_resets_the_shared_fetch_per_run() {
         let runner = CountingRunner::new();

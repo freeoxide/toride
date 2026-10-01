@@ -1,14 +1,3 @@
-//! Shared hermetic Dashboard-view fixture for the F01 render bench
-//! (`benches/dashboard_render.rs`) and the buffer-parity oracle
-//! (`tests/render_parity.rs`, which pulls this file in via `#[path]`).
-//!
-//! Everything here is fixed data: no collectors, no terminal, no host probes,
-//! no wall-clock reads. The state shape mirrors the in-repo live fixture in
-//! `src/ui/screens/dashboard.rs` (`dashboard_screen_live_snapshot`), with
-//! `Capabilities::detect()` (a host binary probe) replaced by a fixed literal
-//! — the render path never reads `capabilities`, so this keeps the frame
-//! byte-for-byte reproducible on any host.
-
 use std::time::{Duration, UNIX_EPOCH};
 
 use ratatui::{Terminal, backend::TestBackend};
@@ -28,18 +17,8 @@ use toride::ui::screens::AppScreen;
 use toride::ui::screens::dashboard::DashboardScreen;
 use toride::ui::theme::{CHARM, Palette, Theme};
 
-/// Width/height pairs the bench and parity oracle exercise: a compact SSH
-/// session (80x24) and a large desktop terminal (200x60).
 pub const SIZES: [(u16, u16); 2] = [(80, 24), (200, 60)];
 
-/// The palette a steady-state `App::view` bakes for every frame
-/// (`app/render.rs`: theme palette + the resolved `reduced_motion` flag).
-///
-/// `reduced_motion` is pinned `true` for two reasons: it is the motion
-/// decision the crate's own tests pin (`App::new_for_test(AnimPref::Off,
-/// true)`, `app/mod.rs`), and it is required for determinism — with
-/// animations on, shimmer/gradient phase depends on wall-clock time and the
-/// same state can render different buffers frame to frame.
 #[must_use]
 pub fn render_palette() -> Palette {
     Palette {
@@ -48,8 +27,6 @@ pub fn render_palette() -> Palette {
     }
 }
 
-/// Fixed all-capable platform description (replaces the host-probing
-/// `Capabilities::detect()` used by the in-repo snapshot fixture).
 #[must_use]
 pub fn fixed_capabilities() -> Capabilities {
     Capabilities {
@@ -135,9 +112,6 @@ pub fn fixed_capabilities() -> Capabilities {
     }
 }
 
-/// A deterministic live [`TorideStatus`] snapshot (8 processes, 3 disks,
-/// loaded memory/CPU). All values are literals; `collected_at` is a fixed
-/// epoch offset so the rendered frame never depends on the clock.
 #[expect(
     clippy::too_many_lines,
     reason = "struct-literal fixture, mirrors the in-repo snapshot fixture"
@@ -343,10 +317,6 @@ pub fn fixed_status() -> TorideStatus {
     }
 }
 
-/// A [`DashboardScreen`] in the exact state `App` keeps it in on the
-/// Dashboard screen: `Theme::Charm` applied (`App::new_with_motion`) and the
-/// live status pushed twice so net/disk throughput rates are computed from
-/// the fixed 2s delta (mirrors the in-repo live fixture).
 #[must_use]
 pub fn fixed_dashboard() -> DashboardScreen {
     let mut screen = DashboardScreen::new();
@@ -360,13 +330,7 @@ pub fn fixed_dashboard() -> DashboardScreen {
     screen
 }
 
-/// Render one full frame of `screen` at `width`x`height` through the same
-/// public `AppScreen::view` entry point `App::view` dispatches to for
-/// `Screen::Dashboard`, and return the resulting terminal buffer.
-///
-/// Parity oracles diff these buffers; any render-behavior change shows up as
-/// a buffer inequality.
-#[allow(dead_code)] // used by tests/render_parity.rs; benches embed this module too
+#[allow(dead_code)]
 #[must_use]
 pub fn render_frame(
     screen: &mut DashboardScreen,

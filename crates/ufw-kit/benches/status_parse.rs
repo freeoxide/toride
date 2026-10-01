@@ -1,44 +1,22 @@
-//! Criterion benchmarks for UFW status and rule-line parsing.
-//!
-//! All inputs are committed, deterministic fixtures under
-//! `benches/fixtures/status/` — no host binaries, no network, no generated
-//! state. Each fixture's expected parse counts are asserted once during bench
-//! setup so fixture drift fails loudly instead of silently skewing numbers.
-//!
-//! Run scoped:
-//!
-//! ```text
-//! cargo bench -p ufw-kit --bench status_parse
-//! ```
-
 use std::hint::black_box;
 
 use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use ufw_kit::status;
 
-/// Fixture directory, resolved relative to this crate's manifest.
 const FIXTURE_DIR: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/benches/fixtures/status/");
 
-/// Load a fixture by file name, panicking if it is missing (fixtures are
-/// committed, so a missing file is a broken checkout).
 fn fixture(name: &str) -> String {
     let path = format!("{FIXTURE_DIR}{name}");
     std::fs::read_to_string(&path)
         .unwrap_or_else(|e| panic!("bench fixture {path} should be committed and readable: {e}"))
 }
 
-/// Number of rule lines in the status fixtures (plain / verbose / numbered
-/// share the same 400-line rule corpus).
 const EXPECTED_STATUS_RULES: usize = 400;
 
-/// Number of lines in the `show added` fixture after its header.
 const EXPECTED_ADDED_RULES: usize = 200;
 
-/// Number of listening entries in the `show listening` fixture.
 const EXPECTED_LISTENING: usize = 128;
 
-/// One-time validation of every fixture against the parsers, so benchmark
-/// numbers are only produced from inputs with known parse counts.
 fn assert_fixtures_parse_as_expected() {
     let plain = status::parse_status(&fixture("status_plain_400.txt")).expect("plain fixture");
     assert_eq!(plain.rules.len(), EXPECTED_STATUS_RULES);
@@ -117,10 +95,6 @@ fn bench_show_parsing(c: &mut Criterion) {
     group.finish();
 }
 
-/// Per-rule-line resolution: run the public per-line entry point
-/// `parse_status_numbered` on each of the 400 numbered rule lines in
-/// isolation. This isolates single-rule parsing (including status-struct
-/// construction) from whole-dump scanning, at 400 lines per sample.
 fn bench_rule_line_parse(c: &mut Criterion) {
     let numbered = fixture("status_numbered_400.txt");
     let rule_lines: Vec<&str> = numbered.lines().filter(|l| l.starts_with('[')).collect();

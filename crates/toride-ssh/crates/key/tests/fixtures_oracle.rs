@@ -1,11 +1,3 @@
-//! Deterministic oracles for the private-key parse fixtures used by the
-//! `from_openssh` criterion bench (`benches/from_openssh.rs`).
-//!
-//! These pin the properties the bench silently depends on: the fixtures are
-//! unencrypted, they parse via `ssh_key::PrivateKey::from_openssh`, the
-//! algorithms are what the bench labels claim, and each private key's public
-//! half matches the committed `.pub` fixture (fingerprint parity).
-
 use ssh_key::{Algorithm, HashAlg, PrivateKey, PublicKey};
 
 fn fixture(name: &str) -> String {
@@ -42,8 +34,6 @@ fn rsa_fixture_parses_as_unencrypted_2048_bit_rsa() {
     assert_eq!(bits, 2048, "expected a 2048-bit RSA bench fixture");
 }
 
-/// Parity oracle: the private key's embedded public half and the committed
-/// `.pub` fixture must carry the identical SHA-256 fingerprint.
 #[test]
 fn private_and_public_fixture_fingerprints_match() {
     for (private_name, public_name) in [
@@ -65,8 +55,6 @@ fn private_and_public_fixture_fingerprints_match() {
     }
 }
 
-/// The two fixtures must be different keys so the two bench targets measure
-/// distinct code paths (ed25519 vs RSA bignum parsing).
 #[test]
 fn ed25519_and_rsa_fixtures_are_distinct_keys() {
     let ed = PrivateKey::from_openssh(fixture("id_ed25519")).expect("ed25519 fixture must parse");

@@ -1,3 +1,5 @@
+//! The welcome splash screen shown at startup.
+
 use std::time::Instant;
 
 use crate::action::Action;
@@ -27,7 +29,7 @@ const LOGO: &[&str] = &[
     "   ╚═╝    ╚═════╝ ╚═╝  ╚═╝╚═╝╚═════╝ ╚══════╝",
 ];
 
-/// Splash screen with an animated border, shimmer logo, and a button row.
+/// The welcome splash screen: logo, animated border, and entry buttons.
 pub struct WelcomeScreen {
     base: ScreenBase,
     border: AnimatedBorder,
@@ -43,7 +45,6 @@ impl Default for WelcomeScreen {
 
 impl AppScreen for WelcomeScreen {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
-        // Direct shortcuts always work
         match code {
             KeyCode::Char('q') | KeyCode::Esc => return Some(Action::Quit),
             KeyCode::Enter | KeyCode::Char(' ') => {
@@ -52,7 +53,6 @@ impl AppScreen for WelcomeScreen {
             _ => {}
         }
 
-        // Focus cycling
         match code {
             KeyCode::Tab | KeyCode::Right => self.buttons.cycle_focus_next(),
             KeyCode::BackTab | KeyCode::Left => self.buttons.cycle_focus_prev(),
@@ -62,9 +62,6 @@ impl AppScreen for WelcomeScreen {
     }
 
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Buttons track hover internally; motion that only moves the hover
-        // between buttons still changed visible state, so report it as a
-        // [`Action::Redraw`] (the event loop change-gates mouse redraws).
         let hover_before = self.buttons.hovered_snapshot();
         let action = self.buttons.handle_mouse(&mouse);
         if action.is_none() && hover_before != self.buttons.hovered_snapshot() {
@@ -86,19 +83,16 @@ impl AppScreen for WelcomeScreen {
     }
 
     fn needs_animation(&self) -> bool {
-        true // shimmer always runs
+        true
     }
 
     fn needs_fast_frames(&self) -> bool {
-        // The animated border's colour flow moves ~12 cells/s and the logo
-        // shimmer rides along on the same frames, so the welcome screen
-        // always wants full-frame-rate ticks under full motion.
         true
     }
 }
 
 impl WelcomeScreen {
-    /// Construct a new welcome screen with the default button row.
+    /// Create a welcome screen with the default continue/help/quit buttons.
     #[must_use]
     pub fn new() -> Self {
         let buttons = vec![
@@ -115,7 +109,7 @@ impl WelcomeScreen {
         }
     }
 
-    /// Update the animated border color (used when the theme changes).
+    /// Re-create the animated border with a new accent color.
     pub fn set_border_color(&mut self, color: ratatui::style::Color) {
         self.border = AnimatedBorder::new(color);
     }
@@ -124,18 +118,14 @@ impl WelcomeScreen {
         let area = frame.area();
         let viewport = Viewport::from_area(area);
 
-        // Fallback for tiny terminals
         if ScreenBase::guard_too_small(frame, p) {
             return;
         }
 
-        // Gradient background
         self.base.render_bg(frame.buffer_mut(), area, p, skip_bg);
 
-        // Adaptive center column
         let center = responsive::center_area(area);
 
-        // Vertical layout
         let [
             _top,
             logo_area,
@@ -157,29 +147,24 @@ impl WelcomeScreen {
         ])
         .areas(center);
 
-        // ── Animated border ───────────────────────────────────────────────
         let border_rect = content_border_rect(logo_area, keys_area, area);
         let buf = frame.buffer_mut();
         if p.reduced_motion {
-            // Static single-colour outline — no per-frame colour flow.
             self.border.draw_static(buf, border_rect);
         } else {
             self.border.draw(buf, border_rect);
         }
 
-        // ── Logo ──────────────────────────────────────────────────────────
         let logo_style = Style::new().fg(p.accent).bold();
         let logo_lines = responsive::truncate_logo(LOGO, center.width, logo_style);
         frame.render_widget(Paragraph::new(logo_lines).centered(), logo_area);
 
-        // Shimmer sweep across logo — skipped under reduced motion (solid accent).
         if !p.reduced_motion {
             let elapsed = self.shimmer_start.elapsed().as_secs_f32();
             let buf = frame.buffer_mut();
             apply_logo_shimmer(buf, logo_area, p.accent, elapsed);
         }
 
-        // ── Version ───────────────────────────────────────────────────────
         let version_line = Line::from(vec![
             Span::styled("砦", Style::new().fg(p.accent2).bold()),
             Span::styled("  ·  ", Style::new().fg(p.text_muted)),
@@ -189,7 +174,6 @@ impl WelcomeScreen {
         ]);
         frame.render_widget(Paragraph::new(version_line).centered(), version_area);
 
-        // ── Prompt ────────────────────────────────────────────────────────
         let prompt_text = if viewport >= Viewport::Compact {
             "Press any key, or click a button, to enter."
         } else {
@@ -204,16 +188,11 @@ impl WelcomeScreen {
             prompt_area,
         );
 
-        // ── Interactive buttons ───────────────────────────────────────────
         let buf = frame.buffer_mut();
         self.buttons.render(buf, keys_area, p, viewport);
     }
 }
 
-// ── Layout helpers ─────────────────────────────────────────────────────────────
-
-/// Compute the border rect as the union of content areas expanded by 2 cells
-/// of padding, clamped to the frame area.
 fn content_border_rect(logo_area: Rect, keys_area: Rect, frame_area: Rect) -> Rect {
     let pad = 2u16;
     let x = logo_area.x.saturating_sub(pad).max(frame_area.x);
@@ -227,8 +206,6 @@ fn content_border_rect(logo_area: Rect, keys_area: Rect, frame_area: Rect) -> Re
         height: bottom.saturating_sub(y),
     }
 }
-
-// ── Logo shimmer ───────────────────────────────────────────────────────────────
 
 fn apply_logo_shimmer(
     buf: &mut ratatui::buffer::Buffer,
@@ -274,9 +251,7 @@ mod tests {
     #[test]
     fn new_creates_screen_with_working_invalidate_cache() {
         let mut screen = WelcomeScreen::new();
-        // invalidate_cache should run without panicking
         screen.invalidate_cache();
-        // Screen should still be functional after invalidation
         assert!(screen.needs_animation());
     }
 
@@ -295,7 +270,6 @@ mod tests {
     #[test]
     fn handle_key_returns_continue_for_enter() {
         let mut screen = WelcomeScreen::new();
-        // Button 0 (Continue) is focused by default, so Enter yields Continue
         assert_eq!(screen.handle_key(KeyCode::Enter), Some(Action::Continue));
     }
 

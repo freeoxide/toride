@@ -1,9 +1,5 @@
 use super::*;
 
-// ---------------------------------------------------------------------------
-// Firewall enum trait tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn firewall_debug_trait() {
     let fw = Firewall::Iptables;
@@ -51,13 +47,8 @@ fn firewall_clone() {
 fn firewall_copy() {
     let original = Firewall::Pf;
     let copied = original;
-    // Both should still be usable -- Copy means no move semantics.
     assert_eq!(original, copied);
 }
-
-// ---------------------------------------------------------------------------
-// InitSystem enum trait tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn init_system_debug_trait() {
@@ -93,10 +84,6 @@ fn init_system_copy() {
     let copied = original;
     assert_eq!(original, copied);
 }
-
-// ---------------------------------------------------------------------------
-// PlatformInfo trait tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn platform_info_clone() {
@@ -173,15 +160,9 @@ fn platform_info_deserialize_from_json() {
     assert_eq!(info.init_system, InitSystem::Rc);
 }
 
-// ---------------------------------------------------------------------------
-// detect_firewall tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn detect_firewall_returns_valid_variant() {
     let fw = detect_firewall();
-    // Should be one of the valid variants -- we just verify it matches
-    // at least one. Since it is an enum the match is exhaustive by nature.
     let is_valid = matches!(
         fw,
         Firewall::Iptables
@@ -193,10 +174,6 @@ fn detect_firewall_returns_valid_variant() {
     );
     assert!(is_valid, "detect_firewall returned an invalid variant");
 }
-
-// ---------------------------------------------------------------------------
-// detect_init tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn detect_init_returns_valid_variant() {
@@ -211,10 +188,6 @@ fn detect_init_returns_valid_variant() {
     );
     assert!(is_valid, "detect_init returned an invalid variant");
 }
-
-// ---------------------------------------------------------------------------
-// detect_platform tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn detect_platform_returns_non_empty_os_and_arch() {
@@ -245,15 +218,9 @@ fn detect_platform_returns_expected_os_values() {
 #[test]
 fn detect_platform_firewall_and_init_are_consistent() {
     let info = detect_platform();
-    // The detected firewall and init system should be valid variants.
     let _ = info.firewall;
     let _ = info.init_system;
-    // Platform detection should succeed without panicking.
 }
-
-// ---------------------------------------------------------------------------
-// default_ban_commands tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn default_ban_commands_iptables() {
@@ -333,10 +300,6 @@ fn default_ban_commands_unknown_returns_empty() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// IPv6 support tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn default_ban_commands_iptables_includes_ipv6_variant() {
     let cmds = default_ban_commands(Firewall::Iptables);
@@ -391,10 +354,6 @@ fn default_unban_commands_nftables_includes_ipv6_variant() {
         cmds.linux[0]
     );
 }
-
-// ---------------------------------------------------------------------------
-// default_unban_commands tests
-// ---------------------------------------------------------------------------
 
 #[test]
 fn default_unban_commands_iptables() {
@@ -470,10 +429,6 @@ fn default_unban_commands_unknown_returns_empty() {
     assert!(cmds.freebsd.is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// PlatformCommands::for_current_platform tests
-// ---------------------------------------------------------------------------
-
 #[test]
 fn for_current_platform_returns_correct_slice() {
     use crate::types::PlatformCommands;
@@ -493,7 +448,6 @@ fn for_current_platform_returns_correct_slice() {
     } else if cfg!(target_os = "freebsd") {
         assert_eq!(platform_cmds, &["freebsd_cmd"]);
     }
-    // For other platforms the fallback is linux.
 }
 
 #[test]
@@ -529,10 +483,6 @@ fn for_current_platform_multiple_commands() {
         assert!(platform_cmds.is_empty());
     }
 }
-
-// ---------------------------------------------------------------------------
-// Firewall and InitSystem serialization roundtrips
-// ---------------------------------------------------------------------------
 
 #[test]
 fn firewall_serialize_deserialize_roundtrip() {
@@ -571,10 +521,6 @@ fn init_system_serialize_deserialize_roundtrip() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Edge case: default ban/unban commands symmetry
-// ---------------------------------------------------------------------------
-
 #[test]
 fn default_ban_and_unban_commands_same_structure_per_firewall() {
     let firewalls = [
@@ -590,7 +536,6 @@ fn default_ban_and_unban_commands_same_structure_per_firewall() {
         let ban = default_ban_commands(*fw);
         let unban = default_unban_commands(*fw);
 
-        // The command vectors should have the same number of entries per platform.
         assert_eq!(
             ban.linux.len(),
             unban.linux.len(),
@@ -611,10 +556,6 @@ fn default_ban_and_unban_commands_same_structure_per_firewall() {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// Edge case: <ip> placeholder presence in all non-Unknown firewall commands
-// ---------------------------------------------------------------------------
 
 #[test]
 fn default_ban_commands_all_firewalls_have_ip_placeholder() {
@@ -662,25 +603,15 @@ fn default_unban_commands_all_firewalls_have_ip_placeholder() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Edge case: detect functions do not panic
-// ---------------------------------------------------------------------------
-
 #[test]
 fn detect_firewall_does_not_panic() {
-    // Edge case: ensure platform detection gracefully handles any environment.
     let _fw = detect_firewall();
 }
 
 #[test]
 fn detect_init_does_not_panic() {
-    // Edge case: ensure init system detection gracefully handles any environment.
     let _init = detect_init();
 }
-
-// ---------------------------------------------------------------------------
-// Edge case: platform info defaults
-// ---------------------------------------------------------------------------
 
 #[test]
 fn platform_info_version_is_unknown_by_default() {
@@ -690,10 +621,6 @@ fn platform_info_version_is_unknown_by_default() {
         "detect_platform should set version to \"unknown\" since real version detection is not implemented"
     );
 }
-
-// ---------------------------------------------------------------------------
-// Edge case: serialization of all variants to known strings
-// ---------------------------------------------------------------------------
 
 #[test]
 fn firewall_all_variants_serialize_to_known_strings() {
@@ -717,7 +644,6 @@ fn firewall_all_variants_serialize_to_known_strings() {
 
     for variant in &variants {
         let json = serde_json::to_string(variant).expect("serialization should succeed");
-        // serde_json::to_string wraps enum variants in quotes; strip them for comparison.
         let inner = &json[1..json.len() - 1];
         assert!(
             known.contains(&inner),
@@ -742,7 +668,6 @@ fn init_system_all_variants_serialize_to_known_strings() {
 
     for variant in &variants {
         let json = serde_json::to_string(variant).expect("serialization should succeed");
-        // serde_json::to_string wraps enum variants in quotes; strip them for comparison.
         let inner = &json[1..json.len() - 1];
         assert!(
             known.contains(&inner),
@@ -752,10 +677,6 @@ fn init_system_all_variants_serialize_to_known_strings() {
         );
     }
 }
-
-// ---------------------------------------------------------------------------
-// Edge case: Unknown firewall has empty commands
-// ---------------------------------------------------------------------------
 
 #[test]
 fn default_ban_and_unban_commands_empty_for_unknown() {

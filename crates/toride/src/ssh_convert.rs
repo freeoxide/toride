@@ -1,8 +1,6 @@
 //! Convert `toride-ssh` library types to UI presentation types.
 //!
-//! Standalone conversion functions that map rich library structs to the simpler
-//! types used by the TUI tab renderers. Each function handles errors gracefully
-//! — individual entries that fail conversion are skipped with a warning log.
+//! Entries that fail conversion are skipped with a warning log.
 
 use std::ffi::OsStr;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -14,17 +12,12 @@ use crate::ui::screens::ssh::{
     DiagnosticEntry, ForwardEntry, ForwardSessionEntry, KnownHostEntry, SshKeyEntry,
 };
 
-// ── Known Hosts ─────────────────────────────────────────────────────────────
-
 /// Convert library `known_hosts` entries to UI entries.
 ///
 /// Groups multiple key lines for the same host into a single entry.
-/// For example, if `github.com` has ed25519, ecdsa, and rsa keys,
-/// they become one entry with `key_types: ["ssh-ed25519", "ecdsa-sha2-nistp256", "ssh-rsa"]`.
 pub fn convert_known_hosts(
     entries: &[toride_ssh::known_hosts::KnownHostEntry],
 ) -> Vec<KnownHostEntry> {
-    // Index: sorted comma-joined host string → (key_types, fingerprints, first entry)
     let mut groups: std::collections::BTreeMap<String, GroupAccum> =
         std::collections::BTreeMap::new();
 
@@ -40,8 +33,6 @@ pub fn convert_known_hosts(
                 "(unknown)".into()
             }
         };
-        // Use sorted comma-joined hosts as the grouping key so
-        // ["github.com"] and ["github.com"] match even if line order differs.
         let mut host_key = e.hosts.clone();
         host_key.sort();
         let host_key = host_key.join(",");
@@ -81,7 +72,6 @@ pub fn convert_known_hosts(
         .collect()
 }
 
-/// Accumulator for grouping `known_hosts` lines by host.
 struct GroupAccum {
     hosts: Vec<String>,
     is_hashed: bool,
@@ -92,8 +82,6 @@ struct GroupAccum {
     key_types: Vec<String>,
     fingerprints: Vec<String>,
 }
-
-// ── Authorized Keys ─────────────────────────────────────────────────────────
 
 /// Convert library `authorized_keys` entries to UI entries.
 pub fn convert_authorized_keys(
@@ -116,7 +104,6 @@ pub fn convert_authorized_keys(
         .collect()
 }
 
-/// Format authorized key options back to a string representation.
 fn format_options(opts: &toride_ssh::authorized_keys::Options) -> String {
     let mut parts = Vec::new();
 
@@ -175,8 +162,6 @@ fn format_options(opts: &toride_ssh::authorized_keys::Options) -> String {
     parts.join(",")
 }
 
-// ── SSH Keys ────────────────────────────────────────────────────────────────
-
 /// Convert library SSH key entries to UI entries.
 pub fn convert_keys(keys: Vec<toride_ssh::SshKey>) -> Vec<SshKeyEntry> {
     keys.into_iter()
@@ -225,8 +210,6 @@ pub fn format_key_type(kt: &KeyType) -> String {
     }
 }
 
-// ── Diagnostics ─────────────────────────────────────────────────────────────
-
 /// Convert library diagnostics to UI diagnostics.
 pub fn convert_diagnostics(diagnostics: Vec<toride_ssh::Diagnostic>) -> Vec<DiagnosticEntry> {
     diagnostics
@@ -250,8 +233,6 @@ pub fn format_severity(s: toride_ssh::Severity) -> String {
         toride_ssh::Severity::Error => "error".into(),
     }
 }
-
-// ── Config Hosts ────────────────────────────────────────────────────────────
 
 /// Convert a parsed config AST to UI config host entries.
 pub fn convert_config_ast(ast: &toride_ssh::config::ast::ConfigAst) -> Vec<ConfigHostEntry> {
@@ -303,13 +284,10 @@ pub fn convert_config_ast(ast: &toride_ssh::config::ast::ConfigAst) -> Vec<Confi
     entries
 }
 
-// ── Agent ────────────────────────────────────────────────────────────────────
-
 /// Convert agent keys and status into UI types.
 ///
-/// `reachable` and `socket_path` come from the collector (not from `SshKey`).
-/// `is_locked` and `has_constraints` default to `false` — the current agent
-/// protocol does not expose these fields.
+/// `is_locked` and `has_constraints` are always `false` — the agent
+/// protocol does not expose them.
 pub fn convert_agent_keys(
     keys: Vec<toride_ssh::SshKey>,
     reachable: bool,
@@ -345,8 +323,6 @@ pub fn convert_agent_keys(
     (status, entries)
 }
 
-// ── Forwarding ───────────────────────────────────────────────────────────────
-
 /// Convert forwarding sessions and their port forwards to UI types.
 pub fn convert_forwarding(
     sessions: Vec<(
@@ -379,8 +355,6 @@ pub fn convert_forwarding(
         })
         .collect()
 }
-
-// ── Certificates ─────────────────────────────────────────────────────────────
 
 /// Convert certificate file paths and their parsed info into UI types.
 pub fn convert_certificates(
@@ -418,9 +392,6 @@ pub fn convert_certificates(
         .collect()
 }
 
-// ── Helpers ─────────────────────────────────────────────────────────────────
-
-/// Truncate a base64 public key for display, keeping the beginning and end.
 fn truncate_key(key: &str, max_len: usize) -> String {
     if key.len() <= max_len {
         return key.to_owned();
@@ -429,10 +400,6 @@ fn truncate_key(key: &str, max_len: usize) -> String {
     format!("{}..{}", &key[..half], &key[key.len() - half..])
 }
 
-/// Format the duration since a `SystemTime` as a human-readable string.
-///
-/// Returns `"Xd Xh Xm"` with zero units omitted. Returns an empty string
-/// if the time is `None` or the clock would go backwards.
 fn format_duration_since(t: Option<SystemTime>) -> String {
     let Some(established) = t else {
         return String::new();
@@ -457,9 +424,6 @@ fn format_duration_since(t: Option<SystemTime>) -> String {
     }
 }
 
-/// Format a Unix timestamp (seconds) as a human-readable datetime string.
-///
-/// Returns `"forever"` for `u64::MAX`, or `"(invalid)"` if out of range.
 fn format_unix_timestamp(secs: u64) -> String {
     if secs == u64::MAX {
         return "forever".into();
@@ -473,8 +437,6 @@ fn format_unix_timestamp(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    // ── truncate_key ──────────────────────────────────────────────────────────
 
     #[test]
     fn truncate_key_short_returns_unchanged() {
@@ -497,8 +459,6 @@ mod tests {
     fn truncate_key_empty_string() {
         assert_eq!(truncate_key("", 5), "");
     }
-
-    // ── format_options ────────────────────────────────────────────────────────
 
     #[test]
     fn format_options_empty() {
@@ -529,8 +489,6 @@ mod tests {
         assert!(result.contains("no-port-forwarding"), "got: {result}");
         assert!(result.contains("restrict"), "got: {result}");
     }
-
-    // ── format_duration_since ────────────────────────────────────────────────
 
     #[test]
     fn format_duration_since_none_returns_empty() {
@@ -564,8 +522,6 @@ mod tests {
         assert!(result.contains("45m"), "should contain minutes: {result}");
     }
 
-    // ── format_unix_timestamp ────────────────────────────────────────────────
-
     #[test]
     fn format_unix_timestamp_forever() {
         assert_eq!(format_unix_timestamp(u64::MAX), "forever");
@@ -582,15 +538,12 @@ mod tests {
 
     #[test]
     fn format_unix_timestamp_known_value() {
-        // 2024-01-01 00:00:00 UTC = 1704067200
         let result = format_unix_timestamp(1_704_067_200);
         assert!(
             result.starts_with("2024"),
             "should start with 2024: {result}"
         );
     }
-
-    // ── format_key_type ──────────────────────────────────────────────────────
 
     #[test]
     fn format_key_type_ed25519() {
@@ -613,8 +566,6 @@ mod tests {
         assert_eq!(format_key_type(&KeyType::EcdsaP384), "ECDSA P-384");
         assert_eq!(format_key_type(&KeyType::EcdsaP521), "ECDSA P-521");
     }
-
-    // ── convert_config_ast ───────────────────────────────────────────────────
 
     #[test]
     fn convert_config_ast_empty() {
@@ -663,14 +614,9 @@ mod tests {
         assert_eq!(entries[0].port, Some(2222));
         assert_eq!(entries[0].directive_count, 3);
     }
-    // ── List-ordering pins (F08 precondition for memoizing fingerprints) ─────
 
     #[test]
     fn convert_known_hosts_output_is_sorted_by_host_group() {
-        // Entries are grouped into a BTreeMap keyed by the sorted
-        // comma-joined hosts, so the converted list order is the host-key
-        // order — independent of input line order. Memoized lists must keep
-        // returning this exact order on cache hits.
         let line = |host: &str| toride_ssh::known_hosts::KnownHostEntry {
             markers: vec![],
             hosts: vec![host.to_owned()],
@@ -704,8 +650,6 @@ mod tests {
         let entries = vec![mk("third", 3), mk("first", 1), mk("second", 2)];
         let out = convert_authorized_keys(entries);
         let comments: Vec<&str> = out.iter().map(|e| e.comment.as_deref().unwrap()).collect();
-        // Conversion keeps the input (file) order verbatim — the memoized
-        // list must be byte-stable in this order.
         assert_eq!(comments, ["third", "first", "second"]);
         assert_eq!(out.iter().map(|e| e.line).collect::<Vec<_>>(), [3, 1, 2]);
     }

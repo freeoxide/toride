@@ -1,41 +1,5 @@
-//! Async outbound-traffic-monitor data collection (LIVE READ-ONLY).
-//!
-//! [`MonitorCollector`] manages background collection of all monitor
-//! subsystem data via a tokio oneshot channel, following the exact same
-//! pattern as [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector)
-//! and [`StatusCollector`](crate::status_collector::StatusCollector).
-//!
-//! This mirrors the fail2ban / SSH reference MINUS the entire write path —
-//! there are no write operations, no optimistic updates, no cooldown gate, and
-//! no loading spinner. Every call to the backend is a pure read.
-//!
-//! Two-tier cache (F11): doctor findings shell out (`iptables-save`, `which`,
-//! etc.) and change slowly, so they are cached for 60s like the fail2ban /
-//! SSH diagnostics caches. The SNAPSHOT cluster (`ss -tunap` +
-//! `conntrack -L` + anomaly detection + the OUTPUT-rule count) gets a much
-//! shorter TTL — 8s — because anomaly detection consumes snapshots: the
-//! window stays bounded for detection while the per-2s-tick spawn storm (4
-//! subprocesses per fresh run: `ss -tunap`, `conntrack -L`, the fast
-//! `conntrack -C` count, and the `iptables-save` pass) drops to a quarter
-//! (30 fresh runs/min → 7.5). The listening-ports enumeration is native
-//! (netstat2, no subprocess) and stays fresh every collection.
-//!
-//! ## macOS / construction
-//!
-//! [`MonitorClient::system`](toride_monitor::client::MonitorClient::system)
-//! resolves `iptables`,
-//! `iptables-save`, `conntrack`, `ss`, and `journalctl` via `which`. On macOS
-//! none of these are on `$PATH`, so construction returns
-//! `Err(BinaryNotFound)` and the whole section degrades to `available = false`
-//! with the reason surfaced in the UI. On Linux the constructor succeeds and
-//! individual probes degrade per-field (a missing `conntrack` binary leaves
-//! the conntrack summary `None` but keeps the section available).
-//!
-//! ## Blocking
-//!
-//! The `DuctRunner` / `netstat2` calls are synchronous. All backend work is
-//! wrapped in [`tokio::task::spawn_blocking`] so the tokio worker is never
-//! stalled.
+//! Async read-only outbound-traffic-monitor collection. Two cache tiers:
+//! doctor findings 60s, the snapshot cluster 8s (4s after a failed snapshot).
 
 use tokio::sync::oneshot;
 
@@ -44,134 +8,64 @@ use crate::ui::screens::toride_monitor::{
     AnomalyEntry, ConnectionEntry, ConntrackSummary, FindingEntry, PortEntry, SnapshotSummary,
 };
 
-/// Aggregated monitor data for the read-only section.
-///
-/// The three list fields are shared (`Arc<[T]>`) with the collector's cache
-/// tiers, so a cache-hit tick hands the UI its bundle with reference-count
-/// bumps instead of heap clones proportional to the live connection count —
-/// only the always-fresh listening ports (`Vec`) are built per collection.
+/// A read-only snapshot of outbound-traffic monitor state.
 #[derive(Clone, Debug)]
 pub struct MonitorDataBundle {
-    /// Whether the monitor backend was reachable at all. `false` when
-    /// `MonitorClient::system()` failed (typically `BinaryNotFound` on macOS)
-    /// or when a collection task panicked — the UI renders a degraded
-    /// "unavailable" panel.
+    /// `false` when construction failed (typically `BinaryNotFound` on
+    /// macOS) or the collection task panicked; renders the degraded panel.
     pub available: bool,
-    /// Aggregated snapshot counters.
+    /// Snapshot totals (connections, destinations, bytes, packets).
     pub summary: SnapshotSummary,
-    /// Outbound connections table (shared with the snapshot cache tier).
+    /// Current outbound connections.
     pub connections: std::sync::Arc<[ConnectionEntry]>,
-    /// Listening ports.
+    /// Listening TCP/UDP ports.
     pub ports: Vec<PortEntry>,
-    /// Conntrack counters.
+    /// Conntrack byte/packet counters.
     pub conntrack: ConntrackSummary,
-    /// Number of installed OUTPUT chain LOG rules (`None` if the probe failed).
+    /// Number of installed OUTPUT chain LOG rules; `None` when the probe failed.
     pub output_rule_count: Option<usize>,
-    /// Anomaly findings (from `MonitorClient::detect`; shared with the
-    /// snapshot cache tier).
+    /// Anomaly-detection findings.
     pub anomalies: std::sync::Arc<[AnomalyEntry]>,
-    /// Doctor findings (shared with the 60s findings cache tier).
+    /// Doctor findings.
     pub findings: std::sync::Arc<[FindingEntry]>,
-    /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` (construction `Err`, or a panicked collection
-    /// task). `None` otherwise. Surfaced to the UI so the degraded panel can
-    /// show what actually went wrong instead of guessing.
+    /// Populated only when `available == false` (construction `Err` or a
+    /// panicked task); rendered by the degraded panel.
     pub unavailable_reason: Option<String>,
 }
 
-// ── Collector ───────────────────────────────────────────────────────────────
-
-/// What one monitor collection hands back: the bundle, which cache tier was
-/// served, and the fresh snapshot cluster (present only when the snapshot
-/// re-ran, mirroring the proxy collector's fresh-report hand-back). The
-/// cluster is `Arc`-shared so `poll()` caches it with a reference-count bump
-/// instead of a deep clone.
 type MonitorOutcome = (
     MonitorDataBundle,
-    bool,                                    // findings served from cache
-    bool,                                    // snapshot cluster served from cache
-    Option<std::sync::Arc<SnapshotCluster>>, // fresh cluster, when re-run
+    bool,
+    bool,
+    Option<std::sync::Arc<SnapshotCluster>>,
 );
 
-/// The subprocess-spawning snapshot cluster, cached at the short
-/// [`SNAPSHOT_TTL`] so anomaly detection keeps a bounded detection window.
 #[derive(Clone, Debug)]
 struct SnapshotCluster {
-    /// Aggregated snapshot counters (`ss` + conntrack aggregates).
     summary: SnapshotSummary,
-    /// Outbound connections table (parsed `ss -tunap` rows) — shared into
-    /// the bundle so cache-hit ticks don't clone it.
     connections: std::sync::Arc<[ConnectionEntry]>,
-    /// Anomaly findings derived from the snapshot report — shared into the
-    /// bundle.
     anomalies: std::sync::Arc<[AnomalyEntry]>,
-    /// Conntrack counters (fast count + snapshot aggregates).
     conntrack: ConntrackSummary,
-    /// Installed OUTPUT chain LOG rule count (`iptables-save` pass).
     output_rule_count: Option<usize>,
-    /// Whether `client.snapshot()` itself succeeded — the availability
-    /// heuristic's canonical "is the monitor actually working" signal.
     snapshot_ok: bool,
 }
 
-/// Manages periodic async collection of monitor data.
-///
-/// Two-tier cache: the doctor findings at `FINDINGS_TTL` (60s, like the
-/// sibling read-only collectors) and the snapshot cluster at
-/// `SNAPSHOT_TTL` (8s — short because anomaly detection consumes
-/// snapshots; the window stays bounded without re-spawning every 2s tick).
-/// Both tiers are `Arc`-shared: a cache-hit tick passes them through the
-/// spawned collection with reference-count bumps only — no per-tick heap
-/// clones proportional to the connection/findings count.
+/// Manages periodic async monitor collection with a two-tier cache: doctor
+/// findings for 60s, the snapshot cluster for 8s (4s when it failed).
 pub struct MonitorCollector {
-    /// Carries the [`MonitorOutcome`] for the in-flight collection.
     rx: Option<oneshot::Receiver<MonitorOutcome>>,
-    /// Cached doctor findings from the last collection (shared with the
-    /// bundles handed to the UI).
     cached_findings: Option<std::sync::Arc<[FindingEntry]>>,
-    /// When the findings cache was last refreshed.
     findings_fresh_at: Option<std::time::Instant>,
-    /// Cached snapshot cluster from the last snapshot run (shared with the
-    /// bundles handed to the UI).
     cached_snapshot: Option<std::sync::Arc<SnapshotCluster>>,
-    /// When the snapshot cache was last refreshed.
     snapshot_fresh_at: Option<std::time::Instant>,
 }
 
-/// How long to keep cached findings before re-running the doctor suite.
 const FINDINGS_TTL: std::time::Duration = std::time::Duration::from_mins(1);
 
-/// How long to keep the cached snapshot cluster before re-running `ss
-/// -tunap` + `conntrack -L` + anomaly detection.
-///
-/// Deliberate freshness semantics (F11): the anomaly detector consumes
-/// snapshots, so the staleness window must stay inside the product's
-/// detection window. The default threshold window is 60s
-/// ([`AnomalyThreshold`](toride_monitor::spec::AnomalyThreshold)'s `window`
-/// default), so an 8s TTL keeps a connection visible to detection well
-/// inside it while cutting the per-tick spawn storm (4 subprocesses per
-/// fresh run — `ss -tunap`, `conntrack -L`, `conntrack -C`,
-/// `iptables-save` — i.e. 120 spawns/minute at the raw 2s tick) to a
-/// quarter (7.5 fresh runs/minute).
 const SNAPSHOT_TTL: std::time::Duration = std::time::Duration::from_secs(8);
 
-/// How long a FAILED snapshot cluster (`snapshot_ok == false`) is cached
-/// before the snapshot tier retries.
-///
-/// Deliberate failure-backoff semantics (round 4): without this, a host
-/// where `ss` persistently fails while the section stays `available` (any
-/// listening port or doctor finding keeps the disjunction true) would re-run
-/// the full 4-spawn snapshot suite every 2s tick — ~120 spawns/minute, the
-/// exact storm the TTL cache exists to stop. Caching the failed cluster for
-/// 4s bounds that worst case to half (one retry every other tick, ~60
-/// spawns/minute) while still retrying 2× faster than the healthy 8s
-/// cadence, so a transient failure clears at the next retry rather than
-/// waiting the full healthy TTL.
 const SNAPSHOT_FAILURE_TTL: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// The TTL a cached snapshot cluster is served under: the healthy
-/// [`SNAPSHOT_TTL`] for successful snapshots, the short
-/// [`SNAPSHOT_FAILURE_TTL`] for failed ones (bounded retry backoff).
 fn snapshot_ttl_for(cluster: &SnapshotCluster) -> std::time::Duration {
     if cluster.snapshot_ok {
         SNAPSHOT_TTL
@@ -180,13 +74,6 @@ fn snapshot_ttl_for(cluster: &SnapshotCluster) -> std::time::Duration {
     }
 }
 
-/// Whether a cache TTL has already elapsed for an entry refreshed at
-/// `fresh_at`.
-///
-/// Round-0 instrumentation seam pattern, ZERO behavior change outside
-/// `cfg(test)`: the thread-local [`TTL_TEST_OFFSET_MS`] is folded into the
-/// elapsed time so cadence oracles can observe each tier's TTL expiry
-/// deterministically (no sleeps, no host-uptime dependence).
 fn ttl_expired(ttl: std::time::Duration, fresh_at: std::time::Instant) -> bool {
     let elapsed = fresh_at.elapsed();
     #[cfg(test)]
@@ -195,9 +82,6 @@ fn ttl_expired(ttl: std::time::Duration, fresh_at: std::time::Instant) -> bool {
     elapsed >= ttl
 }
 
-// Extra milliseconds folded into `ttl_expired`'s elapsed time by the cadence
-// oracles. Test-only. (Plain comments: rustdoc does not document macro
-// invocations, so a doc comment here warns as unused.)
 #[cfg(test)]
 thread_local! {
     static TTL_TEST_OFFSET_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -221,12 +105,6 @@ impl MonitorCollector {
         self.rx.is_some()
     }
 
-    /// Which cache tiers the next collection should serve from cache, per the
-    /// two TTL clocks. A tier is served only when BOTH its data and its
-    /// freshness timestamp are present and the TTL has not elapsed. The
-    /// snapshot tier's TTL depends on what it cached: healthy clusters serve
-    /// for [`SNAPSHOT_TTL`], failed ones only for [`SNAPSHOT_FAILURE_TTL`]
-    /// (bounded retry backoff — see its docs).
     fn tier_decisions(&self) -> (bool, bool) {
         let use_findings = self.cached_findings.is_some()
             && self
@@ -239,23 +117,14 @@ impl MonitorCollector {
         (use_findings, use_snapshot)
     }
 
-    /// Start a new background collection.
-    ///
-    /// If a collection is already in-flight, this is a no-op. Each cache tier
-    /// is consulted independently: a fresh findings tier skips the doctor, a
-    /// fresh snapshot tier skips the `ss`/`conntrack`/detect/iptables passes.
+    /// Start a background collection; a no-op if one is already in-flight.
+    /// Each cache tier is consulted independently.
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
         }
         let (tx, rx) = oneshot::channel();
         let (use_findings, use_snapshot) = self.tier_decisions();
-        // Arc bumps, not deep clones: a cache-hit tick costs O(1) here no
-        // matter how many connections/findings are cached. (Honest-number
-        // label: the O(1)-vs-O(n) claim is structurally pinned — the
-        // `cache_hit_ticks_share_arc_allocations` ptr_eq oracle proves the
-        // hit tick's tables are the SAME allocations as the cache's, never
-        // copies — but the allocation-count delta itself is unmeasured.)
         let cached_findings = self.cached_findings.clone();
         let cached_snapshot = self.cached_snapshot.clone();
         self.rx = Some(rx);
@@ -267,17 +136,6 @@ impl MonitorCollector {
         });
     }
 
-    /// Test seam: [`Self::start`] with an INJECTED client instead of
-    /// `MonitorClient::system()`.
-    ///
-    /// The cadence oracles drive this with a `FakeRunner`-backed client so
-    /// their strong arms (sentinels served verbatim, tier independence,
-    /// zero-spawn cache hits) run on EVERY host — `MonitorClient::system()`
-    /// needs iptables/iptables-save/conntrack/ss/journalctl on `$PATH`, so
-    /// the real-`start` oracles would silently degrade to their
-    /// construction-failure arm on hosts without them. Tier decisions and
-    /// `poll()` semantics are byte-identical to [`Self::start`]; only the
-    /// client construction differs (none).
     #[cfg(test)]
     fn start_with_client(&mut self, client: toride_monitor::client::MonitorClient) {
         if self.rx.is_some() {
@@ -315,19 +173,8 @@ impl MonitorCollector {
         });
     }
 
-    /// Poll for a completed collection result.
-    ///
-    /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. Each cache tier is written (and
-    /// its clock advanced) only when that tier actually re-ran and the bundle
-    /// is a real (available) result — otherwise the TTLs would be re-armed
-    /// forever with cached data, and a degraded bundle would be pinned for
-    /// the TTL instead of retried. A fresh snapshot cluster is cached whether
-    /// it succeeded or failed; the cluster's own `snapshot_ok` then picks its
-    /// TTL at read time (`snapshot_ttl_for`): a healthy run is served for the
-    /// full 8s, a failed one only for the 4s failure backoff — so a
-    /// persistent failure is retried every other tick instead of storming
-    /// every tick, while a transient one still clears at the next retry.
+    /// Returns `Some(bundle)` once the collection completes, `None` while
+    /// pending; a tier's cache is written only when it re-ran on an available bundle.
     pub async fn poll(&mut self) -> Option<MonitorDataBundle> {
         match &mut self.rx {
             Some(rx) => {
@@ -336,19 +183,12 @@ impl MonitorCollector {
                     && bundle.available
                 {
                     if !findings_used {
-                        // Arc bump: the bundle's findings are shared with the
-                        // cache, so this write-back never deep-clones.
                         self.cached_findings = Some(std::sync::Arc::clone(&bundle.findings));
                         self.findings_fresh_at = Some(std::time::Instant::now());
                     }
                     if let Some(cluster) = fresh_cluster
                         && !snapshot_used
                     {
-                        // The fresh cluster is handed back only when the
-                        // snapshot tier re-ran (`snapshot_used == false`).
-                        // Cached for both outcomes (Arc bump);
-                        // `snapshot_ttl_for` picks the short failure TTL or
-                        // the healthy one.
                         self.cached_snapshot = Some(std::sync::Arc::clone(cluster));
                         self.snapshot_fresh_at = Some(std::time::Instant::now());
                     }
@@ -376,43 +216,16 @@ impl Default for MonitorCollector {
     }
 }
 
-// ── Real data collection ────────────────────────────────────────────────────
-
-/// Collect monitor data by shelling out to the real binaries.
-///
-/// Construction (`MonitorClient::system()`) runs in its own `spawn_blocking`
-/// so the `which` lookups don't stall the tokio worker. On macOS this returns
-/// `Err(BinaryNotFound)` and we degrade to `available = false` with the reason
-/// surfaced — NOT a panic, so the unavailable reason is accurate and
-/// actionable. All blocking probes then run in a SECOND `spawn_blocking` that
-/// owns the client. Each cache tier is independent: fresh findings skip the
-/// doctor, a fresh snapshot cluster skips the `ss`/`conntrack`/detect/
-/// iptables passes (only the native port enumeration always runs). On ANY
-/// panic returns [`empty_bundle_with_reason`] with `available = false`.
-///
-/// Returns `(bundle, findings_used, snapshot_used, fresh_cluster)`:
-/// `findings_used` / `snapshot_used` record which tiers were actually served
-/// from a present cache, and `fresh_cluster` carries the freshly-run snapshot
-/// cluster (present iff the snapshot tier re-ran) so the caller can cache it
-/// — mirroring the proxy collector's fresh-report hand-back.
 async fn collect_real_monitor(
     use_findings: bool,
     cached_findings: Option<std::sync::Arc<[FindingEntry]>>,
     use_snapshot: bool,
     cached_snapshot: Option<std::sync::Arc<SnapshotCluster>>,
 ) -> MonitorOutcome {
-    // Build the MonitorClient on the blocking pool. `system()` resolves
-    // iptables/iptables-save/conntrack/ss/journalctl via `which`; on macOS
-    // this returns Err(BinaryNotFound) and the section degrades cleanly.
     let client =
         match tokio::task::spawn_blocking(toride_monitor::client::MonitorClient::system).await {
             Ok(Ok(client)) => client,
             Ok(Err(e)) => {
-                // Construction failed (typically BinaryNotFound on macOS). This is
-                // a clean Err, NOT a panic, so we can surface the backend's own
-                // error string verbatim. Cache flags are irrelevant on this
-                // path — nothing was collected, so the caller must NOT write
-                // either cache tier.
                 tracing::debug!("monitor backend unavailable: {e}");
                 return (empty_bundle_with_reason(format!("{e}")), false, false, None);
             }
@@ -427,13 +240,6 @@ async fn collect_real_monitor(
             }
         };
 
-    // Run ALL blocking probes in a single spawn_blocking that owns `client`.
-    // This keeps every shell-out / socket enumeration off the tokio worker and
-    // sidesteps the 'static-borrow problem: each probe borrows `client.paths`,
-    // so collecting everything in one owned closure is simpler than spawning
-    // one task per probe. Results are returned as plain owned data so they
-    // cross the thread boundary cleanly. Each cache tier is taken from its
-    // cache when fresh, otherwise re-run here.
     let result = tokio::task::spawn_blocking(move || {
         collect_monitor_with_client(
             &client,
@@ -459,13 +265,6 @@ async fn collect_real_monitor(
     }
 }
 
-/// The blocking body of one monitor collection, run against an ALREADY
-/// constructed client.
-///
-/// Split out of [`collect_real_monitor`] so the cadence oracles can drive the
-/// full tier logic against an injected `FakeRunner`-backed client (no `$PATH`
-/// resolution, no real subprocesses) while production keeps its
-/// `MonitorClient::system()` construction.
 #[expect(
     clippy::too_many_lines,
     reason = "real-data collection is inherently linear"
@@ -481,17 +280,9 @@ fn collect_monitor_with_client(
         use toride_monitor::conntrack::ConntrackReader;
         use toride_monitor::doctor::{Doctor, DoctorScope};
 
-        // ── Doctor (unless cached) ─────────────────────────────────────────
-        // `findings_served` tracks the EFFECTIVE cache use: start() only sets
-        // use_findings when the cache is populated, but the truthful flag
-        // must also be false in the impossible race where it was not.
         let findings_served = use_findings && cached_findings.is_some();
-        // Same for the snapshot tier: `true` means SERVED FROM CACHE (the
-        // fresh cluster is absent), so poll() knows to write the cache.
         let snapshot_served = use_snapshot && cached_snapshot.is_some();
         let findings: std::sync::Arc<[FindingEntry]> = if findings_served {
-            // Arc bump out of the cache tier — a hit tick never clones the
-            // findings list.
             std::sync::Arc::clone(cached_findings.expect("checked above"))
         } else {
             let doctor = Doctor::new(client.paths(), client.runner());
@@ -504,17 +295,7 @@ fn collect_monitor_with_client(
             }
         };
 
-        // ── Snapshot cluster (unless cached) ───────────────────────────────
-        // The snapshot's aggregated bytes/packets come from a conntrack table
-        // read done inside `client.snapshot()` (`collect_conntrack_stats`). We
-        // reuse those aggregates below for the conntrack summary instead of
-        // forking `conntrack -L` a SECOND time — the only extra reads we
-        // allow ourselves are the fast `conntrack -C` count and, when the
-        // snapshot's bytes/packets are missing, a single fallback table read
-        // for the count.
         let (cluster, fresh_cluster) = if snapshot_served && let Some(cached) = cached_snapshot {
-            // Arc bump out of the cache tier — a hit tick never clones the
-            // connections/anomalies lists.
             (std::sync::Arc::clone(&cached), None)
         } else {
             let snapshot_report = client.snapshot();
@@ -546,23 +327,9 @@ fn collect_monitor_with_client(
                 Err(_) => Vec::new().into(),
             };
 
-            // Reuse the snapshot's already-aggregated bytes/packets — the
-            // snapshot ran `conntrack -L` once via `collect_conntrack_stats`,
-            // so re-reading the table here would double the fork+parse work.
-            // For the COUNT we prefer the fast `conntrack -C`; only when that
-            // fast count is unavailable AND the snapshot also failed (so we
-            // have no connection count to fall back on) do we do a single
-            // fallback `list_all()` read for the table length. Bytes/packets
-            // are NEVER re-derived from a second table read.
             let reader = ConntrackReader::new(client.paths(), client.runner());
             let fast_count = reader.count().ok();
-            // Snapshot-derived count fallback: `ss` already enumerated the
-            // outbound flows, so `total_connections` is a valid lower-bound
-            // count when the fast `conntrack -C` path is missing.
             let snapshot_count = snapshot_report.as_ref().ok().map(|r| r.total_connections);
-            // Only when neither the fast count nor the snapshot succeeded do
-            // we pay for a single fallback table read — purely to derive a
-            // count.
             let fallback_table_count = if fast_count.is_none() && snapshot_count.is_none() {
                 match reader.list_all() {
                     Ok(entries) => Some(entries.len() as u64),
@@ -575,15 +342,11 @@ fn collect_monitor_with_client(
                 None
             };
             let conntrack = ConntrackSummary {
-                // Prefer the fast count; fall back to the snapshot's
-                // connection count; last resort the fallback table length. If
-                // none worked, leave None so the UI renders "—".
                 count: fast_count.or(snapshot_count).or(fallback_table_count),
                 total_bytes: snapshot_bytes,
                 total_packets: snapshot_packets,
             };
 
-            // ── OUTPUT chain LOG rules ─────────────────────────────────────
             let output_rule_count =
                 match toride_monitor::output::OutputChain::new(client.paths(), client.runner())
                     .list_rules()
@@ -603,16 +366,10 @@ fn collect_monitor_with_client(
                 output_rule_count,
                 snapshot_ok: snapshot_report.is_ok(),
             };
-            // Wrap once; the bundle and the cache share this Arc, so a fresh
-            // run's write-back in poll() is a bump, not a deep clone.
             let cluster = std::sync::Arc::new(cluster);
             (std::sync::Arc::clone(&cluster), Some(cluster))
         };
 
-        // ── Listening ports (always fresh — native netstat2, no shell-out) ──
-        // list_listening_ports uses native netstat2 (no shell-out), so it can
-        // succeed even where ss/conntrack are missing. Degrade to empty on
-        // error.
         let ports: Vec<PortEntry> = match client.list_listening_ports() {
             Ok(raw) => toride_monitor_convert::convert_ports(&raw),
             Err(e) => {
@@ -621,25 +378,6 @@ fn collect_monitor_with_client(
             }
         };
 
-        // ── Availability heuristic ─────────────────────────────────────────
-        // Mirrors the sibling read-only collectors (fail2ban_data,
-        // ufw_kit_data, wireguard_data, ...): `available` is a disjunction of
-        // meaningful probe-success signals, NOT an unconditional `true`.
-        // Construction succeeding only proves the binaries EXIST on `$PATH`
-        // (which/iptables-save/conntrack/ss/journalctl resolved); it does NOT
-        // prove they RUN. `conntrack -L` requires CAP_NET_ADMIN/root on most
-        // distros and `ss -tunap` can fail under seccomp/permissions. If every
-        // runtime probe failed on an unprivileged host, an unconditional
-        // `true` here would render `available == true` with empty data —
-        // indistinguishable from a genuinely quiet host and surfacing the
-        // misleading empty-state messages ('no outbound connections observed',
-        // conntrack bytes '—') the audit's dimension #2 targets.
-        //
-        // `cluster.snapshot_ok` is the canonical 'is the monitor actually
-        // working' probe (it ran `ss` + the conntrack table read). The
-        // remaining disjuncts keep the section available when the snapshot
-        // alone failed but another probe still produced data, matching the
-        // sibling 'OR in at least one success signal' posture.
         let available = monitor_available(
             cluster.snapshot_ok,
             !cluster.connections.is_empty(),
@@ -656,27 +394,12 @@ fn collect_monitor_with_client(
             output_rule_count: cluster.output_rule_count,
             anomalies: std::sync::Arc::clone(&cluster.anomalies),
             findings,
-            // Success path: no panic, no construction error, so no reason.
             unavailable_reason: None,
         };
         (bundle, findings_served, snapshot_served, fresh_cluster)
     }
 }
 
-/// Availability heuristic, factored out so it can be unit-tested.
-///
-/// Mirrors the sibling read-only collectors' disjunction of probe-success
-/// signals. Returns `false` when EVERY probe failed at runtime — the case the
-/// audit's dimension #2 targets: construction succeeded (binaries exist on
-/// `$PATH`) but `conntrack -L` failed for lack of `CAP_NET_ADMIN` and `ss
-/// -tunap` failed under seccomp, so the host produced no connections, no
-/// ports, no findings, and the snapshot itself errored. Such a host must NOT
-/// be reported as `available` (it would render misleading empty-state messages
-/// indistinguishable from a genuinely quiet host).
-///
-/// `snapshot_ok` is the canonical 'is the monitor actually working' signal;
-/// the remaining arguments keep the section available when the snapshot alone
-/// failed but another probe still produced data.
 #[expect(
     clippy::fn_params_excessive_bools,
     reason = "four independent probe-presence flags ORed together"
@@ -690,11 +413,6 @@ fn monitor_available(
     snapshot_ok || has_connections || has_ports || has_findings
 }
 
-/// Empty bundle used when the monitor backend could not be constructed at all.
-///
-/// `available = false` signals the UI to render the degraded panel. No reason
-/// is attached because none is known at this point; construction errors and
-/// collection-time panics use [`empty_bundle_with_reason`] to surface a cause.
 fn empty_bundle() -> MonitorDataBundle {
     MonitorDataBundle {
         available: false,
@@ -709,17 +427,11 @@ fn empty_bundle() -> MonitorDataBundle {
     }
 }
 
-/// Empty bundle carrying the reason collection failed. Used for both a
-/// construction `Err` (e.g. `BinaryNotFound` on macOS) and a `spawn_blocking`
-/// task panic (`JoinError`) — the reason string is rendered by the UI's degraded
-/// panel so the operator sees what actually went wrong.
 fn empty_bundle_with_reason(reason: String) -> MonitorDataBundle {
     let mut b = empty_bundle();
     b.unavailable_reason = Some(reason);
     b
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -752,7 +464,7 @@ mod tests {
         let mut collector = MonitorCollector::new();
         collector.start();
         assert!(collector.is_pending());
-        collector.start(); // no-op, does not replace the receiver
+        collector.start();
         assert!(collector.is_pending());
     }
 
@@ -766,9 +478,6 @@ mod tests {
     async fn poll_clears_pending() {
         let mut collector = MonitorCollector::new();
         collector.start();
-        // Let the spawned task complete (it shells out / resolves binaries, so
-        // give it time). On macOS construction fails fast (which()); on Linux
-        // the probes shell out.
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         let _ = collector.poll().await;
         assert!(!collector.is_pending(), "poll should clear pending state");
@@ -776,9 +485,6 @@ mod tests {
 
     #[tokio::test]
     async fn poll_returns_bundle_after_collection() {
-        // On any host (including macOS where the backend is unavailable) the
-        // collector must return Some(bundle) after start() + enough time. The
-        // bundle's `available` flag reflects whether the backend was found.
         let mut collector = MonitorCollector::new();
         collector.start();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -814,14 +520,6 @@ mod tests {
 
     #[test]
     fn monitor_available_false_when_every_probe_failed() {
-        // The audit's dimension #2 edge case: construction succeeded (the
-        // binaries exist on $PATH so `MonitorClient::system()` returned Ok),
-        // but every RUNTIME probe failed — `ss -tunap` under seccomp,
-        // `conntrack -L` for lack of CAP_NET_ADMIN — so the snapshot errored
-        // and no connections/ports/findings were produced. Such a host must
-        // NOT be reported `available`: it would otherwise render the
-        // misleading empty-state messages ('no outbound connections observed',
-        // conntrack bytes '—') indistinguishable from a genuinely quiet host.
         assert!(
             !monitor_available(false, false, false, false),
             "host where every runtime probe failed must not be 'available'"
@@ -830,18 +528,14 @@ mod tests {
 
     #[test]
     fn monitor_available_true_when_snapshot_ok() {
-        // The canonical 'is the monitor actually working' signal.
         assert!(monitor_available(true, false, false, false));
     }
 
     #[test]
     fn monitor_available_true_when_any_probe_produced_data() {
-        // Even with a failed snapshot, a single successful probe keeps the
-        // section available (mirrors the sibling 'OR in at least one success
-        // signal' posture).
-        assert!(monitor_available(false, true, false, false)); // connections
-        assert!(monitor_available(false, false, true, false)); // ports
-        assert!(monitor_available(false, false, false, true)); // findings
+        assert!(monitor_available(false, true, false, false));
+        assert!(monitor_available(false, false, true, false));
+        assert!(monitor_available(false, false, false, true));
     }
 
     #[tokio::test]
@@ -850,10 +544,6 @@ mod tests {
         collector.start();
         tokio::time::sleep(std::time::Duration::from_secs(2)).await;
         let bundle = collector.poll().await;
-        // After a successful AVAILABLE poll both cache tiers are populated.
-        // A host where every runtime probe failed (available == false,
-        // e.g. macOS construction failure) stays uncached so the next tick
-        // retries.
         match bundle {
             Some(b) if b.available => {
                 assert!(collector.cached_findings.is_some());
@@ -892,34 +582,14 @@ mod tests {
     }
 }
 
-// ── Cadence oracles (round 2, F11 two-tier cache) ────────────────────────────
-
-/// Cadence oracles for the two-tier monitor cache (findings 60s, snapshot 8s).
-///
-/// HERMETIC: every oracle drives [`MonitorCollector::start_with_client`] with
-/// a `FakeRunner`-backed client, so the strong arms run on every host — the
-/// real `MonitorClient::system()` needs iptables/conntrack/ss on `$PATH` and
-/// would silently flip these oracles to a construction-failure arm on hosts
-/// without them. Sentinels cover both tiers — a finding id and a connection
-/// destination no real probe can emit — so "the bundle came back verbatim"
-/// proves NEITHER the doctor NOR the `ss`/`conntrack`/detect/iptables passes
-/// spawned anything, and the runner's call log proves it directly (zero calls
-/// on a both-tier hit). The tier-split oracle is the interesting one: cranking
-/// the test clock past only the `SNAPSHOT_TTL` (9s < 60s) re-runs the
-/// snapshot tier (exactly one `ss` spawn) while the findings tier keeps
-/// serving its sentinel verbatim — pinning that the two TTLs expire
-/// independently.
 #[cfg(test)]
 mod cadence_oracle {
     use super::*;
 
-    /// Sentinel id no real monitor doctor finding can carry.
     const SENTINEL_ID: &str = "oracle-sentinel.monitor.findings-cache";
 
-    /// Sentinel destination no real `ss` row can carry.
     const SENTINEL_DST: &str = "203.0.113.0";
 
-    /// A sentinel snapshot cluster (`snapshot_ok` true so availability holds).
     fn sentinel_cluster() -> SnapshotCluster {
         SnapshotCluster {
             summary: SnapshotSummary::default(),
@@ -938,7 +608,6 @@ mod cadence_oracle {
         }
     }
 
-    /// Sentinel findings for the 60s tier.
     fn sentinel_findings() -> std::sync::Arc<[FindingEntry]> {
         vec![FindingEntry {
             id: SENTINEL_ID.to_string(),
@@ -950,7 +619,6 @@ mod cadence_oracle {
         .into()
     }
 
-    /// Advances this thread's TTL test clock by `ms`, resetting on drop.
     struct TtlOffsetGuard;
 
     impl TtlOffsetGuard {
@@ -959,7 +627,6 @@ mod cadence_oracle {
             Self
         }
 
-        /// Past the 8s snapshot TTL but well under the 60s findings TTL.
         fn snapshot_only() -> Self {
             Self::by_ms(
                 u64::try_from(SNAPSHOT_TTL.as_millis())
@@ -968,9 +635,6 @@ mod cadence_oracle {
             )
         }
 
-        /// Past the 4s failure backoff TTL but still under the 8s healthy
-        /// snapshot TTL — the window where a FAILED cluster must retry while
-        /// a HEALTHY one is still fresh.
         fn failure_ttl_only() -> Self {
             Self::by_ms(
                 u64::try_from(SNAPSHOT_FAILURE_TTL.as_millis())
@@ -979,7 +643,6 @@ mod cadence_oracle {
             )
         }
 
-        /// Past both TTLs.
         fn both() -> Self {
             Self::by_ms(
                 u64::try_from(FINDINGS_TTL.as_millis())
@@ -995,24 +658,16 @@ mod cadence_oracle {
         }
     }
 
-    /// Deterministic `ss -tunap` output for the fresh-run oracles: two ESTAB
-    /// rows under the REAL header shape (the F11 header-mapping fix's layout)
-    /// whose destinations no sentinel collides with.
     const SS_FIXTURE: &str = concat!(
         "Netid State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\n",
         "tcp ESTAB 0 0 198.51.100.7:40000 203.0.113.9:443 users:((\"fixture-proc\",pid=1,fd=3))\n",
         "tcp ESTAB 0 0 198.51.100.7:40001 203.0.113.9:443 users:((\"fixture-proc\",pid=1,fd=4))",
     );
 
-    /// The `ss -tunap` spec `MonitorClient::snapshot()` issues (program is
-    /// `paths.ss`, which `default_paths()` pins to `/usr/bin/ss`).
     fn ss_spec() -> toride_runner::CommandSpec {
         toride_runner::CommandSpec::new("/usr/bin/ss").args(["-tunap"])
     }
 
-    /// A hermetic client: `ss -tunap` answers with the fixture; every other
-    /// command answers with an empty success (lenient `FakeRunner`). The
-    /// handle is kept so oracles can count what actually spawned.
     fn fake_client() -> (
         toride_monitor::client::MonitorClient,
         toride_runner::fake::FakeRunner,
@@ -1028,10 +683,6 @@ mod cadence_oracle {
         (client, runner)
     }
 
-    /// A hermetic client whose `ss -tunap` run ERRORS, so
-    /// `MonitorClient::snapshot()` fails and the fresh cluster carries
-    /// `snapshot_ok == false` (every other command still answers an empty
-    /// success via the lenient `FakeRunner`).
     fn failing_ss_client() -> (
         toride_monitor::client::MonitorClient,
         toride_runner::fake::FakeRunner,
@@ -1047,10 +698,6 @@ mod cadence_oracle {
         (client, runner)
     }
 
-    /// How many `ss -tunap` spawns the runner recorded. `CommandSpec` has no
-    /// `PartialEq`, so match on the public program/args fields — the same
-    /// fields `FakeRunner`'s exact-match responder keys on (modulo the
-    /// excluded policy fields, which the snapshot spec never sets).
     fn ss_spawn_count(runner: &toride_runner::fake::FakeRunner) -> usize {
         runner
             .calls()
@@ -1059,11 +706,6 @@ mod cadence_oracle {
             .count()
     }
 
-    /// ORACLE: with both tiers fresh the whole bundle is served verbatim —
-    /// the sentinel connection AND the sentinel finding both survive — with
-    /// ZERO subprocess spawns (not even `ss`), and neither clock re-arms.
-    /// Hermetic: the injected client works on every host, so this arm can
-    /// never silently degrade to a construction-failure branch.
     #[tokio::test]
     async fn both_tiers_fresh_serves_bundle_verbatim_with_zero_spawns() {
         let mut collector = MonitorCollector::new();
@@ -1115,12 +757,6 @@ mod cadence_oracle {
         );
     }
 
-    /// ORACLE: the tiers expire INDEPENDENTLY. 9s after priming (past the 8s
-    /// snapshot TTL, under the 60s findings TTL) the snapshot tier re-runs —
-    /// exactly one `ss` spawn, the fixture rows come through, the sentinel
-    /// connection is gone — while the findings tier still serves its sentinel
-    /// verbatim with its clock untouched, and the re-run cluster is cached so
-    /// the NEXT collection serves it with zero spawns.
     #[tokio::test]
     async fn snapshot_ttl_expires_before_findings_ttl() {
         let mut collector = MonitorCollector::new();
@@ -1170,11 +806,6 @@ mod cadence_oracle {
             "the re-run snapshot tier must re-arm its clock"
         );
 
-        // The re-run cluster is now cached: an immediate second collection
-        // serves it verbatim with ZERO spawns (the cache-write half of the
-        // cadence). Drop the cranked clock first — the re-armed snapshot
-        // clock is fresh against the REAL clock, so the hit must hold
-        // without any test offset.
         drop(ttl);
         let (client2, runner2) = fake_client();
         collector.start_with_client(client2);
@@ -1196,8 +827,6 @@ mod cadence_oracle {
         );
     }
 
-    /// ORACLE: past both TTLs every sentinel is gone — the doctor and the
-    /// snapshot passes both re-ran, and both clocks re-arm.
     #[tokio::test]
     async fn both_ttls_expiring_reruns_everything() {
         let mut collector = MonitorCollector::new();
@@ -1235,23 +864,12 @@ mod cadence_oracle {
         );
     }
 
-    /// ORACLE (round 4 failure backoff): a FAILED fresh snapshot is cached at
-    /// the SHORT failure TTL, bounding the persistent-failure spawn storm —
-    /// the immediate next tick is a failure-cache hit (ZERO spawns), the
-    /// retry fires once the 4s failure TTL elapses (while a healthy cluster
-    /// would still be fresh at that age), and a successful retry is then
-    /// cached under the healthy 8s TTL. The findings tier is primed fresh
-    /// with the sentinel so `available` holds deterministically via the
-    /// findings disjunct (no dependence on native port enumeration).
     #[tokio::test]
     async fn failed_snapshot_backs_off_at_the_short_failure_ttl() {
         let mut collector = MonitorCollector::new();
         collector.cached_findings = Some(sentinel_findings());
         collector.findings_fresh_at = Some(std::time::Instant::now());
-        // No snapshot cache primed: the snapshot tier runs fresh on the first
-        // collection by construction — no TTL crank needed.
 
-        // (1) Fresh run fails: served to the UI, cached with snapshot_ok=false.
         let (client, runner) = failing_ss_client();
         collector.start_with_client(client);
         let bundle = collector.poll().await.expect("collection completes");
@@ -1274,9 +892,6 @@ mod cadence_oracle {
         );
         assert!(collector.snapshot_fresh_at.is_some(), "and its clock armed");
 
-        // (2) Immediate re-collect is a failure-cache HIT: zero spawns. This
-        // is the bound — a persistently failing host retried every 2s tick
-        // would storm ~120 spawns/min; the backoff halves the tick rate.
         let (client2, runner2) = failing_ss_client();
         collector.start_with_client(client2);
         let second = collector.poll().await.expect("second collection completes");
@@ -1291,9 +906,6 @@ mod cadence_oracle {
             "the cached failed cluster is served verbatim"
         );
 
-        // (3) Past the 4s failure TTL (still under the 8s healthy TTL): the
-        // snapshot tier retries and — with ss now answering the fixture —
-        // succeeds, so the cache flips to the healthy cluster.
         let ttl = TtlOffsetGuard::failure_ttl_only();
         let (client3, runner3) = fake_client();
         collector.start_with_client(client3);
@@ -1318,8 +930,6 @@ mod cadence_oracle {
             "the SUCCESSFUL retry replaced the failed cluster in the cache"
         );
 
-        // (4) And that healthy cluster now serves the FULL 8s TTL: an
-        // immediate re-collect is a hit (the failure TTL no longer applies).
         let (client4, runner4) = fake_client();
         collector.start_with_client(client4);
         let fourth = collector.poll().await.expect("fourth collection completes");
@@ -1331,9 +941,6 @@ mod cadence_oracle {
         assert_eq!(fourth.connections.len(), 2);
     }
 
-    /// ORACLE (round 4 failure backoff, healthy arm): a SUCCESSFUL cluster
-    /// cached at the same instant is still fresh at an age where a FAILED
-    /// cluster retries — pinning that the two TTLs genuinely differ.
     #[tokio::test]
     async fn healthy_cluster_outlives_the_failure_ttl() {
         let mut collector = MonitorCollector::new();
@@ -1369,12 +976,6 @@ mod cadence_oracle {
         );
     }
 
-    /// ORACLE (round 4 Arc sharing): consecutive cache-hit bundles share the
-    /// SAME list allocations (`Arc::ptr_eq`), both with each other AND with
-    /// the cache tiers themselves — a hit tick hands the UI reference-count
-    /// bumps, never a deep clone of the cached connections/anomalies/findings
-    /// (the clone cost the per-tick path used to pay scaled with the live
-    /// connection count).
     #[tokio::test]
     async fn cache_hit_ticks_share_arc_allocations() {
         let mut collector = MonitorCollector::new();
@@ -1395,7 +996,6 @@ mod cadence_oracle {
             "both collections were pure cache hits"
         );
 
-        // The two hit bundles share one allocation per list field...
         assert!(
             std::sync::Arc::ptr_eq(&b1.connections, &b2.connections),
             "consecutive hit bundles share the connections allocation"
@@ -1408,7 +1008,6 @@ mod cadence_oracle {
             std::sync::Arc::ptr_eq(&b1.findings, &b2.findings),
             "consecutive hit bundles share the findings allocation"
         );
-        // ...and that allocation IS the cached tier's, not a copy of it.
         assert!(
             std::sync::Arc::ptr_eq(
                 &b1.connections,

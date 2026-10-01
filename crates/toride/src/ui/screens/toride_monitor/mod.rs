@@ -1,18 +1,6 @@
-//! Outbound traffic monitoring content area (live READ-ONLY).
-//!
-//! Renders inside the dashboard's content region when
-//! [`Section::Monitor`](crate::data::Section) is the active sidebar section.
-//! Mirrors the fail2ban / SSH read-only integrations MINUS the write path —
-//! every line is a pure read of the `toride-monitor` backend.
-//!
-//! Layout (single scrollable pane, no sub-tab bar):
-//! 1. Snapshot summary — total connections, unique destinations, bytes/packets.
-//! 2. Outbound connections table — proto / src→dst / state / bytes.
-//! 3. Listening ports — proto / addr:port / process.
-//! 4. Conntrack summary — tracked count, total bytes, total packets.
-//! 5. OUTPUT chain LOG rules — count of installed logging rules.
-//! 6. Anomaly findings — grouped by severity (Critical > Error > Warning > Info).
-//! 7. Doctor findings — grouped by severity (Critical > Error > Warning > Info).
+//! Outbound traffic monitoring content area (live READ-ONLY) for
+//! [`Section::Monitor`](crate::data::Section). One scrollable pane, in order:
+//! snapshot, connections, ports, conntrack, OUTPUT LOG rules, anomalies, findings.
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -28,24 +16,22 @@ use crate::ui::responsive::truncate_str;
 use crate::ui::theme::Palette;
 use crate::ui::widgets::render_titled_panel;
 
-// ── Presentation types ──────────────────────────────────────────────────────
-
-/// A single outbound connection row (from `ss` / `conntrack`).
+/// One outbound connection row.
 #[derive(Clone, Debug)]
 pub struct ConnectionEntry {
     /// Protocol (e.g. "tcp", "udp").
     pub protocol: String,
     /// Source IP:port label.
     pub src: String,
-    /// Destination IP:port label (port embedded via `format_addr_port`).
+    /// Destination IP:port label.
     pub dst: String,
     /// Connection state (e.g. "ESTABLISHED", "TIME-WAIT").
     pub state: String,
-    /// Bytes transferred, if known from conntrack.
+    /// Byte counter, when available.
     pub bytes: Option<u64>,
 }
 
-/// A single listening socket (from `netstat2` via `PortReader`).
+/// One listening-port row.
 #[derive(Clone, Debug)]
 pub struct PortEntry {
     /// Protocol label ("tcp" / "udp").
@@ -56,105 +42,82 @@ pub struct PortEntry {
     pub local_addr: String,
     /// Local port.
     pub local_port: u16,
-    /// Socket state label.
+    /// Port state label.
     pub state: String,
-    /// Owning process name, if resolved.
+    /// Owning process name, when known.
     pub process_name: Option<String>,
-    /// Owning PID, if resolved.
+    /// Owning process PID, when known.
     pub pid: Option<u32>,
 }
 
-/// Aggregated conntrack counters.
+/// Conntrack totals.
 #[derive(Clone, Debug, Default)]
 pub struct ConntrackSummary {
-    /// Number of currently tracked connections (`conntrack -C`).
+    /// Tracked-connection count.
     pub count: Option<u64>,
-    /// Total bytes across tracked flows, if the table was readable.
+    /// Total bytes across tracked connections.
     pub total_bytes: Option<u64>,
-    /// Total packets across tracked flows, if the table was readable.
+    /// Total packets across tracked connections.
     pub total_packets: Option<u64>,
 }
 
-/// A single anomaly finding (from `MonitorClient::detect`).
+/// One anomaly-detection finding.
 #[derive(Clone, Debug)]
 pub struct AnomalyEntry {
     /// Machine-readable id (e.g. "anomaly.connection-volume").
     pub id: String,
     /// Severity as a lowercase string: "info" | "warning" | "error" | "critical".
     pub severity: String,
-    /// Short human-readable title.
+    /// Human-readable title.
     pub title: String,
-    /// Observed value that triggered the anomaly.
+    /// Observed value that tripped the threshold.
     pub observed: String,
     /// Threshold that was exceeded.
     pub threshold: String,
-    /// Suggested remediation, if any.
+    /// Optional fix hint.
     pub fix: Option<String>,
 }
 
-/// A single doctor finding (from `Doctor::run`).
+/// One doctor finding.
 #[derive(Clone, Debug)]
 pub struct FindingEntry {
     /// Machine-readable dot-separated id (e.g. "doctor.binary.iptables.missing").
     pub id: String,
     /// Severity as a lowercase string: "info" | "warning" | "error" | "critical".
     pub severity: String,
-    /// Short human-readable title.
+    /// Human-readable title.
     pub title: String,
-    /// Longer description / observed value.
+    /// Human-readable detail.
     pub detail: String,
-    /// Suggested remediation, if any.
+    /// Optional fix hint.
     pub fix: Option<String>,
 }
 
-/// Aggregated snapshot counters shown in the summary panel.
+/// Snapshot totals for the header line.
 #[derive(Clone, Debug, Default)]
 pub struct SnapshotSummary {
-    /// Total outbound connections observed.
+    /// Total tracked connections.
     pub total_connections: u64,
-    /// Unique destination IPs.
+    /// Unique destination addresses.
     pub unique_destinations: u64,
-    /// Total bytes transferred, if known.
+    /// Total bytes, when available.
     pub total_bytes: Option<u64>,
-    /// Total packets transferred, if known.
+    /// Total packets, when available.
     pub total_packets: Option<u64>,
 }
 
-// ── MonitorContent ──────────────────────────────────────────────────────────
-
-/// Outbound traffic monitoring content rendered inside the dashboard content
-/// area.
-///
-/// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via `MonitorContent::set_*` setters
-/// driven by [`MonitorCollector`](crate::toride_monitor_data::MonitorCollector).
+/// Outbound traffic monitoring content (READ-ONLY); data arrives via the
+/// `set_*` setters driven by [`MonitorCollector`](crate::toride_monitor_data::MonitorCollector).
 pub struct MonitorContent {
-    /// Whether the monitor backend was reachable at all (binaries present,
-    /// `MonitorClient::system()` succeeded). `false` means the section renders
-    /// a degraded "unavailable" panel instead of live data.
     available: bool,
-    /// Aggregated snapshot counters.
     summary: SnapshotSummary,
-    /// Outbound connections table — shared (`Arc<[T]>`) with the collector's
-    /// snapshot-cache tier, so a cache-hit tick replaces it with a
-    /// reference-count bump instead of a clone proportional to the live
-    /// connection count.
     connections: std::sync::Arc<[ConnectionEntry]>,
-    /// Listening ports.
     ports: Vec<PortEntry>,
-    /// Conntrack counters.
     conntrack: ConntrackSummary,
-    /// Number of installed OUTPUT chain LOG rules (from `iptables-save`).
     output_rule_count: Option<usize>,
-    /// Anomaly findings — shared with the snapshot-cache tier.
     anomalies: std::sync::Arc<[AnomalyEntry]>,
-    /// Doctor findings — shared with the 60s findings-cache tier.
     findings: std::sync::Arc<[FindingEntry]>,
-    /// Human-readable reason the backend was unreachable, surfaced in the
-    /// degraded panel. Populated only when a collection task panicked or
-    /// `MonitorClient::system()` returned `BinaryNotFound` (macOS).
     unavailable_reason: Option<String>,
-    /// Vertical scroll offset over the whole pane.
     scroll: usize,
 }
 
@@ -165,7 +128,7 @@ impl Default for MonitorContent {
 }
 
 impl MonitorContent {
-    /// Create a new empty content area.
+    /// Create empty, unavailable monitor content.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -199,51 +162,46 @@ impl MonitorContent {
         }
     }
 
-    /// Current scroll offset (used by dashboard tests).
+    /// Current scroll offset (test accessor).
     #[cfg(test)]
     pub fn scroll(&self) -> usize {
         self.scroll
     }
 
-    // ── Data setters ─────────────────────────────────────────────────────────
-
-    /// Replace the snapshot summary.
+    /// Replace the snapshot totals.
     pub fn set_summary(&mut self, summary: SnapshotSummary) {
         self.summary = summary;
     }
 
-    /// Replace the connections list and clamp scroll. Takes the shared slice
-    /// the collector's cache tier hands out (Arc bump on cache-hit ticks).
+    /// Replace the connections list.
     pub fn set_connections(&mut self, connections: std::sync::Arc<[ConnectionEntry]>) {
         self.connections = connections;
         self.clamp_scroll();
     }
 
-    /// Replace the listening-ports list and clamp scroll.
+    /// Replace the ports list.
     pub fn set_ports(&mut self, ports: Vec<PortEntry>) {
         self.ports = ports;
         self.clamp_scroll();
     }
 
-    /// Replace the conntrack summary.
+    /// Replace the conntrack totals.
     pub fn set_conntrack(&mut self, conntrack: ConntrackSummary) {
         self.conntrack = conntrack;
     }
 
-    /// Replace the OUTPUT-chain LOG-rule count.
+    /// Replace the OUTPUT chain LOG rule count.
     pub fn set_output_rule_count(&mut self, count: Option<usize>) {
         self.output_rule_count = count;
     }
 
-    /// Replace the anomaly findings and clamp scroll. Takes the shared slice
-    /// the collector's cache tier hands out.
+    /// Replace the anomaly list.
     pub fn set_anomalies(&mut self, anomalies: std::sync::Arc<[AnomalyEntry]>) {
         self.anomalies = anomalies;
         self.clamp_scroll();
     }
 
-    /// Replace the doctor findings and clamp scroll. Takes the shared slice
-    /// the collector's cache tier hands out.
+    /// Replace the findings list.
     pub fn set_findings(&mut self, findings: std::sync::Arc<[FindingEntry]>) {
         self.findings = findings;
         self.clamp_scroll();
@@ -254,14 +212,11 @@ impl MonitorContent {
         self.available = available;
     }
 
-    /// Set the human-readable reason the backend was unreachable. Cleared
-    /// (`None`) whenever availability flips back to `true` so a stale reason
-    /// can't linger after recovery.
+    /// Set the reason the backend was unreachable; forced to `None` while
+    /// `available` is true.
     pub fn set_unavailable_reason(&mut self, reason: Option<String>) {
         self.unavailable_reason = if self.available { None } else { reason };
     }
-
-    // ── Input ────────────────────────────────────────────────────────────────
 
     /// Handle a key press. Returns `Some(Action)` only for navigation keys
     /// (Esc → Back); scroll keys are consumed here.
@@ -303,28 +258,20 @@ impl MonitorContent {
         }
     }
 
-    /// Clamp scroll against a (post-layout) max. Called by the render path
-    /// once the visible row count is known, since `view` is the only place
-    /// that knows the inner pane height.
     fn clamp_scroll_to(&mut self, max_scroll: usize) {
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
         }
     }
 
-    /// Generic clamp after a data setter (defensive — the real clamp happens
-    /// at render time once the pane height is known).
     #[expect(
         clippy::unused_self,
         reason = "API symmetry with other scrollable panes"
     )]
-    fn clamp_scroll(&mut self) {
-        // No-op body: scroll is clamped against visible rows during render.
-    }
+    fn clamp_scroll(&mut self) {}
 
-    // ── Rendering ───────────────────────────────────────────────────────────
-
-    /// Render the full monitor content area.
+    /// Render the monitor pane: degraded panel when unavailable, otherwise
+    /// the scrollable sections.
     pub fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         if !self.available {
             self.render_unavailable(frame, area, p);
@@ -350,8 +297,6 @@ impl MonitorContent {
             return;
         }
 
-        // Build the full content as a Vec<Line> then render only the visible
-        // window (mirrors the SSH / fail2ban tabs' manual-scroll approach).
         let lines = self.build_lines(p);
 
         let visible = inner.height as usize;
@@ -369,23 +314,8 @@ impl MonitorContent {
         }
     }
 
-    /// Render the degraded state when the monitor backend is unavailable on
-    /// this host.
-    ///
-    /// `available == false` is set when `MonitorClient::system()` returned an
-    /// error (typically `BinaryNotFound` on macOS, where `iptables`,
-    /// `iptables-save`, `conntrack`, `ss`, or `journalctl` are missing) or
-    /// when the `spawn_blocking` collection task panicked (`JoinError`). The
-    /// reason string is surfaced here so the operator can see what actually
-    /// went wrong; when no reason is known we fall back to a generic,
-    /// accurate message.
     fn render_unavailable(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let inner = render_titled_panel(frame, area, p, " MONITOR ", p.text_dim, false);
-        // Symmetric defensive posture with the available `view()` path: a
-        // zero-height inner rect (e.g. tiny terminal clipped after the panel
-        // border is drawn) renders nothing. ratatui would no-op the Paragraph
-        // writes anyway, but the early return keeps the two render paths
-        // consistent and avoids the saturating centering math below.
         if inner.height == 0 {
             return;
         }
@@ -396,8 +326,6 @@ impl MonitorContent {
                 Style::new().fg(p.text).add_modifier(Modifier::BOLD),
             ),
         ]);
-        // Prefer the concrete reason (BinaryNotFound / panic); otherwise a
-        // generic message that is accurate for the macOS case.
         let detail_text = self.unavailable_reason.clone().unwrap_or_else(|| {
             "monitor backend requires iptables/conntrack/ss/journalctl (Linux)".to_string()
         });
@@ -415,16 +343,12 @@ impl MonitorContent {
             1,
         );
         frame.render_widget(Paragraph::new(msg).centered(), centered_msg);
-        // Wrap so a long reason wraps within the panel instead of clipping.
         frame.render_widget(
             Paragraph::new(detail).centered().wrap(Wrap { trim: false }),
             centered_detail,
         );
     }
 
-    /// Build the complete content as a flat list of lines (summary,
-    /// connections, ports, conntrack, output rules, anomalies, findings).
-    /// Scrolling operates over this list.
     fn build_lines(&self, p: Palette) -> Vec<Line<'static>> {
         let mut lines: Vec<Line<'static>> = Vec::new();
 
@@ -625,7 +549,6 @@ impl MonitorContent {
             return;
         }
 
-        // Group by severity: Critical > Error > Warning > Info.
         let order = ["critical", "error", "warning", "info"];
         for sev in order {
             let group: Vec<&AnomalyEntry> = self
@@ -675,7 +598,6 @@ impl MonitorContent {
     }
 
     fn push_findings_lines(&self, lines: &mut Vec<Line<'static>>, p: Palette) {
-        // Group by severity: Critical > Error > Warning > Info.
         const ORDER: &[&str] = &["critical", "error", "warning", "info"];
         crate::ui::screens::findings::push_findings_grouped(
             lines,
@@ -734,7 +656,6 @@ impl crate::ui::screens::findings::Finding for FindingEntry {
     }
 }
 
-/// Format a byte count as a human-readable string (B / KB / MB / GB).
 #[expect(clippy::cast_precision_loss, reason = "display-only")]
 fn format_bytes_count(bytes: u64) -> String {
     const KB: u64 = 1024;
@@ -833,7 +754,6 @@ mod tests {
         .into()
     }
 
-    /// Render a content area to a string (snapshot pattern from fail2ban).
     fn render_to_string(content: &mut MonitorContent, w: u16, h: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(w, h)).unwrap();
         terminal.draw(|f| content.view(f, f.area(), CHARM)).unwrap();
@@ -876,10 +796,8 @@ mod tests {
     #[test]
     fn set_unavailable_reason_clears_when_available() {
         let mut c = MonitorContent::new();
-        // While unavailable, the reason sticks.
         c.set_unavailable_reason(Some("boom".into()));
         assert_eq!(c.unavailable_reason.as_deref(), Some("boom"));
-        // Flipping available true must clear the reason.
         c.set_available(true);
         c.set_unavailable_reason(Some("boom".into()));
         assert!(c.unavailable_reason.is_none());
@@ -1022,27 +940,18 @@ mod tests {
         c.set_available(true);
         c.set_connections(sample_connections());
         c.set_findings(sample_findings());
-        // 20x5 — well below comfortable, must not panic.
         let _ = render_to_string(&mut c, 20, 5);
     }
 
     #[test]
     fn render_unavailable_zero_height_does_not_panic() {
-        // Pins the `inner.height == 0` early-return guard in
-        // `render_unavailable`: a clipped panel rect (the border consumes the
-        // single row, leaving inner.height == 0) must render as a no-op
-        // without panicking in the centering math.
         let mut c = MonitorContent::new();
-        // Unavailable path is taken when available == false (the default).
         c.set_unavailable_reason(Some("clipped".into()));
-        // height 1 → the panel border fills the only row, inner.height == 0.
         let _ = render_to_string(&mut c, 80, 1);
     }
 
     #[test]
     fn render_unavailable_zero_height_preserves_reason_without_panic() {
-        // Companion to the above: even with a reason set, the zero-height
-        // path must early-return before touching the reason string.
         let mut c = MonitorContent::new();
         c.set_unavailable_reason(Some("a very long reason ".repeat(50)));
         let _ = render_to_string(&mut c, 1, 1);
@@ -1064,9 +973,6 @@ mod tests {
 
     #[test]
     fn format_bytes_count_boundaries() {
-        // Table-driven boundary coverage — the render tests only assert
-        // substrings like "5.0 MB", so this pins the exact unit thresholds
-        // and degenerate values (0, unit boundaries, one-below boundaries).
         const KB: u64 = 1024;
         const MB: u64 = 1024 * KB;
         const GB: u64 = 1024 * MB;
@@ -1084,27 +990,14 @@ mod tests {
         for &(input, expected) in cases {
             assert_eq!(format_bytes_count(input), expected, "input = {input}");
         }
-        // u64::MAX must not panic; the helper caps at GB so it lands in the
-        // GB branch (large float). Only assert the branch, not the exact
-        // rendering — the float magnitude is implementation-defined.
         let max_str = format_bytes_count(u64::MAX);
         assert!(max_str.ends_with(" GB"), "u64::MAX renders as {max_str}");
     }
 
-    /// Regression: monitor is the only section that carries two elevated-
-    /// severity collections (`findings` and `anomalies`). The
-    /// [`SectionOverview`](crate::ui::screens::section_overview::SectionOverview)
-    /// impl must fold anomalies into BOTH the severity iteration (so a
-    /// critical-only anomaly flips the status to `degraded`) and the count
-    /// (so the FINDINGS stat card is bumped). Mirrors
-    /// `derived_findings_and_available_match_standalone_methods` in
-    /// `dashboard.rs`: with zero doctor findings but an elevated-severity
-    /// anomaly, the overview must report `degraded` and the bumped count.
     #[test]
     fn overview_folds_anomalies_into_status_and_count() {
         use crate::ui::screens::section_overview::SectionOverview;
 
-        // ── Baseline: available, no findings, no anomalies → active, 0. ──
         let mut c = MonitorContent::new();
         c.set_available(true);
         c.set_findings(Vec::new().into());
@@ -1112,10 +1005,6 @@ mod tests {
         assert_eq!(c.status_label(), "active");
         assert_eq!(c.findings_count(), 0);
 
-        // ── Critical anomaly with zero doctor findings. ──
-        // Before the fix this reported `active · 0 finding(s)`, contradicting
-        // the monitor screen's own anomaly grouping. Now it must be degraded
-        // with the anomaly counted.
         c.set_anomalies(
             vec![AnomalyEntry {
                 id: "anomaly.connection-volume".into(),
@@ -1138,12 +1027,9 @@ mod tests {
             "findings_count must include anomalies"
         );
 
-        // ── Both axes populated: counts must sum. ──
-        // 2 doctor findings + 1 anomaly = 3.
         c.set_findings(sample_findings());
         assert_eq!(c.findings_count(), 3);
 
-        // ── Warning-severity anomaly also degrades (plan rule). ──
         let mut w = MonitorContent::new();
         w.set_available(true);
         w.set_anomalies(
@@ -1160,8 +1046,6 @@ mod tests {
         assert_eq!(w.status_label(), "degraded");
         assert_eq!(w.findings_count(), 1);
 
-        // ── Info-severity anomaly alone must NOT degrade (not in the
-        // elevated set), but still counts toward findings_count. ──
         let mut i = MonitorContent::new();
         i.set_available(true);
         i.set_anomalies(
@@ -1178,7 +1062,6 @@ mod tests {
         assert_eq!(i.status_label(), "active");
         assert_eq!(i.findings_count(), 1);
 
-        // ── Offline (unavailable) dominates regardless of anomalies. ──
         let mut off = MonitorContent::new();
         off.set_available(false);
         off.set_anomalies(
@@ -1193,7 +1076,6 @@ mod tests {
             .into(),
         );
         assert_eq!(off.status_label(), "offline");
-        // Count is independent of availability (mirrors `findings_total()`).
         assert_eq!(off.findings_count(), 1);
     }
 }

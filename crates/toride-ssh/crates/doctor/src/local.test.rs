@@ -1,7 +1,6 @@
 use super::*;
 use serial_test::serial;
 
-/// Set up a temporary SSH directory with the given layout and run `run_all`.
 async fn run_checks_with_dir(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
     let runner = toride_ssh_core::MockCliRunner::new();
@@ -14,10 +13,6 @@ fn find<'a>(
 ) -> Vec<&'a toride_ssh_core::Diagnostic> {
     diagnostics.iter().filter(|d| d.id == id).collect()
 }
-
-// ---------------------------------------------------------------------------
-// SshDirExists
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn ssh_dir_exists_when_present() {
@@ -53,13 +48,8 @@ async fn ssh_dir_missing_when_absent() {
     let diags = run_checks_with_dir(&missing).await;
     let matches = find(&diags, "ssh_dir_exists");
     assert!(!matches.is_empty());
-    // When the directory doesn't exist, severity should be Warning.
     assert!(matches.iter().all(|d| d.severity == Severity::Warning));
 }
-
-// ---------------------------------------------------------------------------
-// SshDirPermissions (unix only)
-// ---------------------------------------------------------------------------
 
 #[cfg(unix)]
 #[tokio::test]
@@ -83,10 +73,6 @@ async fn ssh_dir_permissions_too_permissive() {
     assert!(matches.iter().all(|d| d.severity == Severity::Error));
 }
 
-// ---------------------------------------------------------------------------
-// ConfigExists
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn config_exists_when_present() {
     let dir = tempfile::tempdir().unwrap();
@@ -100,16 +86,11 @@ async fn config_exists_when_present() {
 #[tokio::test]
 async fn config_missing_reports_info() {
     let dir = tempfile::tempdir().unwrap();
-    // No config file written.
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "config_exists");
     assert!(!matches.is_empty());
     assert!(matches.iter().all(|d| d.severity == Severity::Info));
 }
-
-// ---------------------------------------------------------------------------
-// KnownHostsExists
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn known_hosts_exists_when_present() {
@@ -130,10 +111,6 @@ async fn known_hosts_missing_warns() {
     assert!(matches.iter().all(|d| d.severity == Severity::Warning));
 }
 
-// ---------------------------------------------------------------------------
-// PrivateKeyPermissions (unix only)
-// ---------------------------------------------------------------------------
-
 #[cfg(unix)]
 #[tokio::test]
 async fn private_key_correct_permissions() {
@@ -148,7 +125,6 @@ async fn private_key_correct_permissions() {
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "private_key_permissions");
-    // Should have at least one Ok entry for our key.
     assert!(
         matches
             .iter()
@@ -181,16 +157,11 @@ async fn private_key_wrong_permissions() {
 #[tokio::test]
 async fn private_key_permissions_no_keys_found() {
     let dir = tempfile::tempdir().unwrap();
-    // Empty ssh dir — no private key files.
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "private_key_permissions");
     assert!(!matches.is_empty());
     assert!(matches.iter().any(|d| d.severity == Severity::Info));
 }
-
-// ---------------------------------------------------------------------------
-// DefaultKeyExists
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn default_key_exists_when_present() {
@@ -206,16 +177,11 @@ async fn default_key_exists_when_present() {
 #[tokio::test]
 async fn default_key_missing() {
     let dir = tempfile::tempdir().unwrap();
-    // No keys written.
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "default_key_exists");
     assert!(!matches.is_empty());
     assert!(matches.iter().all(|d| d.severity == Severity::Warning));
 }
-
-// ---------------------------------------------------------------------------
-// OwnerCheck (unix only)
-// ---------------------------------------------------------------------------
 
 #[cfg(unix)]
 #[tokio::test]
@@ -230,12 +196,8 @@ async fn owner_check_passes_for_current_user() {
 #[cfg(unix)]
 #[tokio::test]
 async fn owner_check_errors_for_wrong_owner() {
-    // /var/empty is owned by root (uid 0) on macOS and Linux.
-    // When running as a non-root user this triggers the
-    // file_uid != current_uid error branch.
     let current_uid = unsafe { libc::getuid() };
     if current_uid == 0 {
-        // Running as root — /var/empty is also owned by us, so skip.
         return;
     }
 
@@ -267,10 +229,6 @@ async fn owner_check_errors_for_wrong_owner() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// ConfigPermissionsCheck (unix only)
-// ---------------------------------------------------------------------------
-
 #[cfg(unix)]
 #[tokio::test]
 async fn config_permissions_ok_when_not_world_writable() {
@@ -298,10 +256,6 @@ async fn config_permissions_error_when_world_writable() {
     assert!(!matches.is_empty());
     assert!(matches.iter().all(|d| d.severity == Severity::Error));
 }
-
-// ---------------------------------------------------------------------------
-// AuthorizedKeysPermissionsCheck (unix only)
-// ---------------------------------------------------------------------------
 
 #[cfg(unix)]
 #[tokio::test]
@@ -334,16 +288,11 @@ async fn authorized_keys_permissions_error_when_world_writable() {
 #[tokio::test]
 async fn authorized_keys_permissions_info_when_missing() {
     let dir = tempfile::tempdir().unwrap();
-    // No authorized_keys file.
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "authorized_keys_permissions");
     assert!(!matches.is_empty());
     assert!(matches.iter().all(|d| d.severity == Severity::Info));
 }
-
-// ---------------------------------------------------------------------------
-// PublicKeyPairsCheck
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn public_key_pair_present() {
@@ -364,7 +313,6 @@ async fn public_key_pair_present() {
 async fn public_key_pair_missing_pub() {
     let dir = tempfile::tempdir().unwrap();
     std::fs::write(dir.path().join("id_ed25519"), "fake-private-key").unwrap();
-    // No .pub file.
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "public_key_pairs");
@@ -378,16 +326,11 @@ async fn public_key_pair_missing_pub() {
 #[tokio::test]
 async fn public_key_pairs_no_keys() {
     let dir = tempfile::tempdir().unwrap();
-    // No id_* files at all.
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "public_key_pairs");
     assert!(!matches.is_empty());
     assert!(matches.iter().all(|d| d.severity == Severity::Info));
 }
-
-// ---------------------------------------------------------------------------
-// IdentityFileExistsCheck
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn identity_file_exists_present() {
@@ -422,16 +365,11 @@ async fn identity_file_exists_missing() {
 #[tokio::test]
 async fn identity_file_exists_no_config() {
     let dir = tempfile::tempdir().unwrap();
-    // No config file.
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "identity_file_exists");
     assert!(!matches.is_empty());
     assert!(matches.iter().all(|d| d.severity == Severity::Info));
 }
-
-// ---------------------------------------------------------------------------
-// DuplicateHostCheck
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn duplicate_host_detected() {
@@ -477,10 +415,6 @@ Host api
     assert!(matches.iter().all(|d| d.severity == Severity::Ok));
 }
 
-// ---------------------------------------------------------------------------
-// HostStarPlacementCheck
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn host_star_before_specific_warns() {
     let dir = tempfile::tempdir().unwrap();
@@ -521,14 +455,9 @@ Host *
     assert!(matches.iter().all(|d| d.severity == Severity::Ok));
 }
 
-// ---------------------------------------------------------------------------
-// SshV1KeyCheck
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn ssh_v1_key_not_present() {
     let dir = tempfile::tempdir().unwrap();
-    // No "identity" file.
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "ssh_v1_key");
     assert!(!matches.is_empty());
@@ -545,10 +474,6 @@ async fn ssh_v1_key_detected() {
     assert!(matches.iter().any(|d| d.severity == Severity::Warning));
 }
 
-// ---------------------------------------------------------------------------
-// AgentAvailable & KeygenAvailable (env-dependent, just ensure no crash)
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 #[serial]
 async fn agent_available_returns_valid_diagnostic() {
@@ -556,7 +481,6 @@ async fn agent_available_returns_valid_diagnostic() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "agent_available");
     assert_eq!(matches.len(), 1);
-    // Either Ok (if SSH_AUTH_SOCK is set and socket exists) or Warning.
     assert!(matches[0].severity == Severity::Ok || matches[0].severity == Severity::Warning);
 }
 
@@ -566,13 +490,8 @@ async fn keygen_available_returns_valid_diagnostic() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "keygen_available");
     assert_eq!(matches.len(), 1);
-    // ssh-keygen should be available on macOS/Linux dev machines.
     assert!(matches[0].severity == Severity::Ok || matches[0].severity == Severity::Error);
 }
-
-// ---------------------------------------------------------------------------
-// IdentityFilePubCheck
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn identity_file_pub_detected() {
@@ -601,10 +520,6 @@ async fn identity_file_private_key_ok() {
     let matches = find(&diags, "identity_file_pub");
     assert!(matches.iter().all(|d| d.severity == Severity::Ok));
 }
-
-// ---------------------------------------------------------------------------
-// IdentitiesOnlyCheck
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn identities_only_missing_warns() {
@@ -657,15 +572,8 @@ async fn identities_only_single_key_ok() {
     assert!(matches.iter().all(|d| d.severity == Severity::Ok));
 }
 
-// ---------------------------------------------------------------------------
-// Doctor MaxAuthTries check — warning when agent has many keys
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn identities_only_warns_when_many_keys() {
-    // Simulate a host with many IdentityFile entries (agent has many keys).
-    // The IdentitiesOnly check warns when a host has multiple IdentityFile
-    // entries without IdentitiesOnly yes, which relates to MaxAuthTries issues.
     let dir = tempfile::tempdir().unwrap();
     let config = "\
 Host busy-host
@@ -681,7 +589,6 @@ Host busy-host
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "identities_only");
-    // With 7 IdentityFile entries and no IdentitiesOnly yes, a warning is expected.
     assert!(
         matches.iter().any(|d| d.severity == Severity::Warning),
         "should warn about {} IdentityFile entries without IdentitiesOnly",
@@ -721,10 +628,6 @@ Host busy-host
     );
 }
 
-// ---------------------------------------------------------------------------
-// CertificateFileExistsCheck
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn certificate_file_exists_present() {
     let dir = tempfile::tempdir().unwrap();
@@ -758,7 +661,6 @@ async fn certificate_file_exists_missing() {
 #[tokio::test]
 async fn certificate_file_exists_no_config() {
     let dir = tempfile::tempdir().unwrap();
-    // No config file.
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "certificate_file_exists");
     assert!(!matches.is_empty());
@@ -779,10 +681,6 @@ async fn certificate_file_exists_no_directives() {
     assert!(!matches.is_empty());
     assert!(matches.iter().all(|d| d.severity == Severity::Info));
 }
-
-// ---------------------------------------------------------------------------
-// PreferredAuthenticationsCheck
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn preferred_authentications_not_set() {
@@ -829,14 +727,8 @@ async fn preferred_authentications_password_only() {
     assert!(matches.iter().any(|d| d.severity == Severity::Info));
 }
 
-// ---------------------------------------------------------------------------
-// Doctor ProxyJump host check — unconfigured ProxyJump targets warned
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn identity_file_exists_warns_for_missing_proxy_jump_key() {
-    // ProxyJump itself doesn't need an IdentityFile check, but if the
-    // jump host's IdentityFile is referenced and doesn't exist, we warn.
     let dir = tempfile::tempdir().unwrap();
     let config = "\
 Host target
@@ -847,7 +739,6 @@ Host target
 
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "identity_file_exists");
-    // The jump_key doesn't exist, so we should get a warning.
     assert!(
         matches.iter().any(|d| d.severity == Severity::Warning),
         "should warn about missing IdentityFile for ProxyJump host"
@@ -856,7 +747,6 @@ Host target
 
 #[tokio::test]
 async fn duplicate_host_detected_for_proxy_jump_target() {
-    // If a ProxyJump target has a duplicate Host block, we should warn.
     let dir = tempfile::tempdir().unwrap();
     let config = "\
 Host jumphost
@@ -880,7 +770,6 @@ Host target
 
 #[tokio::test]
 async fn host_star_placement_affects_proxy_jump_defaults() {
-    // Host * before specific blocks means ProxyJump defaults can't be overridden.
     let dir = tempfile::tempdir().unwrap();
     let config = "\
 Host *
@@ -899,13 +788,6 @@ Host target
     );
 }
 
-// ---------------------------------------------------------------------------
-// HomeDirPermissionsCheck (unix only)
-// ---------------------------------------------------------------------------
-
-/// Run the `HomeDirPermissionsCheck` against a temp directory with the given
-/// Unix permission mode.  Sets `$HOME` to the temp dir for the duration of
-/// the check and restores it afterwards.
 #[cfg(unix)]
 async fn run_home_dir_check_with_mode(mode: u32) -> Vec<toride_ssh_core::Diagnostic> {
     let dir = tempfile::tempdir().unwrap();
@@ -938,7 +820,6 @@ async fn run_home_dir_check_with_mode(mode: u32) -> Vec<toride_ssh_core::Diagnos
 #[serial]
 #[tokio::test]
 async fn home_dir_permissions_ok_when_secure() {
-    // 0755 — no group or world write bits.
     let diags = run_home_dir_check_with_mode(0o755).await;
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].id, "home_dir_permissions");
@@ -955,7 +836,6 @@ async fn home_dir_permissions_ok_when_secure() {
 #[serial]
 #[tokio::test]
 async fn home_dir_permissions_warns_when_group_writable() {
-    // 0775 — group write bit set.
     let diags = run_home_dir_check_with_mode(0o775).await;
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].id, "home_dir_permissions");
@@ -975,7 +855,6 @@ async fn home_dir_permissions_warns_when_group_writable() {
 #[serial]
 #[tokio::test]
 async fn home_dir_permissions_warns_when_world_writable() {
-    // 0757 — world (other) write bit set, group write clear.
     let diags = run_home_dir_check_with_mode(0o757).await;
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].id, "home_dir_permissions");
@@ -995,7 +874,6 @@ async fn home_dir_permissions_warns_when_world_writable() {
 #[serial]
 #[tokio::test]
 async fn home_dir_permissions_warns_when_group_and_world_writable() {
-    // 0777 — both group and world write bits set.
     let diags = run_home_dir_check_with_mode(0o777).await;
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].id, "home_dir_permissions");
@@ -1012,12 +890,6 @@ async fn home_dir_permissions_warns_when_group_and_world_writable() {
 #[serial]
 #[tokio::test]
 async fn home_dir_permissions_info_when_home_unknown() {
-    // `dirs::home_dir()` reads `$HOME` on Unix.  When the variable is
-    // removed, the crate falls back to the passwd database.  In a normal
-    // dev environment the lookup succeeds so we cannot reliably reach the
-    // `None` branch.  This test removes `$HOME` and accepts either outcome:
-    //   - Info (dirs returned None — e.g. in a sandboxed container)
-    //   - Ok/Warning (passwd fallback resolved a home directory)
     let orig = std::env::var("HOME").ok();
     unsafe {
         std::env::remove_var("HOME");
@@ -1044,18 +916,10 @@ async fn home_dir_permissions_info_when_home_unknown() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// MaxAuthTriesExhaustionCheck
-// ---------------------------------------------------------------------------
-
-/// Run `MaxAuthTriesExhaustionCheck` directly against the current environment.
 async fn run_max_auth_tries_check() -> Vec<toride_ssh_core::Diagnostic> {
     MaxAuthTriesExhaustionCheck.run().await.unwrap()
 }
 
-/// Run `MaxAuthTriesExhaustionCheck` against a fixed agent socket
-/// (`None` = no agent) without touching the process-global environment,
-/// which races with tests running in parallel.
 async fn run_max_auth_tries_check_with_sock(
     sock: Option<&str>,
 ) -> Vec<toride_ssh_core::Diagnostic> {
@@ -1082,7 +946,6 @@ async fn max_auth_tries_skips_when_auth_sock_unset() {
 #[tokio::test]
 #[serial]
 async fn max_auth_tries_info_when_ssh_add_fails() {
-    // Point to a non-existent socket — ssh-add -l will fail.
     let diags =
         run_max_auth_tries_check_with_sock(Some("/tmp/toride_test_nonexistent_agent_socket")).await;
 
@@ -1099,12 +962,6 @@ async fn max_auth_tries_info_when_ssh_add_fails() {
 #[tokio::test]
 #[serial]
 async fn max_auth_tries_classifies_key_count() {
-    // Runs against the real SSH agent (if present) and verifies the
-    // diagnostic severity matches the key count thresholds:
-    //   < 5 keys   → Ok
-    //   5 keys     → Info (approaching MaxAuthTries)
-    //   >= 6 keys  → Warning
-    //   no agent   → Info (skip)
     let diags = run_max_auth_tries_check().await;
 
     assert_eq!(diags.len(), 1);
@@ -1113,7 +970,6 @@ async fn max_auth_tries_classifies_key_count() {
 
     match diags[0].severity {
         Severity::Ok => {
-            // Few keys loaded — within the safe range.
             assert!(
                 diags[0].message.contains("within MaxAuthTries limit")
                     || diags[0].message.contains("No keys loaded"),
@@ -1123,7 +979,6 @@ async fn max_auth_tries_classifies_key_count() {
             assert!(diags[0].hint.is_none());
         }
         Severity::Info => {
-            // Either agent unavailable or approaching threshold.
             assert!(
                 diags[0].message.contains("SSH agent is not running")
                     || diags[0].message.contains("Could not list agent keys")
@@ -1133,7 +988,6 @@ async fn max_auth_tries_classifies_key_count() {
             );
         }
         Severity::Warning => {
-            // Too many keys — at or above MaxAuthTries threshold.
             assert!(
                 diags[0].message.contains("MaxAuthTries"),
                 "Warning should mention MaxAuthTries, got: {}",
@@ -1156,9 +1010,6 @@ async fn max_auth_tries_classifies_key_count() {
 #[tokio::test]
 #[serial]
 async fn max_auth_tries_warns_when_above_threshold() {
-    // Verifies the Warning branch (>= 6 keys) produces correct message
-    // and hint.  When the real agent has fewer keys this is a no-op —
-    // the classification logic is still exercised via the sibling test.
     let diags = run_max_auth_tries_check().await;
 
     assert_eq!(diags.len(), 1);
@@ -1186,13 +1037,6 @@ async fn max_auth_tries_warns_when_above_threshold() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AgentIdentityCheck
-// ---------------------------------------------------------------------------
-
-/// Generate an Ed25519 key pair in `dir` using `ssh-keygen`.
-/// Returns the path to the private key file.  The public key is at
-/// `<name>.pub` in the same directory.
 fn generate_ed25519_key_pair(dir: &std::path::Path, name: &str) -> std::path::PathBuf {
     let key_path = dir.join(name);
     let status = std::process::Command::new("ssh-keygen")
@@ -1214,7 +1058,6 @@ fn generate_ed25519_key_pair(dir: &std::path::Path, name: &str) -> std::path::Pa
     key_path
 }
 
-/// Add a private key to the running SSH agent.  Returns `true` on success.
 fn ssh_add_key(key_path: &std::path::Path) -> bool {
     std::process::Command::new("ssh-add")
         .arg(key_path.to_str().unwrap())
@@ -1224,7 +1067,6 @@ fn ssh_add_key(key_path: &std::path::Path) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// Remove a key from the SSH agent using its public key file path.
 fn ssh_remove_key_by_pub(pub_path: &std::path::Path) {
     let _ = std::process::Command::new("ssh-add")
         .args(["-d", pub_path.to_str().unwrap()])
@@ -1233,7 +1075,6 @@ fn ssh_remove_key_by_pub(pub_path: &std::path::Path) {
         .status();
 }
 
-/// Returns `true` when `SSH_AUTH_SOCK` is set and the socket exists.
 fn agent_is_reachable() -> bool {
     match std::env::var("SSH_AUTH_SOCK") {
         Ok(sock) if !sock.is_empty() => std::path::Path::new(&sock).exists(),
@@ -1241,7 +1082,6 @@ fn agent_is_reachable() -> bool {
     }
 }
 
-/// Returns `true` when `ssh-add -l` reports at least one loaded key.
 fn agent_has_keys() -> bool {
     std::process::Command::new("ssh-add")
         .arg("-l")
@@ -1249,7 +1089,6 @@ fn agent_has_keys() -> bool {
         .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
 }
 
-/// Run the `AgentIdentityCheck` directly against the given SSH directory.
 async fn run_agent_identity_check(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
     let check = AgentIdentityCheck { paths: &paths };
@@ -1295,12 +1134,10 @@ async fn agent_identity_ok_when_agent_holds_matching_key() {
     let key_path = generate_ed25519_key_pair(dir.path(), "id_ed25519_match");
     let pub_path = dir.path().join("id_ed25519_match.pub");
 
-    // Load the key into the agent.
     if !ssh_add_key(&key_path) {
         return;
     }
 
-    // Config references this key via an absolute path.
     std::fs::write(
         dir.path().join("config"),
         format!("Host test\n    IdentityFile {}\n", key_path.display()),
@@ -1309,7 +1146,6 @@ async fn agent_identity_ok_when_agent_holds_matching_key() {
 
     let diags = run_agent_identity_check(dir.path()).await;
 
-    // Cleanup: remove key from agent before the temp dir is deleted.
     ssh_remove_key_by_pub(&pub_path);
 
     let matches = find(&diags, "agent_identity");
@@ -1336,12 +1172,10 @@ async fn agent_identity_info_when_pub_file_missing() {
     let key_path = generate_ed25519_key_pair(dir.path(), "id_ed25519_nopub");
     let pub_path = dir.path().join("id_ed25519_nopub.pub");
 
-    // Load the key so the check does not early-return with "No keys loaded".
     if !ssh_add_key(&key_path) {
         return;
     }
 
-    // Remove the .pub file so `ssh-keygen -lf` fails.
     std::fs::remove_file(&pub_path).unwrap();
 
     std::fs::write(
@@ -1352,7 +1186,6 @@ async fn agent_identity_info_when_pub_file_missing() {
 
     let diags = run_agent_identity_check(dir.path()).await;
 
-    // Best-effort cleanup: try removing by private key path.
     let _ = std::process::Command::new("ssh-add")
         .args(["-d", key_path.to_str().unwrap()])
         .stdout(std::process::Stdio::null())
@@ -1376,13 +1209,10 @@ async fn agent_identity_info_when_pub_file_missing() {
 #[serial]
 async fn agent_identity_warns_when_key_not_in_agent() {
     if !agent_is_reachable() || !agent_has_keys() {
-        // The check needs the agent to have at least one key loaded so it
-        // does not early-return with "No keys loaded in agent".
         return;
     }
 
     let dir = tempfile::tempdir().unwrap();
-    // Generate a fresh key pair that is NOT loaded in the agent.
     let key_path = generate_ed25519_key_pair(dir.path(), "id_ed25519_mismatch");
 
     std::fs::write(
@@ -1407,12 +1237,6 @@ async fn agent_identity_warns_when_key_not_in_agent() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// RsaWeakKeyCheck
-// ---------------------------------------------------------------------------
-
-/// Generate an RSA key pair in `dir` with the given bit size using `ssh-keygen`.
-/// Returns the path to the private key file.
 fn generate_rsa_key_pair(dir: &std::path::Path, name: &str, bits: u32) -> std::path::PathBuf {
     let key_path = dir.join(name);
     let status = std::process::Command::new("ssh-keygen")
@@ -1439,7 +1263,6 @@ fn generate_rsa_key_pair(dir: &std::path::Path, name: &str, bits: u32) -> std::p
     key_path
 }
 
-/// Run the `RsaWeakKeyCheck` directly against the given SSH directory.
 async fn run_rsa_weak_key_check(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
     let check = RsaWeakKeyCheck { paths: &paths };
@@ -1564,10 +1387,6 @@ async fn rsa_weak_key_skips_ed25519_key() {
     assert!(diags[0].hint.is_none(), "Ok diagnostic should have no hint");
 }
 
-// ---------------------------------------------------------------------------
-// UseKeychainPlatformCheck
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn use_keychain_no_directive_info() {
     let dir = tempfile::tempdir().unwrap();
@@ -1666,7 +1485,6 @@ Host mac-host
     let matches = find(&diags, "use_keychain_platform");
 
     if cfg!(target_os = "macos") {
-        // On macOS, a single Ok diagnostic summarizing the count.
         assert_eq!(matches.len(), 1);
         assert_eq!(matches[0].severity, Severity::Ok);
         assert!(
@@ -1675,7 +1493,6 @@ Host mac-host
             matches[0].message,
         );
     } else {
-        // On non-macOS, one Warning per UseKeychain context.
         assert_eq!(
             matches.len(),
             2,
@@ -1684,10 +1501,6 @@ Host mac-host
         assert!(matches.iter().all(|d| d.severity == Severity::Warning));
     }
 }
-
-// ---------------------------------------------------------------------------
-// GssapiConfigCheck
-// ---------------------------------------------------------------------------
 
 #[tokio::test]
 async fn gssapi_config_no_directives() {
@@ -1863,11 +1676,6 @@ Host kerb-off
     );
 }
 
-// ---------------------------------------------------------------------------
-// NfsHomeCheck
-// ---------------------------------------------------------------------------
-
-/// Run `NfsHomeCheck` directly against the current environment.
 async fn run_nfs_home_check() -> Vec<toride_ssh_core::Diagnostic> {
     NfsHomeCheck.run().await.unwrap()
 }
@@ -1880,9 +1688,6 @@ async fn nfs_home_returns_valid_diagnostic() {
     assert_eq!(diags[0].module, "local");
 
     if cfg!(target_os = "linux") {
-        // On Linux the check reads /proc/mounts. The severity depends on
-        // whether the home directory is actually on NFS. Accept any valid
-        // severity.
         assert!(
             matches!(
                 diags[0].severity,
@@ -1892,7 +1697,6 @@ async fn nfs_home_returns_valid_diagnostic() {
             diags[0].severity,
         );
     } else {
-        // On non-Linux the check should report Info (not applicable).
         assert_eq!(
             diags[0].severity,
             Severity::Info,
@@ -1911,8 +1715,6 @@ async fn nfs_home_returns_valid_diagnostic() {
 #[serial]
 #[tokio::test]
 async fn nfs_home_info_when_home_unknown() {
-    // Save and remove $HOME so dirs::home_dir() returns None (or falls back
-    // to the passwd database, which may still succeed).
     let orig = std::env::var("HOME").ok();
     unsafe {
         std::env::remove_var("HOME");
@@ -1928,7 +1730,6 @@ async fn nfs_home_info_when_home_unknown() {
 
     assert_eq!(diags.len(), 1);
     assert_eq!(diags[0].id, "nfs_home");
-    // Either Info (no home) or the normal Linux/non-Linux result (passwd fallback).
     assert!(
         matches!(
             diags[0].severity,
@@ -1950,11 +1751,6 @@ async fn nfs_home_registered_in_run_all() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// SELinuxContextCheck
-// ---------------------------------------------------------------------------
-
-/// Run `SELinuxContextCheck` directly against the given SSH directory.
 async fn run_selinux_context_check(ssh_dir: &std::path::Path) -> Vec<toride_ssh_core::Diagnostic> {
     let paths = SshPaths::with_dir(ssh_dir);
     let check = SELinuxContextCheck { paths: &paths };
@@ -1964,13 +1760,11 @@ async fn run_selinux_context_check(ssh_dir: &std::path::Path) -> Vec<toride_ssh_
 #[tokio::test]
 async fn selinux_context_skipped_on_non_linux() {
     if cfg!(target_os = "linux") {
-        // On Linux the check actually runs restorecon; accept any outcome.
         return;
     }
 
     let dir = tempfile::tempdir().unwrap();
     let diags = run_selinux_context_check(dir.path()).await;
-    // On non-Linux, the check returns no diagnostics (skipped entirely).
     assert!(
         diags.is_empty(),
         "SELinux check should produce no diagnostics on non-Linux, got: {diags:?}",
@@ -1983,14 +1777,12 @@ async fn selinux_context_registered_in_run_all() {
     let diags = run_checks_with_dir(dir.path()).await;
 
     if cfg!(target_os = "linux") {
-        // On Linux the check runs and produces a diagnostic.
         let matches = find(&diags, "selinux_context");
         assert!(
             !matches.is_empty(),
             "selinux_context check should be registered in run_all on Linux"
         );
     } else {
-        // On non-Linux the check returns empty diagnostics (skipped).
         let matches = find(&diags, "selinux_context");
         assert!(
             matches.is_empty(),
@@ -2011,10 +1803,8 @@ async fn selinux_context_returns_valid_severity_on_linux() {
     assert_eq!(diags[0].id, "selinux_context");
     assert_eq!(diags[0].module, "local");
 
-    // restorecon may or may not be available on the test system.
     match diags[0].severity {
         Severity::Info => {
-            // restorecon not available or SELinux not enabled.
             assert!(
                 diags[0].message.contains("restorecon") || diags[0].message.contains("SELinux"),
                 "Info message should mention restorecon or SELinux, got: {}",
@@ -2049,10 +1839,6 @@ async fn selinux_context_returns_valid_severity_on_linux() {
     }
 }
 
-// ---------------------------------------------------------------------------
-// VerifyHostKeyDnsCheck
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn verify_host_key_dns_info_when_no_config() {
     let dir = tempfile::tempdir().unwrap();
@@ -2063,7 +1849,6 @@ async fn verify_host_key_dns_info_when_no_config() {
         matches.iter().all(|d| d.severity == Severity::Info),
         "expected Info when config is absent, got: {matches:?}"
     );
-    // When no config file exists, the check reports that it cannot check.
     assert!(
         matches[0].message.contains("does not exist"),
         "expected 'does not exist' in message, got: {}",
@@ -2096,7 +1881,6 @@ async fn verify_host_key_dns_enabled() {
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "verify_host_key_dns");
     assert!(!matches.is_empty());
-    // At least one diagnostic should say VerifyHostKeyDNS is enabled.
     assert!(
         matches.iter().any(|d| d.message.contains("set to 'yes'")),
         "expected 'set to yes' in diagnostics, got: {matches:?}"
@@ -2138,26 +1922,17 @@ async fn verify_host_key_dns_enabled_reports_dns_check() {
     std::fs::write(dir.path().join("config"), "VerifyHostKeyDNS yes\n").unwrap();
     let diags = run_checks_with_dir(dir.path()).await;
     let matches = find(&diags, "verify_host_key_dns");
-    // When enabled, the check should produce multiple diagnostics:
-    // one for the mode, one for DNS availability, and one SSHFP warning.
     assert!(
         matches.len() >= 2,
         "expected at least 2 diagnostics when enabled, got {}",
         matches.len()
     );
-    // Should include an SSHFP hint.
     assert!(
         matches.iter().any(|d| d.message.contains("SSHFP")),
         "expected an SSHFP-related diagnostic, got: {matches:?}"
     );
 }
 
-// ---------------------------------------------------------------------------
-// F10 oracles: bounded-concurrency run_all
-// ---------------------------------------------------------------------------
-
-/// A [`toride_ssh_core::CliRunner`] that counts every spawn it is asked for
-/// while delegating to the canned [`toride_ssh_core::MockCliRunner`].
 struct CountingRunner<'a> {
     inner: &'a toride_ssh_core::MockCliRunner,
     spawns: std::sync::Arc<std::sync::atomic::AtomicUsize>,
@@ -2187,9 +1962,6 @@ impl toride_ssh_core::CliRunner for CountingRunner<'_> {
     }
 }
 
-/// The concurrency fan-out must not add CLI spawns: `run_all` still asks the
-/// runner for exactly the one `ssh-keygen` PATH probe the sequential loop
-/// made (`keygen_available`), and nothing else.
 #[tokio::test]
 async fn run_all_spawn_count_matches_sequential_baseline() {
     let dir = tempfile::tempdir().unwrap();
@@ -2211,9 +1983,6 @@ async fn run_all_spawn_count_matches_sequential_baseline() {
     );
 }
 
-/// The diagnostic output order must stay stable across runs (and therefore
-/// across concurrent execution): the ids arrive grouped per check, in
-/// registration order.
 #[tokio::test]
 async fn run_all_diagnostic_order_is_stable_across_runs() {
     let dir = tempfile::tempdir().unwrap();
@@ -2231,16 +2000,10 @@ async fn run_all_diagnostic_order_is_stable_across_runs() {
         ids(&second),
         "concurrent execution must not reorder diagnostic output"
     );
-    // And the order is registration order: ssh_dir_exists is the first
-    // registered check, so its diagnostic must come first.
     assert_eq!(first.first().map(|d| d.id), Some("ssh_dir_exists"));
 }
 
-/// The throttle itself: at most `limit` futures run between their start and
-/// completion, every future completes, and outputs keep input order.
-/// Futures spawned by the throttle test below.
 const THROTTLE_TASKS: usize = 24;
-/// Concurrency bound used by the throttle test below.
 const THROTTLE_LIMIT: usize = 4;
 
 #[tokio::test]
@@ -2279,8 +2042,6 @@ async fn join_all_bounded_caps_in_flight_and_preserves_order() {
     );
 }
 
-/// `join_all` semantics: one future's `Err` never cancels its siblings.
-/// Outcome token for the sibling-failure test below.
 #[derive(Debug, PartialEq, Eq)]
 enum JoinItem {
     Err(&'static str),
@@ -2303,19 +2064,6 @@ async fn join_all_bounded_sibling_failure_does_not_cancel_siblings() {
     assert_eq!(out[3], JoinItem::Err("also failed"));
 }
 
-// ---------------------------------------------------------------------------
-// Shared config-read oracles (novel-finding fixes)
-// ---------------------------------------------------------------------------
-
-/// The doctor's config reads go through the shared mtime-keyed cache, not
-/// around it: a run of `run_all` must neither re-read the config nor
-/// replace the memoized content entry.
-///
-/// Populating the cache with a content-only load first (the raw-scanner
-/// path `VerifyHostKeyDnsCheck` now uses), running the whole check suite,
-/// and then re-loading the content must yield the SAME shared buffer — any
-/// check-side `read_to_string` that re-inserted a fresh entry would break
-/// the pointer identity.
 #[tokio::test]
 async fn run_all_shares_the_memoized_config_content() {
     use std::sync::Arc;
@@ -2324,16 +2072,12 @@ async fn run_all_shares_the_memoized_config_content() {
     let config_path = dir.path().join("config");
     std::fs::write(&config_path, "Host a\n    VerifyHostKeyDNS yes\n").unwrap();
 
-    // Content-only population — the raw-scanner path.
     let first = toride_ssh_config::cache::load_cached_content(&config_path).expect("content load");
 
     let paths = SshPaths::with_dir(dir.path());
     let runner = toride_ssh_core::MockCliRunner::new();
     run_all(&paths, &runner).await.expect("run_all");
 
-    // The suite's AST consumers plus the raw scanner must all have gone
-    // through the same entry: the content buffer is neither re-read nor
-    // replaced by the run.
     let second =
         toride_ssh_config::cache::load_cached_content(&config_path).expect("content reload");
     assert!(

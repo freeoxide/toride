@@ -1,8 +1,5 @@
-//! Diagnostics sub-tab for the SSH management screen.
-//!
-//! Displays diagnostic check results (SSH directory permissions, config issues,
-//! agent status, etc.) as a scrollable list with severity icons, messages, and
-//! module badges. Supports keyboard navigation, selection, and a detail modal.
+//! The SSH diagnostics tab: doctor findings list with detail, run, and
+//! fix-all actions.
 
 use crossterm::event::{KeyCode, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -25,53 +22,30 @@ use crate::ui::widgets::{
 
 use super::{DiagnosticEntry, SshTab, char_to_keycode};
 
-// ── ActionModal ───────────────────────────────────────────────────────────────
-
-/// Which action modal is currently open (if any).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ActionModal {
-    /// Run diagnostic checks form.
     Run,
-    /// Fix all auto-fixable issues confirmation.
     FixAll,
 }
 
-// ── DiagnosticsTab ────────────────────────────────────────────────────────────
-
-/// State for the Diagnostics sub-tab.
+/// The SSH diagnostics tab: findings list plus its action modals and ops.
 pub struct DiagnosticsTab {
-    /// Diagnostic entries to display.
-    ///
-    /// Stored as an [`Arc`](std::sync::Arc) so the collector's cache, the
-    /// bundle, and this tab share one allocation (the per-tick refresh used
-    /// to deep-clone the list three to four times).
     entries: std::sync::Arc<Vec<DiagnosticEntry>>,
-    /// Index of the currently selected entry.
     selected: usize,
-    /// Vertical scroll offset.
     scroll: usize,
-    /// Whether the detail modal is open, and for which entry index.
     detail_open: Option<usize>,
-    /// Rendered rect of the detail modal (for click-outside detection).
     detail_modal_rect: Option<Rect>,
-    /// Hitbox rects for list rows (rebuilt each frame).
     row_hitboxes: Vec<Rect>,
-    /// Which row is hovered by the mouse.
     hovered_row: Option<usize>,
-    /// Interactive footer shortcut buttons.
     buttons: ButtonRow<char>,
-    /// Which action modal is open (if any).
     action_modal: Option<ActionModal>,
-    /// Form modal for run checks operation.
     form: FormModal,
-    /// Confirm modal for fix all operation.
     confirm: ConfirmModal,
-    /// Pending write operations to be drained by the parent `SshContent`.
     pending_ops: Vec<SshOp>,
 }
 
 impl DiagnosticsTab {
-    /// Create a new empty diagnostics tab.
+    /// Create an empty diagnostics tab with its action button row.
     #[must_use]
     pub fn new() -> Self {
         let buttons = ButtonRow::new(
@@ -98,7 +72,7 @@ impl DiagnosticsTab {
         }
     }
 
-    /// Replace the diagnostic entries with new data.
+    /// Replace the findings list, clamping selection and scroll.
     pub fn set_entries(&mut self, entries: std::sync::Arc<Vec<DiagnosticEntry>>) {
         self.entries = entries;
         if self.selected >= self.entries.len() && !self.entries.is_empty() {
@@ -107,37 +81,32 @@ impl DiagnosticsTab {
         self.clamp_scroll();
     }
 
-    /// Whether a modal is currently open.
+    /// Whether the detail or action modal is open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
         self.detail_open.is_some() || self.action_modal.is_some()
     }
 
-    /// Clamp scroll so the selected item is visible.
     fn clamp_scroll(&mut self) {
         if self.entries.is_empty() {
             self.scroll = 0;
             return;
         }
-        // Ensure selected is within bounds
         if self.selected >= self.entries.len() {
             self.selected = self.entries.len() - 1;
         }
     }
 
-    /// Close the detail modal (if open).
+    /// Close the detail modal.
     pub fn close_modal(&mut self) {
         self.detail_open = None;
     }
 
-    /// Handle a mouse event for the diagnostic entry list.
     fn handle_mouse_impl(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // Action modal open: block background input.
         if self.action_modal.is_some() {
             return None;
         }
 
-        // Detail modal open: block background, only close on click outside.
         if self.detail_open.is_some() {
             if matches!(mouse.kind, MouseEventKind::Down(MouseButton::Left))
                 && let Some(mr) = self.detail_modal_rect
@@ -152,7 +121,6 @@ impl DiagnosticsTab {
             return None;
         }
 
-        // Footer buttons (always process for hover tracking).
         if let Some(c) = self.buttons.handle_mouse(&mouse) {
             return self.handle_key(char_to_keycode(c));
         }
@@ -182,7 +150,6 @@ impl DiagnosticsTab {
         None
     }
 
-    /// Check if a screen coordinate falls within a list row hitbox.
     fn row_at(&self, col: u16, row: u16) -> Option<usize> {
         self.row_hitboxes.iter().position(|rect| {
             col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
@@ -198,7 +165,6 @@ impl Default for DiagnosticsTab {
 
 impl SshTab for DiagnosticsTab {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
-        // If detail modal is open, handle modal keys
         if self.detail_open.is_some() {
             match code {
                 KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => {
@@ -208,7 +174,6 @@ impl SshTab for DiagnosticsTab {
                 _ => None,
             }
         } else if let Some(action) = self.action_modal {
-            // Action modal is open: delegate to it.
             match action {
                 ActionModal::Run => match self.form.handle_key(code) {
                     FormResult::Submitted => {
@@ -220,19 +185,16 @@ impl SshTab for DiagnosticsTab {
                     }
                     FormResult::Pending => {}
                 },
-                ActionModal::FixAll => {
-                    match self.confirm.handle_key(code) {
-                        Some(ConfirmResult::Confirmed) => {
-                            // Fix all auto-fixable issues
-                            self.pending_ops.push(SshOp::DoctorRunChecks);
-                            self.action_modal = None;
-                        }
-                        Some(ConfirmResult::Cancelled) => {
-                            self.action_modal = None;
-                        }
-                        None => {}
+                ActionModal::FixAll => match self.confirm.handle_key(code) {
+                    Some(ConfirmResult::Confirmed) => {
+                        self.pending_ops.push(SshOp::DoctorRunChecks);
+                        self.action_modal = None;
                     }
-                }
+                    Some(ConfirmResult::Cancelled) => {
+                        self.action_modal = None;
+                    }
+                    None => {}
+                },
             }
             None
         } else {
@@ -257,7 +219,6 @@ impl SshTab for DiagnosticsTab {
                     }
                     None
                 }
-                // CRUD shortcuts
                 KeyCode::Char('r') => {
                     self.form = FormModal::new(40)
                         .text_field(TextInput::new("Filter", 30).placeholder("check id or module"))
@@ -289,14 +250,12 @@ impl SshTab for DiagnosticsTab {
             self.render_list(frame, area, p);
         }
 
-        // Render detail modal if open
         if let Some(idx) = self.detail_open
             && let Some(entry) = self.entries.get(idx).cloned()
         {
             self.render_detail_modal(frame, p, &entry);
         }
 
-        // Render action modal on top
         match self.action_modal {
             Some(ActionModal::Run) => {
                 self.form.render_in_modal_with_hint(
@@ -333,8 +292,6 @@ impl SshTab for DiagnosticsTab {
         std::mem::take(&mut self.pending_ops)
     }
 }
-
-// ── Rendering ─────────────────────────────────────────────────────────────────
 
 impl DiagnosticsTab {
     fn render_empty(frame: &mut Frame, area: Rect, p: Palette) {
@@ -374,7 +331,6 @@ impl DiagnosticsTab {
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
         }
-        // Ensure selected item is visible
         if self.selected < self.scroll {
             self.scroll = self.selected;
         } else if self.selected >= self.scroll + visible {
@@ -392,10 +348,8 @@ impl DiagnosticsTab {
             let y = inner.y + row as u16;
             let row_area = Rect::new(inner.x, y, inner.width, 1);
 
-            // Store hitbox for mouse detection.
             self.row_hitboxes.push(row_area);
 
-            // Selection or hover highlight.
             if is_selected || is_hovered {
                 for x in row_area.x..row_area.right() {
                     if let Some(cell) = frame.buffer_mut().cell_mut((x, y)) {
@@ -406,7 +360,6 @@ impl DiagnosticsTab {
 
             let mut spans = Vec::new();
 
-            // Severity icon and color
             let (icon, icon_color) = match entry.severity.as_str() {
                 "ok" => ("✓", p.ok),
                 "info" => ("ℹ", p.info),
@@ -415,13 +368,11 @@ impl DiagnosticsTab {
                 _ => ("·", p.text_dim),
             };
 
-            // Icon
             spans.push(Span::styled(
                 format!("{icon} "),
                 Style::new().fg(icon_color),
             ));
 
-            // Message (truncated to fit)
             let msg_w = inner.width.saturating_sub(20) as usize;
             let msg = truncate_str(&entry.message, msg_w);
             let msg_style = match entry.severity.as_str() {
@@ -430,9 +381,8 @@ impl DiagnosticsTab {
             };
             spans.push(Span::styled(&msg, msg_style));
 
-            // Right-align module badge — pad to end of row
             let module_badge = format!(" {}", entry.module);
-            let used: usize = 2 + msg.len() + module_badge.len(); // icon+space + msg + badge
+            let used: usize = 2 + msg.len() + module_badge.len();
             let avail = inner.width as usize;
             if used < avail {
                 let padding = avail - used;
@@ -447,7 +397,6 @@ impl DiagnosticsTab {
             frame.render_widget(Paragraph::new(line), row_area);
         }
 
-        // Footer with key count and action hints
         self.render_footer(frame, area, p);
     }
 
@@ -520,9 +469,6 @@ impl DiagnosticsTab {
         });
     }
 }
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-// (truncate_str is imported from crate::ui::responsive)
 
 #[cfg(test)]
 mod tests {
@@ -657,7 +603,7 @@ mod tests {
 
         let mut tab = DiagnosticsTab::new();
         tab.set_entries(sample_entries());
-        tab.detail_open = Some(1); // warning entry with hint
+        tab.detail_open = Some(1);
         let mut terminal = Terminal::new(TestBackend::new(80, 30)).unwrap();
         terminal.draw(|f| tab.view(f, f.area(), CHARM)).unwrap();
         let output = terminal.backend().to_string();
@@ -692,23 +638,18 @@ mod tests {
     fn set_entries_clamps_selected() {
         let mut tab = DiagnosticsTab::new();
         tab.selected = 10;
-        tab.set_entries(sample_entries()); // 3 items
+        tab.set_entries(sample_entries());
         assert!(tab.selected < 3);
     }
-
-    // ── SshOp coverage (mirror security_tab pattern) ───────────────────────
 
     #[test]
     fn run_checks_submit_pushes_doctor_run_checks_op() {
         let mut tab = DiagnosticsTab::new();
         tab.set_entries(sample_entries());
 
-        // 'r' opens the run form (Filter + Scope). No field is required, so
-        // submitting immediately is valid.
         tab.handle_key(KeyCode::Char('r'));
         assert_eq!(tab.action_modal, Some(ActionModal::Run));
 
-        // Tab past both fields to the buttons, then submit.
         tab.handle_key(KeyCode::Tab);
         tab.handle_key(KeyCode::Tab);
         tab.handle_key(KeyCode::Enter);

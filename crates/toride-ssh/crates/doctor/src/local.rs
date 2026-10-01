@@ -1,5 +1,3 @@
-//! Local SSH diagnostic checks.
-
 use std::collections::HashMap;
 
 #[cfg(unix)]
@@ -12,14 +10,6 @@ use toride_ssh_core::Result;
 use toride_ssh_core::paths::SshPaths;
 use toride_ssh_core::{Diagnostic, Severity};
 
-/// Load the config AST through the shared mtime-keyed cache, off the async
-/// worker.
-///
-/// `load_cached_ast` performs synchronous `std::fs` I/O on a cache miss;
-/// `ConfigService::load` wraps the same call in `spawn_blocking`, and the
-/// checks do the same here so a current-thread runtime is never stalled by
-/// a config read (the mutex inside the cache is only ever held for
-/// lookup/insert, never across the read).
 async fn cached_config_ast(
     config_path: std::path::PathBuf,
 ) -> std::io::Result<std::sync::Arc<ast::ConfigAst>> {
@@ -28,12 +18,6 @@ async fn cached_config_ast(
         .map_err(|e| std::io::Error::other(e.to_string()))?
 }
 
-/// Load the raw config content through the same cache, off the async worker.
-///
-/// Raw line scanners (e.g. `VerifyHostKeyDnsCheck`) share one buffered read
-/// with the AST consumers instead of issuing their own `read_to_string`,
-/// so an unchanged config is read once per doctor run however it is
-/// consumed.
 async fn cached_config_content(
     config_path: std::path::PathBuf,
 ) -> std::io::Result<std::sync::Arc<String>> {
@@ -42,22 +26,14 @@ async fn cached_config_content(
         .map_err(|e| std::io::Error::other(e.to_string()))?
 }
 
-/// Status of the `VerifyHostKeyDNS` SSH config directive.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DnsVerifyStatus {
-    /// Directive not present (default off).
     Unknown,
-    /// `VerifyHostKeyDNS no`
     Disabled,
-    /// `VerifyHostKeyDNS yes`
     Enabled,
-    /// `VerifyHostKeyDNS ask`
     Ask,
 }
 
-/// Detect the `VerifyHostKeyDNS` setting from SSH config content.
-///
-/// Inlined from `toride_ssh_known_hosts` since the original is `pub(crate)`.
 fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
     for line in config_content.lines() {
         let trimmed = line.trim();
@@ -78,122 +54,86 @@ fn detect_verify_host_key_dns(config_content: &str) -> DnsVerifyStatus {
     }
     DnsVerifyStatus::Unknown
 }
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
-/// Number of bytes to read from the start of a file to detect PEM private key
-/// headers without loading potentially large files into memory.
 const PRIVATE_KEY_HEADER_READ_SIZE: usize = 4096;
 
-/// Minimum number of bytes required to contain a PEM header marker.
 const MIN_PEM_HEADER_LENGTH: usize = 8;
 
-/// Minimum recommended RSA key size in bits for long-term security.
-/// NIST recommends 2048 through 2030, but 3072 is the widely accepted
-/// minimum. OpenSSH 9.x+ warns about RSA-2048 keys.
 const RECOMMENDED_RSA_BITS: u32 = 3072;
 
-// ---------------------------------------------------------------------------
-// Concrete check structs
-// ---------------------------------------------------------------------------
-
-/// Check that `~/.ssh` exists and is a directory.
 struct SshDirExists<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh` has permission mode `0o700` (Unix) or reports ACL info (Windows).
 struct SshDirPermissions<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh/config` exists.
 struct ConfigExists<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh/known_hosts` exists.
 struct KnownHostsExists<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that all private key files under `~/.ssh` have mode `0o600` (Unix) or reports ACL info (Windows).
 struct PrivateKeyPermissions<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that the SSH agent socket is reachable.
 struct AgentAvailable;
 
-/// Check that `ssh-keygen` is available in `PATH`.
 struct KeygenAvailable<'a> {
     runner: &'a dyn toride_ssh_core::CliRunner,
 }
 
-/// Check that at least one default key pair exists.
 struct DefaultKeyExists<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh` is owned by the current user (Unix) or reports ACL info (Windows).
 struct OwnerCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh/config` is not group/world writable (Unix) or reports ACL info (Windows).
 struct ConfigPermissionsCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `~/.ssh/authorized_keys` has mode `0o600` or `0o644` (Unix) or reports ACL info (Windows).
 struct AuthorizedKeysPermissionsCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that every `id_*` private key has a matching `.pub` file.
 struct PublicKeyPairsCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `IdentityFile` paths referenced in config actually exist.
 struct IdentityFileExistsCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Detect duplicate `Host` blocks with the same pattern.
 struct DuplicateHostCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Detect `Host *` appearing before specific `Host` blocks.
 struct HostStarPlacementCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check for deprecated `SSHv1` key files (`~/.ssh/identity`).
 struct SshV1KeyCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check that `UseKeychain` is only set on macOS.
 struct UseKeychainPlatformCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check for GSSAPI/Kerberos-related directives in SSH config.
 struct GssapiConfigCheck<'a> {
     paths: &'a SshPaths,
 }
 
-/// Check for `VerifyHostKeyDNS` configuration and DNS/SSHFP readiness.
 struct VerifyHostKeyDnsCheck<'a> {
     paths: &'a SshPaths,
 }
-
-// ---------------------------------------------------------------------------
-// Check implementations
-// ---------------------------------------------------------------------------
 
 impl Check for SshDirExists<'_> {
     fn id(&self) -> &'static str {
@@ -379,7 +319,6 @@ impl Check for PrivateKeyPermissions<'_> {
                 let name = entry.file_name();
                 let name_lossy = name.to_string_lossy();
 
-                // Skip public keys, certificates, config files, and dotfiles.
                 if name_lossy.ends_with(".pub")
                     || name_lossy.ends_with("-cert.pub")
                     || name_lossy == "config"
@@ -396,13 +335,10 @@ impl Check for PrivateKeyPermissions<'_> {
                     continue;
                 };
 
-                // Only check regular files.
                 if !meta.is_file() {
                     continue;
                 }
 
-                // Read only the first 4 KB to detect private key markers without
-                // loading potentially large files into memory.
                 {
                     use tokio::io::AsyncReadExt;
                     let Ok(mut file) = tokio::fs::File::open(&path).await else {
@@ -412,8 +348,6 @@ impl Check for PrivateKeyPermissions<'_> {
                     let Ok(n) = file.read(&mut buf).await else {
                         continue;
                     };
-                    // `from_utf8_lossy` returns `Cow<str>` so no allocation
-                    // occurs when the header is valid UTF-8 (always true for PEM).
                     if n < MIN_PEM_HEADER_LENGTH
                         || !String::from_utf8_lossy(&buf[..n]).contains("PRIVATE KEY")
                     {
@@ -576,10 +510,6 @@ impl Check for DefaultKeyExists<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// OwnerCheck
-// ---------------------------------------------------------------------------
-
 #[cfg(unix)]
 impl Check for OwnerCheck<'_> {
     fn id(&self) -> &'static str {
@@ -638,10 +568,6 @@ impl Check for OwnerCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ConfigPermissionsCheck
-// ---------------------------------------------------------------------------
-
 #[cfg(unix)]
 impl Check for ConfigPermissionsCheck<'_> {
     fn id(&self) -> &'static str {
@@ -698,10 +624,6 @@ impl Check for ConfigPermissionsCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AuthorizedKeysPermissionsCheck
-// ---------------------------------------------------------------------------
-
 #[cfg(unix)]
 impl Check for AuthorizedKeysPermissionsCheck<'_> {
     fn id(&self) -> &'static str {
@@ -757,10 +679,6 @@ impl Check for AuthorizedKeysPermissionsCheck<'_> {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Non-Unix (Windows) stubs for permission checks
-// ---------------------------------------------------------------------------
 
 #[cfg(not(unix))]
 impl Check for SshDirPermissions<'_> {
@@ -896,11 +814,6 @@ impl Check for AuthorizedKeysPermissionsCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PlatformCheck
-// ---------------------------------------------------------------------------
-
-/// Report platform information: OS, architecture, SSH version, and agent type.
 struct PlatformCheck;
 
 impl Check for PlatformCheck {
@@ -914,7 +827,6 @@ impl Check for PlatformCheck {
         Box::pin(async move {
             let mut diagnostics = Vec::new();
 
-            // Report OS and architecture.
             diagnostics.push(Diagnostic {
                 id: "platform_os",
                 severity: Severity::Info,
@@ -927,7 +839,6 @@ impl Check for PlatformCheck {
                 module: "local",
             });
 
-            // Detect SSH agent type.
             #[cfg(unix)]
             {
                 match std::env::var("SSH_AUTH_SOCK") {
@@ -978,8 +889,6 @@ impl Check for PlatformCheck {
                 }
             }
 
-            // Run `ssh -V` to get the SSH client version.
-            // `ssh -V` prints to stderr.
             let version_output = tokio::task::spawn_blocking(|| {
                 duct::cmd("ssh", ["-V"]).stderr_to_stdout().read().ok()
             })
@@ -1020,10 +929,6 @@ impl Check for PlatformCheck {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PublicKeyPairsCheck
-// ---------------------------------------------------------------------------
-
 impl Check for PublicKeyPairsCheck<'_> {
     fn id(&self) -> &'static str {
         "public_key_pairs"
@@ -1053,7 +958,6 @@ impl Check for PublicKeyPairsCheck<'_> {
                 let name = entry.file_name();
                 let name_str = name.to_string_lossy().to_string();
 
-                // Match id_* private keys (not .pub, not -cert.pub).
                 if name_str.starts_with("id_")
                     && !name_str.to_lowercase().ends_with(".pub")
                     && !name_str.to_lowercase().ends_with("-cert.pub")
@@ -1112,11 +1016,6 @@ impl Check for PublicKeyPairsCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// CertificateFileExistsCheck
-// ---------------------------------------------------------------------------
-
-/// Check that `CertificateFile` paths referenced in config actually exist.
 struct CertificateFileExistsCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -1132,8 +1031,6 @@ impl Check for CertificateFileExistsCheck<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "certificate_file_exists",
@@ -1148,7 +1045,6 @@ impl Check for CertificateFileExistsCheck<'_> {
             };
             let mut cert_files: Vec<String> = Vec::new();
 
-            // Collect CertificateFile directives from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
                     ConfigNode::Directive(d)
@@ -1215,10 +1111,6 @@ impl Check for CertificateFileExistsCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IdentityFileExistsCheck
-// ---------------------------------------------------------------------------
-
 impl Check for IdentityFileExistsCheck<'_> {
     fn id(&self) -> &'static str {
         "identity_file_exists"
@@ -1230,8 +1122,6 @@ impl Check for IdentityFileExistsCheck<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "identity_file_exists",
@@ -1246,7 +1136,6 @@ impl Check for IdentityFileExistsCheck<'_> {
             };
             let mut identity_files: Vec<String> = Vec::new();
 
-            // Collect IdentityFile directives from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
                     ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("IdentityFile") => {
@@ -1308,10 +1197,6 @@ impl Check for IdentityFileExistsCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DuplicateHostCheck
-// ---------------------------------------------------------------------------
-
 impl Check for DuplicateHostCheck<'_> {
     fn id(&self) -> &'static str {
         "duplicate_host"
@@ -1322,8 +1207,6 @@ impl Check for DuplicateHostCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "duplicate_host",
@@ -1337,7 +1220,6 @@ impl Check for DuplicateHostCheck<'_> {
                 }]);
             };
 
-            // Track each pattern and the first Host block header it appeared in.
             let mut seen: HashMap<String, String> = HashMap::new();
             let mut duplicates: Vec<(String, String, String)> = Vec::new();
 
@@ -1345,7 +1227,6 @@ impl Check for DuplicateHostCheck<'_> {
                 if let ConfigNode::HostBlock(b) = node {
                     for pat in &b.patterns {
                         if pat == "*" {
-                            // Skip wildcard for duplicate detection.
                             continue;
                         }
                         match seen.entry(pat.clone()) {
@@ -1389,10 +1270,6 @@ impl Check for DuplicateHostCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HostStarPlacementCheck
-// ---------------------------------------------------------------------------
-
 impl Check for HostStarPlacementCheck<'_> {
     fn id(&self) -> &'static str {
         "host_star_placement"
@@ -1403,8 +1280,6 @@ impl Check for HostStarPlacementCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "host_star_placement",
@@ -1418,7 +1293,6 @@ impl Check for HostStarPlacementCheck<'_> {
                 }]);
             };
 
-            // Find the index of the first Host * and the last specific Host block.
             let mut star_index: Option<usize> = None;
             let mut last_specific_index: Option<usize> = None;
 
@@ -1461,10 +1335,6 @@ impl Check for HostStarPlacementCheck<'_> {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// SshV1KeyCheck
-// ---------------------------------------------------------------------------
 
 impl Check for SshV1KeyCheck<'_> {
     fn id(&self) -> &'static str {
@@ -1517,10 +1387,6 @@ impl Check for SshV1KeyCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// UseKeychainPlatformCheck — warn if UseKeychain is set on non-macOS
-// ---------------------------------------------------------------------------
-
 impl Check for UseKeychainPlatformCheck<'_> {
     fn id(&self) -> &'static str {
         "use_keychain_platform"
@@ -1531,8 +1397,6 @@ impl Check for UseKeychainPlatformCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "use_keychain_platform",
@@ -1547,7 +1411,6 @@ impl Check for UseKeychainPlatformCheck<'_> {
             };
             let mut use_keychain_contexts: Vec<String> = Vec::new();
 
-            // Collect UseKeychain directives from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
                     ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("UseKeychain") => {
@@ -1614,11 +1477,6 @@ impl Check for UseKeychainPlatformCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IdentityFilePubCheck — warn if IdentityFile points to a .pub file
-// ---------------------------------------------------------------------------
-
-/// Check that `IdentityFile` directives don't accidentally point to `.pub` files.
 struct IdentityFilePubCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -1633,8 +1491,6 @@ impl Check for IdentityFilePubCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![]);
             };
@@ -1693,12 +1549,6 @@ impl Check for IdentityFilePubCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// IdentitiesOnlyCheck — warn when multi-key hosts lack IdentitiesOnly
-// ---------------------------------------------------------------------------
-
-/// Check that hosts with multiple `IdentityFile` entries also have
-/// `IdentitiesOnly yes` to prevent the agent from offering wrong keys.
 struct IdentitiesOnlyCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -1713,8 +1563,6 @@ impl Check for IdentitiesOnlyCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![]);
             };
@@ -1774,11 +1622,6 @@ impl Check for IdentitiesOnlyCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// GssapiConfigCheck — GSSAPI/Kerberos configuration awareness
-// ---------------------------------------------------------------------------
-
-/// GSSAPI-related directive keywords to scan for.
 const GSSAPI_DIRECTIVES: &[&str] = &[
     "GSSAPIAuthentication",
     "GSSAPIDelegateCredentials",
@@ -1790,8 +1633,6 @@ const GSSAPI_DIRECTIVES: &[&str] = &[
     "GSSAPITrustDns",
 ];
 
-/// Check whether `PreferredAuthentications` is set to `gssapi-with-mic` only
-/// (excluding publickey) anywhere in the config AST.
 fn is_preferred_gssapi_only(ast: &ast::ConfigAst) -> bool {
     let mut result = false;
     for node in &ast.nodes {
@@ -1841,8 +1682,6 @@ impl Check for GssapiConfigCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "gssapi_config",
@@ -1856,7 +1695,6 @@ impl Check for GssapiConfigCheck<'_> {
                 }]);
             };
 
-            // Collect GSSAPI directives with their context (top-level or Host block).
             let mut findings: Vec<(String, String, String)> = Vec::new();
 
             for node in &ast.nodes {
@@ -1896,7 +1734,6 @@ impl Check for GssapiConfigCheck<'_> {
 
             let mut diagnostics = Vec::new();
 
-            // Report each configured GSSAPI directive.
             let summary_parts: Vec<String> = findings
                 .iter()
                 .map(|(keyword, value, context)| format!("{keyword} {value} ({context})"))
@@ -1910,8 +1747,6 @@ impl Check for GssapiConfigCheck<'_> {
                 module: "local",
             });
 
-            // Warn if GSSAPIAuthentication is the ONLY authentication method
-            // and publickey is explicitly excluded via PreferredAuthentications.
             let gssapi_auth_yes = findings.iter().any(|(kw, val, _)| {
                 kw.eq_ignore_ascii_case("GSSAPIAuthentication") && val.eq_ignore_ascii_case("yes")
             });
@@ -1937,10 +1772,6 @@ impl Check for GssapiConfigCheck<'_> {
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// VerifyHostKeyDnsCheck — VerifyHostKeyDNS configuration and SSHFP readiness
-// ---------------------------------------------------------------------------
 
 impl Check for VerifyHostKeyDnsCheck<'_> {
     fn id(&self) -> &'static str {
@@ -2010,8 +1841,6 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
                         module: "local",
                     });
 
-                    // Basic DNS resolution check: try to resolve localhost
-                    // as a heuristic that DNS is functional.
                     let dns_available = tokio::task::spawn_blocking(|| {
                         duct::cmd("host", ["localhost"])
                             .stderr_null()
@@ -2045,7 +1874,6 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
                         });
                     }
 
-                    // Warn about SSHFP record requirements.
                     diagnostics.push(Diagnostic {
                         id: "verify_host_key_dns",
                         severity: Severity::Info,
@@ -2067,11 +1895,6 @@ impl Check for VerifyHostKeyDnsCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// HomeDirPermissionsCheck — StrictModes full chain
-// ---------------------------------------------------------------------------
-
-/// Check that the home directory is not group/world writable (`StrictModes`).
 #[cfg(unix)]
 struct HomeDirPermissionsCheck;
 
@@ -2141,25 +1964,10 @@ impl Check for HomeDirPermissionsCheck {
     }
 }
 
-// ---------------------------------------------------------------------------
-// MaxAuthTriesExhaustionCheck — count agent keys vs MaxAuthTries
-// ---------------------------------------------------------------------------
-
-/// Count keys loaded in the SSH agent and warn if the count is close to
-/// the default `MaxAuthTries` limit (6). When a client offers more keys
-/// than the server allows attempts, authentication silently fails after
-/// the server rejects the excess offers.
 struct MaxAuthTriesExhaustionCheck;
 
 impl MaxAuthTriesExhaustionCheck {
-    /// Classify agent keys against `MaxAuthTries` for the given agent socket
-    /// (`None` = no agent). Split from [`Check::run`] so tests can exercise
-    /// each branch without mutating the process-global `SSH_AUTH_SOCK`, which
-    /// races with parallel tests. The spawned `ssh-add` pins its own
-    /// `SSH_AUTH_SOCK` so its result matches `sock` even if the ambient
-    /// environment changes mid-run.
     async fn classify_agent_keys(sock: Option<&str>) -> Result<Vec<Diagnostic>> {
-        // Default MaxAuthTries on most sshd installations.
         const DEFAULT_MAX_AUTH_TRIES: usize = 6;
 
         let Some(sock) = sock else {
@@ -2194,8 +2002,6 @@ impl MaxAuthTriesExhaustionCheck {
             }]);
         };
 
-        // `ssh-add -l` exits 1 with "The agent has no identities." when
-        // empty, and 2 on error. When successful it prints one key per line.
         let key_count = output.lines().filter(|l| !l.is_empty()).count();
 
         if key_count == 0 {
@@ -2266,13 +2072,6 @@ impl Check for MaxAuthTriesExhaustionCheck {
     }
 }
 
-// ---------------------------------------------------------------------------
-// PreferredAuthenticationsCheck — read PreferredAuthentications from config
-// ---------------------------------------------------------------------------
-
-/// Check for `PreferredAuthentications` directives in the SSH config and
-/// report the configured authentication order. This helps diagnose connection
-/// issues when specific auth methods are disabled on the server.
 struct PreferredAuthenticationsCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -2287,8 +2086,6 @@ impl Check for PreferredAuthenticationsCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "preferred_authentications",
@@ -2301,9 +2098,8 @@ impl Check for PreferredAuthenticationsCheck<'_> {
                     module: "local",
                 }]);
             };
-            let mut preferred: Vec<(String, String)> = Vec::new(); // (context, value)
+            let mut preferred: Vec<(String, String)> = Vec::new();
 
-            // Collect PreferredAuthentications from top-level and Host blocks.
             for node in &ast.nodes {
                 match node {
                     ConfigNode::Directive(d)
@@ -2366,12 +2162,6 @@ impl Check for PreferredAuthenticationsCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// ProxyJumpHostCheck — verify ProxyJump targets exist in config
-// ---------------------------------------------------------------------------
-
-/// For every `ProxyJump` directive in the SSH config, verify that the target
-/// host has a usable config entry (a `Host` block or is resolvable).
 struct ProxyJumpHostCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -2387,8 +2177,6 @@ impl Check for ProxyJumpHostCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "proxy_jump_host",
@@ -2402,7 +2190,6 @@ impl Check for ProxyJumpHostCheck<'_> {
                 }]);
             };
 
-            // Collect all Host block patterns for lookup.
             let mut host_patterns: Vec<String> = Vec::new();
             for node in &ast.nodes {
                 if let ConfigNode::HostBlock(b) = node {
@@ -2414,8 +2201,7 @@ impl Check for ProxyJumpHostCheck<'_> {
                 }
             }
 
-            // Collect all ProxyJump directive values (top-level and in blocks).
-            let mut proxy_jumps: Vec<(String, String)> = Vec::new(); // (value, context)
+            let mut proxy_jumps: Vec<(String, String)> = Vec::new();
             for node in &ast.nodes {
                 match node {
                     ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("ProxyJump") => {
@@ -2447,22 +2233,18 @@ impl Check for ProxyJumpHostCheck<'_> {
 
             let mut diagnostics = Vec::new();
             for (raw_value, context) in &proxy_jumps {
-                // ProxyJump values can be "none", a comma-separated list of
-                // [user@]host[:port] jump specs, or "direct".
                 if raw_value.eq_ignore_ascii_case("none")
                     || raw_value.eq_ignore_ascii_case("direct")
                 {
                     continue;
                 }
 
-                // Each comma-separated token is a jump host.
                 for token in raw_value.split(',') {
                     let token = token.trim();
                     if token.is_empty() {
                         continue;
                     }
 
-                    // Strip [user@] prefix and [:port] suffix to get the hostname.
                     let host_part = token
                         .rsplit_once(':')
                         .map_or(token, |(h, _port)| h)
@@ -2471,13 +2253,11 @@ impl Check for ProxyJumpHostCheck<'_> {
                         .unwrap_or(token)
                         .trim_matches(|c| c == '[' || c == ']');
 
-                    // Check if the jump target has a matching Host block.
                     let lower = host_part.to_lowercase();
                     let has_config = host_patterns.iter().any(|p| {
                         if p.starts_with('!') {
                             return false;
                         }
-                        // Exact match or wildcard prefix pattern (e.g. *.example.com).
                         p == &lower || (p.starts_with("*.") && lower.ends_with(&p[1..]))
                     });
 
@@ -2523,13 +2303,6 @@ impl Check for ProxyJumpHostCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// AgentIdentityCheck — verify agent holds keys expected by config
-// ---------------------------------------------------------------------------
-
-/// Verify that the SSH agent holds keys matching the `IdentityFile` directives
-/// in the config. When a configured key is not loaded in the agent, SSH falls
-/// back to trying all agent keys (or fails if `IdentitiesOnly yes` is set).
 struct AgentIdentityCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -2545,7 +2318,6 @@ impl Check for AgentIdentityCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let config_path = self.paths.config_path().to_path_buf();
         Box::pin(async move {
-            // First, get the agent's public key fingerprints.
             if std::env::var("SSH_AUTH_SOCK").map_or(true, |v| v.is_empty()) {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
@@ -2569,7 +2341,6 @@ impl Check for AgentIdentityCheck<'_> {
                 .map(|o| {
                     o.lines()
                         .filter_map(|line| {
-                            // Lines look like: "256 SHA256:abc... comment (ED25519)"
                             line.split_whitespace()
                                 .nth(1)
                                 .map(std::borrow::ToOwned::to_owned)
@@ -2588,9 +2359,6 @@ impl Check for AgentIdentityCheck<'_> {
                 }]);
             }
 
-            // Read config to find IdentityFile directives.
-            // Shared mtime-keyed AST: the first check to read the config this run
-            // parses it; the rest reuse the cached Arc (one parse per run).
             let Ok(ast) = cached_config_ast(config_path.clone()).await else {
                 return Ok(vec![Diagnostic {
                     id: "agent_identity",
@@ -2634,13 +2402,10 @@ impl Check for AgentIdentityCheck<'_> {
                 }]);
             }
 
-            // For each IdentityFile, check if the corresponding public key
-            // fingerprint is in the agent.
             let mut diagnostics = Vec::new();
             for raw_path in &identity_files {
                 let expanded = toride_ssh_core::paths::expand_path(raw_path, self.paths.ssh_dir());
 
-                // Get the fingerprint of the public key file.
                 let pub_path = expanded.with_file_name(format!(
                     "{}.pub",
                     expanded.file_name().unwrap_or_default().to_string_lossy()
@@ -2716,16 +2481,6 @@ impl Check for AgentIdentityCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RsaWeakKeyCheck — warn about RSA keys with fewer than 3072 bits
-// ---------------------------------------------------------------------------
-
-/// Check that all RSA keys on disk have at least 3072 bits.
-///
-/// RSA keys with fewer than 3072 bits are considered weak by modern standards.
-/// NIST recommends a minimum of 2048 bits through 2030, but 3072 bits is the
-/// widely accepted minimum for long-term security.  OpenSSH itself warns about
-/// RSA-2048 keys since version 9.x.
 struct RsaWeakKeyCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -2760,7 +2515,6 @@ impl Check for RsaWeakKeyCheck<'_> {
                 let name = entry.file_name();
                 let name_lossy = name.to_string_lossy();
 
-                // Skip public keys, certificates, config files, and dotfiles.
                 if name_lossy.ends_with(".pub")
                     || name_lossy.ends_with("-cert.pub")
                     || name_lossy == "config"
@@ -2779,7 +2533,6 @@ impl Check for RsaWeakKeyCheck<'_> {
                     continue;
                 }
 
-                // Quick header check: only inspect files that look like private keys.
                 {
                     use tokio::io::AsyncReadExt;
                     let Ok(mut file) = tokio::fs::File::open(&path).await else {
@@ -2796,7 +2549,6 @@ impl Check for RsaWeakKeyCheck<'_> {
                     }
                 }
 
-                // Try to parse the key and check RSA bit size.
                 let Ok(content) = tokio::fs::read_to_string(&path).await else {
                     continue;
                 };
@@ -2808,7 +2560,6 @@ impl Check for RsaWeakKeyCheck<'_> {
                     continue;
                 }
 
-                // Extract RSA bit size from the public key.
                 let public_key = pk.public_key();
                 if let Some(rsa_public) = public_key.key_data().rsa() {
                     let bits = rsa_public.key_size();
@@ -2862,16 +2613,6 @@ impl Check for RsaWeakKeyCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// NfsHomeCheck — detect NFS home directory mounts
-// ---------------------------------------------------------------------------
-
-/// Check whether the home directory resides on an NFS mount.
-///
-/// NFS servers commonly apply *root-squashing*, which maps root access to an
-/// unprivileged user (typically `nobody`).  When `sshd` runs as root and tries
-/// to read `~/.ssh/authorized_keys` on an NFS-mounted home, root-squashing can
-/// silently deny access, causing public-key authentication to fail.
 struct NfsHomeCheck;
 
 impl Check for NfsHomeCheck {
@@ -2893,20 +2634,17 @@ impl Check for NfsHomeCheck {
                 }]);
             };
 
-            // On Linux, inspect /proc/mounts for NFS entries.
             if cfg!(target_os = "linux") {
                 let home_str = home.to_string_lossy().to_string();
 
                 let nfs_detected = tokio::task::spawn_blocking(move || {
                     let Ok(content) = std::fs::read_to_string("/proc/mounts") else {
-                        // Cannot read mounts file — cannot determine NFS status.
                         return None::<Vec<String>>;
                     };
 
                     let mut matches: Vec<String> = Vec::new();
                     for line in content.lines() {
                         let parts: Vec<&str> = line.split_whitespace().collect();
-                        // Format: device mount_point fs_type options ...
                         if parts.len() >= 3 {
                             let fs_type = parts[2];
                             let mount_point = parts[1];
@@ -2944,7 +2682,6 @@ impl Check for NfsHomeCheck {
                         }]);
                     }
                     Some(_) => {
-                        // No NFS mounts matching home dir.
                         return Ok(vec![Diagnostic {
                             id: "nfs_home",
                             severity: Severity::Ok,
@@ -2957,7 +2694,6 @@ impl Check for NfsHomeCheck {
                         }]);
                     }
                     None => {
-                        // Could not read /proc/mounts.
                         return Ok(vec![Diagnostic {
                             id: "nfs_home",
                             severity: Severity::Info,
@@ -2970,7 +2706,6 @@ impl Check for NfsHomeCheck {
                 }
             }
 
-            // Non-Linux: NFS check is not applicable.
             Ok(vec![Diagnostic {
                 id: "nfs_home",
                 severity: Severity::Info,
@@ -2982,16 +2717,6 @@ impl Check for NfsHomeCheck {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SELinuxContextCheck — check SELinux security contexts on ~/.ssh
-// ---------------------------------------------------------------------------
-
-/// Check `SELinux` security contexts for files under `~/.ssh`.
-///
-/// Runs `restorecon -Rvn ~/.ssh` (dry-run, non-destructive) to detect files
-/// that would be relabeled. Incorrect `SELinux` contexts can prevent sshd from
-/// reading `~/.ssh/authorized_keys`, causing public-key authentication failures
-/// on SELinux-enforced systems.
 struct SELinuxContextCheck<'a> {
     paths: &'a SshPaths,
 }
@@ -3006,14 +2731,10 @@ impl Check for SELinuxContextCheck<'_> {
     fn run(&self) -> CheckFuture<'_> {
         let ssh_dir = self.paths.ssh_dir().to_path_buf();
         Box::pin(async move {
-            // Only applicable on Linux; skip entirely on other platforms.
             if !cfg!(target_os = "linux") {
                 return Ok(vec![]);
             }
 
-            // Run restorecon -Rvn ~/.ssh (dry-run, verbose, no-change).
-            // Output lines have the form:
-            //   would relabel /home/user/.ssh/authorized_keys from ...
             let output = tokio::task::spawn_blocking({
                 let ssh_dir_clone = ssh_dir.clone();
                 move || {
@@ -3050,11 +2771,7 @@ impl Check for SELinuxContextCheck<'_> {
             } else {
                 let files: Vec<&str> = relabel_lines
                     .iter()
-                    .filter_map(|line| {
-                        // Extract the file path from restorecon output.
-                        // Typical: "would relabel /path/to/file from X to Y"
-                        line.split_whitespace().nth(2)
-                    })
+                    .filter_map(|line| line.split_whitespace().nth(2))
                     .collect();
 
                 Ok(vec![Diagnostic {
@@ -3077,36 +2794,11 @@ impl Check for SELinuxContextCheck<'_> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// run_all — execute every local check
-// ---------------------------------------------------------------------------
-
-/// Maximum number of checks running their I/O concurrently.
-///
-/// Checks are independent read-only diagnostics, but several spawn CLI
-/// helpers (`restorecon`, `ssh -O`, `host`); an unbounded fan-out would
-/// burst the process table when many stale sockets or keys exist. The bound
-/// keeps the wall-clock win of overlapping the checks' await points without
-/// that burst (`join_all` semantics — one check failing or hanging never
-/// cancels its siblings).
 const MAX_CONCURRENT_CHECKS: usize = 8;
 
-/// One check's boxed outcome future.
-///
-/// Boxing gives the joined collection a concrete `Send` item type (see the
-/// comment at the collection site in [`run_all`]).
 type BoxedCheckFuture<'a> =
     std::pin::Pin<Box<dyn std::future::Future<Output = Result<Vec<Diagnostic>>> + Send + 'a>>;
 
-/// Join every future to completion under a bounded-concurrency throttle.
-///
-/// `join_all` semantics: every future runs to completion regardless of its
-/// siblings' outcomes (an `Err` output is a value, not a cancellation), and
-/// outputs come back in input order so callers can re-zip them against
-/// their inputs. The semaphore only caps how many futures hold a permit —
-/// i.e. run their awaited I/O — at once; a permit is never required to make
-/// progress, so a closed semaphore (never done here) degrades to unbounded
-/// execution rather than deadlock.
 async fn join_all_bounded<I, T>(limit: usize, futs: I) -> Vec<T>
 where
     I: IntoIterator,
@@ -3123,12 +2815,6 @@ where
     futures::future::join_all(guarded).await
 }
 
-/// Run all local diagnostic checks.
-///
-/// The checks are awaited under [`futures::future::join_all`] with a
-/// bounded-concurrency throttle, and results are collected in registration
-/// order so the diagnostic output ordering is identical to the previous
-/// sequential loop.
 pub async fn run_all<'a>(
     paths: &'a SshPaths,
     runner: &'a dyn toride_ssh_core::CliRunner,
@@ -3174,13 +2860,8 @@ pub async fn run_all<'a>(
     checks.push(Box::new(HomeDirPermissionsCheck));
     checks.push(Box::new(PlatformCheck));
 
-    // Box the per-check futures so the joined collection has a concrete
-    // `Send` item type. Joining closure-produced async blocks through a
-    // generic combinator would force rustc to prove `Send` for
-    // `&dyn CliRunner` for ALL lifetimes ("Send is not general enough")
-    // wherever `run_all` is awaited inside a spawned future
-    // (`SshOp::DoctorRunChecks` / the tick collector); the box gives it the
-    // concrete lifetime it can prove.
+    // Boxed for one concrete `Send` type: joining closure async blocks
+    // otherwise hits "Send is not general enough" (rust-lang/rust#89976).
     let futs: Vec<BoxedCheckFuture<'_>> = checks
         .iter()
         .map(|check| {

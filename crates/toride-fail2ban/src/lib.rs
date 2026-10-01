@@ -1,22 +1,5 @@
-//! Fail2ban-style intrusion prevention library for toride.
-//!
-//! Provides log parsing, IP banning, and automated response capabilities
-//! with support for iptables, nftables, pf, and firewalld backends.
-//!
-//! # High-level API
-//!
-//! The [`Fail2Ban`] struct is the main entry point. It composes a command runner,
-//! system paths, and delegates to sub-modules for client operations, service
-//! management, firewall diagnostics, regex testing, doctor checks, and
-//! jail lifecycle management.
-//!
-//! ```ignore
-//! use toride_fail2ban::Fail2Ban;
-//!
-//! let f2b = Fail2Ban::system()?;
-//! f2b.test_config()?;
-//! let report = f2b.doctor(toride_fail2ban::doctor::DoctorScope::All)?;
-//! ```
+//! Fail2ban-style intrusion prevention library for toride: log parsing,
+//! IP banning, and automated response via iptables/nftables/pf/firewalld.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -39,18 +22,10 @@
     )
 )]
 
-// ---------------------------------------------------------------------------
-// Module declarations -- always compiled
-// ---------------------------------------------------------------------------
-
 pub mod command;
 pub mod error;
 pub mod report;
 pub mod types;
-
-// ---------------------------------------------------------------------------
-// Module declarations -- feature-gated
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "client")]
 pub mod client;
@@ -98,23 +73,12 @@ pub mod regex_test;
 #[cfg(feature = "cli")]
 pub mod cli;
 
-// ---------------------------------------------------------------------------
-// Error types -- re-exported from the `error` module (unified source of truth)
-// ---------------------------------------------------------------------------
-
 pub use error::{Error, Result};
-
-// ---------------------------------------------------------------------------
-// SystemPaths -- Fail2Ban system directory layout
-// ---------------------------------------------------------------------------
 
 use std::path::PathBuf;
 
-/// Resolved paths to the system Fail2Ban configuration directories.
-///
-/// `SystemPaths` points at the real `/etc/fail2ban` tree used by the
-/// Fail2Ban daemon, as opposed to [`paths::Fail2BanPaths`] which resolves
-/// XDG-based user-local paths for the toride application's own data.
+/// Resolved paths to the system `/etc/fail2ban` tree used by the daemon,
+/// unlike [`paths::Fail2BanPaths`] (XDG user-local paths for toride's own data).
 #[derive(Debug, Clone)]
 pub struct SystemPaths {
     /// Root Fail2Ban configuration directory (e.g. `/etc/fail2ban`).
@@ -129,10 +93,7 @@ pub struct SystemPaths {
 
 impl SystemPaths {
     /// Create a `SystemPaths` from the default `/etc/fail2ban` location.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidConfig`] if the config directory does not exist.
+    /// Errors with [`Error::InvalidConfig`] if the config directory does not exist.
     #[allow(
         clippy::should_implement_trait,
         reason = "returns Result, cannot implement Default trait"
@@ -142,10 +103,7 @@ impl SystemPaths {
     }
 
     /// Create a `SystemPaths` from an explicit config directory.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::InvalidConfig`] if `dir` does not exist on disk.
+    /// Errors with [`Error::InvalidConfig`] if `dir` does not exist on disk.
     pub fn with_config_dir(dir: PathBuf) -> Result<Self> {
         if !dir.is_dir() {
             return Err(Error::InvalidConfig(format!(
@@ -177,33 +135,8 @@ impl SystemPaths {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Fail2Ban -- main entry point struct
-// ---------------------------------------------------------------------------
-
-/// High-level Fail2Ban management facade.
-///
-/// Owns a command runner and system paths, and provides convenience methods
-/// that compose the lower-level modules (`client`, `service`, `doctor`, etc.)
-/// into common workflows.
-///
-/// # Construction
-///
-/// - [`Fail2Ban::system`] -- production defaults: `DuctRunner` + `/etc/fail2ban`.
-/// - [`Fail2Ban::with_runner`] -- inject a custom or test runner.
-/// - [`Fail2Ban::with_paths`] -- custom paths with a default `DuctRunner`.
-///
-/// # Example
-///
-/// ```ignore
-/// let f2b = Fail2Ban::system()?;
-///
-/// // Validate and apply a jail spec.
-/// let report = f2b.ensure_jail(jail_spec)?;
-///
-/// // Run full diagnostics.
-/// let doctor_report = f2b.doctor(doctor::DoctorScope::All)?;
-/// ```
+/// High-level Fail2Ban management facade: owns a command runner and system
+/// paths, composing the client/service/doctor/jail-lifecycle modules.
 pub struct Fail2Ban {
     runner: Box<dyn command::Runner>,
     #[expect(dead_code, reason = "kept for future path-aware operations")]
@@ -212,18 +145,8 @@ pub struct Fail2Ban {
 }
 
 impl Fail2Ban {
-    // -----------------------------------------------------------------------
-    // Constructors
-    // -----------------------------------------------------------------------
-
-    /// Create a `Fail2Ban` instance with production defaults.
-    ///
-    /// Uses a [`command::DuctRunner`] with the default 30-second timeout
-    /// and resolves system paths from `/etc/fail2ban`.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `/etc/fail2ban` does not exist.
+    /// Create a `Fail2Ban` instance with production defaults: a [`command::DuctRunner`]
+    /// (30s timeout) and `/etc/fail2ban` paths; errors if that directory is missing.
     #[cfg(feature = "client")]
     pub fn system() -> Result<Self> {
         let runner = command::DuctRunner::new();
@@ -236,11 +159,7 @@ impl Fail2Ban {
     }
 
     /// Create a `Fail2Ban` instance with explicit system paths and a default
-    /// [`command::DuctRunner`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if `paths.config_dir` does not exist.
+    /// [`command::DuctRunner`]; errors if `paths.config_dir` does not exist.
     #[cfg(feature = "client")]
     pub fn with_paths(paths: SystemPaths) -> Result<Self> {
         let runner = command::DuctRunner::new();
@@ -251,10 +170,8 @@ impl Fail2Ban {
         })
     }
 
-    /// Create a `Fail2Ban` instance with a custom runner.
-    ///
-    /// Uses `/etc/fail2ban` for system paths. The config directory does not
-    /// need to exist when a custom runner is injected (useful for testing).
+    /// Create a `Fail2Ban` instance with a custom runner and `/etc/fail2ban`
+    /// paths; the config directory need not exist (useful for testing).
     pub fn with_runner(runner: Box<dyn command::Runner>) -> Self {
         let paths = SystemPaths {
             config_dir: PathBuf::from("/etc/fail2ban"),
@@ -269,18 +186,12 @@ impl Fail2Ban {
         }
     }
 
-    /// Set dry-run mode.
-    ///
-    /// When enabled, commands are logged but not executed.
+    /// Set dry-run mode: commands are logged but not executed.
     #[must_use]
     pub fn with_dry_run(mut self, dry_run: bool) -> Self {
         self.dry_run = dry_run;
         self
     }
-
-    // -----------------------------------------------------------------------
-    // Sub-module accessors
-    // -----------------------------------------------------------------------
 
     /// Return a [`client::Fail2BanClient`] borrowing this instance's runner.
     #[cfg(feature = "client")]
@@ -300,28 +211,15 @@ impl Fail2Ban {
         firewall::FirewallChecker::new(self.runner.as_ref())
     }
 
-    /// Return a [`regex_test::RegexTester`] borrowing this instance's runner.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::NotFound`] if the `fail2ban-regex` binary cannot
-    /// be found on `$PATH`.
+    /// Return a [`regex_test::RegexTester`] borrowing this instance's runner;
+    /// errors with [`Error::NotFound`] if `fail2ban-regex` is not on `$PATH`.
     #[cfg(feature = "regex-test")]
     pub fn regex_tester(&self) -> Result<regex_test::RegexTester<'_>> {
         regex_test::RegexTester::new(self.runner.as_ref())
     }
 
-    // -----------------------------------------------------------------------
-    // Doctor
-    // -----------------------------------------------------------------------
-
-    /// Run the diagnostic engine and return a [`report::DoctorReport`].
-    ///
-    /// # Errors
-    ///
-    /// Returns an error only for fundamental failures (e.g. a broken runner).
-    /// Individual check failures appear as [`report::Finding`] values in the
-    /// report.
+    /// Run the diagnostic engine and return a [`report::DoctorReport`]; errors
+    /// only on fundamental failures — check failures arrive as [`report::Finding`]s.
     #[cfg(feature = "doctor")]
     #[allow(
         clippy::needless_pass_by_value,
@@ -332,36 +230,15 @@ impl Fail2Ban {
         doc.run(&scope)
     }
 
-    // -----------------------------------------------------------------------
-    // Jail lifecycle
-    // -----------------------------------------------------------------------
-
-    /// Write a jail specification to disk, validate, and reload.
-    ///
-    /// Workflow:
-    /// 1. Validate the spec via [`spec::JailSpec::validate`].
-    /// 2. Render and write via [`ini::IniManager`].
-    /// 3. Run `fail2ban-client --test`.
-    /// 4. Reload the specific jail.
-    /// 5. Return an [`report::ApplyReport`] summarising the operation.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error at the first failing step.
+    /// Write a jail specification to disk, validate it, test the config, and
+    /// reload the jail; errors at the first failing step.
     #[cfg(all(feature = "jail-lifecycle", feature = "client"))]
     pub fn ensure_jail(&self, spec: spec::JailSpec) -> Result<report::ApplyReport> {
-        // 1. Validate.
         spec.validate()?;
 
-        // 2. Write via IniManager.
         let mgr = ini::IniManager::new(&self.paths.config_dir)?;
         let mut report = mgr.write_jail(&spec)?;
 
-        // If there are filter specs that need writing, write them too.
-        // (The JailSpec carries a FilterSpec inline; custom filters with
-        // failregex are written as separate filter files.)
-
-        // 3. Test config.
         match self.test_config() {
             Ok(()) => {
                 report.test_passed = true;
@@ -381,7 +258,6 @@ impl Fail2Ban {
             }
         }
 
-        // 4. Reload the specific jail.
         match self.reload_jail(spec.name.as_str()) {
             Ok(()) => {
                 report.reload_result = Some("ok".to_owned());
@@ -403,12 +279,8 @@ impl Fail2Ban {
         Ok(report)
     }
 
-    /// Remove a managed jail configuration, test, and reload.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the file is not managed, does not exist, or the
-    /// reload fails.
+    /// Remove a managed jail configuration, then test and reload; errors if
+    /// the file is not managed, missing, or the reload fails.
     #[cfg(all(feature = "jail-lifecycle", feature = "client"))]
     pub fn remove_jail(&self, name: &str) -> Result<report::ApplyReport> {
         let mgr = ini::IniManager::new(&self.paths.config_dir)?;
@@ -438,45 +310,31 @@ impl Fail2Ban {
         Ok(report)
     }
 
-    // -----------------------------------------------------------------------
-    // Convenience delegations
-    // -----------------------------------------------------------------------
-
-    /// Validate the current Fail2Ban configuration.
-    ///
-    /// Runs `fail2ban-client --test`.
+    /// Validate the current Fail2Ban configuration (`fail2ban-client --test`).
     #[cfg(feature = "client")]
     pub fn test_config(&self) -> Result<()> {
         self.client()?.test_config()
     }
 
-    /// Reload the entire Fail2Ban configuration.
-    ///
-    /// Runs `fail2ban-client reload`.
+    /// Reload the entire Fail2Ban configuration (`fail2ban-client reload`).
     #[cfg(feature = "client")]
     pub fn reload(&self) -> Result<()> {
         self.client()?.reload()
     }
 
-    /// Reload a single jail.
-    ///
-    /// Runs `fail2ban-client reload <name>`.
+    /// Reload a single jail (`fail2ban-client reload <name>`).
     #[cfg(feature = "client")]
     pub fn reload_jail(&self, name: &str) -> Result<()> {
         self.client()?.reload_jail(name)
     }
 
-    /// Manually ban an IP in the given jail.
-    ///
-    /// Runs `fail2ban-client set <jail> banip <ip>`.
+    /// Manually ban an IP in the given jail (`fail2ban-client set <jail> banip <ip>`).
     #[cfg(feature = "client")]
     pub fn ban_ip(&self, jail: &str, ip: &str) -> Result<()> {
         self.client()?.ban_ip(jail, ip)
     }
 
-    /// Manually unban an IP in the given jail.
-    ///
-    /// Runs `fail2ban-client set <jail> unbanip <ip>`.
+    /// Manually unban an IP in the given jail (`fail2ban-client set <jail> unbanip <ip>`).
     #[cfg(feature = "client")]
     pub fn unban_ip(&self, jail: &str, ip: &str) -> Result<()> {
         self.client()?.unban_ip(jail, ip)

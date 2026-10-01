@@ -1,9 +1,5 @@
-//! Port forwarding management via SSH `ControlMaster` sessions.
-//!
-//! Provides [`ForwardService`] for listing and closing active port forwards
-//! across `ControlMaster` sockets. The `control` sub-module handles the
-//! low-level parsing of `ssh -O forward` / `ssh -O cancel` output and the
-//! [`ControlSession`], [`PortForward`], and [`ForwardType`] types.
+//! Port forwarding management via SSH `ControlMaster` sessions:
+//! [`ForwardService`] over the low-level `control` module.
 
 pub mod control;
 
@@ -17,7 +13,7 @@ pub use control::{ControlSession, ForwardType, PortForward};
 
 /// Port forwarding management via `ControlMaster` sessions.
 ///
-/// Obtained from [`SshManager::forward()`](crate::SshManager::forward).
+/// Obtained from `SshManager::forward()`.
 pub struct ForwardService<'a> {
     paths: &'a SshPaths,
 }
@@ -28,21 +24,13 @@ impl<'a> ForwardService<'a> {
         Self { paths }
     }
 
-    /// List all active port forwards across all discovered `ControlMaster` sessions.
-    ///
-    /// Returns a list of `(session, forwards)` pairs.  Sessions whose
-    /// forwards cannot be listed are included with an empty forward list
-    /// (the error is logged but not propagated).
+    /// List `(session, forwards)` pairs in session order; a session whose
+    /// listing fails is included with an empty list (logged, not propagated).
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::TaskFailed`] if the background task for discovering
-    /// `ControlMaster` sessions panics or is cancelled.
+    /// As [`Self::list_sessions`].
     pub async fn list(&self) -> Result<Vec<(ControlSession, Vec<PortForward>)>> {
         let sessions = self.list_sessions().await?;
-        // Per-session `ssh -O list` spawns run under bounded concurrency and
-        // are re-zipped in session order, matching the old sequential loop's
-        // output ordering.
         let listings =
             control::list_forwards_bounded(sessions.iter().map(|s| s.control_path.clone())).await;
         Ok(sessions
@@ -61,78 +49,57 @@ impl<'a> ForwardService<'a> {
             .collect())
     }
 
-    /// Discover active `ControlMaster` sessions.
-    ///
-    /// Scans `~/.ssh/cm-*`, `~/.ssh/control-*`, `~/.ssh/mux-*`,
-    /// `~/.ssh/ctrl-*`, and `/tmp/ssh-*` for control sockets.  Each
-    /// candidate is verified with `ssh -O check` before inclusion.
+    /// Discover active `ControlMaster` sessions, verified via `ssh -O check`.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::TaskFailed`] if the background scan task panics
-    /// or is cancelled.
+    /// [`Error::TaskFailed`] if the directory scan task fails.
     pub async fn list_sessions(&self) -> Result<Vec<ControlSession>> {
         control::list_sessions(self.paths.ssh_dir()).await
     }
 
-    /// Cancel a port forward on a specific session by local port number.
+    /// Cancel the forward on `local_port`.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ForwardNotFound`] if no forward exists on the
-    /// given local port, [`Error::ForwardFailed`] if the control path is
-    /// not valid UTF-8, or [`Error::CommandFailed`] if the cancel command
-    /// fails.
+    /// [`Error::ForwardNotFound`], [`Error::ForwardFailed`] (non-UTF-8
+    /// path), [`Error::CommandFailed`], or [`Error::TaskFailed`].
     pub async fn cancel(&self, control_path: &Path, local_port: u16) -> Result<()> {
         control::cancel_forward(control_path, local_port).await
     }
 
-    /// List forwards for a single session identified by its control socket path.
+    /// List forwards for the session at `control_path`.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ForwardFailed`] if the control path is not valid
-    /// UTF-8, or [`Error::CommandFailed`] if the `ssh -O list` command fails.
+    /// [`Error::ForwardFailed`] (non-UTF-8 path), [`Error::CommandFailed`],
+    /// or [`Error::TaskFailed`].
     pub async fn list_forwards(&self, control_path: &Path) -> Result<Vec<PortForward>> {
         control::list_forwards(control_path).await
     }
 
-    /// Cancel a known forward (avoids the extra list round-trip).
+    /// Cancel a known forward, skipping the list round-trip.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ForwardFailed`] if the control path is not valid
-    /// UTF-8, or [`Error::CommandFailed`] if the `ssh -O cancel` command fails.
+    /// [`Error::ForwardFailed`] (non-UTF-8 path), [`Error::CommandFailed`],
+    /// or [`Error::TaskFailed`].
     pub async fn cancel_known(&self, control_path: &Path, forward: &PortForward) -> Result<()> {
         control::cancel_known_forward(control_path, forward).await
     }
 
-    /// Gracefully shut down a `ControlMaster` session.
+    /// Gracefully shut down a `ControlMaster` session (`ssh -O exit`).
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ForwardFailed`] if the control path is not valid
-    /// UTF-8, or [`Error::CommandFailed`] if the `ssh -O exit` command
-    /// fails for a reason other than a stale socket.
+    /// [`Error::ForwardFailed`] (non-UTF-8 path), [`Error::CommandFailed`],
+    /// or [`Error::TaskFailed`].
     pub async fn exit_session(&self, control_path: &Path) -> Result<()> {
         control::exit_session(control_path).await
     }
 
-    /// Detect duplicate local port bindings across all active sessions.
-    ///
-    /// When two different `ControlMaster` sessions both forward the same
-    /// local port, only one can actually be listening.  This method
-    /// returns a map from each conflicting port number to the list of
-    /// control socket paths that claim it.
+    /// Map each local port claimed by more than one session to the control
+    /// socket paths claiming it.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::TaskFailed`] if listing sessions or forwards
-    /// fails due to a background task panic.
+    /// As [`Self::list_sessions`].
     pub async fn conflicting_local_ports(&self) -> Result<HashMap<u16, Vec<std::path::PathBuf>>> {
         let sessions = self.list_sessions().await?;
-        // Same bounded-concurrency fan-out as `list`; errors are logged and
-        // skip that session, exactly as the sequential loop did.
         let listings =
             control::list_forwards_bounded(sessions.iter().map(|s| s.control_path.clone())).await;
         let mut port_owners: HashMap<u16, Vec<std::path::PathBuf>> = HashMap::new();
@@ -156,30 +123,17 @@ impl<'a> ForwardService<'a> {
             }
         }
 
-        // Keep only ports claimed by more than one session.
         port_owners.retain(|_, owners| owners.len() > 1);
         Ok(port_owners)
     }
 
-    /// Default timeout for [`test_connectivity`](Self::test_connectivity).
     const TEST_CONNECTIVITY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 
-    /// Test whether the local port is reachable by attempting a TCP connection.
-    ///
-    /// Connects to `127.0.0.1:<local_port>` within the given `timeout`.
-    /// Returns `Ok(())` if the connection succeeds, or an error describing
-    /// the failure.
-    ///
-    /// **Important:** This only verifies that the local forwarding socket is
-    /// active and accepting connections. It does **NOT** test end-to-end
-    /// connectivity to the remote side — a successful result here does not
-    /// guarantee that traffic is actually being forwarded to the expected
-    /// remote service.
+    /// Connect to `127.0.0.1:<local_port>` within `timeout`; proves only that
+    /// the local socket accepts — not end-to-end forwarding to the remote side.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ForwardFailed`] if the connection cannot be
-    /// established (port not listening, connection refused, timeout).
+    /// [`Error::ForwardFailed`] on timeout or connect failure.
     pub async fn test_connectivity_with_timeout(
         &self,
         local_port: u16,
@@ -201,20 +155,11 @@ impl<'a> ForwardService<'a> {
         Ok(())
     }
 
-    /// Test whether the local port is reachable by attempting a TCP
-    /// connection with the [`default timeout`](Self::TEST_CONNECTIVITY_TIMEOUT).
-    ///
-    /// Convenience wrapper around [`test_connectivity_with_timeout`]
-    /// that uses [`TEST_CONNECTIVITY_TIMEOUT`](Self::TEST_CONNECTIVITY_TIMEOUT).
-    ///
-    /// **Important:** This only verifies that the local forwarding socket is
-    /// active and accepting connections. It does **NOT** test end-to-end
-    /// connectivity to the remote side.
+    /// [`test_connectivity_with_timeout`](Self::test_connectivity_with_timeout)
+    /// with the default 2s timeout; local-acceptance only, not end-to-end.
     ///
     /// # Errors
-    ///
-    /// Returns [`Error::ForwardFailed`] if the connection cannot be
-    /// established (port not listening, connection refused, timeout).
+    /// As [`Self::test_connectivity_with_timeout`].
     pub async fn test_connectivity(&self, local_port: u16) -> Result<()> {
         self.test_connectivity_with_timeout(local_port, Self::TEST_CONNECTIVITY_TIMEOUT)
             .await

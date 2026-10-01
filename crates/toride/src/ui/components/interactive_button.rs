@@ -6,44 +6,22 @@ use ratatui_interact::events::get_mouse_pos;
 use crate::ui::responsive::Viewport;
 use crate::ui::theme::{KEY_BG, Palette};
 
-// ── Interactive button ─────────────────────────────────────────────────────────
-
-/// A self-contained interactive button that tracks its own focus, hover,
-/// press state, and rendered area for hit-testing.
-///
-/// Place it anywhere on any screen. Call [`render`] once per frame, then
-/// forward mouse events via [`handle_mouse`]. Focus is set externally by the
-/// owning screen's `FocusManager`.
-///
-/// # Visual states (all use static palette colours)
-///
-/// | State            | Foreground | Background |
-/// |------------------|-----------|------------|
-/// | Default          | `p.text`  | `KEY_BG`   |
-/// | Keyboard focused | `p.bg`    | `p.accent` |
-/// | Hovered (mouse)  | `p.text`  | `p.sel_bg` |
-/// | Pressed          | `p.bg`    | `p.accent2`|
-///
-/// [`render`]: InteractiveButton::render
-/// [`handle_mouse`]: InteractiveButton::handle_mouse
+/// A self-contained interactive button: call [`render`](Self::render) each
+/// frame, then forward mouse events to [`handle_mouse`](Self::handle_mouse).
 pub struct InteractiveButton<A: Copy + PartialEq> {
     label_compact: &'static str,
     label_minimal: &'static str,
     action: A,
     state: ButtonState,
-    /// Keyboard focus (set externally by `FocusManager` via `set_focused`).
     kb_focused: bool,
-    /// Mouse hover (updated on every `Moved`/`Drag` event).
     hovered: bool,
     area: Rect,
     pending_click: bool,
 }
 
 impl<A: Copy + PartialEq> InteractiveButton<A> {
-    /// Create a new button.
-    ///
-    /// `label_compact` is shown when `viewport >= Compact`, otherwise
-    /// `label_minimal` is used.
+    /// Creates a button showing `label_compact` once `viewport >= Compact`,
+    /// else `label_minimal`.
     #[must_use]
     pub fn new(label_compact: &'static str, label_minimal: &'static str, action: A) -> Self {
         Self {
@@ -58,37 +36,31 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
         }
     }
 
-    /// The action this button emits on click / activation.
+    /// The action emitted on click.
     #[must_use]
     pub fn action(&self) -> A {
         self.action
     }
 
-    /// Whether this button currently has keyboard focus.
+    /// Whether the button has keyboard focus.
     #[must_use]
     pub fn is_focused(&self) -> bool {
         self.kb_focused
     }
 
-    /// Whether the cursor currently hovers this button.
+    /// Whether the pointer currently hovers the button.
     #[must_use]
     pub fn is_hovered(&self) -> bool {
         self.hovered
     }
 
-    /// Set or clear keyboard focus (called by the screen's `FocusManager`).
+    /// Set keyboard focus.
     pub fn set_focused(&mut self, focused: bool) {
         self.kb_focused = focused;
     }
 
-    /// Handle a mouse event.
-    ///
-    /// - **Move/Drag** — updates hover state internally.
-    /// - **Down** — sets pressed visual if cursor is over this button.
-    /// - **Up** — clears pressed and returns `Some(action)` if this button
-    ///   was the one pressed.
-    ///
-    /// Returns `Some(action)` only on the `Up` event of a confirmed press.
+    /// Updates hover/press state; returns the action only on the `Up` event
+    /// of a press that started on this button.
     #[must_use]
     pub fn handle_mouse(&mut self, mouse: &ratatui::crossterm::event::MouseEvent) -> Option<A> {
         let (col, row) = get_mouse_pos(mouse);
@@ -117,7 +89,7 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
         }
     }
 
-    /// Compute the minimum width this button needs to render.
+    /// Minimum button width for the label the `viewport` selects.
     #[must_use]
     pub fn min_width(&self, viewport: Viewport) -> u16 {
         let label = self.label(viewport);
@@ -138,14 +110,11 @@ impl<A: Copy + PartialEq> InteractiveButton<A> {
         btn_style.pressed_fg = p.bg;
         btn_style.pressed_bg = p.accent2;
 
-        // Keyboard focus drives the focused visual; hover is layered separately.
         self.state.focused = self.kb_focused;
         Button::new(label, &self.state)
             .style(btn_style)
             .render(rect, buf);
 
-        // Apply distinct hover highlight when hovered but not keyboard-focused
-        // (matches the sidebar selection style: subtle `sel_bg` background).
         if self.hovered && !self.kb_focused && !self.state.pressed {
             for pos in rect.positions() {
                 if let Some(cell) = buf.cell_mut(pos) {

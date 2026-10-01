@@ -1,18 +1,9 @@
-//! Tests for the mtime-keyed config AST cache.
-
 use std::path::Path;
 use std::sync::Arc;
 use std::time::SystemTime;
 
 use super::{clear_cache_for_tests, load_cached_ast, load_cached_content};
 
-/// Rewrite `path` with `content`, spinning until the file's mtime differs
-/// from `previous`.
-///
-/// Filesystems with coarse mtime granularity could land a rewrite in the
-/// same nanosecond stamp as the earlier write — a legitimate cache hit.
-/// Tests that assert invalidation need a distinguishable stamp, so we keep
-/// rewriting until the mtime actually moves.
 fn rewrite_with_new_stamp(path: &Path, previous: SystemTime, content: &str) {
     loop {
         std::fs::write(path, content).expect("write fixture");
@@ -27,7 +18,6 @@ fn rewrite_with_new_stamp(path: &Path, previous: SystemTime, content: &str) {
     }
 }
 
-/// Read the current mtime of a fixture.
 fn mtime_of(path: &Path) -> SystemTime {
     std::fs::metadata(path)
         .expect("stat fixture")
@@ -84,9 +74,6 @@ fn changed_file_reparses() {
 
 #[test]
 fn same_length_rewrite_reparses() {
-    // A same-length rewrite still changes mtime, so the (mtime, len) stamp
-    // must miss. This pins that content edits which do not change the
-    // length are never served stale.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
     clear_cache_for_tests(&path);
@@ -143,10 +130,6 @@ fn content_load_shares_one_buffer_for_unchanged_file() {
 
 #[test]
 fn ast_after_content_parses_cached_bytes_without_reread() {
-    // A content-only consumer (the doctor's raw line scan) must not force a
-    // second read for a later AST consumer: the AST is parsed from the
-    // memoized bytes. Observable as: content and AST agree, and a second
-    // content load still shares the original Arc.
     let dir = tempfile::tempdir().expect("tempdir");
     let path = dir.path().join("config");
     clear_cache_for_tests(&path);
@@ -164,7 +147,6 @@ fn ast_after_content_parses_cached_bytes_without_reread() {
         Arc::ptr_eq(&content, &content_again),
         "the AST fill must not replace the shared content buffer"
     );
-    // And the AST is now itself shared.
     let ast_again = load_cached_ast(&path).expect("ast reload");
     assert!(Arc::ptr_eq(&ast, &ast_again));
 }

@@ -1,5 +1,3 @@
-//! SSH key file discovery and parsing.
-
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -11,10 +9,6 @@ use crate::get_permissions;
 use toride_ssh_core::SshPaths;
 use toride_ssh_core::{Error, Fingerprint, KeyFormat, KeySource, KeyType, Result, SshKey};
 
-/// Convert an [`ssh_key::Algorithm`] to our [`KeyType`].
-///
-/// Returns `None` for unknown algorithms so callers can decide how to handle them
-/// rather than silently misidentifying the key type.
 fn algorithm_to_key_type(algo: &ssh_key::Algorithm) -> Option<KeyType> {
     match algo {
         ssh_key::Algorithm::Ed25519 => Some(KeyType::Ed25519),
@@ -34,46 +28,20 @@ fn algorithm_to_key_type(algo: &ssh_key::Algorithm) -> Option<KeyType> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Mtime-keyed parse memoization
-// ---------------------------------------------------------------------------
-
-/// Freshness stamp for a key file: nanosecond mtime plus length.
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct FileStamp {
     mtime_ns: u128,
     len: u64,
 }
 
-/// One memoized [`SshKey`] parse.
 struct CachedKey {
     stamp: FileStamp,
     key: SshKey,
 }
 
-/// Process-wide memo of per-file key parses, keyed by path.
-///
-/// The periodic inventory scan re-decodes every private key (MPINT decode,
-/// key-type parse, SHA-256 fingerprint) on each collection tick even when
-/// nothing changed. Parsing is a pure function of the file bytes, so the
-/// result is memoized on the file's `(mtime, len)` stamp: any rotation or
-/// edit changes the stamp and re-parses — invalidation is content-keyed,
-/// never a TTL. Files whose mtime cannot be determined bypass the cache.
-///
-/// Entries are small and keyed by path, so the map is bounded by the set of
-/// key files scanned during the process lifetime. Read errors are not
-/// cached (transient/permission failures retry on the next scan).
-///
-/// Consumers: the periodic inventory scan (via [`inspect_private_key_cached`])
-/// and any external caller of [`crate::inspect_key_cached`]. The doctor's
-/// key checks do NOT go through this cache — its RSA bitsize check parses
-/// keys itself (once per diagnostics refresh), so a key file is parsed at
-/// most twice between mutations, not once.
 static KEY_PARSE_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedKey>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// Compute a file's freshness stamp, or `None` when the mtime is
-/// unavailable (such files are never cached).
 fn key_stamp(metadata: &std::fs::Metadata) -> Option<FileStamp> {
     let mtime_ns = metadata
         .modified()
@@ -87,10 +55,6 @@ fn key_stamp(metadata: &std::fs::Metadata) -> Option<FileStamp> {
     })
 }
 
-/// Parse a private key file, memoized on its `(mtime, len)` stamp.
-///
-/// Returns the same data [`inspect_private_key`] would, skipping the
-/// MPINT/fingerprint work when the file is unchanged since the last scan.
 pub(crate) fn inspect_private_key_cached(path: &Path) -> Result<SshKey> {
     let metadata = std::fs::metadata(path).map_err(|e| Error::KeyParseFailed(format!("{e}")))?;
     let Some(stamp) = key_stamp(&metadata) else {
@@ -122,8 +86,6 @@ pub(crate) fn inspect_private_key_cached(path: &Path) -> Result<SshKey> {
     Ok(key)
 }
 
-/// Drop every memoized key parse. Test hook so suites observe cold-cache
-/// behavior on reused paths.
 #[cfg(test)]
 pub(crate) fn clear_key_cache_for_tests() {
     KEY_PARSE_CACHE
@@ -132,7 +94,6 @@ pub(crate) fn clear_key_cache_for_tests() {
         .clear();
 }
 
-/// Try to parse a private key file and determine its metadata.
 fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     let path = path.to_path_buf();
     let filename = path
@@ -162,21 +123,15 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     let private_key_data = std::fs::read_to_string(&path)
         .map_err(|e| Error::KeyParseFailed(format!("failed to read {filename}: {e}")))?;
 
-    // Check the file content for encryption markers which is more
-    // reliable than parsing the error message string.
     let is_encrypted_from_content = is_likely_encrypted(&private_key_data);
 
-    // Detect key format from content (PEM vs OpenSSH).
     let key_format = detect_key_format(&private_key_data);
 
     match ssh_key::PrivateKey::from_openssh(&private_key_data) {
         Ok(pk) => {
-            // Explicit fallback: if we can't determine the algorithm, treat as
-            // Ed25519. This is a best-effort heuristic for encrypted/unknown keys.
             let mut key_type = algorithm_to_key_type(&pk.algorithm()).unwrap_or(KeyType::Ed25519);
             let public_key = pk.public_key();
 
-            // Extract RSA bit size from the public key data.
             if matches!(key_type, KeyType::Rsa { .. })
                 && let Some(rsa_public) = public_key.key_data().rsa()
             {
@@ -195,8 +150,6 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 Some(comment_str)
             };
 
-            // If format was not detected from content, default to OpenSSH for
-            // keys that parsed successfully via from_openssh.
             let resolved_format = key_format.or(Some(KeyFormat::OpenSSH));
 
             Ok(SshKey {
@@ -215,9 +168,6 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
             })
         }
         Err(e) => {
-            // If parsing failed because the key is encrypted, we still want
-            // to return a useful entry. Use content-based detection first,
-            // then fall back to error message matching for edge cases.
             let err_str = e.to_string();
             let is_encrypted = is_encrypted_from_content
                 || err_str.contains("encrypted")
@@ -225,12 +175,8 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
                 || err_str.contains("cipher")
                 || err_str.contains("bcrypt");
 
-            // For encrypted keys, try to infer key type from the filename
             let mut key_type = guess_key_type_from_name(&filename);
 
-            // FIX: If the filename guessed ECDSA, the curve size is unknown.
-            // Try to read the corresponding .pub file to determine the actual
-            // curve (P256, P384, or P521) from the public key.
             if matches!(
                 key_type,
                 KeyType::EcdsaP256 | KeyType::EcdsaP384 | KeyType::EcdsaP521
@@ -260,39 +206,20 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     }
 }
 
-/// Check whether raw key file content indicates an encrypted private key.
-///
-/// OpenSSH encrypted keys contain `ENCRYPTED` in the header guard line.
-/// PEM-encrypted keys contain `ENCRYPTED` in the proc-type header.
 fn is_likely_encrypted(data: &str) -> bool {
-    // OpenSSH format: encrypted keys contain "bcrypt" in the base64-encoded
-    // header area (the KDF name).  PEM format: "Proc-Type: 4,ENCRYPTED".
     let mut found = false;
     for line in data.lines().take(5) {
-        // Match only uppercase "ENCRYPTED" — the standard marker in OpenSSH
-        // and PEM proc-type headers.  Avoid matching lowercase "encrypted"
-        // which can appear in comments or other benign content.
         if line.contains("ENCRYPTED") {
             found = true;
             break;
         }
     }
-    // Also check the first 5 lines for "bcrypt" which appears in OpenSSH
-    // encrypted key headers (base64-encoded KDF name).  Only scan the header
-    // area to avoid false positives from the word "bcrypt" appearing in
-    // key comments or other metadata deeper in the file.
     if !found {
         found = data.lines().take(5).any(|line| line.contains("bcrypt"));
     }
     found
 }
 
-/// Detect whether key file content is in PEM format (legacy OpenSSL) vs OpenSSH format.
-///
-/// Returns `Some(KeyFormat::Pem)` if the content starts with a PEM marker like
-/// `-----BEGIN RSA PRIVATE KEY-----` or `-----BEGIN EC PRIVATE KEY-----`.
-/// Returns `None` if the content is OpenSSH format or the format cannot be
-/// determined from the content alone.
 fn detect_key_format(data: &str) -> Option<KeyFormat> {
     let first_line = data.lines().next().unwrap_or("");
     if first_line.starts_with("-----BEGIN OPENSSH PRIVATE KEY-----") {
@@ -307,13 +234,8 @@ fn detect_key_format(data: &str) -> Option<KeyFormat> {
     }
 }
 
-/// Guess key type from a filename like `id_ed25519`, `id_rsa`, etc.
-///
-/// Security key (FIDO) variants are checked first since their names contain
-/// the base algorithm as a substring (e.g., `id_ed25519_sk` contains `ed25519`).
 fn guess_key_type_from_name(name: &str) -> KeyType {
     let lower = name.to_ascii_lowercase();
-    // Check FIDO/SK variants first since they also contain the base algo name
     if lower.contains("ed25519_sk") {
         KeyType::SkEd25519
     } else if lower.contains("ecdsa_sk") {
@@ -331,33 +253,14 @@ fn guess_key_type_from_name(name: &str) -> KeyType {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Config-sourced key discovery
-// ---------------------------------------------------------------------------
-
-/// Results of parsing the SSH config for key-related directives.
 struct ConfigKeyScan {
-    /// `IdentityFile` paths expanded to absolute paths.
     identity_paths: Vec<PathBuf>,
-    /// `PKCS11Provider` values found in the config.
     pkcs11_providers: Vec<String>,
-    /// Maps expanded `IdentityFile` path -> host aliases that reference it.
     identity_host_map: HashMap<PathBuf, Vec<String>>,
 }
 
-/// Parse `~/.ssh/config` and extract `IdentityFile` and `PKCS11Provider` directives.
-///
-/// Uses the lossless AST parser from the config module. Handles directives
-/// inside `Host`/`Match` blocks as well as standalone directives. `IdentityFile`
-/// paths are expanded (tilde and relative) via [`toride_ssh_config::expand_identity_path`].
-///
-/// Also tracks which host block referenced each `IdentityFile` path, so that
-/// [`scan_keys`] can populate [`SshKey::used_by_hosts`].
 fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
     let config_path = ssh_dir.join("config");
-    // Share the mtime-keyed cached AST with the config-tab load and the
-    // doctor checks in the same collection pass — one parse per pass for an
-    // unchanged config instead of one per consumer.
     let Ok(ast) = toride_ssh_config::cache::load_cached_ast(&config_path) else {
         return ConfigKeyScan {
             identity_paths: Vec::new(),
@@ -372,7 +275,6 @@ fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
     let mut identity_host_map: HashMap<PathBuf, Vec<String>> = HashMap::new();
 
     for node in &ast.nodes {
-        // Determine the host alias (if any) and the child nodes to scan.
         let (host_alias, nodes): (Option<String>, &[toride_ssh_config::ast::ConfigNode]) =
             match node {
                 toride_ssh_config::ast::ConfigNode::HostBlock(b) => {
@@ -389,13 +291,11 @@ fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
         for child in nodes {
             if let toride_ssh_config::ast::ConfigNode::Directive(d) = child {
                 if d.keyword.eq_ignore_ascii_case("IdentityFile") {
-                    // Strip surrounding quotes that the AST preserves verbatim.
                     let trimmed = d.value.trim_matches('"').trim_matches('\'');
                     let expanded = toride_ssh_config::expand_identity_path(trimmed, ssh_dir);
                     if seen_identity.insert(expanded.clone()) {
                         identity_paths.push(expanded.clone());
                     }
-                    // Track which host referenced this key.
                     if let Some(ref alias) = host_alias {
                         identity_host_map
                             .entry(expanded)
@@ -418,15 +318,6 @@ fn scan_ssh_config(ssh_dir: &Path) -> ConfigKeyScan {
     }
 }
 
-// ---------------------------------------------------------------------------
-// SSH v1 key detection
-// ---------------------------------------------------------------------------
-
-/// Check for deprecated SSH v1 key files and log warnings.
-///
-/// SSH v1 keys use `~/.ssh/identity` and `~/.ssh/identity.pub` (as opposed to
-/// the `id_*` naming convention of SSH v2). The SSH v1 protocol is deprecated
-/// and insecure.
 fn check_ssh_v1_keys(ssh_dir: &Path) {
     let identity_path = ssh_dir.join("identity");
     let identity_pub_path = ssh_dir.join("identity.pub");
@@ -447,16 +338,6 @@ fn check_ssh_v1_keys(ssh_dir: &Path) {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Standalone .pub file scanning
-// ---------------------------------------------------------------------------
-
-/// Scan for standalone `.pub` files without a matching private key.
-///
-/// Returns [`SshKey`] entries for each `.pub` file that does not have a
-/// corresponding private key (i.e. the path without `.pub` extension does
-/// not exist or is not in `known_private_keys`). Certificate files
-/// (`*-cert.pub`) and SSH v1 `identity.pub` are excluded.
 fn scan_standalone_pub_files(ssh_dir: &Path, known_private_keys: &HashSet<PathBuf>) -> Vec<SshKey> {
     let Ok(entries) = std::fs::read_dir(ssh_dir) else {
         return Vec::new();
@@ -468,12 +349,10 @@ fn scan_standalone_pub_files(ssh_dir: &Path, known_private_keys: &HashSet<PathBu
         let file_name = entry.file_name();
         let name = file_name.to_string_lossy();
 
-        // Only consider .pub files, exclude certificates.
         if !name.ends_with(".pub") || name.ends_with("-cert.pub") {
             continue;
         }
 
-        // Skip SSH v1 public key (detected separately with deprecation warning).
         if name == "identity.pub" {
             continue;
         }
@@ -481,7 +360,6 @@ fn scan_standalone_pub_files(ssh_dir: &Path, known_private_keys: &HashSet<PathBu
         let pub_path = entry.path();
         let private_path = pub_path.with_extension("");
 
-        // Skip if a matching private key exists (already inventoried).
         if known_private_keys.contains(&private_path) || private_path.exists() {
             continue;
         }
@@ -493,7 +371,6 @@ fn scan_standalone_pub_files(ssh_dir: &Path, known_private_keys: &HashSet<PathBu
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs());
 
-        // Try to parse the public key for fingerprint and type.
         let Ok(pub_data) = std::fs::read_to_string(&pub_path) else {
             continue;
         };
@@ -514,7 +391,6 @@ fn scan_standalone_pub_files(ssh_dir: &Path, known_private_keys: &HashSet<PathBu
                 };
                 (kt, fingerprint, comment)
             }
-            // Not a valid SSH public key — skip.
             Err(_) => continue,
         };
 
@@ -537,15 +413,6 @@ fn scan_standalone_pub_files(ssh_dir: &Path, known_private_keys: &HashSet<PathBu
     standalone
 }
 
-// ---------------------------------------------------------------------------
-// Agent key merging
-// ---------------------------------------------------------------------------
-
-/// Query the SSH agent and merge agent-only keys into the inventory.
-///
-/// Keys from the agent whose fingerprint does not match any key already in the
-/// inventory are appended with [`KeySource::Agent`]. Agent connection failures
-/// are logged but non-fatal.
 #[cfg(feature = "agent-integration")]
 async fn merge_agent_keys(keys: &mut Vec<SshKey>, runner: &dyn toride_ssh_core::CliRunner) {
     let agent_keys = match toride_ssh_agent::list_identities(runner).await {
@@ -561,8 +428,6 @@ async fn merge_agent_keys(keys: &mut Vec<SshKey>, runner: &dyn toride_ssh_core::
     keys.extend(new_keys);
 }
 
-/// From a set of agent keys, return only those whose fingerprint does not
-/// appear among the existing (filesystem) keys.
 #[cfg(feature = "agent-integration")]
 fn filter_new_agent_keys(existing: &[SshKey], agent_keys: Vec<SshKey>) -> Vec<SshKey> {
     let fs_fingerprints: HashSet<&str> = existing
@@ -581,15 +446,6 @@ fn filter_new_agent_keys(existing: &[SshKey], agent_keys: Vec<SshKey>) -> Vec<Ss
         .collect()
 }
 
-// ---------------------------------------------------------------------------
-// Filesystem scanning
-// ---------------------------------------------------------------------------
-
-/// Query a PKCS#11 provider via `ssh-keygen -D` to get actual key metadata.
-///
-/// Returns the detected [`KeyType`] and [`Fingerprint`] if the provider can be
-/// queried. Falls back to `(KeyType::Ed25519, None)` with a warning if the
-/// query fails (e.g. the token is not inserted or `ssh-keygen` is unavailable).
 async fn query_pkcs11_provider(
     provider: &str,
     runner: &dyn toride_ssh_core::CliRunner,
@@ -632,18 +488,6 @@ async fn query_pkcs11_provider(
     }
 }
 
-/// Perform all filesystem-based key scanning.
-///
-/// Discovers keys from:
-/// 1. `~/.ssh/id_*` files (standard naming convention).
-/// 2. Default key names (`id_rsa`, `id_ed25519`, etc.).
-/// 3. `IdentityFile` directives parsed from `~/.ssh/config`.
-/// 4. Standalone `.pub` files without matching private keys.
-///
-/// Also emits warnings for SSH v1 key files (`~/.ssh/identity`).
-///
-/// PKCS#11 providers are **not** queried here; they require async CLI access
-/// and are handled separately in [`scan_keys`].
 fn scan_filesystem_keys(
     ssh_dir: &Path,
     default_names: &[&str],
@@ -653,7 +497,6 @@ fn scan_filesystem_keys(
     let mut seen_paths = HashSet::<PathBuf>::new();
     let mut private_key_paths: Vec<PathBuf> = Vec::new();
 
-    // --- Directory scan: id_* files ---
     let entries = match std::fs::read_dir(ssh_dir) {
         Ok(entries) => entries,
         Err(e) => {
@@ -685,7 +528,6 @@ fn scan_filesystem_keys(
         }
     }
 
-    // --- Default key names ---
     for &default_name in default_names {
         let default_path = ssh_dir.join(default_name);
         if default_path.is_file() && seen_paths.insert(default_path.clone()) {
@@ -693,22 +535,17 @@ fn scan_filesystem_keys(
         }
     }
 
-    // --- Config-sourced IdentityFile discovery ---
     for identity_path in &config_scan.identity_paths {
         if identity_path.is_file() && seen_paths.insert(identity_path.clone()) {
             private_key_paths.push(identity_path.clone());
         }
     }
 
-    // Sort for deterministic output.
     private_key_paths.sort();
 
-    // Inspect each private key (memoized on mtime+size so unchanged keys
-    // skip the MPINT decode and SHA-256 fingerprint on re-scan).
     for path in &private_key_paths {
         match inspect_private_key_cached(path) {
             Ok(mut key) => {
-                // Populate used_by_hosts from the config host map.
                 if let Some(hosts) = config_scan.identity_host_map.get(path) {
                     key.used_by_hosts.clone_from(hosts);
                 }
@@ -720,37 +557,14 @@ fn scan_filesystem_keys(
         }
     }
 
-    // --- SSH v1 key detection ---
     check_ssh_v1_keys(ssh_dir);
 
-    // --- Standalone .pub file scanning ---
     let standalone = scan_standalone_pub_files(ssh_dir, &seen_paths);
     keys.extend(standalone);
 
     Ok(keys)
 }
 
-// ---------------------------------------------------------------------------
-// Public entry point
-// ---------------------------------------------------------------------------
-
-/// Scan for all SSH keys: filesystem, config-sourced, standalone `.pub`, and
-/// agent.
-///
-/// Discovers keys from multiple sources:
-///
-/// - **Filesystem**: `~/.ssh/id_*` files and default key names.
-/// - **Config**: `IdentityFile` paths parsed from `~/.ssh/config`.
-/// - **Standalone `.pub`**: Public key files without matching private keys.
-/// - **SSH v1**: Deprecated `~/.ssh/identity` files (logged as warnings).
-/// - **PKCS#11**: Hardware token providers from `PKCS11Provider` config
-///   directives.
-/// - **Agent**: Keys loaded in the SSH agent but not found on disk (requires
-///   a [`CliRunner`](toride_ssh_core::CliRunner)).
-///
-/// When `runner` is provided, the SSH agent is queried and keys that exist
-/// only in the agent (no matching file on disk) are added with
-/// [`KeySource::Agent`].
 pub async fn scan_keys(
     paths: &SshPaths,
     runner: Option<&dyn toride_ssh_core::CliRunner>,
@@ -758,9 +572,6 @@ pub async fn scan_keys(
     let ssh_dir = paths.ssh_dir().to_path_buf();
     let default_names = SshPaths::default_key_names();
 
-    // Phase 1: Filesystem-based scanning (blocking I/O).
-    // Scan the SSH config first (also blocking I/O), then pass the results
-    // into the filesystem scan so used_by_hosts can be populated.
     let config_scan = tokio::task::spawn_blocking(move || {
         let config_scan = scan_ssh_config(&ssh_dir);
         let keys = scan_filesystem_keys(&ssh_dir, default_names, &config_scan)?;
@@ -771,7 +582,6 @@ pub async fn scan_keys(
 
     let (mut keys, config_scan) = (config_scan.0, config_scan.1);
 
-    // Phase 2: PKCS#11 provider querying (async, requires CliRunner).
     for provider in &config_scan.pkcs11_providers {
         tracing::info!("PKCS#11 provider detected in SSH config: {}", provider);
         let (key_type, fingerprint) = if let Some(r) = runner {
@@ -795,7 +605,6 @@ pub async fn scan_keys(
         });
     }
 
-    // Phase 3: Agent key merging (async).
     #[cfg(feature = "agent-integration")]
     if let Some(runner) = runner {
         merge_agent_keys(&mut keys, runner).await;
@@ -839,7 +648,6 @@ mod tests {
 
     #[test]
     fn guess_key_type_from_name_sk_ed25519() {
-        // SK variants must be checked before base algo (ed25519_sk contains "ed25519")
         assert!(matches!(
             guess_key_type_from_name("id_ed25519_sk"),
             KeyType::SkEd25519
@@ -876,7 +684,6 @@ mod tests {
 
     #[test]
     fn is_likely_encrypted_openssh_format() {
-        // OpenSSH encrypted keys have "ENCRYPTED" in the header comment area.
         let data = "-----BEGIN OPENSSH PRIVATE KEY-----\nENCRYPTED\nb3BlbnNzaC1rZXktdjEAAAA...\n";
         assert!(is_likely_encrypted(data));
     }
@@ -948,17 +755,13 @@ mod tests {
         assert!(matches!(p521, KeyType::EcdsaP521));
     }
 
-    // Edge cases for guess_key_type_from_name
-
     #[test]
     fn guess_key_type_from_name_empty() {
-        // Empty name should default to Ed25519
         assert!(matches!(guess_key_type_from_name(""), KeyType::Ed25519));
     }
 
     #[test]
     fn guess_key_type_from_name_partial_match() {
-        // "rsa_backup" should match because it contains "rsa"
         assert!(matches!(
             guess_key_type_from_name("rsa_backup"),
             KeyType::Rsa { .. }
@@ -967,7 +770,6 @@ mod tests {
 
     #[test]
     fn guess_key_type_from_name_no_match() {
-        // Random name with no algo hint
         assert!(matches!(
             guess_key_type_from_name("my_ssh_key"),
             KeyType::Ed25519
@@ -976,7 +778,6 @@ mod tests {
 
     #[test]
     fn guess_key_type_from_name_sk_before_base() {
-        // "id_ed25519_sk" must match SkEd25519, not Ed25519
         assert!(matches!(
             guess_key_type_from_name("id_ed25519_sk"),
             KeyType::SkEd25519
@@ -987,19 +788,14 @@ mod tests {
         ));
     }
 
-    // Edge cases for is_likely_encrypted
-
     #[test]
     fn is_likely_encrypted_lowercase_not_matched() {
-        // "encrypted" (lowercase) in header should NOT match — only uppercase
-        // "ENCRYPTED" is a reliable marker.
         let data = "-----BEGIN OPENSSH PRIVATE KEY-----\nencrypted\n";
         assert!(!is_likely_encrypted(data));
     }
 
     #[test]
     fn is_likely_encrypted_beyond_first_5_lines() {
-        // "ENCRYPTED" on line 6 should NOT be detected
         let data = "line1\nline2\nline3\nline4\nline5\nENCRYPTED\n";
         assert!(!is_likely_encrypted(data));
     }
@@ -1010,16 +806,11 @@ mod tests {
         assert!(is_likely_encrypted(data));
     }
 
-    // ---------------------------------------------------------------------------
-    // Key inventory with config-sourced keys
-    // ---------------------------------------------------------------------------
-
     #[tokio::test]
     async fn scan_keys_discovers_identity_file_from_config() {
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Generate a real Ed25519 key pair for parsing.
         let key_path = ssh_dir.join("id_config_key");
         let output = std::process::Command::new("ssh-keygen")
             .args([
@@ -1040,15 +831,12 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
 
-        // Write a config referencing this key via IdentityFile.
         let config_content = format!("Host myhost\n    IdentityFile {}\n", key_path.display());
         std::fs::write(ssh_dir.join("config"), &config_content).unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(ssh_dir);
         let keys = scan_keys(&paths, None).await.unwrap();
 
-        // scan_keys discovers keys from both the directory listing (id_config_key
-        // starts with "id_") and from the config's IdentityFile directive.
         assert!(
             keys.iter().any(|k| k.path == key_path),
             "scan_keys should discover key file referenced in config: found {:?}",
@@ -1065,7 +853,6 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Create two key pairs.
         for name in &["id_work", "id_personal"] {
             let key_path = ssh_dir.join(name);
             let output = std::process::Command::new("ssh-keygen")
@@ -1084,7 +871,6 @@ mod tests {
             assert!(output.status.success());
         }
 
-        // Config references both.
         let config = "\
 Host work
     IdentityFile ~/.ssh/id_work
@@ -1106,7 +892,6 @@ Host personal
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Create a key with a passphrase.
         let key_path = ssh_dir.join("id_encrypted");
         let output = std::process::Command::new("ssh-keygen")
             .args([
@@ -1140,7 +925,6 @@ Host personal
     fn inspect_private_key_encrypted_key_returns_encrypted_true() {
         let dir = tempfile::tempdir().unwrap();
 
-        // Generate an Ed25519 key with a passphrase.
         let key_path = dir.path().join("id_ed25519");
         let output = std::process::Command::new("ssh-keygen")
             .args([
@@ -1191,16 +975,11 @@ Host personal
         assert!(keys.is_empty());
     }
 
-    // ---------------------------------------------------------------------------
-    // Standalone .pub file scanning
-    // ---------------------------------------------------------------------------
-
     #[tokio::test]
     async fn scan_keys_discovers_standalone_pub_file() {
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Generate a key pair, then remove the private key.
         let key_pair_path = ssh_dir.join("id_standalone");
         let output = std::process::Command::new("ssh-keygen")
             .args([
@@ -1240,7 +1019,6 @@ Host personal
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Create a standalone -cert.pub file (should be excluded).
         std::fs::write(
             ssh_dir.join("id_test-cert.pub"),
             "ssh-ed25519 AAAA... cert\n",
@@ -1257,21 +1035,15 @@ Host personal
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // SSH v1 key detection
-    // ---------------------------------------------------------------------------
-
     #[tokio::test]
     async fn scan_keys_handles_ssh_v1_keys_without_panic() {
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Touch SSH v1 key files (real generation not possible without SSH v1 support).
         std::fs::write(ssh_dir.join("identity"), "fake-ssh1-private-key").unwrap();
         std::fs::write(ssh_dir.join("identity.pub"), "fake-ssh1-public-key").unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(ssh_dir);
-        // Should not panic or error — SSH v1 files produce warnings only.
         let _keys = scan_keys(&paths, None).await.unwrap();
     }
 
@@ -1280,23 +1052,17 @@ Host personal
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Only the public key exists (no private key).
         std::fs::write(ssh_dir.join("identity.pub"), "ssh-rsa AAAA... identity\n").unwrap();
 
         let paths = toride_ssh_core::SshPaths::with_dir(ssh_dir);
         let keys = scan_keys(&paths, None).await.unwrap();
 
-        // identity.pub is explicitly excluded from standalone .pub scanning.
         assert!(
             keys.iter()
                 .all(|k| k.path.file_name().is_none_or(|n| n != "identity.pub")),
             "identity.pub should be excluded from standalone scan (handled by SSH v1 warning)",
         );
     }
-
-    // ---------------------------------------------------------------------------
-    // PKCS#11 detection
-    // ---------------------------------------------------------------------------
 
     #[tokio::test]
     async fn scan_keys_detects_pkcs11_provider() {
@@ -1328,7 +1094,6 @@ Host hsm
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Same provider referenced in two Host blocks.
         let config_content = "\
 Host hsm1
     PKCS11Provider /usr/lib/libpkcs11.so
@@ -1352,16 +1117,11 @@ Host hsm2
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // Config-sourced keys outside ~/.ssh
-    // ---------------------------------------------------------------------------
-
     #[tokio::test]
     async fn scan_keys_discovers_config_identity_outside_ssh_dir() {
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
 
-        // Create a key outside the ssh directory.
         let external_dir = tempfile::tempdir().unwrap();
         let key_path = external_dir.path().join("id_external");
         let output = std::process::Command::new("ssh-keygen")
@@ -1379,7 +1139,6 @@ Host hsm2
             .unwrap();
         assert!(output.status.success());
 
-        // Config references the external key by absolute path.
         let config_content = format!("Host external\n    IdentityFile {}\n", key_path.display());
         std::fs::write(ssh_dir.join("config"), &config_content).unwrap();
 
@@ -1396,16 +1155,6 @@ Host hsm2
         assert!(found.fingerprint.is_some());
     }
 
-    // ---------------------------------------------------------------------------
-    // Agent-only keys — tested in agent/client.test.rs
-    // (agent::client is a private module, so we test parse_ssh_add_line there)
-    // ---------------------------------------------------------------------------
-
-    // ---------------------------------------------------------------------------
-    // Mtime-keyed parse cache (F08)
-    // ---------------------------------------------------------------------------
-
-    /// Generate a fresh Ed25519 key pair at `dir/name`.
     fn gen_ed25519(dir: &Path, name: &str, comment: &str) -> PathBuf {
         let key_path = dir.join(name);
         let output = std::process::Command::new("ssh-keygen")
@@ -1429,8 +1178,6 @@ Host hsm2
         key_path
     }
 
-    /// Rewrite `path` with `content`, spinning until its mtime moves past
-    /// `previous` so the (mtime, len) stamp is distinguishable.
     fn rewrite_with_new_stamp(path: &Path, previous: std::time::SystemTime, content: &str) {
         loop {
             std::fs::write(path, content).expect("rewrite key fixture");
@@ -1460,7 +1207,6 @@ Host hsm2
 
         let fresh = inspect_private_key(&key_path).expect("fresh parse");
         let cached = crate::inspect_key_cached(&key_path).expect("cached parse");
-        // Cached-vs-fresh parity: every observable field must match.
         assert_eq!(cached.path, fresh.path);
         assert_eq!(cached.key_type, fresh.key_type);
         assert_eq!(cached.encrypted, fresh.encrypted);
@@ -1493,7 +1239,6 @@ Host hsm2
         let before = crate::inspect_key_cached(&key_path).expect("parse before");
         assert_eq!(before.comment.as_deref(), Some("before-rotation"));
 
-        // Rotate: generate a different key and copy it over the cached path.
         let rotated = gen_ed25519(dir.path(), "id_cache_rotated", "after-rotation");
         let content = std::fs::read_to_string(&rotated).unwrap();
         rewrite_with_new_stamp(&key_path, mtime_of(&key_path), &content);
@@ -1512,9 +1257,6 @@ Host hsm2
 
     #[tokio::test]
     async fn scan_keys_order_is_deterministic_for_cache_stability() {
-        // Pin the keys list ordering: private keys sorted by path, then
-        // standalone .pub entries — the cache must return hits in the same
-        // order as a fresh scan.
         clear_key_cache_for_tests();
         let dir = tempfile::tempdir().unwrap();
         let ssh_dir = dir.path();
@@ -1529,8 +1271,6 @@ Host hsm2
             .map(|k| k.path.clone())
             .filter(|p| p.extension().is_none())
             .collect();
-        // The scan discovers id_* files via read_dir but sorts before
-        // inspecting, so the private-key prefix of the list is sorted.
         let mut sorted = private_paths.clone();
         sorted.sort();
         assert_eq!(private_paths, sorted);
@@ -1538,7 +1278,6 @@ Host hsm2
         assert!(private_paths.contains(&b));
         assert!(private_paths.contains(&c));
 
-        // Second scan (all cache hits) yields the identical order.
         let second = scan_keys(&paths, None).await.unwrap();
         assert_eq!(
             first.iter().map(|k| k.path.clone()).collect::<Vec<_>>(),
@@ -1547,11 +1286,6 @@ Host hsm2
         );
     }
 
-    // ---------------------------------------------------------------------------
-    // filter_new_agent_keys — agent key deduplication by fingerprint
-    // ---------------------------------------------------------------------------
-
-    /// Helper: build an `SshKey` with the given fingerprint hash and source.
     #[cfg(feature = "agent-integration")]
     fn make_key(hash: &str, source: KeySource) -> SshKey {
         SshKey {
@@ -1573,7 +1307,6 @@ Host hsm2
         }
     }
 
-    /// Helper: build an `SshKey` with no fingerprint.
     #[cfg(feature = "agent-integration")]
     fn make_key_no_fp(source: KeySource) -> SshKey {
         SshKey {
