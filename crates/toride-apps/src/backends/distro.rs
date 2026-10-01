@@ -2546,8 +2546,6 @@ mod tests {
         let ubuntu = backend_for(DistroFamily::Ubuntu, &FakeRunner::new().strict());
         assert!(ubuntu.supports(&target(DistroFamily::Ubuntu)));
         assert!(!ubuntu.supports(&target(DistroFamily::Debian)));
-        // An Arch backend does not vouch for Alpine targets even though
-        // both are now executable.
         let arch = backend_for(DistroFamily::Arch, &FakeRunner::new().strict());
         assert!(!arch.supports(&target(DistroFamily::Alpine)));
     }

@@ -769,9 +769,6 @@ impl Apps {
                 if backend.family() != *family {
                     return Ok(Presence::Absent);
                 }
-                // Presence, not version: apk's listing reports installed
-                // packages with no version, so `installed_version`'s
-                // Ok(None) would read a successful install as absent.
                 match backend.status(StatusQuery::new(package)).await? {
                     BackendStatus::Installed { version } => Ok(Presence::Present(version)),
                     BackendStatus::NotInstalled => Ok(Presence::Absent),

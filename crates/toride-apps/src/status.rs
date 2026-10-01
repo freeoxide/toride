@@ -252,10 +252,6 @@ async fn toride_recorded_status(
             if backend.family() != *family {
                 return Ok(AppStatus::NotInstalled);
             }
-            // Presence, not version: apk's listing reports installed
-            // packages with no version at all, so `installed_version`'s
-            // Ok(None) cannot distinguish absent from present-without-a-
-            // version — the same reason the flatpak arm reads the row.
             Ok(match backend.status(StatusQuery::new(package)).await? {
                 BackendStatus::Installed { version } => AppStatus::Installed {
                     backend: BackendId::Distro(*family),
