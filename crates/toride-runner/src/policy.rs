@@ -142,9 +142,8 @@ mod spawn_gate {
 
         first_path_match(&path_var, name).ok_or_else(|| Error::ProgramRejected {
             program: name.to_owned(),
-            detail:
-                "not found on the child PATH (first match; the working directory is never searched)"
-                    .to_owned(),
+            detail: "not found on PATH (first match; the working directory is never searched)"
+                .to_owned(),
         })
     }
 
@@ -334,7 +333,23 @@ mod spawn_gate {
             match resolve_program(&spec) {
                 Err(Error::ProgramRejected { program, detail }) => {
                     assert_eq!(program, "sh");
-                    assert!(detail.contains("child PATH"));
+                    assert!(detail.contains("not found on PATH"), "detail: {detail}");
+                }
+                other => panic!("expected ProgramRejected, got {other:?}"),
+            }
+        }
+
+        #[test]
+        fn resolve_bare_name_not_found_detail_does_not_misname_the_searched_path() {
+            let missing = "definitely_not_a_real_binary_xyz_123";
+            let searched = OsString::from("/nonexistent/toride-policy-probe");
+            match resolve_bare_name(missing, None, Some(searched)) {
+                Err(Error::ProgramRejected { detail, .. }) => {
+                    assert!(detail.contains("not found on PATH"), "detail: {detail}");
+                    assert!(
+                        !detail.contains("child"),
+                        "fallback search must not be misnamed as the child PATH: {detail}"
+                    );
                 }
                 other => panic!("expected ProgramRejected, got {other:?}"),
             }

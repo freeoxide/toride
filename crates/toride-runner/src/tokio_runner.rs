@@ -1536,7 +1536,7 @@ mod tests {
         match runner.run(&spec).await {
             Err(Error::ProgramRejected { program, detail }) => {
                 assert_eq!(program, "definitely_not_a_real_binary_xyz_123");
-                assert!(detail.contains("child PATH"));
+                assert!(detail.contains("not found on PATH"), "detail: {detail}");
             }
             other => panic!("expected ProgramRejected, got {other:?}"),
         }
