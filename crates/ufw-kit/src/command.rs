@@ -7,7 +7,7 @@
 //! The local [`CommandSpec`] is kept because it carries UFW-specific fields
 //! (`requires_root`, `force_c_locale`, `redact_logs`) that the shared
 //! [`toride_runner::CommandSpec`] does not have. Conversion is handled by
-//! the [`IntoShared`] helper.
+//! the `IntoShared` helper.
 
 use std::collections::HashMap;
 use std::time::Duration;

@@ -23,6 +23,11 @@ ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "std"] }
 
 [dev-dependencies]
 tempfile = "3"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "known_hosts_fingerprint"
+harness = false
 
 [lints]
 workspace = true

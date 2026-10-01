@@ -4,7 +4,7 @@
 //! groups, ingress/egress rules, and VPC firewall configuration.
 //!
 //! All commands shell out through the centralised [`toride_runner::Runner`]
-//! abstraction, so the client is fully testable with a [`FakeRunner`].
+//! abstraction, so the client is fully testable with a `FakeRunner`.
 //!
 //! # JSON shape
 //!
@@ -65,7 +65,7 @@ impl AwsClient {
 
     /// Inject a custom [`Runner`] behind an [`Arc`].
     ///
-    /// The [`Arc`] lets tests retain a handle to a shared [`FakeRunner`] after
+    /// The [`Arc`] lets tests retain a handle to a shared `FakeRunner` after
     /// handing the client a clone, so they can inspect recorded calls.
     #[must_use]
     pub fn with_runner(region: impl Into<String>, runner: Arc<dyn Runner>) -> Self {

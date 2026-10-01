@@ -39,7 +39,7 @@ fn severity_str(s: toride_backup::doctor::Severity) -> &'static str {
 /// `fix` string (e.g. `Some("")`) is normalized to `None` so the render layer
 /// never shows a dangling `→ ` arrow implying a fix exists when none does —
 /// consistent with the placeholder treatment for empty `id`/`title`. Mirrors
-/// [`fail2ban_convert::convert_findings`].
+/// [`fail2ban_convert::convert_findings`](crate::fail2ban_convert::convert_findings).
 pub fn convert_findings(findings: Vec<toride_backup::doctor::Finding>) -> Vec<FindingEntry> {
     findings
         .into_iter()

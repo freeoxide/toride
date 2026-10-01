@@ -1,8 +1,8 @@
-//! UFW client — typed wrapper around the `ufw` command.
-//!
-//! This is the primary API surface for the crate.
+//! UFW client — typed wrapper around the `ufw` command. Reads are cached
+//! (`status` 10 s, `--version` client lifetime); mutations invalidate status.
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use crate::command::{CommandRunner, DuctRunner};
 use crate::error::{Error, Result};
@@ -13,11 +13,38 @@ use crate::spec::{
 };
 use crate::status;
 
-/// The main UFW client.
-///
-/// Create with `Ufw::system()` for real usage, or `Ufw::with_runner()` for tests.
+const STATUS_CACHE_TTL: Duration = Duration::from_secs(10);
+
+#[derive(Debug, Default)]
+struct DocCache {
+    status_ttl_override: Option<Duration>,
+    version: Option<String>,
+    status: Option<(Instant, UfwStatus)>,
+    status_verbose: Option<(Instant, UfwStatus)>,
+}
+
+impl DocCache {
+    fn status_ttl(&self) -> Duration {
+        self.status_ttl_override.unwrap_or(STATUS_CACHE_TTL)
+    }
+
+    fn fresh(doc: Option<&(Instant, UfwStatus)>, ttl: Duration) -> Option<UfwStatus> {
+        doc.filter(|(fetched_at, _)| fetched_at.elapsed() < ttl)
+            .map(|(_, status)| status.clone())
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CacheSlot {
+    Status,
+    StatusVerbose,
+}
+
+/// The main UFW client: `Ufw::system()` for real usage, `Ufw::with_runner()`
+/// for tests.
 pub struct Ufw {
     runner: Arc<dyn CommandRunner>,
+    cache: std::sync::Mutex<DocCache>,
 }
 
 impl Ufw {
@@ -25,6 +52,7 @@ impl Ufw {
     pub fn system() -> Self {
         Self {
             runner: Arc::new(DuctRunner::new()),
+            cache: std::sync::Mutex::new(DocCache::default()),
         }
     }
 
@@ -32,10 +60,47 @@ impl Ufw {
     pub fn with_runner(runner: impl CommandRunner + 'static) -> Self {
         Self {
             runner: Arc::new(runner),
+            cache: std::sync::Mutex::new(DocCache::default()),
         }
     }
 
-    /// Find the UFW binary path.
+    fn lock_cache(&self) -> std::sync::MutexGuard<'_, DocCache> {
+        self.cache
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn cached_doc(&self, slot: CacheSlot) -> Option<UfwStatus> {
+        let cache = self.lock_cache();
+        let ttl = cache.status_ttl();
+        match slot {
+            CacheSlot::Status => DocCache::fresh(cache.status.as_ref(), ttl),
+            CacheSlot::StatusVerbose => DocCache::fresh(cache.status_verbose.as_ref(), ttl),
+        }
+    }
+
+    fn store_doc(&self, slot: CacheSlot, result: &Result<UfwStatus>) {
+        if let Ok(status) = result {
+            let mut cache = self.lock_cache();
+            let slot_doc = match slot {
+                CacheSlot::Status => &mut cache.status,
+                CacheSlot::StatusVerbose => &mut cache.status_verbose,
+            };
+            *slot_doc = Some((Instant::now(), status.clone()));
+        }
+    }
+
+    fn invalidate_status_cache(&self) {
+        let mut cache = self.lock_cache();
+        cache.status = None;
+        cache.status_verbose = None;
+    }
+
+    #[cfg(test)]
+    fn set_status_ttl_for_test(&self, ttl: Duration) {
+        self.lock_cache().status_ttl_override = Some(ttl);
+    }
+
     pub fn find_ufw(&self) -> Result<String> {
         if self.runner.binary_exists("ufw") {
             Ok(which::which("ufw")
@@ -45,31 +110,55 @@ impl Ufw {
         }
     }
 
-    /// Get UFW version.
+    /// Get UFW version; the first success is memoized for the client lifetime
+    /// (failures are retried on the next call).
     pub fn version(&self) -> Result<String> {
-        let result = self.run_ufw(&["--version"])?;
-        Ok(result.stdout.trim().to_string())
+        {
+            let cache = self.lock_cache();
+            if let Some(version) = &cache.version {
+                return Ok(version.clone());
+            }
+        }
+        let result = self
+            .run_ufw(&["--version"])
+            .map(|r| r.stdout.trim().to_string());
+        if let Ok(version) = &result {
+            self.lock_cache().version = Some(version.clone());
+        }
+        result
     }
 
-    /// Get UFW status (non-verbose).
+    /// Get UFW status (non-verbose); a successful fetch is reused for 10 s and
+    /// every mutating command invalidates the cache. Failures are never cached.
     pub fn status(&self) -> Result<UfwStatus> {
-        let result = self.run_ufw(&["status"])?;
-        status::parse_status(&result.stdout)
+        if let Some(cached) = self.cached_doc(CacheSlot::Status) {
+            return Ok(cached);
+        }
+        let result = self
+            .run_ufw(&["status"])
+            .and_then(|r| status::parse_status(&r.stdout));
+        self.store_doc(CacheSlot::Status, &result);
+        result
     }
 
-    /// Get UFW verbose status (includes defaults and logging).
+    /// Get verbose status (defaults, logging); cached independently of
+    /// [`status`](Self::status) with the same TTL semantics.
     pub fn status_verbose(&self) -> Result<UfwStatus> {
-        let result = self.run_ufw(&["status", "verbose"])?;
-        status::parse_status_verbose(&result.stdout)
+        if let Some(cached) = self.cached_doc(CacheSlot::StatusVerbose) {
+            return Ok(cached);
+        }
+        let result = self
+            .run_ufw(&["status", "verbose"])
+            .and_then(|r| status::parse_status_verbose(&r.stdout));
+        self.store_doc(CacheSlot::StatusVerbose, &result);
+        result
     }
 
-    /// Get UFW numbered status.
     pub fn status_numbered(&self) -> Result<UfwStatus> {
         let result = self.run_ufw(&["status", "numbered"])?;
         status::parse_status_numbered(&result.stdout)
     }
 
-    /// Show a UFW report.
     pub fn show(&self, report: UfwReport) -> Result<String> {
         let result = self.run_ufw(&["show", &report.to_string()])?;
         Ok(result.stdout)
@@ -77,19 +166,12 @@ impl Ufw {
 
     /// Enable UFW with safety checks.
     pub fn enable(&self, opts: &EnableOptions) -> Result<()> {
-        // Check if UFW is already active
         let current = self.status()?;
         if current.active {
             tracing::info!("UFW is already active");
             return Ok(());
         }
 
-        // SSH lockout check.
-        //
-        // This safety check runs whenever `require_ssh_allow_rule` is true,
-        // independent of `allow_force`. `allow_force` only controls whether we
-        // pass `--force` to UFW to skip its interactive confirmation prompt; it
-        // must NOT bypass this library's own lockout protection (see force_enable).
         if opts.require_ssh_allow_rule {
             self.check_ssh_lockout(opts)?;
         }
@@ -101,17 +183,9 @@ impl Ufw {
         };
 
         let result = self.run_ufw_root(&args)?;
-        // A successful `ufw enable` always prints one of the activation markers
-        // ("active" / "enabled") on stdout. Treat anything else as a failure:
-        //   * a non-zero exit code, or
-        //   * stdout lacking the success marker (even with empty stderr — UFW
-        //     occasionally no-ops or fails silently, e.g. when already enabled
-        //     at the iptables layer but inactive in its own state).
         let has_marker = result.stdout.contains("active") || result.stdout.contains("enabled");
         let exit_ok = matches!(result.exit_code, Some(0) | None);
         if !has_marker || !exit_ok {
-            // Prefer the stderr message when UFW wrote one; otherwise describe
-            // the silent failure so a no-op is never masked as success.
             let message = if result.stderr.is_empty() {
                 format!(
                     "ufw enable did not report success (exit: {:?}, stdout: {:?})",
@@ -126,10 +200,8 @@ impl Ufw {
         Ok(())
     }
 
-    /// Enable UFW with `--force`, bypassing the interactive prompt.
-    ///
-    /// This is a convenience wrapper around [`enable`](Self::enable) that sets
-    /// `allow_force: true` while still performing the SSH lockout safety check.
+    /// Enable UFW with `--force`, bypassing the interactive prompt; still
+    /// performs the SSH lockout safety check.
     pub fn force_enable(&self) -> Result<()> {
         self.enable(&EnableOptions {
             allow_force: true,
@@ -137,7 +209,6 @@ impl Ufw {
         })
     }
 
-    /// Disable UFW.
     pub fn disable(&self, opts: &DisableOptions) -> Result<()> {
         if !opts.require_explicit_confirmation {
             return Err(Error::Validation(
@@ -155,7 +226,6 @@ impl Ufw {
         Ok(())
     }
 
-    /// Reload UFW.
     pub fn reload(&self) -> Result<()> {
         let result = self.run_ufw_root(&["reload"])?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {
@@ -164,16 +234,13 @@ impl Ufw {
         Ok(())
     }
 
-    /// Reset UFW (destructive!).
-    ///
-    /// If `backup_first` is true, creates a backup of all UFW configuration
-    /// before resetting. The backup is stored in a temporary directory.
+    /// Reset UFW (destructive); with `backup_first`, a pre-reset backup is
+    /// written to a fresh temporary directory.
     pub fn reset(&self, opts: &ResetOptions) -> Result<()> {
         if !opts.force {
             return Err(Error::ResetRequiresForce);
         }
 
-        // Backup before reset if requested
         if opts.backup_first {
             let paths = crate::paths::UfwPaths::default();
             let backup_dir = std::env::temp_dir().join(format!(
@@ -203,14 +270,9 @@ impl Ufw {
         Ok(())
     }
 
-    /// Set default policy for a direction.
-    ///
-    /// When changing the incoming policy to `Deny` or `Reject`, an SSH lockout
-    /// safety check is performed first. If no incoming SSH allow rule exists,
-    /// the operation is rejected to prevent accidental lockout.
+    /// Set default policy; setting incoming to Deny/Reject is rejected unless
+    /// an incoming SSH allow rule exists.
     pub fn set_default_policy(&self, direction: Direction, policy: Policy) -> Result<()> {
-        // SSH lockout safety check: if we are about to set incoming to deny/reject,
-        // make sure there is an SSH allow rule.
         if direction == Direction::In && matches!(policy, Policy::Deny | Policy::Reject) {
             let check = self.check_ssh_lockout_structured(&[22]);
             if !check.has_incoming_ssh_allow {
@@ -230,7 +292,6 @@ impl Ufw {
         Ok(())
     }
 
-    /// Set global logging level.
     pub fn set_logging(&self, level: LoggingLevel) -> Result<()> {
         let args = rule::render_logging_args(level);
         let args_str: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -241,7 +302,6 @@ impl Ufw {
         Ok(())
     }
 
-    /// Add a firewall rule.
     pub fn add_rule(&self, spec: &RuleSpec) -> Result<()> {
         let args = rule::render_rule_args(spec);
         let args_str: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -279,15 +339,11 @@ impl Ufw {
         Ok(())
     }
 
-    /// Delete all rules matching a comment, from bottom to top.
-    ///
-    /// Deletes rules whose comment contains the given string, starting from the
-    /// highest-numbered rule to avoid index shifting during deletion.
-    /// Returns the number of rules deleted.
+    /// Delete rules whose comment contains `comment`, highest number first;
+    /// returns the number of rules deleted.
     pub fn delete_rules_by_comment(&self, comment: &str) -> Result<u32> {
         let status = self.status_numbered()?;
 
-        // Filter rules whose comment contains the search string
         let mut matching: Vec<u32> = status
             .rules
             .iter()
@@ -295,7 +351,6 @@ impl Ufw {
             .filter_map(|r| r.number)
             .collect();
 
-        // Sort descending (highest first) to avoid number shifting
         matching.sort_by(|a, b| b.cmp(a));
 
         let delete_opts = DeleteOptions {
@@ -311,14 +366,12 @@ impl Ufw {
         Ok(deleted)
     }
 
-    /// Insert a rule at a specific position.
     pub fn insert_rule(&self, number: u32, spec: &RuleSpec) -> Result<()> {
         let mut spec = spec.clone();
         spec.position = crate::spec::RulePosition::Insert(number);
         self.add_rule(&spec)
     }
 
-    /// Add a route rule.
     pub fn add_route_rule(&self, spec: &RouteRuleSpec) -> Result<()> {
         let args = rule::render_route_rule_args(spec);
         let args_str: Vec<&str> = args.iter().map(String::as_str).collect();
@@ -329,7 +382,6 @@ impl Ufw {
         Ok(())
     }
 
-    /// Delete a route rule.
     pub fn delete_route_rule(&self, spec: &RouteRuleSpec) -> Result<()> {
         let mut spec = spec.clone();
         spec.delete = true;
@@ -342,19 +394,18 @@ impl Ufw {
         Ok(())
     }
 
-    /// List application profiles.
     pub fn app_list(&self) -> Result<String> {
         let result = self.run_ufw(&["app", "list"])?;
         Ok(result.stdout)
     }
 
-    /// Get info about an application profile.
     pub fn app_info(&self, name: &str) -> Result<String> {
         let result = self.run_ufw(&["app", "info", name])?;
         Ok(result.stdout)
     }
 
-    /// Update an application profile.
+    /// Update an application profile; does not invalidate the status caches
+    /// (profile refresh only — the status documents are unchanged).
     pub fn app_update(&self, name: &str) -> Result<()> {
         let result = self.run_ufw(&["app", "update", name])?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {
@@ -363,7 +414,8 @@ impl Ufw {
         Ok(())
     }
 
-    /// Update all application profiles.
+    /// Update all application profiles; like [`app_update`](Self::app_update),
+    /// does not invalidate the status caches.
     pub fn app_update_all(&self) -> Result<()> {
         let result = self.run_ufw(&["app", "update", "all"])?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {
@@ -383,12 +435,8 @@ impl Ufw {
         Ok(())
     }
 
-    // ── Dry-run and apply ────────────────────────────────────────────
-
-    /// Perform a dry-run of a UFW command without actually executing it.
-    ///
-    /// Returns the dry-run output. If the dry-run indicates an error,
-    /// an error is returned.
+    /// Dry-run a UFW command without executing it; returns the dry-run output,
+    /// or an error if the dry-run reports one.
     pub fn dry_run(&self, args: &[&str]) -> Result<String> {
         let mut dry_args = vec!["--dry-run"];
         dry_args.extend_from_slice(args);
@@ -402,17 +450,14 @@ impl Ufw {
         Ok(result.stdout)
     }
 
-    /// Add a rule with dry-run safety check.
-    ///
-    /// Runs `ufw --dry-run` first, then adds the rule if the dry-run succeeds.
+    /// Add a rule with a dry-run safety check: runs `--dry-run` first, then
+    /// adds the rule if it succeeds.
     pub fn apply_rule(&self, spec: &RuleSpec) -> Result<crate::spec::ApplyReport> {
         let args = rule::render_rule_args(spec);
         let args_str: Vec<&str> = args.iter().map(String::as_str).collect();
 
-        // Step 1: Dry-run
         let dry_output = self.dry_run(&args_str)?;
 
-        // Step 2: Execute
         let result = self.run_ufw_root(&args_str)?;
         if !result.stderr.is_empty() && result.exit_code != Some(0) {
             return Err(Error::RuleAddFailed(result.stderr));
@@ -427,20 +472,15 @@ impl Ufw {
         })
     }
 
-    /// Idempotently ensure a rule exists.
-    ///
-    /// Checks existing rules by comment. If an exact match exists, does nothing.
-    /// If a managed comment exists but the rule differs, replaces it.
-    /// Otherwise, adds the new rule.
+    /// Idempotently ensure a rule exists, keyed by comment: an exact match is
+    /// a no-op, a differing rule with the same comment is replaced, else added.
     pub fn ensure_rule(&self, spec: &RuleSpec) -> Result<crate::spec::ApplyReport> {
         let comment = spec.comment.as_deref().unwrap_or("");
 
         if comment.is_empty() {
-            // No comment — just add directly
             return self.apply_rule(spec);
         }
 
-        // Check existing rules
         let status = self.status_numbered()?;
         let existing: Vec<_> = status
             .rules
@@ -449,15 +489,9 @@ impl Ufw {
             .collect();
 
         if existing.is_empty() {
-            // No existing rule with this comment — add
             return self.apply_rule(spec);
         }
 
-        // Render the expected args for the new rule. We compare key structural
-        // tokens against the existing rule's raw text to detect changes.
-        // UFW output format differs from rendered args format, so we check
-        // that the essential parts (action, direction, proto, port, addresses)
-        // are all consistent.
         let matches = existing.iter().any(|r| rule_matches_spec(r, spec));
 
         if matches {
@@ -470,11 +504,8 @@ impl Ufw {
             });
         }
 
-        // Rules with the same comment exist but differ — replace them.
-        // Delete old rules from bottom to top (highest number first) to avoid
-        // number shifting during deletion.
         let mut numbers: Vec<u32> = existing.iter().filter_map(|r| r.number).collect();
-        numbers.sort_by(|a, b| b.cmp(a)); // descending order
+        numbers.sort_by(|a, b| b.cmp(a));
 
         let delete_opts = crate::spec::DeleteOptions {
             allow_numbered_delete: true,
@@ -484,12 +515,10 @@ impl Ufw {
             self.delete_rule_number(*num, &delete_opts)?;
         }
 
-        // If there were only un-numbered matches, fall back to delete by spec
         if numbers.is_empty() {
             self.delete_rule(spec)?;
         }
 
-        // Add the new rule
         let report = self.apply_rule(spec)?;
         Ok(crate::spec::ApplyReport {
             success: true,
@@ -500,31 +529,22 @@ impl Ufw {
         })
     }
 
-    // ── Runner access ────────────────────────────────────────────────
-
-    /// Get a reference to the underlying command runner.
-    ///
-    /// This is useful for doctor checks and other diagnostics that need
-    /// to query binary existence or service status directly.
     pub fn runner(&self) -> &dyn CommandRunner {
         self.runner.as_ref()
     }
 
-    // ── Internal helpers ──────────────────────────────────────────────
-
-    /// Run a UFW command (non-root).
     fn run_ufw(&self, args: &[&str]) -> Result<crate::spec::CommandResult> {
         let spec = CommandSpec::ufw(args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>());
         self.runner.run(&spec)
     }
 
-    /// Run a UFW command (root required).
     fn run_ufw_root(&self, args: &[&str]) -> Result<crate::spec::CommandResult> {
         let spec = CommandSpec::ufw_root(args.iter().map(|s| (*s).to_string()).collect::<Vec<_>>());
-        self.runner.run(&spec)
+        let result = self.runner.run(&spec);
+        self.invalidate_status_cache();
+        result
     }
 
-    /// Check for SSH lockout risk before enabling.
     fn check_ssh_lockout(&self, opts: &EnableOptions) -> Result<()> {
         for &port in &opts.ssh_ports {
             let result = self.check_ssh_lockout_structured(&[port]);
@@ -538,18 +558,9 @@ impl Ufw {
         Ok(())
     }
 
-    /// Perform a structured SSH lockout check using parsed rules.
-    ///
-    /// Instead of searching raw rule text, this checks the structured
-    /// `ParsedRule` fields for direction, action, and port.
-    ///
-    /// A rule is considered an incoming SSH allow if:
-    /// - Its direction is `In` (or direction is not specified, which UFW
-    ///   treats as inbound for simple rules).
-    /// - Its action is `Allow` or `Limit`.
-    /// - It targets port 22, port `ssh`, or matches any of the given ports.
+    /// Structured SSH lockout check: a rule counts when it is inbound (or
+    /// direction unparsed), Allow/Limit, and targets `ssh` or one of `ssh_ports`.
     pub fn check_ssh_lockout_structured(&self, ssh_ports: &[u16]) -> crate::spec::SshCheckResult {
-        // Silently return a negative result if status cannot be fetched.
         let Ok(status) = self.status() else {
             return crate::spec::SshCheckResult {
                 has_incoming_ssh_allow: false,
@@ -563,25 +574,18 @@ impl Ufw {
         let mut interface_scoped = false;
 
         for rule in &status.rules {
-            // Must be an Allow or Limit action
             let is_allow = matches!(rule.action, Some(Action::Allow | Action::Limit));
             if !is_allow {
-                // Fall back to raw text check if action wasn't parsed
                 let raw_lower = rule.raw.to_lowercase();
                 if !raw_lower.contains("allow") && !raw_lower.contains("limit") {
                     continue;
                 }
             }
 
-            // Must be incoming direction. When direction is `None` (not parsed),
-            // we check the raw text for explicit "OUT" to avoid false positives.
-            // UFW's default for simple rules is inbound, so None without "OUT"
-            // in raw text is treated as incoming.
             let is_incoming = match rule.direction {
                 Some(Direction::In) => true,
                 Some(Direction::Out | Direction::Routed) => false,
                 None => {
-                    // Not parsed — check raw text for direction markers
                     let raw_lower = rule.raw.to_lowercase();
                     !raw_lower.contains(" out ")
                         && !raw_lower.contains(" out\t")
@@ -592,14 +596,11 @@ impl Ufw {
                 continue;
             }
 
-            // Must target SSH port
             let targets_ssh = rule_targets_ssh(rule, ssh_ports);
             if !targets_ssh {
                 continue;
             }
 
-            // Check interface scope from raw text (ParsedRule doesn't have an
-            // interface field, so we inspect the raw text for "on <iface>" patterns).
             let raw_lower = rule.raw.to_lowercase();
             if raw_lower.contains(" in on ") || raw_lower.contains(" on ") {
                 interface_scoped = true;
@@ -619,35 +620,23 @@ impl Ufw {
     }
 }
 
-/// Check whether a parsed rule targets an SSH port.
-///
-/// A rule targets SSH if its raw text contains any of the specified port numbers,
-/// the string "ssh", or "22/tcp"/"22" patterns.
 fn rule_targets_ssh(rule: &crate::spec::ParsedRule, ssh_ports: &[u16]) -> bool {
     let raw_lower = rule.raw.to_lowercase();
 
-    // Check for the "ssh" service name
     if raw_lower.contains("ssh") {
         return true;
     }
 
-    // Check for each specified port number
     for &port in ssh_ports {
-        // Exact port patterns: "22/tcp", "22/udp", "22 " (with space after),
-        // or "22" at end of a token boundary. We check common variants.
         if raw_lower.contains(&format!("{port}/tcp")) || raw_lower.contains(&format!("{port}/udp"))
         {
             return true;
         }
 
-        // Check for bare port number with word boundaries. The port typically
-        // appears at the start of the rule line in "To" column, e.g. "22   ALLOW IN".
-        // We look for the port number followed by whitespace or at end of line.
         for token in raw_lower.split_whitespace() {
             if token == port.to_string() {
                 return true;
             }
-            // Also handle "22/tcp", "22/udp" (already checked above, but be thorough)
             if let Some(slash_pos) = token.find('/') {
                 if token[..slash_pos] == port.to_string() {
                     return true;
@@ -659,18 +648,10 @@ fn rule_targets_ssh(rule: &crate::spec::ParsedRule, ssh_ports: &[u16]) -> bool {
     false
 }
 
-/// Check whether a parsed rule from `ufw status numbered` matches a `RuleSpec`.
-///
-/// Compares key structural fields (action, direction, protocol, port, addresses)
-/// rather than raw text, because UFW's status output format differs from the
-/// argument format we render.
 #[allow(clippy::unnested_or_patterns)]
 fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool {
     use crate::spec::{Address, PortSpec, ProtocolFilter};
 
-    // Action must match. In numbered output the action may appear mid-line
-    // (e.g. "443/tcp ALLOW IN ...") so when parsed.action is None we fall
-    // back to a substring check on the raw text.
     let action_matches = if let Some(a) = parsed.action {
         a == spec.action
     } else {
@@ -681,7 +662,6 @@ fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool 
         return false;
     }
 
-    // Direction must match. Similarly, fall back to raw text when not parsed.
     let dir_matches = match (parsed.direction, spec.direction) {
         (Some(d), Some(sd)) => d == sd,
         (None, None) | (Some(_), None) => true,
@@ -694,9 +674,8 @@ fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool 
         return false;
     }
 
-    // Protocol must match — check that the raw text contains the expected proto
     let proto_matches = match &spec.protocol {
-        ProtocolFilter::Any => true, // no proto filter
+        ProtocolFilter::Any => true,
         ProtocolFilter::Specific(proto) => {
             let lower = parsed.raw.to_lowercase();
             lower.contains(&proto.to_string())
@@ -706,12 +685,10 @@ fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool 
         return false;
     }
 
-    // Destination port must be present in the raw text
     let port_matches = match &spec.to_port {
         PortSpec::Any => true,
         PortSpec::Single(p) => {
             let lower = parsed.raw.to_lowercase();
-            // Check for "NNNN/tcp" or "NNNN/udp" or bare "NNNN"
             lower.contains(&format!("{p}/tcp"))
                 || lower.contains(&format!("{p}/udp"))
                 || lower.contains(&format!("{p}"))
@@ -733,7 +710,6 @@ fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool 
         return false;
     }
 
-    // Source address check — if spec specifies a non-any source, it should appear
     let from_matches = match &spec.from_addr {
         Address::Any => true,
         addr => {
@@ -745,7 +721,6 @@ fn rule_matches_spec(parsed: &crate::spec::ParsedRule, spec: &RuleSpec) -> bool 
         return false;
     }
 
-    // Destination address check
     let to_matches = match &spec.to_addr {
         Address::Any => true,
         addr => {

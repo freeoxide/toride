@@ -1,8 +1,9 @@
 //! Shared severity styling + findings-grouping helpers.
 //!
-//! Several content screens (fail2ban, toride_audit, toride_cloud, toride_proxy,
-//! toride_backup, toride_users, toride_harden, toride_updates, toride_mise,
-//! toride_monitor, toride_wireguard, toride_tailscale, ufw_kit) each render a
+//! Several content screens (`fail2ban`, `toride_audit`, `toride_cloud`,
+//! `toride_proxy`, `toride_backup`, `toride_users`, `toride_harden`,
+//! `toride_updates`, `toride_mise`, `toride_monitor`, `toride_wireguard`,
+//! `toride_tailscale`, `ufw_kit`) each render a
 //! "Doctor Findings" block: a bold accent header, a grouped list sorted by
 //! severity (each group gets a bold `ICON  SEVERITY (n)` header followed by the
 //! indented title / detail / fix of every finding), and a `no findings` line

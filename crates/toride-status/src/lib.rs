@@ -2,13 +2,6 @@
 //!
 //! Provides [`TorideStatus`] — a point-in-time snapshot of every monitored
 //! subsystem (OS metrics, daemon liveness, SSH health).
-//!
-//! ```no_run
-//! use toride_status::TorideStatus;
-//!
-//! let status = TorideStatus::collect();
-//! println!("{status}");
-//! ```
 
 pub mod capabilities;
 pub mod collector;
@@ -44,8 +37,7 @@ pub use units::{Bytes, Celsius, Hertz, Rpm, Volts, Watts};
 
 /// Top-level aggregated status snapshot.
 ///
-/// Collects data from all subsystems in a single [`collect`](Self::collect)
-/// call. Each sub-status is independent — a failure in one subsystem does not
+/// Each sub-status is independent — a failure in one subsystem does not
 /// prevent the others from being collected.
 ///
 /// # Examples
@@ -75,33 +67,17 @@ pub struct TorideStatus {
 }
 
 impl TorideStatus {
-    /// Collect a point-in-time snapshot of all subsystems.
-    ///
-    /// Delegates to [`collect_with_preset`](Self::collect_with_preset) using
-    /// the [`Preset::default`] preset (`Diagnostics`), which includes every
-    /// available metric.
-    ///
-    /// Each subsystem is collected independently — if one fails, its fields
-    /// will contain `None` values rather than propagating the error.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use toride_status::TorideStatus;
-    ///
-    /// let status = TorideStatus::collect();
-    /// println!("{}", status.system.hostname);
-    /// ```
+    /// Collect a point-in-time snapshot of all subsystems with the
+    /// [`Preset::default`] preset (`Diagnostics`); a failing subsystem
+    /// yields `None` fields rather than propagating the error.
     #[must_use]
     pub fn collect() -> Self {
         Self::collect_with_preset(Preset::default())
     }
 
-    /// Collect a snapshot filtered by the given [`Preset`].
-    ///
-    /// Always-collected fields (`cpu_usage`, memory, disk, network, `os_info`,
-    /// hostname, uptime) are populated regardless of preset. Preset-gated
-    /// fields are zeroed / set to `None` when the preset excludes them.
+    /// Collect a snapshot filtered by the given [`Preset`]: always-collected
+    /// fields are populated regardless of preset; preset-gated fields are
+    /// zeroed / set to `None` when the preset excludes them.
     ///
     /// # Examples
     ///
@@ -118,10 +94,8 @@ impl TorideStatus {
         status
     }
 
-    /// Collect a snapshot with privacy-aware redaction applied.
-    ///
-    /// Uses the default preset (`Diagnostics`). The [`PrivacyMode`]
-    /// controls which fields are redacted before they are stored.
+    /// Collect a snapshot with privacy-aware redaction applied (default
+    /// preset); the [`PrivacyMode`] controls which fields are redacted.
     ///
     /// # Examples
     ///
@@ -136,11 +110,8 @@ impl TorideStatus {
         Self::collect_with_options(Preset::default(), mode)
     }
 
-    /// Collect a snapshot with both preset filtering and privacy redaction.
-    ///
-    /// Combines [`collect_with_preset`](Self::collect_with_preset) and
-    /// privacy redaction in a single call. The preset is applied first,
-    /// then privacy redaction is applied to the remaining fields.
+    /// Collect a snapshot with both preset filtering and privacy redaction
+    /// (preset first, then redaction).
     ///
     /// # Examples
     ///
@@ -161,9 +132,6 @@ impl TorideStatus {
         status
     }
 
-    // ── Internal helpers ────────────────────────────────────────────
-
-    /// Collect every subsystem without any filtering.
     fn collect_all() -> Self {
         let system = SystemStatus::collect();
         let daemon = DaemonStatus::collect();
@@ -190,10 +158,6 @@ impl TorideStatus {
         }
     }
 
-    /// Zero out fields excluded by the given preset.
-    ///
-    /// Always-collected fields (`cpu_usage`, memory, disk, network, `os_info`,
-    /// hostname, uptime, `load_average`, `boot_time`) are never touched.
     fn apply_preset(&mut self, preset: Preset) {
         if !preset.includes_per_core_cpu() {
             self.system.cpu_cores.clear();
@@ -225,12 +189,8 @@ impl TorideStatus {
         }
     }
 
-    /// Zero out fields excluded by per-metric collection toggles.
-    ///
-    /// Unlike [`apply_preset`](Self::apply_preset), these toggles are explicit
-    /// per-metric overrides set via [`Collector`](crate::collector::Collector)'s
-    /// builder. A toggle set to `false` drops the corresponding metric
-    /// regardless of the preset. Core always-collected fields (hostname,
+    /// Zero out fields excluded by per-metric [`Collector`] toggles; a `false`
+    /// toggle drops the metric regardless of the preset. Core fields (hostname,
     /// `os_info`, uptime, load average) are never affected.
     pub fn apply_toggles(&mut self, toggles: collector::MetricToggles) {
         if !toggles.cpu {
@@ -273,43 +233,32 @@ impl TorideStatus {
         }
     }
 
-    /// Apply privacy redaction to sensitive fields.
-    ///
-    /// Uses the [`Redactor`] from the privacy module to redact hostnames,
-    /// MAC addresses, serial numbers, command lines, and other identifying
-    /// information according to the given mode.
     fn apply_privacy(&mut self, mode: PrivacyMode) {
         let redactor = Redactor::new(mode);
 
-        // Hostname
         self.system.hostname = redactor.redact_hostname(&self.system.hostname);
 
-        // Static info hostname
         self.system.static_info.hostname =
             redactor.redact_hostname(&self.system.static_info.hostname);
 
-        // Network interface MAC addresses
         for iface in &mut self.system.network_interfaces {
             if let Some(ref mac) = iface.mac_address {
                 iface.mac_address = Some(redactor.redact_mac(mac));
             }
         }
 
-        // Process command lines
         for proc in &mut self.system.processes.processes {
             if let Some(ref cmd) = proc.command_line {
                 proc.command_line = Some(redactor.redact_command_line(cmd));
             }
         }
 
-        // Process usernames (hide unless Full mode)
         if !redactor.should_show_username() {
             for proc in &mut self.system.processes.processes {
                 proc.user = None;
             }
         }
 
-        // Hardware serial numbers, UUIDs, asset tags
         if let Some(ref serial) = self.system.static_info.hardware.system_serial {
             self.system.static_info.hardware.system_serial = Some(redactor.redact_serial(serial));
         }
@@ -320,7 +269,6 @@ impl TorideStatus {
             self.system.static_info.hardware.asset_tag = Some(redactor.redact_asset_tag(tag));
         }
 
-        // Disk serial numbers
         for disk in &mut self.system.disks {
             if let Some(ref serial) = disk.serial {
                 disk.serial = Some(redactor.redact_serial(serial));
@@ -346,21 +294,8 @@ impl fmt::Display for TorideStatus {
     }
 }
 
-/// Simple API entry point for collecting system status.
-///
-/// `SysProbe` provides the primary user-facing API as specified in the
-/// system-status spec. For advanced use cases (streaming, delta tracking),
-/// use [`Collector`] instead.
-///
-/// # Examples
-///
-/// ```no_run
-/// use toride_status::SysProbe;
-///
-/// let probe = SysProbe::new();
-/// let snapshot = probe.snapshot();
-/// println!("{}", snapshot.system.cpu_usage.unwrap_or(0.0));
-/// ```
+/// Simple API entry point for collecting system status; for streaming or
+/// delta tracking use [`Collector`] instead.
 pub struct SysProbe {
     preset: Preset,
     privacy: PrivacyMode,
@@ -451,7 +386,6 @@ mod tests {
     #[test]
     fn collect_returns_all_subsystems() {
         let status = TorideStatus::collect();
-        // SystemStatus should always have a hostname on any platform
         assert!(
             !status.system.hostname.is_empty(),
             "hostname should not be empty"
@@ -482,7 +416,7 @@ mod tests {
         );
     }
 
-    #[cfg(target_os = "linux")] // snapshot encodes Linux capability probing; add per-OS snapshots when needed
+    #[cfg(target_os = "linux")]
     #[test]
     #[expect(
         clippy::too_many_lines,
@@ -693,7 +627,7 @@ mod tests {
         let mut collector = Collector::default_collector();
         let (status, delta) = collector.collect();
         assert!(!status.system.hostname.is_empty());
-        assert!(delta.is_none()); // first collect
+        assert!(delta.is_none());
         std::thread::sleep(std::time::Duration::from_millis(50));
         let (_, delta2) = collector.collect();
         assert!(delta2.is_some());
@@ -712,14 +646,10 @@ mod tests {
         assert!(p.includes_processes());
     }
 
-    // ── Integration: Full pipeline ─────────────────────────────────
-
     #[test]
     fn integration_full_pipeline_collect_serialize_display() {
-        // Collect a full TorideStatus snapshot.
         let status = TorideStatus::collect();
 
-        // Verify all subsystems are populated with non-trivial data.
         assert!(
             !status.system.hostname.is_empty(),
             "system hostname must be populated"
@@ -740,14 +670,11 @@ mod tests {
             status.system.processes.total_count > 0,
             "process count must be nonzero"
         );
-        // daemon and ssh fields are always set (even if not alive/running).
-        // capabilities always populated via detect().
         assert!(
             status.capabilities.system.cpu_usage,
             "capabilities must report cpu_usage"
         );
 
-        // Serialize to JSON and verify it parses as valid JSON.
         let json = serde_json::to_string(&status).expect("serialization must succeed");
         let parsed: serde_json::Value =
             serde_json::from_str(&json).expect("JSON must be valid and parseable");
@@ -766,7 +693,6 @@ mod tests {
             "JSON must contain 'capabilities' key"
         );
 
-        // Display and verify all section headers are present.
         let display = format!("{status}");
         assert!(
             display.contains("=== Toride Status ==="),
@@ -787,13 +713,10 @@ mod tests {
         );
     }
 
-    // ── Integration: Collector ─────────────────────────────────────
-
     #[test]
     fn integration_collector_two_collects_with_delta() {
         let mut collector = Collector::default_collector();
 
-        // First collect: status present, delta absent.
         let (status1, delta1) = collector.collect();
         assert!(
             !status1.system.hostname.is_empty(),
@@ -801,10 +724,8 @@ mod tests {
         );
         assert!(delta1.is_none(), "first collect must have no delta");
 
-        // Sleep briefly so elapsed > 0 for the delta.
         std::thread::sleep(std::time::Duration::from_millis(100));
 
-        // Second collect: delta present with reasonable values.
         let (status2, delta2) = collector.collect();
         assert!(
             !status2.system.hostname.is_empty(),
@@ -812,14 +733,12 @@ mod tests {
         );
         let d = delta2.expect("second collect must produce a delta");
 
-        // Elapsed must be at least as long as we slept.
         assert!(
             d.elapsed >= std::time::Duration::from_millis(80),
             "delta elapsed ({:?}) must be >= 80ms",
             d.elapsed
         );
 
-        // Rates must be non-negative and finite.
         assert!(
             d.network.bytes_received_rate.is_finite(),
             "RX rate must be finite"
@@ -837,10 +756,6 @@ mod tests {
             "TX rate must be non-negative"
         );
 
-        // Deltas must be non-negative (saturating_sub).
-        // (They could be 0 if the system had no traffic, which is fine.)
-
-        // CPU delta: if both snapshots had CPU data, the delta should be Some.
         if status1.system.cpu_usage.is_some() && status2.system.cpu_usage.is_some() {
             assert!(
                 d.cpu_usage_delta.is_some(),
@@ -848,8 +763,6 @@ mod tests {
             );
         }
     }
-
-    // ── Integration: Privacy ───────────────────────────────────────
 
     #[test]
     fn integration_privacy_redactor_on_toride_hostname() {
@@ -860,7 +773,6 @@ mod tests {
             "hostname must be non-empty for this test"
         );
 
-        // Safe mode: hostname is fully redacted.
         let safe = Redactor::new(PrivacyMode::Safe);
         let redacted = safe.redact_hostname(hostname);
         assert_eq!(redacted, "[redacted]", "Safe mode must redact hostname");
@@ -869,18 +781,14 @@ mod tests {
             "redacted value must differ from original"
         );
 
-        // Diagnostics mode: hostname is shown as-is.
         let diag = Redactor::new(PrivacyMode::Diagnostics);
         let shown = diag.redact_hostname(hostname);
         assert_eq!(shown, *hostname, "Diagnostics mode must preserve hostname");
 
-        // Full mode: hostname is also shown.
         let full = Redactor::new(PrivacyMode::Full);
         let full_shown = full.redact_hostname(hostname);
         assert_eq!(full_shown, *hostname, "Full mode must preserve hostname");
     }
-
-    // ── Integration: Presets ───────────────────────────────────────
 
     #[test]
     fn integration_preset_diagnostics_includes_all_features() {
@@ -915,18 +823,14 @@ mod tests {
             "Minimal must exclude network interfaces"
         );
         assert!(!p.includes_all_disks(), "Minimal must exclude all disks");
-        // Minimal always includes OS info.
         assert!(p.includes_os_info(), "Minimal must include OS info");
     }
-
-    // ── Integration: Doctor ────────────────────────────────────────
 
     #[test]
     fn integration_doctor_report_has_system_daemon_ssh_checks() {
         let report = DoctorReport::check();
         assert!(!report.checks.is_empty(), "doctor report must have checks");
 
-        // Verify checks exist for each subsystem category.
         let has_system = report.checks.iter().any(|c| c.name.starts_with("system."));
         let has_daemon = report.checks.iter().any(|c| c.name.starts_with("daemon."));
         let has_ssh = report.checks.iter().any(|c| c.name.starts_with("ssh."));
@@ -934,7 +838,6 @@ mod tests {
         assert!(has_daemon, "report must include daemon checks");
         assert!(has_ssh, "report must include ssh checks");
 
-        // Verify summary counts are consistent.
         let (pass, warn, fail) = report.summary();
         assert_eq!(
             pass + warn + fail,
@@ -943,21 +846,16 @@ mod tests {
         );
     }
 
-    // ── Integration: Error handling ────────────────────────────────
-
     #[test]
     fn integration_error_variants_work() {
-        // PermissionDenied
         let err = StatusError::PermissionDenied("/secret".into());
         assert!(err.to_string().contains("permission denied"));
         assert!(err.to_string().contains("/secret"));
 
-        // CommandNotFound
         let err = StatusError::CommandNotFound("foobar".into());
         assert!(err.to_string().contains("command not found"));
         assert!(err.to_string().contains("foobar"));
 
-        // CommandFailed
         let err = StatusError::CommandFailed {
             command: "ls".into(),
             code: 1,
@@ -968,24 +866,19 @@ mod tests {
         assert!(msg.contains("exited 1"), "msg: {msg}");
         assert!(msg.contains("no such file"), "msg: {msg}");
 
-        // CommandTimeout
         let err = StatusError::CommandTimeout("ping".into());
         assert!(err.to_string().contains("timed out"));
 
-        // ParseError
         let err = StatusError::ParseError("bad data".into());
         assert!(err.to_string().contains("parse error"));
 
-        // Io
         let io_err = std::io::Error::new(std::io::ErrorKind::PermissionDenied, "denied");
         let err = StatusError::Io(io_err);
         assert!(err.to_string().contains("io error"));
 
-        // Unsupported
         let err = StatusError::Unsupported("plan9".into());
         assert!(err.to_string().contains("unsupported platform"));
 
-        // DataUnavailable
         let err = StatusError::DataUnavailable("gpu".into());
         assert!(err.to_string().contains("data unavailable"));
     }
@@ -1009,7 +902,6 @@ mod tests {
 
         for original in &variants {
             let cloned = original.clone();
-            // Cloned error must have the same Display output.
             assert_eq!(
                 original.to_string(),
                 cloned.to_string(),
@@ -1041,7 +933,6 @@ mod tests {
                 !display.is_empty(),
                 "Display must produce non-empty string for {variant:?}"
             );
-            // Every Display string must be at least as long as the prefix.
             assert!(
                 display.len() >= 5,
                 "Display string suspiciously short: {display}"
@@ -1049,13 +940,10 @@ mod tests {
         }
     }
 
-    // ── collect_with_preset ────────────────────────────────────────
-
     #[test]
     fn collect_with_preset_minimal_excludes_gated_fields() {
         let status = TorideStatus::collect_with_preset(Preset::Minimal);
 
-        // Always-collected fields must still be populated.
         assert!(
             status.system.cpu_usage.is_some(),
             "cpu_usage must be collected"
@@ -1073,7 +961,6 @@ mod tests {
             "os_info must be collected"
         );
 
-        // Preset-gated fields must be cleared.
         assert!(
             status.system.cpu_cores.is_empty(),
             "Minimal must exclude cpu_cores"
@@ -1114,7 +1001,6 @@ mod tests {
     fn collect_with_preset_diagnostics_includes_all_fields() {
         let status = TorideStatus::collect_with_preset(Preset::Diagnostics);
 
-        // Always-collected fields.
         assert!(
             status.system.cpu_usage.is_some(),
             "cpu_usage must be collected"
@@ -1132,8 +1018,6 @@ mod tests {
             "os_info must be collected"
         );
 
-        // Diagnostics includes everything — nothing should be cleared.
-        // cpu_cores and processes are populated on real hardware.
         assert!(
             !status.system.cpu_cores.is_empty(),
             "Diagnostics must include cpu_cores"
@@ -1148,7 +1032,6 @@ mod tests {
     fn collect_with_preset_task_manager_includes_expected_fields() {
         let status = TorideStatus::collect_with_preset(Preset::TaskManager);
 
-        // TaskManager includes: per_core_cpu, sensors, processes, all_disks.
         assert!(
             !status.system.cpu_cores.is_empty(),
             "TaskManager must include cpu_cores"
@@ -1158,7 +1041,6 @@ mod tests {
             "TaskManager must include processes"
         );
 
-        // TaskManager excludes: swap, network_interfaces, gpu, battery.
         assert!(
             status.system.swap.is_none(),
             "TaskManager must exclude swap"
@@ -1178,11 +1060,6 @@ mod tests {
     fn collect_with_preset_server_monitoring_expected_fields() {
         let status = TorideStatus::collect_with_preset(Preset::ServerMonitoring);
 
-        // ServerMonitoring includes: swap, network_interfaces.
-        // (swap may be None if not configured, so we only check the field isn't forcibly cleared
-        //  by verifying that the preset *would* include it)
-
-        // ServerMonitoring excludes: per_core_cpu, sensors, processes, all_disks, gpu, battery.
         assert!(
             status.system.cpu_cores.is_empty(),
             "ServerMonitoring must exclude cpu_cores"
@@ -1213,7 +1090,6 @@ mod tests {
     fn collect_with_preset_privacy_safe_excludes_gated_fields() {
         let status = TorideStatus::collect_with_preset(Preset::PrivacySafeBugReport);
 
-        // PrivacySafeBugReport excludes most gated fields.
         assert!(
             status.system.cpu_cores.is_empty(),
             "PrivacySafe must exclude cpu_cores"
@@ -1242,15 +1118,10 @@ mod tests {
             status.system.battery.is_none(),
             "PrivacySafe must exclude battery"
         );
-
-        // PrivacySafeBugReport includes gpu.
-        // (gpu may be empty on some hardware; we just verify it wasn't forcibly cleared
-        //  by checking the preset logic — gpu is included for PrivacySafeBugReport)
     }
 
     #[test]
     fn collect_with_preset_always_collects_core_fields() {
-        // Verify that always-collected fields survive every preset.
         let presets = [
             Preset::Minimal,
             Preset::TaskManager,
@@ -1277,19 +1148,14 @@ mod tests {
                 !status.system.os_info.arch.is_empty(),
                 "{preset}: os_info must be collected"
             );
-            // disk (root) is always collected.
             assert!(
                 !status.system.disk.mount_point.is_empty(),
                 "{preset}: root disk must be collected"
             );
-            // network aggregate is always collected.
-            // (bytes may be 0 on idle systems, but the struct is populated)
             let _ = status.system.network.bytes_received;
             let _ = status.system.network.bytes_transmitted;
         }
     }
-
-    // ── collect_with_privacy ───────────────────────────────────────
 
     #[test]
     fn collect_with_privacy_safe_redacts_hostname() {
@@ -1331,7 +1197,6 @@ mod tests {
         let safe = TorideStatus::collect_with_privacy(PrivacyMode::Safe);
         let full = TorideStatus::collect_with_privacy(PrivacyMode::Full);
 
-        // Non-hostname fields should be identical in structure.
         assert_eq!(
             safe.system.memory.total_bytes, full.system.memory.total_bytes,
             "privacy must not affect memory"
@@ -1342,19 +1207,15 @@ mod tests {
         );
     }
 
-    // ── collect_with_options ───────────────────────────────────────
-
     #[test]
     fn collect_with_options_combines_preset_and_privacy() {
         let status = TorideStatus::collect_with_options(Preset::Minimal, PrivacyMode::Safe);
 
-        // Privacy: hostname redacted.
         assert_eq!(
             status.system.hostname, "[redacted]",
             "Safe must redact hostname"
         );
 
-        // Preset: gated fields cleared.
         assert!(
             status.system.cpu_cores.is_empty(),
             "Minimal must exclude cpu_cores"
@@ -1377,7 +1238,6 @@ mod tests {
             "Minimal must exclude all_disks"
         );
 
-        // Always-collected fields still present.
         assert!(
             status.system.cpu_usage.is_some(),
             "cpu_usage must be collected"
@@ -1392,13 +1252,11 @@ mod tests {
     fn collect_with_options_diagnostics_full_shows_everything() {
         let status = TorideStatus::collect_with_options(Preset::Diagnostics, PrivacyMode::Full);
 
-        // Full privacy: hostname shown.
         assert_ne!(
             status.system.hostname, "[redacted]",
             "Full must not redact hostname"
         );
 
-        // Diagnostics preset: everything included.
         assert!(
             !status.system.cpu_cores.is_empty(),
             "Diagnostics must include cpu_cores"
@@ -1411,7 +1269,6 @@ mod tests {
 
     #[test]
     fn collect_with_options_all_preset_privacy_combinations() {
-        // Smoke test: every preset + privacy mode combination must not panic.
         let presets = [
             Preset::Minimal,
             Preset::TaskManager,
@@ -1428,12 +1285,10 @@ mod tests {
         for preset in presets {
             for mode in modes {
                 let status = TorideStatus::collect_with_options(preset, mode);
-                // Must always have a hostname (possibly redacted).
                 assert!(
                     !status.system.hostname.is_empty(),
                     "{preset} + {mode:?}: hostname must not be empty"
                 );
-                // Must always have memory.
                 assert!(
                     status.system.memory.total_bytes > 0,
                     "{preset} + {mode:?}: memory must be nonzero"
@@ -1442,13 +1297,10 @@ mod tests {
         }
     }
 
-    // ── collect() backward compatibility ───────────────────────────
-
     #[test]
     fn collect_uses_diagnostics_preset() {
         let status = TorideStatus::collect();
 
-        // Diagnostics includes everything, so gated fields should be populated.
         assert!(
             !status.system.cpu_cores.is_empty(),
             "collect() must include cpu_cores (Diagnostics default)"
@@ -1457,7 +1309,6 @@ mod tests {
             status.system.processes.total_count > 0,
             "collect() must include processes (Diagnostics default)"
         );
-        // Hostname must not be redacted (no privacy applied).
         assert_ne!(
             status.system.hostname, "[redacted]",
             "collect() must not redact hostname"
@@ -1469,9 +1320,6 @@ mod tests {
         let a = TorideStatus::collect();
         let b = TorideStatus::collect_with_preset(Preset::Diagnostics);
 
-        // Both use the same preset (Diagnostics) and no privacy, so
-        // structural properties must be identical. Exact counts may
-        // differ because system state changes between the two calls.
         assert_eq!(a.system.hostname, b.system.hostname, "hostname must match");
         assert!(
             !a.system.cpu_cores.is_empty(),
@@ -1491,14 +1339,11 @@ mod tests {
         );
     }
 
-    // ── Display with preset/privacy ────────────────────────────────
-
     #[test]
     fn display_with_preset_minimal_omits_cleared_sections() {
         let status = TorideStatus::collect_with_preset(Preset::Minimal);
         let output = format!("{status}");
 
-        // Always-visible sections.
         assert!(
             output.contains("=== Toride Status ==="),
             "must have top header"
@@ -1507,8 +1352,6 @@ mod tests {
         assert!(output.contains("Hostname:"), "must have Hostname");
         assert!(output.contains("Memory:"), "must have Memory");
 
-        // Cleared sections should not appear.
-        // Use precise prefixes matching the Display format ("  Swap: ").
         assert!(
             status.system.cpu_cores.is_empty(),
             "cpu_cores must be empty"
@@ -1541,8 +1384,6 @@ mod tests {
         );
     }
 
-    // ── Serialization with preset/privacy ──────────────────────────
-
     #[test]
     fn serialize_with_preset_minimal() {
         let status = TorideStatus::collect_with_preset(Preset::Minimal);
@@ -1551,7 +1392,6 @@ mod tests {
 
         let parsed: serde_json::Value = serde_json::from_str(&json.unwrap()).unwrap();
         let system = parsed.get("system").unwrap();
-        // cpu_cores should be empty array.
         let cores = system.get("cpu_cores").unwrap().as_array().unwrap();
         assert!(cores.is_empty(), "Minimal cpu_cores must be empty in JSON");
     }

@@ -2,21 +2,19 @@ use super::*;
 use std::fs;
 use tempfile::TempDir;
 
-/// Helper: set XDG env vars to a temp dir so tests are hermetic.
-/// Returns the TempDir so it stays alive for the test's duration.
+#[allow(
+    unsafe_code,
+    reason = "edition 2024 makes set_var unsafe; tests mutate the env before spawning threads"
+)]
 fn with_custom_xdg() -> TempDir {
     let tmp = TempDir::new().expect("failed to create temp dir");
     let base = tmp.path();
-    // dirs crate reads XDG_CONFIG_HOME / XDG_DATA_HOME on Linux;
-    // on macOS it also reads these when set.
     unsafe {
         std::env::set_var("XDG_CONFIG_HOME", base.join("config"));
         std::env::set_var("XDG_DATA_HOME", base.join("data"));
     }
     tmp
 }
-
-// ---------- resolve() ----------
 
 #[test]
 fn resolve_returns_ok() {
@@ -87,8 +85,6 @@ fn resolve_journal_dir_is_journals_in_data_dir() {
     assert_eq!(p.journal_dir, p.data_dir.join("journals"));
 }
 
-// ---------- absolute paths ----------
-
 #[test]
 fn resolve_all_paths_are_absolute() {
     let _tmp = with_custom_xdg();
@@ -107,13 +103,10 @@ fn resolve_all_paths_are_absolute() {
     }
 }
 
-// ---------- path components ----------
-
 #[test]
 fn resolve_config_dir_has_three_components() {
     let _tmp = with_custom_xdg();
     let p = Fail2BanPaths::resolve().unwrap();
-    // Should end with: <base>/toride/fail2ban
     let components: Vec<_> = p.config_dir.iter().collect();
     let len = components.len();
     assert!(
@@ -138,11 +131,8 @@ fn resolve_data_dir_has_three_components() {
     assert_eq!(components[len - 2].to_str().unwrap(), "toride");
 }
 
-// Note: on macOS, dirs::config_dir() and dirs::data_dir() both return
-// ~/Library/Application Support, so config_dir and data_dir can be the same
-// base. We do not assert they differ.
-
-// ---------- ensure_directories() ----------
+// On macOS `dirs::config_dir()` and `dirs::data_dir()` both return
+// ~/Library/Application Support (docs.rs/dirs) — never assert the two differ.
 
 #[test]
 fn ensure_directories_creates_all_dirs() {
@@ -187,9 +177,7 @@ fn ensure_directories_is_idempotent() {
         journal_dir: base.join("data").join("journals"),
     };
 
-    // First call creates them.
     paths.ensure_directories().unwrap();
-    // Second call should be a no-op success.
     paths
         .ensure_directories()
         .expect("ensure_directories should be idempotent");
@@ -254,7 +242,6 @@ fn ensure_directories_with_real_resolve() {
     assert!(p.log_dir.is_dir());
     assert!(p.journal_dir.is_dir());
 
-    // Clean up created dirs.
     let _ = fs::remove_dir_all(&p.config_dir);
     let _ = fs::remove_dir_all(&p.data_dir);
 }
@@ -276,13 +263,10 @@ fn ensure_directories_does_not_create_file_paths() {
 
     paths.ensure_directories().unwrap();
 
-    // File paths should NOT exist -- only directories are created.
     assert!(!paths.config_file.exists());
     assert!(!paths.ban_db.exists());
     assert!(!paths.pid_file.exists());
 }
-
-// ---------- pid_file_with_override() ----------
 
 #[test]
 fn test_pid_file_with_override_returns_default_when_none() {
@@ -303,8 +287,6 @@ fn test_pid_file_with_override_returns_custom_when_some() {
     assert_eq!(result, custom.to_path_buf());
     assert_ne!(result, p.pid_file);
 }
-
-// ---------- path suffix checks ----------
 
 #[test]
 fn test_resolve_config_file_ends_with_json() {
@@ -342,8 +324,6 @@ fn test_resolve_pid_file_ends_with_pid() {
     );
 }
 
-// ---------- ensure_directories edge cases ----------
-
 #[test]
 fn test_ensure_directories_on_existing_dirs_does_not_error() {
     let tmp = TempDir::new().unwrap();
@@ -359,12 +339,9 @@ fn test_ensure_directories_on_existing_dirs_does_not_error() {
         journal_dir: base.join("data").join("journals"),
     };
 
-    // Call twice in a row on fresh dirs -- both must succeed.
     paths.ensure_directories().unwrap();
     paths.ensure_directories().unwrap();
 }
-
-// ---------- struct trait checks ----------
 
 #[test]
 fn test_paths_struct_is_cloneable() {
@@ -417,8 +394,6 @@ fn test_paths_struct_is_debug_printable() {
     );
 }
 
-// ---------- prefix consistency ----------
-
 #[test]
 fn test_resolve_all_paths_use_same_toride_prefix() {
     let _tmp = with_custom_xdg();
@@ -436,8 +411,6 @@ fn test_resolve_all_paths_use_same_toride_prefix() {
         "data_dir should contain toride/fail2ban: {data_s}"
     );
 }
-
-// ---------- deeply nested journal_dir ----------
 
 #[test]
 fn test_ensure_directories_creates_journal_dir_nested() {
@@ -461,6 +434,5 @@ fn test_ensure_directories_creates_journal_dir_nested() {
     paths.ensure_directories().unwrap();
 
     assert!(paths.journal_dir.is_dir());
-    // Verify intermediate directories were also created.
     assert!(paths.journal_dir.parent().unwrap().is_dir());
 }

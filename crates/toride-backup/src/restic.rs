@@ -5,7 +5,7 @@
 //! listing snapshots, checking integrity, pruning, and restoring.
 //!
 //! Every method constructs a [`toride_runner::CommandSpec`] and delegates
-//! execution to a [`Runner`](toride_runner::Runner), so commands are testable
+//! execution to a [`Runner`], so commands are testable
 //! via [`FakeRunner`](toride_runner::FakeRunner) and respect redaction of
 //! secret-bearing arguments automatically.
 //!

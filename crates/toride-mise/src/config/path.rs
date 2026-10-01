@@ -1,4 +1,4 @@
-//! Config path resolution for [`Mise`](crate::Mise).
+//! Config path resolution for [`Mise`].
 //!
 //! This module provides `impl Mise::config_path` which resolves the global mise
 //! config file path by querying `mise config path` (or falling back to the
@@ -22,7 +22,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if `mise config path` exits
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if `mise config path` exits
     /// non-zero and the fallback path cannot be determined.
     pub async fn config_path(&self) -> MiseResult<Utf8PathBuf> {
         // Ask mise directly.

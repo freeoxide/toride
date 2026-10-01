@@ -2,7 +2,7 @@
 //!
 //! [`BackupClient`] is the main entry point for the `client` feature. It
 //! composes a command runner, system paths, and delegates to the
-//! backend-specific clients ([`ResticClient`] / [`BorgClient`]) for backup
+//! backend-specific clients ([`ResticClient`](crate::restic::ResticClient) / [`BorgClient`](crate::borg::BorgClient)) for backup
 //! operations, restore workflows, scheduling, and doctor diagnostics.
 //!
 //! # Example
@@ -636,7 +636,7 @@ impl BackupClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ScheduleError`] if installation fails.
+    /// Returns [`Error::ScheduleError`](crate::error::Error::ScheduleError) if installation fails.
     pub fn install_schedule(&self, spec: &BackupSpec) -> Result<()> {
         let mgr = ScheduleManager::new();
         mgr.install(&spec.name, &spec.schedule)
@@ -648,7 +648,7 @@ impl BackupClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ScheduleError`] if removal fails.
+    /// Returns [`Error::ScheduleError`](crate::error::Error::ScheduleError) if removal fails.
     pub fn remove_schedule(&self, name: &str) -> Result<()> {
         let mgr = ScheduleManager::new();
         mgr.remove(name)

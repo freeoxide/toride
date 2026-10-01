@@ -16,7 +16,7 @@
 //! verified live against v2026.9.15). The static [`Tool`] descriptor
 //! carries [`Checksum::None`] only because the checksum-file URL embeds
 //! the concrete version; the install paths pin [`Checksum::Url`] for that
-//! version (see [`checksum_pinned_tool`]), so mise installs are
+//! version (see `checksum_pinned_tool`), so mise installs are
 //! checksum-verified, never size-floor-only.
 //!
 //! # Quick start
@@ -82,9 +82,9 @@ const USER_AGENT: &str = concat!("toride-installer/", env!("CARGO_PKG_VERSION"))
 /// Build the [`Tool`] descriptor for mise.
 ///
 /// mise is a `Binary` artifact. The descriptor carries [`Checksum::None`]
-/// only because the release's [`SHASUMS_FILE`] URL embeds the concrete
+/// only because the release's `SHASUMS_FILE` URL embeds the concrete
 /// version — the install paths pin [`Checksum::Url`] for that version once
-/// it is known (see [`checksum_pinned_tool`]). The default install dir is
+/// it is known (see `checksum_pinned_tool`). The default install dir is
 /// `~/.local/bin` (handled by the engine when `default_install_dir` is
 /// `None`), and `bin_name` follows the compile target: `mise.exe` under
 /// `cfg(windows)` ([`MISE_BIN_NAME`]), `mise` elsewhere.
@@ -241,7 +241,7 @@ fn checksum_pinned_tool(version: &str, target: Target) -> Tool {
 ///
 /// The concrete version is resolved first — zero network for a pinned
 /// request; for `"latest"` it is the one API call the install needed anyway
-/// — then [`checksum_pinned_tool`] pins the release's [`SHASUMS_FILE`] on
+/// — then `checksum_pinned_tool` pins the release's `SHASUMS_FILE` on
 /// the descriptor and the engine verifies the downloaded asset against it
 /// strictly. The engine re-resolves the now-concrete version off its pinned
 /// (pure string-formatting) path, so nothing is fetched twice.
@@ -273,7 +273,7 @@ pub async fn install_mise(version: &str, install_dir: Option<&Utf8PathBuf>) -> R
 /// `"latest"` always keeps an installed copy (deciding whether a newer
 /// release exists needs network by definition); a pinned semver keeps it
 /// when the detected version meets the pin. Only a true miss routes into
-/// [`install_mise`], which pins the release's [`SHASUMS_FILE`] (see the
+/// [`install_mise`], which pins the release's `SHASUMS_FILE` (see the
 /// module-level note) and installs under strict sha256 verification.
 ///
 /// The detect → keep/miss → re-detect flow mirrors

@@ -89,8 +89,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn plugins_list(&self) -> MiseResult<Vec<PluginInfo>> {
         self.run_json(["plugins", "ls", "--json"]).await
     }
@@ -101,8 +101,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn plugins_list_remote(&self) -> MiseResult<Vec<PluginInfo>> {
         self.run_json(["plugins", "ls-remote", "--json"]).await
     }
@@ -114,7 +114,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the installation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the installation fails.
     pub async fn plugin_install(&self, req: PluginInstallRequest) -> MiseResult<()> {
         let mut args: Vec<String> = vec!["plugins".into(), "install".into()];
 
@@ -143,7 +143,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the link operation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the link operation fails.
     pub async fn plugin_link(&self, name: &str, path: Utf8PathBuf) -> MiseResult<()> {
         self.run_checked(["plugins", "link", name, path.as_str()])
             .await?;
@@ -156,7 +156,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the link operation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the link operation fails.
     pub async fn plugin_link_request(&self, req: PluginLinkRequest) -> MiseResult<()> {
         self.run_checked(["plugins", "link", &req.name, req.path.as_str()])
             .await?;
@@ -169,7 +169,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the uninstallation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the uninstallation fails.
     pub async fn plugin_uninstall(&self, name: &str) -> MiseResult<()> {
         self.run_checked(["plugins", "uninstall", name]).await?;
         Ok(())
@@ -183,7 +183,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the update fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the update fails.
     pub async fn plugin_update(&self, names: &[String]) -> MiseResult<()> {
         let mut args: Vec<String> = vec!["plugins".into(), "update".into()];
         for name in names {

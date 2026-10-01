@@ -1,0 +1,22 @@
+# Round-0 style committed fixture for the F08 config-parse bench.
+# Throwaway content: a representative multi-host user config.
+
+Host github
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/id_ed25519
+    IdentitiesOnly yes
+
+Host gitlab
+    HostName gitlab.com
+    User git
+    IdentityFile ~/.ssh/id_work
+
+Host prod-*
+    User deploy
+    ProxyJump bastion
+    ServerAliveInterval 60
+
+Host *
+    AddKeysToAgent yes
+    IdentityFile ~/.ssh/id_rsa

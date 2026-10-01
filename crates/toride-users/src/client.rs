@@ -1,6 +1,6 @@
 //! High-level client facade composing all user management subsystems.
 //!
-//! [`UsersClient`] is the main entry point for user management operations.
+//! [`UsersClient`](crate::client::UsersClient) is the main entry point for user management operations.
 //! It resolves system paths and provides accessor methods for each subsystem.
 
 use crate::Result;

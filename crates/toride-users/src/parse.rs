@@ -205,7 +205,7 @@ pub struct SudoersEntry {
 ///
 /// # Errors
 ///
-/// Returns [`Error::SudoError`] if a rule line cannot be parsed.
+/// Returns [`Error::SudoError`](crate::error::Error::SudoError) if a rule line cannot be parsed.
 pub fn parse_sudoers(content: &str) -> Result<Vec<SudoersEntry>> {
     let mut entries = Vec::new();
     for line in content.lines() {
@@ -260,7 +260,7 @@ pub fn parse_sudoers(content: &str) -> Result<Vec<SudoersEntry>> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the file cannot be read. Malformed lines are
+/// Returns [`Error::Io`](crate::error::Error::Io) if the file cannot be read. Malformed lines are
 /// skipped by [`parse_passwd`] (logged via `tracing::warn!`), never propagated
 /// as `Err`.
 pub fn read_passwd(path: &Path) -> Result<Vec<PasswdEntry>> {
@@ -272,7 +272,7 @@ pub fn read_passwd(path: &Path) -> Result<Vec<PasswdEntry>> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the file cannot be read. Malformed lines are
+/// Returns [`Error::Io`](crate::error::Error::Io) if the file cannot be read. Malformed lines are
 /// skipped by [`parse_group`] (logged via `tracing::warn!`), never propagated
 /// as `Err`.
 pub fn read_group(path: &Path) -> Result<Vec<GroupEntry>> {
@@ -284,7 +284,7 @@ pub fn read_group(path: &Path) -> Result<Vec<GroupEntry>> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the file cannot be read. Malformed rule lines are
+/// Returns [`Error::Io`](crate::error::Error::Io) if the file cannot be read. Malformed rule lines are
 /// skipped by [`parse_sudoers`], never propagated as `Err`.
 pub fn read_sudoers(path: &Path) -> Result<Vec<SudoersEntry>> {
     let content = std::fs::read_to_string(path)?;

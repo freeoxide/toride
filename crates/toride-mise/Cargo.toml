@@ -49,6 +49,16 @@ tempfile = { workspace = true }
 insta = { workspace = true }
 tokio = { workspace = true }
 toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner", "stream", "fake", "duct-runner"] }
+serde_json = { workspace = true }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+# serde_parse: the serde_utils JSON kernels over committed fixtures
+# (ls --json / outdated --json). Hermetic — no mise binary, no network.
+[[bench]]
+name = "serde_parse"
+harness = false
+test = false
+required-features = ["json"]
 
 [lints]
 workspace = true

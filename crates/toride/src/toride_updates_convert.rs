@@ -61,7 +61,7 @@ pub fn convert_findings(findings: Vec<toride_updates::Finding>) -> Vec<FindingEn
         .collect()
 }
 
-/// Render a backend [`toride_updates::Schedule`] as a short human label.
+/// Render a backend `toride_updates::Schedule` as a short human label.
 ///
 /// `Schedule` already implements `Display` (`daily` / `weekly` / `monthly` /
 /// `custom(expr)`); this helper exists so the data module never has to import

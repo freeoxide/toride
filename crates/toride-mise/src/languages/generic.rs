@@ -1,6 +1,6 @@
 //! Generic tool helper for mise.
 //!
-//! [`GenericHelper`] wraps a [`Mise`](crate::Mise) reference and a tool name
+//! [`GenericHelper`] wraps a [`Mise`] reference and a tool name
 //! string, providing async methods for installing, and setting global/local
 //! defaults for any mise-managed tool that does not have a dedicated helper.
 
@@ -16,11 +16,11 @@ use crate::error::MiseResult;
 /// Typed helper for interacting with an arbitrary mise tool.
 ///
 /// Unlike the language-specific helpers, [`GenericHelper`] carries a `tool`
-/// name as a `String` field alongside the [`Mise`](crate::Mise) reference,
+/// name as a `String` field alongside the [`Mise`] reference,
 /// allowing it to work with any tool known to mise (e.g. `"terraform"`,
 /// `"jq"`, `"ripgrep"`, `"uv"`).
 ///
-/// Borrows a [`Mise`](crate::Mise) client so it can be used without taking
+/// Borrows a [`Mise`] client so it can be used without taking
 /// ownership.
 ///
 /// # Example

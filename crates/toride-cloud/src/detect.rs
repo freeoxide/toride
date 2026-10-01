@@ -93,7 +93,7 @@ impl CloudProvider {
 ///
 /// # Errors
 ///
-/// Returns [`Error::ProviderNotFound`] if no metadata endpoint responds.
+/// Returns [`Error::ProviderNotFound`](crate::error::Error::ProviderNotFound) if no metadata endpoint responds.
 pub fn detect_provider() -> Result<CloudProvider> {
     // TODO: Implement actual metadata endpoint probing.
     // For now, try to detect from environment variables or files.

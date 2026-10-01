@@ -1,0 +1,6 @@
+# The workspace test suite (~7000 tests) prints one line per passing test,
+# which overflows CI output caps that gate on `cargo test --workspace
+# --all-targets`. Quiet mode compacts passing tests to dots; rustc warnings,
+# errors, and test failure diagnostics are unaffected.
+[term]
+quiet = true

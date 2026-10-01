@@ -22,7 +22,7 @@
 //! backend is currently a scaffold (it does not actually shell out to `wg`
 //! yet), so construction succeeds on ANY host — including macOS dev machines
 //! where `wg` is absent. The doctor, run separately inside
-//! [`collect_real_wireguard`], is what probes `$PATH` for `wg` / `wg-quick`
+//! `collect_real_wireguard`, is what probes `$PATH` for `wg` / `wg-quick`
 //! via `which::which(...)`. On macOS that probe surfaces a missing-`wg`
 //! Error / Warning finding, and the availability heuristic below
 //! (`available = !interfaces.is_empty() || !findings.is_empty()`) evaluates to

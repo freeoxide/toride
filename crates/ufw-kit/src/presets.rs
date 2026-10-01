@@ -1,7 +1,7 @@
 //! Preset firewall rule templates.
 //!
 //! Provides ready-made rule sets for common server configurations.
-//! Each preset returns a [`Preset`] containing a list of [`RuleSpec`](crate::spec::RuleSpec)
+//! Each preset returns a [`Preset`] containing a list of [`RuleSpec`]
 //! values that can be applied via the client.
 
 use crate::spec::{Action, Address, Direction, Protocol, RuleSpec};

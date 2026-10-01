@@ -182,7 +182,7 @@ pub const STDERR_TRUNCATION_MARKER: &str = "...[stderr truncated]";
 /// Minimum length a secret value must reach before [`redact_output`] will
 /// substring-scrub it from captured output. Shorter values are skipped for the
 /// free-form scrub (they would mangle benign output) but are still position-
-/// redacted in argv by [`redact_args`](crate::redact::redact_args).
+/// redacted in argv by [`redact_args`].
 pub const MIN_SUBSTRING_SCRUB_LEN: usize = 3;
 
 /// Scrub captured stderr for inclusion in an error variant.

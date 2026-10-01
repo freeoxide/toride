@@ -1,7 +1,7 @@
 //! Typed specification module for user accounts and password policies.
 //!
 //! Defines [`UserSpec`] for describing a desired user state, and
-//! [`PasswordPolicy`] for password aging and complexity rules.
+//! [`PasswordPolicy`](crate::spec::PasswordPolicy) for password aging and complexity rules.
 
 // ---------------------------------------------------------------------------
 // PasswordPolicy

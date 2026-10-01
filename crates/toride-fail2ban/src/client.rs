@@ -2,7 +2,7 @@
 //!
 //! [`Fail2BanClient`] provides a safe, typed interface to every
 //! `fail2ban-client` command the library needs. All commands go through the
-//! centralised [`Runner`] trait so they are testable via [`FakeRunner`] and
+//! centralised [`Runner`] trait so they are testable via [`FakeRunner`](crate::command::FakeRunner) and
 //! respect dry-run mode automatically.
 //!
 //! # Example
@@ -37,7 +37,7 @@ use crate::{Error, Result};
 /// # Lifetimes
 ///
 /// The client borrows the runner (`'a`) so the caller controls ownership
-/// and can swap in a [`FakeRunner`] for testing.
+/// and can swap in a [`FakeRunner`](crate::command::FakeRunner) for testing.
 pub struct Fail2BanClient<'a> {
     /// Command runner used for all invocations.
     runner: &'a dyn Runner,

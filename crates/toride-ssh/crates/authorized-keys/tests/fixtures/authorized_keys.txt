@@ -1,0 +1,25 @@
+# authorized_keys fixture for parse/fingerprint benchmarks and oracles.
+#
+# Key material sources:
+#   - throwaway keys generated for the bench rig (see
+#     crates/key/tests/fixtures/id_ed25519(.pub) and id_rsa_2048(.pub))
+#   - the ed25519 and ecdsa blobs reused from
+#     crates/toride-ssh/tests/fixtures/known_hosts_markers.txt
+
+# Plain ed25519 entry, generated bench key.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHAgkyZjuG7fsQuznq9EwYBIsjVEe40F2xUJfhHD0Ifa toride-bench-ed25519
+
+# Plain ed25519 entry, blob reused from the known_hosts fixture.
+ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl user@host
+
+# Plain RSA-2048 entry, generated bench key.
+ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDjGdTXoLY+DLrJ/hBhRHlF/5z1Gci6hpOVRrId5BDfIpg8HtcJ5zn+f+6+3nLsKoKAMRR1Dm1jyXleldY36VXtYyFG94kn3Fb5zdw0Bm6j/vgCa3gEnLDEfCvMfetm1ye5tK9ZO1WXLk1ctp0loC2gmWewpddFCRp2jgzjLiqtkQlEDs63Osx5XjisJ8LOKBOORgfgCEUzAImeROAonwjRW8fM9c3/7utq6d10epctxRaAXsIFKDOawML7eXn28b8Ac1HsPfEfBckg61L3KLtERPTOZhYKWQvloEZl0++jzslE6Ib+VhS/MCsf+LCnSmWSCpTOkEdLciqo+U1ZGw0v toride-bench-rsa2048
+
+# Options with a quoted command containing spaces and commas.
+no-pty,no-agent-forwarding,command="/usr/bin/rrsync --readonly /srv/backup,extra" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHAgkyZjuG7fsQuznq9EwYBIsjVEe40F2xUJfhHD0Ifa backup@host
+
+# restrict + from pattern list.
+restrict,from="10.0.0.*,192.168.1.0/24" ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl ci@host
+
+# ECDSA entry, blob reused from the known_hosts fixture.
+ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBK+O4KZGRKFPNTVKHkb1LQ4NiEGMH8gy0SdJMVPEZFL/A7EwFAk9VhiCZKHQkN8R7KdnVqJb3TDP37pBojDAGaE= ecdsa@host

@@ -60,6 +60,14 @@ rtnetlink = { version = "0.14", optional = true }
 [dev-dependencies]
 insta = "1"
 tempfile = "3"
+# Criterion is a dev-only addition demanded by the round-3/4 audit rubric:
+# quantify the prune complexity change (Vec::contains → HashSet) with a
+# bench ratio — this crate had no benches directory before.
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "prune_slow_proc_cache"
+harness = false
 
 [lints]
 workspace = true

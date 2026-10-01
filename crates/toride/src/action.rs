@@ -1,6 +1,6 @@
-//! User actions that drive the application's [`update`](crate::app::App::update) loop.
+//! User actions that drive the application's `update` loop.
 
-/// Semantic actions produced by screens and consumed by [`App::update`](crate::app::App::update).
+/// Semantic actions produced by screens and consumed by `App::update`.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum Action {
     /// Proceed to the next screen (Welcome → Status).
@@ -24,26 +24,22 @@ pub enum Action {
     /// Cycle to the next colour theme (Ctrl+T).
     CycleTheme,
     /// Cycle the animation preference (Auto → On → Off → Auto) and persist it
-    /// (Ctrl+Shift+A). Lets a user on a laggy VPS disable animations mid-session.
+    /// (Ctrl+Shift+A).
     ToggleAnimations,
+    /// Repaint without navigation: consumed by the app event loop to flag a
+    /// redraw; never forwarded to screens.
+    Redraw,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Verify that all Action variants implement Copy, Clone, Debug, `PartialEq`, Eq
-    /// by exercising each trait. If the derive is removed, this will fail to compile.
     fn assert_copy_clone_debug_partial_eq_eq(a: Action, b: Action) {
-        // Copy
         let _: Action = a;
-        // Clone
         let _: Action = a;
-        // Debug
         let _debug = format!("{a:?}");
-        // PartialEq
         let _: bool = a == b;
-        // Eq is implied by PartialEq + derive; we just verify it compiles.
         let _: bool = a == b;
     }
 
@@ -61,6 +57,7 @@ mod tests {
             Action::ScrollUp,
             Action::CycleTheme,
             Action::ToggleAnimations,
+            Action::Redraw,
         ];
 
         for v in &variants {
@@ -103,6 +100,7 @@ mod tests {
             Action::ScrollUp,
             Action::CycleTheme,
             Action::ToggleAnimations,
+            Action::Redraw,
         ];
         for v in &variants {
             let debug = format!("{v:?}");

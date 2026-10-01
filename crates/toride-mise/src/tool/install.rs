@@ -282,7 +282,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the installation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the installation fails.
     pub async fn install(&self, tool_spec: &str) -> MiseResult<()> {
         self.run_checked(["install", tool_spec]).await?;
         Ok(())
@@ -295,7 +295,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the installation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the installation fails.
     pub async fn install_with(&self, req: &InstallRequest) -> MiseResult<()> {
         let mut args: Vec<String> = Vec::new();
         args.push("install".into());
@@ -348,7 +348,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command fails.
     pub async fn use_tool(&self, req: &UseRequest) -> MiseResult<()> {
         let mut args: Vec<String> = Vec::new();
         args.push("use".into());
@@ -426,7 +426,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command fails.
     pub async fn pin(&self, tools: &[&str]) -> MiseResult<()> {
         let mut args: Vec<String> = Vec::new();
         args.push("use".into());
@@ -444,7 +444,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the installation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the installation fails.
     pub async fn install_into(&self, tool_spec: &str, dir: &str) -> MiseResult<()> {
         self.run_checked(["install-into", tool_spec, dir]).await?;
         Ok(())
@@ -456,7 +456,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the link operation fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the link operation fails.
     pub async fn link(&self, tool_spec: &str, dir: &str) -> MiseResult<()> {
         self.run_checked(["link", tool_spec, dir]).await?;
         Ok(())
@@ -468,7 +468,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command fails.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command fails.
     pub async fn reshim(&self) -> MiseResult<()> {
         self.run_checked(["reshim"]).await?;
         Ok(())

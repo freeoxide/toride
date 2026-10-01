@@ -6,7 +6,7 @@
 //! Each GCP VPC firewall rule is modelled as a [`SecurityGroup`] whose
 //! `rules` vector holds the parsed `allowed`/`denied` protocol+port tuples.
 //! Commands are built as [`toride_runner::CommandSpec`]s and executed through
-//! the injected [`Runner`](toride_runner::Runner), which makes the whole
+//! the injected [`Runner`], which makes the whole
 //! surface unit-testable via [`toride_runner::FakeRunner`].
 
 use std::sync::Arc;

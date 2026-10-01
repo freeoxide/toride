@@ -77,7 +77,7 @@ pub struct FindingEntry {
 /// Reverse-proxy management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`ProxyContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `ProxyContent::set_*` setters
 /// driven by [`ProxyCollector`](crate::toride_proxy_data::ProxyCollector).
 pub struct ProxyContent {
     /// Whether the proxy backend was reachable at all (binaries present,

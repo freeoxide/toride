@@ -4,7 +4,7 @@
 //! normalized model (DESIGN.md §3): every source-specific concern — wire
 //! structs, endpoints, quirk handling, fetch clients — lives behind it, in
 //! the per-source modules under [`sources`](crate::sources). Callers see
-//! only [`App`](crate::App) and [`SourceRef`](crate::model::SourceRef).
+//! only [`App`] and [`SourceRef`].
 //!
 //! The trait follows the house async style:
 //! `#[async_trait::async_trait]` + `Send + Sync` supertraits, matching

@@ -1,8 +1,5 @@
-//! SSH management content area.
-//!
-//! Renders inside the dashboard's content region when [`Section::Ssh`](crate::data::Section)
-//! is the active sidebar section. Provides a horizontal sub-tab bar for each SSH
-//! subsystem and delegates rendering and input handling to the active tab.
+//! The SSH screen: a tab bar over security, keys, known hosts, config,
+//! agent, forwarding, diagnostics, authorized keys, and certificates.
 
 use std::time::Instant;
 
@@ -40,63 +37,36 @@ pub mod keys_tab;
 pub mod known_hosts_tab;
 pub mod security_tab;
 
-// ── Focus ────────────────────────────────────────────────────────────────────
-
-/// Which region currently has keyboard focus within the SSH content area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Focus {
-    /// The sub-tab bar at the top.
     TabBar,
-    /// The main content list below the tab bar.
     List,
 }
 
-// ── SshContent ───────────────────────────────────────────────────────────────
-
-/// SSH management content rendered inside the dashboard content area.
-///
-/// Owns all sub-tab state and delegates rendering/input to the active tab.
+/// The SSH screen content: tab bar, per-tab state, and the pending-op queue.
 pub struct SshContent {
-    /// Currently active sub-tab.
     tab: SshSection,
-    /// Which region has keyboard focus.
     focus: Focus,
-    /// Security overview sub-tab state.
     security: SecurityTab,
-    /// Keys sub-tab state.
     keys: KeysTab,
-    /// Known hosts sub-tab state.
     known_hosts: KnownHostsTab,
-    /// Config sub-tab state.
     config: ConfigTab,
-    /// Agent sub-tab state.
     agent: AgentTab,
-    /// Forwarding sub-tab state.
     forwarding: ForwardingTab,
-    /// Diagnostics sub-tab state.
     diagnostics: DiagnosticsTab,
-    /// Authorized keys sub-tab state.
     authorized_keys: AuthorizedKeysTab,
-    /// Certificates sub-tab state.
     certificates: CertificatesTab,
-    /// Hitbox rects for tab bar labels (rebuilt each frame).
     tab_hitboxes: Vec<Rect>,
-    /// Which tab is hovered by the mouse.
     hovered_tab: Option<usize>,
-    /// Pending write operations to be executed by the app's event loop.
     pending_ops: Vec<SshOp>,
-    /// Last write error message + timestamp, shown as a notification bar.
     last_error: Option<(String, Instant)>,
-    /// Whether SSH write operations are in-flight (drives spinner overlay).
     ssh_loading: bool,
-    /// Number of SSH ops currently in-flight (displayed in loading bar).
     ssh_ops_in_flight: usize,
-    /// Timestamp when loading started (drives braille spinner animation).
     loading_start: Instant,
 }
 
 impl SshContent {
-    /// Create a new SSH content area with default state.
+    /// Create SSH content with the Security tab active.
     #[must_use]
     pub fn new() -> Self {
         Self {
@@ -121,52 +91,45 @@ impl SshContent {
         }
     }
 
-    /// Currently active sub-tab.
+    /// The active tab.
     #[must_use]
     pub fn tab(&self) -> SshSection {
         self.tab
     }
 
-    /// Whether the active sub-tab has a modal currently open.
+    /// Whether the active tab has a modal open.
     #[must_use]
     pub fn has_modal(&self) -> bool {
         self.active_tab().has_modal()
     }
 
-    /// Push a pending write operation to be executed by the app's event loop.
+    /// Queue an SSH op for the app loop to execute.
     pub fn push_op(&mut self, op: SshOp) {
         self.pending_ops.push(op);
     }
 
-    /// Drain all pending write operations, transferring them to the caller.
+    /// Take every pending op, leaving the queue empty.
     pub fn drain_pending_ops(&mut self) -> Vec<SshOp> {
         std::mem::take(&mut self.pending_ops)
     }
 
-    /// Re-queue write operations at the FRONT of the pending queue.
-    ///
-    /// The app's serialized write loop drains ops into a background task and,
-    /// while that task is in-flight, may drain again (e.g. a confirm-modal 'y'
-    /// lands during a write). To avoid spawning a second concurrent task, it
-    /// calls this to hand the ops back. Placing them ahead of any ops the UI
-    /// queues in the meantime keeps the user's original ordering intact.
+    /// Re-queues drained ops at the front so a batch already in-flight never
+    /// spawns a second task and the user's original ordering is preserved.
     pub fn queue_ops_front(&mut self, mut ops: Vec<SshOp>) {
         ops.append(&mut self.pending_ops);
         self.pending_ops = ops;
     }
 
-    /// Drain ops from the active tab and forward them to our `pending_ops`.
     fn collect_ops(&mut self) {
         let ops = self.active_tab_mut().drain_ops();
         self.pending_ops.extend(ops);
     }
 
-    /// Push a write error to be shown as a notification bar.
+    /// Show an error toast for 5s.
     pub fn push_error(&mut self, msg: String) {
         self.last_error = Some((msg, Instant::now()));
     }
 
-    /// Clear the error notification if it's been shown for more than 5 seconds.
     fn clear_expired_error(&mut self) {
         if let Some((_, ts)) = &self.last_error
             && ts.elapsed().as_secs() >= 5
@@ -175,7 +138,28 @@ impl SshContent {
         }
     }
 
-    /// Update the loading state from the app's in-flight counter.
+    /// Whether the error toast is shown; its 5s TTL is enforced only at
+    /// draw time, so the app loop uses this to schedule the clearing redraw.
+    #[must_use]
+    pub fn error_showing(&self) -> bool {
+        self.last_error.is_some()
+    }
+
+    /// Whether the error notification has hit its 5s TTL (the next draw clears it).
+    #[must_use]
+    pub fn error_expired(&self) -> bool {
+        self.last_error
+            .as_ref()
+            .is_some_and(|(_, ts)| ts.elapsed().as_secs() >= 5)
+    }
+
+    /// Whether fingerprint computation is still pending for some keys.
+    #[must_use]
+    pub fn has_pending_fingerprints(&self) -> bool {
+        self.keys.has_pending_fingerprints()
+    }
+
+    /// Set the loading state and in-flight op count.
     pub fn set_loading(&mut self, loading: bool, count: usize) {
         if loading && !self.ssh_loading {
             self.loading_start = Instant::now();
@@ -184,13 +168,12 @@ impl SshContent {
         self.ssh_ops_in_flight = count;
     }
 
-    /// Whether SSH write ops are currently in-flight.
+    /// Whether SSH ops are in flight (input is suppressed).
     #[must_use]
     pub fn is_loading(&self) -> bool {
         self.ssh_loading
     }
 
-    /// Render the loading spinner bar.
     #[expect(
         clippy::cast_possible_truncation,
         reason = "spinner arithmetic bounded"
@@ -206,8 +189,6 @@ impl SshContent {
         let frames = WaveRows::FRAMES;
         let interval_ms = WaveRows::INTERVAL.as_millis() as u32;
         let elapsed = self.loading_start.elapsed().as_secs_f32();
-        // Freeze the spinner frame under reduced motion — the bar still signals
-        // "applying changes…" (and the remaining-op count) without per-frame cycling.
         let idx = if p.reduced_motion {
             0
         } else {
@@ -235,71 +216,59 @@ impl SshContent {
         );
     }
 
-    // ── Data setters ─────────────────────────────────────────────────────────
-
-    /// Provide live SSH key data (called from the data collector).
+    /// Replace the keys tab's data.
     pub fn set_keys(&mut self, keys: Vec<SshKeyEntry>) {
         self.keys.set_keys(keys);
     }
 
-    /// Provide known hosts data.
+    /// Replace the known-hosts tab's data.
     pub fn set_known_hosts(&mut self, hosts: Vec<KnownHostEntry>) {
         self.known_hosts.set_hosts(hosts);
     }
 
-    /// Provide SSH config host entries.
+    /// Replace the config tab's host list.
     pub fn set_config_hosts(&mut self, hosts: Vec<ConfigHostEntry>) {
         self.config.set_hosts(hosts);
     }
 
-    /// Provide SSH agent status and loaded keys.
+    /// Replace the agent tab's data.
     pub fn set_agent_data(&mut self, status: AgentStatus, keys: Vec<AgentKeyEntry>) {
         self.agent.set_data(status, keys);
     }
 
-    /// Provide forwarding session data.
+    /// Replace the forwarding tab's sessions.
     pub fn set_forwarding(&mut self, sessions: Vec<ForwardSessionEntry>) {
         self.forwarding.set_sessions(sessions);
     }
 
-    /// Provide diagnostic entries.
-    pub fn set_diagnostics(&mut self, entries: Vec<DiagnosticEntry>) {
+    /// Replace the diagnostics tab's entries.
+    pub fn set_diagnostics(&mut self, entries: std::sync::Arc<Vec<DiagnosticEntry>>) {
         self.diagnostics.set_entries(entries);
     }
 
-    /// Provide authorized keys data.
+    /// Replace the authorized-keys tab's entries.
     pub fn set_authorized_keys(&mut self, entries: Vec<AuthorizedKeyEntry>) {
         self.authorized_keys.set_entries(entries);
     }
 
-    /// Provide certificate data.
+    /// Replace the certificates tab's entries.
     pub fn set_certificates(&mut self, entries: Vec<CertificateEntry>) {
         self.certificates.set_entries(entries);
     }
 
-    /// Provide security overview data.
+    /// Replace the security tab's data.
     pub fn set_security(&mut self, data: crate::ssh_data::SshSecurityData) {
         self.security.set_data(data);
     }
 
-    // ── Input handling ──────────────────────────────────────────────────────
-
     /// Handle a key press. Returns `Some(Action)` for navigation, `None` if consumed.
     pub fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
-        // A modal (detail / confirm) must ALWAYS be closable — even while a
-        // write is in flight — otherwise the user is frozen out of the modal
-        // they just opened. Route modal input (Esc to close, action keys)
-        // BEFORE the loading gate; the gate only applies to non-modal list
-        // navigation below.
         if self.active_tab().has_modal() {
             let action = self.active_tab_mut().handle_key(code);
             self.collect_ops();
             return action;
         }
 
-        // No modal: block non-modal list navigation while SSH write ops are
-        // in-flight (the list is being mutated optimistically; the loading
-        // spinner overlay reflects this).
         if self.ssh_loading {
             return None;
         }
@@ -338,7 +307,6 @@ impl SshContent {
     fn handle_list_key(&mut self, code: KeyCode) -> Option<Action> {
         match code {
             KeyCode::Up | KeyCode::Char('k' | 'j') | KeyCode::Down => {
-                // Delegate up/down to the active tab's handle_key
                 self.active_tab_mut().handle_key(code)
             }
             KeyCode::Tab | KeyCode::BackTab => {
@@ -346,23 +314,18 @@ impl SshContent {
                 None
             }
             KeyCode::Esc => Some(Action::Back),
-            // Delegate remaining keys to the active tab.
             _ => self.active_tab_mut().handle_key(code),
         }
     }
 
-    /// Handle a mouse event for the SSH content area.
+    /// Handle a mouse event: tab clicks, hover, and the active tab's events.
     pub fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
-        // A modal must always be interactable (click-outside-to-close, confirm
-        // button clicks) — route modal input BEFORE the loading gate so a write
-        // in flight can't freeze the user inside a modal.
         if self.active_tab().has_modal() {
             self.active_tab_mut().handle_mouse(mouse);
             self.collect_ops();
             return None;
         }
 
-        // No modal: block non-modal interaction while SSH write ops are in-flight.
         if self.ssh_loading {
             return None;
         }
@@ -373,12 +336,10 @@ impl SshContent {
                 self.active_tab_mut().handle_mouse(mouse);
             }
             MouseEventKind::Down(MouseButton::Left) => {
-                // Tab bar click takes priority.
                 if let Some(idx) = self.tab_at(mouse.column, mouse.row) {
                     self.tab = SshSection::all()[idx];
                     self.focus = Focus::TabBar;
                 } else {
-                    // Delegate to active tab for list area interaction.
                     self.focus = Focus::List;
                     self.active_tab_mut().handle_mouse(mouse);
                 }
@@ -392,7 +353,6 @@ impl SshContent {
         None
     }
 
-    /// Check if a screen coordinate falls within a tab bar label hitbox.
     fn tab_at(&self, col: u16, row: u16) -> Option<usize> {
         self.tab_hitboxes.iter().position(|rect| {
             col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
@@ -427,27 +387,21 @@ impl SshContent {
         }
     }
 
-    // ── Rendering ───────────────────────────────────────────────────────────
-
-    /// Render the full SSH content area.
+    /// Render the tab bar, loading/error lines, and the active tab.
     pub fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette) {
         self.clear_expired_error();
 
         let loading_h = u16::from(self.ssh_loading);
         let error_h = u16::from(self.last_error.is_some());
 
-        // Split into tab bar + optional loading bar + optional error bar + content area
-        let mut constraints = vec![
-            Constraint::Length(1), // tab bar
-            Constraint::Length(1), // gap
-        ];
+        let mut constraints = vec![Constraint::Length(1), Constraint::Length(1)];
         if loading_h > 0 {
-            constraints.push(Constraint::Length(loading_h)); // loading bar
+            constraints.push(Constraint::Length(loading_h));
         }
         if error_h > 0 {
-            constraints.push(Constraint::Length(error_h)); // error bar
+            constraints.push(Constraint::Length(error_h));
         }
-        constraints.push(Constraint::Min(0)); // content
+        constraints.push(Constraint::Min(0));
 
         let rects = Layout::vertical(constraints).split(area);
         let mut i = 0;
@@ -498,13 +452,12 @@ impl SshContent {
             let is_hovered = self.hovered_tab == Some(i);
 
             if i > 0 {
-                x += 2; // gap between tabs
+                x += 2;
             }
 
             let label = format!(" {} ", tab.label());
             let label_w = label.len() as u16;
 
-            // Record hitbox for mouse detection.
             self.tab_hitboxes.push(Rect::new(x, area.y, label_w, 1));
 
             let style = if is_active && (is_focused || is_hovered) {
@@ -537,37 +490,26 @@ impl Default for SshContent {
     }
 }
 
-// ── SshTab trait ─────────────────────────────────────────────────────────────
-
-/// Interface shared by all SSH sub-tabs.
 trait SshTab {
-    /// Handle a tab-specific key press (including scroll).
     fn handle_key(&mut self, code: KeyCode) -> Option<Action>;
-    /// Handle a tab-specific mouse event.
     fn handle_mouse(&mut self, _mouse: MouseEvent) -> Option<Action> {
         None
     }
-    /// Render the tab content.
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette);
-    /// Whether this tab currently has a modal open.
     fn has_modal(&self) -> bool {
         false
     }
-    /// Close any open modal on this tab.
     #[allow(dead_code)]
     fn close_modal(&mut self) {}
-    /// Drain pending write operations queued by this tab.
     fn drain_ops(&mut self) -> Vec<SshOp> {
         Vec::new()
     }
 }
 
-// ── Data entry structs ───────────────────────────────────────────────────────
-
-/// Lightweight presentation model for an SSH key row in the Keys tab.
+/// One key file in `~/.ssh`.
 #[derive(Clone, Debug)]
 pub struct SshKeyEntry {
-    /// File name (e.g. "`id_ed25519`").
+    /// Key file name (e.g. `id_ed25519`).
     pub name: String,
     /// Key type label (e.g. "Ed25519", "RSA 4096").
     pub key_type: String,
@@ -577,28 +519,24 @@ pub struct SshKeyEntry {
     pub encrypted: bool,
     /// Octal permissions string (e.g. "0600").
     pub permissions: String,
-    /// Whether the public key file (.pub) exists.
+    /// Whether a matching `.pub` file exists.
     pub has_public: bool,
-    /// Whether a certificate is associated.
+    /// Whether a matching `-cert.pub` file exists.
     pub has_cert: bool,
     /// Host aliases in ~/.ssh/config that reference this key via `IdentityFile`.
     pub used_by_hosts: Vec<String>,
 }
 
 impl SshKeyEntry {
-    /// Number of config hosts referencing this key.
-    ///
-    /// Computed from `used_by_hosts.len()` to avoid denormalization drift.
+    /// Number of host aliases referencing this key.
     #[must_use]
     pub fn host_count(&self) -> usize {
         self.used_by_hosts.len()
     }
 }
 
-/// Presentation model for a `known_hosts` entry in the Hosts tab.
-///
-/// Multiple key lines for the same host are **grouped** into a single entry
-/// with `key_types` listing all algorithms and `fingerprints` the matching FP.
+/// One `known_hosts` entry; multiple key lines for the same host are
+/// grouped (see `key_types` / `fingerprints`).
 #[derive(Clone, Debug)]
 pub struct KnownHostEntry {
     /// All hostname patterns (e.g. `["github.com", "gh.com"]`).
@@ -615,7 +553,7 @@ pub struct KnownHostEntry {
     pub is_hashed: bool,
     /// Optional marker (e.g. "@cert-authority", "@revoked").
     pub marker: Option<String>,
-    /// Actual comment text from the entry.
+    /// Trailing comment on the line, when present.
     pub comment: Option<String>,
     /// 1-based line number in the `known_hosts` file (first occurrence).
     pub line: usize,
@@ -631,123 +569,123 @@ impl KnownHostEntry {
     }
 }
 
-/// Presentation model for an SSH config Host block in the Config tab.
+/// One `Host` block from the SSH config.
 #[derive(Clone, Debug)]
 pub struct ConfigHostEntry {
     /// Primary Host name / pattern (e.g. "myserver", "*.example.com").
     pub name: String,
     /// All Host patterns in the block.
     pub patterns: Vec<String>,
-    /// `HostName` directive value, if set.
+    /// `HostName` directive value, when set.
     pub host_name: Option<String>,
-    /// User directive value, if set.
+    /// `User` directive value, when set.
     pub user: Option<String>,
-    /// Port directive value, if set.
+    /// `Port` directive value, when set.
     pub port: Option<u16>,
-    /// `IdentityFile` directive value, if set.
+    /// `IdentityFile` directive value, when set.
     pub identity_file: Option<String>,
-    /// `ProxyJump` directive value, if set.
+    /// `ProxyJump` directive value, when set.
     pub proxy_jump: Option<String>,
-    /// Total number of directives in the block.
+    /// Number of directives in the block.
     pub directive_count: usize,
-    /// Whether `ssh_config diagnose()` flagged this block.
+    /// Whether the config doctor flagged this block.
     pub has_diagnostic: bool,
 }
 
-/// Presentation model for a key loaded in the SSH agent.
+/// One key held by the ssh-agent.
 #[derive(Clone, Debug)]
 pub struct AgentKeyEntry {
-    /// Key name / comment.
+    /// Key file name or comment.
     pub name: String,
     /// Key type label (e.g. "Ed25519", "RSA 4096").
     pub key_type: String,
     /// SHA-256 fingerprint.
     pub fingerprint: String,
-    /// Whether the key requires confirmation to use.
+    /// Whether the key is locked.
     pub is_locked: bool,
-    /// Whether the key has constraints (destination, lifetime, confirm).
+    /// Whether the key was added with constraints.
     pub has_constraints: bool,
 }
 
-/// Agent connection status.
+/// ssh-agent reachability and contents.
 #[derive(Clone, Debug)]
 pub struct AgentStatus {
-    /// Whether the SSH agent is reachable.
+    /// Whether the agent socket answers.
     pub reachable: bool,
-    /// Agent socket path, if available.
+    /// Agent socket path; `None` when not found.
     pub socket_path: Option<String>,
-    /// Number of keys loaded in the agent.
+    /// Number of keys the agent holds.
     pub key_count: usize,
 }
 
-/// Presentation model for an active port-forwarding session.
+/// One `ControlMaster` session and its forwards.
 #[derive(Clone, Debug)]
 pub struct ForwardSessionEntry {
-    /// Connected host alias or name.
+    /// Remote host label.
     pub host: String,
-    /// `ControlMaster` socket path.
+    /// Control socket path.
     pub control_path: String,
-    /// Process ID of the SSH session.
+    /// Master process PID, when known.
     pub pid: Option<u32>,
     /// Time since the session was established (e.g. "2h 15m").
     pub established_ago: String,
-    /// Active port forwards in this session.
+    /// Active forwards.
     pub forwards: Vec<ForwardEntry>,
-    /// Number of active forwards (convenience for display).
+    /// Total forward count.
     pub forward_count: usize,
 }
 
-/// A single port forward within a session.
+/// One active port forward.
 #[derive(Clone, Debug)]
 pub struct ForwardEntry {
     /// Forward type: "local", "remote", or "dynamic".
     pub forward_type: String,
     /// Local bind address.
     pub local_addr: String,
-    /// Local port number.
+    /// Local port.
     pub local_port: u16,
     /// Remote target address (or "SOCKS" for dynamic).
     pub remote_addr: String,
-    /// Remote port number.
+    /// Remote port.
     pub remote_port: u16,
 }
 
-/// Presentation model for a diagnostic check result.
+/// One SSH doctor diagnostic.
 #[derive(Clone, Debug)]
 pub struct DiagnosticEntry {
-    /// Check identifier (e.g. "`ssh_dir_permissions`").
+    /// Diagnostic id.
     pub id: String,
     /// Severity level: "ok", "info", "warning", "error".
     pub severity: String,
     /// Source module (e.g. "local", "config", "agent").
     pub module: String,
-    /// Human-readable finding message.
+    /// Human-readable message.
     pub message: String,
-    /// Suggested fix, if applicable.
+    /// Optional fix hint.
     pub hint: Option<String>,
 }
 
-/// Presentation model for an `authorized_keys` entry.
+/// One `authorized_keys` line.
 #[derive(Clone, Debug)]
 pub struct AuthorizedKeyEntry {
     /// Key type (e.g. "ssh-ed25519", "ssh-rsa").
     pub key_type: String,
     /// Public key data (truncated for display).
     pub public_key: String,
-    /// Associated comment / identifier.
+    /// Key comment, when present.
     pub comment: Option<String>,
     /// SHA-256 fingerprint.
     pub fingerprint: String,
     /// Parsed options string (e.g. 'command="...",no-port-forwarding').
     pub options: Option<String>,
-    /// Line number in the `authorized_keys` file.
+    /// 1-based line number in the file.
     pub line: usize,
 }
 
-/// Presentation model for an SSH certificate.
+/// One SSH certificate.
 #[derive(Clone, Debug)]
 pub struct CertificateEntry {
-    /// Associated key file name (e.g. "id_ed25519-cert.pub").
+    /// Certificate file name.
     pub name: String,
     /// Certificate type ("User" or "Host").
     pub cert_type: String,
@@ -759,23 +697,21 @@ pub struct CertificateEntry {
     pub valid_from: String,
     /// Valid to (ISO 8601-ish).
     pub valid_to: String,
-    /// Whether the certificate is currently valid.
+    /// Whether now is inside the validity window.
     pub is_valid: bool,
-    /// CA fingerprint that signed this cert.
+    /// SHA-256 fingerprint of the signing CA.
     pub ca_fingerprint: String,
-    /// Key ID string embedded in the certificate.
+    /// Certificate key id.
     pub key_id: String,
-    /// Principals allowed by this certificate.
+    /// Valid principals.
     pub principals: Vec<String>,
 }
 
-/// SSH server access control information parsed from `sshd_config`.
+/// Parsed `sshd_config` access policy.
 #[derive(Debug, Clone, Default)]
 pub struct SshAccessInfo {
-    /// Whether `sshd_config` was found and readable on this machine.
-    /// When false, all other fields are defaults — the UI should hide
-    /// sections that depend on server config rather than showing
-    /// misleading empty states.
+    /// Whether `sshd_config` was readable; when `false` every other field is
+    /// a default, not a real observation.
     pub available: bool,
     /// Users allowed via `AllowUsers` (empty = all allowed).
     pub allowed_users: Vec<String>,
@@ -785,40 +721,40 @@ pub struct SshAccessInfo {
     pub allowed_groups: Vec<String>,
     /// Groups denied via `DenyGroups`.
     pub denied_groups: Vec<String>,
-    /// Authentication methods from `AuthenticationMethods` directive.
+    /// Allowed authentication methods.
     pub auth_methods: Vec<String>,
     /// Whether password authentication is enabled.
     pub password_auth: bool,
-    /// Whether public key authentication is enabled.
+    /// Whether public-key authentication is enabled.
     pub pubkey_auth: bool,
     /// Root login policy (yes/no/prohibit-password/forced-commands-only).
     pub permit_root_login: String,
 }
 
-/// A system user with SSH-relevant information.
+/// One system user with SSH-relevant details.
 #[derive(Debug, Clone)]
 pub struct SystemUserInfo {
-    /// Username.
+    /// User name.
     pub username: String,
-    /// Login shell path.
+    /// Login shell.
     pub shell: String,
-    /// Home directory path.
+    /// Home directory.
     pub home_dir: String,
-    /// Number of SSH key pairs (private keys like `id_ed25519`, `id_rsa`) in ~/.ssh/.
+    /// Key count in the user's `~/.ssh`.
     pub ssh_key_count: usize,
-    /// Number of entries in `authorized_keys` (keys that can log in as this user).
+    /// Line count of the user's `authorized_keys`.
     pub authorized_key_count: usize,
-    /// Up to a handful of `authorized_keys` entries for the user detail modal.
-    /// Empty when unreadable (e.g. another user's file without root).
+    /// Preview `authorized_keys` entries for the detail modal; empty when
+    /// unreadable (e.g. another user's file without root).
     pub authorized_keys_preview: Vec<AuthorizedKeyPreview>,
 }
 
-/// A compact view of one `authorized_keys` entry, for the user detail modal.
+/// Preview of one `authorized_keys` line for the detail modal.
 #[derive(Debug, Clone)]
 pub struct AuthorizedKeyPreview {
     /// Key type (e.g. `ssh-ed25519`).
     pub key_type: String,
-    /// Trailing comment, if any.
+    /// Trailing comment, when present.
     pub comment: Option<String>,
     /// SHA-256 fingerprint of the public key.
     pub fingerprint: String,
@@ -826,10 +762,6 @@ pub struct AuthorizedKeyPreview {
     pub line: usize,
 }
 
-/// Convert a footer-button action char back to the corresponding [`KeyCode`].
-///
-/// Footer buttons use `char` as their action type.  This maps the char to the
-/// `KeyCode` that the tab's `handle_key` already knows how to process.
 pub(crate) fn char_to_keycode(c: char) -> KeyCode {
     match c {
         '\r' => KeyCode::Enter,
@@ -838,8 +770,6 @@ pub(crate) fn char_to_keycode(c: char) -> KeyCode {
     }
 }
 
-/// Truncate an error message to fit within `max_width` characters.
-/// Uses character-based truncation to avoid panicking on multi-byte UTF-8.
 fn truncate_error(msg: &str, max_width: usize) -> String {
     if msg.chars().count() <= max_width {
         msg.to_string()
@@ -854,6 +784,66 @@ fn truncate_error(msg: &str, max_width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn error_expiry_truth_table() {
+        let mut content = SshContent::new();
+        assert!(!content.error_showing());
+        assert!(!content.error_expired());
+
+        content.push_error("write failed".into());
+        assert!(content.error_showing());
+        assert!(!content.error_expired(), "a fresh toast is not expired");
+
+        if let Some(ts) = Instant::now().checked_sub(std::time::Duration::from_secs(6)) {
+            content.last_error = Some(("write failed".into(), ts));
+            assert!(
+                content.error_showing(),
+                "the toast stays shown until a draw clears it"
+            );
+            assert!(
+                content.error_expired(),
+                "past the TTL it must report expired"
+            );
+        }
+    }
+
+    #[test]
+    fn pending_fingerprints_flag_follows_key_rows() {
+        let mut content = SshContent::new();
+        assert!(
+            !content.has_pending_fingerprints(),
+            "no keys → no spinner rows"
+        );
+        content.set_keys(vec![SshKeyEntry {
+            name: "id_ed25519".into(),
+            key_type: "Ed25519".into(),
+            fingerprint: "SHA256:abc123".into(),
+            encrypted: false,
+            permissions: "0600".into(),
+            has_public: true,
+            has_cert: false,
+            used_by_hosts: Vec::new(),
+        }]);
+        assert!(
+            !content.has_pending_fingerprints(),
+            "a filled fingerprint renders text, not a spinner"
+        );
+        content.set_keys(vec![SshKeyEntry {
+            name: "id_new".into(),
+            key_type: "Ed25519".into(),
+            fingerprint: String::new(),
+            encrypted: false,
+            permissions: "0600".into(),
+            has_public: false,
+            has_cert: false,
+            used_by_hosts: Vec::new(),
+        }]);
+        assert!(
+            content.has_pending_fingerprints(),
+            "an empty fingerprint row spins"
+        );
+    }
 
     #[test]
     fn new_defaults_to_security_tab() {
@@ -947,10 +937,6 @@ mod tests {
 
     #[test]
     fn queue_ops_front_preserves_held_order_ahead_of_new() {
-        // The serialized write loop hands ops back to the front of the queue
-        // when a batch is already in-flight. The held ops must come back out
-        // FIRST (preserving the user's original ordering), ahead of anything
-        // the UI queued in the meantime.
         let mut content = SshContent::new();
         content.push_op(SshOp::SshdAllowUser {
             username: "held-first".into(),
@@ -958,12 +944,10 @@ mod tests {
 
         let drained = content.drain_pending_ops();
         assert_eq!(drained.len(), 1);
-        // Simulate the UI queuing a new op while the batch is in-flight.
         content.push_op(SshOp::SshdDenyUser {
             username: "queued-later".into(),
         });
 
-        // App hands the held ops back to the front.
         content.queue_ops_front(drained);
 
         let order = content

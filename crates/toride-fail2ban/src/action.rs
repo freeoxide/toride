@@ -1,6 +1,4 @@
 //! Command execution for ban/unban actions.
-//!
-//! Handles command templating with variable expansion and execution.
 
 use std::collections::HashMap;
 
@@ -9,10 +7,6 @@ use serde::{Deserialize, Serialize};
 use crate::command::Runner;
 use crate::types::PlatformCommands;
 
-/// Escape a value for safe use in `sh -c` command strings.
-///
-/// Wraps the value in single quotes and escapes embedded single quotes.
-/// Numeric values and simple alphanumeric strings are passed through unchanged.
 fn shell_escape(value: &str) -> String {
     if value.is_empty() {
         return "''".to_string();
@@ -26,15 +20,7 @@ fn shell_escape(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
-/// Reject templates that place shell-escaped placeholders inside double quotes.
-///
-/// When a placeholder like `<ip>` or `<jail>` appears inside double quotes in a
-/// command template (e.g. `echo "<jail>"`), the single-quote wrapping produced by
-/// [`shell_escape`] becomes literal characters and no longer protects against
-/// shell expansion (`$`, backtick, etc.). This function scans the template for
-/// that pattern and returns an error if found.
 fn check_dq_placeholders(template: &str) -> Result<(), crate::Error> {
-    // Only check string-valued placeholders that go through shell_escape.
     const PLACEHOLDERS: &[&str] = &["<ip>", "<jail>", "<log-path>"];
     let bytes = template.as_bytes();
     let mut in_single_quote = false;
@@ -73,25 +59,20 @@ fn check_dq_placeholders(template: &str) -> Result<(), crate::Error> {
     Ok(())
 }
 
-/// Perform single-pass template expansion.
-///
-/// Scans the template left-to-right, replacing each `<placeholder>` exactly once.
-/// Already-substituted values are never re-scanned, preventing corruption when a
-/// substituted value contains placeholder-like text (e.g. a jail name containing `<ip>`).
 fn expand_template(template: &str, replacements: &[(&str, &str)]) -> String {
     let mut result = String::with_capacity(template.len() * 2);
     let mut pos = 0;
     let bytes = template.as_bytes();
 
     while pos < bytes.len() {
-        if bytes[pos] == b'<' {
-            if let Some(close) = template[pos..].find('>') {
-                let placeholder = &template[pos..pos + close + 1];
-                if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
-                    result.push_str(value);
-                    pos += placeholder.len();
-                    continue;
-                }
+        if bytes[pos] == b'<'
+            && let Some(close) = template[pos..].find('>')
+        {
+            let placeholder = &template[pos..=(pos + close)];
+            if let Some((_, value)) = replacements.iter().find(|(k, _)| placeholder == *k) {
+                result.push_str(value);
+                pos += placeholder.len();
+                continue;
             }
         }
         let ch = template[pos..]
@@ -170,17 +151,9 @@ impl ActionExec {
         }
     }
 
-    /// Expand command templates with the given variables.
-    ///
-    /// All string values are shell-escaped to prevent command injection.
-    /// Numeric values (`<prefix>`, `<ban-time>`, `<fail-count>`) are not escaped
-    /// since they are guaranteed to be numeric.
-    ///
+    /// Expand command templates with `vars`; string values are shell-escaped.
     /// # Errors
-    ///
-    /// Returns `InvalidConfig` if a shell-escaped placeholder (`<ip>`, `<jail>`,
-    /// `<log-path>`) appears inside double quotes in the template, which would
-    /// bypass single-quote shell escaping.
+    /// `InvalidConfig` if an escaped placeholder sits inside double quotes.
     pub fn expand_command(template: &str, vars: &ActionVars) -> crate::Result<String> {
         check_dq_placeholders(template)?;
 
@@ -260,13 +233,6 @@ impl ActionExec {
         self.commands.for_current_platform()
     }
 
-    /// Execute a shell command using the provided runner.
-    ///
-    /// # Security
-    /// Commands are executed via `sh -c`. Template variables (`<ip>`, `<jail>`, etc.)
-    /// are substituted before execution. Callers must ensure template values are safe
-    /// for shell interpolation. IP addresses from regex captures are generally safe,
-    /// but user-provided paths or jail names should be validated.
     fn run_command(
         cmd_str: &str,
         _env: &HashMap<String, String>,

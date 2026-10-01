@@ -51,7 +51,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn backends(&self) -> MiseResult<Vec<String>> {
         let output = self.run_checked(["backends", "ls"]).await?;
         let lines = output
@@ -69,8 +69,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn bin_paths(&self) -> MiseResult<Vec<Utf8PathBuf>> {
         let paths: Vec<String> = self.run_json(["bin-paths", "--json"]).await?;
         Ok(paths.into_iter().map(Utf8PathBuf::from).collect())
@@ -83,8 +83,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn bin_paths_with_names(&self) -> MiseResult<Vec<BinPathEntry>> {
         self.run_json(["bin-paths", "--bin-names", "--json"]).await
     }

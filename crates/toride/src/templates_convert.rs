@@ -231,7 +231,7 @@ pub fn convert_recipes(installed: &[bool]) -> Vec<RecipeEntry> {
 ///
 /// Every un-ready recipe maps to one finding with id
 /// `templates.missing.<recipe_id>`. A missing tool is an OPPORTUNITY, not a
-/// fault, so the severity is `info` (which [`status_label_for`] does NOT count
+/// fault, so the severity is `info` (which [`status_label_for`](crate::ui::screens::section_overview::status_label_for) does NOT count
 /// as degraded) — a partially-ready catalogue reads `active`, matching the
 /// panel's readiness summary.
 ///

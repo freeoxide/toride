@@ -20,7 +20,7 @@ use crate::ui::screens::settings::{SettingsConfig, SettingsRuntime};
 /// build a populated [`SettingsDataBundle`](crate::settings_data::SettingsDataBundle).
 ///
 /// This is the entry point invoked inside `spawn_blocking` by
-/// [`collect_real_settings`](crate::settings_data::collect_real_settings).
+/// `collect_real_settings`.
 /// Every probe degrades independently: an absent config file →
 /// `config.exists = false`, `raw_keys` empty; a missing env var → `None`.
 /// Availability stays `true` whenever the task body ran (only a panic flips it

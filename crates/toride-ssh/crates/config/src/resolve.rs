@@ -112,8 +112,8 @@ const TOKEN_EXPANDABLE: &[&str] = &[
 ///
 /// # Errors
 ///
-/// Returns [`Error::ConfigIncludeCycle`] if an `Include` chain contains a
-/// cycle. Returns [`Error::Io`] if the config file cannot be read.
+/// Returns `Error::ConfigIncludeCycle` if an `Include` chain contains a
+/// cycle. Returns `Error::Io` if the config file cannot be read.
 pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<ResolvedHost> {
     let config_path = ssh_dir.join("config");
 

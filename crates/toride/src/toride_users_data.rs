@@ -16,7 +16,7 @@
 //!
 //! ## macOS / degradation
 //!
-//! [`toride_users::UsersClient::new`] is infallible: it resolves `/etc` paths
+//! `toride_users::UsersClient::new` is infallible: it resolves `/etc` paths
 //! without checking existence. On macOS `/etc/passwd` exists but is NOT the
 //! real account database (Directory Service is), and `/etc/shadow`,
 //! `/etc/sudoers`, `/etc/sudoers.d`, `/etc/pam.d` mostly DO NOT exist. Each

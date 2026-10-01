@@ -4,9 +4,9 @@
 //! the rendered configuration file content as a `String`. The caller is
 //! responsible for writing the content to disk.
 //!
-//! - [`render_auto_upgrades_conf`] -- `/etc/apt/apt.conf.d/50unattended-upgrades`
-//! - [`render_dnf_automatic_conf`] -- `/etc/dnf/automatic.conf`
-//! - [`render_apt_conf`] -- `/etc/apt/apt.conf.d/20auto-upgrades`
+//! - [`render_auto_upgrades_conf`](crate::render::render_auto_upgrades_conf) -- `/etc/apt/apt.conf.d/50unattended-upgrades`
+//! - [`render_dnf_automatic_conf`](crate::render::render_dnf_automatic_conf) -- `/etc/dnf/automatic.conf`
+//! - [`render_apt_conf`](crate::render::render_apt_conf) -- `/etc/apt/apt.conf.d/20auto-upgrades`
 
 use crate::spec::{RebootPolicy, Schedule, UpdateSpec};
 

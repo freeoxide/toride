@@ -10,11 +10,11 @@
 //! [`RestoreManager`] dispatches to the appropriate backend based on
 //! [`BackupSpec::backend`]:
 //!
-//! - [`Backend::Restic`](crate::spec::Backend::Restic) runs `restic restore`.
-//! - [`Backend::Borg`](crate::spec::Backend::Borg) runs `borg extract`.
+//! - [`Backend::Restic`] runs `restic restore`.
+//! - [`Backend::Borg`] runs `borg extract`.
 //!
 //! All commands are built as [`toride_runner::CommandSpec`] and executed via
-//! the [`Runner`](toride_runner::Runner) trait, making the full restore path
+//! the [`Runner`] trait, making the full restore path
 //! testable with [`FakeRunner`](toride_runner::FakeRunner).
 //!
 //! # Secret handling
@@ -109,8 +109,8 @@ pub struct RestoreManager;
 impl RestoreManager {
     /// Perform a full restore from the given backup spec.
     ///
-    /// Dispatches to [`run_restic_restore`](Self::run_restic_restore) or
-    /// [`run_borg_extract`](Self::run_borg_extract) based on
+    /// Dispatches to `run_restic_restore` or
+    /// `run_borg_extract` based on
     /// [`BackupSpec::backend`], executing the command through the default
     /// [`DuctRunner`](toride_runner::DuctRunner).
     ///

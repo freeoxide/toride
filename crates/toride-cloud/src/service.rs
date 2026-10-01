@@ -30,7 +30,7 @@ impl ServiceManager {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::ProviderNotFound`] if no provider can be detected.
+    /// Returns [`Error::ProviderNotFound`](crate::error::Error::ProviderNotFound) if no provider can be detected.
     pub fn detect() -> Result<Self> {
         let provider = crate::detect::detect_provider()?;
         Ok(Self { provider })

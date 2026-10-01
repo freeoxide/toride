@@ -74,6 +74,13 @@ tempfile = "3"
 testty = "0.9"
 # `fake` feature for the strict FakeRunner used in proxy cert-scan tests.
 toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["fake"] }
+criterion = "0.8"
+
+# F01 kernel: full-frame Dashboard render cost via TestBackend (hermetic —
+# fixed fixture state, no terminal, no collectors).
+[[bench]]
+name = "dashboard_render"
+harness = false
 
 [lints]
 workspace = true

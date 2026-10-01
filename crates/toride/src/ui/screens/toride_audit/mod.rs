@@ -82,7 +82,7 @@ pub struct AuditLogSourceEntry {
 /// Audit management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`AuditContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `AuditContent::set_*` setters
 /// driven by [`AuditCollector`](crate::toride_audit_data::AuditCollector).
 pub struct AuditContent {
     /// Whether the audit backend produced any data at all. `false` only when a

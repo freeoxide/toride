@@ -1,4 +1,4 @@
-//! Read-only config operations on [`Mise`](crate::Mise).
+//! Read-only config operations on [`Mise`].
 //!
 //! This module contains `impl Mise` methods that query mise configuration
 //! without modifying any files:
@@ -44,8 +44,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the underlying `mise config ls`
-    /// exits non-zero. Returns [`MiseError::JsonParse`] if the output cannot
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the underlying `mise config ls`
+    /// exits non-zero. Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot
     /// be deserialised (requires `json` feature).
     pub async fn config_ls(&self) -> MiseResult<Vec<Utf8PathBuf>> {
         #[cfg(feature = "json")]
@@ -77,7 +77,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] for unexpected failures.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) for unexpected failures.
     pub async fn config_get(&self, key: &str) -> MiseResult<Option<String>> {
         let result = self.run_checked(["config", "get", key]).await;
         match result {
@@ -108,7 +108,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::Config`] if the file cannot be read or parsed.
+    /// Returns [`MiseError::Config`](crate::error::MiseError::Config) if the file cannot be read or parsed.
     pub async fn config_read(&self, path: Option<&Utf8PathBuf>) -> MiseResult<MiseToml> {
         let config_path = match path {
             Some(p) => p.clone(),
@@ -131,7 +131,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the underlying `mise settings`
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the underlying `mise settings`
     /// exits non-zero.
     pub async fn settings(&self) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
         #[cfg(feature = "json")]
@@ -173,8 +173,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn settings_all(
         &self,
     ) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
@@ -220,8 +220,8 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
-    /// Returns [`MiseError::JsonParse`] if the output cannot be deserialised.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
+    /// Returns [`MiseError::JsonParse`](crate::error::MiseError::JsonParse) if the output cannot be deserialised.
     pub async fn settings_local(
         &self,
     ) -> MiseResult<std::collections::BTreeMap<String, SettingsEntry>> {
@@ -263,7 +263,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] for unexpected failures.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) for unexpected failures.
     pub async fn settings_get(&self, key: &str) -> MiseResult<Option<SettingsEntry>> {
         let output = self.run_checked(["settings", "get", key]).await;
         match output {

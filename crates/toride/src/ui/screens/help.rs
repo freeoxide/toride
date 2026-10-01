@@ -1,3 +1,5 @@
+//! The help screen: keybindings and usage, rendered inside a modal.
+
 use crossterm::event::KeyCode;
 use ratatui::{
     Frame,

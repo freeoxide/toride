@@ -1,6 +1,6 @@
 //! Diagnostic report types for user and access control findings.
 //!
-//! Defines [`UserReport`] and [`UserFinding`] for structured reporting of
+//! Defines [`UserReport`](crate::report::UserReport) and [`UserFinding`](crate::report::UserFinding) for structured reporting of
 //! user security issues discovered by the doctor module.
 
 // ---------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 //! System paths for user and access control configuration files.
 //!
-//! [`UserPaths`] resolves the standard Linux paths used by user management
+//! [`UserPaths`](crate::paths::UserPaths) resolves the standard Linux paths used by user management
 //! tools: `/etc/passwd`, `/etc/shadow`, `/etc/group`, `/etc/sudoers`,
 //! `/etc/sudoers.d/`, and `/etc/pam.d/`.
 

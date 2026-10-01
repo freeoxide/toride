@@ -37,6 +37,12 @@ similar = "2"
 insta = { version = "1", features = ["serde"] }
 tempfile = "3"
 proptest = "1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "status_parse"
+harness = false
+test = false
 
 [lints]
 workspace = true

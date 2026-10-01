@@ -2,7 +2,7 @@
 //!
 //! A badge is a short label rendered with a filled background and a little
 //! horizontal padding, e.g. ` active `, ` apt `, ` install all `. These are
-//! plain [`Span`]s so they compose into any [`Line`].
+//! plain [`Span`]s so they compose into any `Line`.
 
 use ratatui::style::{Color, Style};
 use ratatui::text::Span;

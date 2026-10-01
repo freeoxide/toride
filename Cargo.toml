@@ -55,3 +55,14 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Bench codegen must match release discipline (LTO + single CGU) so A/B
+# benchmark comparisons measure the optimized kernel, not partitioned codegen.
+# `panic` is deliberately NOT set here: cargo ignores a `panic` key in the
+# `bench` profile (warning: "`panic` setting is ignored for `bench` profile")
+# and compiles bench targets with `--cfg test`, which forces unwinding — the
+# mode criterion requires. It therefore never inherits release's
+# `panic = "abort"`.
+[profile.bench]
+lto = true
+codegen-units = 1

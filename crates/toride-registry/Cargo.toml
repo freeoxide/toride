@@ -40,6 +40,24 @@ flate2 = { version = "1", optional = true }
 # Snapshot tests of the normalized output per §7 fixture (DESIGN.md §9,
 # conventions.md §7); snapshots live in `tests/snapshots/`.
 insta = { workspace = true }
+# Criterion bench of the DEP-11 parse half (benches/dep11_parse.rs, the
+# F14 pin). Default features off: the HTML-report stack (plotters) and
+# rayon are unneeded for stdout estimates + baseline save/load, keeping
+# the bench compile lean; `cargo_bench_support` is required to run under
+# `cargo bench` at all.
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+# F14 parse-half pin + F14 round-2 fetch-side cache pin: parse_dep11_catalog /
+# AppstreamAdapter::from_text over a synthetic dep11 fixture
+# (benches/fixtures/dep11-synthetic.yml), plus (with the default `http`
+# feature) the TTL-hit cache serving path `AppstreamClient::cached_catalog`
+# over a seeded cache dir — never a live 27 MB catalog. Hermetic
+# (compile-time fixture, pure parse + seeded gz cache, no network), with a
+# deterministic count/parity oracle inlined before any timing. Run scoped:
+# `cargo bench -p toride-registry --bench dep11_parse`.
+[[bench]]
+name = "dep11_parse"
+harness = false
 
 [lints]
 workspace = true

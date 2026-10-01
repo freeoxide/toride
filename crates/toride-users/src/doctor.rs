@@ -1,7 +1,7 @@
 //! Diagnostic checks for user and access control security.
 //!
 //! The doctor module runs a series of security checks and produces a
-//! [`UserReport`] with findings. Checks include:
+//! [`UserReport`](crate::report::UserReport) with findings. Checks include:
 //!
 //! - Root login enabled via SSH
 //! - Users with empty passwords

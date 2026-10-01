@@ -5,8 +5,8 @@
 //!
 //! Every operation shells out via [`toride_runner::CommandSpec`] and parses the
 //! provider's JSON output into the provider-agnostic
-//! [`SecurityGroup`](crate::spec::SecurityGroup) /
-//! [`FirewallRule`](crate::spec::FirewallRule) model.
+//! [`SecurityGroup`] /
+//! [`FirewallRule`] model.
 //!
 //! # CLI reference
 //!

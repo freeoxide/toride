@@ -1,6 +1,6 @@
 //! Shared base for full-screen views that need a gradient background.
 //!
-//! Extracts the boilerplate shared by [`DashboardScreen`] and [`WelcomeScreen`]:
+//! Extracts the boilerplate shared by `DashboardScreen` and `WelcomeScreen`:
 //! gradient cache ownership, background rendering, cache invalidation, and the
 //! "too small" terminal guard.
 

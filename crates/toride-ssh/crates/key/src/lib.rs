@@ -11,16 +11,13 @@ use std::ffi::OsStr;
 use toride_ssh_core::SshPaths;
 use toride_ssh_core::{Error, KeyCreateParams, KeyDeleteParams, KeyFormat, Result, SshKey};
 
-/// Maximum allowed key name length (typical filesystem limit).
 const MAX_KEY_NAME_LENGTH: usize = 255;
 
-/// Get Unix file permissions from metadata.
 #[cfg(unix)]
 pub(crate) fn get_permissions(path: &std::path::Path) -> Option<toride_ssh_core::Permissions> {
     use std::os::unix::fs::PermissionsExt;
     let metadata = std::fs::metadata(path).ok()?;
     let mode = metadata.permissions().mode();
-    // Only keep the lower 12 bits (rwx + setuid/setgid/sticky)
     Some(toride_ssh_core::Permissions {
         mode: mode & 0o7777,
     })
@@ -31,10 +28,6 @@ pub(crate) fn get_permissions(_path: &std::path::Path) -> Option<toride_ssh_core
     None
 }
 
-/// Validate a key name to prevent path traversal attacks.
-///
-/// Key names must not contain path separators, `..` components, or null bytes.
-/// Maximum length is 255 bytes (typical filesystem limit).
 fn validate_key_name(name: &str) -> Result<()> {
     if name.is_empty() {
         return Err(Error::InvalidKeyName(
@@ -64,9 +57,6 @@ fn validate_key_name(name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Return a unique backup path by appending a Unix timestamp suffix if the
-/// path already exists.  For example, if `foo.bak` exists, returns
-/// `foo.bak.1717020000`.
 fn unique_backup_path(base: &std::path::Path) -> std::path::PathBuf {
     if !base.exists() {
         return base.to_path_buf();
@@ -82,12 +72,16 @@ fn unique_backup_path(base: &std::path::Path) -> std::path::PathBuf {
     base.with_extension(ext)
 }
 
-/// Key management operations.
-///
-/// Obtained from [`SshManager::keys()`](crate::SshManager::keys).
 pub struct KeyService<'a> {
     paths: &'a SshPaths,
     runner: &'a dyn toride_ssh_core::CliRunner,
+}
+
+/// Inspect a private key file, memoized on its `(mtime, len)` stamp (rewrites re-parse).
+/// # Errors
+/// Same as the uncached parse; read errors are never memoized.
+pub fn inspect_key_cached(path: &std::path::Path) -> Result<SshKey> {
+    inventory::inspect_private_key_cached(path)
 }
 
 impl<'a> KeyService<'a> {
@@ -95,41 +89,24 @@ impl<'a> KeyService<'a> {
         Self { paths, runner }
     }
 
-    /// List all SSH keys found on disk and in the agent.
-    ///
-    /// Scans `~/.ssh/id_*` files and queries the SSH agent via `ssh-add -l`.
-    /// Keys that cannot be parsed are skipped with a warning.
-    ///
+    /// List all SSH keys on disk and in the agent; unparseable keys are skipped.
     /// # Errors
-    ///
-    /// Returns [`Error::TaskFailed`] if the background scan task panics
-    /// or is cancelled.
+    /// [`Error::TaskFailed`] if the background scan task panics or is cancelled.
     pub async fn list(&self) -> Result<Vec<SshKey>> {
         inventory::scan_keys(self.paths, Some(self.runner)).await
     }
 
     /// Generate a new SSH key pair.
-    ///
     /// # Errors
-    ///
-    /// Returns [`Error::InvalidKeyName`] if the key name is invalid
-    /// (empty, contains path separators or null bytes, or exceeds 255 bytes),
-    /// [`Error::ToolNotFound`] if `ssh-keygen` is not in `PATH`, or
-    /// [`Error::CommandFailed`] if key generation fails.
+    /// [`Error::InvalidKeyName`] (bad name), [`Error::ToolNotFound`], [`Error::CommandFailed`].
     pub async fn create(&self, params: KeyCreateParams) -> Result<SshKey> {
         validate_key_name(&params.name)?;
         generate::generate_key(self.paths, params, self.runner).await
     }
 
-    /// Delete a key and optionally its public pair, certificate, agent entry, and config refs.
-    ///
+    /// Delete a key and optionally its companions, agent entry, and config refs.
     /// # Errors
-    ///
-    /// Returns [`Error::KeyNotFound`] if the key does not exist,
-    /// [`Error::InvalidKeyName`] if the key name is invalid,
-    /// [`Error::Io`] if file operations fail, [`Error::TaskFailed`] if
-    /// the background deletion task panics, or
-    /// [`Error::ConfigWriteFailed`] if config cleanup fails.
+    /// [`Error::KeyNotFound`], [`Error::InvalidKeyName`], [`Error::Io`], [`Error::TaskFailed`], [`Error::ConfigWriteFailed`].
     pub async fn delete(&self, params: KeyDeleteParams) -> Result<()> {
         validate_key_name(&params.name)?;
         let private_path = self.paths.ssh_dir().join(&params.name);
@@ -145,20 +122,15 @@ impl<'a> KeyService<'a> {
             .ssh_dir()
             .join(format!("{}-cert.pub", params.name));
 
-        // Destructure to avoid cloning the entire params struct into spawn_blocking.
         let backup = params.backup;
         let remove_public = params.remove_public;
         let remove_certificate = params.remove_certificate;
 
-        // Remove from agent if requested (non-fatal).
-        // Must happen BEFORE the file is deleted/renamed so that ssh-add -d
-        // can still reference the original path.
         if params.remove_from_agent {
             remove_key_from_agent(&self.paths.ssh_dir().join(&params.name), self.runner).await;
         }
 
         tokio::task::spawn_blocking(move || {
-            // Backup if requested
             if backup {
                 let backup_path = unique_backup_path(&private_path.with_extension("bak"));
                 std::fs::rename(&private_path, &backup_path)?;
@@ -187,15 +159,12 @@ impl<'a> KeyService<'a> {
                     }
                 }
             } else {
-                // Remove the private key file
                 std::fs::remove_file(&private_path)?;
 
-                // Remove public key companion
                 if remove_public && public_path.exists() {
                     std::fs::remove_file(&public_path)?;
                 }
 
-                // Remove certificate companion
                 if remove_certificate && cert_path.exists() {
                     std::fs::remove_file(&cert_path)?;
                 }
@@ -206,7 +175,6 @@ impl<'a> KeyService<'a> {
         .await
         .map_err(|e| Error::TaskFailed(format!("delete task failed: {e}")))??;
 
-        // Remove from config if requested
         if params.remove_from_config {
             remove_from_config(self.paths, &params.name).await?;
         }
@@ -214,18 +182,9 @@ impl<'a> KeyService<'a> {
         Ok(())
     }
 
-    /// Derive the `.pub` file from a private key.
-    ///
-    /// First attempts an in-process parse. For encrypted keys, falls back to
-    /// `ssh-keygen -y -f <path>` to extract the public key and writes it to
-    /// the corresponding `.pub` file.
-    ///
+    /// Derive the `.pub` from a private key (encrypted keys via `ssh-keygen -y`).
     /// # Errors
-    ///
-    /// Returns [`Error::KeyNotFound`] if the private key does not exist,
-    /// [`Error::ToolNotFound`] if `ssh-keygen` is not in `PATH`, or
-    /// [`Error::CommandFailed`] if public key extraction fails (e.g.
-    /// the key is encrypted and no passphrase was provided).
+    /// [`Error::KeyNotFound`], [`Error::ToolNotFound`], or [`Error::CommandFailed`].
     pub async fn repair_public(
         &self,
         private_key_path: &std::path::Path,
@@ -234,24 +193,9 @@ impl<'a> KeyService<'a> {
         repair::repair_public_key(private_key_path, passphrase, self.runner).await
     }
 
-    /// Rename a key pair (private, public, certificate).
-    ///
-    /// Renames `~/.ssh/<old_name>` to `~/.ssh/<new_name>` and all companion
-    /// files (`.pub`, `-cert.pub`). Does NOT update config references — call
-    /// `remove_from_config` for the old name and add new `IdentityFile` entries
-    /// separately.
-    ///
-    /// If the private key rename succeeds but the public key or certificate
-    /// rename fails, the operation continues with a warning. This may leave
-    /// the key pair in an inconsistent state where the private key has the
-    /// new name but the public key retains the old name.
-    ///
+    /// Rename a key pair and companions; config refs NOT updated; companion failures non-fatal.
     /// # Errors
-    ///
-    /// Returns [`Error::KeyNotFound`] if the old key does not exist,
-    /// [`Error::KeyExists`] if a key with the new name already exists,
-    /// [`Error::InvalidKeyName`] if either name is invalid, or
-    /// [`Error::Io`] if the private key rename fails.
+    /// [`Error::KeyNotFound`], [`Error::KeyExists`], [`Error::InvalidKeyName`], [`Error::Io`].
     pub async fn rename(&self, old_name: &str, new_name: &str) -> Result<()> {
         validate_key_name(old_name)?;
         validate_key_name(new_name)?;
@@ -272,17 +216,14 @@ impl<'a> KeyService<'a> {
         let new_cert = self.paths.ssh_dir().join(format!("{new_name}-cert.pub"));
 
         tokio::task::spawn_blocking(move || {
-            // Rename private key
             std::fs::rename(&old_private, &new_private).map_err(Error::Io)?;
 
-            // Rename public key if it exists
             if old_public.exists()
                 && let Err(e) = std::fs::rename(&old_public, &new_public)
             {
                 tracing::warn!("failed to rename public key: {e}");
             }
 
-            // Rename certificate if it exists
             if old_cert.exists()
                 && let Err(e) = std::fs::rename(&old_cert, &new_cert)
             {
@@ -295,13 +236,9 @@ impl<'a> KeyService<'a> {
         .map_err(|e| Error::TaskFailed(format!("rename task failed: {e}")))?
     }
 
-    /// Fix permissions on key files (set private keys to 0o600, public to 0o644).
-    ///
+    /// Fix key file permissions (private `0o600`, public `0o644`).
     /// # Errors
-    ///
-    /// Returns [`Error::KeyNotFound`] if the key does not exist,
-    /// [`Error::InvalidKeyName`] if the key name is invalid, or
-    /// [`Error::Io`] if `chmod` fails.
+    /// [`Error::KeyNotFound`], [`Error::InvalidKeyName`], or [`Error::Io`].
     pub async fn chmod_fix(&self, key_name: &str) -> Result<()> {
         validate_key_name(key_name)?;
 
@@ -338,27 +275,9 @@ impl<'a> KeyService<'a> {
         .map_err(|e| Error::TaskFailed(format!("chmod task failed: {e}")))?
     }
 
-    /// Change the passphrase on an existing key (`ssh-keygen -p`).
-    ///
-    /// If `old_passphrase` is `None`, the key is assumed to be unencrypted.
-    /// If `new_passphrase` is `None` or empty, the passphrase is removed.
-    ///
-    /// # Security
-    ///
-    /// Neither the old nor the new passphrase is ever placed on the
-    /// `ssh-keygen` argv. `ssh-keygen -p` is invoked WITHOUT `-P`/`-N` so it
-    /// prompts for the passphrases, and they are fed through a temporary
-    /// `SSH_ASKPASS` helper script — the same approach used by
-    /// [`Self::create`](Self::create)/[`generate_key`](crate::generate). The
-    /// passphrase therefore never appears in `argv` or `/proc/<pid>/cmdline`,
-    /// unlike the old `-P <old> -N <new>` approach which exposed it to every
-    /// local user via `ps` for the lifetime of the `ssh-keygen` process.
-    ///
+    /// Change a key's passphrase (`None`/empty new removes it) via `SSH_ASKPASS`, never argv.
     /// # Errors
-    ///
-    /// Returns [`Error::KeyNotFound`] if the key file does not exist, or
-    /// [`Error::CommandFailed`] if the passphrase change fails (e.g. wrong
-    /// old passphrase).
+    /// [`Error::KeyNotFound`] or [`Error::CommandFailed`] (e.g. wrong old passphrase).
     pub async fn change_passphrase(
         &self,
         key_path: &std::path::Path,
@@ -377,12 +296,6 @@ impl<'a> KeyService<'a> {
         let old_pass = old_passphrase.unwrap_or("").to_owned();
         let new_pass = new_passphrase.unwrap_or("").to_owned();
 
-        // `ssh-keygen -p` (with no `-P`/`-N`) prompts THREE times when run via
-        // SSH_ASKPASS: "Enter old passphrase", "Enter new passphrase", then
-        // "Enter same passphrase again" (confirmation). The askpass helper is
-        // invoked once per prompt, so it must answer old, new, new in order.
-        // A single-value askpass (like the one used for key generation) is not
-        // sufficient here.
         let askpass = MultiAskpassHandler::new(&[&old_pass, &new_pass, &new_pass])?;
         let args = vec!["-p".to_owned(), "-f".to_owned(), path_str];
         run_with_askpass(self.runner, "ssh-keygen", args, &askpass).await?;
@@ -390,21 +303,9 @@ impl<'a> KeyService<'a> {
         Ok(())
     }
 
-    /// Change the comment on an existing key (`ssh-keygen -c`).
-    ///
-    /// Updates both the private and public key files.
-    ///
-    /// # Security
-    ///
-    /// When a passphrase is supplied it is fed to `ssh-keygen` through a
-    /// temporary `SSH_ASKPASS` helper script (the same mechanism used by
-    /// [`Self::create`](Self::create)) rather than as `-P <passphrase>` on the
-    /// argv, so it never appears in `/proc/<pid>/cmdline` or `ps`.
-    ///
+    /// Change a key's comment (`ssh-keygen -c`); a passphrase goes via `SSH_ASKPASS`, never argv.
     /// # Errors
-    ///
-    /// Returns [`Error::KeyNotFound`] if the key file does not exist, or
-    /// [`Error::CommandFailed`] if the comment change fails.
+    /// [`Error::KeyNotFound`] or [`Error::CommandFailed`].
     pub async fn change_comment(
         &self,
         key_path: &std::path::Path,
@@ -430,8 +331,6 @@ impl<'a> KeyService<'a> {
             new_comment.to_owned(),
         ];
 
-        // `ssh-keygen -c` prompts once for the passphrase when the key is
-        // encrypted; a single-value askpass handler suffices.
         if pass.is_empty() {
             self.runner.run("ssh-keygen", args).await?;
         } else {
@@ -441,18 +340,9 @@ impl<'a> KeyService<'a> {
         Ok(())
     }
 
-    /// Convert a key between OpenSSH and PEM formats.
-    ///
-    /// - [`KeyFormat::Pem`]: exports the key in PEM format via `ssh-keygen -e -m PEM`.
-    /// - [`KeyFormat::OpenSSH`]: imports a PEM-format key to OpenSSH format via `ssh-keygen -i -m PEM`.
-    ///
-    /// Returns the converted key content as a string.
-    ///
+    /// Convert a key between OpenSSH and PEM formats, returning the content.
     /// # Errors
-    ///
-    /// Returns [`Error::KeyNotFound`] if the key file does not exist,
-    /// [`Error::ToolNotFound`] if `ssh-keygen` is not available, or
-    /// [`Error::CommandFailed`] if the conversion command fails.
+    /// [`Error::KeyNotFound`], [`Error::ToolNotFound`], or [`Error::CommandFailed`].
     pub async fn convert(
         &self,
         key_path: &std::path::Path,
@@ -491,16 +381,9 @@ impl<'a> KeyService<'a> {
         self.runner.run("ssh-keygen", args).await
     }
 
-    /// Install a public key to a remote host's `authorized_keys`.
-    ///
-    /// Uses `ssh-copy-id` if available, otherwise falls back to manual SSH.
-    /// See [`install::install_key_to_remote`] for details.
-    ///
+    /// Install a public key to a remote's `authorized_keys` via `ssh-copy-id` (or plain SSH).
     /// # Errors
-    ///
-    /// Returns [`Error::ToolNotFound`] if neither `ssh-copy-id` nor `ssh`
-    /// is available, [`Error::CommandFailed`] if the installation command
-    /// fails, or [`Error::KeyNotFound`] if the key path does not exist.
+    /// [`Error::ToolNotFound`], [`Error::CommandFailed`], or [`Error::KeyNotFound`].
     pub async fn install_key_to_remote(
         &self,
         key_path: &std::path::Path,
@@ -510,16 +393,8 @@ impl<'a> KeyService<'a> {
     }
 
     /// Remove a public key from a remote host's `authorized_keys`.
-    ///
-    /// `SSHes` into the remote and uses `grep -vF` to strip the matching key
-    /// line from `~/.ssh/authorized_keys`. See
-    /// [`install::uninstall_key_from_remote`] for details.
-    ///
     /// # Errors
-    ///
-    /// Returns [`Error::KeyNotFound`] if the key path does not exist,
-    /// [`Error::ToolNotFound`] if `ssh` is not available, or
-    /// [`Error::CommandFailed`] if the remote command fails.
+    /// [`Error::KeyNotFound`], [`Error::ToolNotFound`], or [`Error::CommandFailed`].
     pub async fn uninstall_key_from_remote(
         &self,
         key_path: &std::path::Path,
@@ -529,14 +404,7 @@ impl<'a> KeyService<'a> {
     }
 }
 
-/// An `SSH_ASKPASS` helper whose lifecycle is owned by the caller.
-///
-/// Implementors write a temporary executable script to disk that `ssh-keygen`
-/// (or another SSH tool) reads passphrases from via `SSH_ASKPASS`, and remove
-/// it again on drop. The passphrase(s) are thus kept out of the child process
-/// `argv` and `/proc/<pid>/cmdline`.
 pub(crate) trait Askpass {
-    /// Path to the on-disk askpass script.
     fn script_path(&self) -> &std::path::Path;
 }
 
@@ -546,12 +414,6 @@ impl Askpass for toride_ssh_agent::AskpassHandler {
     }
 }
 
-/// Run `cmd` with `args` and the askpass environment wired so that passphrase
-/// prompts are answered by `askpass` instead of appearing on the argv.
-///
-/// Centralizes the `SSH_ASKPASS`/`SSH_ASKPASS_REQUIRE`/`DISPLAY` env wiring
-/// shared by [`KeyService::change_passphrase`], [`KeyService::change_comment`],
-/// and [`repair::repair_public_key`].
 pub(crate) async fn run_with_askpass(
     runner: &dyn toride_ssh_core::CliRunner,
     cmd: &str,
@@ -569,48 +431,20 @@ pub(crate) async fn run_with_askpass(
     runner.run_with_env(cmd, args, env).await
 }
 
-/// A multi-response `SSH_ASKPASS` handler.
-///
-/// [`toride_ssh_agent::AskpassHandler`] always echoes the same passphrase on
-/// every invocation, which is correct for tools that prompt once (key
-/// generation, `ssh-keygen -c`/`-y`). `ssh-keygen -p`, however, prompts three
-/// times when driven via `SSH_ASKPASS` — old, new, new (confirmation) — so the
-/// helper must answer a different value per invocation. This handler writes a
-/// script that returns `responses[i]` on the `i`-th call (and the last value
-/// for any subsequent call, so extra confirmation prompts are still answered).
-///
-/// The script is created with mode `0o700` and removed on drop, mirroring
-/// [`toride_ssh_agent::AskpassHandler`].
 struct MultiAskpassHandler {
     script_path: std::path::PathBuf,
 }
 
 impl MultiAskpassHandler {
-    /// Create a handler that answers the `i`-th askpass invocation with
-    /// `responses[i]` (clamped to the last entry).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::CommandFailed`] if the temporary script cannot be
-    /// written or made executable.
     fn new(responses: &[&str]) -> Result<Self> {
         #[cfg(unix)]
         use std::io::Write;
         #[cfg(unix)]
         use std::os::unix::fs::OpenOptionsExt;
 
-        // Build the script body. Each response is emitted by a dedicated
-        // `case` arm keyed on the invocation counter; the fallthrough arm
-        // repeats the final response so a confirmation prompt (or any future
-        // extra prompt) is still answered with the new passphrase.
-        //
-        // The invocation counter is persisted in a sibling `.cnt` file (its
-        // path is baked into the script, so no extra env wiring is needed).
         use std::fmt::Write as _;
         let mut arms = String::new();
         for (i, resp) in responses.iter().enumerate() {
-            // The script increments its counter BEFORE the `case`, so the
-            // first invocation is `n=1` — arm indices must be 1-based.
             let arm = i + 1;
             let escaped = resp.replace('\'', "'\\''");
             let _ = writeln!(arms, "    {arm}) echo '{escaped}';;");
@@ -631,18 +465,12 @@ impl MultiAskpassHandler {
             .replace(')', "");
         let filename = format!("toride-askpass-multi-{pid}-{tid}-{ts}");
 
-        // Write via a hidden sibling + atomic rename so the published script
-        // is never observed half-written or open-for-writing (avoids
-        // ETXTBSY). The temp file is created with its final 0o700 mode via a
-        // single O_CREAT|O_EXCL open, so there is no window in which the
-        // script exists but is world-readable or non-executable.
-        // Only the Unix branch performs the hidden-temp write; other targets
-        // write the script directly, so the temp path would be unused there.
+        // Publish via hidden temp + atomic rename: an in-place rewrite can be seen
+        // half-written or open-for-writing (ETXTBSY); the single O_EXCL open carries
+        // the final 0o700 mode (open(2)).
         #[cfg(unix)]
         let tmp_path = dir.join(format!("{filename}.tmp"));
         let script_path = dir.join(&filename);
-        // Sibling counter file; its path is baked into the script so no extra
-        // env wiring is needed. Cleaned up alongside the script on drop.
         let count_path = dir.join(format!("{filename}.cnt"));
 
         let count_path_str = count_path.to_string_lossy().replace('\'', "'\\''");
@@ -688,8 +516,6 @@ impl MultiAskpassHandler {
             })?;
         }
 
-        // Non-Unix: best-effort plain write (no exec bit needed for the
-        // shape of the test, and SSH_ASKPASS is Unix-only in practice).
         #[cfg(not(unix))]
         {
             std::fs::write(&script_path, script.as_bytes()).map_err(|e| {
@@ -703,7 +529,6 @@ impl MultiAskpassHandler {
         Ok(Self { script_path })
     }
 
-    /// Path to the on-disk askpass script.
     fn script_path(&self) -> &std::path::Path {
         &self.script_path
     }
@@ -723,16 +548,11 @@ impl Drop for MultiAskpassHandler {
                 self.script_path.display()
             );
         }
-        // Best-effort cleanup of the sibling counter file.
         let count_path = self.script_path.with_extension("cnt");
         let _ = std::fs::remove_file(&count_path);
     }
 }
 
-/// Remove a key from the SSH agent.
-///
-/// This is intentionally non-fatal: the key may not be loaded in the agent,
-/// which is a perfectly normal state. Errors are logged but not propagated.
 async fn remove_key_from_agent(
     private_path: &std::path::Path,
     runner: &dyn toride_ssh_core::CliRunner,
@@ -747,33 +567,15 @@ async fn remove_key_from_agent(
     }
 }
 
-/// Filter `IdentityFile`/`CertificateFile` references to `key_name` out of an
-/// SSH config body.
-///
-/// Pure helper extracted from [`remove_from_config`] so the quote/tilde/CRLF
-/// matching logic is unit-testable without a filesystem round-trip. A line is
-/// dropped when its leading keyword (matched case-insensitively) is
-/// `IdentityFile` (or `CertificateFile`) AND its value — after stripping one
-/// layer of surrounding `"` or `'` quotes — equals one of:
-///
-/// - `~/.ssh/<key_name>` (tilde form) / `~/.ssh/<key_name>-cert.pub`
-/// - `<ssh_dir>/<key_name>` (absolute form) / `<ssh_dir>/<key_name>-cert.pub`
-/// - the bare `<key_name>` / `<key_name>-cert.pub`
-///
-/// The original line-ending style (`\r\n` vs `\n`) and any trailing newline
-/// are preserved. Lines that merely *contain* the name as a substring, or are
-/// comments, are left untouched.
 fn filter_config_lines(content: &str, ssh_dir_str: &str, key_name: &str) -> String {
     let key_pattern_tilde = format!("~/.ssh/{key_name}");
     let key_pattern_abs = format!("{ssh_dir_str}/{key_name}");
 
-    // Also match CertificateFile directives for the companion cert.
     let cert_name = format!("{key_name}-cert.pub");
     let cert_pattern_tilde = format!("~/.ssh/{cert_name}");
     let cert_pattern_abs = format!("{ssh_dir_str}/{cert_name}");
 
     let trailing_newline = content.ends_with('\n');
-    // Preserve the original line ending style (\r\n vs \n).
     let line_ending = if content.contains("\r\n") {
         "\r\n"
     } else {
@@ -784,23 +586,16 @@ fn filter_config_lines(content: &str, ssh_dir_str: &str, key_name: &str) -> Stri
         .lines()
         .filter(|line| {
             let trimmed = line.trim();
-            // Extract the keyword (first whitespace-delimited token) and
-            // compare case-insensitively.  This avoids matching directives
-            // like "IdentityFileSomething" or comments containing the word.
             let keyword = trimmed.split_whitespace().next().unwrap_or("");
 
             if keyword.eq_ignore_ascii_case("IdentityFile") {
-                // Extract the value (everything after the keyword).
                 let value = trimmed[keyword.len()..].trim();
-                // Remove quotes if present
                 let value = value.trim_matches('"').trim_matches('\'');
                 return value != key_pattern_tilde && value != key_pattern_abs && value != key_name;
             }
 
             if keyword.eq_ignore_ascii_case("CertificateFile") {
-                // Extract the value (everything after the keyword).
                 let value = trimmed[keyword.len()..].trim();
-                // Remove quotes if present
                 let value = value.trim_matches('"').trim_matches('\'');
                 return value != cert_pattern_tilde
                     && value != cert_pattern_abs
@@ -812,7 +607,6 @@ fn filter_config_lines(content: &str, ssh_dir_str: &str, key_name: &str) -> Stri
         .collect::<Vec<&str>>()
         .join(line_ending);
 
-    // Preserve trailing newline from the original file
     if trailing_newline && !new_content.is_empty() {
         format!("{new_content}{line_ending}")
     } else {
@@ -820,12 +614,7 @@ fn filter_config_lines(content: &str, ssh_dir_str: &str, key_name: &str) -> Stri
     }
 }
 
-/// Remove `IdentityFile` references from `~/.ssh/config`.
-///
-/// This is a basic implementation that removes lines containing the key path.
-/// Read errors are non-fatal (the config may be unreadable due to permissions).
 async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
-    // Allocate an owned PathBuf for use inside `spawn_blocking` (requires `'static`).
     let config_path = paths.config_path().to_path_buf();
 
     if !config_path.exists() {
@@ -859,7 +648,6 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
         let final_content = filter_config_lines(&content, &ssh_dir_str, &key_name_owned);
 
         if final_content != content {
-            // Atomic write: temp file + rename to prevent corruption on crash.
             let parent = config_path
                 .parent()
                 .unwrap_or_else(|| std::path::Path::new("."));
@@ -871,21 +659,13 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
                     .unwrap_or_default()
                     .as_nanos()
             ));
-            // Create the temp file with O_EXCL (`create_new`). A plain
-            // `std::fs::write` opens with O_CREAT|O_TRUNC and no O_EXCL, so a
-            // local attacker who can predict the PID+nanos-derived name can
-            // pre-place a symlink at the temp path and trick us into writing
-            // the rewritten config through it (symlink race). `create_new`
-            // fails with `AlreadyExists` if the path already exists — whether
-            // as a regular file or a symlink — closing the race. This mirrors
-            // the askpass script write path below (~line 661).
+            // `create_new` (O_EXCL) is load-bearing: the PID+nanos temp name is
+            // predictable, and without O_EXCL a pre-placed symlink there would redirect
+            // this write (open(2), O_EXCL symlink protection).
             #[cfg(unix)]
             {
                 use std::io::Write;
                 use std::os::unix::fs::OpenOptionsExt;
-                // Match the typical ~/.ssh/config permissions (0o600). The
-                // previous plain `fs::write` produced a umask-default mode, so
-                // 0o600 is at least as strict.
                 let mut file = std::fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
@@ -905,8 +685,6 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
             }
             #[cfg(not(unix))]
             {
-                // Non-Unix: best-effort create_new without mode (no O_EXCL
-                // race on platforms without symlink-following open).
                 use std::io::Write;
                 let mut file = std::fs::OpenOptions::new()
                     .write(true)

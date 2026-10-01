@@ -2,7 +2,7 @@
 //!
 //! This module provides [`LockRequest`] for describing a lockfile operation and
 //! adds [`Mise::lock`], [`Mise::lock_dry_run`], and [`Mise::install_locked`]
-//! methods on the [`Mise`](crate::Mise) client.
+//! methods on the [`Mise`] client.
 //!
 //! # Example
 //!
@@ -170,7 +170,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the `mise lock` command exits
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the `mise lock` command exits
     /// non-zero.
     pub async fn lock(&self, req: &LockRequest) -> MiseResult<LockReport> {
         let args = Self::build_lock_args(req, false);
@@ -189,7 +189,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the `mise lock` command exits
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the `mise lock` command exits
     /// non-zero.
     pub async fn lock_dry_run(&self, req: &LockRequest) -> MiseResult<LockReport> {
         let mut req = req.clone();
@@ -212,7 +212,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the `mise install` command
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the `mise install` command
     /// exits non-zero (e.g. a locked version is no longer available).
     pub async fn install_locked(&self) -> MiseResult<InstallReport> {
         let output = self.run_checked(["install", "--locked"]).await?;

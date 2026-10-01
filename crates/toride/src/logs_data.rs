@@ -30,7 +30,7 @@
 //! stalled. Permission errors are caught per-source (that source is degraded
 //! to `exists == false` with a `"(permission denied)"` note) and never panic.
 //! Large files are seeked near the end before reading — total bytes per file
-//! are capped at [`MAX_FILE_BYTES`] (256 KiB) so a multi-GB syslog is never
+//! are capped at `MAX_FILE_BYTES` (256 KiB) so a multi-GB syslog is never
 //! read whole.
 
 use std::path::PathBuf;
@@ -56,7 +56,7 @@ const JOURNALCTL_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// The tail of one log source.
 ///
-/// Built by [`collect_real_logs`] for each source that exists on this host.
+/// Built by `collect_real_logs` for each source that exists on this host.
 /// Permission-denied sources are still emitted with `exists == false` and a
 /// note in [`LogSource::mtime`] so the operator can see WHY a file was
 /// skipped.
@@ -81,7 +81,7 @@ pub struct LogSource {
     /// Number of lines in [`LogSource::lines`] (kept explicitly because the
     /// viewer clamps scroll against it).
     pub line_count: usize,
-    /// The last ~[`MAX_LINES`] lines of the source (already decoded UTF-8,
+    /// The last ~`MAX_LINES` lines of the source (already decoded UTF-8,
     /// lossy for non-UTF-8 bytes — logs must never crash the viewer).
     pub lines: Vec<String>,
 }

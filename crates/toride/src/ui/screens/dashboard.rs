@@ -1,11 +1,7 @@
-//! The main Dashboard screen: a full-width shell (header / sidebar / footer)
-//! wrapping stat cards, a module-card grid, an updates list and an activity log.
-//!
-//! Built on the reusable [`shell`](crate::ui::shell) chrome. The sidebar drives
-//! an internal "active section"; only [`Section::Dashboard`] renders full
-//! content for now, other sections show a placeholder.
+//! The dashboard home screen: sidebar navigation over the read-only content
+//! sections plus live system status panels.
 
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crossterm::event::{KeyCode, MouseEvent, MouseEventKind};
 use ratatui::{
@@ -57,38 +53,24 @@ use crate::ui::widgets::{InteractiveModal, ModalEvent};
 use ratatui_interact::state::FocusManager;
 use tachyonfx::{EffectManager, Interpolation, fx};
 
-/// Below this frame width the sidebar auto-collapses to an icon rail.
 const AUTO_COLLAPSE_W: u16 = 100;
-/// Below this content width the dashboard drops to a single column.
 const SINGLE_COL_W: u16 = 78;
-/// Height of the top stat-card row.
 const STAT_ROW_H: u16 = 6;
-/// Height of a module card in the grid.
 const MODULE_CARD_H: u16 = 5;
-/// Number of columns in the module grid (used for keyboard navigation).
 const GRID_COLS: usize = 2;
 /// Number of read-only sections surfaced in the live managed-services grid.
 pub const MANAGED_SECTIONS_TOTAL: usize = 13;
 
-/// Bundled inputs for the stat-card row, passed as one argument to keep
-/// [`DashboardScreen::render_stat_cards`] under clippy's argument limit.
 #[derive(Clone, Copy, Debug)]
 struct StatCardInput {
-    /// Whether live status has been collected (else mock fallback).
     live: bool,
-    /// Count of sections whose backend is reachable.
     managed_available: usize,
-    /// Total findings across sections + status warnings.
     findings: usize,
-    /// Live pending-update count, if the updates backend is available.
     pending_total: Option<usize>,
 }
 
-/// One row of the live "Managed Services" grid: a section's icon, name, and an
-/// owned snapshot of its overview. Owned so it can be collected across all 13
-/// content fields before any `&mut self` panel render runs.
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // `section` documents the source section for future click-to-navigate.
+#[allow(dead_code)]
 struct ManagedServiceCard {
     icon: &'static str,
     name: &'static str,
@@ -97,8 +79,6 @@ struct ManagedServiceCard {
 }
 
 impl ManagedServiceCard {
-    /// Map the overview status label to a [`ModuleStatus`] for reuse of
-    /// [`render_module_card`] and the module modal/hitboxes without changes.
     #[must_use]
     fn status(&self) -> ModuleStatus {
         match self.overview.status_label {
@@ -109,13 +89,8 @@ impl ManagedServiceCard {
         }
     }
 
-    /// Build the [`Module`] view consumed by [`render_module_card`] / the modal.
     #[must_use]
     fn to_module(&self) -> Module {
-        // An offline section could not collect findings, so rendering
-        // "· 0 finding(s)" is noisy and implies a successful inspection.
-        // Surface "backend unreachable" instead; any other status reports
-        // the uniform finding count.
         let detail = if self.overview.status_label == "offline" {
             "backend unreachable".to_string()
         } else {
@@ -135,7 +110,6 @@ impl ManagedServiceCard {
     }
 }
 
-/// Which header gauge is currently hovered by the mouse.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GaugeKind {
     Cpu,
@@ -144,16 +118,12 @@ enum GaugeKind {
     Net,
 }
 
-/// Top-level focus regions. This never grows — it is always exactly
-/// `Sidebar ↔ Content`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 enum ShellFocus {
     Sidebar,
     Content,
 }
 
-/// Internal focus within the Dashboard content area (modules grid, updates
-/// list, activity log). Each section owns its own internal focus model.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DashboardFocus {
     Modules,
@@ -179,31 +149,14 @@ impl DashboardFocus {
     }
 }
 
-/// Shared dispatch surface for every read-only content section panel.
-///
-/// All 18 non-`Dashboard` content structs ([`SshContent`], [`Fail2banContent`],
-/// [`FirewallContent`], [`HardenContent`], [`WireguardContent`],
-/// [`UpdatesContent`], [`UsersContent`], [`AuditContent`], [`MonitorContent`],
-/// [`BackupContent`], [`ProxyContent`], [`CloudContent`], [`TailscaleContent`],
-/// [`MiseContent`], [`ToolsContent`], [`TemplatesContent`], [`LogsContent`],
-/// [`AboutContent`], [`SettingsContent`]) expose the exact same
-/// `handle_key` / `handle_mouse` / `view` trio with identical signatures.
-/// Modeling it as a trait lets the dashboard collapse what used to be five
-/// near-identical 19-arm `match self.active_section()` blocks (key Tab/BackTab,
-/// generic content key, render, mouse hover/click/scroll/up) into a single
-/// [`DashboardScreen::active_panel_mut`] lookup plus one match arm for the
-/// bespoke [`Section::Dashboard`] behavior.
-///
-/// [`Section::Dashboard`] is intentionally NOT a `ContentPanel`: it has
-/// bespoke key handling ([`DashboardScreen::handle_dashboard_content_key`]),
-/// bespoke rendering ([`DashboardScreen::render_dashboard_content`]), and
-/// bespoke wheel scrolling ([`DashboardScreen::scroll_focused`]).
+/// Shared `handle_key`/`handle_mouse`/`view` surface for the read-only
+/// content sections; [`Section::Dashboard`] is intentionally excluded.
 pub trait ContentPanel {
-    /// Forward a keypress to the active content panel.
+    /// Forward a key press to the content's inherent handler.
     fn handle_key(&mut self, code: KeyCode) -> Option<Action>;
-    /// Forward a mouse event to the active content panel.
+    /// Forward a mouse event to the content's inherent handler.
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action>;
-    /// Render the active content panel into its content area.
+    /// Render the content into `area`.
     fn view(&mut self, frame: &mut Frame, area: Rect, p: Palette);
 }
 
@@ -247,112 +200,54 @@ impl_content_panel!(
     SettingsContent,
 );
 
-/// The dashboard screen state.
+/// The dashboard home screen: sidebar, live status panels, and the
+/// read-only content sections.
 pub struct DashboardScreen {
     data: DashboardData,
     status: Option<TorideStatus>,
     sidebar: Sidebar,
     active: usize,
     focus: FocusManager<ShellFocus>,
-    /// Internal panel focus for the Dashboard section only.
     dashboard_focus: DashboardFocus,
     module_sel: usize,
     module_scroll: usize,
     updates_scroll: usize,
     activity_scroll: usize,
-    /// Which module index is shown in the detail modal (if open).
     open_module_idx: Option<usize>,
-    /// Interactive module detail modal (manages visibility + rect + buttons + click-outside).
     module_modal: InteractiveModal<Action>,
     gauge_hover: Option<GaugeKind>,
     gauge_hitboxes: [Rect; 4],
-    /// Last-rendered sidebar pane rect. Used to route mouse-wheel scroll by
-    /// cursor position (over the sidebar → scroll the sidebar list) rather
-    /// than by the focused shell region.
     sidebar_area: Rect,
-    /// Hitbox rects for module cards (rebuilt each frame).
     module_hitboxes: Vec<Rect>,
-    /// Materialized module list for the *current* frame: live modules when a
-    /// status has been collected, else the mock list. Cached during render so
-    /// keyboard navigation (`module_right/down/up/left`), the modal-open branch,
-    /// and mouse click lookup all index the same vec the grid actually drew —
-    /// never the disjoint mock list when the grid is live.
     modules_view: Vec<Module>,
-    /// Live network throughput (bytes/sec).
     net_rx_rate: Option<f64>,
     net_tx_rate: Option<f64>,
-    /// Live disk I/O throughput (bytes/sec).
     disk_read_rate: Option<f64>,
     disk_write_rate: Option<f64>,
     base: ScreenBase,
     clock: String,
     shimmer_start: Instant,
-    /// Tooltip fade-in effect manager.
     tooltip_fx: EffectManager<()>,
-    /// Previous hover state for detecting transitions.
     prev_gauge_hover: Option<GaugeKind>,
-    /// Timestamp of the last render call (for frame deltas).
     last_frame: Instant,
-    /// SSH management content (rendered when `Section::Ssh` is active).
     ssh_content: SshContent,
-    /// Fail2ban management content (rendered when `Section::Fail2ban` is active).
-    /// READ-ONLY: no write ops, no cooldown.
     fail2ban_content: Fail2banContent,
-    /// UFW firewall management content (rendered when `Section::Firewall` is active).
-    /// READ-ONLY: no write ops, no cooldown.
     ufw_kit_content: FirewallContent,
-    /// Kernel-hardening management content (rendered when `Section::Harden` is
-    /// active). READ-ONLY: no write ops, no cooldown.
     toride_harden_content: HardenContent,
-    /// `WireGuard` management content (rendered when `Section::WireGuard` is
-    /// active). READ-ONLY: no write ops, no cooldown.
     toride_wireguard_content: WireguardContent,
-    /// Updates management content (rendered when `Section::Updates` is active).
-    /// READ-ONLY: no write ops, no cooldown.
     toride_updates_content: UpdatesContent,
-    /// User & access-control management content (rendered when `Section::Users`
-    /// is active). READ-ONLY: no write ops, no cooldown.
     toride_users_content: UsersContent,
-    /// Audit (auditd/AIDE/logs) management content (rendered when
-    /// `Section::Audit` is active). READ-ONLY: no write ops, no cooldown.
     toride_audit_content: AuditContent,
-    /// Outbound traffic monitor management content (rendered when
-    /// `Section::Monitor` is active). READ-ONLY: no write ops, no cooldown.
     toride_monitor_content: MonitorContent,
-    /// Backup (restic/borg) management content (rendered when `Section::Backup`
-    /// is active). READ-ONLY: no write ops, no cooldown.
     toride_backup_content: BackupContent,
-    /// Reverse-proxy (nginx/certbot/WAF) management content (rendered when
-    /// `Section::Proxy` is active). READ-ONLY: no write ops, no cooldown.
     toride_proxy_content: ProxyContent,
-    /// Cloud provider (security groups / firewalls / agent) management content
-    /// (rendered when `Section::Cloud` is active). READ-ONLY: no write ops, no
-    /// cooldown.
     toride_cloud_content: CloudContent,
-    /// Tailscale mesh VPN (status / peers / netcheck / DNS) management content
-    /// (rendered when `Section::Tailscale` is active). READ-ONLY: no write ops, no
-    /// cooldown.
     toride_tailscale_content: TailscaleContent,
-    /// Mise runtime version manager (installed tools / outdated / config /
-    /// doctor) management content (rendered when `Section::Mise` is active).
-    /// READ-ONLY: no write ops, no cooldown.
     toride_mise_content: MiseContent,
-    /// About-toride content (rendered when `Section::About` is active).
-    /// READ-ONLY: no write ops, no cooldown, no findings.
     about_content: AboutContent,
-    /// System log-sources content (rendered when `Section::Logs` is active).
-    /// READ-ONLY: no write ops, no cooldown, no findings.
     logs_content: LogsContent,
-    /// Settings (app config + theme + runtime env) management content
-    /// (rendered when `Section::Settings` is active). READ-ONLY: no write ops,
-    /// no cooldown. ALSO carries the live active Theme, kept in sync by
-    /// `App::update`'s `Action::CycleTheme` arm via `set_active_theme`.
     settings_content: SettingsContent,
-    /// Hardening-recipes catalogue management content (rendered when
-    /// `Section::Templates` is active). READ-ONLY: no write ops, no cooldown.
     templates_content: TemplatesContent,
-    /// Installed-tools catalogue management content (rendered when
-    /// `Section::Tools` is active). READ-ONLY: no write ops, no cooldown.
     tools_content: ToolsContent,
 }
 
@@ -363,18 +258,13 @@ impl Default for DashboardScreen {
 }
 
 impl DashboardScreen {
-    /// Create a new dashboard seeded with an honest empty skeleton (no mock
-    /// host info, modules, updates, or activity). Collectors overlay live data
-    /// as they report via the `set_*` methods.
+    /// Creates a dashboard seeded with an empty skeleton; collectors overlay
+    /// live data via the `set_*` methods.
     #[must_use]
     pub fn new() -> Self {
         let data = DashboardData::empty();
         let sidebar = Sidebar::new(data.sidebar.len());
         let clock = "09:17 PM".to_string();
-        // Seed the module view with the single honest "collecting system
-        // status…" sentinel so keyboard navigation and the modal lookup have a
-        // valid bound before the first render. The live managed-services grid
-        // (13 cards) replaces this once a status is collected.
         let modules_view = data.modules.clone();
         Self {
             data,
@@ -450,7 +340,6 @@ impl DashboardScreen {
                 .map_or(0.5, |d| d.as_secs_f64())
                 .max(0.1);
 
-            // Network throughput
             let rx = status.system.network.bytes_received as f64
                 - prev.system.network.bytes_received as f64;
             let tx = status.system.network.bytes_transmitted as f64
@@ -458,7 +347,6 @@ impl DashboardScreen {
             self.net_rx_rate = Some(rx.max(0.0) / dt);
             self.net_tx_rate = Some(tx.max(0.0) / dt);
 
-            // Disk I/O throughput
             let dr =
                 status.system.disk_io.read_bytes as f64 - prev.system.disk_io.read_bytes as f64;
             let dw = status.system.disk_io.written_bytes as f64
@@ -470,19 +358,7 @@ impl DashboardScreen {
         self.refresh_sidebar_badges();
     }
 
-    /// Derive each section's sidebar badge from its LIVE content struct and
-    /// write it into `self.data.sidebar[i].badge`. Called from each `set_*_data`
-    /// setter (and `set_status`) so badges refresh as live data lands.
-    ///
-    /// At cold start (before any collector reports) every badge stays `None` —
-    /// honest "nothing known yet". Never fabricates a count for a section whose
-    /// backend is unreachable or whose content struct doesn't expose a clean
-    /// count.
     fn refresh_sidebar_badges(&mut self) {
-        // Read the live values out of the content structs first (no &mut self
-        // borrow held) so we can then mutate self.data.sidebar in place. Every
-        // accessor returns None when its backend is unavailable, so the badge
-        // stays honestly empty at cold start — no count is ever fabricated.
         let tools = self.tools_content.installed_count().map(|n| n.to_string());
         let fail2ban = self.fail2ban_content.total_bans().map(|n| n.to_string());
         let firewall = self
@@ -547,25 +423,14 @@ impl DashboardScreen {
                 Section::Harden => harden.clone(),
                 Section::Audit => audit.clone(),
                 Section::Monitor => monitor.clone(),
-                // Sections without a clean live count (Dashboard, Ssh,
-                // Templates, Logs, About, Settings) and the cold-start case
-                // (backend unavailable): leave the badge honestly empty. Do
-                // NOT fabricate counts.
                 _ => None,
             };
             item.badge = badge;
         }
     }
 
-    /// Snapshot of all 13 read-only sections for the live "Managed Services"
-    /// grid and the MANAGED/FINDINGS stat cards.
-    ///
-    /// Returns an owned vec (no borrows held) so it can be called *before* the
-    /// `&mut self` panel renders. SSH is excluded (no `available`/`findings`
-    /// shape; already dominates the sidebar).
     #[must_use]
     fn managed_services(&self) -> Vec<ManagedServiceCard> {
-        // Generic inner: builds a card from any SectionOverview impl.
         fn snap<O: SectionOverview>(
             icon: &'static str,
             name: &'static str,
@@ -626,10 +491,6 @@ impl DashboardScreen {
         ]
     }
 
-    /// Total findings across all 13 read-only sections, plus any status-gather
-    /// warnings. The render path inlines this computation (see
-    /// `render_dashboard_content`); this standalone copy exists solely as the
-    /// oracle for `derived_findings_and_available_match_standalone_methods`.
     #[cfg(test)]
     #[must_use]
     fn findings_total(&self) -> usize {
@@ -644,10 +505,6 @@ impl DashboardScreen {
         total
     }
 
-    /// Count of sections whose backend is reachable. The render path inlines
-    /// this computation (see `render_dashboard_content`); this standalone copy
-    /// exists solely as the oracle for
-    /// `derived_findings_and_available_match_standalone_methods`.
     #[cfg(test)]
     #[must_use]
     fn managed_available(&self) -> usize {
@@ -657,7 +514,6 @@ impl DashboardScreen {
             .count()
     }
 
-    // ── Test-only hooks to flip section availability for the live snapshot ──
     #[cfg(test)]
     pub(crate) fn fail2ban_set_available_for_test(&mut self, available: bool) {
         self.fail2ban_content.set_available(available);
@@ -686,12 +542,13 @@ impl DashboardScreen {
         self.ufw_kit_content.set_available(available);
     }
 
-    /// Refresh the wall-clock label (called from the app refresh tick).
+    /// Refresh the header clock string.
     pub fn tick_clock(&mut self) {
         self.clock = current_clock();
     }
 
-    /// Provide live SSH data for all subsystems (called from the SSH data collector).
+    /// Push a collected [`SshDataBundle`](crate::ssh_data::SshDataBundle)
+    /// into the SSH panel.
     pub fn set_ssh_data(&mut self, bundle: crate::ssh_data::SshDataBundle) {
         self.ssh_content.set_keys(bundle.keys);
         self.ssh_content.set_known_hosts(bundle.known_hosts);
@@ -705,42 +562,41 @@ impl DashboardScreen {
         self.ssh_content.set_security(bundle.security);
     }
 
-    /// Drain pending SSH write operations from the SSH content area.
+    /// Drain the SSH ops queued by the SSH panel.
     pub fn drain_ssh_ops(&mut self) -> Vec<crate::ssh_data::SshOp> {
         self.ssh_content.drain_pending_ops()
     }
 
-    /// Re-queue SSH write operations at the front of the pending queue.
-    ///
-    /// Used by the app's serialized write loop to hold ops that were drained
-    /// while a batch was already in-flight (so a second task is never spawned
-    /// concurrently). The held ops are drained again once the in-flight batch
-    /// completes. They are placed ahead of any ops the UI may queue in the
-    /// meantime to preserve the user's original ordering.
+    /// Re-queue SSH ops at the front of the pending queue.
     pub fn queue_ssh_ops_front(&mut self, ops: Vec<crate::ssh_data::SshOp>) {
         self.ssh_content.queue_ops_front(ops);
     }
 
-    /// Push an SSH write error to be shown as a notification.
+    /// Push an error message onto the SSH panel.
     pub fn push_ssh_error(&mut self, msg: String) {
         self.ssh_content.push_error(msg);
     }
 
-    /// Update SSH loading state (spinner overlay) from the in-flight counter.
+    /// Whether the SSH error popup is currently showing.
+    #[must_use]
+    pub fn ssh_error_showing(&self) -> bool {
+        self.active_section() == Section::Ssh && self.ssh_content.error_showing()
+    }
+
+    /// Whether the SSH error popup has expired.
+    #[must_use]
+    pub fn ssh_error_expired(&self) -> bool {
+        self.active_section() == Section::Ssh && self.ssh_content.error_expired()
+    }
+
+    /// Set the SSH panel's loading state and pending op count.
     pub fn set_ssh_loading(&mut self, loading: bool, count: usize) {
         self.ssh_content.set_loading(loading, count);
     }
 
-    /// Provide live fail2ban data for the read-only Fail2ban section (called
-    /// from the [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected fail2ban bundle into the fail2ban panel.
     pub fn set_fail2ban_data(&mut self, b: crate::fail2ban_data::Fail2banDataBundle) {
         self.fail2ban_content.set_available(b.available);
-        // Surface the panic reason (if any) only when unavailable. Must be set
-        // AFTER set_available so the reason-clearing guard sees the fresh flag.
         self.fail2ban_content
             .set_unavailable_reason(b.unavailable_reason);
         self.fail2ban_content
@@ -753,17 +609,9 @@ impl DashboardScreen {
         self.refresh_sidebar_badges();
     }
 
-    /// Provide live UFW firewall data for the read-only Firewall section
-    /// (called from the
-    /// [`FirewallCollector`](crate::ufw_kit_data::FirewallCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected UFW bundle into the firewall panel.
     pub fn set_ufw_kit_data(&mut self, b: crate::ufw_kit_data::FirewallDataBundle) {
         self.ufw_kit_content.set_available(b.available);
-        // Surface the panic reason (if any) only when unavailable. Must be set
-        // AFTER set_available so the reason-clearing guard sees the fresh flag.
         self.ufw_kit_content
             .set_unavailable_reason(b.unavailable_reason);
         self.ufw_kit_content.set_status(
@@ -779,20 +627,9 @@ impl DashboardScreen {
         self.refresh_sidebar_badges();
     }
 
-    /// Provide live kernel-hardening data for the read-only Harden section
-    /// (called from the
-    /// [`HardenCollector`](crate::toride_harden_data::HardenCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view. The
-    /// profile selector is repopulated even on a degraded bundle so the desired
-    /// state stays visible when the live state is unreadable.
+    /// Push a collected harden bundle into the harden panel.
     pub fn set_toride_harden_data(&mut self, b: crate::toride_harden_data::HardenDataBundle) {
         self.toride_harden_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_harden_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_harden_content.set_profiles(b.profiles);
@@ -802,21 +639,12 @@ impl DashboardScreen {
         self.toride_harden_content.set_findings(b.findings);
     }
 
-    /// Provide live `WireGuard` data for the read-only `WireGuard` section (called
-    /// from the
-    /// [`WireguardCollector`](crate::toride_wireguard_data::WireguardCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected `WireGuard` bundle into the `WireGuard` panel.
     pub fn set_toride_wireguard_data(
         &mut self,
         b: crate::toride_wireguard_data::WireguardDataBundle,
     ) {
         self.toride_wireguard_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_wireguard_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_wireguard_content.set_env(
@@ -830,17 +658,9 @@ impl DashboardScreen {
         self.toride_wireguard_content.set_findings(b.findings);
     }
 
-    /// Provide live updates data for the read-only Updates section (called from
-    /// the [`UpdatesCollector`](crate::toride_updates_data::UpdatesCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected updates bundle into the updates panel.
     pub fn set_toride_updates_data(&mut self, b: crate::toride_updates_data::UpdatesDataBundle) {
         self.toride_updates_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_updates_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_updates_content.set_status(
@@ -857,18 +677,9 @@ impl DashboardScreen {
         self.refresh_sidebar_badges();
     }
 
-    /// Provide live user & access-control data for the read-only Users section
-    /// (called from the
-    /// [`UsersCollector`](crate::toride_users_data::UsersCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected users bundle into the users panel.
     pub fn set_toride_users_data(&mut self, b: crate::toride_users_data::UsersDataBundle) {
         self.toride_users_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_users_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_users_content.set_read_flags(
@@ -883,17 +694,9 @@ impl DashboardScreen {
         self.toride_users_content.set_findings(b.findings);
     }
 
-    /// Provide live audit data for the read-only Audit section (called from the
-    /// [`AuditCollector`](crate::toride_audit_data::AuditCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected audit bundle into the audit panel.
     pub fn set_toride_audit_data(&mut self, b: crate::toride_audit_data::AuditDataBundle) {
         self.toride_audit_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_audit_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_audit_content
@@ -906,18 +709,9 @@ impl DashboardScreen {
         self.toride_audit_content.set_findings(b.findings);
     }
 
-    /// Provide live outbound-traffic monitor data for the read-only Monitor
-    /// section (called from the
-    /// [`MonitorCollector`](crate::toride_monitor_data::MonitorCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected monitor bundle into the monitor panel.
     pub fn set_toride_monitor_data(&mut self, b: crate::toride_monitor_data::MonitorDataBundle) {
         self.toride_monitor_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_monitor_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_monitor_content.set_summary(b.summary);
@@ -930,17 +724,9 @@ impl DashboardScreen {
         self.toride_monitor_content.set_findings(b.findings);
     }
 
-    /// Provide live backup data for the read-only Backup section (called from
-    /// the [`BackupCollector`](crate::toride_backup_data::BackupCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected backup bundle into the backup panel.
     pub fn set_toride_backup_data(&mut self, b: crate::toride_backup_data::BackupDataBundle) {
         self.toride_backup_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_backup_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_backup_content
@@ -955,17 +741,9 @@ impl DashboardScreen {
         self.toride_backup_content.set_findings(b.findings);
     }
 
-    /// Provide live reverse-proxy data for the read-only Proxy section (called
-    /// from the [`ProxyCollector`](crate::toride_proxy_data::ProxyCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected proxy bundle into the proxy panel.
     pub fn set_toride_proxy_data(&mut self, b: crate::toride_proxy_data::ProxyDataBundle) {
         self.toride_proxy_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_proxy_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_proxy_content.set_status(b.backend, b.status);
@@ -976,16 +754,9 @@ impl DashboardScreen {
         self.toride_proxy_content.set_findings(b.findings);
     }
 
-    /// Provide live cloud-provider data for the read-only Cloud section (called
-    /// from the [`CloudCollector`](crate::toride_cloud_data::CloudCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected cloud bundle into the cloud panel.
     pub fn set_toride_cloud_data(&mut self, b: crate::toride_cloud_data::CloudDataBundle) {
         self.toride_cloud_content.set_available(b.available);
-        // Surface the panic reason (if any) only when unavailable. Must be set
-        // AFTER set_available so the reason-clearing guard sees the fresh flag.
         self.toride_cloud_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_cloud_content.set_provider(b.provider);
@@ -996,19 +767,12 @@ impl DashboardScreen {
         self.toride_cloud_content.set_findings(b.findings);
     }
 
-    /// Provide live Tailscale data for the read-only Tailscale section (called from
-    /// the [`TailscaleCollector`](crate::toride_tailscale_data::TailscaleCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly read-only, so
-    /// every refresh cleanly overwrites the previous view.
+    /// Push a collected tailscale bundle into the tailscale panel.
     pub fn set_toride_tailscale_data(
         &mut self,
         b: crate::toride_tailscale_data::TailscaleDataBundle,
     ) {
         self.toride_tailscale_content.set_available(b.available);
-        // Surface the panic reason (if any) only when unavailable. Must be set
-        // AFTER set_available so the reason-clearing guard sees the fresh flag.
         self.toride_tailscale_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_tailscale_content.set_status(
@@ -1033,17 +797,9 @@ impl DashboardScreen {
         self.toride_tailscale_content.set_findings(b.findings);
     }
 
-    /// Provide live mise data for the read-only Mise section (called from the
-    /// [`MiseCollector`](crate::toride_mise_data::MiseCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected mise bundle into the mise panel.
     pub fn set_toride_mise_data(&mut self, b: crate::toride_mise_data::MiseDataBundle) {
         self.toride_mise_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.toride_mise_content
             .set_unavailable_reason(b.unavailable_reason);
         self.toride_mise_content.set_version(b.version);
@@ -1053,11 +809,7 @@ impl DashboardScreen {
         self.toride_mise_content.set_findings(b.findings);
     }
 
-    /// Provide live About-toride data for the read-only About section (called
-    /// from the [`AboutCollector`](crate::about_data::AboutCollector)).
-    ///
-    /// Fans the bundle out to the content setters. No cooldown or optimistic
-    /// updates — the section is strictly read-only identity metadata.
+    /// Push a collected about bundle into the about panel.
     pub fn set_about_data(&mut self, b: crate::about_data::AboutDataBundle) {
         self.about_content.set_available(b.available);
         self.about_content
@@ -1067,8 +819,7 @@ impl DashboardScreen {
         self.about_content.set_runtime(b.runtime);
     }
 
-    /// Provide live system log-sources data for the read-only Logs section
-    /// (called from the [`LogsCollector`](crate::logs_data::LogsCollector)).
+    /// Push a collected logs bundle into the logs panel.
     pub fn set_logs_data(&mut self, b: crate::logs_data::LogsDataBundle) {
         self.logs_content.set_available(b.available);
         self.logs_content
@@ -1076,59 +827,32 @@ impl DashboardScreen {
         self.logs_content.set_logs(b.sources);
     }
 
-    /// Provide live settings data for the read-only Settings section (called
-    /// from the [`SettingsCollector`](crate::settings_data::SettingsCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected settings bundle into the settings panel.
     pub fn set_settings_data(&mut self, b: crate::settings_data::SettingsDataBundle) {
         self.settings_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.settings_content
             .set_unavailable_reason(b.unavailable_reason);
         self.settings_content.set_config(b.config);
         self.settings_content.set_runtime(b.runtime);
     }
 
-    /// Push the live active theme into the Settings content so its THEME block
-    /// highlight + swatches track the current palette. Called by `App::update`'s
-    /// `Action::CycleTheme` arm after it computes the new theme.
+    /// Set the theme the settings panel reports as active.
     pub fn set_active_theme(&mut self, theme: crate::ui::theme::Theme) {
         self.settings_content.set_active_theme(theme);
     }
 
-    /// Provide live hardening-recipes catalogue data for the read-only
-    /// Templates section (called from the
-    /// [`TemplatesCollector`](crate::templates_data::TemplatesCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected templates bundle into the templates panel.
     pub fn set_templates_data(&mut self, b: crate::templates_data::TemplatesDataBundle) {
         self.templates_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.templates_content
             .set_unavailable_reason(b.unavailable_reason);
         self.templates_content.set_recipes(b.recipes);
         self.templates_content.set_findings(b.findings);
     }
 
-    /// Provide live installed-tools data for the read-only Tools section
-    /// (called from the [`ToolsCollector`](crate::tools_data::ToolsCollector)).
-    ///
-    /// Fans the bundle out to the content setters. There is no cooldown or
-    /// optimistic-update reconciliation here — the section is strictly
-    /// read-only, so every refresh cleanly overwrites the previous view.
+    /// Push a collected tools bundle into the tools panel.
     pub fn set_tools_data(&mut self, b: crate::tools_data::ToolsDataBundle) {
         self.tools_content.set_available(b.available);
-        // Surface the unavailable reason (if any) only when unavailable. Must
-        // be set AFTER set_available so the reason-clearing guard sees the
-        // fresh flag.
         self.tools_content
             .set_unavailable_reason(b.unavailable_reason);
         self.tools_content.set_tools(b.tools);
@@ -1136,18 +860,10 @@ impl DashboardScreen {
         self.refresh_sidebar_badges();
     }
 
-    /// The currently active section.
     fn active_section(&self) -> Section {
         self.data.sidebar[self.active].section
     }
 
-    /// Resolve the active section to its content panel, or `None` when
-    /// [`Section::Dashboard`] is active (it has bespoke key/render/scroll
-    /// handling and is not a [`ContentPanel`]).
-    ///
-    /// This single 19-arm match replaces the five former triplicated
-    /// `match self.active_section()` dispatch blocks in `handle_key`/`render`/
-    /// `handle_mouse`.
     fn active_panel_mut(&mut self) -> Option<&mut dyn ContentPanel> {
         match self.active_section() {
             Section::Dashboard => None,
@@ -1173,14 +889,10 @@ impl DashboardScreen {
         }
     }
 
-    // ── Input ────────────────────────────────────────────────────────────────
-
     fn module_left(&mut self) {
         self.module_sel = self.module_sel.saturating_sub(1);
     }
 
-    /// Number of modules in the *current* grid view (live cards when a status
-    /// has been collected, else the mock list). Navigation is bounded by this.
     fn modules_count(&self) -> usize {
         let view_len = self.modules_view.len();
         if view_len > 0 {
@@ -1208,13 +920,11 @@ impl DashboardScreen {
         }
     }
 
-    /// Scroll/move within the currently focused region (used by the mouse wheel).
     fn scroll_focused(&mut self, down: bool) {
         if self.focus.is_focused(&ShellFocus::Sidebar) {
             self.sidebar.scroll(if down { 1 } else { -1 });
             return;
         }
-        // Content-focused: delegate to the active section.
         if self.active_section() == Section::Dashboard {
             match self.dashboard_focus {
                 DashboardFocus::Updates => {
@@ -1240,10 +950,8 @@ impl DashboardScreen {
                 }
             }
         }
-        // SSH and other sections handle their own scrolling via mouse delegation.
     }
 
-    /// Check if a screen coordinate falls within a header gauge hitbox.
     fn gauge_at(&self, col: u16, row: u16) -> Option<GaugeKind> {
         let kinds = [
             GaugeKind::Cpu,
@@ -1259,14 +967,11 @@ impl DashboardScreen {
         None
     }
 
-    /// Check if a screen coordinate falls within a module card hitbox.
     fn module_at(&self, col: u16, row: u16) -> Option<usize> {
         self.module_hitboxes.iter().position(|rect| {
             col >= rect.x && col < rect.right() && row >= rect.y && row < rect.bottom()
         })
     }
-
-    // ── Render ─────────────────────────────────────────────────────────────────
 
     #[expect(
         clippy::too_many_lines,
@@ -1288,11 +993,8 @@ impl DashboardScreen {
         };
 
         let shell = shell_layout(area, sidebar_w);
-        // Stash the sidebar pane rect so mouse-wheel events can be routed by
-        // cursor position (see the ScrollDown/ScrollUp arm in `handle_mouse`).
         self.sidebar_area = shell.sidebar;
 
-        // Header gauges from live status when available.
         let (cpu, ram, disk_label, net_label) = self.gauges();
         let header_data = HeaderData {
             cpu,
@@ -1304,7 +1006,6 @@ impl DashboardScreen {
         };
         render_header(frame, shell.header, p, &header_data);
 
-        // Refresh gauge hitboxes for hover detection.
         self.gauge_hitboxes = gauge_hitboxes(shell.header, &header_data);
 
         self.sidebar.render(
@@ -1331,13 +1032,6 @@ impl DashboardScreen {
             ],
         );
 
-        // ── Content ──────────────────────────────────────────────────────────
-        // Exhaustive match over every Section variant — NO wildcard arm. A
-        // future Section variant added without a matching arm is a compile
-        // error, not a silent "coming soon" placeholder. (Previously this was
-        // an if/else-if chain with a trailing `render_placeholder(...)` else
-        // branch that was unreachable today but would have silently rendered
-        // "<section> — coming soon" for any future unwired variant.)
         let content = shell.content;
         if let Some(panel) = self.active_panel_mut() {
             panel.view(frame, content, p);
@@ -1345,9 +1039,6 @@ impl DashboardScreen {
             self.render_dashboard_content(frame, content, p);
         }
 
-        // ── Module detail modal ───────────────────────────────────────────────
-        // Clamp the modal index against the current view; if the source vec
-        // shrank (e.g. switched mock→live), drop the stale selection.
         if let Some(idx) = self.open_module_idx
             && idx >= self.modules_count()
         {
@@ -1362,18 +1053,14 @@ impl DashboardScreen {
                 });
         }
 
-        // ── Header gauge tooltip overlay ────────────────────────────────────
-        let dt = self.last_frame.elapsed();
+        let mut dt = self.last_frame.elapsed();
         self.last_frame = Instant::now();
 
-        // Detect hover transitions and manage fade-in effect.
         if self.gauge_hover != self.prev_gauge_hover {
             self.prev_gauge_hover = self.gauge_hover;
+            dt = Duration::ZERO;
             if self.gauge_hover.is_some() {
                 self.tooltip_fx = EffectManager::default();
-                // Under reduced motion skip the 300ms fade — render the tooltip
-                // fully opaque immediately (an empty EffectManager is a no-op in
-                // process_effects below).
                 if !p.reduced_motion {
                     self.tooltip_fx
                         .add_effect(fx::fade_from_fg(p.panel, (300, Interpolation::SineOut)));
@@ -1407,6 +1094,13 @@ impl DashboardScreen {
         }
     }
 
+    fn header_spinners_live(&self) -> bool {
+        self.net_rx_rate.is_none()
+            || self.net_tx_rate.is_none()
+            || self.disk_read_rate.is_none()
+            || self.disk_write_rate.is_none()
+    }
+
     fn gauges(&self) -> (Option<f64>, Option<f64>, Option<String>, Option<String>) {
         let net_label = match (self.net_rx_rate, self.net_tx_rate) {
             (Some(rx), Some(tx)) => Some(format!("{}↓ {}↑", format_rate(rx), format_rate(tx))),
@@ -1437,11 +1131,6 @@ impl DashboardScreen {
         ])
         .areas(pad(area));
 
-        // Collect the live managed-services snapshot ONCE, before any &mut self
-        // panel render. Owned vec → no borrow conflicts with the &mut renders below.
-        // Derive `findings` and `managed_available` from this same slice instead of
-        // re-calling managed_services() (which rebuilds all 13 cards + their detail
-        // Strings) inside findings_total()/managed_available() each frame.
         let live = self.status.is_some();
         let managed = self.managed_services();
         let findings = managed
@@ -1473,7 +1162,6 @@ impl DashboardScreen {
 
         let single_col = body_area.width < SINGLE_COL_W;
         if single_col {
-            // Stack: modules on top, then storage/network, then top processes.
             let [mods, ups, acts] = Layout::vertical([
                 Constraint::Fill(2),
                 Constraint::Fill(1),
@@ -1514,10 +1202,6 @@ impl DashboardScreen {
         .spacing(1)
         .areas(area);
 
-        // MANAGED: live available/total, else honest cold-start 0/0 (no live
-        // status yet). The old DashboardData.modules_installed/modules_total
-        // fields were always 0 here (never populated with real data) and have
-        // been removed; the literal 0/0 is the same honest cold-start value.
         let (managed_num, managed_denom) = if live {
             (managed_available, MANAGED_SECTIONS_TOTAL)
         } else {
@@ -1548,10 +1232,6 @@ impl DashboardScreen {
         ];
         Card::new(managed_card).render(frame, a, p);
 
-        // UPDATES: live pending_total, else honest 0 (no live updates data yet).
-        // The old DashboardData.updates_count() always returned 0 (the updates
-        // Vec was never populated with real data) and has been removed; the
-        // literal 0 is the same honest cold-start value.
         let updates_num = pending_total.unwrap_or(0);
         let updates_color = if updates_num == 0 { p.ok } else { p.warn };
         let updates_card = vec![
@@ -1567,7 +1247,6 @@ impl DashboardScreen {
         ];
         Card::new(updates_card).render(frame, b, p);
 
-        // FINDINGS: sum of section findings + status warnings (replaces STAGED).
         let findings_color = if findings == 0 {
             p.ok
         } else if findings < 5 {
@@ -1594,7 +1273,6 @@ impl DashboardScreen {
         let muted = Style::new().fg(p.text_muted);
         let accent = Style::new().fg(p.accent3);
 
-        // Prefer live status where available, fall back to mock host.
         let (hostname, os, cpu, mem_used, mem_total, uptime, load) = match &self.status {
             Some(s) => {
                 let os = match (&s.system.os_info.name, &s.system.os_info.version) {
@@ -1644,7 +1322,6 @@ impl DashboardScreen {
             ),
         };
 
-        // Compact daemon/ssh health, appended to the uptime/load line when live.
         let health_suffix = match &self.status {
             Some(s) => {
                 let (daemon_glyph, daemon_color) = if s.daemon.alive {
@@ -1711,10 +1388,6 @@ impl DashboardScreen {
             return;
         }
 
-        // Live path: materialize Modules from the snapshot; mock path: borrow mock data.
-        // Cache the materialized view on the screen so keyboard navigation and
-        // the detail modal index the same vec the grid drew this frame (the live
-        // grid is 13 cards; the mock list is 8 — they must not be mixed).
         let modules: Vec<Module> = if live {
             managed.iter().map(ManagedServiceCard::to_module).collect()
         } else {
@@ -1729,7 +1402,6 @@ impl DashboardScreen {
         }
         let per_row = usize::from(cols.max(1));
 
-        // Clamp scroll so the selected module stays visible.
         let sel_row = self.module_sel / per_row;
         if sel_row < self.module_scroll {
             self.module_scroll = sel_row;
@@ -1749,7 +1421,6 @@ impl DashboardScreen {
         )
         .split(inner);
 
-        // Rebuild module hitboxes for click detection.
         self.module_hitboxes.clear();
 
         for (r, row_rect) in row_rects.iter().enumerate() {
@@ -1768,7 +1439,6 @@ impl DashboardScreen {
                 let m = &modules[idx];
                 let card_focused = focused && idx == self.module_sel;
                 render_module_card(frame, *cell, p, m, card_focused);
-                // Record hitbox — index matches position in the module data vec.
                 while self.module_hitboxes.len() <= idx {
                     self.module_hitboxes.push(Rect::default());
                 }
@@ -1777,9 +1447,6 @@ impl DashboardScreen {
         }
     }
 
-    /// STORAGE & NETWORK panel: top disks (usage %) + network rate line, from
-    /// live `TorideStatus`. Renders an honest "collecting…" line before the
-    /// first status lands — never the fabricated updates list.
     fn render_updates_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let focused = self.focus.is_focused(&ShellFocus::Content)
             && self.active_section() == Section::Dashboard
@@ -1790,10 +1457,6 @@ impl DashboardScreen {
                 render_titled_panel(frame, area, p, " STORAGE & NETWORK ", p.accent, focused);
             self.render_storage_network(frame, inner, p, s);
         } else {
-            // Honest cold-start state: nothing fabricated. The pending-update
-            // count is shown in the stat card above (0 until the updates
-            // collector reports); this panel shows disk/network once status
-            // arrives, and an honest placeholder until then.
             let inner =
                 render_titled_panel(frame, area, p, " STORAGE & NETWORK ", p.accent, focused);
             let line = Line::from(Span::styled(
@@ -1804,11 +1467,9 @@ impl DashboardScreen {
         }
     }
 
-    /// Render live disk + network rows into the STORAGE & NETWORK panel inner area.
     fn render_storage_network(&self, frame: &mut Frame, inner: Rect, p: Palette, s: &TorideStatus) {
         let mut lines: Vec<(String, Option<String>, ratatui::style::Color)> = Vec::new();
 
-        // Top disks by usage %. Skip empty/zero-total disks.
         let mut disks: Vec<&crate::status::DiskStatus> = s
             .system
             .disks
@@ -1831,7 +1492,6 @@ impl DashboardScreen {
             lines.push((label, Some(value), color));
         }
 
-        // Network rate line (reuse already-computed throughput).
         let net_value = match (self.net_rx_rate, self.net_tx_rate) {
             (Some(rx), Some(tx)) => Some(format!("↓ {} · ↑ {}", fmt_rate(rx), fmt_rate(tx))),
             (Some(rx), None) => Some(format!("↓ {}", fmt_rate(rx))),
@@ -1842,7 +1502,6 @@ impl DashboardScreen {
             lines.push(("network".to_string(), net_value, p.info));
         }
 
-        // If we somehow produced nothing, show a placeholder so the panel isn't blank.
         if lines.is_empty() {
             let line = Line::from(Span::styled(
                 "  no storage/network data",
@@ -1871,10 +1530,6 @@ impl DashboardScreen {
         }
     }
 
-    /// TOP PROCESSES panel: top 3-5 by CPU then memory, from live `TorideStatus`.
-    /// Renders an honest "collecting…" line before the first status lands —
-    /// never the fabricated "RECENTLY INSTALLED" activity log (there is no real
-    /// "recently installed" source on the dashboard; that data was mock).
     fn render_activity_panel(&self, frame: &mut Frame, area: Rect, p: Palette) {
         let focused = self.focus.is_focused(&ShellFocus::Content)
             && self.active_section() == Section::Dashboard
@@ -1893,10 +1548,6 @@ impl DashboardScreen {
         }
     }
 
-    /// Forward a keypress to the active content panel, or — when
-    /// [`Section::Dashboard`] is active — to the bespoke dashboard key handler.
-    /// Collapses the three former triplicated `match self.active_section()`
-    /// blocks in [`Self::handle_key`] (Tab, `BackTab`, generic content-focused).
     fn content_handle_key(&mut self, code: KeyCode) -> Option<Action> {
         if let Some(panel) = self.active_panel_mut() {
             panel.handle_key(code)
@@ -1905,9 +1556,7 @@ impl DashboardScreen {
         }
     }
 
-    /// Handle a key press while the Dashboard section's content is focused.
     fn handle_dashboard_content_key(&mut self, code: KeyCode) -> Option<Action> {
-        // Tab/BackTab cycle between internal panels.
         match code {
             KeyCode::Tab => {
                 self.dashboard_focus = self.dashboard_focus.next();
@@ -1956,7 +1605,6 @@ impl DashboardScreen {
 
 impl AppScreen for DashboardScreen {
     fn handle_key(&mut self, code: KeyCode) -> Option<Action> {
-        // Module detail modal intercepts input while open.
         if self.module_modal.is_visible() {
             match self.module_modal.handle_key(code) {
                 ModalEvent::Closed | ModalEvent::Button(_) => {
@@ -1969,17 +1617,12 @@ impl AppScreen for DashboardScreen {
         }
 
         match code {
-            // When SSH content has a modal (form/confirm) open OR is loading,
-            // ALL keys go to SSH first. This prevents global shortcuts (q,
-            // digits, Esc, etc.) from firing while the user is filling in a
-            // form or while write ops are in-flight.
             _ if self.active_section() == Section::Ssh
                 && (self.ssh_content.has_modal() || self.ssh_content.is_loading()) =>
             {
                 return self.ssh_content.handle_key(code);
             }
             KeyCode::Char('q') => return Some(Action::ConfirmQuit),
-            // Tab/BackTab on Sidebar: cycle shell focus. On Content: forward to section.
             KeyCode::Tab => {
                 if self.focus.is_focused(&ShellFocus::Content) {
                     return self.content_handle_key(code);
@@ -2017,12 +1660,10 @@ impl AppScreen for DashboardScreen {
             _ => {}
         }
 
-        // ── Content-focused: delegate to active section ────────────────
         if self.focus.is_focused(&ShellFocus::Content) {
             return self.content_handle_key(code);
         }
 
-        // ── Sidebar-focused ─────────────────────────────────────────────
         match code {
             KeyCode::Down | KeyCode::Char('j') => self.sidebar.select_next(),
             KeyCode::Up | KeyCode::Char('k') => self.sidebar.select_prev(),
@@ -2035,12 +1676,15 @@ impl AppScreen for DashboardScreen {
     fn handle_mouse(&mut self, mouse: MouseEvent) -> Option<Action> {
         use crossterm::event::MouseButton;
 
-        // Header gauge hover always works (even with modals open).
-        if matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_)) {
-            self.gauge_hover = self.gauge_at(mouse.column, mouse.row);
+        let motion = matches!(mouse.kind, MouseEventKind::Moved | MouseEventKind::Drag(_));
+
+        let mut hover_changed = false;
+        if motion {
+            let gauge = self.gauge_at(mouse.column, mouse.row);
+            hover_changed |= gauge != self.gauge_hover;
+            self.gauge_hover = gauge;
         }
 
-        // Module detail modal open: block all background interaction.
         if self.module_modal.is_visible() {
             match self.module_modal.handle_mouse(&mouse) {
                 ModalEvent::Closed | ModalEvent::Button(_) => {
@@ -2049,28 +1693,29 @@ impl AppScreen for DashboardScreen {
                 }
                 ModalEvent::Consumed => {}
             }
+            if motion {
+                return Some(Action::Redraw);
+            }
             return None;
         }
 
         match mouse.kind {
-            // Hover: highlight sidebar item under the cursor.
             MouseEventKind::Moved | MouseEventKind::Drag(_) => {
                 let idx = self.sidebar.item_at(mouse.column, mouse.row);
-                self.sidebar.set_hovered(idx);
-                // Delegate hover to content sections that track it. The
-                // Dashboard section has nothing to hover (no-op).
+                hover_changed |= self.sidebar.set_hovered(idx);
                 if let Some(panel) = self.active_panel_mut() {
                     panel.handle_mouse(mouse);
                 }
+                if hover_changed || self.active_section() == Section::Ssh {
+                    return Some(Action::Redraw);
+                }
             }
-            // Click: select + activate the clicked element.
             MouseEventKind::Down(MouseButton::Left) => {
                 if let Some(idx) = self.sidebar.item_at(mouse.column, mouse.row) {
                     self.sidebar.select_to(idx);
                     self.active = idx;
                     self.focus.set(ShellFocus::Sidebar);
                 } else if self.active_section() == Section::Dashboard {
-                    // Module clicks only work in the Dashboard section.
                     if let Some(idx) = self.module_at(mouse.column, mouse.row) {
                         self.module_sel = idx;
                         self.focus.set(ShellFocus::Content);
@@ -2078,8 +1723,6 @@ impl AppScreen for DashboardScreen {
                         self.module_modal.open();
                     }
                 } else {
-                    // A read-only content panel owns this click: focus content
-                    // and forward the mouse event to the active panel.
                     self.focus.set(ShellFocus::Content);
                     if let Some(panel) = self.active_panel_mut() {
                         return panel.handle_mouse(mouse);
@@ -2088,12 +1731,6 @@ impl AppScreen for DashboardScreen {
             }
             MouseEventKind::ScrollDown | MouseEventKind::ScrollUp => {
                 let down = matches!(mouse.kind, MouseEventKind::ScrollDown);
-                // Route the wheel by cursor position, not focus: when the
-                // pointer is over the sidebar column, scroll the sidebar list
-                // regardless of which shell region is focused or which section
-                // is active. (Previously the sidebar only scrolled when it was
-                // already focused, so wheeling over it scrolled the focused
-                // content instead.)
                 let s = self.sidebar_area;
                 let over_sidebar = mouse.column >= s.x
                     && mouse.column < s.x + s.width
@@ -2106,12 +1743,9 @@ impl AppScreen for DashboardScreen {
                 if let Some(panel) = self.active_panel_mut() {
                     return panel.handle_mouse(mouse);
                 }
-                // Section::Dashboard: wheel the focused dashboard region.
                 self.scroll_focused(down);
             }
             MouseEventKind::Up(_) => {
-                // Forward to the active content panel; the Dashboard section
-                // has nothing to do on mouse-up (no-op).
                 if let Some(panel) = self.active_panel_mut() {
                     return panel.handle_mouse(mouse);
                 }
@@ -2134,7 +1768,15 @@ impl AppScreen for DashboardScreen {
     }
 
     fn needs_animation(&self) -> bool {
+        true
+    }
+
+    fn needs_fast_frames(&self) -> bool {
         self.sidebar.is_animating()
+            || self.header_spinners_live()
+            || self.ssh_content.is_loading()
+            || self.ssh_content.has_pending_fingerprints()
+            || self.tooltip_fx.is_running()
     }
 
     fn has_modal(&self) -> bool {
@@ -2146,18 +1788,10 @@ impl AppScreen for DashboardScreen {
         {
             return true;
         }
-        // All non-SSH content sections (Fail2ban, Firewall, Harden, WireGuard,
-        // Updates, Users, Audit, Monitor, Backup, Proxy, Cloud, Tailscale, Mise,
-        // Tools, Templates, Logs, About, Settings) are read-only with no modal
-        // — has_modal() always returns false for them, so only SSH needs a
-        // branch here.
         false
     }
 }
 
-// ── Free render helpers ───────────────────────────────────────────────────────
-
-/// Inset an area by one column/row for breathing room inside the content region.
 fn pad(area: Rect) -> Rect {
     Rect {
         x: area.x + 1,
@@ -2167,7 +1801,6 @@ fn pad(area: Rect) -> Rect {
     }
 }
 
-/// Format a bytes/sec rate compactly (e.g. `1.2 MB/s`, `340 KB/s`).
 fn fmt_rate(bytes_per_sec: f64) -> String {
     #[allow(clippy::cast_precision_loss)]
     let v = bytes_per_sec.max(0.0);
@@ -2182,7 +1815,6 @@ fn fmt_rate(bytes_per_sec: f64) -> String {
     }
 }
 
-/// Compute the visible `(item_index, row_rect)` pairs for a scrollable list.
 fn render_module_card(frame: &mut Frame, area: Rect, p: Palette, m: &Module, focused: bool) {
     let border = if focused { p.border_hi } else { p.border };
     let inner = render_panel(frame, area, None, p.text, border, p.panel);
@@ -2226,10 +1858,8 @@ fn render_module_card(frame: &mut Frame, area: Rect, p: Palette, m: &Module, foc
     }
 }
 
-/// Render live top processes (by CPU, then memory) into the TOP PROCESSES panel.
-#[allow(clippy::cast_possible_truncation)] // i is bounded by inner.height (u16) via take()
+#[allow(clippy::cast_possible_truncation)]
 fn render_top_processes(frame: &mut Frame, inner: Rect, p: Palette, s: &TorideStatus) {
-    // Top by CPU (desc), tie-break by memory.
     let mut procs: Vec<&crate::status::ProcessStatus> =
         s.system.processes.processes.iter().collect();
     procs.sort_by(|a, b| {
@@ -2319,9 +1949,6 @@ fn render_module_modal_content(
     }
 }
 
-// ── Header gauge tooltip ─────────────────────────────────────────────────────
-
-/// Live throughput rates passed to tooltip renderers.
 struct LiveRates {
     net_rx: Option<f64>,
     net_tx: Option<f64>,
@@ -2329,9 +1956,6 @@ struct LiveRates {
     disk_write: Option<f64>,
 }
 
-/// Render a floating popup card anchored below the hovered header gauge.
-///
-/// Returns `Some(rect)` if the tooltip was rendered, `None` if it didn't fit.
 fn render_gauge_tooltip(
     frame: &mut Frame,
     p: Palette,
@@ -2350,8 +1974,6 @@ fn render_gauge_tooltip(
     let hitbox = hitboxes[idx];
     let lines = gauge_tooltip_lines(gauge, status, p, rates);
 
-    // Construct an anchor whose `.bottom()` equals `header_area.bottom()` so the
-    // tooltip appears just below the header, centered on the gauge hitbox.
     let anchor = Rect::new(
         hitbox.x,
         header_area.bottom().saturating_sub(1),
@@ -2361,7 +1983,6 @@ fn render_gauge_tooltip(
     Tooltip::new(&lines).anchor(anchor).render(frame, p)
 }
 
-/// Build tooltip content lines for a given gauge kind.
 fn gauge_tooltip_lines(
     gauge: GaugeKind,
     status: &TorideStatus,
@@ -2379,10 +2000,8 @@ fn gauge_tooltip_lines(
 fn cpu_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
 
-    // Title
     lines.push(title_line_with_detail("CPU", &sys.static_info.cpu_brand, p));
 
-    // Usage — kept manual because value uses `.bold()`, unique to CPU.
     if let Some(usage) = sys.cpu_usage {
         let color = percent_color(usage, p);
         lines.push(Line::from(vec![
@@ -2391,14 +2010,12 @@ fn cpu_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<
         ]));
     }
 
-    // Cores
     let phys = sys
         .physical_cores
         .map_or_else(|| "—".to_string(), |c| c.to_string());
     let log = sys.static_info.logical_cores;
     lines.push(kv("Cores", &format!("{phys} / {log}"), p));
 
-    // Load average
     if let Some(load) = &sys.load_average {
         lines.push(kv(
             "Load",
@@ -2407,7 +2024,6 @@ fn cpu_tooltip_lines(sys: &crate::status::SystemStatus, p: Palette) -> Vec<Line<
         ));
     }
 
-    // Per-core mini readout (dynamic multi-span — kept manual)
     if !sys.cpu_cores.is_empty() {
         let mut cores: Vec<Span<'static>> = Vec::new();
         for (i, c) in sys.cpu_cores.iter().enumerate() {
@@ -2502,7 +2118,6 @@ fn disk_tooltip_lines(
     lines.push(kv("Free", &format_bytes(d.available_bytes), p));
     lines.push(kv("Type", &d.disk_type, p));
 
-    // Disk I/O — live throughput
     if rates.disk_read.is_some() || rates.disk_write.is_some() {
         let read_s = rates.disk_read.map_or_else(|| "—".to_string(), format_rate);
         let write_s = rates
@@ -2549,7 +2164,6 @@ fn net_tooltip_lines(
     lines
 }
 
-/// Format a bytes/sec rate as a human-readable string (e.g. `"12.3 KB"`).
 fn format_rate(bytes_per_sec: f64) -> String {
     const KB: f64 = 1024.0;
     const MB: f64 = KB * 1024.0;
@@ -2565,9 +2179,6 @@ fn format_rate(bytes_per_sec: f64) -> String {
     }
 }
 
-// ── Clock ─────────────────────────────────────────────────────────────────────
-
-/// Format the current wall-clock time as a 12-hour `HH:MM AM/PM` label (UTC).
 fn current_clock() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -2590,28 +2201,22 @@ mod tests {
 
     #[test]
     fn shell_focus_cycles_sidebar_content() {
-        // Tab from Sidebar → Content. Esc returns to Sidebar.
         let mut s = DashboardScreen::new();
         assert!(s.focus.is_focused(&ShellFocus::Sidebar));
         s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
-        // Tab on Content is forwarded to the section (not shell-level cycle).
-        // Use Esc to go back to Sidebar.
         s.handle_key(KeyCode::Esc);
         assert!(s.focus.is_focused(&ShellFocus::Sidebar));
-        // BackTab from Sidebar goes to Content (wraps around FocusManager ring).
         s.handle_key(KeyCode::BackTab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
     }
 
     #[test]
     fn dashboard_focus_cycles_panels() {
-        // Internal Tab cycles Modules → Updates → Activity → Modules.
         let mut s = DashboardScreen::new();
-        s.handle_key(KeyCode::Tab); // -> Content (Dashboard section)
+        s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
         assert_eq!(s.dashboard_focus, DashboardFocus::Modules);
-        // Tab is forwarded to dashboard content handler which cycles panels.
         s.handle_key(KeyCode::Tab);
         assert_eq!(s.dashboard_focus, DashboardFocus::Updates);
         s.handle_key(KeyCode::Tab);
@@ -2623,12 +2228,11 @@ mod tests {
     #[test]
     fn enter_on_module_opens_modal() {
         let mut s = DashboardScreen::new();
-        s.handle_key(KeyCode::Tab); // -> Content
+        s.handle_key(KeyCode::Tab);
         assert!(!s.module_modal.is_visible());
         s.handle_key(KeyCode::Enter);
         assert!(s.module_modal.is_visible());
         assert_eq!(s.open_module_idx, Some(0));
-        // Esc closes it.
         s.handle_key(KeyCode::Esc);
         assert!(!s.module_modal.is_visible());
     }
@@ -2636,7 +2240,7 @@ mod tests {
     #[test]
     fn esc_from_content_returns_to_sidebar() {
         let mut s = DashboardScreen::new();
-        s.handle_key(KeyCode::Tab); // Content
+        s.handle_key(KeyCode::Tab);
         let action = s.handle_key(KeyCode::Esc);
         assert!(action.is_none());
         assert!(s.focus.is_focused(&ShellFocus::Sidebar));
@@ -2649,30 +2253,132 @@ mod tests {
     }
 
     #[test]
-    fn mouse_wheel_over_sidebar_scrolls_sidebar_not_content() {
-        // Regression: the mouse wheel must route by CURSOR POSITION. When the
-        // pointer is over the sidebar column, scrolling must move the sidebar
-        // list — regardless of which shell region is focused or which section
-        // is active. Previously the sidebar only scrolled when it was already
-        // focused, so wheeling over it scrolled the focused content instead.
+    fn needs_animation_is_always_true_for_header_shimmer() {
+        let s = DashboardScreen::new();
+        assert!(s.needs_animation());
+    }
+
+    #[test]
+    fn needs_fast_frames_tracks_spinners_and_loading() {
+        let mut s = DashboardScreen::new();
+        assert!(
+            s.needs_fast_frames(),
+            "cold start renders header gauge spinners — full frame rate"
+        );
+
+        s.net_rx_rate = Some(1.0);
+        s.net_tx_rate = Some(1.0);
+        s.disk_read_rate = Some(1.0);
+        s.disk_write_rate = Some(1.0);
+        assert!(
+            !s.needs_fast_frames(),
+            "settled screen with known rates is shimmer-only"
+        );
+
+        s.set_ssh_loading(true, 1);
+        assert!(s.needs_fast_frames(), "SSH write spinner needs fast frames");
+        s.set_ssh_loading(false, 0);
+        assert!(!s.needs_fast_frames(), "spinner gone — slow cadence again");
+    }
+
+    #[test]
+    fn needs_fast_frames_covers_pending_key_fingerprints() {
+        use crate::ui::screens::SshKeyEntry;
+
+        fn key_entry(fingerprint: &str) -> SshKeyEntry {
+            SshKeyEntry {
+                name: "id_ed25519".into(),
+                key_type: "Ed25519".into(),
+                fingerprint: fingerprint.into(),
+                encrypted: false,
+                permissions: "0600".into(),
+                has_public: true,
+                has_cert: false,
+                used_by_hosts: Vec::new(),
+            }
+        }
+
+        let mut s = DashboardScreen::new();
+        s.net_rx_rate = Some(1.0);
+        s.net_tx_rate = Some(1.0);
+        s.disk_read_rate = Some(1.0);
+        s.disk_write_rate = Some(1.0);
+        assert!(!s.needs_fast_frames(), "settled screen is shimmer-only");
+
+        s.ssh_content.set_keys(vec![key_entry("")]);
+        assert!(
+            s.needs_fast_frames(),
+            "a pending fingerprint row spins at full frame rate"
+        );
+
+        s.ssh_content.set_keys(vec![key_entry("SHA256:abc123")]);
+        assert!(
+            !s.needs_fast_frames(),
+            "filled fingerprint settles back to shimmer cadence"
+        );
+    }
+
+    #[test]
+    fn ssh_error_expiry_flags_follow_the_visible_section() {
+        let mut s = DashboardScreen::new();
+        s.push_ssh_error("write failed".into());
+        assert!(
+            !s.ssh_error_showing(),
+            "the Dashboard overview does not render the SSH toast"
+        );
+
+        let idx = s
+            .data
+            .sidebar
+            .iter()
+            .position(|i| i.section == Section::Ssh)
+            .expect("SSH section is in the sidebar");
+        s.active = idx;
+        assert_eq!(s.active_section(), Section::Ssh);
+        assert!(s.ssh_error_showing(), "visible on the SSH section");
+        assert!(!s.ssh_error_expired(), "a fresh toast is not expired");
+    }
+
+    #[test]
+    fn motion_over_unchanged_ui_requests_no_redraw() {
         use crate::ui::theme::CHARM;
         use crossterm::event::KeyModifiers;
         use ratatui::{Terminal, backend::TestBackend};
 
-        // Short terminal so the 20 sidebar items overflow the pane (scrollable).
+        let mut s = DashboardScreen::new();
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| s.view(f, CHARM)).unwrap();
+
+        for row in 6..22u16 {
+            let action = s.handle_mouse(MouseEvent {
+                kind: MouseEventKind::Moved,
+                column: 60,
+                row,
+                modifiers: KeyModifiers::empty(),
+            });
+            assert_eq!(
+                action, None,
+                "no-change motion at row {row} repaints nothing"
+            );
+        }
+    }
+
+    #[test]
+    fn mouse_wheel_over_sidebar_scrolls_sidebar_not_content() {
+        use crate::ui::theme::CHARM;
+        use crossterm::event::KeyModifiers;
+        use ratatui::{Terminal, backend::TestBackend};
+
         let mut s = DashboardScreen::new();
         let mut term = Terminal::new(TestBackend::new(80, 16)).unwrap();
         term.draw(|f| s.view(f, CHARM)).unwrap();
 
-        // `view` → `render` must populate the sidebar pane rect.
         let sb = s.sidebar_area;
         assert!(sb.width > 0 && sb.height > 0, "sidebar_area set by render");
 
-        // Focus the CONTENT pane — the old bug scrolled content here.
         s.focus.set(ShellFocus::Content);
         let module_scroll_before = s.module_scroll;
 
-        // Wheel DOWN while the pointer is inside the sidebar pane.
         s.handle_mouse(MouseEvent {
             kind: MouseEventKind::ScrollDown,
             column: sb.x,
@@ -2688,7 +2394,6 @@ mod tests {
             "wheel over sidebar must scroll the sidebar list"
         );
 
-        // Wheel UP returns the offset to zero.
         s.handle_mouse(MouseEvent {
             kind: MouseEventKind::ScrollUp,
             column: sb.x,
@@ -2710,10 +2415,6 @@ mod tests {
         assert_eq!(s.active_section(), Section::Tools);
     }
 
-    /// Regression for the data-correctness bug: the live overview `status_label`
-    /// must map to the matching `ModuleStatus` — `offline` → Offline (was
-    /// Installed, which rendered as green ✓ installed), `degraded` → Degraded
-    /// (was Ready, which rendered as blue ✓ ready).
     #[test]
     fn managed_service_card_status_mapping_is_faithful() {
         fn card(label: &'static str) -> ManagedServiceCard {
@@ -2731,15 +2432,9 @@ mod tests {
         assert_eq!(card("active").status(), ModuleStatus::Active);
         assert_eq!(card("degraded").status(), ModuleStatus::Degraded);
         assert_eq!(card("offline").status(), ModuleStatus::Offline);
-        // Unknown label still falls back to Installed (the mock-oriented default).
         assert_eq!(card("ready").status(), ModuleStatus::Installed);
     }
 
-    /// Regression for the cosmetic/noise bug: an OFFLINE section could not
-    /// collect findings, so `to_module` must NOT render the uniform
-    /// "· 0 finding(s)" detail (which implies a successful inspection).
-    /// It surfaces "backend unreachable" instead, while every other status
-    /// keeps the uniform finding-count line.
     #[test]
     fn managed_service_card_offline_detail_is_unreachable() {
         fn card(label: &'static str, findings: usize) -> ManagedServiceCard {
@@ -2754,11 +2449,8 @@ mod tests {
                 },
             }
         }
-        // Offline reports "backend unreachable" regardless of findings_count
-        // (defensively, even if the backend reported 0 it was never inspected).
         assert_eq!(card("offline", 0).to_module().detail, "backend unreachable");
         assert_eq!(card("offline", 7).to_module().detail, "backend unreachable");
-        // Non-offline statuses keep the uniform finding-count line.
         assert_eq!(card("active", 0).to_module().detail, "· 0 finding(s)");
         assert_eq!(card("degraded", 3).to_module().detail, "· 3 finding(s)");
         assert_eq!(card("ready", 1).to_module().detail, "· 1 finding(s)");
@@ -2767,10 +2459,6 @@ mod tests {
     #[test]
     fn module_grid_navigation() {
         let mut s = DashboardScreen::new();
-        // Seed a multi-module view so 2D grid navigation (right/down/left) has
-        // more than the single cold-start sentinel to move across. The
-        // cold-start grid is honest: one "collecting system status…" card, so
-        // navigation would be a no-op without seeding.
         s.modules_view = (0..4)
             .map(|_| Module {
                 icon: "◆",
@@ -2780,44 +2468,34 @@ mod tests {
                 detail: String::new(),
             })
             .collect();
-        s.handle_key(KeyCode::Tab); // Content → Modules
+        s.handle_key(KeyCode::Tab);
         s.handle_key(KeyCode::Right);
         assert_eq!(s.module_sel, 1);
         s.handle_key(KeyCode::Down);
-        assert_eq!(s.module_sel, 3); // +2 cols
+        assert_eq!(s.module_sel, 3);
         s.handle_key(KeyCode::Left);
         assert_eq!(s.module_sel, 2);
     }
 
-    /// Regression for the scroll/hitbox/selection bug: in live mode the grid
-    /// renders 13 managed-service cards, but navigation and the modal lookup
-    /// used to be bounded/indexed by the 8-entry mock list. After the fix the
-    /// selection bound is the live count and the modal opens for any index.
     #[test]
     fn live_module_navigation_reaches_all_cards() {
         let mut s = DashboardScreen::new();
-        // Simulate a live frame: render caches modules_view from the snapshot.
-        // We drive the screen through the render path so the cache is populated.
-        s.handle_key(KeyCode::Tab); // Content → Modules
-        // Seed the live view directly: managed_services() returns 13 cards.
+        s.handle_key(KeyCode::Tab);
         let managed = s.managed_services();
         let live_modules: Vec<Module> = managed.iter().map(ManagedServiceCard::to_module).collect();
         s.modules_view = live_modules.clone();
         assert_eq!(s.modules_count(), MANAGED_SECTIONS_TOTAL);
 
-        // Walk right across the first row — must reach index 8+ (was clamped at 7).
         for _ in 0..12 {
             s.module_right();
         }
         assert_eq!(s.module_sel, 12, "right must reach the last (mise) card");
 
-        // Down past the mock boundary: index 10 (cloud), 12 (mise) reachable.
         s.module_sel = 10;
         s.module_down();
         assert_eq!(s.module_sel, 12, "down from 10 reaches 12 (no mock clamp)");
 
-        // The modal lookup must succeed for live indices and reflect live data.
-        s.module_sel = 9; // proxy
+        s.module_sel = 9;
         s.open_module_idx = Some(9);
         assert_eq!(
             s.modules_view.get(9).map(|m| m.name.as_str()),
@@ -2826,24 +2504,16 @@ mod tests {
         );
     }
 
-    /// Regression for the `open_module_idx` clamp: when the source vec shrinks
-    /// (mock 8 → live 13 doesn't shrink, but a future shorter source must),
-    /// the stale selection is cleared instead of indexing None silently.
     #[test]
     fn open_module_idx_is_clamped_when_view_shrinks() {
         let mut s = DashboardScreen::new();
-        // Pre-seed a live view, then shrink to mock (8).
         s.modules_view = s
             .managed_services()
             .iter()
             .map(ManagedServiceCard::to_module)
             .collect();
-        s.open_module_idx = Some(12); // valid against the live view
-        // Render mock path rebuilds modules_view from the 8-entry mock list.
-        // Simulate by truncating the cache to the mock length.
+        s.open_module_idx = Some(12);
         s.modules_view.truncate(s.data.modules.len());
-        // The render-time clamp fires when open_module_idx >= modules_count().
-        // Drive it via the guard directly:
         if let Some(idx) = s.open_module_idx
             && idx >= s.modules_count()
         {
@@ -2852,22 +2522,8 @@ mod tests {
         assert_eq!(s.open_module_idx, None);
     }
 
-    /// Regression for the per-frame allocation collapse in
-    /// `render_dashboard_content`: `findings` and `managed_available` are now
-    /// derived from the single `managed` slice captured at L1068, instead of
-    /// re-invoking `managed_services()` (which rebuilds all 13 cards + their
-    /// detail Strings) two more times via `findings_total()` / `managed_available()`.
-    ///
-    /// This guards that the derived computation stays byte-for-byte equal to the
-    /// standalone methods (the source of truth), including:
-    ///   - the status-warnings contribution to findings (`+ s.warnings.len()`),
-    ///   - the `status_label != "offline"` filter for the available count.
     #[test]
     fn derived_findings_and_available_match_standalone_methods() {
-        // ── Mock mode: no status snapshot yet (status == None). ──
-        // In this branch the warnings contribution is 0; the inlined
-        // `self.status.as_ref().map_or(0, |s| s.warnings.len())` term must
-        // reduce to exactly the same value as `findings_total()`.
         let mut s = DashboardScreen::new();
         assert!(s.status.is_none(), "fresh screen has no status snapshot");
 
@@ -2885,11 +2541,6 @@ mod tests {
         assert_eq!(derived_findings, s.findings_total());
         assert_eq!(derived_available, s.managed_available());
 
-        // ── Edge case: flip a section offline. ──
-        // `managed_available` must drop by one (offline is excluded), while
-        // `findings_total` is unaffected by availability (it sums counts).
-        // This exercises the `!= "offline"` filter and confirms the derived
-        // offline check matches the standalone method's identical filter.
         let before_available = s.managed_available();
         s.fail2ban_set_available_for_test(false);
         assert_eq!(s.managed_services().len(), MANAGED_SECTIONS_TOTAL);
@@ -2913,22 +2564,13 @@ mod tests {
             "flipping fail2ban offline must drop the available count by exactly one"
         );
 
-        // ── Edge case: status snapshot present with warnings. ──
-        // The warnings branch (`+ s.warnings.len()`) is only reachable when
-        // `status` is `Some`. We can't cheaply build a full TorideStatus here,
-        // so verify the term directly: with N synthetic warnings, the findings
-        // total must equal the section-sum plus N. This pins the formula the
-        // inlined code copies from `findings_total()`.
         let section_sum: usize = s
             .managed_services()
             .iter()
             .map(|c| c.overview.findings_count)
             .sum();
         for n in [0_usize, 1, 3] {
-            // Simulate the warnings term the inline closure adds.
             let with_warnings = section_sum + n;
-            // The standalone method adds exactly s.warnings.len(); if status is
-            // None that's 0, so with n==0 it must equal the live method output.
             if n == 0 {
                 assert_eq!(with_warnings, s.findings_total());
             }
@@ -2944,191 +2586,119 @@ mod tests {
     #[test]
     fn ssh_section_receives_keys_when_content_focused() {
         let mut s = DashboardScreen::new();
-        // Jump to SSH section (index 3 in sidebar = '4' key).
         s.handle_key(KeyCode::Char('4'));
         assert_eq!(s.active_section(), Section::Ssh);
-        // Focus content.
         s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
-        // Keys are now routed to ssh_content (Tab cycles SSH internal focus).
-        // This shouldn't crash — just confirms the dispatch path works.
-        s.handle_key(KeyCode::Tab); // SSH consumes Tab for TabBar/List cycling.
+        s.handle_key(KeyCode::Tab);
     }
 
     #[test]
     fn placeholder_sections_stay_on_sidebar_with_tab() {
         let mut s = DashboardScreen::new();
-        // Jump to Tools (unimplemented).
         s.handle_key(KeyCode::Char('2'));
         assert_eq!(s.active_section(), Section::Tools);
-        // Tab still cycles shell-level focus.
         s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
-        // But keys go nowhere (placeholder section returns None).
         assert!(s.handle_key(KeyCode::Down).is_none());
     }
 
     #[test]
     fn wireguard_content_receives_scroll_keys_via_dashboard_dispatch() {
-        // Regression: when the WireGuard section is active and the content pane
-        // is focused, Down/Up/j/k/PageUp/PageDown must be routed to
-        // toride_wireguard_content (the third content-focus dispatch arm),
-        // not silently dropped by the `_ => None` fallback.
         let mut s = DashboardScreen::new();
-        // Jump to WireGuard section (sidebar index 8 → digit '9').
         s.handle_key(KeyCode::Char('9'));
         assert_eq!(s.active_section(), Section::WireGuard);
-        // Focus the content pane.
         s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
         assert_eq!(s.toride_wireguard_content.scroll(), 0);
-        // Down advances the WireGuard pane scroll through the dashboard dispatch.
         assert!(s.handle_key(KeyCode::Down).is_none());
         assert_eq!(s.toride_wireguard_content.scroll(), 1);
-        // Up returns it to zero.
         s.handle_key(KeyCode::Up);
         assert_eq!(s.toride_wireguard_content.scroll(), 0);
-        // j/k alias the same path.
         s.handle_key(KeyCode::Char('j'));
         assert_eq!(s.toride_wireguard_content.scroll(), 1);
         s.handle_key(KeyCode::Char('k'));
         assert_eq!(s.toride_wireguard_content.scroll(), 0);
-        // PageDown jumps by 8.
         s.handle_key(KeyCode::PageDown);
         assert_eq!(s.toride_wireguard_content.scroll(), 8);
     }
 
     #[test]
     fn backup_content_receives_scroll_keys_via_dashboard_dispatch() {
-        // Regression: when the Backup section is active and the content pane is
-        // focused, Down/Up/j/k/PageUp/PageDown must be routed to
-        // toride_backup_content through the content-focus dispatch arm — not
-        // silently dropped by the `_ => None` fallback. The widget-level test
-        // exercises BackupContent::handle_key directly and so does not cover the
-        // dashboard routing layer (which is the only path reachable from real
-        // keyboard input for non-Tab keys).
         let mut s = DashboardScreen::new();
-        // Backup sits at sidebar index 13, beyond the '1'..='9' digit jump range,
-        // so select it directly.
         s.active = 13;
         assert_eq!(s.active_section(), Section::Backup);
-        // Focus the content pane.
         s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
         assert_eq!(s.toride_backup_content.scroll(), 0);
-        // Down advances the Backup pane scroll through the dashboard dispatch.
         assert!(s.handle_key(KeyCode::Down).is_none());
         assert_eq!(s.toride_backup_content.scroll(), 1);
-        // Up returns it to zero.
         s.handle_key(KeyCode::Up);
         assert_eq!(s.toride_backup_content.scroll(), 0);
-        // j/k alias the same path.
         s.handle_key(KeyCode::Char('j'));
         assert_eq!(s.toride_backup_content.scroll(), 1);
         s.handle_key(KeyCode::Char('k'));
         assert_eq!(s.toride_backup_content.scroll(), 0);
-        // PageDown jumps by 8.
         s.handle_key(KeyCode::PageDown);
         assert_eq!(s.toride_backup_content.scroll(), 8);
     }
 
     #[test]
     fn proxy_content_receives_scroll_keys_via_dashboard_dispatch() {
-        // Regression: when the Proxy section is active and the content pane is
-        // focused, Down/Up/j/k/PageUp/PageDown must be routed to
-        // toride_proxy_content through the generic content-focus dispatch arm
-        // (the third dispatch arm in handle_key), not silently dropped by the
-        // `_ => None` fallback. The Tab/BackTab arms already route Proxy, but
-        // the generic arm is the only path for non-Tab scroll keys — without
-        // an explicit `Section::Proxy` branch there, the pane never scrolls.
         let mut s = DashboardScreen::new();
-        // Proxy sits at sidebar index 14, beyond the '1'..='9' digit jump range,
-        // so select it directly.
         s.active = 14;
         assert_eq!(s.active_section(), Section::Proxy);
-        // Focus the content pane.
         s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
         assert_eq!(s.toride_proxy_content.scroll(), 0);
-        // Down advances the Proxy pane scroll through the dashboard dispatch.
         assert!(s.handle_key(KeyCode::Down).is_none());
         assert_eq!(s.toride_proxy_content.scroll(), 1);
-        // Up returns it to zero.
         s.handle_key(KeyCode::Up);
         assert_eq!(s.toride_proxy_content.scroll(), 0);
-        // j/k alias the same path.
         s.handle_key(KeyCode::Char('j'));
         assert_eq!(s.toride_proxy_content.scroll(), 1);
         s.handle_key(KeyCode::Char('k'));
         assert_eq!(s.toride_proxy_content.scroll(), 0);
-        // PageDown jumps by 8.
         s.handle_key(KeyCode::PageDown);
         assert_eq!(s.toride_proxy_content.scroll(), 8);
     }
 
     #[test]
     fn cloud_content_receives_scroll_keys_via_dashboard_dispatch() {
-        // Regression: when the Cloud section is active and the content pane is
-        // focused, Down/Up/j/k/PageUp/PageDown must be routed to
-        // toride_cloud_content through the generic content-focus dispatch arm
-        // (the third dispatch arm in handle_key), not silently dropped by the
-        // `_ => None` fallback. The Tab/BackTab arms already route Cloud, but
-        // the generic arm is the only path for non-Tab scroll keys — without
-        // an explicit `Section::Cloud` branch there, the pane never scrolls.
         let mut s = DashboardScreen::new();
-        // Cloud sits at sidebar index 15, beyond the '1'..='9' digit jump
-        // range, so select it directly.
         s.active = 15;
         assert_eq!(s.active_section(), Section::Cloud);
-        // Focus the content pane.
         s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
         assert_eq!(s.toride_cloud_content.scroll(), 0);
-        // Down advances the Cloud pane scroll through the dashboard dispatch.
         assert!(s.handle_key(KeyCode::Down).is_none());
         assert_eq!(s.toride_cloud_content.scroll(), 1);
-        // Up returns it to zero.
         s.handle_key(KeyCode::Up);
         assert_eq!(s.toride_cloud_content.scroll(), 0);
-        // j/k alias the same path.
         s.handle_key(KeyCode::Char('j'));
         assert_eq!(s.toride_cloud_content.scroll(), 1);
         s.handle_key(KeyCode::Char('k'));
         assert_eq!(s.toride_cloud_content.scroll(), 0);
-        // PageDown jumps by 8.
         s.handle_key(KeyCode::PageDown);
         assert_eq!(s.toride_cloud_content.scroll(), 8);
     }
 
     #[test]
     fn tailscale_content_receives_scroll_keys_via_dashboard_dispatch() {
-        // Regression: when the Tailscale section is active and the content pane
-        // is focused, Down/Up/j/k/PageUp/PageDown must be routed to
-        // toride_tailscale_content through the content-focus dispatch arm — not
-        // silently dropped by the `_ => None` fallback. The Tab/BackTab and all
-        // mouse arms already route Tailscale, but the generic content-focus arm
-        // is the only path for non-Tab scroll keys — without an explicit
-        // `Section::Tailscale` branch there, the pane never scrolls via keyboard.
         let mut s = DashboardScreen::new();
-        // Tailscale sits at sidebar index 6 (digit '7'), selected directly here.
         s.active = 6;
         assert_eq!(s.active_section(), Section::Tailscale);
-        // Focus the content pane.
         s.handle_key(KeyCode::Tab);
         assert!(s.focus.is_focused(&ShellFocus::Content));
         assert_eq!(s.toride_tailscale_content.scroll(), 0);
-        // Down advances the Tailscale pane scroll through the dashboard dispatch.
         assert!(s.handle_key(KeyCode::Down).is_none());
         assert_eq!(s.toride_tailscale_content.scroll(), 1);
-        // Up returns it to zero.
         s.handle_key(KeyCode::Up);
         assert_eq!(s.toride_tailscale_content.scroll(), 0);
-        // j/k alias the same path.
         s.handle_key(KeyCode::Char('j'));
         assert_eq!(s.toride_tailscale_content.scroll(), 1);
         s.handle_key(KeyCode::Char('k'));
         assert_eq!(s.toride_tailscale_content.scroll(), 0);
-        // PageDown jumps by 8.
         s.handle_key(KeyCode::PageDown);
         assert_eq!(s.toride_tailscale_content.scroll(), 8);
     }

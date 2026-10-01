@@ -73,7 +73,7 @@ pub struct FindingEntry {
 /// Fail2ban management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`Fail2banContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `Fail2banContent::set_*` setters
 /// driven by [`Fail2banCollector`](crate::fail2ban_data::Fail2banCollector).
 pub struct Fail2banContent {
     /// Whether the fail2ban backend was reachable at all (binaries present,

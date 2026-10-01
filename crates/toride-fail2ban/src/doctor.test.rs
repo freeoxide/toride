@@ -1,19 +1,7 @@
-//! Comprehensive tests for the [`Doctor`] diagnostic engine.
-//!
-//! Every test uses [`FakeRunner`] to avoid executing real system commands.
-//! Where the code under test calls [`find_binary`], the result depends on
-//! the host system, so tests assert on the *shape* of findings (presence of
-//! specific IDs) rather than exact counts.
-
 use super::*;
 use crate::command::{CommandOutput, FakeRunner};
 use crate::report::{DoctorReport, Finding, Severity};
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/// Shorthand for a successful command output with the given stdout.
 fn ok_output(stdout: &str) -> CommandOutput {
     CommandOutput {
         stdout: stdout.to_string(),
@@ -23,7 +11,6 @@ fn ok_output(stdout: &str) -> CommandOutput {
     }
 }
 
-/// Shorthand for a failed command output with the given stderr.
 fn fail_output(stderr: &str) -> CommandOutput {
     CommandOutput {
         stdout: String::new(),
@@ -33,25 +20,15 @@ fn fail_output(stderr: &str) -> CommandOutput {
     }
 }
 
-/// Check whether findings contain an entry with the given id.
 fn has_finding(findings: &[Finding], id: &str) -> bool {
     findings.iter().any(|f| f.id == id)
 }
-
-// ===========================================================================
-// Doctor construction
-// ===========================================================================
 
 #[test]
 fn doctor_new_borrows_runner() {
     let fake = FakeRunner::new();
     let _doctor = Doctor::new(&fake);
-    // Doctor should construct without panicking.
 }
-
-// ===========================================================================
-// DoctorScope
-// ===========================================================================
 
 #[test]
 fn doctor_scope_all_categories_has_ten_variants() {
@@ -86,50 +63,35 @@ fn doctor_scope_jail_carries_name() {
     assert!(matches!(scope, DoctorScope::Jail(name) if name == "sshd"));
 }
 
-// ===========================================================================
-// check_binaries
-// ===========================================================================
-
 #[test]
 fn check_binaries_with_all_binaries_present() {
     let mut fake = FakeRunner::new();
 
-    // fail2ban-client --version
     fake.with_response(
         "fail2ban-client",
         &["--version"],
         ok_output("Fail2Ban v1.0.2"),
     );
-    // nft --version
     fake.with_response("nft", &["--version"], ok_output("nftables 1.0.6"));
-    // iptables --version
     fake.with_response("iptables", &["--version"], ok_output("iptables v1.8.8"));
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_binaries();
 
-    // nft and iptables should be reported as available.
     assert!(has_finding(&findings, "binary.nft.available"));
     assert!(has_finding(&findings, "binary.iptables.available"));
 
-    // If fail2ban-client / fail2ban-regex / systemctl are on the host PATH,
-    // they will have .found findings; otherwise .missing. Either way we must
-    // have at least the firewall findings above.
     assert!(!findings.is_empty());
 }
 
 #[test]
 fn check_binaries_with_missing_fail2ban_client() {
-    // On a system where fail2ban-client is not on PATH, the find_binary call
-    // will fail and the runner is never invoked for --version.
     let fake = FakeRunner::new();
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_binaries();
 
-    // The method must produce findings regardless.
     assert!(!findings.is_empty());
 
-    // If fail2ban-client is not found, the critical finding should appear.
     if find_binary("fail2ban-client").is_err() {
         assert!(has_finding(&findings, "binary.fail2ban-client.missing"));
         assert!(
@@ -143,7 +105,6 @@ fn check_binaries_with_missing_fail2ban_client() {
 
 #[test]
 fn check_binaries_reports_version_when_available() {
-    // Only test the version-detection branch if fail2ban-client is on PATH.
     let Ok(path) = find_binary("fail2ban-client") else {
         return;
     };
@@ -187,10 +148,6 @@ fn check_binaries_reports_version_failed_when_nonzero() {
     ));
 }
 
-// ===========================================================================
-// check_service
-// ===========================================================================
-
 #[test]
 fn check_service_with_active_service() {
     let mut fake = FakeRunner::new();
@@ -201,7 +158,6 @@ fn check_service_with_active_service() {
         ok_output("enabled"),
     );
 
-    // If fail2ban-client is on PATH, set up responses for ping/logtarget/dbfile.
     if let Ok(path) = find_binary("fail2ban-client") {
         let bin = path.to_str().unwrap_or("fail2ban-client");
         fake.with_response(bin, &["ping"], ok_output("Server replied: pong"));
@@ -223,7 +179,6 @@ fn check_service_with_active_service() {
     assert!(has_finding(&findings, "service.active"));
     assert!(has_finding(&findings, "service.enabled"));
 
-    // If fail2ban-client is available, we should also see ping and logtarget.
     if find_binary("fail2ban-client").is_ok() {
         assert!(has_finding(&findings, "service.ping-ok"));
         assert!(has_finding(&findings, "service.logtarget-accessible"));
@@ -262,9 +217,6 @@ fn check_service_with_inactive_service() {
 #[test]
 fn check_service_active_check_error() {
     let fake = FakeRunner::new();
-    // FakeRunner returns a default success for unregistered commands,
-    // so the default empty success flows through and we verify the
-    // service.active finding is emitted.
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_service();
     assert!(!findings.is_empty());
@@ -327,14 +279,8 @@ fn check_service_dbfile_disabled() {
     assert!(has_finding(&findings, "service.dbfile-disabled"));
 }
 
-// ===========================================================================
-// check_config
-// ===========================================================================
-
 #[test]
 fn check_config_with_valid_config() {
-    // This test depends on whether /etc/fail2ban exists on the host.
-    // We verify the method runs and produces a directory finding.
     let fake = FakeRunner::new();
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_config();
@@ -349,7 +295,6 @@ fn check_config_with_valid_config() {
 
 #[test]
 fn check_config_reports_missing_directory() {
-    // /etc/fail2ban likely does not exist on a macOS dev machine.
     let fake = FakeRunner::new();
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_config();
@@ -400,10 +345,6 @@ fn check_config_test_failed_when_nonzero() {
     assert_eq!(f.severity, Severity::Error);
     assert!(f.fix.is_some());
 }
-
-// ===========================================================================
-// check_jail
-// ===========================================================================
 
 #[test]
 fn check_jail_with_existing_jail() {
@@ -510,8 +451,6 @@ fn check_jail_maxretry_very_high_info() {
 
 #[test]
 fn check_jail_no_client_binary() {
-    // If fail2ban-client is not on PATH, the method should still produce a
-    // finding without panicking.
     let fake = FakeRunner::new();
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_jail("sshd");
@@ -522,10 +461,6 @@ fn check_jail_no_client_binary() {
         assert_eq!(f.severity, Severity::Critical);
     }
 }
-
-// ===========================================================================
-// check_permissions
-// ===========================================================================
 
 #[test]
 fn check_permissions_reports_something() {
@@ -544,16 +479,11 @@ fn check_permissions_finds_config_dir_safe_when_present() {
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_permissions();
 
-    // Either the dir is world-writable or it is safe.
     let has_perm_finding = has_finding(&findings, "permission.config-dir-safe")
         || has_finding(&findings, "permission.config-dir-world-writable")
         || has_finding(&findings, "permission.config-dir-missing");
     assert!(has_perm_finding);
 }
-
-// ===========================================================================
-// check_safety
-// ===========================================================================
 
 #[test]
 fn check_safety_always_reports_dry_run_available() {
@@ -563,10 +493,6 @@ fn check_safety_always_reports_dry_run_available() {
 
     assert!(has_finding(&findings, "safety.dry-run-available"));
 }
-
-// ===========================================================================
-// run() with DoctorScope::All
-// ===========================================================================
 
 #[test]
 fn run_with_all_scope_returns_report() {
@@ -590,10 +516,6 @@ fn run_with_all_scope_returns_report() {
 
     assert!(!report.findings.is_empty());
 }
-
-// ===========================================================================
-// run() with specific scopes
-// ===========================================================================
 
 #[test]
 fn run_with_binary_scope() {
@@ -672,7 +594,6 @@ fn run_with_regex_scope() {
     let fake = FakeRunner::new();
     let doctor = Doctor::new(&fake);
     let report = doctor.run(&DoctorScope::Regex).unwrap();
-    // Should produce some finding (either tool found or missing).
     assert!(!report.findings.is_empty());
 }
 
@@ -697,7 +618,6 @@ fn run_with_proxy_scope() {
     let fake = FakeRunner::new();
     let doctor = Doctor::new(&fake);
     let report = doctor.run(&DoctorScope::Proxy).unwrap();
-    // If no proxy issues are detected, the ok finding is emitted.
     assert!(has_finding(&report.findings, "proxy.no-issues"));
 }
 
@@ -723,10 +643,6 @@ fn run_with_jail_scope() {
     assert!(has_finding(&report.findings, "jail.exists"));
 }
 
-// ===========================================================================
-// DoctorReport::summary_by_severity()
-// ===========================================================================
-
 #[test]
 fn doctor_report_summary_by_severity_groups_correctly() {
     let mut report = DoctorReport::empty();
@@ -750,10 +666,6 @@ fn doctor_report_summary_by_severity_empty_report() {
     let summary = report.summary_by_severity();
     assert!(summary.is_empty());
 }
-
-// ===========================================================================
-// DoctorReport::has_errors()
-// ===========================================================================
 
 #[test]
 fn doctor_report_has_errors_true_with_error_severity() {
@@ -784,10 +696,6 @@ fn doctor_report_has_errors_false_when_empty() {
     assert!(!report.has_errors());
 }
 
-// ===========================================================================
-// DoctorReport::has_critical()
-// ===========================================================================
-
 #[test]
 fn doctor_report_has_critical_true() {
     let mut report = DoctorReport::empty();
@@ -802,10 +710,6 @@ fn doctor_report_has_critical_false_with_error_only() {
     assert!(!report.has_critical());
 }
 
-// ===========================================================================
-// DoctorReport::len / is_empty
-// ===========================================================================
-
 #[test]
 fn doctor_report_len_and_is_empty() {
     let empty = DoctorReport::empty();
@@ -817,10 +721,6 @@ fn doctor_report_len_and_is_empty() {
     assert!(!nonempty.is_empty());
     assert_eq!(nonempty.len(), 1);
 }
-
-// ===========================================================================
-// Finding construction and fields
-// ===========================================================================
 
 #[test]
 fn finding_new_sets_mandatory_fields() {
@@ -869,10 +769,6 @@ fn finding_fix_replaces_previous() {
     assert_eq!(f.fix.as_deref(), Some("second"));
 }
 
-// ===========================================================================
-// Severity ordering
-// ===========================================================================
-
 #[test]
 fn severity_ordering() {
     assert!(Severity::Ok < Severity::Info);
@@ -889,10 +785,6 @@ fn severity_display() {
     assert_eq!(format!("{}", Severity::Error), "ERROR");
     assert_eq!(format!("{}", Severity::Critical), "CRITICAL");
 }
-
-// ===========================================================================
-// parse_jail_list
-// ===========================================================================
 
 #[test]
 fn parse_jail_list_extracts_names() {
@@ -929,10 +821,6 @@ fn parse_jail_list_case_insensitive_detection() {
     assert_eq!(jails, vec!["sshd", "apache"]);
 }
 
-// ===========================================================================
-// Socket file check
-// ===========================================================================
-
 #[test]
 fn check_service_socket_ok_when_path_exists() {
     let Ok(path) = find_binary("fail2ban-client") else {
@@ -958,7 +846,6 @@ fn check_service_socket_ok_when_path_exists() {
         &["get", "dbfile"],
         ok_output("/var/lib/fail2ban/fail2ban.sqlite3"),
     );
-    // Use a path that exists on any Unix system.
     fake.with_response(
         bin,
         &["get", "socket"],
@@ -973,8 +860,6 @@ fn check_service_socket_ok_when_path_exists() {
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_service();
 
-    // The socket path /var/run/fail2ban/fail2ban.sock may or may not exist on
-    // the test host, so assert one of the two socket findings is present.
     let has_socket_finding = has_finding(&findings, "service.socket_ok")
         || has_finding(&findings, "service.socket_missing");
     assert!(
@@ -1009,7 +894,6 @@ fn check_service_socket_missing_when_path_not_on_disk() {
         &["get", "dbfile"],
         ok_output("/var/lib/fail2ban/fail2ban.sqlite3"),
     );
-    // Report a path that is guaranteed not to exist.
     fake.with_response(
         bin,
         &["get", "socket"],
@@ -1032,10 +916,6 @@ fn check_service_socket_missing_when_path_not_on_disk() {
     assert_eq!(f.severity, Severity::Warning);
     assert!(f.fix.is_some());
 }
-
-// ===========================================================================
-// PID file check
-// ===========================================================================
 
 #[test]
 fn check_service_pidfile_ok_when_path_exists() {
@@ -1067,8 +947,6 @@ fn check_service_pidfile_ok_when_path_exists() {
         &["get", "socket"],
         ok_output("/var/run/fail2ban/fail2ban.sock"),
     );
-    // Report /proc/1/status -- a path that exists on Linux (always present for
-    // init).  On macOS, /dev/null works as a universally existing path.
     fake.with_response(bin, &["get", "pidfile"], ok_output("/dev/null"));
 
     let doctor = Doctor::new(&fake);
@@ -1130,10 +1008,6 @@ fn check_service_pidfile_missing_when_path_not_on_disk() {
     assert!(f.fix.is_some());
 }
 
-// ===========================================================================
-// usedns check
-// ===========================================================================
-
 #[test]
 fn check_jail_usedns_no_is_ok() {
     let Ok(path) = find_binary("fail2ban-client") else {
@@ -1188,10 +1062,6 @@ fn check_jail_usedns_yes_is_warning() {
         .unwrap();
     assert_eq!(f.severity, Severity::Warning);
 }
-
-// ===========================================================================
-// ignoreip check
-// ===========================================================================
 
 #[test]
 fn check_jail_ignoreip_empty_is_info() {
@@ -1256,10 +1126,6 @@ fn check_jail_ignoreip_populated_is_ok() {
         .unwrap();
     assert_eq!(f.severity, Severity::Ok);
 }
-
-// ===========================================================================
-// bantime / findtime sanity
-// ===========================================================================
 
 #[test]
 fn check_jail_bantime_shorter_than_findtime_is_warning() {
@@ -1351,10 +1217,6 @@ fn check_jail_findtime_very_long_is_info() {
     assert_eq!(f.severity, Severity::Info);
 }
 
-// ===========================================================================
-// Real IP detection (proxy-only IPs)
-// ===========================================================================
-
 #[test]
 fn check_log_paths_proxy_ips_only_warning() {
     let Ok(path) = find_binary("fail2ban-client") else {
@@ -1362,7 +1224,6 @@ fn check_log_paths_proxy_ips_only_warning() {
     };
     let bin = path.to_str().unwrap_or("fail2ban-client");
 
-    // Create a temp file with only private IPs.
     let tmp_dir = tempfile::tempdir().unwrap();
     let log_file = tmp_dir.path().join("test.log");
     std::fs::write(
@@ -1419,25 +1280,15 @@ fn check_log_paths_public_ips_no_warning() {
     assert!(!has_finding(&findings, "logpath.proxy_ips_only"));
 }
 
-/// `check_single_log_path` must inspect only the first `PROXY_IP_SAMPLE_LINES`
-/// lines of a log file (not the whole file), and it must do so without slurping
-/// the entire file into memory.
-///
-/// This calls the private associated function directly via `super::*`, which is
-/// the unit that performs the proxy-IP detection.
 #[test]
 fn check_single_log_path_streams_only_first_lines_and_private_ips_warn() {
     let tmp = tempfile::tempdir().unwrap();
     let log = tmp.path().join("auth.log");
 
-    // First PROXY_IP_SAMPLE_LINES lines: only private IPs.
     let mut content = String::new();
     for _ in 0..PROXY_IP_SAMPLE_LINES {
         content.push_str("Failed password from 192.168.1.50 port 22 ssh2\n");
     }
-    // After the sample window: a PUBLIC IP. If the implementation read the
-    // whole file (or more than PROXY_IP_SAMPLE_LINES lines), this public IP
-    // would flip `all_private = false` and suppress the proxy finding.
     content.push_str("Failed password from 203.0.113.99 port 22 ssh2\n");
 
     std::fs::write(&log, content).unwrap();
@@ -1446,8 +1297,6 @@ fn check_single_log_path_streams_only_first_lines_and_private_ips_warn() {
     let mut findings = Vec::new();
     Doctor::check_single_log_path(log_path, "sshd", &mut findings);
 
-    // Only the first N lines were inspected, so the trailing public IP is
-    // never seen and the proxy-only warning is still emitted.
     assert!(
         has_finding(&findings, "logpath.proxy_ips_only"),
         "expected proxy_ips_only warning when only the first {PROXY_IP_SAMPLE_LINES} \
@@ -1455,28 +1304,15 @@ fn check_single_log_path_streams_only_first_lines_and_private_ips_warn() {
     );
 }
 
-/// `check_single_log_path` must not read the entire file via
-/// `read_to_string`. If it did, an invalid-UTF-8 byte anywhere in the file
-/// (here, *after* the sampled window) would make the whole read fail and
-/// silently drop the proxy-only detection. Streaming the first lines via a
-/// `BufReader` bounds memory and still surfaces the finding.
-///
-/// This test FAILS on the pre-fix `read_to_string` implementation (the whole
-/// read errors out, so no `logpath.proxy_ips_only` finding is produced) and
-/// PASSES once the function streams only the leading lines.
 #[test]
 fn check_single_log_path_does_not_slurp_invalid_utf8_past_sample_window() {
     let tmp = tempfile::tempdir().unwrap();
     let log = tmp.path().join("auth.log");
 
-    // First PROXY_IP_SAMPLE_LINES lines are valid UTF-8 with private IPs.
     let mut content = String::new();
     for _ in 0..PROXY_IP_SAMPLE_LINES {
         content.push_str("Failed password from 10.0.0.5 port 22 ssh2\n");
     }
-    // Append a block of invalid UTF-8 (lone continuation bytes) AFTER the
-    // sampled window. `read_to_string` of the whole file would fail here.
-    // Build the on-disk bytes directly so the file is genuinely invalid UTF-8.
     let mut bytes = content.into_bytes();
     bytes.push(b'\n');
     bytes.push(0xFF);
@@ -1495,10 +1331,6 @@ fn check_single_log_path_does_not_slurp_invalid_utf8_past_sample_window() {
     );
 }
 
-// ===========================================================================
-// Docker path warning
-// ===========================================================================
-
 #[test]
 fn check_log_paths_docker_path_warning() {
     let Ok(path) = find_binary("fail2ban-client") else {
@@ -1516,18 +1348,8 @@ fn check_log_paths_docker_path_warning() {
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_log_paths();
 
-    // The path doesn't exist on disk, so it won't reach the Docker check
-    // unless the parent check allows it. We verify the Docker finding is
-    // emitted when the path triggers the detection logic. Since the path
-    // does not exist, we will not get the docker finding but we verify
-    // the method handles it without panicking and produces some findings.
-    // If the path were to exist, the Docker finding would appear.
     assert!(!findings.is_empty());
 }
-
-// ===========================================================================
-// Journal checks -- logpath with systemd backend
-// ===========================================================================
 
 #[test]
 fn check_journal_logpath_with_systemd_backend_warning() {
@@ -1638,10 +1460,6 @@ fn check_journal_access_denied_error() {
     assert_eq!(f.severity, Severity::Error);
 }
 
-// ===========================================================================
-// Regex checks
-// ===========================================================================
-
 #[test]
 fn check_regex_attack_not_matched_warning() {
     let Ok(regex_path) = find_binary("fail2ban-regex") else {
@@ -1662,7 +1480,6 @@ fn check_regex_attack_not_matched_warning() {
         &["get", "testjail", "failregex"],
         ok_output("^some weird pattern <HOST>$"),
     );
-    // Attack lines should NOT match -- return success without "Lines:".
     fake.with_response(
         regex_bin,
         &[
@@ -1679,7 +1496,6 @@ fn check_regex_attack_not_matched_warning() {
         ],
         ok_output("No match"),
     );
-    // Safe lines -- return success with "Lines:" and "0 matched" so no false positive.
     fake.with_response(
         regex_bin,
         &[
@@ -1738,7 +1554,6 @@ fn check_regex_false_positive_warning() {
         &["get", "testjail", "failregex"],
         ok_output(".* <HOST> .*"),
     );
-    // Attack lines match (good).
     fake.with_response(
         regex_bin,
         &[
@@ -1755,7 +1570,6 @@ fn check_regex_false_positive_warning() {
         ],
         ok_output("Lines: 1 matched"),
     );
-    // Safe lines also match -- false positive.
     fake.with_response(
         regex_bin,
         &[
@@ -1811,7 +1625,6 @@ fn check_regex_missing_datepattern_info() {
         &["get", "testjail", "failregex"],
         ok_output("^Failed <HOST>$"),
     );
-    // Attack lines match.
     fake.with_response(
         regex_bin,
         &[
@@ -1828,7 +1641,6 @@ fn check_regex_missing_datepattern_info() {
         ],
         ok_output("Lines: 0 matched"),
     );
-    // Safe lines don't match.
     fake.with_response(
         regex_bin,
         &[
@@ -1875,7 +1687,6 @@ fn check_regex_maxlines_missing_with_multiline_regex() {
     };
     let client_bin = client_path.to_str().unwrap_or("fail2ban-client");
 
-    // A multiline failregex (contains \n).
     let multiline_regex = "^line1 <HOST>\n^line2";
 
     let mut fake = FakeRunner::new();
@@ -1887,7 +1698,6 @@ fn check_regex_maxlines_missing_with_multiline_regex() {
         &["get", "testjail", "failregex"],
         ok_output(multiline_regex),
     );
-    // Attack lines.
     fake.with_response(
         regex_bin,
         &[
@@ -1904,7 +1714,6 @@ fn check_regex_maxlines_missing_with_multiline_regex() {
         ],
         ok_output("Lines: 0 matched"),
     );
-    // Safe lines.
     fake.with_response(
         regex_bin,
         &[
@@ -1918,7 +1727,6 @@ fn check_regex_maxlines_missing_with_multiline_regex() {
         &["session opened for user admin", multiline_regex],
         ok_output("Lines: 0 matched"),
     );
-    // maxlines returns None / empty.
     fake.with_response(
         client_bin,
         &["get", "testjail", "maxlines"],
@@ -1941,14 +1749,8 @@ fn check_regex_maxlines_missing_with_multiline_regex() {
     assert_eq!(f.severity, Severity::Warning);
 }
 
-// ===========================================================================
-// Action checks
-// ===========================================================================
-
 #[test]
 fn check_actions_missing_actionban_error() {
-    // This test requires /etc/fail2ban/action.d to exist with a file
-    // that lacks an actionban key. We create a temp file to exercise the check.
     if !std::path::Path::new("/etc/fail2ban/action.d").exists() {
         return;
     }
@@ -1965,9 +1767,6 @@ fn check_actions_missing_actionban_error() {
         &["get", "testjail", "actions"],
         ok_output("dummy-action"),
     );
-    // The file dummy-action.conf / .local must exist. We skip this test
-    // if the action file is not on disk; the real test coverage comes from
-    // the filesystem-based check. Instead we verify the method does not panic.
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_actions();
     assert!(!findings.is_empty());
@@ -1975,8 +1774,6 @@ fn check_actions_missing_actionban_error() {
 
 #[test]
 fn check_actions_missing_actionunban_warning() {
-    // Mirrors the structure of the actionban test; exercises the action
-    // check code path without panicking.
     if !std::path::Path::new("/etc/fail2ban/action.d").exists() {
         return;
     }
@@ -1998,8 +1795,6 @@ fn check_actions_missing_actionunban_warning() {
 
 #[test]
 fn check_actions_high_timeout_warning() {
-    // Tests that an action file with a timeout > 60s produces a warning.
-    // Requires filesystem access; exercises the code path without panic.
     if !std::path::Path::new("/etc/fail2ban/action.d").exists() {
         return;
     }
@@ -2021,8 +1816,6 @@ fn check_actions_high_timeout_warning() {
 
 #[test]
 fn check_actions_cloudflare_placeholder_creds_error() {
-    // Tests the Cloudflare placeholder credential detection.
-    // Requires /etc/fail2ban/action.d to exist and a cloudflare action.
     if !std::path::Path::new("/etc/fail2ban/action.d").exists() {
         return;
     }
@@ -2042,19 +1835,11 @@ fn check_actions_cloudflare_placeholder_creds_error() {
 
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_actions();
-    // Should not panic; findings depend on whether cloudflare action file
-    // exists and its contents.
     assert!(!findings.is_empty());
 }
 
-// ===========================================================================
-// Permission checks -- non-root owned file and secrets
-// ===========================================================================
-
 #[test]
 fn check_permissions_ownership_and_secrets_checks() {
-    // This test verifies that check_permissions runs without panicking
-    // and produces the expected types of findings when /etc/fail2ban exists.
     if !std::path::Path::new("/etc/fail2ban").exists() {
         return;
     }
@@ -2062,15 +1847,10 @@ fn check_permissions_ownership_and_secrets_checks() {
     let doctor = Doctor::new(&fake);
     let findings = doctor.check_permissions();
 
-    // Should have at least one permission finding (dir-safe or dir-world-writable).
     let has_perm = has_finding(&findings, "permission.config-dir-safe")
         || has_finding(&findings, "permission.config-dir-world-writable");
     assert!(has_perm);
 }
-
-// ===========================================================================
-// Safety checks -- self-ban risk
-// ===========================================================================
 
 #[test]
 fn check_safety_self_ban_risk_critical() {
@@ -2082,7 +1862,6 @@ fn check_safety_self_ban_risk_critical() {
     let mut fake = FakeRunner::new();
     let status_output = "`- Jail list:   myjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
-    // ignoreip returns only an external IP -- no localhost.
     fake.with_response(
         bin,
         &["get", "myjail", "ignoreip"],
@@ -2110,7 +1889,6 @@ fn check_safety_no_private_network_ignore_info() {
     let mut fake = FakeRunner::new();
     let status_output = "`- Jail list:   myjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
-    // ignoreip has 127.0.0.1 and ::1 (protects against self-ban) but no RFC1918 ranges.
     fake.with_response(
         bin,
         &["get", "myjail", "ignoreip"],
@@ -2128,10 +1906,6 @@ fn check_safety_no_private_network_ignore_info() {
     assert_eq!(f.severity, Severity::Info);
 }
 
-// ===========================================================================
-// Proxy checks
-// ===========================================================================
-
 #[test]
 fn check_proxy_realip_docs_info() {
     let Ok(path) = find_binary("fail2ban-client") else {
@@ -2142,14 +1916,12 @@ fn check_proxy_realip_docs_info() {
     let mut fake = FakeRunner::new();
     let status_output = "`- Jail list:   webjail\n";
     fake.with_response(bin, &["status"], ok_output(status_output));
-    // Traefik log path triggers proxy detection.
     fake.with_response(
         bin,
         &["get", "webjail", "logpath"],
         ok_output("/var/log/traefik/access.log"),
     );
     fake.with_response(bin, &["get", "webjail", "actions"], ok_output("iptables"));
-    // Second logpath call in the proxy detection block.
     fake.with_response(
         bin,
         &["get", "webjail", "logpath"],
@@ -2236,10 +2008,6 @@ fn check_proxy_cloudflare_action_info() {
     assert_eq!(f.severity, Severity::Info);
 }
 
-// ===========================================================================
-// IP helpers
-// ===========================================================================
-
 #[test]
 fn extract_ips_from_line_finds_valid_ipv4() {
     let ips = extract_ips_from_line("Failed password from 192.168.1.100 port 22");
@@ -2262,10 +2030,6 @@ fn is_private_ip_detects_rfc1918() {
     assert!(!is_private_ip("8.8.8.8"));
 }
 
-// ===========================================================================
-// Journal helper: extract_systemd_units
-// ===========================================================================
-
 #[test]
 fn extract_systemd_units_parses_unit() {
     let units = extract_systemd_units("_SYSTEMD_UNIT=sshd.service");
@@ -2283,10 +2047,6 @@ fn extract_systemd_units_empty_when_no_match() {
     let units = extract_systemd_units("_COMM=sshd");
     assert!(units.is_empty());
 }
-
-// ===========================================================================
-// Regex anchor helper: is_host_anchored
-// ===========================================================================
 
 #[test]
 fn is_host_anchored_true_when_bracketed() {
@@ -2307,10 +2067,6 @@ fn is_host_anchored_true_at_start_of_pattern() {
 fn is_host_anchored_true_at_end_of_pattern() {
     assert!(is_host_anchored("text <HOST>"));
 }
-
-// ===========================================================================
-// INI value extraction helper
-// ===========================================================================
 
 #[test]
 fn extract_ini_value_finds_key() {
@@ -2336,10 +2092,6 @@ fn extract_ini_value_returns_none_when_missing() {
     assert_eq!(extract_ini_value(content, "timeout"), None);
 }
 
-// ===========================================================================
-// CIDR helpers
-// ===========================================================================
-
 #[test]
 fn cidr_covers_ip_exact_match() {
     assert!(cidr_covers_ip("192.168.1.1", "192.168.1.1"));
@@ -2362,4 +2114,135 @@ fn cidr_covers_range_direct_match() {
 fn cidr_covers_range_supernet() {
     assert!(cidr_covers_range("10.0.0.0/8", "10.1.0.0/16"));
     assert!(!cidr_covers_range("10.1.0.0/16", "10.0.0.0/8"));
+}
+
+fn shared_fetch_fixture() -> Option<(FakeRunner, std::path::PathBuf)> {
+    let bin = find_binary("fail2ban-client").ok()?;
+    find_binary("fail2ban-regex").ok()?;
+    Some((FakeRunner::new(), bin))
+}
+
+fn seed_shared_jail(fake: &mut FakeRunner, bin: &str, log: &std::path::Path) {
+    fake.with_response(bin, &["status"], ok_output("`- Jail list:\ttestjail\n"));
+    fake.with_response(bin, &["get", "testjail", "backend"], ok_output("systemd\n"));
+    fake.with_response(
+        bin,
+        &["get", "testjail", "failregex"],
+        ok_output("^(?:.*)<HOST>.*$"),
+    );
+    fake.with_response(
+        bin,
+        &["get", "testjail", "logpath"],
+        ok_output(log.to_str().unwrap_or("/dev/null")),
+    );
+    fake.with_response(bin, &["get", "testjail", "actions"], ok_output(""));
+    fake.with_response(
+        bin,
+        &["get", "testjail", "ignoreip"],
+        ok_output("127.0.0.1 ::1\n"),
+    );
+}
+
+fn client_status_calls(fake: &FakeRunner) -> usize {
+    fake.calls()
+        .iter()
+        .filter(|(program, args)| {
+            program
+                .rsplit('/')
+                .next()
+                .is_some_and(|b| b == "fail2ban-client")
+                && args.len() == 1
+                && args[0] == "status"
+        })
+        .count()
+}
+
+#[test]
+fn doctor_all_shares_one_jail_list_fetch_across_consumers() {
+    let Some((mut fake, bin)) = shared_fetch_fixture() else {
+        return;
+    };
+    let bin = bin.to_str().unwrap_or("fail2ban-client").to_string();
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("test.log");
+    std::fs::write(&log, "Failed password for root\n").unwrap();
+    seed_shared_jail(&mut fake, &bin, &log);
+
+    let doctor = Doctor::new(&fake);
+    let report = doctor.run(&DoctorScope::All).unwrap();
+
+    assert!(
+        has_finding(&report.findings, "jail.backend-systemd"),
+        "journal check must consume the shared jail list"
+    );
+    assert!(
+        has_finding(&report.findings, "regex.host-tag-present"),
+        "regex check must consume the shared jail list"
+    );
+    assert!(
+        has_finding(&report.findings, "logpath.exists"),
+        "log-path check must consume the shared jail list"
+    );
+    assert_eq!(
+        client_status_calls(&fake),
+        1,
+        "doctor(All) must fetch the jail list exactly once (F13)"
+    );
+}
+
+#[test]
+fn doctor_all_degraded_jail_list_keeps_per_check_failure_arms() {
+    let Some((mut fake, bin)) = shared_fetch_fixture() else {
+        return;
+    };
+    let bin = bin.to_str().unwrap_or("fail2ban-client").to_string();
+    fake.with_response(
+        bin.as_str(),
+        &["status"],
+        fail_output("ERROR: Unable to contact server"),
+    );
+
+    let doctor = Doctor::new(&fake);
+    let report = doctor.run(&DoctorScope::All).unwrap();
+
+    assert!(
+        has_finding(&report.findings, "logpath.status-failed"),
+        "check_log_paths must report its own status-failure arm"
+    );
+    assert!(
+        !has_finding(&report.findings, "jail.backend-systemd"),
+        "journal check keeps skipping silently on a failed shared fetch"
+    );
+    assert!(
+        !has_finding(&report.findings, "regex.host-tag-present"),
+        "regex check keeps skipping silently on a failed shared fetch"
+    );
+    assert!(
+        !has_finding(&report.findings, "logpath.exists"),
+        "log-path per-jail probes must not run without a jail list"
+    );
+    assert_eq!(client_status_calls(&fake), 1);
+}
+
+#[test]
+fn doctor_all_consecutive_runs_keep_findings_parity() {
+    let Some((mut fake, bin)) = shared_fetch_fixture() else {
+        return;
+    };
+    let bin = bin.to_str().unwrap_or("fail2ban-client").to_string();
+    let tmp = tempfile::tempdir().unwrap();
+    let log = tmp.path().join("test.log");
+    std::fs::write(&log, "Failed password for root\n").unwrap();
+    seed_shared_jail(&mut fake, &bin, &log);
+
+    let doctor = Doctor::new(&fake);
+    let first = doctor.run(&DoctorScope::All).unwrap();
+    let second = doctor.run(&DoctorScope::All).unwrap();
+
+    assert_eq!(
+        format!("{:?}", first.findings),
+        format!("{:?}", second.findings),
+        "a re-run must not change findings (fresh fetch per run, same canned data)"
+    );
+    assert_eq!(client_status_calls(&fake), 2, "one fetch per run");
 }

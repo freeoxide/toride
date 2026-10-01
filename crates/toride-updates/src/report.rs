@@ -1,6 +1,6 @@
 //! Structured status reports and diagnostic findings for the updates subsystem.
 //!
-//! [`UpdateStatus`] captures the current state of automatic updates on the host.
+//! [`UpdateStatus`](crate::report::UpdateStatus) captures the current state of automatic updates on the host.
 //! Doctor findings use [`toride_diagnostic_types::Finding`] for consistency
 //! across the toride diagnostic framework.
 

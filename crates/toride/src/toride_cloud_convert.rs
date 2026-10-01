@@ -44,7 +44,7 @@ pub fn format_provider(provider: toride_cloud::CloudProvider) -> &'static str {
 /// Build the presentation [`ProviderInfo`] for a detected provider.
 ///
 /// `cli_tool` is the empty string for `Unknown` (see
-/// [`CloudProvider::cli_tool`]); the presentation layer renders "—" for it.
+/// `CloudProvider::cli_tool`); the presentation layer renders "—" for it.
 pub fn convert_provider(provider: toride_cloud::CloudProvider) -> ProviderInfo {
     ProviderInfo {
         provider: format_provider(provider).to_string(),
@@ -149,7 +149,7 @@ fn convert_rule(rule: toride_cloud::spec::FirewallRule) -> FirewallRuleEntry {
 ///
 /// Each group is mapped 1:1; an empty group name is logged and replaced with a
 /// placeholder so the row is still visible. The rule list per group is
-/// converted via [`convert_rule`] (best-effort; malformed rules keep their
+/// converted via `convert_rule` (best-effort; malformed rules keep their
 /// row with placeholders). The ingress/egress counts are derived from the
 /// converted rule list so they always agree with what is rendered.
 pub fn convert_security_groups(

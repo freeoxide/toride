@@ -5,7 +5,7 @@
 //! listing archives, checking integrity, pruning, extracting, and querying
 //! repository info.
 //!
-//! All commands go through a centralised [`Runner`](toride_runner::Runner) so
+//! All commands go through a centralised [`Runner`] so
 //! that they are testable (via [`FakeRunner`](toride_runner::FakeRunner)) and
 //! respect a uniform redaction / output-capping policy. The passphrase is
 //! always passed via the `BORG_PASSPHRASE` environment variable (never as a
@@ -49,7 +49,7 @@ use toride_runner::{CommandSpec, Runner};
 ///
 /// # Secrets
 ///
-/// The repository passphrase is held in [`Self::passphrase`] and injected into
+/// The repository passphrase is held in `Self::passphrase` and injected into
 /// each command via the `BORG_PASSPHRASE` environment variable. Commands that
 /// carry the passphrase (or any other secret) are built with `redact(true)`,
 /// which ensures the secret values are scrubbed from any error message or log

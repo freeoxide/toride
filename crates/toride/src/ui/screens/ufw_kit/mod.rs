@@ -63,7 +63,7 @@ pub struct FindingEntry {
 /// UFW firewall management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`FirewallContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `FirewallContent::set_*` setters
 /// driven by [`FirewallCollector`](crate::ufw_kit_data::FirewallCollector).
 pub struct FirewallContent {
     /// Whether the UFW backend was reachable at all (binary present, status

@@ -107,7 +107,7 @@ fn redacted_cmd_str(program: &str, args: &[&str]) -> String {
 
 /// Production command runner backed by the `duct` crate.
 ///
-/// Uses [`duct::cmd`] for execution. Timeouts are implemented by spawning the
+/// Uses [`duct::cmd()`] for execution. Timeouts are implemented by spawning the
 /// child via `start()`, then waiting on a channel with a deadline. If the
 /// deadline expires the child is killed.
 ///

@@ -1,6 +1,6 @@
 //! Binary and filesystem permission check helpers.
 //!
-//! These produce [`Finding`] values suitable for inclusion in a [`DoctorReport`].
+//! These produce [`Finding`] values suitable for inclusion in a `DoctorReport`.
 
 use std::path::Path;
 

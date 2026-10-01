@@ -7,7 +7,11 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["client", "doctor"]
+# `config` is on by default so the `detector_scan` criterion bench (which needs
+# the `detector` module) builds under plain `cargo bench --workspace`. It adds
+# no new dependencies: `regex` and `client` are already pulled in by `doctor`
+# and the old defaults.
+default = ["client", "doctor", "config"]
 
 # === Capability features ===
 
@@ -71,6 +75,13 @@ assert_fs = "1"
 tempfile = "3"
 indoc = "2"
 proptest = "1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "detector_scan"
+harness = false
+test = false
+required-features = ["config"]
 
 [lints]
 workspace = true

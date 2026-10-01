@@ -1,0 +1,403 @@
+Status: active
+To                         Action      From
+--                         ------      ----
+10003/tcp (v6)                ALLOW IN    Anywhere (v6)
+10006/udp                     DENY OUT   203.0.113.3/24
+10009/tcp                     LIMIT IN    198.51.100.4
+Nginx Full                 ALLOW IN    Anywhere
+10015,10016/tcp                  ALLOW IN    Anywhere comment web tier 5
+Anywhere                   REJECT OUT   192.0.2.7
+Anywhere on eth0           ALLOW FWD   10.7.7.0/24
+10024/tcp                     ALLOW IN    Anywhere
+10027/tcp (v6)                ALLOW IN    Anywhere (v6)
+10030/udp                     DENY OUT   203.0.113.11/24
+10033/tcp                     LIMIT IN    198.51.100.12
+Nginx Full                 ALLOW IN    Anywhere
+10039,10040/tcp                  ALLOW IN    Anywhere comment web tier 13
+Anywhere                   REJECT OUT   192.0.2.15
+Anywhere on eth0           ALLOW FWD   10.15.15.0/24
+10048/tcp                     ALLOW IN    Anywhere
+10051/tcp (v6)                ALLOW IN    Anywhere (v6)
+10054/udp                     DENY OUT   203.0.113.19/24
+10057/tcp                     LIMIT IN    198.51.100.20
+Nginx Full                 ALLOW IN    Anywhere
+10063,10064/tcp                  ALLOW IN    Anywhere comment web tier 21
+Anywhere                   REJECT OUT   192.0.2.23
+Anywhere on eth0           ALLOW FWD   10.7.23.0/24
+10072/tcp                     ALLOW IN    Anywhere
+10075/tcp (v6)                ALLOW IN    Anywhere (v6)
+10078/udp                     DENY OUT   203.0.113.27/24
+10081/tcp                     LIMIT IN    198.51.100.28
+Nginx Full                 ALLOW IN    Anywhere
+10087,10088/tcp                  ALLOW IN    Anywhere comment web tier 29
+Anywhere                   REJECT OUT   192.0.2.31
+Anywhere on eth0           ALLOW FWD   10.15.31.0/24
+10096/tcp                     ALLOW IN    Anywhere
+10099/tcp (v6)                ALLOW IN    Anywhere (v6)
+10102/udp                     DENY OUT   203.0.113.35/24
+10105/tcp                     LIMIT IN    198.51.100.36
+Nginx Full                 ALLOW IN    Anywhere
+10111,10112/tcp                  ALLOW IN    Anywhere comment web tier 37
+Anywhere                   REJECT OUT   192.0.2.39
+Anywhere on eth0           ALLOW FWD   10.7.39.0/24
+10120/tcp                     ALLOW IN    Anywhere
+10123/tcp (v6)                ALLOW IN    Anywhere (v6)
+10126/udp                     DENY OUT   203.0.113.43/24
+10129/tcp                     LIMIT IN    198.51.100.44
+Nginx Full                 ALLOW IN    Anywhere
+10135,10136/tcp                  ALLOW IN    Anywhere comment web tier 45
+Anywhere                   REJECT OUT   192.0.2.47
+Anywhere on eth0           ALLOW FWD   10.15.47.0/24
+10144/tcp                     ALLOW IN    Anywhere
+10147/tcp (v6)                ALLOW IN    Anywhere (v6)
+10150/udp                     DENY OUT   203.0.113.51/24
+10153/tcp                     LIMIT IN    198.51.100.52
+Nginx Full                 ALLOW IN    Anywhere
+10159,10160/tcp                  ALLOW IN    Anywhere comment web tier 53
+Anywhere                   REJECT OUT   192.0.2.55
+Anywhere on eth0           ALLOW FWD   10.7.55.0/24
+10168/tcp                     ALLOW IN    Anywhere
+10171/tcp (v6)                ALLOW IN    Anywhere (v6)
+10174/udp                     DENY OUT   203.0.113.59/24
+10177/tcp                     LIMIT IN    198.51.100.60
+Nginx Full                 ALLOW IN    Anywhere
+10183,10184/tcp                  ALLOW IN    Anywhere comment web tier 61
+Anywhere                   REJECT OUT   192.0.2.63
+Anywhere on eth0           ALLOW FWD   10.15.63.0/24
+10192/tcp                     ALLOW IN    Anywhere
+10195/tcp (v6)                ALLOW IN    Anywhere (v6)
+10198/udp                     DENY OUT   203.0.113.67/24
+10201/tcp                     LIMIT IN    198.51.100.68
+Nginx Full                 ALLOW IN    Anywhere
+10207,10208/tcp                  ALLOW IN    Anywhere comment web tier 69
+Anywhere                   REJECT OUT   192.0.2.71
+Anywhere on eth0           ALLOW FWD   10.7.71.0/24
+10216/tcp                     ALLOW IN    Anywhere
+10219/tcp (v6)                ALLOW IN    Anywhere (v6)
+10222/udp                     DENY OUT   203.0.113.75/24
+10225/tcp                     LIMIT IN    198.51.100.76
+Nginx Full                 ALLOW IN    Anywhere
+10231,10232/tcp                  ALLOW IN    Anywhere comment web tier 77
+Anywhere                   REJECT OUT   192.0.2.79
+Anywhere on eth0           ALLOW FWD   10.15.79.0/24
+10240/tcp                     ALLOW IN    Anywhere
+10243/tcp (v6)                ALLOW IN    Anywhere (v6)
+10246/udp                     DENY OUT   203.0.113.83/24
+10249/tcp                     LIMIT IN    198.51.100.84
+Nginx Full                 ALLOW IN    Anywhere
+10255,10256/tcp                  ALLOW IN    Anywhere comment web tier 85
+Anywhere                   REJECT OUT   192.0.2.87
+Anywhere on eth0           ALLOW FWD   10.7.87.0/24
+10264/tcp                     ALLOW IN    Anywhere
+10267/tcp (v6)                ALLOW IN    Anywhere (v6)
+10270/udp                     DENY OUT   203.0.113.91/24
+10273/tcp                     LIMIT IN    198.51.100.92
+Nginx Full                 ALLOW IN    Anywhere
+10279,10280/tcp                  ALLOW IN    Anywhere comment web tier 93
+Anywhere                   REJECT OUT   192.0.2.95
+Anywhere on eth0           ALLOW FWD   10.15.95.0/24
+10288/tcp                     ALLOW IN    Anywhere
+10291/tcp (v6)                ALLOW IN    Anywhere (v6)
+10294/udp                     DENY OUT   203.0.113.99/24
+10297/tcp                     LIMIT IN    198.51.100.100
+Nginx Full                 ALLOW IN    Anywhere
+10303,10304/tcp                  ALLOW IN    Anywhere comment web tier 101
+Anywhere                   REJECT OUT   192.0.2.103
+Anywhere on eth0           ALLOW FWD   10.7.103.0/24
+10312/tcp                     ALLOW IN    Anywhere
+10315/tcp (v6)                ALLOW IN    Anywhere (v6)
+10318/udp                     DENY OUT   203.0.113.107/24
+10321/tcp                     LIMIT IN    198.51.100.108
+Nginx Full                 ALLOW IN    Anywhere
+10327,10328/tcp                  ALLOW IN    Anywhere comment web tier 109
+Anywhere                   REJECT OUT   192.0.2.111
+Anywhere on eth0           ALLOW FWD   10.15.111.0/24
+10336/tcp                     ALLOW IN    Anywhere
+10339/tcp (v6)                ALLOW IN    Anywhere (v6)
+10342/udp                     DENY OUT   203.0.113.115/24
+10345/tcp                     LIMIT IN    198.51.100.116
+Nginx Full                 ALLOW IN    Anywhere
+10351,10352/tcp                  ALLOW IN    Anywhere comment web tier 117
+Anywhere                   REJECT OUT   192.0.2.119
+Anywhere on eth0           ALLOW FWD   10.7.119.0/24
+10360/tcp                     ALLOW IN    Anywhere
+10363/tcp (v6)                ALLOW IN    Anywhere (v6)
+10366/udp                     DENY OUT   203.0.113.123/24
+10369/tcp                     LIMIT IN    198.51.100.124
+Nginx Full                 ALLOW IN    Anywhere
+10375,10376/tcp                  ALLOW IN    Anywhere comment web tier 125
+Anywhere                   REJECT OUT   192.0.2.127
+Anywhere on eth0           ALLOW FWD   10.15.127.0/24
+10384/tcp                     ALLOW IN    Anywhere
+10387/tcp (v6)                ALLOW IN    Anywhere (v6)
+10390/udp                     DENY OUT   203.0.113.131/24
+10393/tcp                     LIMIT IN    198.51.100.132
+Nginx Full                 ALLOW IN    Anywhere
+10399,10400/tcp                  ALLOW IN    Anywhere comment web tier 133
+Anywhere                   REJECT OUT   192.0.2.135
+Anywhere on eth0           ALLOW FWD   10.7.135.0/24
+10408/tcp                     ALLOW IN    Anywhere
+10411/tcp (v6)                ALLOW IN    Anywhere (v6)
+10414/udp                     DENY OUT   203.0.113.139/24
+10417/tcp                     LIMIT IN    198.51.100.140
+Nginx Full                 ALLOW IN    Anywhere
+10423,10424/tcp                  ALLOW IN    Anywhere comment web tier 141
+Anywhere                   REJECT OUT   192.0.2.143
+Anywhere on eth0           ALLOW FWD   10.15.143.0/24
+10432/tcp                     ALLOW IN    Anywhere
+10435/tcp (v6)                ALLOW IN    Anywhere (v6)
+10438/udp                     DENY OUT   203.0.113.147/24
+10441/tcp                     LIMIT IN    198.51.100.148
+Nginx Full                 ALLOW IN    Anywhere
+10447,10448/tcp                  ALLOW IN    Anywhere comment web tier 149
+Anywhere                   REJECT OUT   192.0.2.151
+Anywhere on eth0           ALLOW FWD   10.7.151.0/24
+10456/tcp                     ALLOW IN    Anywhere
+10459/tcp (v6)                ALLOW IN    Anywhere (v6)
+10462/udp                     DENY OUT   203.0.113.155/24
+10465/tcp                     LIMIT IN    198.51.100.156
+Nginx Full                 ALLOW IN    Anywhere
+10471,10472/tcp                  ALLOW IN    Anywhere comment web tier 157
+Anywhere                   REJECT OUT   192.0.2.159
+Anywhere on eth0           ALLOW FWD   10.15.159.0/24
+10480/tcp                     ALLOW IN    Anywhere
+10483/tcp (v6)                ALLOW IN    Anywhere (v6)
+10486/udp                     DENY OUT   203.0.113.163/24
+10489/tcp                     LIMIT IN    198.51.100.164
+Nginx Full                 ALLOW IN    Anywhere
+10495,10496/tcp                  ALLOW IN    Anywhere comment web tier 165
+Anywhere                   REJECT OUT   192.0.2.167
+Anywhere on eth0           ALLOW FWD   10.7.167.0/24
+10504/tcp                     ALLOW IN    Anywhere
+10507/tcp (v6)                ALLOW IN    Anywhere (v6)
+10510/udp                     DENY OUT   203.0.113.171/24
+10513/tcp                     LIMIT IN    198.51.100.172
+Nginx Full                 ALLOW IN    Anywhere
+10519,10520/tcp                  ALLOW IN    Anywhere comment web tier 173
+Anywhere                   REJECT OUT   192.0.2.175
+Anywhere on eth0           ALLOW FWD   10.15.175.0/24
+10528/tcp                     ALLOW IN    Anywhere
+10531/tcp (v6)                ALLOW IN    Anywhere (v6)
+10534/udp                     DENY OUT   203.0.113.179/24
+10537/tcp                     LIMIT IN    198.51.100.180
+Nginx Full                 ALLOW IN    Anywhere
+10543,10544/tcp                  ALLOW IN    Anywhere comment web tier 181
+Anywhere                   REJECT OUT   192.0.2.183
+Anywhere on eth0           ALLOW FWD   10.7.183.0/24
+10552/tcp                     ALLOW IN    Anywhere
+10555/tcp (v6)                ALLOW IN    Anywhere (v6)
+10558/udp                     DENY OUT   203.0.113.187/24
+10561/tcp                     LIMIT IN    198.51.100.188
+Nginx Full                 ALLOW IN    Anywhere
+10567,10568/tcp                  ALLOW IN    Anywhere comment web tier 189
+Anywhere                   REJECT OUT   192.0.2.191
+Anywhere on eth0           ALLOW FWD   10.15.191.0/24
+10576/tcp                     ALLOW IN    Anywhere
+10579/tcp (v6)                ALLOW IN    Anywhere (v6)
+10582/udp                     DENY OUT   203.0.113.195/24
+10585/tcp                     LIMIT IN    198.51.100.196
+Nginx Full                 ALLOW IN    Anywhere
+10591,10592/tcp                  ALLOW IN    Anywhere comment web tier 197
+Anywhere                   REJECT OUT   192.0.2.199
+Anywhere on eth0           ALLOW FWD   10.7.199.0/24
+10600/tcp                     ALLOW IN    Anywhere
+10603/tcp (v6)                ALLOW IN    Anywhere (v6)
+10606/udp                     DENY OUT   203.0.113.203/24
+10609/tcp                     LIMIT IN    198.51.100.204
+Nginx Full                 ALLOW IN    Anywhere
+10615,10616/tcp                  ALLOW IN    Anywhere comment web tier 205
+Anywhere                   REJECT OUT   192.0.2.207
+Anywhere on eth0           ALLOW FWD   10.15.207.0/24
+10624/tcp                     ALLOW IN    Anywhere
+10627/tcp (v6)                ALLOW IN    Anywhere (v6)
+10630/udp                     DENY OUT   203.0.113.211/24
+10633/tcp                     LIMIT IN    198.51.100.212
+Nginx Full                 ALLOW IN    Anywhere
+10639,10640/tcp                  ALLOW IN    Anywhere comment web tier 213
+Anywhere                   REJECT OUT   192.0.2.215
+Anywhere on eth0           ALLOW FWD   10.7.215.0/24
+10648/tcp                     ALLOW IN    Anywhere
+10651/tcp (v6)                ALLOW IN    Anywhere (v6)
+10654/udp                     DENY OUT   203.0.113.219/24
+10657/tcp                     LIMIT IN    198.51.100.220
+Nginx Full                 ALLOW IN    Anywhere
+10663,10664/tcp                  ALLOW IN    Anywhere comment web tier 221
+Anywhere                   REJECT OUT   192.0.2.223
+Anywhere on eth0           ALLOW FWD   10.15.223.0/24
+10672/tcp                     ALLOW IN    Anywhere
+10675/tcp (v6)                ALLOW IN    Anywhere (v6)
+10678/udp                     DENY OUT   203.0.113.227/24
+10681/tcp                     LIMIT IN    198.51.100.228
+Nginx Full                 ALLOW IN    Anywhere
+10687,10688/tcp                  ALLOW IN    Anywhere comment web tier 229
+Anywhere                   REJECT OUT   192.0.2.231
+Anywhere on eth0           ALLOW FWD   10.7.231.0/24
+10696/tcp                     ALLOW IN    Anywhere
+10699/tcp (v6)                ALLOW IN    Anywhere (v6)
+10702/udp                     DENY OUT   203.0.113.235/24
+10705/tcp                     LIMIT IN    198.51.100.236
+Nginx Full                 ALLOW IN    Anywhere
+10711,10712/tcp                  ALLOW IN    Anywhere comment web tier 237
+Anywhere                   REJECT OUT   192.0.2.239
+Anywhere on eth0           ALLOW FWD   10.15.239.0/24
+10720/tcp                     ALLOW IN    Anywhere
+10723/tcp (v6)                ALLOW IN    Anywhere (v6)
+10726/udp                     DENY OUT   203.0.113.243/24
+10729/tcp                     LIMIT IN    198.51.100.244
+Nginx Full                 ALLOW IN    Anywhere
+10735,10736/tcp                  ALLOW IN    Anywhere comment web tier 245
+Anywhere                   REJECT OUT   192.0.2.247
+Anywhere on eth0           ALLOW FWD   10.7.247.0/24
+10744/tcp                     ALLOW IN    Anywhere
+10747/tcp (v6)                ALLOW IN    Anywhere (v6)
+10750/udp                     DENY OUT   203.0.113.251/24
+10753/tcp                     LIMIT IN    198.51.100.252
+Nginx Full                 ALLOW IN    Anywhere
+10759,10760/tcp                  ALLOW IN    Anywhere comment web tier 253
+Anywhere                   REJECT OUT   192.0.2.1
+Anywhere on eth0           ALLOW FWD   10.15.1.0/24
+10768/tcp                     ALLOW IN    Anywhere
+10771/tcp (v6)                ALLOW IN    Anywhere (v6)
+10774/udp                     DENY OUT   203.0.113.5/24
+10777/tcp                     LIMIT IN    198.51.100.6
+Nginx Full                 ALLOW IN    Anywhere
+10783,10784/tcp                  ALLOW IN    Anywhere comment web tier 261
+Anywhere                   REJECT OUT   192.0.2.9
+Anywhere on eth0           ALLOW FWD   10.7.9.0/24
+10792/tcp                     ALLOW IN    Anywhere
+10795/tcp (v6)                ALLOW IN    Anywhere (v6)
+10798/udp                     DENY OUT   203.0.113.13/24
+10801/tcp                     LIMIT IN    198.51.100.14
+Nginx Full                 ALLOW IN    Anywhere
+10807,10808/tcp                  ALLOW IN    Anywhere comment web tier 269
+Anywhere                   REJECT OUT   192.0.2.17
+Anywhere on eth0           ALLOW FWD   10.15.17.0/24
+10816/tcp                     ALLOW IN    Anywhere
+10819/tcp (v6)                ALLOW IN    Anywhere (v6)
+10822/udp                     DENY OUT   203.0.113.21/24
+10825/tcp                     LIMIT IN    198.51.100.22
+Nginx Full                 ALLOW IN    Anywhere
+10831,10832/tcp                  ALLOW IN    Anywhere comment web tier 277
+Anywhere                   REJECT OUT   192.0.2.25
+Anywhere on eth0           ALLOW FWD   10.7.25.0/24
+10840/tcp                     ALLOW IN    Anywhere
+10843/tcp (v6)                ALLOW IN    Anywhere (v6)
+10846/udp                     DENY OUT   203.0.113.29/24
+10849/tcp                     LIMIT IN    198.51.100.30
+Nginx Full                 ALLOW IN    Anywhere
+10855,10856/tcp                  ALLOW IN    Anywhere comment web tier 285
+Anywhere                   REJECT OUT   192.0.2.33
+Anywhere on eth0           ALLOW FWD   10.15.33.0/24
+10864/tcp                     ALLOW IN    Anywhere
+10867/tcp (v6)                ALLOW IN    Anywhere (v6)
+10870/udp                     DENY OUT   203.0.113.37/24
+10873/tcp                     LIMIT IN    198.51.100.38
+Nginx Full                 ALLOW IN    Anywhere
+10879,10880/tcp                  ALLOW IN    Anywhere comment web tier 293
+Anywhere                   REJECT OUT   192.0.2.41
+Anywhere on eth0           ALLOW FWD   10.7.41.0/24
+10888/tcp                     ALLOW IN    Anywhere
+10891/tcp (v6)                ALLOW IN    Anywhere (v6)
+10894/udp                     DENY OUT   203.0.113.45/24
+10897/tcp                     LIMIT IN    198.51.100.46
+Nginx Full                 ALLOW IN    Anywhere
+10903,10904/tcp                  ALLOW IN    Anywhere comment web tier 301
+Anywhere                   REJECT OUT   192.0.2.49
+Anywhere on eth0           ALLOW FWD   10.15.49.0/24
+10912/tcp                     ALLOW IN    Anywhere
+10915/tcp (v6)                ALLOW IN    Anywhere (v6)
+10918/udp                     DENY OUT   203.0.113.53/24
+10921/tcp                     LIMIT IN    198.51.100.54
+Nginx Full                 ALLOW IN    Anywhere
+10927,10928/tcp                  ALLOW IN    Anywhere comment web tier 309
+Anywhere                   REJECT OUT   192.0.2.57
+Anywhere on eth0           ALLOW FWD   10.7.57.0/24
+10936/tcp                     ALLOW IN    Anywhere
+10939/tcp (v6)                ALLOW IN    Anywhere (v6)
+10942/udp                     DENY OUT   203.0.113.61/24
+10945/tcp                     LIMIT IN    198.51.100.62
+Nginx Full                 ALLOW IN    Anywhere
+10951,10952/tcp                  ALLOW IN    Anywhere comment web tier 317
+Anywhere                   REJECT OUT   192.0.2.65
+Anywhere on eth0           ALLOW FWD   10.15.65.0/24
+10960/tcp                     ALLOW IN    Anywhere
+10963/tcp (v6)                ALLOW IN    Anywhere (v6)
+10966/udp                     DENY OUT   203.0.113.69/24
+10969/tcp                     LIMIT IN    198.51.100.70
+Nginx Full                 ALLOW IN    Anywhere
+10975,10976/tcp                  ALLOW IN    Anywhere comment web tier 325
+Anywhere                   REJECT OUT   192.0.2.73
+Anywhere on eth0           ALLOW FWD   10.7.73.0/24
+10984/tcp                     ALLOW IN    Anywhere
+10987/tcp (v6)                ALLOW IN    Anywhere (v6)
+10990/udp                     DENY OUT   203.0.113.77/24
+10993/tcp                     LIMIT IN    198.51.100.78
+Nginx Full                 ALLOW IN    Anywhere
+10999,11000/tcp                  ALLOW IN    Anywhere comment web tier 333
+Anywhere                   REJECT OUT   192.0.2.81
+Anywhere on eth0           ALLOW FWD   10.15.81.0/24
+11008/tcp                     ALLOW IN    Anywhere
+11011/tcp (v6)                ALLOW IN    Anywhere (v6)
+11014/udp                     DENY OUT   203.0.113.85/24
+11017/tcp                     LIMIT IN    198.51.100.86
+Nginx Full                 ALLOW IN    Anywhere
+11023,11024/tcp                  ALLOW IN    Anywhere comment web tier 341
+Anywhere                   REJECT OUT   192.0.2.89
+Anywhere on eth0           ALLOW FWD   10.7.89.0/24
+11032/tcp                     ALLOW IN    Anywhere
+11035/tcp (v6)                ALLOW IN    Anywhere (v6)
+11038/udp                     DENY OUT   203.0.113.93/24
+11041/tcp                     LIMIT IN    198.51.100.94
+Nginx Full                 ALLOW IN    Anywhere
+11047,11048/tcp                  ALLOW IN    Anywhere comment web tier 349
+Anywhere                   REJECT OUT   192.0.2.97
+Anywhere on eth0           ALLOW FWD   10.15.97.0/24
+11056/tcp                     ALLOW IN    Anywhere
+11059/tcp (v6)                ALLOW IN    Anywhere (v6)
+11062/udp                     DENY OUT   203.0.113.101/24
+11065/tcp                     LIMIT IN    198.51.100.102
+Nginx Full                 ALLOW IN    Anywhere
+11071,11072/tcp                  ALLOW IN    Anywhere comment web tier 357
+Anywhere                   REJECT OUT   192.0.2.105
+Anywhere on eth0           ALLOW FWD   10.7.105.0/24
+11080/tcp                     ALLOW IN    Anywhere
+11083/tcp (v6)                ALLOW IN    Anywhere (v6)
+11086/udp                     DENY OUT   203.0.113.109/24
+11089/tcp                     LIMIT IN    198.51.100.110
+Nginx Full                 ALLOW IN    Anywhere
+11095,11096/tcp                  ALLOW IN    Anywhere comment web tier 365
+Anywhere                   REJECT OUT   192.0.2.113
+Anywhere on eth0           ALLOW FWD   10.15.113.0/24
+11104/tcp                     ALLOW IN    Anywhere
+11107/tcp (v6)                ALLOW IN    Anywhere (v6)
+11110/udp                     DENY OUT   203.0.113.117/24
+11113/tcp                     LIMIT IN    198.51.100.118
+Nginx Full                 ALLOW IN    Anywhere
+11119,11120/tcp                  ALLOW IN    Anywhere comment web tier 373
+Anywhere                   REJECT OUT   192.0.2.121
+Anywhere on eth0           ALLOW FWD   10.7.121.0/24
+11128/tcp                     ALLOW IN    Anywhere
+11131/tcp (v6)                ALLOW IN    Anywhere (v6)
+11134/udp                     DENY OUT   203.0.113.125/24
+11137/tcp                     LIMIT IN    198.51.100.126
+Nginx Full                 ALLOW IN    Anywhere
+11143,11144/tcp                  ALLOW IN    Anywhere comment web tier 381
+Anywhere                   REJECT OUT   192.0.2.129
+Anywhere on eth0           ALLOW FWD   10.15.129.0/24
+11152/tcp                     ALLOW IN    Anywhere
+11155/tcp (v6)                ALLOW IN    Anywhere (v6)
+11158/udp                     DENY OUT   203.0.113.133/24
+11161/tcp                     LIMIT IN    198.51.100.134
+Nginx Full                 ALLOW IN    Anywhere
+11167,11168/tcp                  ALLOW IN    Anywhere comment web tier 389
+Anywhere                   REJECT OUT   192.0.2.137
+Anywhere on eth0           ALLOW FWD   10.7.137.0/24
+11176/tcp                     ALLOW IN    Anywhere
+11179/tcp (v6)                ALLOW IN    Anywhere (v6)
+11182/udp                     DENY OUT   203.0.113.141/24
+11185/tcp                     LIMIT IN    198.51.100.142
+Nginx Full                 ALLOW IN    Anywhere
+11191,11192/tcp                  ALLOW IN    Anywhere comment web tier 397
+Anywhere                   REJECT OUT   192.0.2.145
+Anywhere on eth0           ALLOW FWD   10.15.145.0/24
+11200/tcp                     ALLOW IN    Anywhere

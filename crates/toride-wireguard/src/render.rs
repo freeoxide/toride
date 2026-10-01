@@ -1,6 +1,6 @@
 //! INI config rendering for WireGuard interface and peer entries.
 //!
-//! Renders a [`WireguardSpec`] into the standard WireGuard INI configuration
+//! Renders a [`WireguardSpec`](crate::spec::WireguardSpec) into the standard WireGuard INI configuration
 //! format suitable for writing to `/etc/wireguard/<interface>.conf`.
 
 use crate::spec::{PeerSpec, WireguardSpec};

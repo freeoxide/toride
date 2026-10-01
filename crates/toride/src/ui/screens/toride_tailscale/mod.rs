@@ -90,7 +90,7 @@ pub struct TailscaleFindingEntry {
 /// Tailscale management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`TailscaleContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `TailscaleContent::set_*` setters
 /// driven by [`TailscaleCollector`](crate::toride_tailscale_data::TailscaleCollector).
 #[expect(
     clippy::struct_excessive_bools,

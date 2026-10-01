@@ -72,7 +72,7 @@ const PAM_FILE_MODE: u32 = 0o644;
 /// # Errors
 ///
 /// Returns [`Error::Io`] if the backup or permission step fails, or an
-/// [`Error`](crate::Error) wrapping a `toride_fs` atomic-write failure if the
+/// [`Error`] wrapping a `toride_fs` atomic-write failure if the
 /// temp file cannot be created, written, fsynced, or persisted.
 pub fn write_pam_config(path: &Path, rules: &[PamRule], comment: Option<&str>) -> Result<()> {
     let mut content = String::new();

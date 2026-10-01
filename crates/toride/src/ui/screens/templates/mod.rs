@@ -87,7 +87,7 @@ pub struct FindingEntry {
 /// area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`TemplatesContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `TemplatesContent::set_*` setters
 /// driven by
 /// [`TemplatesCollector`](crate::templates_data::TemplatesCollector).
 pub struct TemplatesContent {

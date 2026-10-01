@@ -99,7 +99,7 @@ pub fn convert_tools(t: Vec<toride_mise::ToolStatus>) -> Vec<MiseToolEntry> {
 /// name, [`OutdatedOutput`](toride_mise::serde_utils::json_outputs::OutdatedOutput))
 /// into UI outdated rows.
 ///
-/// This is the LIVE path used by [`collect_real_mise`](crate::toride_mise_data::collect_real_mise):
+/// This is the LIVE path used by `collect_real_mise`:
 /// real `mise outdated --json` emits a JSON *object*
 /// `{"node":{"requested":"22","current":"22.0.0","latest":"22.1.0"}}`, NOT a
 /// sequence. The map key is the tool name; the entry carries `current`,

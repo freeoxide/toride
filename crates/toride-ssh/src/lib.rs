@@ -58,7 +58,7 @@ use std::sync::Arc;
 
 /// Entry point for all SSH management operations.
 ///
-/// `SshManager` is cheaply [`Clone`](Clone)-able and safe to share
+/// `SshManager` is cheaply [`Clone`]-able and safe to share
 /// across async tasks. Each subsystem is accessed via a dedicated
 /// accessor method (e.g. [`keys()`](Self::keys), [`config()`](Self::config)).
 ///

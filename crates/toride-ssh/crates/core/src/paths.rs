@@ -54,7 +54,7 @@ impl SshPaths {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::HomeNotFound`] if the home directory cannot be
+    /// Returns [`Error::HomeNotFound`](crate::Error::HomeNotFound) if the home directory cannot be
     /// determined.
     pub fn new() -> Result<Self> {
         let home = dirs::home_dir().ok_or(crate::Error::HomeNotFound)?;

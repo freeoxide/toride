@@ -1,6 +1,6 @@
 //! Editing of `/etc/ssh/sshd_config` for access-control directives.
 //!
-//! This reuses the lossless [`ast::ConfigAst`] (which already handles `Match`
+//! This reuses the lossless [`ast::ConfigAst`](crate::ast::ConfigAst) (which already handles `Match`
 //! blocks, `Include`, comments, and whitespace faithfully) to provide focused
 //! read/edit operations for the user-access directives Toride cares about:
 //! `AllowUsers` and `DenyUsers`.
@@ -103,7 +103,7 @@ fn ensure_lock_file(path: &std::path::Path) {
 ///
 /// # Errors
 ///
-/// Returns [`Error::Io`] if the file exists but cannot be read.
+/// Returns `Error::Io` if the file exists but cannot be read.
 pub async fn load() -> Result<ConfigAst> {
     let path = std::path::Path::new(SSHD_CONFIG_PATH);
     if !path.exists() {
@@ -120,8 +120,8 @@ pub async fn load() -> Result<ConfigAst> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::SshdConfigInvalid`] if `sshd -t` rejects the config, or
-/// [`Error::SudoFailed`] if the privileged install can't run.
+/// Returns `Error::SshdConfigInvalid` if `sshd -t` rejects the config, or
+/// `Error::SudoFailed` if the privileged install can't run.
 pub async fn save(ast: &ConfigAst, running_as_root: bool) -> Result<()> {
     let content = ast.to_string_lossless();
     run_privileged(PrivilegedOp::WriteSshdConfig { content }, running_as_root).await
@@ -164,7 +164,7 @@ fn with_edit_lock<T>(path: &std::path::Path, f: impl FnOnce() -> Result<T>) -> R
 /// # Concurrency
 ///
 /// The entire load → mutate → save critical section is serialized across
-/// processes by an advisory lock (`flock`) acquired on [`edit_lock_path`]
+/// processes by an advisory lock (`flock`) acquired on `edit_lock_path`
 /// **before** the read and held until the install completes. This prevents two
 /// concurrent toride instances (or toride + another editor) from each loading
 /// the same original config, applying their edit, and the second install
@@ -407,7 +407,7 @@ pub fn directive_has_patterns(ast: &ConfigAst, key: &str) -> bool {
 ///
 /// # Errors
 ///
-/// Returns [`Error::SshdConfigInvalid`] if an existing `AllowUsers` directive
+/// Returns `Error::SshdConfigInvalid` if an existing `AllowUsers` directive
 /// uses pattern tokens (`*`, `?`, `@`); the AST is left unmodified in that
 /// case. Editing a pattern directive by exact username would be semantically
 /// wrong.
@@ -424,7 +424,7 @@ pub fn add_user_to_allow(ast: &mut ConfigAst, user: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::SshdConfigInvalid`] if an existing `AllowUsers` directive
+/// Returns `Error::SshdConfigInvalid` if an existing `AllowUsers` directive
 /// uses pattern tokens (`*`, `?`, `@`); the AST is left unmodified.
 pub fn remove_user_from_allow(ast: &mut ConfigAst, user: &str) -> Result<()> {
     upsert_user_in_directive(ast, "AllowUsers", user, Action::Remove)
@@ -434,7 +434,7 @@ pub fn remove_user_from_allow(ast: &mut ConfigAst, user: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::SshdConfigInvalid`] if an existing `DenyUsers` directive
+/// Returns `Error::SshdConfigInvalid` if an existing `DenyUsers` directive
 /// uses pattern tokens (`*`, `?`, `@`); the AST is left unmodified.
 pub fn add_user_to_deny(ast: &mut ConfigAst, user: &str) -> Result<()> {
     upsert_user_in_directive(ast, "DenyUsers", user, Action::Add)
@@ -445,7 +445,7 @@ pub fn add_user_to_deny(ast: &mut ConfigAst, user: &str) -> Result<()> {
 ///
 /// # Errors
 ///
-/// Returns [`Error::SshdConfigInvalid`] if an existing `DenyUsers` directive
+/// Returns `Error::SshdConfigInvalid` if an existing `DenyUsers` directive
 /// uses pattern tokens (`*`, `?`, `@`); the AST is left unmodified.
 pub fn remove_user_from_deny(ast: &mut ConfigAst, user: &str) -> Result<()> {
     upsert_user_in_directive(ast, "DenyUsers", user, Action::Remove)

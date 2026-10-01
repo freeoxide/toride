@@ -98,7 +98,7 @@ pub struct CloudFindingEntry {
 /// Cloud provider management content rendered inside the dashboard content area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`CloudContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `CloudContent::set_*` setters
 /// driven by [`CloudCollector`](crate::toride_cloud_data::CloudCollector).
 pub struct CloudContent {
     /// Whether the cloud backend was reachable at all (provider detectable or

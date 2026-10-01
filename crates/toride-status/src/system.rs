@@ -1,60 +1,7 @@
 //! OS-level metrics: CPU, memory, disk, network, load average, uptime, hostname.
 //!
-//! Uses the [`sysinfo`] crate for cross-platform data collection. Each metric
-//! returns `None` when the underlying data cannot be read (e.g. permission
-//! denied on certain Linux containers).
-//!
-//! # Platform support
-//!
-//! | Metric        | Linux | macOS | Windows |
-//! |---------------|:-----:|:-----:|:-------:|
-//! | CPU usage     | Yes   | Yes   | Yes     |
-//! | Per-core CPU  | Yes   | Yes   | Yes     |
-//! | Memory        | Yes   | Yes   | Yes     |
-//! | Swap          | Yes   | Yes   | Yes     |
-//! | Disk usage    | Yes   | Yes   | Yes     |
-//! | Network I/O   | Yes   | Yes   | Yes     |
-//! | Load average  | Yes   | Yes   | No      |
-//! | Uptime        | Yes   | Yes   | Yes     |
-//! | Hostname      | Yes   | Yes   | Yes     |
-//! | OS info       | Yes   | Yes   | Yes     |
-//! | Sensors       | Yes   | Yes   | Yes     |
-//! | Processes     | Yes   | Yes   | Yes     |
-//! | GPU           | Yes   | Yes   | No      |
-//! | Battery       | Yes   | Yes   | No      |
-//!
-//! # Examples
-//!
-//! Collect a full system snapshot:
-//!
-//! ```no_run
-//! use toride_status::system::SystemStatus;
-//!
-//! let status = SystemStatus::collect();
-//! println!("CPU: {:.1}%", status.cpu_usage.unwrap_or(0.0));
-//! println!("Memory: {} / {} bytes", status.memory.used_bytes, status.memory.total_bytes);
-//! println!("Hostname: {}", status.hostname);
-//! ```
-//!
-//! Get top CPU-consuming processes:
-//!
-//! ```no_run
-//! use toride_status::system::SystemStatus;
-//!
-//! let status = SystemStatus::collect();
-//! for proc in status.processes.top_by_cpu(5) {
-//!     println!("{}: {:.1}% CPU", proc.name, proc.cpu_usage);
-//! }
-//! ```
-//!
-//! Display formatted output:
-//!
-//! ```no_run
-//! use toride_status::system::SystemStatus;
-//!
-//! let status = SystemStatus::collect();
-//! println!("{status}");
-//! ```
+//! Backed by [`sysinfo`]; each metric returns `None` when the underlying data
+//! cannot be read (e.g. permission denied on certain Linux containers).
 
 use std::fmt;
 use std::path::Path;
@@ -64,8 +11,6 @@ use sysinfo::{
     Components, CpuRefreshKind, Disks, MemoryRefreshKind, Networks, ProcessRefreshKind,
     ProcessesToUpdate, RefreshKind, System,
 };
-// Only [`run_cmd`] consumes these, and it exists solely on macOS/Linux
-// (every probed tool is platform-specific).
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 use toride_runner::{CommandSpec, DuctRunner, Runner};
 
@@ -75,11 +20,6 @@ use crate::provider::{
     NetworkProvider, OsProvider, ProcessProvider, SensorProvider, StaticInfoProvider,
     VirtualizationProvider,
 };
-
-// ── Feature-gated optional crate imports ──────────────────────────────
-// These ensure optional deps compile-check when their feature is enabled.
-// Each crate is imported as `_` to suppress unused warnings while still
-// verifying the dependency resolves and compiles.
 
 #[cfg(feature = "os-info")]
 #[allow(unused_imports)]
@@ -136,16 +76,13 @@ use hwlocality as _hwlocality;
 #[allow(unused_imports)]
 use cgroups_rs as _cgroups_rs;
 
-// ── Shared helpers ──────────────────────────────────────────────────────
-
-/// Parse VRAM string (e.g., "8192 MB", "8 GB", "8192") to bytes.
 #[cfg(any(target_os = "macos", test))]
 #[allow(
     clippy::cast_precision_loss,
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
     clippy::option_if_let_else
-)] // f64->u64 for VRAM values; always positive, fits in f64 mantissa; chained if-let clearer than map_or_else
+)]
 fn parse_vram_to_bytes(v: &str) -> Option<u64> {
     let v = v.trim();
     if let Some(gb_str) = v.strip_suffix("GB").or_else(|| v.strip_suffix(" GB")) {
@@ -167,7 +104,6 @@ fn parse_vram_to_bytes(v: &str) -> Option<u64> {
             .ok()
             .map(|tb| (tb * 1024.0 * 1024.0 * 1024.0 * 1024.0) as u64)
     } else {
-        // Bare number, assume MB
         v.replace(' ', "")
             .parse::<u64>()
             .ok()
@@ -175,12 +111,6 @@ fn parse_vram_to_bytes(v: &str) -> Option<u64> {
     }
 }
 
-/// Run a command via [`DuctRunner`] and return its stdout on success.
-///
-/// Returns `None` if the command fails to execute, times out, or exits
-/// with a non-zero status. This is the shared helper for migrating raw
-/// `std::process::Command` calls to the `toride-runner` abstraction.
-/// Every caller probes a macOS or Linux tool, so it only exists there.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
     let mut spec = CommandSpec::new(program);
@@ -195,9 +125,6 @@ fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
         .map(|o| o.stdout)
 }
 
-// ── OS info helpers ──────────────────────────────────────────────────────
-
-/// Parse `/etc/os-release` into a `HashMap` of key=value pairs.
 #[cfg(target_os = "linux")]
 fn parse_os_release() -> std::collections::HashMap<String, String> {
     let mut map = std::collections::HashMap::new();
@@ -208,7 +135,6 @@ fn parse_os_release() -> std::collections::HashMap<String, String> {
                 continue;
             }
             if let Some((key, value)) = line.split_once('=') {
-                // Strip surrounding quotes from value
                 let value = value.trim_matches('"');
                 map.insert(key.trim().to_string(), value.to_string());
             }
@@ -217,7 +143,6 @@ fn parse_os_release() -> std::collections::HashMap<String, String> {
     map
 }
 
-/// Resolve macOS version to codename.
 #[cfg(target_os = "macos")]
 fn macos_codename(version: &str) -> Option<String> {
     let major_minor = version.split('.').take(2).collect::<Vec<_>>().join(".");
@@ -237,14 +162,10 @@ fn macos_codename(version: &str) -> Option<String> {
     }
 }
 
-/// Detect system timezone by reading /etc/localtime symlink target.
 #[cfg(unix)]
 fn detect_timezone() -> Option<String> {
     std::fs::read_link("/etc/localtime").ok().and_then(|path| {
         let s = path.to_string_lossy();
-        // Typical path: /var/db/timezone/zoneinfo/America/New_York or
-        // /usr/share/zoneinfo/America/New_York
-        // Extract everything after "zoneinfo/"
         s.rsplit_once("zoneinfo/").map(|(_, tz)| tz.to_string())
     })
 }
@@ -254,7 +175,6 @@ fn detect_timezone() -> Option<String> {
     None
 }
 
-/// Detect whether the effective user is root.
 #[cfg(unix)]
 fn detect_is_root() -> bool {
     nix::unistd::Uid::effective().is_root()
@@ -265,18 +185,15 @@ fn detect_is_root() -> bool {
     false
 }
 
-/// Detect WSL environment.
 fn detect_wsl() -> bool {
     std::env::var("WSL_DISTRO_NAME").is_ok()
         || Path::new("/proc/sys/fs/binfmt_misc/WSLInterop").exists()
 }
 
-/// Detect systemd presence.
 fn detect_systemd() -> bool {
     Path::new("/run/systemd/system").exists()
 }
 
-/// Build the Rust target triple string.
 fn detect_target_triple() -> String {
     let env = if cfg!(target_env = "gnu") {
         "gnu"
@@ -295,7 +212,6 @@ fn detect_target_triple() -> String {
     )
 }
 
-/// Detect system locale from environment variables.
 fn detect_locale() -> Option<String> {
     std::env::var("LANG")
         .ok()
@@ -303,7 +219,6 @@ fn detect_locale() -> Option<String> {
         .or_else(|| std::env::var("LC_ALL").ok().filter(|v| !v.is_empty()))
 }
 
-/// Detect current user name from environment.
 fn detect_current_user() -> Option<String> {
     std::env::var("USER")
         .ok()
@@ -311,10 +226,6 @@ fn detect_current_user() -> Option<String> {
         .or_else(|| std::env::var("USERNAME").ok().filter(|v| !v.is_empty()))
 }
 
-// ── Memory helpers ──────────────────────────────────────────────────────
-
-/// Parse a field from /proc/meminfo, returning its value in bytes.
-/// The file lists values in kB; this function converts to bytes.
 #[cfg(target_os = "linux")]
 fn parse_meminfo_field(field_name: &str) -> Option<u64> {
     let content = std::fs::read_to_string("/proc/meminfo").ok()?;
@@ -328,7 +239,6 @@ fn parse_meminfo_field(field_name: &str) -> Option<u64> {
     None
 }
 
-/// Read cached memory in bytes (cross-platform).
 fn read_cached_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
@@ -365,7 +275,6 @@ fn read_cached_bytes() -> u64 {
     }
 }
 
-/// Read buffer memory in bytes (Linux only, 0 elsewhere).
 fn read_buffers_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
@@ -377,9 +286,6 @@ fn read_buffers_bytes() -> u64 {
     }
 }
 
-// ── Network helpers ──────────────────────────────────────────────────────
-
-/// Extra per-interface metrics from platform-specific sources.
 struct InterfaceExtras {
     link_status: Option<String>,
     speed_bps: Option<u64>,
@@ -473,7 +379,6 @@ fn read_interface_extras(_name: &str) -> InterfaceExtras {
     }
 }
 
-/// Detect the default gateway (cross-platform).
 fn detect_gateway() -> Option<String> {
     #[cfg(target_os = "linux")]
     {
@@ -514,10 +419,7 @@ fn detect_gateway() -> Option<String> {
     }
 }
 
-/// Detect DNS servers (Unix: /etc/resolv.conf; macOS also tries scutil).
 fn detect_dns_servers() -> Vec<String> {
-    // The `mut` binding only exists where something can push into the vec;
-    // other targets have no DNS source to consult.
     #[cfg(unix)]
     let mut servers = Vec::new();
     #[cfg(not(unix))]
@@ -560,16 +462,21 @@ fn detect_dns_servers() -> Vec<String> {
     servers
 }
 
-/// Detect the first DNS server (for per-interface field).
 fn detect_first_dns() -> Option<String> {
     detect_dns_servers().into_iter().next()
 }
 
-// ── Process helpers (Linux) ──────────────────────────────────────────────
+#[cfg(all(test, target_os = "linux"))]
+fn note_proc_read() {
+    if SLOW_LOCK_HELD.with(std::cell::Cell::get) {
+        SLOW_READS_UNDER_LOCK.with(|c| c.set(c.get() + 1));
+    }
+}
 
-/// Read thread count from /proc/<pid>/status.
 #[cfg(target_os = "linux")]
 fn read_proc_thread_count(pid: u32) -> Option<u32> {
+    #[cfg(test)]
+    note_proc_read();
     let content = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
     for line in content.lines() {
         if let Some(rest) = line.strip_prefix("Threads:") {
@@ -579,15 +486,15 @@ fn read_proc_thread_count(pid: u32) -> Option<u32> {
     None
 }
 
-/// Read working directory from /proc/<pid>/cwd symlink.
 #[cfg(target_os = "linux")]
 fn read_proc_working_dir(pid: u32) -> Option<String> {
+    #[cfg(test)]
+    note_proc_read();
     std::fs::read_link(format!("/proc/{pid}/cwd"))
         .ok()
         .map(|p| p.to_string_lossy().to_string())
 }
 
-/// Read disk I/O bytes from /proc/<pid>/io.
 #[cfg(target_os = "linux")]
 fn read_proc_io(pid: u32) -> (Option<u64>, Option<u64>) {
     let Ok(content) = std::fs::read_to_string(format!("/proc/{pid}/io")) else {
@@ -605,18 +512,195 @@ fn read_proc_io(pid: u32) -> (Option<u64>, Option<u64>) {
     (read_bytes, write_bytes)
 }
 
-/// Count open file descriptors from /proc/<pid>/fd.
 #[cfg(target_os = "linux")]
-#[allow(clippy::cast_possible_truncation)] // fd count fits in u32 for any real process
+#[allow(clippy::cast_possible_truncation)]
 fn read_proc_fd_count(pid: u32) -> Option<u32> {
+    #[cfg(test)]
+    note_proc_read();
     std::fs::read_dir(format!("/proc/{pid}/fd"))
         .ok()
         .map(|entries| entries.filter_map(Result::ok).count() as u32)
 }
 
-// ── Sensor helpers (Linux) ──────────────────────────────────────────────
+#[cfg(target_os = "linux")]
+const SLOW_PROC_TTL: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// Read fan RPM readings from /sys/class/hwmon/.
+#[cfg(target_os = "linux")]
+struct SlowProcFields {
+    start_time: Option<u64>,
+    working_dir: Option<String>,
+    fd_count: Option<u32>,
+    thread_count: Option<u32>,
+    sampled_at: std::time::Instant,
+}
+
+#[cfg(target_os = "linux")]
+static SLOW_PROC_CACHE: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<u32, SlowProcFields>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+#[cfg(all(test, target_os = "linux"))]
+static SLOW_PROC_TEST_SERIAL: std::sync::LazyLock<std::sync::Mutex<()>> =
+    std::sync::LazyLock::new(|| std::sync::Mutex::new(()));
+
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    static SLOW_PROC_SERIAL_DEPTH: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, target_os = "linux"))]
+fn slow_proc_serialized<R>(f: impl FnOnce() -> R) -> R {
+    if SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get) > 0 {
+        return f();
+    }
+    let _guard = SLOW_PROC_TEST_SERIAL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _depth = SlowSerialDepth::raise();
+    f()
+}
+
+#[cfg(all(test, target_os = "linux"))]
+struct SlowSerialDepth;
+
+#[cfg(all(test, target_os = "linux"))]
+impl SlowSerialDepth {
+    fn raise() -> Self {
+        SLOW_PROC_SERIAL_DEPTH.with(|d| d.set(d.get() + 1));
+        Self
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+impl Drop for SlowSerialDepth {
+    fn drop(&mut self) {
+        SLOW_PROC_SERIAL_DEPTH.with(|d| d.set(d.get() - 1));
+    }
+}
+
+#[cfg(all(not(test), target_os = "linux"))]
+#[inline]
+fn slow_proc_serialized<R>(f: impl FnOnce() -> R) -> R {
+    f()
+}
+
+#[cfg(target_os = "linux")]
+fn slow_proc_ttl_expired(sampled_at: std::time::Instant) -> bool {
+    let elapsed = sampled_at.elapsed();
+    #[cfg(test)]
+    let elapsed = elapsed
+        + std::time::Duration::from_millis(SLOW_TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
+    elapsed >= SLOW_PROC_TTL
+}
+
+#[cfg(test)]
+thread_local! {
+    static SLOW_TTL_TEST_OFFSET_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(target_os = "linux")]
+fn slow_proc_fields(
+    pid: u32,
+    start_time: Option<u64>,
+) -> (Option<String>, Option<u32>, Option<u32>) {
+    slow_proc_serialized(|| slow_proc_fields_inner(pid, start_time))
+}
+
+#[cfg(target_os = "linux")]
+fn slow_proc_fields_inner(
+    pid: u32,
+    start_time: Option<u64>,
+) -> (Option<String>, Option<u32>, Option<u32>) {
+    {
+        let cache = SLOW_PROC_CACHE
+            .lock()
+            .expect("slow-proc cache poisoned by a panicking sampler");
+        #[cfg(test)]
+        let _held = SlowLockHeld::raise();
+        if let Some(entry) = cache.get(&pid)
+            && entry.start_time == start_time
+            && !slow_proc_ttl_expired(entry.sampled_at)
+        {
+            #[cfg(test)]
+            SLOW_CACHE_HITS.with(|c| c.set(c.get() + 1));
+            return (
+                entry.working_dir.clone(),
+                entry.fd_count,
+                entry.thread_count,
+            );
+        }
+    }
+    #[cfg(test)]
+    SLOW_SAMPLES.with(|c| c.set(c.get() + 1));
+    let sampled = SlowProcFields {
+        start_time,
+        working_dir: read_proc_working_dir(pid),
+        fd_count: read_proc_fd_count(pid),
+        thread_count: read_proc_thread_count(pid),
+        sampled_at: std::time::Instant::now(),
+    };
+    let out = (
+        sampled.working_dir.clone(),
+        sampled.fd_count,
+        sampled.thread_count,
+    );
+    {
+        let mut cache = SLOW_PROC_CACHE
+            .lock()
+            .expect("slow-proc cache poisoned by a panicking sampler");
+        #[cfg(test)]
+        let _held = SlowLockHeld::raise();
+        cache.insert(pid, sampled);
+    }
+    out
+}
+
+#[cfg(target_os = "linux")]
+fn prune_slow_proc_cache(live_pids: &std::collections::HashSet<u32>) {
+    slow_proc_serialized(|| prune_slow_proc_cache_inner(live_pids));
+}
+
+#[cfg(target_os = "linux")]
+fn prune_slow_proc_cache_inner(live_pids: &std::collections::HashSet<u32>) {
+    let mut cache = SLOW_PROC_CACHE
+        .lock()
+        .expect("slow-proc cache poisoned by a panicking sampler");
+    #[cfg(test)]
+    let _held = SlowLockHeld::raise();
+    cache.retain(|pid, _| {
+        #[cfg(test)]
+        PRUNE_MEMBERSHIP_PROBES.with(|c| c.set(c.get() + 1));
+        live_pids.contains(pid)
+    });
+}
+
+#[cfg(all(test, target_os = "linux"))]
+thread_local! {
+    static SLOW_SAMPLES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SLOW_CACHE_HITS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static SLOW_LOCK_HELD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static SLOW_READS_UNDER_LOCK: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static PRUNE_MEMBERSHIP_PROBES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, target_os = "linux"))]
+struct SlowLockHeld;
+
+#[cfg(all(test, target_os = "linux"))]
+impl SlowLockHeld {
+    fn raise() -> Self {
+        SLOW_LOCK_HELD.with(|held| held.set(true));
+        Self
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+impl Drop for SlowLockHeld {
+    fn drop(&mut self) {
+        SLOW_LOCK_HELD.with(|held| held.set(false));
+    }
+}
+
 #[cfg(target_os = "linux")]
 fn read_hwmon_fans() -> Vec<SensorStatus> {
     let mut sensors = Vec::new();
@@ -647,9 +731,8 @@ fn read_hwmon_fans() -> Vec<SensorStatus> {
     sensors
 }
 
-/// Read voltage readings from /sys/class/hwmon/.
 #[cfg(target_os = "linux")]
-#[allow(clippy::cast_precision_loss)] // millivolt to volt conversion; bounded sensor values
+#[allow(clippy::cast_precision_loss)]
 fn read_hwmon_voltages() -> Vec<SensorStatus> {
     let mut sensors = Vec::new();
     let Ok(hwmon_dir) = std::fs::read_dir("/sys/class/hwmon") else {
@@ -679,10 +762,6 @@ fn read_hwmon_voltages() -> Vec<SensorStatus> {
     sensors
 }
 
-// ── Disk helpers ──────────────────────────────────────────────────────
-
-/// Determine the base block device name from a partition name.
-/// E.g., "sda1" -> "sda", "nvme0n1p1" -> "nvme0n1".
 #[cfg(target_os = "linux")]
 fn disk_base_device(name: &str) -> &str {
     if name.contains("nvme") {
@@ -697,7 +776,6 @@ fn disk_base_device(name: &str) -> &str {
     name.trim_end_matches(|c: char| c.is_ascii_digit())
 }
 
-/// Read disk type from sysfs rotational flag.
 #[cfg(target_os = "linux")]
 fn read_disk_type_linux(dev_name: &str) -> String {
     let base = disk_base_device(dev_name);
@@ -716,7 +794,6 @@ fn read_disk_type_linux(dev_name: &str) -> String {
     }
 }
 
-/// Determine disk type on macOS (APFS defaults to SSD).
 #[cfg(target_os = "macos")]
 fn read_disk_type_macos(filesystem: &str) -> String {
     if filesystem.to_lowercase() == "apfs" {
@@ -726,7 +803,6 @@ fn read_disk_type_macos(filesystem: &str) -> String {
     }
 }
 
-/// CPU topology information (internal helper for `StaticInfo` / `CpuStatic`).
 struct CpuTopology {
     sockets: Option<u32>,
     cores_per_socket: Option<u32>,
@@ -739,9 +815,8 @@ struct CpuTopology {
     cache_l3: Option<u64>,
 }
 
-/// Read CPU topology from macOS sysctl values.
 #[cfg(target_os = "macos")]
-#[allow(clippy::cast_possible_truncation)] // core/thread/socket counts fit in u32
+#[allow(clippy::cast_possible_truncation)]
 fn read_cpu_topology() -> CpuTopology {
     fn sysctl_u64(name: &str) -> Option<u64> {
         run_cmd("sysctl", &["-n", name]).and_then(|s| s.trim().parse().ok())
@@ -764,7 +839,6 @@ fn read_cpu_topology() -> CpuTopology {
         _ => None,
     };
 
-    // Frequencies in Hz, convert to MHz. Apple Silicon may not report these.
     let max_frequency = sysctl_u64("hw.cpufrequency_max")
         .or_else(|| sysctl_u64("hw.cpufrequency"))
         .filter(|&v| v > 0)
@@ -773,7 +847,6 @@ fn read_cpu_topology() -> CpuTopology {
         .filter(|&v| v > 0)
         .map(|hz| hz / 1_000_000);
 
-    // Cache sizes in bytes.
     let l1_data_bytes = sysctl_u64("hw.l1dcachesize")
         .filter(|&v| v > 0)
         .map(|v| v as u32);
@@ -798,9 +871,8 @@ fn read_cpu_topology() -> CpuTopology {
     }
 }
 
-/// Read CPU topology from /proc/cpuinfo and sysfs on Linux.
 #[cfg(target_os = "linux")]
-#[allow(clippy::cast_possible_truncation)] // core/thread/socket counts fit in u32
+#[allow(clippy::cast_possible_truncation)]
 #[expect(
     clippy::similar_names,
     reason = "L1d/L1i cache level names mirror the hardware nomenclature"
@@ -809,7 +881,6 @@ fn read_cpu_topology() -> CpuTopology {
     use std::collections::HashSet;
     use std::fs;
 
-    /// Parse a sysfs cache size string like "32K" or "12288K" or "32M" into bytes.
     fn parse_cache_size(path: &str) -> Option<u64> {
         let s = fs::read_to_string(path).ok()?;
         let s = s.trim();
@@ -822,7 +893,6 @@ fn read_cpu_topology() -> CpuTopology {
         }
     }
 
-    // ── Parse /proc/cpuinfo ──
     let cpuinfo = fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
 
     let mut physical_ids = HashSet::new();
@@ -850,7 +920,6 @@ fn read_cpu_topology() -> CpuTopology {
         }
     }
 
-    // Sockets: count unique physical ids; fallback to NUMA node count.
     let sockets = if physical_ids.is_empty() {
         fs::read_dir("/sys/devices/system/node/")
             .ok()
@@ -872,7 +941,6 @@ fn read_cpu_topology() -> CpuTopology {
         _ => None,
     };
 
-    // ── Frequencies from sysfs (kHz -> MHz) ──
     let read_freq_khz = |path: &str| -> Option<u64> {
         fs::read_to_string(path)
             .ok()
@@ -883,7 +951,6 @@ fn read_cpu_topology() -> CpuTopology {
     let max_frequency = read_freq_khz("/sys/devices/system/cpu/cpu0/cpufreq/cpuinfo_max_freq");
     let base_frequency = read_freq_khz("/sys/devices/system/cpu/cpu0/cpufreq/base_frequency");
 
-    // ── Cache sizes from sysfs ──
     let mut cache_l1d = None;
     let mut cache_l1i = None;
     let mut cache_l2 = None;
@@ -926,7 +993,6 @@ fn read_cpu_topology() -> CpuTopology {
     }
 }
 
-/// Fallback for unsupported platforms.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn read_cpu_topology() -> CpuTopology {
     CpuTopology {
@@ -942,7 +1008,6 @@ fn read_cpu_topology() -> CpuTopology {
     }
 }
 
-/// Read hardware inventory from macOS `system_profiler`.
 #[cfg(target_os = "macos")]
 fn read_hardware_inventory() -> HardwareInventory {
     let mut inv = HardwareInventory {
@@ -970,7 +1035,6 @@ fn read_hardware_inventory() -> HardwareInventory {
     inv
 }
 
-/// Read hardware inventory from Linux DMI/SMBIOS sysfs.
 #[cfg(target_os = "linux")]
 fn read_hardware_inventory() -> HardwareInventory {
     use std::fs;
@@ -1036,13 +1100,11 @@ fn read_hardware_inventory() -> HardwareInventory {
     }
 }
 
-/// Fallback for unsupported platforms.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn read_hardware_inventory() -> HardwareInventory {
     HardwareInventory::default()
 }
 
-/// Build a fully populated [`OsInfo`].
 fn build_os_info() -> OsInfo {
     let os_type = Some(std::env::consts::OS.to_string());
     #[expect(
@@ -1058,7 +1120,6 @@ fn build_os_info() -> OsInfo {
     let systemd_detected = detect_systemd();
     let wsl_detected = detect_wsl();
 
-    // Platform-specific: edition and codename
     #[cfg(target_os = "linux")]
     let (edition, codename) = {
         let release = parse_os_release();
@@ -1100,11 +1161,6 @@ fn build_os_info() -> OsInfo {
     }
 }
 
-/// Convert a non-negative floating-point duration (seconds) into a whole `u64`.
-///
-/// Input is already filtered to be finite and `>= 0.0`; the `as i64` truncates
-/// the fractional remainder to whole seconds, which is the desired granularity
-/// for battery time-to-empty/full.
 #[cfg(feature = "battery")]
 #[expect(
     clippy::cast_possible_truncation,
@@ -1114,7 +1170,6 @@ fn duration_secs_to_u64(secs: f32) -> Option<u64> {
     u64::try_from(secs as i64).ok()
 }
 
-/// Read battery status from the OS.
 #[cfg(feature = "battery")]
 fn read_battery_os() -> Option<BatteryInfo> {
     use starship_battery::units::electric_potential::volt;
@@ -1170,7 +1225,6 @@ fn read_battery_os() -> Option<BatteryInfo> {
     })
 }
 
-/// Read battery status from the OS (no crate support).
 #[cfg(not(feature = "battery"))]
 fn read_battery_os() -> Option<BatteryInfo> {
     None
@@ -1639,19 +1693,23 @@ pub struct ProcessStatus {
     pub user: Option<String>,
     /// Virtual memory usage in bytes.
     pub virtual_memory: u64,
-    /// Number of threads.
+    /// Number of threads. Sampled at a 15s TTL (Linux); CPU/mem/state stay
+    /// fresh every collect.
     pub thread_count: Option<u32>,
     /// Full command line (argv joined with spaces).
     pub command_line: Option<String>,
-    /// Current working directory.
+    /// Current working directory. Sampled at a 15s TTL (Linux); cwd changes
+    /// rarely.
     pub working_dir: Option<String>,
     /// Disk bytes read, if available.
     pub disk_read_bytes: Option<u64>,
     /// Disk bytes written, if available.
     pub disk_write_bytes: Option<u64>,
-    /// Number of open files, if available.
+    /// Number of open files, if available. Sampled at a 15s TTL (Linux),
+    /// like [`working_dir`](Self::working_dir).
     pub open_files: Option<u32>,
-    /// Number of file descriptors, if available.
+    /// Number of file descriptors, if available. Sampled at a 15s TTL
+    /// (Linux), like [`working_dir`](Self::working_dir).
     pub fd_count: Option<u32>,
 }
 
@@ -1753,18 +1811,7 @@ impl SystemStatus {
     /// Collect a point-in-time snapshot of OS metrics.
     ///
     /// Each metric is collected independently — a failure reading one metric
-    /// (e.g. permission denied) results in `None` for that field rather than
-    /// propagating an error.
-    ///
-    /// # Examples
-    ///
-    /// ```no_run
-    /// use toride_status::system::SystemStatus;
-    ///
-    /// let status = SystemStatus::collect();
-    /// println!("CPU: {:?}", status.cpu_usage);
-    /// println!("Memory: {} / {}", status.memory.used_bytes, status.memory.total_bytes);
-    /// ```
+    /// results in `None` for that field rather than propagating an error.
     #[must_use]
     pub fn collect() -> Self {
         let mut sys = System::new_with_specifics(
@@ -1773,7 +1820,6 @@ impl SystemStatus {
                 .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap())
                 .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
         );
-        // sysinfo requires a brief sleep to measure CPU usage accurately.
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         sys.refresh_cpu_usage();
         sys.refresh_processes(ProcessesToUpdate::All, true);
@@ -1831,7 +1877,7 @@ impl SystemStatus {
         }
     }
 
-    #[allow(clippy::cast_precision_loss)] // usize->f64 for average; negligible precision loss for core counts
+    #[allow(clippy::cast_precision_loss)]
     fn read_cpu(sys: &System) -> Option<f64> {
         let cpus = sys.cpus();
         if cpus.is_empty() {
@@ -1841,7 +1887,7 @@ impl SystemStatus {
         Some(total / cpus.len() as f64)
     }
 
-    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
+    #[allow(clippy::cast_precision_loss)]
     fn read_memory(sys: &System) -> MemoryStatus {
         let total = sys.total_memory();
         let used = sys.used_memory().min(total);
@@ -1901,7 +1947,7 @@ impl SystemStatus {
     }
 
     #[cfg(unix)]
-    #[allow(clippy::unnecessary_wraps)] // non-unix version returns None; signature must accommodate both platforms
+    #[allow(clippy::unnecessary_wraps)]
     fn read_load_average() -> Option<LoadAverage> {
         let load = sysinfo::System::load_average();
         Some(LoadAverage {
@@ -1940,7 +1986,7 @@ impl SystemStatus {
             .collect()
     }
 
-    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
+    #[allow(clippy::cast_precision_loss)]
     fn read_swap(sys: &System) -> Option<SwapStatus> {
         let total = sys.total_swap();
         if total == 0 {
@@ -1956,7 +2002,7 @@ impl SystemStatus {
         })
     }
 
-    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
+    #[allow(clippy::cast_precision_loss)]
     fn read_disks() -> Vec<DiskStatus> {
         let disks = Disks::new_with_refreshed_list();
         disks
@@ -2057,7 +2103,7 @@ impl SystemStatus {
 
     fn read_sensors() -> Vec<SensorStatus> {
         let components = Components::new_with_refreshed_list();
-        #[allow(unused_mut)] // mut needed on Linux for hwmon extension
+        #[allow(unused_mut)]
         let mut sensors: Vec<SensorStatus> = components
             .iter()
             .map(|c| SensorStatus {
@@ -2088,6 +2134,11 @@ impl SystemStatus {
                     .map(|c| c.to_string_lossy().to_string())
                     .collect::<Vec<_>>()
                     .join(" ");
+                let start_time = if p.start_time() > 0 {
+                    Some(p.start_time())
+                } else {
+                    None
+                };
                 #[cfg(target_os = "linux")]
                 let (disk_read_bytes, disk_write_bytes) = read_proc_io(pid_u32);
                 #[cfg(not(target_os = "linux"))]
@@ -2096,9 +2147,13 @@ impl SystemStatus {
                     Option<u64>,
                 ) = (None, None);
                 #[cfg(target_os = "linux")]
-                let fd_count = read_proc_fd_count(pid_u32);
+                let (working_dir, fd_count, thread_count) = slow_proc_fields(pid_u32, start_time);
                 #[cfg(not(target_os = "linux"))]
-                let fd_count: Option<u32> = None;
+                let (working_dir, fd_count, thread_count): (
+                    Option<String>,
+                    Option<u32>,
+                    Option<u32>,
+                ) = (None, None, None);
                 ProcessStatus {
                     pid: pid_u32,
                     parent_pid: p.parent().map(sysinfo::Pid::as_u32),
@@ -2106,27 +2161,17 @@ impl SystemStatus {
                     cpu_usage: p.cpu_usage(),
                     memory_bytes: p.memory(),
                     status: format!("{}", p.status()),
-                    start_time: if p.start_time() > 0 {
-                        Some(p.start_time())
-                    } else {
-                        None
-                    },
+                    start_time,
                     executable_path: p.exe().map(|e| e.to_string_lossy().to_string()),
                     user: p.user_id().map(|uid| uid.to_string()),
                     virtual_memory: p.virtual_memory(),
-                    #[cfg(target_os = "linux")]
-                    thread_count: read_proc_thread_count(pid_u32),
-                    #[cfg(not(target_os = "linux"))]
-                    thread_count: None,
+                    thread_count,
                     command_line: if cmd_line.is_empty() {
                         None
                     } else {
                         Some(cmd_line)
                     },
-                    #[cfg(target_os = "linux")]
-                    working_dir: read_proc_working_dir(pid_u32),
-                    #[cfg(not(target_os = "linux"))]
-                    working_dir: None,
+                    working_dir,
                     disk_read_bytes,
                     disk_write_bytes,
                     open_files: fd_count,
@@ -2134,6 +2179,11 @@ impl SystemStatus {
                 }
             })
             .collect();
+        #[cfg(target_os = "linux")]
+        {
+            let live: std::collections::HashSet<u32> = processes.iter().map(|ps| ps.pid).collect();
+            prune_slow_proc_cache(&live);
+        }
         let total_count = processes.len();
         ProcessSnapshot {
             processes,
@@ -2146,13 +2196,10 @@ impl SystemStatus {
         reason = "GPU enumeration spans multiple platform-specific probe strategies; splitting reduces readability"
     )]
     fn read_gpus() -> Vec<GpuInfo> {
-        // The `mut` binding only exists where a probe can push GPU entries;
-        // other targets have no enumeration strategy and return an empty vec.
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         let mut gpus = Vec::new();
         #[cfg(not(any(target_os = "macos", target_os = "linux")))]
         let gpus = Vec::new();
-        // Try system_profiler on macOS
         #[cfg(target_os = "macos")]
         {
             if let Some(text) = run_cmd("system_profiler", &["SPDisplaysDataType", "-json"])
@@ -2201,7 +2248,6 @@ impl SystemStatus {
                 }
             }
         }
-        // Try nvidia-smi on Linux
         #[cfg(target_os = "linux")]
         {
             if let Some(text) = run_cmd(
@@ -2429,13 +2475,12 @@ impl SystemStatus {
     }
 }
 
-#[allow(clippy::too_many_lines)] // Display impl must render all fields; splitting reduces readability
+#[allow(clippy::too_many_lines)]
 impl fmt::Display for SystemStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "System:")?;
         writeln!(f, "  Hostname: {}", self.hostname)?;
 
-        // OS info
         {
             let name = self.os_info.name.as_deref().unwrap_or("Unknown");
             let version = self.os_info.version.as_deref().unwrap_or("unknown");
@@ -2457,7 +2502,6 @@ impl fmt::Display for SystemStatus {
             writeln!(f, "  Physical cores: {cores}")?;
         }
 
-        // Per-core CPU
         if !self.cpu_cores.is_empty() {
             writeln!(f, "  CPU cores:")?;
             for core in &self.cpu_cores {
@@ -2475,7 +2519,6 @@ impl fmt::Display for SystemStatus {
         write_bytes(f, self.memory.total_bytes)?;
         writeln!(f, " ({:.1}%)", self.memory.percentage)?;
 
-        // Swap
         if let Some(swap) = &self.swap {
             write!(f, "  Swap: ")?;
             write_bytes(f, swap.used_bytes)?;
@@ -2490,7 +2533,6 @@ impl fmt::Display for SystemStatus {
         write_bytes(f, self.disk.total_bytes)?;
         writeln!(f, " ({:.1}%)", self.disk.percentage)?;
 
-        // All disks
         if self.disks.len() > 1 {
             writeln!(f, "  Disks:")?;
             for disk in &self.disks {
@@ -2512,7 +2554,6 @@ impl fmt::Display for SystemStatus {
         write_bytes(f, self.network.bytes_received)?;
         writeln!(f, " received")?;
 
-        // Network interfaces
         if !self.network_interfaces.is_empty() {
             writeln!(f, "  Network interfaces:")?;
             for iface in &self.network_interfaces {
@@ -2536,7 +2577,6 @@ impl fmt::Display for SystemStatus {
             )?;
         }
 
-        // Sensors
         if !self.sensors.is_empty() {
             writeln!(f, "  Sensors:")?;
             for sensor in &self.sensors {
@@ -2570,7 +2610,6 @@ impl fmt::Display for SystemStatus {
             writeln!(f)?;
         }
 
-        // Boot time
         if let Some(bt) = self.boot_time {
             writeln!(f, "  Boot time: {bt}")?;
         }
@@ -2579,23 +2618,9 @@ impl fmt::Display for SystemStatus {
     }
 }
 
-// ── SysinfoProvider ────────────────────────────────────────────────────
-
 /// Concrete provider backed by the [`sysinfo`] crate.
 ///
-/// Wraps [`sysinfo::System`] and implements all nine provider traits,
-/// reusing the same data-collection logic as [`SystemStatus::collect`].
-///
-/// # Examples
-///
-/// ```no_run
-/// use toride_status::system::SysinfoProvider;
-/// use toride_status::provider::*;
-///
-/// let mut provider = SysinfoProvider::new();
-/// let cpu = provider.cpu_usage().unwrap();
-/// let mem = provider.memory().unwrap();
-/// ```
+/// Wraps [`sysinfo::System`] and implements the provider traits.
 pub struct SysinfoProvider {
     sys: System,
 }
@@ -2603,8 +2628,7 @@ pub struct SysinfoProvider {
 impl SysinfoProvider {
     /// Create a new provider with refreshed system data.
     ///
-    /// Performs the initial CPU measurement sleep, matching the behavior
-    /// of [`SystemStatus::collect`].
+    /// Performs the initial CPU measurement sleep.
     #[must_use]
     pub fn new() -> Self {
         let mut sys = System::new_with_specifics(
@@ -2613,7 +2637,6 @@ impl SysinfoProvider {
                 .with_memory(MemoryRefreshKind::nothing().with_ram().with_swap())
                 .with_processes(ProcessRefreshKind::nothing().with_cpu().with_memory()),
         );
-        // sysinfo requires a brief sleep to measure CPU usage accurately.
         std::thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
         sys.refresh_cpu_usage();
         sys.refresh_processes(ProcessesToUpdate::All, true);
@@ -2627,10 +2650,8 @@ impl Default for SysinfoProvider {
     }
 }
 
-// ── Provider trait implementations ─────────────────────────────────────
-
 impl CpuProvider for SysinfoProvider {
-    #[allow(clippy::cast_precision_loss)] // usize->f64 for average; negligible precision loss for core counts
+    #[allow(clippy::cast_precision_loss)]
     fn cpu_usage(&mut self) -> StatusResult<Option<f64>> {
         let cpus = self.sys.cpus();
         if cpus.is_empty() {
@@ -2682,7 +2703,7 @@ impl CpuProvider for SysinfoProvider {
         })
     }
 
-    #[allow(clippy::cast_precision_loss)] // usize->f64 for average; negligible precision loss for core counts
+    #[allow(clippy::cast_precision_loss)]
     fn cpu_sample(&mut self) -> StatusResult<CpuSample> {
         let cpus = self.sys.cpus();
         let total_usage = if cpus.is_empty() {
@@ -2700,7 +2721,7 @@ impl CpuProvider for SysinfoProvider {
 }
 
 impl MemoryProvider for SysinfoProvider {
-    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
+    #[allow(clippy::cast_precision_loss)]
     fn memory(&mut self) -> StatusResult<MemoryStatus> {
         let total = self.sys.total_memory();
         let used = self.sys.used_memory().min(total);
@@ -2722,7 +2743,7 @@ impl MemoryProvider for SysinfoProvider {
         })
     }
 
-    #[allow(clippy::cast_precision_loss)] // u64->f64 for percentage display; negligible precision loss
+    #[allow(clippy::cast_precision_loss)]
     fn swap(&mut self) -> StatusResult<Option<SwapStatus>> {
         let total = self.sys.total_swap();
         if total == 0 {
@@ -2739,8 +2760,6 @@ impl MemoryProvider for SysinfoProvider {
     }
 
     fn memory_pressure(&self) -> StatusResult<Option<f32>> {
-        // sysinfo does not directly expose memory pressure.
-        // Derive a rough approximation from used/total ratio.
         let total = self.sys.total_memory();
         if total == 0 {
             return Ok(None);
@@ -2787,25 +2806,17 @@ impl DiskProvider for SysinfoProvider {
     }
 
     fn all_disks(&mut self) -> StatusResult<Vec<DiskStatus>> {
-        // Delegate to the single shared mapping implementation in
-        // SystemStatus::read_disks so disk-type detection and field
-        // construction stay in one place.
         Ok(SystemStatus::read_disks())
     }
 }
 
 impl NetworkProvider for SysinfoProvider {
     fn aggregate(&mut self) -> StatusResult<NetworkStatus> {
-        // Delegate to the single shared aggregation in SystemStatus::read_network.
         let networks = Networks::new_with_refreshed_list();
         Ok(SystemStatus::read_network(&networks))
     }
 
     fn interfaces(&mut self) -> StatusResult<Vec<NetworkInterface>> {
-        // Delegate to the single shared mapping in
-        // SystemStatus::read_network_interfaces (MAC formatting,
-        // extras, MTU, gateway/DNS) so interface construction stays
-        // in one place.
         let networks = Networks::new_with_refreshed_list();
         Ok(SystemStatus::read_network_interfaces(&networks))
     }
@@ -2843,7 +2854,7 @@ impl OsProvider for SysinfoProvider {
     }
 
     #[cfg(unix)]
-    #[allow(clippy::unnecessary_wraps)] // non-unix version returns None; signature must accommodate both platforms
+    #[allow(clippy::unnecessary_wraps)]
     fn load_average(&self) -> StatusResult<Option<LoadAverage>> {
         let load = System::load_average();
         Ok(Some(LoadAverage {
@@ -2859,16 +2870,12 @@ impl OsProvider for SysinfoProvider {
     }
 
     fn os_detailed(&self) -> StatusResult<OsInfo> {
-        // os_info() already populates all fields via build_os_info().
         self.os_info()
     }
 }
 
 impl ProcessProvider for SysinfoProvider {
     fn processes(&mut self) -> StatusResult<ProcessSnapshot> {
-        // Delegate to the single shared mapping in
-        // SystemStatus::read_processes_from (cmdline, /proc io/fd/threads,
-        // working dir) so process construction stays in one place.
         Ok(SystemStatus::read_processes_from(&self.sys))
     }
 
@@ -2885,9 +2892,6 @@ impl ProcessProvider for SysinfoProvider {
 
 impl GpuProvider for SysinfoProvider {
     fn gpus(&self) -> StatusResult<Vec<GpuInfo>> {
-        // Delegate to the single shared enumeration in
-        // SystemStatus::read_gpus (system_profiler on macOS,
-        // nvidia-smi on Linux) so GPU construction stays in one place.
         Ok(SystemStatus::read_gpus())
     }
 }
@@ -2901,7 +2905,7 @@ impl BatteryProvider for SysinfoProvider {
 impl SensorProvider for SysinfoProvider {
     fn sensors(&self) -> StatusResult<Vec<SensorStatus>> {
         let components = Components::new_with_refreshed_list();
-        #[allow(unused_mut)] // mut needed on Linux for hwmon extension
+        #[allow(unused_mut)]
         let mut sensors: Vec<SensorStatus> = components
             .iter()
             .map(|c| SensorStatus {
@@ -2939,15 +2943,11 @@ impl StaticInfoProvider for SysinfoProvider {
     }
 }
 
-// ── collect_via_provider ───────────────────────────────────────────────
-
 impl SystemStatus {
     /// Collect a snapshot using the provider abstraction layer.
     ///
-    /// This method uses [`SysinfoProvider`] to gather metrics through
-    /// the provider traits, exercising the same code paths that custom
-    /// providers would use. The result should be structurally identical
-    /// to [`collect`](Self::collect).
+    /// Gathers metrics through [`SysinfoProvider`]; structurally identical to
+    /// [`collect`](Self::collect).
     ///
     /// # Examples
     ///
@@ -2958,7 +2958,7 @@ impl SystemStatus {
     /// assert!(!status.hostname.is_empty());
     /// ```
     #[must_use]
-    #[allow(clippy::too_many_lines)] // Assembles all provider outputs; splitting reduces readability
+    #[allow(clippy::too_many_lines)]
     pub fn collect_via_provider() -> Self {
         let mut provider = SysinfoProvider::new();
 
@@ -3106,8 +3106,7 @@ const TB: u64 = GB * 1024;
 const PB: u64 = TB * 1024;
 const EB: u64 = PB * 1024;
 
-/// Write bytes in human-readable form directly to the formatter.
-#[allow(clippy::cast_precision_loss)] // u64->f64 for display formatting; negligible precision loss
+#[allow(clippy::cast_precision_loss)]
 fn write_bytes(f: &mut fmt::Formatter<'_>, bytes: u64) -> fmt::Result {
     if bytes >= EB {
         write!(f, "{:.1} EiB", bytes as f64 / EB as f64)
@@ -3126,12 +3125,7 @@ fn write_bytes(f: &mut fmt::Formatter<'_>, bytes: u64) -> fmt::Result {
     }
 }
 
-/// Write seconds in human-readable form directly to the formatter.
-///
-/// Intermediate zero-valued units (hours, minutes) are included when a
-/// higher unit is non-zero. For example, 3600 seconds renders as
-/// `1h 0m 0s` rather than `1h 0s`.
-#[allow(clippy::useless_let_if_seq)] // sequential if-blocks with mutable flag are clearer than chained if-expressions
+#[allow(clippy::useless_let_if_seq)]
 fn write_duration(f: &mut fmt::Formatter<'_>, secs: u64) -> fmt::Result {
     let days = secs / 86400;
     let hours = (secs % 86400) / 3600;
@@ -3163,7 +3157,6 @@ fn write_duration(f: &mut fmt::Formatter<'_>, secs: u64) -> fmt::Result {
     write!(f, "{seconds}s")
 }
 
-/// Format bytes into a human-readable string. Wrapper for test use.
 #[cfg(test)]
 fn format_bytes(bytes: u64) -> String {
     struct Fmt(u64);
@@ -3175,7 +3168,6 @@ fn format_bytes(bytes: u64) -> String {
     Fmt(bytes).to_string()
 }
 
-/// Format seconds into a human-readable duration string. Wrapper for test use.
 #[cfg(test)]
 fn format_duration(secs: u64) -> String {
     struct Fmt(u64);
@@ -3271,7 +3263,6 @@ mod tests {
     #[test]
     fn network_fields_are_accessible() {
         let status = SystemStatus::collect();
-        // u64 is always >= 0, but we verify the values are reasonable.
         let _ = status.network.bytes_received;
         let _ = status.network.bytes_transmitted;
     }
@@ -3342,7 +3333,7 @@ mod tests {
 
     #[test]
     fn format_bytes_mixed() {
-        let result = format_bytes(1536); // 1.5 KiB
+        let result = format_bytes(1536);
         assert_eq!(result, "1.5 KiB");
     }
 
@@ -3394,7 +3385,6 @@ mod tests {
 
     #[test]
     fn format_bytes_u64_max() {
-        // u64::MAX = 18_446_744_073_709_551_615 ≈ 16.0 EiB
         let result = format_bytes(u64::MAX);
         assert!(
             result.ends_with("EiB"),
@@ -3598,7 +3588,6 @@ mod tests {
     #[test]
     fn swap_is_some_when_available() {
         let status = SystemStatus::collect();
-        // On most Unix systems swap is configured, but we only assert structure if present.
         if let Some(swap) = &status.swap {
             assert!(swap.used_bytes <= swap.total_bytes, "swap used > total");
             assert!(
@@ -4011,18 +4000,14 @@ mod tests {
     #[test]
     fn gpu_vec_is_accessible() {
         let status = SystemStatus::collect();
-        // GPU detection may or may not find devices; verify the field is accessible.
         let _ = &status.gpu;
     }
 
     #[test]
     fn battery_is_accessible() {
         let status = SystemStatus::collect();
-        // Battery may or may not be present on this machine; verify the field is accessible.
         let _ = &status.battery;
     }
-
-    // ── parse_vram_to_bytes edge cases ─────────────────────────────────────
 
     #[test]
     fn parse_vram_to_bytes_gb() {
@@ -4069,12 +4054,9 @@ mod tests {
 
     #[test]
     fn parse_vram_bare_number_saturates() {
-        // u64::MAX cannot overflow with saturating_mul; it clamps to u64::MAX.
         let result = parse_vram_to_bytes(&u64::MAX.to_string());
         assert_eq!(result, Some(u64::MAX));
     }
-
-    // ── format_bytes edge cases ──────────────────────────────────────────
 
     #[test]
     fn format_bytes_pib_boundary() {
@@ -4083,7 +4065,6 @@ mod tests {
 
     #[test]
     fn format_bytes_just_below_pib() {
-        // PB - 1 is so close to 1024.0 TiB that f64 rounds up to "1024.0 TiB".
         let result = format_bytes(PB - 1);
         assert!(
             result.ends_with("TiB"),
@@ -4121,11 +4102,8 @@ mod tests {
         assert_eq!(format_bytes(EB), "1.0 EiB");
     }
 
-    // ── format_duration edge cases ───────────────────────────────────────
-
     #[test]
     fn format_duration_max_value() {
-        // u64::MAX should not panic
         let result = format_duration(u64::MAX);
         assert!(
             !result.is_empty(),
@@ -4136,15 +4114,11 @@ mod tests {
 
     #[test]
     fn format_duration_very_large_value() {
-        // 1000 days in seconds
         let secs = 1000 * 86400;
         let result = format_duration(secs);
         assert_eq!(result, "1000d 0h 0m 0s");
     }
 
-    // ── Memory percentage edge cases ─────────────────────────────────────
-
-    /// Helper to construct a minimal `SystemStatus` for unit testing.
     fn make_status(memory: MemoryStatus, disk: DiskStatus) -> SystemStatus {
         SystemStatus {
             cpu_usage: None,
@@ -4260,7 +4234,6 @@ mod tests {
 
     #[test]
     fn memory_percentage_zero_total() {
-        // Division by zero protection: total_bytes = 0 should yield 0%.
         let status = make_status(
             MemoryStatus {
                 used_bytes: 0,
@@ -4278,7 +4251,6 @@ mod tests {
 
     #[test]
     fn memory_percentage_capped_at_100() {
-        // When used > total (e.g. reclaimed/buffer memory), percentage should be capped at 100%.
         let status = make_status(
             MemoryStatus {
                 used_bytes: 20 * GB,
@@ -4298,11 +4270,8 @@ mod tests {
         );
     }
 
-    // ── Disk percentage edge cases ───────────────────────────────────────
-
     #[test]
     fn disk_percentage_zero_total() {
-        // Division by zero protection: total_bytes = 0 should yield 0%.
         let status = make_status(
             MemoryStatus {
                 used_bytes: 0,
@@ -4336,7 +4305,6 @@ mod tests {
 
     #[test]
     fn disk_percentage_capped_at_100() {
-        // When used > total (e.g. filesystem overhead), percentage should be capped at 100%.
         let status = make_status(
             MemoryStatus {
                 used_bytes: 0,
@@ -4371,8 +4339,6 @@ mod tests {
             status.disk.percentage
         );
     }
-
-    // ── ProcessSnapshot edge cases ───────────────────────────────────────
 
     fn make_process(pid: u32, cpu: f32, mem: u64) -> ProcessStatus {
         ProcessStatus {
@@ -4462,7 +4428,6 @@ mod tests {
 
     #[test]
     fn top_by_cpu_with_nan_values() {
-        // NaN cpu_usage should not panic and should sort safely.
         let snapshot = ProcessSnapshot {
             processes: vec![
                 make_process(1, f32::NAN, 100),
@@ -4477,7 +4442,6 @@ mod tests {
             3,
             "all processes should be returned even with NaN"
         );
-        // Verify the non-NaN process is included.
         assert!(
             top.iter().any(|p| p.pid == 2),
             "non-NaN process should be present"
@@ -4486,8 +4450,6 @@ mod tests {
 
     #[test]
     fn top_by_cpu_stable_sort() {
-        // When cpu_usage values are equal, the original insertion order should be preserved
-        // (sort_by is stable in Rust's standard library).
         let snapshot = ProcessSnapshot {
             processes: vec![
                 make_process(1, 50.0, 100),
@@ -4511,8 +4473,6 @@ mod tests {
             "stable sort: third inserted should remain third"
         );
     }
-
-    // ── Display edge cases ───────────────────────────────────────────────
 
     #[test]
     #[expect(
@@ -5051,15 +5011,12 @@ mod tests {
         );
     }
 
-    // ── Critical edge case tests ───────────────────────────────────────
-
     #[test]
     #[expect(
         clippy::too_many_lines,
         reason = "exhaustively exercises percentage derivation across zero/non-zero totals"
     )]
     fn memory_percentage_zero_total_does_not_panic() {
-        // Display should not panic when all memory/disk values are zero.
         let status = SystemStatus {
             cpu_usage: None,
             memory: MemoryStatus {
@@ -5174,7 +5131,6 @@ mod tests {
                 cache_l3: None,
             },
         };
-        // Should not panic when displaying
         let _ = format!("{status}");
     }
 
@@ -5335,8 +5291,6 @@ mod tests {
         assert!(output.contains("Battery: 85% (Charging)"));
     }
 
-    // ── SysinfoProvider trait compilation tests ─────────────────────
-
     #[test]
     fn provider_impl_all_traits() {
         fn assert_cpu<T: CpuProvider>() {}
@@ -5365,8 +5319,6 @@ mod tests {
         fn assert_provider<T: StatusProvider>() {}
         assert_provider::<SysinfoProvider>();
     }
-
-    // ── collect_via_provider tests ──────────────────────────────────
 
     #[test]
     fn collect_via_provider_returns_valid_cpu_usage() {
@@ -5608,8 +5560,6 @@ mod tests {
         assert!(parsed.get("memory").is_some(), "JSON must contain 'memory'");
     }
 
-    // ── Individual SysinfoProvider method tests ─────────────────────
-
     #[test]
     fn provider_cpu_usage_returns_valid_range() {
         let mut provider = SysinfoProvider::new();
@@ -5687,7 +5637,6 @@ mod tests {
     fn provider_aggregate_returns_valid_network() {
         let mut provider = SysinfoProvider::new();
         let net = provider.aggregate().expect("aggregate should succeed");
-        // Just verify the struct is accessible; values are always >= 0 for u64.
         let _ = net.bytes_received;
         let _ = net.bytes_transmitted;
     }
@@ -5744,7 +5693,6 @@ mod tests {
     fn provider_sensors_returns_accessible_data() {
         let provider = SysinfoProvider::new();
         let sensors = provider.sensors().expect("sensors should succeed");
-        // Sensors may or may not be available; verify the vec is accessible.
         let _ = sensors.len();
     }
 
@@ -5752,21 +5700,13 @@ mod tests {
     fn provider_gpus_returns_accessible_data() {
         let provider = SysinfoProvider::new();
         let gpus = provider.gpus().expect("gpus should succeed");
-        // GPU detection may or may not find devices; verify the vec is accessible.
         let _ = gpus.len();
     }
 
     #[test]
     fn provider_delegates_to_system_status_static_methods() {
-        // The DiskProvider/NetworkProvider/ProcessProvider/GpuProvider
-        // trait impls must delegate to the single shared mapping in the
-        // SystemStatus::read_* static methods (no second divergent copy).
-        // Pin that contract: the provider result must equal the static
-        // method result captured in the same instant.
         let mut provider = SysinfoProvider::new();
 
-        // GPUs: deterministic probe (system_profiler / nvidia-smi), so the
-        // two paths must return identical name/vendor sets.
         let provider_gpus = provider.gpus().expect("gpus should succeed");
         let static_gpus = SystemStatus::read_gpus();
         assert_eq!(provider_gpus.len(), static_gpus.len(), "gpu count diverged");
@@ -5775,9 +5715,6 @@ mod tests {
             assert_eq!(a.vendor, b.vendor, "gpu vendor diverged");
         }
 
-        // Disks: device name + filesystem + mount point are stable across a
-        // sub-second pair of probes; this is exactly the mapping that was
-        // duplicated (disk-type detection included).
         let provider_disks = provider.all_disks().expect("all_disks should succeed");
         let static_disks = SystemStatus::read_disks();
         assert_eq!(
@@ -5799,9 +5736,6 @@ mod tests {
 
     #[test]
     fn provider_processes_pid_set_matches_static() {
-        // ProcessProvider::processes delegates to read_processes_from; the
-        // PID set is stable across a sub-second pair of probes, so the two
-        // paths must observe the same population.
         let mut provider = SysinfoProvider::new();
         let provider_procs = provider.processes().expect("processes should succeed");
         let static_procs = SystemStatus::read_processes_from(&provider.sys);
@@ -5813,9 +5747,6 @@ mod tests {
             provider_procs.processes.iter().map(|p| p.pid).collect();
         let static_pids: std::collections::HashSet<u32> =
             static_procs.processes.iter().map(|p| p.pid).collect();
-        // The intersection should be the overwhelming majority of both sets;
-        // require at least 90% overlap to absorb a handful of short-lived
-        // processes appearing/disappearing between the two probes.
         let overlap = provider_pids.intersection(&static_pids).count();
         let min_overlap = provider_pids.len() / 10;
         assert!(
@@ -5830,7 +5761,6 @@ mod tests {
     fn provider_battery_returns_accessible_data() {
         let provider = SysinfoProvider::new();
         let battery = provider.battery().expect("battery should succeed");
-        // Battery may or may not be present; verify the option is accessible.
         let _ = battery.is_some();
     }
 
@@ -5840,8 +5770,6 @@ mod tests {
         let bt = provider.boot_time().expect("boot_time should succeed");
         let _ = bt.is_some();
     }
-
-    // ── FakeProvider ──────────────────────────────────────────────────
 
     #[expect(
         clippy::struct_field_names,
@@ -6275,5 +6203,231 @@ mod tests {
         assert!(p.gpus().unwrap().is_empty());
         assert!(p.battery().unwrap().is_none());
         assert!(p.sensors().unwrap().is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_fields_second_resolve_within_ttl_is_a_cache_hit() {
+        slow_proc_serialized(|| {
+            let pid = std::process::id();
+            let (samples_before, hits_before) = slow_proc_counters();
+            let (first_dir, first_fd, first_threads) = slow_proc_fields(pid, Some(42));
+            let (samples_after_first, _hits_after_first) = slow_proc_counters();
+            assert_eq!(
+                samples_after_first,
+                samples_before + 1,
+                "the first resolve must sample"
+            );
+
+            let (second_dir, second_fd, second_threads) = slow_proc_fields(pid, Some(42));
+            let (samples, hits) = slow_proc_counters();
+            assert_eq!(
+                samples, samples_after_first,
+                "a within-TTL resolve for the same process must NOT re-sample"
+            );
+            assert_eq!(
+                hits,
+                hits_before + 1,
+                "it must be served from the cache (the sampling first call did not hit)"
+            );
+            assert_eq!(second_dir, first_dir, "cwd served verbatim from the cache");
+            assert_eq!(
+                second_fd, first_fd,
+                "fd_count served verbatim from the cache"
+            );
+            assert_eq!(
+                second_threads, first_threads,
+                "thread_count served verbatim from the cache"
+            );
+            assert!(
+                second_threads.is_some(),
+                "the test process has at least one thread, so the sample is Some"
+            );
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_fields_ttl_expiry_resamples() {
+        slow_proc_serialized(|| {
+            let pid = std::process::id();
+            slow_proc_fields(pid, Some(7));
+            let samples_before = slow_proc_counters().0;
+
+            let _guard = SlowTtlOffsetGuard::past_ttl();
+            slow_proc_fields(pid, Some(7));
+            let (samples, _hits) = slow_proc_counters();
+            assert_eq!(
+                samples,
+                samples_before + 1,
+                "an expired entry must be re-sampled"
+            );
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_fields_pid_reuse_invalidates_within_ttl() {
+        slow_proc_serialized(|| {
+            let pid = std::process::id();
+            slow_proc_fields(pid, Some(100));
+            let samples_before = slow_proc_counters().0;
+
+            slow_proc_fields(pid, Some(9001));
+            let (samples, hits) = slow_proc_counters();
+            assert_eq!(samples, samples_before + 1, "a reused pid must re-sample");
+            let _ = hits;
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prune_slow_proc_cache_drops_exited_pids() {
+        slow_proc_serialized(|| {
+            let live = std::process::id();
+            slow_proc_fields(live, Some(1));
+            let dead = live.wrapping_add(1);
+            slow_proc_fields(dead, Some(1));
+
+            prune_slow_proc_cache(&std::iter::once(live).collect());
+            let (live_retained, dead_pruned) = {
+                let cache = SLOW_PROC_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (cache.contains_key(&live), !cache.contains_key(&dead))
+            };
+            assert!(live_retained, "the live pid is retained");
+            assert!(dead_pruned, "the exited pid is pruned");
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_miss_never_reads_proc_under_the_cache_lock() {
+        slow_proc_serialized(|| {
+            let pid = std::process::id();
+            SLOW_PROC_CACHE
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&pid);
+            SLOW_READS_UNDER_LOCK.with(|c| c.set(0));
+            let samples_before = slow_proc_counters().0;
+
+            let _ = slow_proc_fields(pid, Some(4));
+
+            assert_eq!(
+                slow_proc_counters().0,
+                samples_before + 1,
+                "the forced miss actually sampled /proc"
+            );
+            assert_eq!(
+                SLOW_READS_UNDER_LOCK.with(std::cell::Cell::get),
+                0,
+                "no /proc read observed the cache mutex held — the lock is \
+             never held across the reads"
+            );
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn prune_probes_each_cached_entry_exactly_once() {
+        slow_proc_serialized(|| {
+            let seeded = [4_101_101_u32, 4_202_202, 4_303_303, 4_404_404];
+            for pid in seeded {
+                let _ = slow_proc_fields(pid, None);
+            }
+            let expected_probes = {
+                let cache = SLOW_PROC_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                u64::try_from(cache.len()).expect("a test cache fits in u64")
+            };
+            let live: std::collections::HashSet<u32> =
+                [seeded[0], seeded[3], 9_001, 9_002].into_iter().collect();
+
+            PRUNE_MEMBERSHIP_PROBES.with(|c| c.set(0));
+            prune_slow_proc_cache(&live);
+
+            assert_eq!(
+                PRUNE_MEMBERSHIP_PROBES.with(std::cell::Cell::get),
+                expected_probes,
+                "one membership probe per cached entry, not entries × live pids"
+            );
+            let (live0, live3, dead1, dead2) = {
+                let cache = SLOW_PROC_CACHE
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                (
+                    cache.contains_key(&seeded[0]),
+                    cache.contains_key(&seeded[3]),
+                    cache.contains_key(&seeded[1]),
+                    cache.contains_key(&seeded[2]),
+                )
+            };
+            assert!(live0 && live3, "the live synthetic pids are retained");
+            assert!(!dead1 && !dead2, "the dead synthetic pids are pruned");
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    fn slow_proc_counters() -> (u64, u64) {
+        (
+            SLOW_SAMPLES.with(std::cell::Cell::get),
+            SLOW_CACHE_HITS.with(std::cell::Cell::get),
+        )
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn slow_proc_serialized_depth_resets_across_a_panic() {
+        let before = SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get);
+        let prev_hook = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+        let outcome = std::panic::catch_unwind(|| {
+            slow_proc_serialized(|| panic!("oracle: deliberate unwind mid-guard"));
+        });
+        std::panic::set_hook(prev_hook);
+        assert!(
+            outcome.is_err(),
+            "the guarded body did panic (the unwind path ran)"
+        );
+        assert_eq!(
+            SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get),
+            before,
+            "the reentrancy depth must reset even when the guarded body panics"
+        );
+        slow_proc_serialized(|| {
+            assert_eq!(
+                SLOW_PROC_SERIAL_DEPTH.with(std::cell::Cell::get),
+                before + 1,
+                "the post-panic call took the mutex path (depth raised), \
+                 not the leaked-depth identity fast path"
+            );
+        });
+    }
+
+    #[cfg(target_os = "linux")]
+    struct SlowTtlOffsetGuard;
+
+    #[cfg(target_os = "linux")]
+    impl SlowTtlOffsetGuard {
+        fn past_ttl() -> Self {
+            SLOW_TTL_TEST_OFFSET_MS.with(|o| {
+                o.set(
+                    u64::try_from(SLOW_PROC_TTL.as_millis())
+                        .expect("a 15s TTL in milliseconds always fits in u64")
+                        + 10_000,
+                );
+            });
+            Self
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    impl Drop for SlowTtlOffsetGuard {
+        fn drop(&mut self) {
+            SLOW_TTL_TEST_OFFSET_MS.with(|o| o.set(0));
+        }
     }
 }

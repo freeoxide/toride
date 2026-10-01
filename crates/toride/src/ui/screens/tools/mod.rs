@@ -61,7 +61,7 @@ pub struct FindingEntry {
 /// area.
 ///
 /// READ-ONLY: there are no write operations, no optimistic updates, no loading
-/// spinner, no cooldown. Data arrives via [`ToolsContent::set_*`] setters
+/// spinner, no cooldown. Data arrives via `ToolsContent::set_*` setters
 /// driven by [`ToolsCollector`](crate::tools_data::ToolsCollector).
 pub struct ToolsContent {
     /// Whether the PATH scan ran at all. `false` means the section renders a

@@ -1,56 +1,7 @@
-//! Async installed-tools catalogue collection (LIVE READ-ONLY).
+//! Async installed-tools catalogue collection (read-only).
 //!
-//! [`ToolsCollector`] manages background collection of the host's installed CLI
-//! tools via a tokio oneshot channel, following the same pattern as
-//! [`HardenCollector`](crate::toride_harden_data::HardenCollector),
-//! [`TailscaleCollector`](crate::toride_tailscale_data::TailscaleCollector),
-//! and (the closest analogue) [`MiseCollector`](crate::toride_mise_data::MiseCollector).
-//!
-//! This is a read-only integration: there are no write operations, no
-//! optimistic updates, no cooldown gate, and no loading spinner. Every probe
-//! is a pure read of the host.
-//!
-//! ## What "live" means here
-//!
-//! Unlike most sibling sections (which shell out to a specific backend
-//! daemon), this one scans the host itself for a curated catalogue of CLI
-//! tools toride cares about. Every catalogue alias is classified through
-//! [`toride_installer::Detector`](toride_installer::Detector): the real
-//! `$PATH` is probed first (what a shell would actually execute — trying
-//! every alias in a tool's `binaries` list, e.g. `fd` resolves to `fdfind` on
-//! Debian), then the installer's managed location (`~/.local/bin/<alias>`),
-//! so a tool installed off-`$PATH` still surfaces as installed. A single
-//! `spawn_blocking` runs a bounded `<binary> --version` / `-V` probe per
-//! found tool through the runner and keeps the trimmed first non-empty stdout
-//! line as the version string. The probes carry a null stdin (the Detector
-//! wires each probe spec with `stdin_null`, exactly like the replaced
-//! hand-rolled probe's `Stdio::null()`), so a catalogue binary that reads
-//! stdin sees EOF and answers instead of blocking on — or consuming — this
-//! TUI's terminal. The data is genuinely live: it reflects the actual
-//! machine.
-//!
-//! ## Doctor findings cache
-//!
-//! The catalogue scan resolves ~30 binaries and runs a version probe on each
-//! found tool, and a tool's presence changes slowly, so the findings (one
-//! `tools.missing.<name>` warning per MISSING expected tool) are cached for
-//! 60s — exactly like the harden / mise / fail2ban findings caches. The whole
-//! scan is treated as the "doctor": `use_cache` reuses the cached findings and
-//! skips re-probing; the tool list itself is still re-resolved each poll
-//! (cheap) so a freshly-installed tool surfaces quickly.
-//!
-//! ## Blocking
-//!
-//! Binary discovery and the version probes are synchronous subprocess work.
-//! ALL of this work runs inside a single [`tokio::task::spawn_blocking`] so
-//! the tokio worker is never stalled — mirroring the harden / fail2ban /
-//! ufw-kit pattern.
-//!
-//! # Name collision
-//!
-//! `toride_mise::ToolStatus` is a different type (the `mise ls --json`
-//! listing, used by [`crate::toride_mise_convert`]); this module only ever
-//! touches the installer's, kept fully qualified at every use.
+//! The whole sweep (`$PATH` + version probes) is cached for 60s: a newly
+//! installed or removed tool surfaces up to 60s late.
 
 use std::time::Duration;
 
@@ -63,10 +14,8 @@ use crate::ui::screens::tools::{FindingEntry, ToolEntry};
 /// Aggregated installed-tools data for the read-only section.
 #[derive(Clone, Debug)]
 pub struct ToolsDataBundle {
-    /// Whether the PATH scan ran at all. `false` is reserved for the panic
-    /// case (a `tokio::spawn` `JoinError`) — a host where every catalogue entry
-    /// is missing still yields `available == true` so the operator SEES the
-    /// findings (every expected tool absent) rather than a blank panel.
+    /// Whether the sweep ran; `false` only for a collection panic. A host
+    /// with every tool missing still yields `true` (findings stay visible).
     pub available: bool,
     /// One row per catalogue entry (installed or missing), in stable
     /// catalogue order. The UI groups these by category for display.
@@ -78,38 +27,33 @@ pub struct ToolsDataBundle {
     /// Doctor findings (cached for 60s between collections). One
     /// `tools.missing.<name>` warning per MISSING expected tool.
     pub findings: Vec<FindingEntry>,
-    /// Human-readable reason the backend was unreachable, populated ONLY when
-    /// `available == false` (collection-task panic). `None` otherwise —
-    /// notably also `None` for a freshly-constructed empty bundle before any
-    /// collection has run. Surfaced to the UI so the degraded panel can show
-    /// what actually went wrong instead of guessing.
+    /// Reason collection failed; populated only when `available == false`
+    /// (collection-task panic).
     pub unavailable_reason: Option<String>,
 }
 
-// ── Collector ───────────────────────────────────────────────────────────────
-
 /// Manages periodic async collection of the installed-tools catalogue.
 ///
-/// Mirrors [`HardenCollector`](crate::toride_harden_data::HardenCollector): a
-/// oneshot channel for the in-flight result, plus a 60s TTL cache for the
-/// expensive findings (missing-expected-tool warnings) so they are not
-/// re-derived on every 2s refresh tick.
+/// A 60s TTL cache covers the whole sweep (rows, counts, findings).
 pub struct ToolsCollector {
-    /// Carries the bundle AND whether the cached findings were reused for this
-    /// poll. The freshness timestamp must only be advanced when the scan was
-    /// actually re-run (`used_cache == false`); otherwise every cache-hit poll
-    /// would reset the TTL clock with the SAME (already-cached) findings and
-    /// the cache would never expire for the lifetime of the app.
     rx: Option<oneshot::Receiver<(ToolsDataBundle, bool)>>,
-    /// Cached doctor findings (missing-expected-tool warnings) from the last
-    /// collection.
-    cached_findings: Option<Vec<FindingEntry>>,
-    /// When the findings cache was last refreshed.
-    findings_fresh_at: Option<std::time::Instant>,
+    cached_bundle: Option<ToolsDataBundle>,
+    bundle_fresh_at: Option<std::time::Instant>,
 }
 
-/// How long to keep cached findings before re-running the catalogue scan.
-const FINDINGS_TTL: Duration = Duration::from_secs(60);
+const SWEEP_TTL: Duration = Duration::from_secs(60);
+
+fn ttl_expired(fresh_at: std::time::Instant) -> bool {
+    let elapsed = fresh_at.elapsed();
+    #[cfg(test)]
+    let elapsed = elapsed + Duration::from_millis(TTL_TEST_OFFSET_MS.with(std::cell::Cell::get));
+    elapsed >= SWEEP_TTL
+}
+
+#[cfg(test)]
+thread_local! {
+    static TTL_TEST_OFFSET_MS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 
 impl ToolsCollector {
     /// Create a new collector with no pending collection.
@@ -117,8 +61,8 @@ impl ToolsCollector {
     pub fn new() -> Self {
         Self {
             rx: None,
-            cached_findings: None,
-            findings_fresh_at: None,
+            cached_bundle: None,
+            bundle_fresh_at: None,
         }
     }
 
@@ -129,33 +73,19 @@ impl ToolsCollector {
 
     /// Start a new background collection.
     ///
-    /// If a collection is already in-flight, this is a no-op. The 60s findings
-    /// cache is consulted: when fresh, the spawned task reuses the cached
-    /// findings instead of re-probing every binary's version.
+    /// If a collection is already in-flight, this is a no-op; a fresh cache
+    /// is served verbatim without any scan or probe.
     pub fn start(&mut self) {
         if self.rx.is_some() {
             return;
         }
         let (tx, rx) = oneshot::channel();
-        let use_cache = self.cached_findings.is_some()
-            && self
-                .findings_fresh_at
-                .is_some_and(|t| t.elapsed() < FINDINGS_TTL);
-        let cached_findings = self.cached_findings.clone();
+        let use_cache =
+            self.cached_bundle.is_some() && self.bundle_fresh_at.is_some_and(|t| !ttl_expired(t));
+        let cached_bundle = self.cached_bundle.clone();
         self.rx = Some(rx);
-        // The catalogue scan is entirely synchronous (PATH discovery plus
-        // version subprocesses), so it runs inside ONE spawn_blocking owned
-        // by the spawned task body
-        // — mirroring the harden / fail2ban / ufw-kit pattern. The inner task
-        // body is itself spawned and awaited so a JoinError (panic inside
-        // `collect_real_tools`) is matched here and surfaced as a degraded
-        // `available == false` bundle with a reason — mirroring the
-        // spawn_blocking JoinError path in the sibling collectors. Without
-        // this wrap a panic would drop `tx`, `rx.await` would return `Err`,
-        // and poll() would map that to `None`, leaving the dashboard showing
-        // stale last-good data indefinitely with no degraded-state signal.
         let handle =
-            tokio::spawn(async move { collect_real_tools(use_cache, cached_findings).await });
+            tokio::spawn(async move { collect_real_tools(use_cache, cached_bundle).await });
         tokio::spawn(async move {
             let result = handle.await;
             let (bundle, reused_cache) = match result {
@@ -174,26 +104,18 @@ impl ToolsCollector {
 
     /// Poll for a completed collection result.
     ///
-    /// Returns `Some(bundle)` if the collection completed, `None` if still
-    /// pending or if the collection failed. On success the cached findings are
-    /// updated to the freshly-returned findings, but the freshness timestamp is
-    /// only advanced when the scan was actually re-run (not on a cache-hit
-    /// poll) — otherwise the 60s TTL would be re-armed forever with the same
-    /// cached data on every 2s refresh.
+    /// Returns `Some(bundle)` on completion, `None` while pending or failed.
+    /// A degraded (panic) bundle is never cached.
     pub async fn poll(&mut self) -> Option<ToolsDataBundle> {
         match &mut self.rx {
             Some(rx) => {
                 let result = rx.await.ok();
-                if let Some((ref bundle, used_cache)) = result {
-                    self.cached_findings = Some(bundle.findings.clone());
-                    // Only advance the freshness clock when the scan was
-                    // actually re-run. On a cache-hit poll the findings are
-                    // the SAME data we already cached, so resetting the TTL
-                    // here would let the cache live forever as long as the 2s
-                    // refresh tick keeps firing inside the TTL window.
-                    if !used_cache {
-                        self.findings_fresh_at = Some(std::time::Instant::now());
-                    }
+                if let Some((ref bundle, used_cache)) = result
+                    && bundle.available
+                    && !used_cache
+                {
+                    self.cached_bundle = Some(bundle.clone());
+                    self.bundle_fresh_at = Some(std::time::Instant::now());
                 }
                 self.rx = None;
                 result.map(|(bundle, _)| bundle)
@@ -202,11 +124,11 @@ impl ToolsCollector {
         }
     }
 
-    /// Invalidate the findings cache so the next collection re-runs the scan.
+    /// Invalidate the sweep cache so the next collection re-runs the scan.
     #[allow(dead_code)]
     pub fn invalidate_findings_cache(&mut self) {
-        self.cached_findings = None;
-        self.findings_fresh_at = None;
+        self.cached_bundle = None;
+        self.bundle_fresh_at = None;
     }
 }
 
@@ -216,43 +138,17 @@ impl Default for ToolsCollector {
     }
 }
 
-// ── Real data collection ────────────────────────────────────────────────────
-
-/// Collect the installed-tools catalogue by scanning the host for every
-/// catalogue entry.
-///
-/// All work runs on the blocking thread pool inside a single
-/// `spawn_blocking`: each catalogue alias is classified through a
-/// [`Detector`](toride_installer::Detector) (`$PATH` first, then the managed
-/// `~/.local/bin` location — the first resolving alias wins), and the found
-/// binary is probed under [`VERSION_TIMEOUT`] (`--version`, falling back to
-/// `-V`) for its version string. The findings (missing-expected-tool
-/// warnings) are reused from the cache when fresh.
-///
-/// `use_cache` / `cached_findings` mirror the harden / mise findings cache:
-/// when the cache is fresh the findings are taken verbatim and the version
-/// probes are still run (the catalogue is short and discovery is cheap), but
-/// the missing-tool warnings are not re-derived.
-///
-/// On ANY panic (`JoinError` from the outer `tokio::spawn`) returns
-/// [`empty_bundle_with_reason`] with `available = false`.
-///
-/// Returns `(bundle, used_cache)` where `used_cache` records whether the
-/// findings were actually taken from the cache on a successful collection.
 async fn collect_real_tools(
     use_cache: bool,
-    cached_findings: Option<Vec<FindingEntry>>,
+    cached_bundle: Option<ToolsDataBundle>,
 ) -> (ToolsDataBundle, bool) {
-    // Run the entire catalogue scan in ONE spawn_blocking. Binary discovery
-    // and the version probes are synchronous subprocess work, so this keeps
-    // every probe off the tokio worker (mirroring the harden / fail2ban /
-    // ufw-kit pattern).
+    if use_cache && let Some(bundle) = cached_bundle {
+        return (bundle, true);
+    }
+
     let result = tokio::task::spawn_blocking(move || {
         let catalogue = tools_convert::catalogue();
 
-        // One detector drives the whole sweep: it is cheap and `Clone`, and
-        // the 800ms per-probe cap ([`VERSION_TIMEOUT`]) preserves the
-        // hand-rolled probe's worst-case bound per found binary.
         let detector = Detector::builder().probe_timeout(VERSION_TIMEOUT).build();
 
         let mut tools: Vec<ToolEntry> = Vec::with_capacity(catalogue.len());
@@ -266,19 +162,8 @@ async fn collect_real_tools(
             tools.push(entry);
         }
 
-        // Findings: one warning per MISSING expected tool. Reused from the
-        // cache when fresh (`use_cache`), otherwise re-derived here.
-        let findings = if use_cache {
-            cached_findings.unwrap_or_default()
-        } else {
-            tools_convert::convert_findings(&tools)
-        };
+        let findings = tools_convert::convert_findings(&tools);
 
-        // Availability heuristic: the scan ALWAYS ran (we got here), so the
-        // section is available. Only a task panic flips this to false, and
-        // that case never reaches this code path: the panic is caught as a
-        // JoinError in `start()`'s outer spawn, which returns
-        // [`empty_bundle_with_reason`] instead of calling this function.
         let available = true;
 
         ToolsDataBundle {
@@ -293,7 +178,7 @@ async fn collect_real_tools(
     .await;
 
     match result {
-        Ok(bundle) => (bundle, use_cache),
+        Ok(bundle) => (bundle, false),
         Err(e) => {
             tracing::warn!("tools collection task panicked: {e}");
             (
@@ -304,22 +189,8 @@ async fn collect_real_tools(
     }
 }
 
-/// Per-version-probe timeout fed to the
-/// [`Detector`](toride_installer::Detector). Generous for a fast `--version`
-/// (sub-50ms) but short enough that a hung binary cannot stall the scan —
-/// the same cap the replaced hand-rolled probe enforced.
 const VERSION_TIMEOUT: Duration = Duration::from_millis(800);
 
-/// The detection descriptor for one catalogue alias.
-///
-/// `Tool`'s defaults are exactly the catalogue's detection semantics:
-/// `ArtifactKind::Binary`, `Checksum::None` (detection never downloads), and
-/// `default_install_dir: None` — the managed tier is therefore
-/// `~/.local/bin/<alias>`, the installer's standard location, which is what
-/// lets a tool installed off-`$PATH` still surface. Built as a struct literal
-/// (an officially supported construction per `Tool`'s docs) because
-/// `ToolBuilder::build`'s validation can only reject a tarball descriptor
-/// without a `bin_path` — the `Result` cannot fail for a `Binary` descriptor.
 fn catalogue_tool(name: &str, alias: &str) -> Tool {
     Tool {
         name: name.to_string(),
@@ -328,15 +199,6 @@ fn catalogue_tool(name: &str, alias: &str) -> Tool {
     }
 }
 
-/// Resolve one catalogue spec to its UI row by trying every alias in order.
-///
-/// The first alias the [`Detector`](toride_installer::Detector) classifies as
-/// installed (on `$PATH` or at the managed location) wins — e.g. `fd`
-/// resolves to `fdfind` on Debian — matching the replaced `which`-based
-/// resolver's first-hit semantics. A miss on one alias is the expected common
-/// case and is logged at `debug`, never `warn`. When no alias resolves, a
-/// missing row ([`missing_entry`]) is returned: presence is the path probe's
-/// verdict, never the version probe's.
 fn detect_entry(spec: &ToolSpec, detector: &Detector) -> ToolEntry {
     for alias in &spec.binaries {
         let status = detector.detect(&catalogue_tool(spec.name, alias));
@@ -348,14 +210,6 @@ fn detect_entry(spec: &ToolSpec, detector: &Detector) -> ToolEntry {
     missing_entry(spec)
 }
 
-/// Map a detection status to the UI row for `spec`; `None` when the tool is
-/// not installed (`ToolStatus::path` is `None` iff `NotInstalled`).
-///
-/// `version` carries [`toride_installer::ToolVersion::line`] verbatim — the
-/// trimmed first non-empty `--version`/`-V` stdout line, byte-identical to
-/// what the replaced hand-rolled probe returned. `path` is the resolved
-/// executable path as a string, identical to the old
-/// `to_string_lossy` rendering for the UTF-8 paths detection can produce.
 fn entry_from_status(spec: &ToolSpec, status: &toride_installer::ToolStatus) -> Option<ToolEntry> {
     let path = status.path()?;
     Some(ToolEntry {
@@ -368,7 +222,6 @@ fn entry_from_status(spec: &ToolSpec, status: &toride_installer::ToolStatus) -> 
     })
 }
 
-/// The missing-tool row for `spec`: not installed, no version, no path.
 fn missing_entry(spec: &ToolSpec) -> ToolEntry {
     ToolEntry {
         name: spec.name.to_string(),
@@ -380,13 +233,6 @@ fn missing_entry(spec: &ToolSpec) -> ToolEntry {
     }
 }
 
-/// Empty bundle used when the collection task panicked (`tokio::spawn`
-/// `JoinError`) — mirrors [`harden_data::empty_bundle`] and the sibling
-/// collectors. `available = false` signals the UI to render the degraded
-/// panel; no reason is attached because none is known at this point (the
-/// `JoinError` reason is added by [`empty_bundle_with_reason`]).
-///
-/// [`harden_data::empty_bundle`]: crate::toride_harden_data::empty_bundle
 fn empty_bundle() -> ToolsDataBundle {
     ToolsDataBundle {
         available: false,
@@ -398,17 +244,11 @@ fn empty_bundle() -> ToolsDataBundle {
     }
 }
 
-/// Empty bundle carrying the reason collection failed. Used when the spawned
-/// collection task panicked (`JoinError`) — the reason string is rendered by the
-/// UI's degraded panel so the operator sees what actually went wrong, mirroring
-/// the `spawn_blocking` `JoinError` path in harden / fail2ban / cloud / etc.
 fn empty_bundle_with_reason(reason: String) -> ToolsDataBundle {
     let mut b = empty_bundle();
     b.unavailable_reason = Some(reason);
     b
 }
-
-// ── Tests ───────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
 mod tests {
@@ -443,7 +283,7 @@ mod tests {
         let mut collector = ToolsCollector::new();
         collector.start();
         assert!(collector.is_pending());
-        collector.start(); // no-op, does not replace the receiver
+        collector.start();
         assert!(collector.is_pending());
     }
 
@@ -457,8 +297,6 @@ mod tests {
     async fn poll_clears_pending() {
         let mut collector = ToolsCollector::new();
         collector.start();
-        // The catalogue scan resolves ~30 binaries; give it time. Discovery
-        // is fast and version probes are bounded at 800ms each.
         tokio::time::sleep(Duration::from_millis(1500)).await;
         let _ = collector.poll().await;
         assert!(!collector.is_pending(), "poll should clear pending state");
@@ -466,9 +304,6 @@ mod tests {
 
     #[tokio::test]
     async fn poll_returns_bundle_after_collection() {
-        // On any host the collector must return Some(bundle) after start() +
-        // enough time. The scan always runs (which is cheap), so available is
-        // true and the catalogue is populated.
         let mut collector = ToolsCollector::new();
         collector.start();
         tokio::time::sleep(Duration::from_secs(2)).await;
@@ -517,24 +352,31 @@ mod tests {
         collector.start();
         tokio::time::sleep(Duration::from_secs(2)).await;
         let _ = collector.poll().await;
-        // After a successful poll the cache is populated (even if to an empty
-        // Vec on a host where every expected tool is installed).
-        assert!(collector.cached_findings.is_some());
-        assert!(collector.findings_fresh_at.is_some());
+        assert!(collector.cached_bundle.is_some());
+        assert!(collector.bundle_fresh_at.is_some());
     }
 
     #[test]
     fn invalidate_findings_cache_clears_it() {
         let mut collector = ToolsCollector::new();
-        collector.cached_findings = Some(Vec::new());
-        collector.findings_fresh_at = Some(std::time::Instant::now());
+        collector.cached_bundle = Some(available_empty_bundle());
+        collector.bundle_fresh_at = Some(std::time::Instant::now());
         collector.invalidate_findings_cache();
-        assert!(collector.cached_findings.is_none());
-        assert!(collector.findings_fresh_at.is_none());
+        assert!(collector.cached_bundle.is_none());
+        assert!(collector.bundle_fresh_at.is_none());
     }
 
-    /// A catalogue spec for `name` trying `aliases` in order — the tests'
-    /// stand-in for a `tools_convert::ToolSpec` row.
+    fn available_empty_bundle() -> ToolsDataBundle {
+        ToolsDataBundle {
+            available: true,
+            tools: Vec::new(),
+            installed_count: 0,
+            total_count: 0,
+            findings: Vec::new(),
+            unavailable_reason: None,
+        }
+    }
+
     fn fixture_spec(name: &'static str, aliases: &[&str]) -> ToolSpec {
         ToolSpec {
             name,
@@ -544,21 +386,14 @@ mod tests {
         }
     }
 
-    /// The detector construction the production collector uses (800ms
-    /// per-probe cap) — the tests must exercise the same sweep as the app.
     fn production_detector() -> Detector {
         Detector::builder().probe_timeout(VERSION_TIMEOUT).build()
     }
 
-    /// A bin name no real `$PATH` or `~/.local/bin` carries.
     const BOGUS: &str = "this-binary-does-not-exist-toride-xyz";
 
     #[test]
     fn detect_entry_finds_a_known_alias_environmental() {
-        // `which` and `cargo` are guaranteed on the dev/CI host that runs
-        // tests (they are how the test binary itself was built). Adapted from
-        // the old `resolve_binary_finds_a_known_alias`: at least one alias in
-        // the list must classify as installed.
         let entry = detect_entry(
             &fixture_spec("cargo", &["which", "cargo"]),
             &production_detector(),
@@ -571,9 +406,6 @@ mod tests {
 
     #[test]
     fn detect_entry_missing_row_for_bogus_alias() {
-        // Adapted from the old `resolve_binary_returns_none_for_bogus_name`:
-        // an absent alias yields the missing row — no version, no path —
-        // while `expected` (catalogue data) is preserved.
         let entry = detect_entry(&fixture_spec(BOGUS, &[BOGUS]), &production_detector());
         assert!(!entry.installed);
         assert_eq!(entry.version, None);
@@ -583,10 +415,6 @@ mod tests {
 
     #[test]
     fn detect_entry_tries_aliases_in_order_until_one_resolves() {
-        // The first alias is absent everywhere; the second is guaranteed on
-        // the dev/CI host (it built this test binary). Proves iteration
-        // continues past a miss and stops at the first resolving alias — the
-        // first-hit semantics `fd` -> `fdfind` on Debian relies on.
         let entry = detect_entry(
             &fixture_spec("cargo", &[BOGUS, "cargo"]),
             &production_detector(),
@@ -601,10 +429,6 @@ mod tests {
 
     #[test]
     fn entry_version_is_the_probe_line_byte_identical() {
-        // Parity with the replaced hand-rolled probe: the row's version is
-        // the trimmed first non-empty `--version` stdout line, verbatim. The
-        // strict FakeRunner supplies the probe output; the tempdir stands in
-        // for the managed install dir so the fixture is hermetic.
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let bin_name = "toride-test-paritytool";
         let bin = tmp.path().join(bin_name);
@@ -618,9 +442,6 @@ mod tests {
         let bin_path = bin.to_str().expect("utf-8 tempdir").to_owned();
 
         let stdout = "paritytool version 12.0.1 (rev deadbeef)";
-        // `timeout` is excluded from exact matching (runtime policy), but the
-        // null-stdin wiring IS compared, so this spec must mirror what the
-        // Detector's `probe_version` issues.
         let fake = FakeRunner::new().strict().respond(
             CommandSpec::new(bin_path.clone())
                 .arg("--version")
@@ -649,19 +470,12 @@ mod tests {
 
     #[test]
     fn entry_from_status_is_none_when_not_installed() {
-        // The `None` arm of the mapping is what drives `detect_entry`'s
-        // alias loop and, once aliases are exhausted, the missing row.
         let status = toride_installer::ToolStatus::NotInstalled;
         assert!(entry_from_status(&fixture_spec("t", &["t"]), &status).is_none());
     }
 
     #[test]
     fn detect_entry_keeps_presence_when_probe_degrades() {
-        // Hermetic: detect classifies the managed fixture file below as
-        // installed, and the strict FakeRunner has NO responses, so both
-        // version probes error. The row built from that status must stay
-        // installed with no version — presence is the path probe's verdict,
-        // never the version probe's.
         let dir = tempfile::TempDir::new().expect("tempdir");
         let dir_str = dir.path().to_str().expect("utf-8 tempdir").to_owned();
         let tool = Tool::builder()
@@ -673,9 +487,6 @@ mod tests {
         std::fs::write(dir.path().join("toride-test-degradetool"), b"x")
             .expect("write managed fixture");
 
-        // detect_entry builds descriptors without an install dir, so drive
-        // the same detector + mapping pair the collector uses, against the
-        // fixture descriptor.
         let detector = Detector::with_runner(Arc::new(FakeRunner::new().strict()));
         let status = detector.detect(&tool);
         let entry = entry_from_status(&fixture_spec("paritytool", &[]), &status)
@@ -685,10 +496,6 @@ mod tests {
         assert_eq!(entry.version, None);
     }
 
-    /// ENVIRONMENTAL smoke test: run the WHOLE production catalogue through
-    /// the production detector on the real host. Pins the row contract the
-    /// UI relies on — one row per catalogue entry, in catalogue order, with
-    /// `installed ⇔ path` and no version on a missing row.
     #[test]
     fn catalogue_smoke_rows_are_well_formed_environmental() {
         let catalogue = tools_convert::catalogue();
@@ -718,5 +525,130 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cadence_oracle {
+    use super::*;
+
+    const SENTINEL_ID: &str = "oracle-sentinel.tools.findings-cache";
+
+    const SENTINEL_TOOL: &str = "oracle-sentinel-tools-row";
+
+    fn sentinel_bundle() -> ToolsDataBundle {
+        ToolsDataBundle {
+            available: true,
+            tools: vec![ToolEntry {
+                name: SENTINEL_TOOL.to_string(),
+                category: "oracle".to_string(),
+                installed: true,
+                version: Some("sentinel 1.2.3".to_string()),
+                path: Some("/nonexistent/oracle-sentinel-bin".to_string()),
+                expected: false,
+            }],
+            installed_count: 1,
+            total_count: 1,
+            findings: vec![FindingEntry {
+                id: SENTINEL_ID.to_string(),
+                severity: "warning".to_string(),
+                title: "cadence-oracle sentinel".to_string(),
+            }],
+            unavailable_reason: None,
+        }
+    }
+
+    struct TtlOffsetGuard;
+
+    impl TtlOffsetGuard {
+        fn past_ttl() -> Self {
+            TTL_TEST_OFFSET_MS.with(|o| {
+                o.set(
+                    u64::try_from(SWEEP_TTL.as_millis())
+                        .expect("a 60s TTL in milliseconds always fits in u64")
+                        + 10_000,
+                );
+            });
+            Self
+        }
+    }
+
+    impl Drop for TtlOffsetGuard {
+        fn drop(&mut self) {
+            TTL_TEST_OFFSET_MS.with(|o| o.set(0));
+        }
+    }
+
+    #[tokio::test]
+    async fn cache_hit_returns_cached_bundle_without_resweeping() {
+        let mut collector = ToolsCollector::new();
+        collector.cached_bundle = Some(sentinel_bundle());
+        let primed = std::time::Instant::now();
+        collector.bundle_fresh_at = Some(primed);
+
+        collector.start();
+        let bundle = collector.poll().await.expect("collection completes");
+
+        assert_eq!(
+            bundle.tools.len(),
+            1,
+            "a cache hit must serve the cached tool rows verbatim"
+        );
+        assert_eq!(
+            bundle.tools[0].name, SENTINEL_TOOL,
+            "the sentinel row name can only come from the cache, never from a real sweep"
+        );
+        assert_eq!(bundle.tools[0].version.as_deref(), Some("sentinel 1.2.3"));
+        assert_eq!(bundle.installed_count, 1);
+        assert_eq!(bundle.total_count, 1);
+        assert_eq!(
+            bundle.findings.len(),
+            1,
+            "a cache hit must serve the cached findings verbatim"
+        );
+        assert_eq!(
+            bundle.findings[0].id, SENTINEL_ID,
+            "the sentinel id can only come from the cache, never from a real catalogue scan"
+        );
+        let catalogue_len = tools_convert::catalogue().len();
+        assert_ne!(
+            bundle.total_count, catalogue_len,
+            "total_count must be the cached sentinel, not a fresh catalogue count"
+        );
+        assert_eq!(
+            collector.bundle_fresh_at,
+            Some(primed),
+            "a cache-hit poll must not advance (re-arm) the freshness timestamp"
+        );
+    }
+
+    #[tokio::test]
+    async fn ttl_expiry_bypasses_cache_and_rederives() {
+        let mut collector = ToolsCollector::new();
+        collector.cached_bundle = Some(sentinel_bundle());
+        let primed = std::time::Instant::now();
+        collector.bundle_fresh_at = Some(primed);
+
+        let _ttl = TtlOffsetGuard::past_ttl();
+        collector.start();
+        let bundle = collector.poll().await.expect("collection completes");
+
+        assert!(
+            bundle.findings.iter().all(|f| f.id != SENTINEL_ID),
+            "an expired cache must not serve the sentinel finding"
+        );
+        assert!(
+            bundle.tools.iter().all(|t| t.name != SENTINEL_TOOL),
+            "an expired cache must not serve the sentinel tool row"
+        );
+        let catalogue_len = tools_convert::catalogue().len();
+        assert_eq!(
+            bundle.total_count, catalogue_len,
+            "an expired cache must re-run the real catalogue sweep"
+        );
+        assert!(
+            collector.bundle_fresh_at.is_some_and(|t| t > primed),
+            "an expired cache must be re-derived and the freshness clock advanced"
+        );
     }
 }

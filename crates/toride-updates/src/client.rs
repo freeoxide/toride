@@ -1,10 +1,3 @@
-//! Client for executing update-related commands.
-//!
-//! [`UpdatesClient`] wraps a [`toride_runner::Runner`] and provides high-level
-//! methods for checking, applying, configuring, and querying the status of
-//! automatic security updates. It dispatches to the APT ([`crate::apt`]) or
-//! DNF ([`crate::dnf`]) backend based on the detected package manager.
-
 use tracing::info;
 
 #[cfg(feature = "apt")]
@@ -17,33 +10,16 @@ use crate::paths::UpdatePaths;
 use crate::report::UpdateStatus;
 use crate::spec::UpdateSpec;
 
-// ---------------------------------------------------------------------------
-// UpdatesClient
-// -----------------------------------------------------------------------
-
-/// Client for interacting with the system's automatic update subsystem.
-///
-/// Owns a boxed [`toride_runner::Runner`] for command execution and resolved
-/// [`UpdatePaths`] for locating configuration files.
-///
-/// # Construction
-///
-/// - [`UpdatesClient::new`] -- production defaults using `duct`.
-/// - [`UpdatesClient::with_runner`] -- inject a custom runner for testing.
+/// Client for the host's automatic update subsystem (APT or DNF backend).
 pub struct UpdatesClient {
     runner: Box<dyn toride_runner::Runner>,
     paths: UpdatePaths,
+    pkg_mgr: PackageManager,
 }
 
 impl UpdatesClient {
-    /// Create a new client with production defaults.
-    ///
-    /// Uses `duct` for command execution and auto-detects update paths.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::PackageDetection`] if no supported package manager is
-    /// detected on the system.
+    /// Create a client with production defaults (`duct` runner, detected paths).
+    /// Returns [`Error::PackageDetection`] if no supported manager is on `$PATH`.
     pub fn new() -> Result<Self> {
         let pkg_mgr = crate::detect::detect_package_manager();
         let paths = UpdatePaths::detect();
@@ -57,6 +33,7 @@ impl UpdatesClient {
         Ok(Self {
             runner: Box::new(toride_runner::DuctRunner),
             paths,
+            pkg_mgr,
         })
     }
 
@@ -65,6 +42,7 @@ impl UpdatesClient {
         Self {
             runner,
             paths: UpdatePaths::new(),
+            pkg_mgr: crate::detect::detect_package_manager(),
         }
     }
 
@@ -73,35 +51,25 @@ impl UpdatesClient {
         runner: Box<dyn toride_runner::Runner>,
         paths: UpdatePaths,
     ) -> Self {
-        Self { runner, paths }
+        Self {
+            runner,
+            paths,
+            pkg_mgr: crate::detect::detect_package_manager(),
+        }
     }
 
-    /// A reference to the owned runner (used to construct backends).
     fn runner_ref(&self) -> &dyn toride_runner::Runner {
         self.runner.as_ref()
     }
 
-    /// The detected package manager.
-    fn package_manager(&self) -> PackageManager {
-        let _ = self;
-        crate::detect::detect_package_manager()
+    /// The detected package manager — resolved once at construction, never re-probed.
+    #[must_use]
+    pub fn package_manager(&self) -> PackageManager {
+        self.pkg_mgr
     }
 
-    // -----------------------------------------------------------------------
-    // Operations
-    // -----------------------------------------------------------------------
-
-    /// Check for available updates and return the counts.
-    ///
-    /// On APT systems, runs `apt-check`. On DNF systems, runs
-    /// `dnf check-update --security`. When the `apt`/`dnf` features are
-    /// enabled the full backend is used; otherwise the command is constructed
-    /// inline so the minimal `client` build still works.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::CommandFailed`] if the command fails, or
-    /// [`Error::PackageDetection`] if no supported package manager is present.
+    /// Check for available updates (`apt-check` / `dnf check-update --security`);
+    /// errors with [`Error::CommandFailed`] or [`Error::PackageDetection`].
     pub fn check_updates(&self) -> Result<(usize, usize)> {
         match self.package_manager() {
             PackageManager::Apt => {
@@ -132,15 +100,8 @@ impl UpdatesClient {
         }
     }
 
-    /// Apply pending updates now.
-    ///
-    /// On APT systems, runs `unattended-upgrades`. On DNF systems, runs
-    /// `dnf-automatic --install`. Uses the full backend when the `apt`/`dnf`
-    /// features are enabled, otherwise constructs the command inline.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::CommandFailed`] if the update command fails.
+    /// Apply pending updates (`unattended-upgrades` / `dnf-automatic --install`);
+    /// errors with [`Error::CommandFailed`] if the command fails.
     pub fn apply_updates(&self) -> Result<()> {
         info!("Applying pending updates");
         match self.package_manager() {
@@ -172,43 +133,20 @@ impl UpdatesClient {
         }
     }
 
-    /// Configure automatic updates according to the given spec.
-    ///
-    /// Writes the appropriate config files (via [`crate::config::ConfigManager`]
-    /// when the `config` feature is enabled, which backs up existing configs
-    /// and atomically renders the new ones), then enables and starts the
-    /// relevant update service / timer so the new schedule takes effect
-    /// immediately.
-    ///
-    /// On APT hosts the canonical systemd timer is `apt-daily-upgrade.timer`
-    /// (the unit that triggers `unattended-upgrades`, per the Ubuntu Server
-    /// "Automatic updates" documentation). On DNF hosts it is
-    /// `dnf-automatic.timer`. The enable is issued as
-    /// `systemctl enable --now <unit>` through the runner, so it is observable
-    /// in tests via [`toride_runner::fake::FakeRunner`].
-    ///
-    /// When the `config` feature is disabled this returns
-    /// [`Error::Other`] noting that config writing is unavailable — the
-    /// spec is otherwise validated but not persisted.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`Error::ConfigWrite`] if any config file cannot be written,
-    /// or [`Error::CommandFailed`] if enabling the service fails.
+    /// Write the spec's config files, then `systemctl enable --now` the backend timer
+    /// (`apt-daily-upgrade.timer`/`dnf-automatic.timer`); errors with
+    /// [`Error::ConfigWrite`]/[`Error::CommandFailed`], or [`Error::Other`] without `config`.
     pub fn configure(&self, spec: &UpdateSpec) -> Result<()> {
         info!("Configuring automatic updates");
         #[cfg(feature = "config")]
         {
             let mgr = crate::config::ConfigManager::with_paths(self.paths.clone());
             mgr.write_spec(spec)?;
-            // Persisted: enable + start the timer so the new schedule is live.
             self.enable_auto_update_timer()?;
             Ok(())
         }
         #[cfg(not(feature = "config"))]
         {
-            // Config persistence is optional; surface a clear error so callers
-            // know the spec was not written to disk.
             let _ = spec;
             Err(Error::Other(
                 "config feature is disabled; cannot write update configuration".into(),
@@ -216,21 +154,12 @@ impl UpdatesClient {
         }
     }
 
-    /// Enable and start the systemd timer that drives automatic updates for the
-    /// detected package manager.
-    ///
-    /// APT: `apt-daily-upgrade.timer` (the unattended-upgrades trigger).
-    /// DNF: `dnf-automatic.timer`. Unknown: no-op.
     fn enable_auto_update_timer(&self) -> Result<()> {
         let unit = match self.package_manager() {
             PackageManager::Apt => "apt-daily-upgrade.timer",
             PackageManager::Dnf => "dnf-automatic.timer",
             PackageManager::Unknown => return Ok(()),
         };
-        // Insert `--` before the unit name for defense-in-depth (the backup
-        // crate's systemctl helpers do the same), so a unit name can never be
-        // parsed as a flag. The unit is a hardcoded literal today, but this
-        // keeps the surface safe if it ever flows in from config.
         let spec =
             toride_runner::CommandSpec::new("systemctl").args(["enable", "--now", "--", unit]);
         self.runner.run_checked(&spec).map_err(|e| {
@@ -239,16 +168,8 @@ impl UpdatesClient {
         Ok(())
     }
 
-    /// Query the current update status.
-    ///
-    /// Returns an [`UpdateStatus`] reflecting the current state of automatic
-    /// updates on this host: parses the backend's update log/journal and
-    /// reports the service-active flag.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the backend status query fails fundamentally (a
-    /// missing log file is treated as a never-run empty status, not an error).
+    /// Query the current update status; a missing log file is a never-run
+    /// empty status, not an error.
     pub fn status(&self) -> Result<UpdateStatus> {
         info!("Querying update status");
         let mut status = match self.package_manager() {
@@ -275,14 +196,9 @@ impl UpdatesClient {
             PackageManager::Unknown => UpdateStatus::empty(),
         };
 
-        // Augment with the service-active flag via systemctl is-active.
         status.service_active = self.is_service_active()?;
         Ok(status)
     }
-
-    // -----------------------------------------------------------------------
-    // Inline backend helpers (used when the apt/dnf feature modules are absent)
-    // -----------------------------------------------------------------------
 
     #[cfg(not(feature = "apt"))]
     fn check_updates_apt_inline(&self) -> Result<(usize, usize)> {
@@ -358,15 +274,6 @@ impl UpdatesClient {
         }
     }
 
-    // -----------------------------------------------------------------------
-    // Service helper
-    // -----------------------------------------------------------------------
-
-    /// Probe whether the auto-update service is currently active.
-    ///
-    /// Returns `false` (rather than an error) when the package manager is
-    /// unknown or `systemctl is-active` returns a non-zero exit, since an
-    /// inactive service is a legitimate status, not a failure.
     fn is_service_active(&self) -> Result<bool> {
         let service = match self.package_manager() {
             PackageManager::Apt => "unattended-upgrades",
@@ -375,7 +282,6 @@ impl UpdatesClient {
         };
         let spec =
             toride_runner::CommandSpec::new("systemctl").args(["is-active", "--quiet", service]);
-        // A non-zero exit (service inactive) is not a runner error here.
         let output = self.runner.run(&spec)?;
         Ok(output.success)
     }
@@ -386,13 +292,10 @@ impl Default for UpdatesClient {
         Self::new().unwrap_or_else(|_| Self {
             runner: Box::new(toride_runner::DuctRunner),
             paths: UpdatePaths::new(),
+            pkg_mgr: PackageManager::Unknown,
         })
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// -----------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -403,12 +306,6 @@ mod tests {
     use toride_runner::fake::FakeRunner;
     use toride_runner::{CommandOutput, CommandSpec, Runner};
 
-    /// A shared handle to a [`FakeRunner`] that can be inspected *after* the
-    /// owning `Box<dyn Runner>` has been handed to a client.
-    ///
-    /// `FakeRunner` records calls into internal `Arc<Mutex<..>>` storage, so an
-    /// `Arc<FakeRunner>` and the boxed [`ArcRunner`] view over it observe the
-    /// same call log. This avoids needing `FakeRunner: Clone` at the call site.
     struct SharedRunner {
         inner: Arc<FakeRunner>,
     }
@@ -420,7 +317,6 @@ mod tests {
             }
         }
 
-        /// Produce an owning `Box<dyn Runner>` view over the shared runner.
         fn boxed(&self) -> Box<dyn Runner> {
             Box::new(ArcRunner(self.inner.clone()))
         }
@@ -430,8 +326,6 @@ mod tests {
         }
     }
 
-    /// Newtype wrapper so we can implement [`Runner`] for a shared
-    /// `Arc<FakeRunner>` without running afoul of the orphan rule.
     struct ArcRunner(Arc<FakeRunner>);
 
     impl Runner for ArcRunner {
@@ -470,8 +364,6 @@ mod tests {
 
     #[test]
     fn status_augments_service_active_via_systemctl() {
-        // Missing log file -> backend status empty; then is_service_active is
-        // probed via `systemctl is-active --quiet`.
         let dir = tempfile::tempdir().unwrap();
         let mut paths = UpdatePaths::new();
         paths.log_file = dir.path().join("missing.log");
@@ -505,8 +397,6 @@ mod tests {
         paths.auto_upgrades_enabled = apt_dir.join("20auto-upgrades");
         paths.apt_conf_d = apt_dir.clone();
 
-        // configure() now enables the timer after writing configs, so the
-        // runner needs a successful response for `systemctl enable --now`.
         let runner =
             SharedRunner::new(FakeRunner::new().push_response(CommandOutput::from_stdout("")));
         let client = UpdatesClient::with_runner_and_paths(runner.boxed(), paths.clone());
@@ -524,12 +414,6 @@ mod tests {
         }
     }
 
-    /// `configure()` must enable the auto-update systemd timer after writing
-    /// the config files, so the new schedule takes effect immediately.
-    ///
-    /// Per the Ubuntu Server "Automatic updates" docs, the systemd timer that
-    /// drives `unattended-upgrades` is `apt-daily-upgrade.timer`.
-    /// https://ubuntu.com/server/docs/how-to/software/automatic-updates/
     #[cfg(feature = "config")]
     #[test]
     fn configure_enables_apt_timer_on_apt_host() {
@@ -554,7 +438,6 @@ mod tests {
         }
     }
 
-    /// On DNF hosts `configure()` enables `dnf-automatic.timer`.
     #[cfg(feature = "config")]
     #[test]
     fn configure_enables_dnf_timer_on_dnf_host() {
@@ -578,8 +461,6 @@ mod tests {
 
     #[test]
     fn configure_returns_clear_error_without_config_feature() {
-        // Only the disabled-feature branch is host-independent and worth
-        // asserting here; the write path is covered by configure_writes_config_files.
         #[cfg(not(feature = "config"))]
         {
             let runner = SharedRunner::new(FakeRunner::new());
@@ -588,14 +469,27 @@ mod tests {
             assert!(matches!(err, Error::Other(_)));
         }
         #[cfg(feature = "config")]
-        {
-            // No-op: the write path is tested above.
-        }
+        {}
     }
 
     #[test]
     fn with_runner_keeps_runner_alive() {
         let runner = SharedRunner::new(FakeRunner::new());
         let _client = UpdatesClient::with_runner(runner.boxed());
+    }
+
+    #[test]
+    fn package_manager_is_memoized_and_matches_detection() {
+        let client = UpdatesClient::with_runner(Box::new(FakeRunner::new()));
+        assert_eq!(
+            client.package_manager(),
+            crate::detect::detect_package_manager(),
+            "memoized answer must agree with a fresh detection on the same host"
+        );
+        assert_eq!(
+            client.package_manager(),
+            client.package_manager(),
+            "repeated reads must be stable (served from the field, not re-probed)"
+        );
     }
 }

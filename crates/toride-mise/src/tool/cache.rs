@@ -35,7 +35,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn cache_clear(&self) -> MiseResult<()> {
         self.run_checked(["cache", "clear"]).await?;
         Ok(())
@@ -47,7 +47,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn cache_clear_tools(&self, tools: Vec<String>) -> MiseResult<()> {
         let mut args: Vec<String> = vec!["cache".into(), "clear".into()];
         args.extend(tools);
@@ -61,7 +61,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn cache_path(&self) -> MiseResult<Utf8PathBuf> {
         let output = self.run_checked(["cache", "path"]).await?;
         Ok(Utf8PathBuf::from(output.stdout_trimmed().to_owned()))
@@ -76,7 +76,7 @@ impl Mise {
     ///
     /// # Errors
     ///
-    /// Returns [`MiseError::CommandFailed`] if the command exits non-zero.
+    /// Returns [`MiseError::CommandFailed`](crate::error::MiseError::CommandFailed) if the command exits non-zero.
     pub async fn cache_prune(&self, req: CachePruneRequest) -> MiseResult<()> {
         let mut args: Vec<String> = vec!["cache".into(), "prune".into()];
 
