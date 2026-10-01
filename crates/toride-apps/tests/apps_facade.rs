@@ -274,6 +274,7 @@ fn dpkg_query_spec(package: &str) -> CommandSpec {
             package,
         ],
     )
+    .env("LC_ALL", "C")
 }
 
 fn rpm_query_spec(package: &str) -> CommandSpec {
@@ -286,6 +287,7 @@ fn rpm_query_spec(package: &str) -> CommandSpec {
             package,
         ],
     )
+    .env("LC_ALL", "C")
 }
 
 fn pacman_spec(verb: &str, package: &str) -> CommandSpec {
@@ -293,7 +295,7 @@ fn pacman_spec(verb: &str, package: &str) -> CommandSpec {
 }
 
 fn pacman_query_spec(package: &str) -> CommandSpec {
-    command("pacman", ["--query", package])
+    command("pacman", ["--query", package]).env("LC_ALL", "C")
 }
 
 fn apk_spec(verb: &str, package: &str) -> CommandSpec {
@@ -301,7 +303,7 @@ fn apk_spec(verb: &str, package: &str) -> CommandSpec {
 }
 
 fn apk_query_spec(package: &str) -> CommandSpec {
-    command("apk", ["list", "--installed", package])
+    command("apk", ["list", "--installed", package]).env("LC_ALL", "C")
 }
 
 // --- canned outputs -------------------------------------------------------------

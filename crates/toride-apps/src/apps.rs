@@ -722,8 +722,9 @@ impl Apps {
     /// (a present item always carries a version), the flatpak **scoped
     /// listing** (an app without appdata metadata reports an empty version
     /// cell, so `installed_version`'s `Ok(None)` cannot distinguish absent
-    /// from present-without-version), and the distro package query
-    /// (`Ok(None)` covers not-installed and `rc` leftovers alike).
+    /// from present-without-version), and the distro presence status
+    /// (apk reports a present package with no version at all, so the
+    /// distro arm cannot ride `installed_version` either).
     async fn verify_presence(&self, ids: &NativeIds) -> AppsResult<Presence> {
         match ids {
             NativeIds::Homebrew { token, cask } => {

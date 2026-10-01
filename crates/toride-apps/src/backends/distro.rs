@@ -82,7 +82,11 @@
 //!   never an error. `apk list` cannot fail on a no-match (its `list_main`
 //!   returns unconditionally, `src/app_list.c`): an empty answer with exit 0
 //!   is apk's not-found signal, so a nonzero apk exit is always a real
-//!   error. Partial results
+//!   error. Those markers are the programs' C-locale wording — dpkg-query,
+//!   rpm, and pacman all translate their stderr (pacman's German po renders
+//!   the not-found line as `Paket »…« wurde nicht gefunden`), so every
+//!   query spec pins `LC_ALL=C`; without the pin, a localized host would
+//!   turn a simply-absent package into [`Error::Command`]. Partial results
 //!   survive: dpkg-query prints found packages on stdout while reporting the
 //!   missing ones on stderr, and the classification keeps the stdout rows.
 //! - **Failures surface with their stderr tail** — apt-get fails at exit
@@ -153,6 +157,8 @@ pub const OS_RELEASE_FALLBACK_PATH: &str = "/usr/lib/os-release";
 /// package configuration scripts never prompt (debconf(7); apt-get's `-y`
 /// alone covers apt's own prompts, not debconf's).
 const DEBIAN_FRONTEND_ENV: (&str, &str) = ("DEBIAN_FRONTEND", "noninteractive");
+
+const QUERY_LOCALE_ENV: (&str, &str) = ("LC_ALL", "C");
 
 /// The dpkg-query showformat: a three-character status abbrev
 /// (`ii ` = installed) glued in front of `<package>\t<version>`, one row per
@@ -592,7 +598,7 @@ fn mutating_spec(
 }
 
 fn query_spec(executor: DistroExecutor, packages: &[String]) -> toride_runner::CommandSpec {
-    match executor {
+    let spec = match executor {
         DistroExecutor::Apt => {
             let showformat = format!("--showformat={DPKG_QUERY_FORMAT}");
             let mut args = vec!["--show", showformat.as_str()];
@@ -619,7 +625,8 @@ fn query_spec(executor: DistroExecutor, packages: &[String]) -> toride_runner::C
             args.extend(packages.iter().map(String::as_str));
             command(executor.query_program(), args)
         }
-    }
+    };
+    spec.env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
 }
 
 // ---------------------------------------------------------------------------
@@ -911,7 +918,7 @@ mod tests {
         let showformat = format!("--showformat={DPKG_QUERY_FORMAT}");
         let mut args = vec!["--show", showformat.as_str()];
         args.extend(packages.iter().copied());
-        command("dpkg-query", args)
+        command("dpkg-query", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
 
     /// The exact spec an rpm query run uses for `packages` (all when empty).
@@ -923,7 +930,7 @@ mod tests {
         args.push("--queryformat");
         args.push(RPM_QUERY_FORMAT);
         args.extend(packages.iter().copied());
-        command("rpm", args)
+        command("rpm", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
 
     /// The exact spec a mutating pacman command runs.
@@ -941,14 +948,14 @@ mod tests {
     fn pacman_query_spec(packages: &[&str]) -> toride_runner::CommandSpec {
         let mut args = vec!["--query"];
         args.extend(packages.iter().copied());
-        command("pacman", args)
+        command("pacman", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
 
     /// The exact spec an apk listing uses for `packages` (all when empty).
     fn apk_query_spec(packages: &[&str]) -> toride_runner::CommandSpec {
         let mut args = vec!["list", "--installed"];
         args.extend(packages.iter().copied());
-        command("apk", args)
+        command("apk", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
 
     /// The fixture dpkg-query document's contents, ready to serve as
@@ -1805,6 +1812,44 @@ mod tests {
         assert_eq!(spec.program, "apk");
         assert_eq!(spec.args, ["list", "--installed", "bash", "musl"]);
         assert!(spec.stdin_null);
+    }
+
+    #[test]
+    fn every_query_spec_pins_the_c_locale() {
+        // dpkg-query, rpm, and pacman translate their stderr (pacman's
+        // German po renders the not-found line as `Paket »…« wurde nicht
+        // gefunden`), so the not-found markers only match C-locale output.
+        let specs = [
+            dpkg_query_spec(&["bash"]),
+            dpkg_query_spec(&[]),
+            rpm_query_spec(&["bash"]),
+            rpm_query_spec(&[]),
+            pacman_query_spec(&["bash"]),
+            pacman_query_spec(&[]),
+            apk_query_spec(&["bash"]),
+            apk_query_spec(&[]),
+        ];
+        for spec in specs {
+            assert!(
+                spec.env.contains(&("LC_ALL".to_owned(), "C".to_owned())),
+                "an inherited host locale would translate the markers away: {spec:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mutating_specs_leave_the_host_locale_alone() {
+        // Only classified stderr needs the C locale: a mutating command's
+        // failure wording travels verbatim to the user, in their language.
+        for executor in [
+            DistroExecutor::Apt,
+            DistroExecutor::Dnf,
+            DistroExecutor::Pacman,
+            DistroExecutor::Apk,
+        ] {
+            let spec = mutating_spec(executor, "install", "bash");
+            assert!(!spec.env.iter().any(|(key, _)| key == "LC_ALL"), "{spec:?}");
+        }
     }
 
     // --- query output parsing ---------------------------------------------------------
