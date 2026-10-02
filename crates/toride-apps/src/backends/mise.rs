@@ -351,19 +351,38 @@ mod tests {
     }
 
     #[test]
-    fn outdated_from_map_reads_current_latest_and_never_reports_a_pin() {
+    fn outdated_from_map_reports_the_move_target_for_every_requested_spec() {
         let output: OutdatedOutput = serde_json::from_str(
-            r#"{"python": {"requested": "3.11", "current": "3.11.0", "latest": "3.11.1"}}"#,
+            concat!(
+                r#"{"uv": {"name": "uv", "requested": "latest", "current": "0.12.15", "latest": "0.13.0"},"#,
+                r#""python": {"requested": "3.11", "current": "3.11.0", "latest": "3.11.1"},"#,
+                r#""node": {"current": "20.0.0", "latest": "20.1.0"}}"#,
+            ),
         )
         .unwrap();
         assert_eq!(
             outdated_from_map(output),
-            [OutdatedEntry {
-                id: "python".to_owned(),
-                installed_versions: vec!["3.11.0".to_owned()],
-                current_version: Some("3.11.1".to_owned()),
-                pinned: false,
-            }]
+            [
+                OutdatedEntry {
+                    id: "node".to_owned(),
+                    installed_versions: vec!["20.0.0".to_owned()],
+                    current_version: Some("20.1.0".to_owned()),
+                    pinned: false,
+                },
+                OutdatedEntry {
+                    id: "python".to_owned(),
+                    installed_versions: vec!["3.11.0".to_owned()],
+                    current_version: Some("3.11.1".to_owned()),
+                    pinned: false,
+                },
+                OutdatedEntry {
+                    id: "uv".to_owned(),
+                    installed_versions: vec!["0.12.15".to_owned()],
+                    current_version: Some("0.13.0".to_owned()),
+                    pinned: false,
+                },
+            ],
+            "mise's `latest` is already the in-range move target of `mise upgrade` (only `--bump` compares absolute latest), so it is the reported current version for every requested spec"
         );
     }
 

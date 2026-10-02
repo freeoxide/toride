@@ -210,10 +210,13 @@ fn parse_cargo_search(stdout: &str, crate_: &str) -> Result<Option<Version>> {
         }
         let mut tokens = line.split_whitespace();
         let Some(name) = tokens.next() else { continue };
+        if tokens.next() != Some("=") {
+            continue;
+        }
         let Some(version) = tokens
             .next()
-            .and_then(|token| token.strip_prefix('('))
-            .and_then(|token| token.strip_suffix(')'))
+            .and_then(|token| token.strip_prefix('"'))
+            .and_then(|token| token.strip_suffix('"'))
         else {
             continue;
         };
@@ -225,7 +228,7 @@ fn parse_cargo_search(stdout: &str, crate_: &str) -> Result<Option<Version>> {
     if !well_formed && !stdout.trim().is_empty() {
         return Err(output_parse_error(
             "cargo search",
-            format_args!("no `name (version)` rows in {stdout:?}"),
+            format_args!("no `name = \"version\"` rows in {stdout:?}"),
         ));
     }
     Ok(None)
@@ -345,13 +348,20 @@ mod tests {
 
     #[test]
     fn parse_cargo_search_answers_only_the_exact_crate_row() {
-        let stdout = "ripgrep-something (9.9.9)\nripgrep (14.1.0)\nsearch tool\n";
-        assert_eq!(
-            parse_cargo_search(stdout, "ripgrep").unwrap(),
-            Some(Version::new("14.1.0"))
+        let stdout = concat!(
+            "ripgrep = \"15.2.0\"         # ripgrep is a line-oriented search tool that recursively searches…\n",
+            "gist-search = \"1.3.1\"      # Indexed code search for Rust\n",
         );
         assert_eq!(
-            parse_cargo_search("ripgrep (14.1.0)\n", "other-crate").unwrap(),
+            parse_cargo_search(stdout, "ripgrep").unwrap(),
+            Some(Version::new("15.2.0"))
+        );
+        assert_eq!(
+            parse_cargo_search(stdout, "gist-search").unwrap(),
+            Some(Version::new("1.3.1"))
+        );
+        assert_eq!(
+            parse_cargo_search(stdout, "other-crate").unwrap(),
             None,
             "a fuzzy match never vouches for another crate's version"
         );
@@ -479,12 +489,14 @@ mod tests {
         let spec = command("cargo", ["search", "ripgrep"]);
         let fake = FakeRunner::new().strict().respond(
             spec.clone(),
-            toride_runner::CommandOutput::from_stdout("ripgrep (14.1.0)\nsearch tool\n"),
+            toride_runner::CommandOutput::from_stdout(
+                "ripgrep = \"15.2.0\"         # ripgrep is a line-oriented search tool…\n",
+            ),
         );
         let backend = backend(&fake);
         assert_eq!(
             backend.available_version("ripgrep").await.unwrap(),
-            Some(Version::new("14.1.0"))
+            Some(Version::new("15.2.0"))
         );
         fake.assert_called_with(&spec);
     }
@@ -504,7 +516,7 @@ mod tests {
             )
             .respond(
                 command("cargo", ["search", "ripgrep"]),
-                toride_runner::CommandOutput::from_stdout("ripgrep (14.1.0)\n"),
+                toride_runner::CommandOutput::from_stdout("ripgrep = \"15.2.0\"\n"),
             );
         let backend = backend(&fake);
         backend
@@ -526,7 +538,7 @@ mod tests {
         );
         assert_eq!(
             backend.available_version_sync("ripgrep").unwrap(),
-            Some(Version::new("14.1.0"))
+            Some(Version::new("15.2.0"))
         );
     }
 }

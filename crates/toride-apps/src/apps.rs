@@ -1334,9 +1334,6 @@ impl Apps {
             BackendId::Distro(_) => self.backends.distro.as_ref().map(|b| b as &dyn Backend),
             #[cfg(feature = "direct")]
             BackendId::Direct => self.backends.direct.as_ref().map(|b| b as &dyn Backend),
-            // Language-ecosystem backends hold no facade slot: this facade
-            // resolves and records through registry InstallMethods, which
-            // name none of them — embedders drive those backends directly.
             BackendId::Npm | BackendId::Cargo | BackendId::Pipx | BackendId::Uv => None,
             #[cfg(feature = "mise")]
             BackendId::Mise => None,

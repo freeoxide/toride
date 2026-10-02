@@ -100,7 +100,9 @@ pub struct Detection {
     pub confidence: DetectionConfidence,
     /// Zero-based `$PATH` rank when the path sits on `$PATH`; `None` otherwise.
     pub path_rank: Option<usize>,
-    /// An earlier `$PATH` entry carries the name too, so this copy cannot run.
+    /// An earlier `$PATH` rank resolved to a **different** artifact for the
+    /// name, so this copy cannot run; the same file sighted again through a
+    /// duplicate or symlinked `$PATH` entry never shadows.
     pub shadowed: bool,
     /// The artifact exists but its source reports it unusable (broken shim).
     pub broken: bool,
@@ -197,7 +199,9 @@ fn absorb(existing: &mut Detection, incoming: Detection) {
     if confidence_rank(incoming.confidence) > confidence_rank(existing.confidence) {
         existing.confidence = incoming.confidence;
     }
-    existing.shadowed |= incoming.shadowed;
+    if incoming.path.is_none() {
+        existing.shadowed |= incoming.shadowed;
+    }
     existing.broken |= incoming.broken;
     existing.arch_mismatch |= incoming.arch_mismatch;
 }
@@ -258,30 +262,33 @@ impl MultiSourceDetector {
         if let Some(dir) = &self.mise_shim_dir {
             return Some(dir.clone());
         }
-        mise_shim_dir_from(std::env::var_os("MISE_DATA_DIR"), dirs::home_dir())
+        mise_shim_dir_from(
+            std::env::var_os("MISE_SHIMS_DIR"),
+            std::env::var_os("MISE_DATA_DIR"),
+            std::env::var_os("XDG_DATA_HOME"),
+            dirs::home_dir(),
+        )
     }
 
     fn path_hits(&self, name: &str) -> Vec<Detection> {
-        let mut hits: Vec<Detection> = self
-            .resolve_path_dirs()
-            .iter()
-            .enumerate()
-            .filter_map(|(rank, dir)| {
-                let candidate = dir.join(name);
-                is_executable_file(&candidate).then(|| {
-                    Detection::new(name, DetectionSource::Path, DetectionConfidence::Medium)
-                        .with_path(candidate.to_string())
-                        .with_path_rank(rank)
-                })
-            })
-            .collect();
-        for (index, hit) in hits.iter_mut().enumerate() {
-            hit.shadowed = index > 0;
-        }
-        for hit in &mut hits {
-            if let Some(path) = hit.path.clone() {
-                hit.arch_mismatch = self.probe_arch_mismatch(&path);
+        let mut seen: Vec<PathBuf> = Vec::new();
+        let mut hits: Vec<Detection> = Vec::new();
+        for (rank, dir) in self.resolve_path_dirs().iter().enumerate() {
+            let candidate = dir.join(name);
+            if !is_executable_file(&candidate) {
+                continue;
             }
+            let artifact = canonical(candidate.as_str());
+            if seen.contains(&artifact) {
+                continue;
+            }
+            seen.push(artifact);
+            let mut hit = Detection::new(name, DetectionSource::Path, DetectionConfidence::Medium)
+                .with_path(candidate.to_string())
+                .with_path_rank(rank);
+            hit.shadowed = !hits.is_empty();
+            hit.arch_mismatch = self.probe_arch_mismatch(candidate.as_str());
+            hits.push(hit);
         }
         hits
     }
@@ -438,16 +445,24 @@ fn split_path_value(value: &std::ffi::OsStr) -> Vec<Utf8PathBuf> {
 }
 
 fn mise_shim_dir_from(
+    shims_dir: Option<std::ffi::OsString>,
     data_dir: Option<std::ffi::OsString>,
+    xdg_data_home: Option<std::ffi::OsString>,
     home: Option<PathBuf>,
 ) -> Option<Utf8PathBuf> {
+    if let Some(shims) = shims_dir {
+        return Utf8PathBuf::from_path_buf(PathBuf::from(shims)).ok();
+    }
     if let Some(data) = data_dir {
         return Utf8PathBuf::from_path_buf(PathBuf::from(data))
             .ok()
             .map(|dir| dir.join("shims"));
     }
-    home.and_then(|home| Utf8PathBuf::from_path_buf(home).ok())
-        .map(|home| home.join(".local/share/mise/shims"))
+    let base = xdg_data_home
+        .map(PathBuf::from)
+        .or_else(|| home.map(|home| home.join(".local/share")));
+    base.and_then(|base| Utf8PathBuf::from_path_buf(base).ok())
+        .map(|base| base.join("mise/shims"))
 }
 
 /// Builder for [`MultiSourceDetector`], mirroring [`crate::AppsBuilder`]:
@@ -888,19 +903,80 @@ mod tests {
     }
 
     #[test]
-    fn mise_shim_dir_from_prefers_the_data_dir_over_the_home_default() {
+    fn mise_shim_dir_from_follows_the_mise_directory_resolution_order() {
+        let shims = std::ffi::OsString::from("/custom/shims");
+        let data = std::ffi::OsString::from("/data/mise");
+        let xdg = std::ffi::OsString::from("/xdg/data");
+        let home = Some(PathBuf::from("/home/u"));
         assert_eq!(
             mise_shim_dir_from(
-                Some(std::ffi::OsString::from("/data/mise")),
-                Some(PathBuf::from("/home/u"))
+                Some(shims.clone()),
+                Some(data.clone()),
+                Some(xdg.clone()),
+                home.clone()
             ),
-            Some(Utf8PathBuf::from("/data/mise/shims"))
+            Some(Utf8PathBuf::from("/custom/shims")),
+            "MISE_SHIMS_DIR wins outright"
         );
         assert_eq!(
-            mise_shim_dir_from(None, Some(PathBuf::from("/home/u"))),
+            mise_shim_dir_from(None, Some(data), Some(xdg.clone()), home.clone()),
+            Some(Utf8PathBuf::from("/data/mise/shims")),
+            "MISE_DATA_DIR is the mise dir itself, so shims sit directly under it"
+        );
+        assert_eq!(
+            mise_shim_dir_from(None, None, Some(xdg), home.clone()),
+            Some(Utf8PathBuf::from("/xdg/data/mise/shims")),
+            "XDG_DATA_HOME replaces the ~/.local/share base only"
+        );
+        assert_eq!(
+            mise_shim_dir_from(None, None, None, home),
             Some(Utf8PathBuf::from("/home/u/.local/share/mise/shims"))
         );
-        assert_eq!(mise_shim_dir_from(None, None), None);
+        assert_eq!(mise_shim_dir_from(None, None, None, None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn one_artifact_sighted_through_two_path_entries_is_a_single_unshadowed_hit() {
+        let real_dir = temp_dir("shadow-real");
+        let real = write_executable(&real_dir, "tool");
+        let link_dir = temp_dir("shadow-link");
+        let link = link_dir.join("tool");
+        std::os::unix::fs::symlink(real.as_std_path(), link.as_std_path())
+            .expect("symlink is creatable");
+        let fake = FakeRunner::new().strict().respond(
+            file_spec(real.as_str()),
+            CommandOutput::from_stdout("a /bin/sh script text executable"),
+        );
+        let detector = MultiSourceDetector::builder()
+            .runner(seam(&fake))
+            .path_dirs(vec![real_dir, link_dir])
+            .build();
+        let hits = detector.detect("tool");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].path_rank, Some(0));
+        assert!(
+            !hits[0].shadowed,
+            "the artifact that runs is not shadowed by its own symlinked re-sighting"
+        );
+        assert_eq!(hits[0].path.as_deref(), Some(real.as_str()));
+        fake.assert_called_with(&file_spec(real.as_str()));
+    }
+
+    #[test]
+    fn merge_never_marks_one_artifact_as_shadowing_itself() {
+        let winner = Detection::new("t", DetectionSource::Path, DetectionConfidence::Medium)
+            .with_path("/x/t")
+            .with_path_rank(0);
+        let mut re_sighting =
+            Detection::new("t", DetectionSource::Path, DetectionConfidence::Medium)
+                .with_path("/x/t")
+                .with_path_rank(1);
+        re_sighting.shadowed = true;
+        let merged = merge_by_canonical_path(vec![winner, re_sighting]);
+        assert_eq!(merged.len(), 1, "{merged:?}");
+        assert!(!merged[0].shadowed);
+        assert_eq!(merged[0].path_rank, Some(0));
     }
 
     #[cfg(unix)]
@@ -1144,5 +1220,20 @@ mod tests {
                 .build(),
         );
         assert!(detector.detect("nothing-here").is_empty());
+    }
+
+    #[test]
+    fn detect_backends_skips_absent_binaries_and_never_errors() {
+        let fake = FakeRunner::new();
+        let detector = MultiSourceDetector::builder()
+            .runner(seam(&fake))
+            .detect_backends()
+            .expect("an absent binary or unknown family is a skip, never an error")
+            .build();
+        assert!(
+            detector
+                .detect("definitely-not-an-installed-tool-xyzq")
+                .is_empty()
+        );
     }
 }
