@@ -99,6 +99,8 @@ use crate::backend::{
     Backend, BackendId, BackendStatus, InstallRequest, StatusQuery, UninstallRequest,
     UpdateRequest, Version,
 };
+#[cfg(feature = "direct")]
+use crate::backends::DirectBackend;
 use crate::backends::distro::detect_host_family;
 use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::{BrewKind, OutdatedScope};
@@ -568,6 +570,9 @@ struct AttachedBackends {
     flatpak: Option<FlatpakBackend>,
     /// Distro backend, when a family manager is usable on this host.
     distro: Option<DistroBackend>,
+    /// Direct-download backend, when attached (the `direct` feature).
+    #[cfg(feature = "direct")]
+    direct: Option<DirectBackend>,
 }
 
 /// The app install/uninstall front door: registry adapters for resolve,
@@ -722,7 +727,7 @@ impl Apps {
         //    that failed confirmation in step 1 re-installs below); a
         //    Foreign copy satisfies only a version-less request.
         if !self.records.contains_key(id) {
-            let native = native_from_method(&app.install);
+            let native = self.native_ids_for(&app);
             let status = app_status(None, native.as_ref(), &self.backend_set()).await?;
             if let AppStatus::Foreign { .. } = status {
                 if options.version.is_none() {
@@ -740,8 +745,8 @@ impl Apps {
             self.version_for_plan(&app, options.version.clone()).await
         };
         let plan = plan_install(&app, &self.target, &InstallOptions { version })?;
-        let ids = native_ids_from_executed(&plan)?;
         let backend = self.backend_for(plan.backend)?;
+        let ids = self.native_ids_from_executed(&plan)?;
         let outcome = backend
             .install(InstallRequest::new(&plan, &self.target).elevated(options.elevated))
             .await?;
@@ -846,10 +851,11 @@ impl Apps {
         options: AppUninstallOptions,
     ) -> AppsResult<UninstallAppOutcome> {
         let app = self.resolve(id).await?;
-        // Planning first refuses what cannot run (a Direct method has no
-        // uninstall backend — wave 2) before anything is probed.
+        // Planning first refuses what cannot run (a Direct method's
+        // uninstall replays a record, never registry data) before anything
+        // is probed.
         let plan = plan_uninstall(&app, &self.target, &UninstallOptions { zap: options.zap })?;
-        let Some(native) = native_from_method(&app.install) else {
+        let Some(native) = self.native_ids_for(&app) else {
             // Unreachable behind a successful plan (every manager method
             // maps to ids); defense, not a silent skip.
             return Err(AppsError::UnrecordableOperation {
@@ -1103,6 +1109,11 @@ impl Apps {
                 .backend_for(ids.backend())?
                 .available_versions(native_id(ids))
                 .await?),
+            #[cfg(feature = "direct")]
+            NativeIds::Direct { .. } => Ok(self
+                .backend_for(ids.backend())?
+                .available_versions(native_id(ids))
+                .await?),
         }
     }
 
@@ -1115,7 +1126,7 @@ impl Apps {
     /// failing offering probe degrades to it and the manager classifies.
     async fn version_for_plan(&self, app: &App, requested: Option<Version>) -> Option<Version> {
         let requested = requested?;
-        let Some(native) = native_from_method(&app.install) else {
+        let Some(native) = self.native_ids_for(app) else {
             return Some(requested);
         };
         match self.record_available_version(&native).await {
@@ -1141,7 +1152,7 @@ impl Apps {
             return self.record_available_versions(&record.ids).await;
         }
         let app = self.resolve(id).await?;
-        let Some(native) = native_from_method(&app.install) else {
+        let Some(native) = self.native_ids_for(&app) else {
             return Err(AppsError::Backend(BackendError::UnsupportedMethod {
                 app: id.as_str().to_owned(),
                 method: format!("{:?}", app.install),
@@ -1247,7 +1258,7 @@ impl Apps {
             .resolve(id)
             .await
             .ok()
-            .and_then(|app| native_from_method(&app.install));
+            .and_then(|app| self.native_ids_for(&app));
         Ok(app_status(None, native.as_ref(), &self.backend_set()).await?)
     }
 
@@ -1305,6 +1316,10 @@ impl Apps {
         if let Some(backend) = &self.backends.distro {
             set = set.distro(backend);
         }
+        #[cfg(feature = "direct")]
+        if let Some(backend) = &self.backends.direct {
+            set = set.direct(backend);
+        }
         set
     }
 
@@ -1317,8 +1332,20 @@ impl Apps {
             // family mismatch surfaces at execution (the distro backend's
             // executor check), not here.
             BackendId::Distro(_) => self.backends.distro.as_ref().map(|b| b as &dyn Backend),
+            #[cfg(feature = "direct")]
+            BackendId::Direct => self.backends.direct.as_ref().map(|b| b as &dyn Backend),
         };
         routed.ok_or(AppsError::BackendUnavailable { backend })
+    }
+
+    /// The attached direct backend's install dir, when one is attached —
+    /// the base direct records resolve their binary paths against.
+    #[cfg(feature = "direct")]
+    fn direct_install_dir(&self) -> Option<&Utf8PathBuf> {
+        self.backends
+            .direct
+            .as_ref()
+            .map(DirectBackend::install_dir)
     }
 
     /// The attached homebrew backend, for kind-aware probes.
@@ -1396,6 +1423,16 @@ impl Apps {
                 match backend.status(StatusQuery::new(package)).await? {
                     BackendStatus::Installed { version } => Ok(Presence::Present(version)),
                     BackendStatus::NotInstalled => Ok(Presence::Absent),
+                }
+            }
+            #[cfg(feature = "direct")]
+            NativeIds::Direct { bin_path, .. } => {
+                // The file itself is the probe; a direct binary reports
+                // no version without executing it.
+                if std::path::Path::new(bin_path).is_file() {
+                    Ok(Presence::Present(None))
+                } else {
+                    Ok(Presence::Absent)
                 }
             }
         }
@@ -1554,13 +1591,17 @@ impl Apps {
             NativeIds::Distro { .. } => Ok(self
                 .backend_for(ids.backend())?
                 .available_versions_sync(native_id(ids))?),
+            #[cfg(feature = "direct")]
+            NativeIds::Direct { .. } => Ok(self
+                .backend_for(ids.backend())?
+                .available_versions_sync(native_id(ids))?),
         }
     }
 
     /// The sync twin of [`Apps::version_for_plan`].
     fn version_for_plan_sync(&self, app: &App, requested: Option<Version>) -> Option<Version> {
         let requested = requested?;
-        let Some(native) = native_from_method(&app.install) else {
+        let Some(native) = self.native_ids_for(app) else {
             return Some(requested);
         };
         match self.record_available_version_sync(&native) {
@@ -1650,6 +1691,14 @@ impl Apps {
                     BackendStatus::NotInstalled => Ok(Presence::Absent),
                 }
             }
+            #[cfg(feature = "direct")]
+            NativeIds::Direct { bin_path, .. } => {
+                if std::path::Path::new(bin_path).is_file() {
+                    Ok(Presence::Present(None))
+                } else {
+                    Ok(Presence::Absent)
+                }
+            }
         }
     }
 
@@ -1714,6 +1763,9 @@ pub struct AppsBuilder {
     flatpak: Option<FlatpakBackend>,
     /// The distro backend, when a family manager is usable on this host.
     distro: Option<DistroBackend>,
+    /// The direct-download backend, when attached (the `direct` feature).
+    #[cfg(feature = "direct")]
+    direct: Option<DirectBackend>,
     /// Caller-supplied record-store persistence; takes precedence over
     /// `manifest_path` (which then names nothing).
     record_store: Option<Arc<dyn RecordStore>>,
@@ -1763,6 +1815,17 @@ impl AppsBuilder {
     #[must_use]
     pub fn distro(mut self, backend: DistroBackend) -> Self {
         self.distro = Some(backend);
+        self
+    }
+
+    /// Attach the direct-download backend — consume-and-return (the
+    /// `direct` feature). Without one attached, direct methods plan but
+    /// every operation on them answers
+    /// [`AppsError::BackendUnavailable`].
+    #[cfg(feature = "direct")]
+    #[must_use]
+    pub fn direct(mut self, backend: DirectBackend) -> Self {
+        self.direct = Some(backend);
         self
     }
 
@@ -1843,6 +1906,15 @@ impl AppsBuilder {
             )) => {}
             Err(error) => return Err(error.into()),
         }
+        #[cfg(feature = "direct")]
+        match DirectBackend::detect() {
+            Ok(backend) => builder = builder.direct(backend),
+            // No resolvable home dir — this host has no direct install
+            // dir to write into; the same skip mode as an absent manager
+            // binary.
+            Err(BackendError::Command(toride_runner::Error::Other(_))) => {}
+            Err(error) => return Err(error.into()),
+        }
         builder.runner = Some(runner);
         Ok(builder)
     }
@@ -1884,6 +1956,8 @@ impl AppsBuilder {
                 homebrew: self.homebrew,
                 flatpak: self.flatpak,
                 distro: self.distro,
+                #[cfg(feature = "direct")]
+                direct: self.direct,
             },
             records: snapshot.into_records(),
             store,
@@ -1996,7 +2070,7 @@ impl AppsBlocking {
             }
         }
         if !self.apps.records.contains_key(&id) {
-            let native = native_from_method(&app.install);
+            let native = self.apps.native_ids_for(app);
             let status = app_status_sync(None, native.as_ref(), &self.apps.backend_set())?;
             if let AppStatus::Foreign { .. } = status {
                 if version.is_none() {
@@ -2011,8 +2085,8 @@ impl AppsBlocking {
             self.apps.version_for_plan_sync(app, version)
         };
         let plan = plan_install(app, &self.apps.target, &InstallOptions { version })?;
-        let ids = native_ids_from_executed(&plan)?;
         let backend = self.apps.backend_for(plan.backend)?;
+        let ids = self.apps.native_ids_from_executed(&plan)?;
         let outcome = backend
             .install_sync(InstallRequest::new(&plan, &self.apps.target).elevated(elevated))?;
         let verification = self.apps.verify_presence_sync(&ids);
@@ -2119,7 +2193,7 @@ impl AppsBlocking {
             &self.apps.target,
             &UninstallOptions { zap: options.zap },
         )?;
-        let Some(native) = native_from_method(&app.install) else {
+        let Some(native) = self.apps.native_ids_for(app) else {
             return Err(AppsError::UnrecordableOperation {
                 app: id.as_str().to_owned(),
                 operation: format!("{:?} carries no native identity", app.install),
@@ -2314,81 +2388,116 @@ impl AppsBlocking {
 // Identity derivation
 // ---------------------------------------------------------------------------
 
-/// The backend-native identifiers a registry [`InstallMethod`] names —
-/// the caller-known spelling the status layer probes `Foreign` presence
-/// with (the flatpak arm carries no installed ref: only a record written
-/// at install time knows the ref that landed; `installation` is toride's
-/// planned scope, and the Foreign probe deliberately ignores it). `None`
-/// for [`InstallMethod::Direct`] (wave 2) and future methods.
-fn native_from_method(method: &InstallMethod) -> Option<NativeIds> {
-    match method {
-        InstallMethod::Homebrew { cask, token } => Some(NativeIds::Homebrew {
-            token: token.clone(),
-            cask: *cask,
-        }),
-        InstallMethod::Flatpak { app_id, .. } => Some(NativeIds::Flatpak {
-            app_id: app_id.clone(),
-            app_ref: None,
-            installation: FlatpakInstallation::User,
-        }),
-        InstallMethod::Distro {
-            family, package, ..
-        } => Some(NativeIds::Distro {
-            package: package.clone(),
-            family: *family,
-        }),
-        // Direct downloads route to toride-installer in wave 2 — the
-        // planner refuses them before this facade records anything — and
-        // `InstallMethod` is non_exhaustive upstream; both map to "no
-        // native identity to probe".
-        _ => None,
-    }
-}
-
-/// The record identity for a **successful** install, built from the
-/// EXECUTED plan — the binding A5 rule: the flatpak `app_ref` is the ref
-/// the backend ran (never re-derived from the registry app), the brew
-/// token + kind and the distro package + family come from the operation
-/// and the plan's backend routing.
-fn native_ids_from_executed(plan: &InstallPlan) -> AppsResult<NativeIds> {
-    match &plan.operation {
-        Operation::BrewInstall { cask, token } => Ok(NativeIds::Homebrew {
-            token: token.clone(),
-            cask: *cask,
-        }),
-        Operation::FlatpakInstall {
-            app_ref,
-            installation,
-            ..
-        } => {
-            // The ref's own id segment is the actually-installed app id —
-            // parsed out of the executed ref, not re-derived.
-            let Some(app_id) = app_id_from_ref(app_ref) else {
-                return Err(AppsError::UnrecordableOperation {
-                    app: plan.app.as_str().to_owned(),
-                    operation: format!("flatpak ref `{app_ref}` carries no app id segment"),
-                });
-            };
-            Ok(NativeIds::Flatpak {
-                app_id: app_id.to_owned(),
-                app_ref: Some(app_ref.clone()),
-                installation: *installation,
-            })
-        }
-        Operation::DistroInstall { package, .. } => match plan.backend {
-            BackendId::Distro(family) => Ok(NativeIds::Distro {
+impl Apps {
+    /// The backend-native identifiers a registry app's [`InstallMethod`]
+    /// names — the caller-known spelling the status layer probes
+    /// `Foreign` presence with (the flatpak arm carries no installed ref:
+    /// only a record written at install time knows the ref that landed;
+    /// `installation` is toride's planned scope, and the Foreign probe
+    /// deliberately ignores it). `None` for a `Direct` method with no
+    /// direct backend attached and for future methods.
+    #[cfg_attr(not(feature = "direct"), allow(clippy::unused_self))]
+    fn native_ids_for(&self, app: &App) -> Option<NativeIds> {
+        match &app.install {
+            InstallMethod::Homebrew { cask, token } => Some(NativeIds::Homebrew {
+                token: token.clone(),
+                cask: *cask,
+            }),
+            InstallMethod::Flatpak { app_id, .. } => Some(NativeIds::Flatpak {
+                app_id: app_id.clone(),
+                app_ref: None,
+                installation: FlatpakInstallation::User,
+            }),
+            InstallMethod::Distro {
+                family, package, ..
+            } => Some(NativeIds::Distro {
                 package: package.clone(),
-                family,
+                family: *family,
             }),
-            backend => Err(AppsError::UnrecordableOperation {
+            #[cfg(feature = "direct")]
+            InstallMethod::Direct { url, checksum, .. } => {
+                let backend = self.backends.direct.as_ref()?;
+                let bin_name = crate::plan::direct_bin_name(app, url)?;
+                Some(NativeIds::Direct {
+                    url: url.clone(),
+                    checksum: crate::plan::direct_digest(checksum.as_ref()).ok().flatten(),
+                    bin_path: backend.install_dir().join(&bin_name).to_string(),
+                })
+            }
+            // `InstallMethod` is non_exhaustive upstream: unmapped future
+            // variants carry no native identity to probe.
+            _ => None,
+        }
+    }
+
+    /// The record identity for a **successful** install, built from the
+    /// EXECUTED plan — the binding A5 rule: the flatpak `app_ref` is the
+    /// ref the backend ran (never re-derived from the registry app), the
+    /// brew token + kind and the distro package + family come from the
+    /// operation and the plan's backend routing, and a direct install
+    /// records its provenance (URL, digest, and the install-dir path the
+    /// attached direct backend resolves `bin_name` against).
+    #[cfg_attr(not(feature = "direct"), allow(clippy::unused_self))]
+    fn native_ids_from_executed(&self, plan: &InstallPlan) -> AppsResult<NativeIds> {
+        match &plan.operation {
+            Operation::BrewInstall { cask, token } => Ok(NativeIds::Homebrew {
+                token: token.clone(),
+                cask: *cask,
+            }),
+            Operation::FlatpakInstall {
+                app_ref,
+                installation,
+                ..
+            } => {
+                // The ref's own id segment is the actually-installed app
+                // id — parsed out of the executed ref, not re-derived.
+                let Some(app_id) = app_id_from_ref(app_ref) else {
+                    return Err(AppsError::UnrecordableOperation {
+                        app: plan.app.as_str().to_owned(),
+                        operation: format!("flatpak ref `{app_ref}` carries no app id segment"),
+                    });
+                };
+                Ok(NativeIds::Flatpak {
+                    app_id: app_id.to_owned(),
+                    app_ref: Some(app_ref.clone()),
+                    installation: *installation,
+                })
+            }
+            Operation::DistroInstall { package, .. } => match plan.backend {
+                BackendId::Distro(family) => Ok(NativeIds::Distro {
+                    package: package.clone(),
+                    family,
+                }),
+                backend => Err(AppsError::UnrecordableOperation {
+                    app: plan.app.as_str().to_owned(),
+                    operation: format!("distro install planned for backend {backend}"),
+                }),
+            },
+            #[cfg(feature = "direct")]
+            Operation::DirectInstall {
+                url,
+                checksum,
+                bin_name,
+            } => {
+                let Some(dir) = self.direct_install_dir() else {
+                    return Err(AppsError::UnrecordableOperation {
+                        app: plan.app.as_str().to_owned(),
+                        operation: format!(
+                            "no direct backend is attached to resolve where `{bin_name}` lands"
+                        ),
+                    });
+                };
+                Ok(NativeIds::Direct {
+                    url: url.clone(),
+                    checksum: checksum.clone(),
+                    bin_path: dir.join(bin_name).to_string(),
+                })
+            }
+            other => Err(AppsError::UnrecordableOperation {
                 app: plan.app.as_str().to_owned(),
-                operation: format!("distro install planned for backend {backend}"),
+                operation: format!("{other:?} is not an install operation"),
             }),
-        },
-        other => Err(AppsError::UnrecordableOperation {
-            app: plan.app.as_str().to_owned(),
-            operation: format!("{other:?} is not an install operation"),
-        }),
+        }
     }
 }
 
@@ -2430,6 +2539,10 @@ fn uninstall_plan_from_record(
                 package: package.clone(),
             }
         }
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { bin_path, .. } => Operation::DirectUninstall {
+            bin_path: bin_path.clone(),
+        },
     };
     Ok(UninstallPlan {
         app: id.clone(),
@@ -2473,6 +2586,15 @@ fn update_plan_from_record(id: &TorideId, record: &InstallRecord) -> AppsResult<
                 package: package.clone(),
             }
         }
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { bin_path, .. } => {
+            return Err(AppsError::UnrecordableOperation {
+                app: id.as_str().to_owned(),
+                operation: format!(
+                    "direct binary `{bin_path}` has no update verb — re-run ensure_installed to re-download"
+                ),
+            });
+        }
     };
     Ok(UpdatePlan {
         app: id.clone(),
@@ -2491,6 +2613,8 @@ fn native_id(ids: &NativeIds) -> &str {
         NativeIds::Homebrew { token, .. } => token,
         NativeIds::Flatpak { app_id, .. } => app_id,
         NativeIds::Distro { package, .. } => package,
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { bin_path, .. } => bin_path,
     }
 }
 
@@ -2531,6 +2655,8 @@ fn requested_version_satisfied(
             app_ref.as_deref().and_then(ref_branch) == Some(requested.as_str())
         }
         NativeIds::Distro { .. } => false,
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { .. } => false,
     }
 }
 
@@ -2553,6 +2679,8 @@ fn native_subject(ids: &NativeIds) -> String {
         } => format!("formula `{token}`"),
         NativeIds::Flatpak { app_id, .. } => format!("flatpak `{app_id}`"),
         NativeIds::Distro { package, .. } => format!("package `{package}`"),
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { bin_path, .. } => format!("direct binary `{bin_path}`"),
     }
 }
 
@@ -2577,6 +2705,17 @@ mod tests {
     use super::*;
     use crate::plan::FlatpakInstallation;
     use toride_registry::{DistroFamily, SourceKind};
+
+    /// An empty facade over a unique temp manifest, no backends attached.
+    fn empty_apps() -> Apps {
+        let path = std::env::temp_dir().join(format!(
+            "toride-apps-unit-{}-{}.json",
+            std::process::id(),
+            line!()
+        ));
+        let path = Utf8PathBuf::from_path_buf(path).expect("system temp dir is valid UTF-8");
+        Apps::builder().manifest_path(&path).build().unwrap()
+    }
 
     // --- options -----------------------------------------------------------------
 
@@ -2676,13 +2815,34 @@ mod tests {
 
     // --- native identity derivation ----------------------------------------------
 
+    fn app_with_method(method: InstallMethod) -> App {
+        App {
+            id: TorideId::slugify("probe-app"),
+            name: "Probe App".to_owned(),
+            aliases: Vec::new(),
+            summary: None,
+            description: None,
+            homepage: None,
+            license: None,
+            developer: None,
+            binaries: Vec::new(),
+            latest: None,
+            platforms: Vec::new(),
+            artifacts: Vec::new(),
+            install: method,
+            sources: Vec::new(),
+            availability: toride_registry::Availability::Available,
+        }
+    }
+
     #[test]
-    fn native_from_method_maps_every_wave_one_method() {
+    fn native_ids_for_maps_every_wave_one_method() {
+        let apps = empty_apps();
         assert_eq!(
-            native_from_method(&InstallMethod::Homebrew {
+            apps.native_ids_for(&app_with_method(InstallMethod::Homebrew {
                 cask: true,
                 token: "firefox".to_owned(),
-            }),
+            })),
             Some(NativeIds::Homebrew {
                 token: "firefox".to_owned(),
                 cask: true,
@@ -2690,10 +2850,10 @@ mod tests {
         );
         // Flatpak: the id without an installed ref, toride's planned scope.
         assert_eq!(
-            native_from_method(&InstallMethod::Flatpak {
+            apps.native_ids_for(&app_with_method(InstallMethod::Flatpak {
                 app_id: "com.brave.Browser".to_owned(),
                 remote: "flathub".to_owned(),
-            }),
+            })),
             Some(NativeIds::Flatpak {
                 app_id: "com.brave.Browser".to_owned(),
                 app_ref: None,
@@ -2701,11 +2861,11 @@ mod tests {
             })
         );
         assert_eq!(
-            native_from_method(&InstallMethod::Distro {
+            apps.native_ids_for(&app_with_method(InstallMethod::Distro {
                 family: DistroFamily::Debian,
                 repo: None,
                 package: "firefox".to_owned(),
-            }),
+            })),
             Some(NativeIds::Distro {
                 package: "firefox".to_owned(),
                 family: DistroFamily::Debian,
@@ -2714,19 +2874,57 @@ mod tests {
     }
 
     #[test]
-    fn native_from_method_is_none_for_direct() {
+    fn native_ids_for_direct_without_a_backend_is_none() {
+        let apps = empty_apps();
         assert_eq!(
-            native_from_method(&InstallMethod::Direct {
+            apps.native_ids_for(&app_with_method(InstallMethod::Direct {
                 url: "https://example.com".to_owned(),
                 checksum: None,
                 arch: None,
-            }),
+            })),
             None
         );
     }
 
+    #[cfg(feature = "direct")]
+    #[test]
+    fn native_ids_for_direct_with_a_backend_resolves_the_install_dir_path() {
+        let dir =
+            std::env::temp_dir().join(format!("toride-apps-native-direct-{}", std::process::id()));
+        let dir = Utf8PathBuf::from_path_buf(dir).expect("system temp dir is valid UTF-8");
+        let apps = Apps::builder()
+            .manifest_path(temp_manifest_path("native-direct"))
+            .direct(DirectBackend::at(&dir))
+            .build()
+            .unwrap();
+        let mut app = app_with_method(InstallMethod::Direct {
+            url: "https://example.com/dist/rg-14.1.0".to_owned(),
+            checksum: None,
+            arch: None,
+        });
+        app.binaries = vec!["rg".to_owned()];
+        assert_eq!(
+            apps.native_ids_for(&app),
+            Some(NativeIds::Direct {
+                url: "https://example.com/dist/rg-14.1.0".to_owned(),
+                checksum: None,
+                bin_path: dir.join("rg").to_string(),
+            })
+        );
+    }
+
+    #[cfg(feature = "direct")]
+    fn temp_manifest_path(label: &str) -> Utf8PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "toride-apps-unit-manifest-{}-{label}.json",
+            std::process::id()
+        ));
+        Utf8PathBuf::from_path_buf(path).expect("system temp dir is valid UTF-8")
+    }
+
     #[test]
     fn native_ids_from_executed_read_the_executed_operation() {
+        let apps = empty_apps();
         let brew = InstallPlan {
             app: TorideId::slugify("brave"),
             backend: BackendId::Homebrew,
@@ -2738,7 +2936,7 @@ mod tests {
             requires_elevation: false,
         };
         assert_eq!(
-            native_ids_from_executed(&brew).unwrap(),
+            apps.native_ids_from_executed(&brew).unwrap(),
             NativeIds::Homebrew {
                 token: "brave-browser".to_owned(),
                 cask: true,
@@ -2748,6 +2946,7 @@ mod tests {
 
     #[test]
     fn native_ids_from_executed_record_the_flatpak_ref_that_ran() {
+        let apps = empty_apps();
         let plan = InstallPlan {
             app: TorideId::slugify("brave"),
             backend: BackendId::Flatpak,
@@ -2761,7 +2960,7 @@ mod tests {
         };
         // The ref, verbatim — never re-derived — and its own id segment.
         assert_eq!(
-            native_ids_from_executed(&plan).unwrap(),
+            apps.native_ids_from_executed(&plan).unwrap(),
             NativeIds::Flatpak {
                 app_id: "com.brave.Browser".to_owned(),
                 app_ref: Some("app/com.brave.Browser/x86_64/stable".to_owned()),
@@ -2772,6 +2971,7 @@ mod tests {
 
     #[test]
     fn native_ids_from_executed_reject_a_ref_without_an_app_id_segment() {
+        let apps = empty_apps();
         let plan = InstallPlan {
             app: TorideId::slugify("brave"),
             backend: BackendId::Flatpak,
@@ -2785,7 +2985,7 @@ mod tests {
         };
         assert!(
             matches!(
-                native_ids_from_executed(&plan),
+                apps.native_ids_from_executed(&plan),
                 Err(AppsError::UnrecordableOperation { .. })
             ),
             "a bare-id ref is not a recordable install identity"
@@ -2794,6 +2994,7 @@ mod tests {
 
     #[test]
     fn native_ids_from_executed_map_the_distro_family_from_the_plan_backend() {
+        let apps = empty_apps();
         let plan = InstallPlan {
             app: TorideId::slugify("brave"),
             backend: BackendId::Distro(DistroFamily::Ubuntu),
@@ -2805,7 +3006,7 @@ mod tests {
             requires_elevation: true,
         };
         assert_eq!(
-            native_ids_from_executed(&plan).unwrap(),
+            apps.native_ids_from_executed(&plan).unwrap(),
             NativeIds::Distro {
                 package: "brave-browser".to_owned(),
                 family: DistroFamily::Ubuntu,
@@ -2815,6 +3016,7 @@ mod tests {
 
     #[test]
     fn native_ids_from_executed_reject_non_install_operations() {
+        let apps = empty_apps();
         let plan = InstallPlan {
             app: TorideId::slugify("brave"),
             backend: BackendId::Homebrew,
@@ -2826,7 +3028,7 @@ mod tests {
             dry_run: false,
             requires_elevation: false,
         };
-        assert!(native_ids_from_executed(&plan).is_err());
+        assert!(apps.native_ids_from_executed(&plan).is_err());
     }
 
     // --- record-sourced uninstall plans ------------------------------------------
@@ -3409,5 +3611,105 @@ mod tests {
         );
         assert_eq!(listed[0].1.plan, None);
         assert_eq!(apps.quarantined(), None);
+    }
+
+    #[cfg(feature = "direct")]
+    mod direct {
+        use super::*;
+
+        fn direct_record(bin_path: String) -> InstallRecord {
+            let ids = NativeIds::Direct {
+                url: "https://example.com/rg".to_owned(),
+                checksum: None,
+                bin_path,
+            };
+            InstallRecord::new(
+                InstallPlan {
+                    app: TorideId::slugify("ripgrep"),
+                    backend: BackendId::Direct,
+                    operation: Operation::DirectInstall {
+                        url: "https://example.com/rg".to_owned(),
+                        checksum: None,
+                        bin_name: "rg".to_owned(),
+                    },
+                    dry_run: false,
+                    requires_elevation: false,
+                },
+                ids,
+                None,
+            )
+            .with_installed_at(1_700_000_000)
+        }
+
+        #[test]
+        fn uninstall_plan_from_record_replays_the_recorded_binary_path() {
+            let record = direct_record("/home/u/.local/bin/rg".to_owned());
+            let plan =
+                uninstall_plan_from_record(&TorideId::slugify("ripgrep"), &record, false).unwrap();
+            assert_eq!(
+                plan.operation,
+                Operation::DirectUninstall {
+                    bin_path: "/home/u/.local/bin/rg".to_owned()
+                }
+            );
+            assert_eq!(plan.backend, BackendId::Direct);
+            assert!(
+                !plan.requires_elevation,
+                "user-scope installs never need root"
+            );
+        }
+
+        #[test]
+        fn update_plan_from_record_refuses_a_direct_record() {
+            let record = direct_record("/home/u/.local/bin/rg".to_owned());
+            let error =
+                update_plan_from_record(&TorideId::slugify("ripgrep"), &record).unwrap_err();
+            assert!(
+                matches!(error, AppsError::UnrecordableOperation { .. }),
+                "{error:?}"
+            );
+            let text = error.to_string();
+            assert!(text.contains("ripgrep"), "{text}");
+            assert!(text.contains("ensure_installed"), "{text}");
+        }
+
+        #[test]
+        fn direct_records_never_satisfy_a_named_install_version() {
+            let ids = NativeIds::Direct {
+                url: "https://example.com/rg".to_owned(),
+                checksum: None,
+                bin_path: "/home/u/.local/bin/rg".to_owned(),
+            };
+            assert!(!requested_version_satisfied(
+                &ids,
+                &AppStatus::Installed {
+                    backend: BackendId::Direct,
+                    version: None,
+                },
+                Some(&Version::new("14.1.0"))
+            ));
+            assert!(requested_version_satisfied(
+                &ids,
+                &AppStatus::Installed {
+                    backend: BackendId::Direct,
+                    version: None
+                },
+                None
+            ));
+        }
+
+        #[test]
+        fn native_subject_and_native_id_name_the_direct_binary_path() {
+            let ids = NativeIds::Direct {
+                url: "https://example.com/rg".to_owned(),
+                checksum: None,
+                bin_path: "/home/u/.local/bin/rg".to_owned(),
+            };
+            assert_eq!(
+                native_subject(&ids),
+                "direct binary `/home/u/.local/bin/rg`"
+            );
+            assert_eq!(native_id(&ids), "/home/u/.local/bin/rg");
+        }
     }
 }

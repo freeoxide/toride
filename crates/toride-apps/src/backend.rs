@@ -1,7 +1,8 @@
 //! # Backend boundary
 //!
 //! The [`Backend`] trait is the seam between a planned operation and one
-//! install technology (homebrew, flatpak, a distro manager): every
+//! install technology (homebrew, flatpak, a distro manager, a direct
+//! download under the `direct` feature): every
 //! technology-specific concern — binary detection, JSON list parsing, argv
 //! quirks — lives behind it, in the implementing module. Callers see only
 //! plan types ([`InstallPlan`], [`UninstallPlan`]), typed requests, and
@@ -48,6 +49,10 @@ pub enum BackendId {
     /// A distro's native package manager, selected by family (`apt`, `dnf`,
     /// `pacman`, `apk`).
     Distro(DistroFamily),
+    /// Direct downloads over toride-installer's verified pipeline — the one
+    /// backend every platform shares (gated with the `direct` feature).
+    #[cfg(feature = "direct")]
+    Direct,
 }
 
 impl std::fmt::Display for BackendId {
@@ -61,6 +66,8 @@ impl std::fmt::Display for BackendId {
                 let slug = format!("distro-{family:?}").to_ascii_lowercase();
                 f.write_str(&slug)
             }
+            #[cfg(feature = "direct")]
+            Self::Direct => f.write_str("direct"),
         }
     }
 }
@@ -1294,5 +1301,13 @@ mod tests {
             BackendId::Distro(DistroFamily::Debian).to_string(),
             "distro-debian"
         );
+    }
+
+    #[cfg(feature = "direct")]
+    #[test]
+    fn backend_id_direct_displays_the_direct_slug() {
+        assert_eq!(BackendId::Direct.to_string(), "direct");
+        let json = serde_json::to_string(&BackendId::Direct).unwrap();
+        assert_eq!(json, r#""Direct""#);
     }
 }

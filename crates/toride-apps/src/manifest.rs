@@ -177,6 +177,20 @@ pub enum NativeIds {
         /// gates probing to a matching backend.
         family: DistroFamily,
     },
+    /// A direct-download install's provenance: the URL it came from, the
+    /// sha256 it verified against, and the path the binary landed at —
+    /// the last one is both the presence probe and the uninstall target
+    /// (gated with the `direct` feature).
+    #[cfg(feature = "direct")]
+    Direct {
+        /// The artifact URL the install downloaded.
+        url: String,
+        /// The sha256 hex digest the install verified against; `None` when
+        /// the source published none and the verifier ran lenient.
+        checksum: Option<String>,
+        /// The absolute install-dir path of the installed binary.
+        bin_path: String,
+    },
 }
 
 impl NativeIds {
@@ -188,6 +202,8 @@ impl NativeIds {
             Self::Homebrew { .. } => BackendId::Homebrew,
             Self::Flatpak { .. } => BackendId::Flatpak,
             Self::Distro { family, .. } => BackendId::Distro(*family),
+            #[cfg(feature = "direct")]
+            Self::Direct { .. } => BackendId::Direct,
         }
     }
 }
@@ -1244,6 +1260,42 @@ mod tests {
             .backend(),
             BackendId::Distro(DistroFamily::Fedora)
         );
+    }
+
+    #[cfg(feature = "direct")]
+    #[test]
+    fn direct_records_round_trip_their_provenance_through_save_and_load() {
+        let path = temp_manifest_path("direct-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        let plan = plan_for(
+            "ripgrep",
+            Operation::DirectInstall {
+                url: "https://example.com/rg-14.1.0".to_owned(),
+                checksum: Some(
+                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_owned(),
+                ),
+                bin_name: "rg".to_owned(),
+            },
+        );
+        let record = InstallRecord::new(
+            plan,
+            NativeIds::Direct {
+                url: "https://example.com/rg-14.1.0".to_owned(),
+                checksum: Some(
+                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_owned(),
+                ),
+                bin_path: "/home/u/.local/bin/rg".to_owned(),
+            },
+            None,
+        )
+        .with_installed_at(1_700_000_000);
+        manifest.record(&app_id("ripgrep"), record.clone());
+        manifest.save().unwrap();
+
+        let reloaded = InstallManifest::load(&path).unwrap();
+        assert_eq!(reloaded.get(&app_id("ripgrep")), Some(&record));
+        assert_eq!(record.backend, BackendId::Direct);
+        assert_eq!(record.ids.backend(), BackendId::Direct);
     }
 
     // --- default location ----------------------------------------------------------

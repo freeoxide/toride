@@ -38,7 +38,10 @@
 //!   dispatch and manifest saves; without it they run on the calling
 //!   thread. The registry rides its parse half by default — the
 //!   non-default `registry-http` feature opts its fetch engine (and its
-//!   tokio) back in for callers registering concrete source adapters.
+//!   tokio) back in for callers registering concrete source adapters,
+//!   and the non-default `direct` feature wires direct-download installs
+//!   over toride-installer's verified pipeline (bringing its tokio and
+//!   reqwest with it).
 //!
 //! ## Pipeline
 //!
@@ -121,9 +124,14 @@
 //!   [`Operation::DistroUpdate`] complete the lifecycle: update plans are
 //!   derived from the manifest record's own identifiers
 //!   ([`Apps::update`]), never re-resolved through the registry
-//! - [`InstallMethod::Direct`] is not yet executed here (wave 2: route it to
-//!   `toride-installer`); the planner reports
-//!   [`Error::UnsupportedMethod`] for it today.
+//! - [`InstallMethod::Direct`] → `DirectInstall` / `DirectUninstall`
+//!   operations under the non-default `direct`
+//!   feature: toride-installer's sha256-enforcing pipeline (`Strict` by
+//!   default, `Lenient` only behind an explicit backend opt) installs
+//!   into the direct backend's install dir, the manifest records the
+//!   download provenance (URL, digest, binary path), and the uninstall
+//!   deletes only that canonicalized install-dir binary. Without the
+//!   feature the planner reports [`Error::UnsupportedMethod`].
 
 #![deny(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]

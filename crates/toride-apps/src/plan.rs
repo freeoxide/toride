@@ -27,8 +27,11 @@
 //!    onto a target, not whether removal from it is possible.
 //! 3. **Method routing** — casks are macOS-only, formulae also plan on Linux
 //!    (Linuxbrew); flatpak is Linux-only; distro methods plan only when the
-//!    host target's family equals the method's family. Unroutable input
-//!    (a `Direct` method, an unknown distro family, a host arch flatpak
+//!    host target's family equals the method's family; direct downloads
+//!    plan under the `direct` feature when the artifact's declared arch
+//!    matches the host and its checksum is a well-formed sha256 (without
+//!    the feature, or off those gates, `Direct` is unroutable here). All
+//!    unroutable input (an unknown distro family, a host arch flatpak
 //!    cannot spell an install ref for) fails **here, at plan time** — never
 //!    deferred to a confusing execute-time error.
 //! 4. **Version selection** — [`InstallOptions::version`] spells the exact
@@ -39,14 +42,17 @@
 //!    names a versioned track, a flatpak version carrying the ref
 //!    separator — fail **here, at plan time**
 //!    ([`Error::InvalidVersion`]), inside the routed method's arm so that
-//!    routing refusals always outrank version refusals; distro methods
-//!    take no version operand and refuse one the same way
+//!    routing refusals always outrank version refusals; distro and direct
+//!    methods take no version operand (the direct URL already addresses
+//!    the artifact) and refuse one the same way
 //!    ([`Error::VersionNotSelectable`]).
 
 use serde::{Deserialize, Serialize};
 use toride_registry::{
     App, Arch, Availability, DistroFamily, InstallMethod, Os, Platform, TorideId,
 };
+#[cfg(feature = "direct")]
+use toride_registry::{Checksum, ChecksumAlgo};
 
 use crate::backend::{BackendId, Version};
 use crate::error::{Error, Result};
@@ -321,6 +327,30 @@ pub enum Operation {
         /// Package name the manager knows.
         package: String,
     },
+    /// Direct download executed through toride-installer's verified
+    /// pipeline — no manager argv exists, so the canonical render names
+    /// the pipeline's own operands: fetch `url`, verify against
+    /// `checksum` (when the source published one), install as `bin_name`
+    /// (gated with the `direct` feature).
+    #[cfg(feature = "direct")]
+    DirectInstall {
+        /// The artifact URL to download.
+        url: String,
+        /// The sha256 hex digest to verify against; `None` when the source
+        /// published none (a strict verifier refuses the install).
+        checksum: Option<String>,
+        /// The on-disk name of the installed binary.
+        bin_name: String,
+    },
+    /// Delete the recorded install-dir binary, and nothing else (gated
+    /// with the `direct` feature). The path is the manifest record's own
+    /// provenance — a direct uninstall cannot be planned from registry
+    /// data, only replayed.
+    #[cfg(feature = "direct")]
+    DirectUninstall {
+        /// The canonical install-dir path of the binary to remove.
+        bin_path: String,
+    },
 }
 
 impl Operation {
@@ -386,6 +416,21 @@ impl Operation {
                 parts.push(package.as_str());
                 argv(&parts)
             }
+            #[cfg(feature = "direct")]
+            Self::DirectInstall {
+                url,
+                checksum,
+                bin_name,
+            } => {
+                let mut parts = vec!["direct".to_owned(), "install".to_owned(), url.clone()];
+                if let Some(checksum) = checksum {
+                    parts.push(checksum.clone());
+                }
+                parts.push(bin_name.clone());
+                parts
+            }
+            #[cfg(feature = "direct")]
+            Self::DirectUninstall { bin_path } => argv(&["direct", "uninstall", bin_path]),
         }
     }
 
@@ -434,6 +479,12 @@ impl Operation {
             Self::DistroUpdate { manager, package } => {
                 format!("upgrade {} package `{package}`", manager.program())
             }
+            #[cfg(feature = "direct")]
+            Self::DirectInstall { url, bin_name, .. } => {
+                format!("install direct download `{bin_name}` from `{url}`")
+            }
+            #[cfg(feature = "direct")]
+            Self::DirectUninstall { bin_path } => format!("uninstall direct binary `{bin_path}`"),
         }
     }
 }
@@ -791,11 +842,18 @@ fn resolve_operation(app: &App, target: Target, action: Action<'_>) -> Result<Re
             repo: _,
             package,
         } => resolve_distro(app, target, action, *family, package),
+        #[cfg(not(feature = "direct"))]
         InstallMethod::Direct { .. } => Err(unsupported(
             app,
             target,
-            "direct downloads route to toride-installer in wave 2",
+            "direct downloads need the `direct` feature (toride-installer's pipeline)",
         )),
+        #[cfg(feature = "direct")]
+        InstallMethod::Direct {
+            url,
+            checksum,
+            arch,
+        } => resolve_direct(app, target, action, url, checksum.as_ref(), *arch),
         // `InstallMethod` is non_exhaustive upstream: unrouted future
         // variants fail loudly instead of guessing.
         _ => Err(unsupported(
@@ -1013,6 +1071,116 @@ fn resolve_distro(
         // executor must satisfy.
         requires_elevation: true,
     })
+}
+
+/// Direct arm (the `direct` feature): the URL is the fully-resolved
+/// artifact address, so the gates are about what the address claims — its
+/// arch, its checksum — and about deriving a name to install as. The
+/// install lands in the direct backend's install dir (never root-owned),
+/// so no elevation is required.
+#[cfg(feature = "direct")]
+fn resolve_direct(
+    app: &App,
+    target: Target,
+    action: Action<'_>,
+    url: &str,
+    checksum: Option<&Checksum>,
+    arch: Option<Arch>,
+) -> Result<Resolved> {
+    if let Some(artifact_arch) = arch
+        && artifact_arch != target.arch
+    {
+        return Err(unsupported(
+            app,
+            target,
+            &format!(
+                "the direct artifact is built for arch {artifact_arch:?}, not the host {:?}",
+                target.arch
+            ),
+        ));
+    }
+    let checksum = direct_digest(checksum).map_err(|reason| unsupported(app, target, reason))?;
+    let Some(bin_name) = direct_bin_name(app, url) else {
+        return Err(unsupported(
+            app,
+            target,
+            "neither the app's binaries nor the URL name a file to install as",
+        ));
+    };
+    match action {
+        Action::Install {
+            version: Some(version),
+        } => Err(Error::VersionNotSelectable {
+            app: app.id.as_str().to_owned(),
+            method: format!("{:?}", app.install),
+            version: version.as_str().to_owned(),
+        }),
+        Action::Install { version: None } => Ok(Resolved {
+            backend: BackendId::Direct,
+            operation: Operation::DirectInstall {
+                url: url.to_owned(),
+                checksum,
+                bin_name,
+            },
+            requires_elevation: false,
+        }),
+        Action::Uninstall { .. } => Err(unsupported(
+            app,
+            target,
+            "a direct uninstall replays the manifest record's installed path — it cannot be planned from registry data",
+        )),
+    }
+}
+
+/// The sha256 digest a direct install verifies against, or `None` when the
+/// source published no checksum. `Err` carries the plan-time refusal for a
+/// checksum the installer's sha256 verification cannot honor.
+#[cfg(feature = "direct")]
+pub(crate) fn direct_digest(
+    checksum: Option<&Checksum>,
+) -> std::result::Result<Option<String>, &'static str> {
+    match checksum {
+        None => Ok(None),
+        Some(Checksum {
+            algo: ChecksumAlgo::Sha256,
+            digest,
+        }) if is_sha256_hex(digest) => Ok(Some(digest.to_ascii_lowercase())),
+        Some(Checksum {
+            algo: ChecksumAlgo::Sha256,
+            ..
+        }) => Err("the sha256 digest is not 64 hex characters"),
+        Some(_) => Err("the checksum is not sha256 — toride-installer verifies sha256 only"),
+    }
+}
+
+/// The on-disk name a direct install installs as: the first executable the
+/// app declares, else the URL's own asset name. `None` when neither names
+/// one.
+#[cfg(feature = "direct")]
+pub(crate) fn direct_bin_name(app: &App, url: &str) -> Option<String> {
+    app.binaries.iter().find(|bin| !bin.is_empty()).map_or_else(
+        || url_asset_name(url).map(str::to_owned),
+        |bin| Some(bin.to_owned()),
+    )
+}
+
+/// The last path segment of `url` (query and fragment stripped) — the
+/// artifact's own name; `None` for URLs that name no file (no path, or a
+/// trailing slash).
+#[cfg(feature = "direct")]
+pub(crate) fn url_asset_name(url: &str) -> Option<&str> {
+    let path = url.split(['?', '#']).next().unwrap_or(url);
+    let after_scheme = path.split_once("://").map_or(path, |(_, rest)| rest);
+    let name = after_scheme.rsplit_once('/')?.1;
+    (!name.is_empty()).then_some(name)
+}
+
+/// Whether `digest` is exactly 64 hex characters — the shape of a sha256
+/// digest (the installer compares case-insensitively; the shape itself is
+/// refused here when wrong).
+#[cfg(feature = "direct")]
+fn is_sha256_hex(digest: &str) -> bool {
+    digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 /// The flatpak arch component of an install ref for a host arch
@@ -1555,6 +1723,7 @@ mod tests {
 
     // --- direct + availability + platform claims -------------------------------
 
+    #[cfg(not(feature = "direct"))]
     #[test]
     fn rejects_direct_method_as_unsupported() {
         let method = InstallMethod::Direct {
@@ -1568,7 +1737,7 @@ mod tests {
             matches!(error, Error::UnsupportedMethod { .. }),
             "{error:?}"
         );
-        assert!(error.to_string().contains("toride-installer"), "{error}");
+        assert!(error.to_string().contains("`direct` feature"), "{error}");
     }
 
     #[test]
@@ -1976,5 +2145,255 @@ mod tests {
         let dry = plan.clone().dry_run(true);
         assert!(dry.dry_run);
         assert!(dry.summary().contains("brew upgrade --cask brave-browser"));
+    }
+
+    #[cfg(feature = "direct")]
+    mod direct {
+        use super::*;
+
+        const HELLO_SHA256: &str =
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
+
+        fn direct_app(
+            url: &str,
+            checksum: Option<Checksum>,
+            arch: Option<Arch>,
+            binaries: &[&str],
+        ) -> App {
+            let mut app = app_with(InstallMethod::Direct {
+                url: url.to_owned(),
+                checksum,
+                arch,
+            });
+            app.binaries = binaries.iter().map(|bin| (*bin).to_owned()).collect();
+            app
+        }
+
+        fn checksum(digest: impl Into<String>) -> Checksum {
+            Checksum {
+                algo: ChecksumAlgo::Sha256,
+                digest: digest.into(),
+            }
+        }
+
+        #[test]
+        fn plans_direct_install_with_the_declared_binary_name_and_digest() {
+            let app = direct_app(
+                "https://example.com/dist/rg-14.1.0-x86_64",
+                Some(checksum(HELLO_SHA256)),
+                None,
+                &["ripgrep"],
+            );
+            let plan = plan_install(
+                &app,
+                &linux(DistroFamily::Debian),
+                &InstallOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(plan.backend, BackendId::Direct);
+            assert_eq!(
+                plan.operation,
+                Operation::DirectInstall {
+                    url: "https://example.com/dist/rg-14.1.0-x86_64".to_owned(),
+                    checksum: Some(HELLO_SHA256.to_owned()),
+                    bin_name: "ripgrep".to_owned(),
+                }
+            );
+            assert!(!plan.requires_elevation);
+            assert!(!plan.dry_run);
+        }
+
+        #[test]
+        fn direct_argv_renders_the_pipeline_operands_with_and_without_a_checksum() {
+            let with = Operation::DirectInstall {
+                url: "https://example.com/rg".to_owned(),
+                checksum: Some(HELLO_SHA256.to_owned()),
+                bin_name: "rg".to_owned(),
+            };
+            assert_eq!(
+                with.argv(),
+                [
+                    "direct",
+                    "install",
+                    "https://example.com/rg",
+                    HELLO_SHA256,
+                    "rg"
+                ]
+            );
+            let without = Operation::DirectInstall {
+                url: "https://example.com/rg".to_owned(),
+                checksum: None,
+                bin_name: "rg".to_owned(),
+            };
+            assert_eq!(
+                without.argv(),
+                ["direct", "install", "https://example.com/rg", "rg"]
+            );
+            assert_eq!(
+                without.description(),
+                "install direct download `rg` from `https://example.com/rg`"
+            );
+        }
+
+        #[test]
+        fn direct_uninstall_renders_the_recorded_path() {
+            let operation = Operation::DirectUninstall {
+                bin_path: "/home/u/.local/bin/rg".to_owned(),
+            };
+            assert_eq!(
+                operation.argv(),
+                ["direct", "uninstall", "/home/u/.local/bin/rg"]
+            );
+            assert_eq!(
+                operation.description(),
+                "uninstall direct binary `/home/u/.local/bin/rg`"
+            );
+        }
+
+        #[test]
+        fn bin_name_falls_back_to_the_url_asset_name() {
+            let app = direct_app("https://example.com/dist/rg-14.1.0.tar.gz", None, None, &[]);
+            let plan = plan_install(
+                &app,
+                &linux(DistroFamily::Debian),
+                &InstallOptions::default(),
+            )
+            .unwrap();
+            let Operation::DirectInstall { bin_name, .. } = &plan.operation else {
+                panic!("direct plan carries a direct operation");
+            };
+            assert_eq!(bin_name, "rg-14.1.0.tar.gz");
+        }
+
+        #[test]
+        fn url_asset_name_strips_query_and_fragment_and_refuses_bare_directories() {
+            assert_eq!(
+                url_asset_name("https://example.com/d/rg-1.0?sig=1#x"),
+                Some("rg-1.0")
+            );
+            assert_eq!(url_asset_name("https://example.com/d/"), None);
+            assert_eq!(url_asset_name("https://example.com"), None);
+        }
+
+        #[test]
+        fn refuses_a_direct_artifact_built_for_another_arch() {
+            let app = direct_app(
+                "https://example.com/rg-arm64",
+                None,
+                Some(Arch::Aarch64),
+                &["rg"],
+            );
+            let error = plan_install(
+                &app,
+                &linux(DistroFamily::Debian),
+                &InstallOptions::default(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::UnsupportedMethod { .. }),
+                "{error:?}"
+            );
+            assert!(error.to_string().contains("Aarch64"), "{error}");
+        }
+
+        #[test]
+        fn refuses_a_digest_that_is_not_64_hex_characters() {
+            let app = direct_app(
+                "https://example.com/rg",
+                Some(checksum("abc123")),
+                None,
+                &["rg"],
+            );
+            let error = plan_install(
+                &app,
+                &linux(DistroFamily::Debian),
+                &InstallOptions::default(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::UnsupportedMethod { .. }),
+                "{error:?}"
+            );
+            assert!(error.to_string().contains("64 hex"), "{error}");
+        }
+
+        #[test]
+        fn direct_digest_passes_wellformed_and_absent_checksums_only() {
+            assert_eq!(direct_digest(None).unwrap(), None);
+            let upper = Some(checksum(HELLO_SHA256.to_uppercase()));
+            assert_eq!(
+                direct_digest(upper.as_ref()).unwrap(),
+                Some(HELLO_SHA256.to_owned()),
+                "the digest is normalized to the installer's lowercase compare"
+            );
+            let malformed = Some(checksum("z".repeat(64)));
+            assert!(direct_digest(malformed.as_ref()).is_err());
+        }
+
+        #[test]
+        fn refuses_a_version_for_a_direct_method_at_plan_time() {
+            let app = direct_app("https://example.com/rg", None, None, &["rg"]);
+            let options = InstallOptions::new().version(Some(Version::new("14.1.0")));
+            let error = plan_install(&app, &linux(DistroFamily::Debian), &options).unwrap_err();
+            assert!(
+                matches!(error, Error::VersionNotSelectable { .. }),
+                "{error:?}"
+            );
+            let text = error.to_string();
+            assert!(text.contains("14.1.0"), "{text}");
+            assert!(text.contains("version: None"), "{text}");
+        }
+
+        #[test]
+        fn refuses_a_direct_uninstall_planned_from_registry_data() {
+            let app = direct_app("https://example.com/rg", None, None, &["rg"]);
+            let error = plan_uninstall(
+                &app,
+                &linux(DistroFamily::Debian),
+                &UninstallOptions::default(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::UnsupportedMethod { .. }),
+                "{error:?}"
+            );
+            assert!(error.to_string().contains("record"), "{error}");
+        }
+
+        #[test]
+        fn direct_plans_round_trip_through_json() {
+            let app = direct_app(
+                "https://example.com/rg",
+                Some(checksum(HELLO_SHA256)),
+                None,
+                &["rg"],
+            );
+            let plan = plan_install(
+                &app,
+                &linux(DistroFamily::Debian),
+                &InstallOptions::default(),
+            )
+            .unwrap();
+            let json = plan.to_json_string().unwrap();
+            assert_eq!(InstallPlan::from_json_str(&json).unwrap(), plan);
+            assert!(
+                plan.summary()
+                    .contains("direct install https://example.com/rg")
+            );
+        }
+
+        #[test]
+        fn direct_plans_on_macos_and_linux_alike() {
+            for target in [
+                macos(),
+                linux(DistroFamily::Debian),
+                Target::new(Os::Windows, Arch::X86_64),
+            ] {
+                let app = direct_app("https://example.com/rg", None, None, &["rg"]);
+                let plan = plan_install(&app, &target, &InstallOptions::default())
+                    .unwrap_or_else(|e| panic!("direct plans on every platform ({target:?}): {e}"));
+                assert_eq!(plan.backend, BackendId::Direct);
+            }
+        }
     }
 }

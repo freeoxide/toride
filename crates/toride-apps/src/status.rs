@@ -61,6 +61,8 @@
 //! [`DistroBackend::installed_version`]: crate::backends::distro::DistroBackend::installed_version
 
 use crate::backend::{Backend, BackendId, BackendStatus, StatusQuery};
+#[cfg(feature = "direct")]
+use crate::backends::DirectBackend;
 use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::BrewKind;
 use crate::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
@@ -116,17 +118,23 @@ pub struct BackendSet<'a> {
     flatpak: Option<&'a FlatpakBackend>,
     /// Distro backend, when a family manager is usable on this host.
     distro: Option<&'a DistroBackend>,
+    /// Direct-download backend, when attached (the `direct` feature).
+    #[cfg(feature = "direct")]
+    direct: Option<&'a DirectBackend>,
 }
 
 /// Debug prints slot occupancy, not the backends (they are not `Debug` —
 /// their seam carries an unprintable runner handle).
 impl std::fmt::Debug for BackendSet<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("BackendSet")
+        let mut builder = f.debug_struct("BackendSet");
+        builder
             .field("homebrew", &self.homebrew.is_some())
             .field("flatpak", &self.flatpak.is_some())
-            .field("distro", &self.distro.is_some())
-            .finish()
+            .field("distro", &self.distro.is_some());
+        #[cfg(feature = "direct")]
+        builder.field("direct", &self.direct.is_some());
+        builder.finish()
     }
 }
 
@@ -155,6 +163,15 @@ impl<'a> BackendSet<'a> {
     #[must_use]
     pub const fn distro(mut self, backend: &'a DistroBackend) -> Self {
         self.distro = Some(backend);
+        self
+    }
+
+    /// Attach the direct-download backend — consume-and-return (the
+    /// `direct` feature).
+    #[cfg(feature = "direct")]
+    #[must_use]
+    pub const fn direct(mut self, backend: &'a DirectBackend) -> Self {
+        self.direct = Some(backend);
         self
     }
 }
@@ -260,6 +277,21 @@ async fn toride_recorded_status(
                 BackendStatus::NotInstalled => AppStatus::NotInstalled,
             })
         }
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { bin_path, .. } => {
+            let Some(backend) = backends.direct else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            // The file itself is the probe: a direct binary's version is
+            // only knowable by executing it, so presence reports none.
+            Ok(match backend.status(StatusQuery::new(bin_path)).await? {
+                BackendStatus::Installed { version } => AppStatus::Installed {
+                    backend: BackendId::Direct,
+                    version,
+                },
+                BackendStatus::NotInstalled => AppStatus::NotInstalled,
+            })
+        }
     }
 }
 
@@ -311,6 +343,18 @@ async fn foreign_status(native: &NativeIds, backends: &BackendSet<'_>) -> Result
             Ok(foreign_from(
                 BackendId::Distro(*family),
                 &format!("package `{package}`"),
+                status,
+            ))
+        }
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { bin_path, .. } => {
+            let Some(backend) = backends.direct else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = backend.status(StatusQuery::new(bin_path)).await?;
+            Ok(foreign_from(
+                BackendId::Direct,
+                &format!("direct binary `{bin_path}`"),
                 status,
             ))
         }
@@ -413,6 +457,19 @@ fn toride_recorded_status_sync(
                 BackendStatus::NotInstalled => AppStatus::NotInstalled,
             })
         }
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { bin_path, .. } => {
+            let Some(backend) = backends.direct else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            Ok(match backend.status_sync(StatusQuery::new(bin_path))? {
+                BackendStatus::Installed { version } => AppStatus::Installed {
+                    backend: BackendId::Direct,
+                    version,
+                },
+                BackendStatus::NotInstalled => AppStatus::NotInstalled,
+            })
+        }
     }
 }
 
@@ -452,6 +509,18 @@ fn foreign_status_sync(native: &NativeIds, backends: &BackendSet<'_>) -> Result<
             Ok(foreign_from(
                 BackendId::Distro(*family),
                 &format!("package `{package}`"),
+                status,
+            ))
+        }
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { bin_path, .. } => {
+            let Some(backend) = backends.direct else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = backend.status_sync(StatusQuery::new(bin_path))?;
+            Ok(foreign_from(
+                BackendId::Direct,
+                &format!("direct binary `{bin_path}`"),
                 status,
             ))
         }
@@ -1150,5 +1219,126 @@ mod tests {
         assert_eq!(status, AppStatus::NotInstalled);
         let status = app_status_sync(None, None, &BackendSet::new()).unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
+    }
+
+    #[cfg(feature = "direct")]
+    mod direct {
+        use super::*;
+
+        fn temp_dir(label: &str) -> String {
+            let dir = std::env::temp_dir().join(format!(
+                "toride-apps-status-direct-{}-{label}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(&dir).expect("unique temp dir is creatable");
+            dir.to_string_lossy().into_owned()
+        }
+
+        fn direct_record(bin_path: String) -> InstallRecord {
+            InstallRecord::adopted(
+                NativeIds::Direct {
+                    url: "https://example.com/rg".to_owned(),
+                    checksum: None,
+                    bin_path,
+                },
+                None,
+            )
+        }
+
+        #[tokio::test]
+        async fn manifest_hit_with_the_binary_present_reports_installed_without_a_version() {
+            let dir = temp_dir("hit");
+            let bin_path = format!("{dir}/rg");
+            std::fs::write(&bin_path, b"x").unwrap();
+            let backend = DirectBackend::at(&dir);
+            let backends = BackendSet::new().direct(&backend);
+            let status = app_status(Some(&direct_record(bin_path.clone())), None, &backends)
+                .await
+                .unwrap();
+            assert_eq!(
+                status,
+                AppStatus::Installed {
+                    backend: BackendId::Direct,
+                    version: None,
+                }
+            );
+        }
+
+        #[tokio::test]
+        async fn manifest_hit_with_the_binary_gone_reports_not_installed() {
+            let dir = temp_dir("gone");
+            let backend = DirectBackend::at(&dir);
+            let backends = BackendSet::new().direct(&backend);
+            let status = app_status(Some(&direct_record(format!("{dir}/rg"))), None, &backends)
+                .await
+                .unwrap();
+            assert_eq!(status, AppStatus::NotInstalled);
+        }
+
+        #[tokio::test]
+        async fn manifest_miss_with_a_present_binary_reports_foreign() {
+            let dir = temp_dir("foreign");
+            let bin_path = format!("{dir}/rg");
+            std::fs::write(&bin_path, b"someone-elses").unwrap();
+            let backend = DirectBackend::at(&dir);
+            let backends = BackendSet::new().direct(&backend);
+            let native = NativeIds::Direct {
+                url: "https://example.com/rg".to_owned(),
+                checksum: None,
+                bin_path: bin_path.clone(),
+            };
+            let status = app_status(None, Some(&native), &backends).await.unwrap();
+            match status {
+                AppStatus::Foreign { backend, detail } => {
+                    assert_eq!(backend, BackendId::Direct);
+                    assert!(detail.contains(&bin_path), "{detail}");
+                    assert!(detail.contains("not by toride"), "{detail}");
+                }
+                other => panic!("expected Foreign, got {other:?}"),
+            }
+        }
+
+        #[tokio::test]
+        async fn an_absent_direct_slot_skips_the_probe_entirely() {
+            let dir = temp_dir("no-slot");
+            let bin_path = format!("{dir}/rg");
+            std::fs::write(&bin_path, b"x").unwrap();
+            let status = app_status(
+                Some(&direct_record(bin_path.clone())),
+                None,
+                &BackendSet::new(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(status, AppStatus::NotInstalled);
+        }
+
+        #[test]
+        fn sync_manifest_hit_and_foreign_mirror_the_async_probes() {
+            let dir = temp_dir("sync");
+            let bin_path = format!("{dir}/rg");
+            std::fs::write(&bin_path, b"x").unwrap();
+            let backend = DirectBackend::at(&dir);
+            let backends = BackendSet::new().direct(&backend);
+            assert_eq!(
+                app_status_sync(Some(&direct_record(bin_path.clone())), None, &backends).unwrap(),
+                AppStatus::Installed {
+                    backend: BackendId::Direct,
+                    version: None,
+                }
+            );
+            let native = NativeIds::Direct {
+                url: "https://example.com/rg".to_owned(),
+                checksum: None,
+                bin_path,
+            };
+            assert!(matches!(
+                app_status_sync(None, Some(&native), &backends).unwrap(),
+                AppStatus::Foreign {
+                    backend: BackendId::Direct,
+                    ..
+                }
+            ));
+        }
     }
 }
