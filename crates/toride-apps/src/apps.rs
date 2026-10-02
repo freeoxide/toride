@@ -128,11 +128,15 @@ pub enum AppsError {
     #[error("registry source failed: {0}")]
     Registry(#[from] toride_registry::Error),
 
-    /// The install manifest failed to load (the **hard stop**: a corrupt
-    /// document — above all "written by a newer toride" — never loads as
-    /// empty and is never saved over) or to persist after a mutation (in
-    /// which case the mutation itself already succeeded; post-mutation
-    /// save failures are surfaced as outcome warnings instead).
+    /// The record store failed to load in a way recovery could not
+    /// absorb, or to persist after a mutation. A corrupt prior document
+    /// is not a load failure: the default JSON store quarantines it
+    /// aside and the facade starts from empty
+    /// ([`Apps::quarantined`] names the moved file) — only a quarantine
+    /// that cannot happen, or a store that cannot be read at all, errors
+    /// here. Post-mutation persist failures surface per verb: as outcome
+    /// warnings where the mutation itself already succeeded, as this
+    /// error where the record is the operation.
     #[error("{0}")]
     Manifest(#[from] ManifestError),
 
@@ -593,12 +597,15 @@ impl Apps {
         &self.runner
     }
 
-    /// The working records this facade holds, ordered by app id (loaded
-    /// from the store at build; mutated by [`Apps::ensure_installed`] /
-    /// [`Apps::uninstall`] / [`Apps::adopt`]).
+    /// The working records this facade holds, each paired with its app
+    /// id and ordered by id (loaded from the store at build; mutated by
+    /// [`Apps::ensure_installed`] / [`Apps::uninstall`] /
+    /// [`Apps::adopt`]). The id is the key every record-sourced verb
+    /// takes; adopted records carry no plan to read it from, so the pair
+    /// is the only way to recover theirs.
     #[must_use]
-    pub fn records(&self) -> Vec<&InstallRecord> {
-        self.records.values().collect()
+    pub fn records(&self) -> Vec<(&TorideId, &InstallRecord)> {
+        self.records.iter().collect()
     }
 
     /// Where a corrupt prior store document was quarantined at build, when
@@ -936,7 +943,8 @@ impl Apps {
     /// [`AppsError::AlreadyRecorded`] when toride already holds a record
     /// for `id`; [`AppsError::AdoptionAbsent`] when the probe cannot
     /// confirm the asserted identifiers; [`AppsError::BackendUnavailable`]
-    /// when their backend is not attached; [`AppsError::Manifest`] when
+    /// when their backend is not attached; [`AppsError::Backend`] when
+    /// the confirming probe itself fails; [`AppsError::Manifest`] when
     /// persisting the record fails — the claim is rolled back, so nothing
     /// stays recorded and a retry starts clean.
     pub async fn adopt(
@@ -2722,7 +2730,14 @@ mod tests {
             .target(Target::new(Os::Linux, Arch::X86_64))
             .build()
             .unwrap();
-        assert_eq!(apps.records().len(), 1);
+        let listed = apps.records();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(
+            listed[0].0,
+            &TorideId::slugify("brave"),
+            "an adopted record's id stays recoverable — it carries no plan"
+        );
+        assert_eq!(listed[0].1.plan, None);
         assert_eq!(apps.quarantined(), None);
     }
 }

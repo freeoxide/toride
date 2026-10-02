@@ -72,7 +72,6 @@ pub trait RecordStore: Send + Sync {
 #[derive(Debug)]
 pub struct JsonRecordStore {
     path: Utf8PathBuf,
-    quarantine_counter: AtomicU64,
 }
 
 impl JsonRecordStore {
@@ -80,10 +79,7 @@ impl JsonRecordStore {
     /// save; a missing file loads as empty).
     #[must_use]
     pub fn at(path: impl Into<Utf8PathBuf>) -> Self {
-        Self {
-            path: path.into(),
-            quarantine_counter: AtomicU64::new(0),
-        }
+        Self { path: path.into() }
     }
 
     /// The manifest path this store reads and writes.
@@ -93,13 +89,14 @@ impl JsonRecordStore {
     }
 
     fn quarantine_path(&self) -> ManifestResult<Utf8PathBuf> {
+        static QUARANTINE_COUNTER: AtomicU64 = AtomicU64::new(0);
         let Some(name) = self.path.file_name() else {
             return Err(ManifestError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 format!("manifest path `{}` has no file name", self.path),
             )));
         };
-        let unique = self.quarantine_counter.fetch_add(1, Ordering::Relaxed);
+        let unique = QUARANTINE_COUNTER.fetch_add(1, Ordering::Relaxed);
         Ok(self
             .path
             .with_file_name(format!("{name}.corrupt-{}-{unique}", std::process::id())))
@@ -274,6 +271,33 @@ mod tests {
     }
 
     #[test]
+    fn quarantines_from_separate_store_instances_never_overwrite_each_other() {
+        let path = temp_store_path("cross-instance");
+        std::fs::write(path.as_std_path(), "first garbage").unwrap();
+        let first = JsonRecordStore::at(&path)
+            .load()
+            .unwrap()
+            .quarantined
+            .unwrap();
+        std::fs::write(path.as_std_path(), "second garbage").unwrap();
+        let second = JsonRecordStore::at(&path)
+            .load()
+            .unwrap()
+            .quarantined
+            .unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            std::fs::read_to_string(first.as_std_path()).unwrap(),
+            "first garbage",
+            "the earlier instance's quarantined bytes survive"
+        );
+        assert_eq!(
+            std::fs::read_to_string(second.as_std_path()).unwrap(),
+            "second garbage"
+        );
+    }
+
+    #[test]
     fn load_maps_io_failures_through_unchanged() {
         let dir = temp_store_path("io-failure");
         std::fs::create_dir_all(dir.as_std_path()).unwrap();
@@ -286,11 +310,13 @@ mod tests {
         let path = temp_store_path("rename-blocked");
         std::fs::write(path.as_std_path(), "garbage").unwrap();
         let store = JsonRecordStore::at(&path);
-        let blocked = path.with_file_name(format!(
-            "apps-manifest.json.corrupt-{}-0",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(blocked.as_std_path()).unwrap();
+        for unique in 0..64_u64 {
+            let blocked = path.with_file_name(format!(
+                "apps-manifest.json.corrupt-{}-{unique}",
+                std::process::id()
+            ));
+            std::fs::create_dir_all(blocked.as_std_path()).unwrap();
+        }
 
         let error = store.load().unwrap_err();
         assert!(matches!(error, ManifestError::Corrupt(_)), "{error:?}");
