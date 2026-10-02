@@ -1,9 +1,10 @@
 //! # Apps facade
 //!
 //! [`Apps`] is the front door of the execution layer: one call per user
-//! intent — ensure an app is installed, update it, uninstall it, ask where
-//! it stands, search the registries — composing every lower layer this
-//! crate built:
+//! intent — ensure an app is installed (at a version, when asked), update
+//! it, uninstall it, ask where it stands, search the registries, list the
+//! versions its backend offers, pin and unpin — composing every lower
+//! layer this crate built:
 //!
 //! 1. **Detect before resolve** (the toride-installer
 //!    `Detector`/`EnsureOutcome` rule): [`Apps::ensure_installed`] answers
@@ -88,8 +89,8 @@ use crate::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
 use crate::error::Error as BackendError;
 use crate::manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
 use crate::plan::{
-    FlatpakInstallation, InstallPlan, Operation, PackageManager, Target, UninstallOptions,
-    UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
+    FlatpakInstallation, InstallOptions, InstallPlan, Operation, PackageManager, Target,
+    UninstallOptions, UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 use crate::runner::CommandRunner;
 use crate::status::{AppStatus, BackendSet, app_status};
@@ -186,9 +187,9 @@ pub enum AppsError {
         id: String,
     },
 
-    /// The options name a target version this toride cannot pin to — the
-    /// wave-1 update verbs move to the manager's current only (version
-    /// selection and pinning arrive with the install-time half of 3.6).
+    /// The options name a target version this toride cannot pin to —
+    /// install-time version selection and brew pinning exist, but the
+    /// update verb itself always moves to the manager's current.
     #[error(
         "cannot update `{id}` to {target}: target pinning is not implemented — updates move to the manager's current version"
     )]
@@ -198,6 +199,22 @@ pub enum AppsError {
         /// The requested target version's native spelling.
         target: String,
     },
+
+    /// The pin target carries no toride install record: pin operates on
+    /// what the manifest knows toride installed, exactly like update.
+    #[error("cannot pin `{id}`: toride has no install record for it — ensure_installed it first")]
+    UnrecordedPin {
+        /// Canonical toride id of the app.
+        id: String,
+    },
+
+    /// The unpin target carries no toride install record — the mirror of
+    /// [`AppsError::UnrecordedPin`].
+    #[error("cannot unpin `{id}`: toride has no install record for it — ensure_installed it first")]
+    UnrecordedUnpin {
+        /// Canonical toride id of the app.
+        id: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -205,20 +222,29 @@ pub enum AppsError {
 // ---------------------------------------------------------------------------
 
 /// Options for [`Apps::ensure_installed`].
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct AppInstallOptions {
     /// Elevation grant: `true` only when the caller has arranged root
     /// privileges. Distro plans require it; the facade never acquires
     /// elevation itself (the no-auto-sudo contract — a requiring plan
     /// without the grant is refused before any dispatch).
     pub elevated: bool,
+    /// The exact thing to install (`None` = whatever the manager considers
+    /// current). Spelled into the plan's native addressing — see
+    /// [`InstallOptions::version`]. Distro methods cannot express a
+    /// version; the request is refused at plan time.
+    pub version: Option<Version>,
 }
 
 impl AppInstallOptions {
-    /// All-default options (no elevation grant).
+    /// All-default options (no elevation grant, the manager's current
+    /// version).
     #[must_use]
     pub const fn new() -> Self {
-        Self { elevated: false }
+        Self {
+            elevated: false,
+            version: None,
+        }
     }
 
     /// Assert that elevation has been arranged — consume-and-return, the
@@ -228,6 +254,14 @@ impl AppInstallOptions {
     #[must_use]
     pub const fn elevated(mut self, elevated: bool) -> Self {
         self.elevated = elevated;
+        self
+    }
+
+    /// Select an exact version to install — consume-and-return; `None`
+    /// takes whatever the manager considers current.
+    #[must_use]
+    pub fn version(mut self, version: Option<Version>) -> Self {
+        self.version = version;
         self
     }
 }
@@ -516,9 +550,11 @@ impl Apps {
     ///    [`AppStatus::Foreign`], exactly like toride-installer keeps a
     ///    satisfying on-`$PATH` copy.
     /// 4. **Plan and execute** — [`plan_install`] derives the exact
-    ///    operation for [`Apps::target`]; the routed backend executes it
-    ///    with the caller's elevation grant (distro plans without one are
-    ///    refused before any dispatch).
+    ///    operation for [`Apps::target`], spelling a requested
+    ///    [`AppInstallOptions::version`] into the method's native
+    ///    addressing; the routed backend executes it with the caller's
+    ///    elevation grant (distro plans without one are refused before any
+    ///    dispatch).
     /// 5. **Post-verify and record** — the facade's own kind-aware probe
     ///    (brew `list <kind> --versions`, the flatpak scoped listing, the
     ///    distro package query) confirms presence and reads the version;
@@ -529,8 +565,9 @@ impl Apps {
     /// # Errors
     ///
     /// [`AppsError::Unresolved`] when no adapter knows the id;
-    /// [`AppsError::Backend`] for plan-stage refusals, elevation/dry-run
-    /// guards, and command failures; [`AppsError::BackendUnavailable`]
+    /// [`AppsError::Backend`] for plan-stage refusals (including a
+    /// requested version a distro method cannot express), elevation/
+    /// dry-run guards, and command failures; [`AppsError::BackendUnavailable`]
     /// when the plan routes to an unattached backend;
     /// [`AppsError::Registry`] when an adapter fails; probe failures
     /// degrade to warnings, not errors.
@@ -560,7 +597,13 @@ impl Apps {
         // 4. Plan, then derive the record identity from the EXECUTED
         //    operation (before any mutation, so a malformed plan fails
         //    with nothing dispatched).
-        let plan = plan_install(&app, &self.target)?;
+        let plan = plan_install(
+            &app,
+            &self.target,
+            &InstallOptions {
+                version: options.version.clone(),
+            },
+        )?;
         let ids = native_ids_from_executed(&plan)?;
         let backend = self.backend_for(plan.backend)?;
         let outcome = backend
@@ -840,6 +883,138 @@ impl Apps {
                 .backend_for(ids.backend())?
                 .available_version(native_id(ids))
                 .await?),
+        }
+    }
+
+    /// The versions the record's backend can install today — the same
+    /// kind- and scope-aware routing as [`Apps::record_available_version`]
+    /// over the listing probe: brew answers per recorded kind, flatpak per
+    /// recorded installation against the flathub remote, distro keeps the
+    /// trait default (none reported).
+    async fn record_available_versions(&self, ids: &NativeIds) -> AppsResult<Vec<Version>> {
+        match ids {
+            NativeIds::Homebrew { token, cask } => {
+                let kind = if *cask {
+                    BrewKind::Cask
+                } else {
+                    BrewKind::Formula
+                };
+                Ok(self
+                    .homebrew_backend()?
+                    .available_versions(kind, token)
+                    .await?)
+            }
+            NativeIds::Flatpak {
+                app_id,
+                installation,
+                ..
+            } => Ok(self
+                .flatpak_backend()?
+                .available_versions(app_id, *installation)
+                .await?),
+            NativeIds::Distro { .. } => Ok(self
+                .backend_for(ids.backend())?
+                .available_versions(native_id(ids))
+                .await?),
+        }
+    }
+
+    /// The versions `id` can be installed at: record-first (the recorded
+    /// backend's listing probe, zero adapter calls), resolved through the
+    /// registry otherwise — the same shape as [`Apps::status`].
+    ///
+    /// # Errors
+    ///
+    /// [`AppsError::Unresolved`] when toride has no record and no adapter
+    /// knows the id; [`AppsError::Backend`] wrapping
+    /// [`Error::UnsupportedMethod`](crate::Error::UnsupportedMethod) when
+    /// the resolved method has no backend to list versions through, and
+    /// for probe failures; [`AppsError::BackendUnavailable`] when the
+    /// routed backend is not attached.
+    pub async fn available_versions(&self, id: &TorideId) -> AppsResult<Vec<Version>> {
+        if let Some(record) = self.manifest.get(id) {
+            return self.record_available_versions(&record.ids).await;
+        }
+        let app = self.resolve(id).await?;
+        let Some(native) = native_from_method(&app.install) else {
+            return Err(AppsError::Backend(BackendError::UnsupportedMethod {
+                app: id.as_str().to_owned(),
+                method: format!("{:?}", app.install),
+                target: format!("{:?}", self.target),
+                reason: "the method has no backend to list versions through".to_owned(),
+            }));
+        };
+        Ok(self
+            .backend_for(native.backend())?
+            .available_versions(native_id(&native))
+            .await?)
+    }
+
+    /// Hold `id` back from upgrades (`brew pin`): the record's backend
+    /// runs its own pin against the recorded identifiers. The manifest is
+    /// untouched — pinned state lives with the manager and surfaces
+    /// through the outdated probe's `pinned` flag.
+    ///
+    /// # Errors
+    ///
+    /// [`AppsError::UnrecordedPin`] when toride has no record for `id`;
+    /// [`AppsError::BackendUnavailable`] when the record's backend is not
+    /// attached; [`AppsError::Backend`] wrapping
+    /// [`Error::PinUnsupported`](crate::Error::PinUnsupported) for
+    /// backends without a pin concept, and for command failures.
+    pub async fn pin(&self, id: &TorideId) -> AppsResult<()> {
+        self.set_pin_state(id, true).await
+    }
+
+    /// Release a pin — the mirror of [`Apps::pin`] on the same record.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Apps::pin`], with [`AppsError::UnrecordedUnpin`]
+    /// for an unrecorded id.
+    pub async fn unpin(&self, id: &TorideId) -> AppsResult<()> {
+        self.set_pin_state(id, false).await
+    }
+
+    /// The shared body of [`Apps::pin`] / [`Apps::unpin`]: record-required,
+    /// kind-aware for brew, the trait method (and its honest refusal)
+    /// otherwise.
+    async fn set_pin_state(&self, id: &TorideId, pin: bool) -> AppsResult<()> {
+        let Some(record) = self.manifest.get(id) else {
+            return Err(if pin {
+                AppsError::UnrecordedPin {
+                    id: id.as_str().to_owned(),
+                }
+            } else {
+                AppsError::UnrecordedUnpin {
+                    id: id.as_str().to_owned(),
+                }
+            });
+        };
+        match &record.ids {
+            NativeIds::Homebrew { token, cask } => {
+                let backend = self.homebrew_backend()?;
+                let kind = if *cask {
+                    BrewKind::Cask
+                } else {
+                    BrewKind::Formula
+                };
+                let result = if pin {
+                    backend.pin(kind, token).await
+                } else {
+                    backend.unpin(kind, token).await
+                };
+                result.map_err(AppsError::from)
+            }
+            other => {
+                let backend = self.backend_for(other.backend())?;
+                let result = if pin {
+                    backend.pin(native_id(other)).await
+                } else {
+                    backend.unpin(native_id(other)).await
+                };
+                result.map_err(AppsError::from)
+            }
         }
     }
 
@@ -1503,8 +1678,19 @@ mod tests {
     fn install_options_default_off_and_elevated_is_fluent() {
         let options = AppInstallOptions::default();
         assert!(!options.elevated);
+        assert!(options.version.is_none());
         assert!(AppInstallOptions::new().elevated(true).elevated);
         assert_eq!(AppInstallOptions::default(), AppInstallOptions::new());
+    }
+
+    #[test]
+    fn install_options_select_a_version_fluently() {
+        let pinned = AppInstallOptions::new()
+            .elevated(true)
+            .version(Some(Version::new("138.0.1")));
+        assert!(pinned.elevated);
+        assert_eq!(pinned.version, Some(Version::new("138.0.1")));
+        assert_eq!(pinned.version(None).version, None);
     }
 
     #[test]
@@ -1888,6 +2074,21 @@ mod tests {
         assert!(text.contains("`ghost`"), "{text}");
         assert!(text.contains("2.0.0"), "{text}");
         assert!(text.contains("not implemented"), "{text}");
+    }
+
+    #[test]
+    fn unrecorded_pin_and_unpin_name_the_app_and_the_escape() {
+        let pin = AppsError::UnrecordedPin {
+            id: "ghost".to_owned(),
+        };
+        let text = pin.to_string();
+        assert!(text.contains("cannot pin"), "{text}");
+        assert!(text.contains("`ghost`"), "{text}");
+        assert!(text.contains("ensure_installed"), "{text}");
+        let unpin = AppsError::UnrecordedUnpin {
+            id: "ghost".to_owned(),
+        };
+        assert!(unpin.to_string().contains("cannot unpin"), "{unpin}");
     }
 
     fn update_plan_for_ids(ids: NativeIds) -> AppsResult<UpdatePlan> {

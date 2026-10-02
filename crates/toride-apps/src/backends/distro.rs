@@ -865,7 +865,9 @@ fn executor_missing_for_family(family: DistroFamily) -> Error {
 mod tests {
     use super::*;
     use crate::backend::{BackendStatus, StatusQuery};
-    use crate::plan::{InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall};
+    use crate::plan::{
+        InstallOptions, InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall,
+    };
     use std::path::Path;
     use std::sync::Arc;
     use toride_registry::{App, Arch, Availability, InstallMethod, TorideId};
@@ -930,7 +932,12 @@ mod tests {
     }
 
     fn install_plan_for(family: DistroFamily) -> InstallPlan {
-        plan_install(&app_with(distro_method(family)), &target(family)).unwrap()
+        plan_install(
+            &app_with(distro_method(family)),
+            &target(family),
+            &InstallOptions::default(),
+        )
+        .unwrap()
     }
 
     fn uninstall_plan_for(family: DistroFamily) -> UninstallPlan {

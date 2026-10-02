@@ -2224,6 +2224,377 @@ async fn a_failed_post_upgrade_probe_degrades_to_no_version_without_failing_the_
 }
 
 // ---------------------------------------------------------------------------
+// Version selection, available-version listing, pin/unpin
+// ---------------------------------------------------------------------------
+
+fn brew_pin_spec(kind_flag: &str, verb: &str, token: &str) -> CommandSpec {
+    command("brew", [verb, kind_flag, token])
+}
+
+fn flatpak_remote_ls_spec(flag: &str) -> CommandSpec {
+    command(
+        "flatpak",
+        [
+            "remote-ls",
+            flag,
+            "--app",
+            "--columns=application,branch",
+            "flathub",
+        ],
+    )
+}
+
+#[tokio::test]
+async fn ensure_installed_with_a_version_installs_the_versioned_token_and_records_it() {
+    let path = temp_manifest_path("install-versioned-cask");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(EMPTY_BREW_INFO),
+        )
+        .respond(
+            brew_install_cask_spec("firefox@138.0.1"),
+            CommandOutput::from_stdout(""),
+        )
+        // The backend's post-install probe, then the facade's verify — both
+        // address the joined token, because that is the identity brew
+        // manages for a versioned install.
+        .respond(
+            brew_versions_spec("--cask", "firefox@138.0.1"),
+            CommandOutput::from_stdout("firefox@138.0.1 138.0.1\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox@138.0.1"),
+            CommandOutput::from_stdout("firefox@138.0.1 138.0.1\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("firefox"),
+            AppInstallOptions::new().version(Some(Version::new("138.0.1"))),
+        )
+        .await
+        .expect("versioned cask install succeeds");
+
+    let EnsureAppOutcome::Installed { ids, version, .. } = outcome else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(
+        ids,
+        NativeIds::Homebrew {
+            token: "firefox@138.0.1".to_owned(),
+            cask: true,
+        },
+        "the recorded identity is the versioned token brew manages"
+    );
+    assert_eq!(version.as_deref(), Some("138.0.1"));
+    fake.assert_called_with(&brew_install_cask_spec("firefox@138.0.1"));
+    fake.assert_no_unmatched_calls();
+
+    let reloaded = InstallManifest::load(&path).expect("manifest reloads");
+    assert_eq!(
+        reloaded.get(&id("firefox")).expect("record present").ids,
+        NativeIds::Homebrew {
+            token: "firefox@138.0.1".to_owned(),
+            cask: true,
+        }
+    );
+}
+
+#[tokio::test]
+async fn ensure_installed_flatpak_with_a_version_selects_the_ref_branch() {
+    let path = temp_manifest_path("install-version-flatpak");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(flatpak_list_spec(None), CommandOutput::from_stdout(""))
+        .respond(
+            flatpak_remotes_spec(),
+            CommandOutput::from_stdout("flathub\n"),
+        )
+        .respond(
+            flatpak_install_user_spec("app/com.brave.Browser/x86_64/beta"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            flatpak_list_spec(Some("--user")),
+            CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.2.3")),
+        )
+        .respond(
+            flatpak_list_spec(Some("--user")),
+            CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.2.3")),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::Flathub,
+        vec![app(
+            "brave",
+            "Brave Browser",
+            InstallMethod::Flatpak {
+                app_id: "com.brave.Browser".to_owned(),
+                remote: "flathub".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("brave"),
+            AppInstallOptions::new().version(Some(Version::new("beta"))),
+        )
+        .await
+        .expect("branch-pinned flatpak install succeeds");
+    assert!(matches!(outcome, EnsureAppOutcome::Installed { .. }));
+
+    fake.assert_called_with(&flatpak_install_user_spec(
+        "app/com.brave.Browser/x86_64/beta",
+    ));
+    fake.assert_no_unmatched_calls();
+    let reloaded = InstallManifest::load(&path).expect("manifest reloads");
+    let NativeIds::Flatpak { app_ref, .. } =
+        &reloaded.get(&id("brave")).expect("record present").ids
+    else {
+        panic!("flatpak record");
+    };
+    assert_eq!(
+        app_ref.as_deref(),
+        Some("app/com.brave.Browser/x86_64/beta"),
+        "the executed branch ref, never re-derived"
+    );
+}
+
+#[tokio::test]
+async fn ensure_installed_distro_with_a_version_is_refused_at_plan_time() {
+    let path = temp_manifest_path("install-version-distro");
+    let fake = FakeRunner::new()
+        .strict()
+        // The Foreign check's dpkg-query: not found → NotInstalled.
+        .respond(
+            dpkg_query_spec("brave-browser"),
+            dpkg_not_found("brave-browser"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::Distro,
+        vec![brave_distro_app(DistroFamily::Debian)],
+    );
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let error = apps
+        .ensure_installed(
+            &id("brave"),
+            AppInstallOptions::new()
+                .elevated(true)
+                .version(Some(Version::new("1.4.2"))),
+        )
+        .await
+        .expect_err("distro methods take no version operand");
+    assert!(
+        matches!(
+            error,
+            AppsError::Backend(ref inner)
+                if matches!(inner, toride_apps::Error::VersionNotSelectable { .. })
+        ),
+        "{error:?}"
+    );
+    let calls = fake.calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "only the Foreign-check probe ran: {calls:?}"
+    );
+    assert_call_is(&calls[0], &dpkg_query_spec("brave-browser"));
+    fake.assert_no_unmatched_calls();
+    assert!(InstallManifest::load(&path).expect("reload").is_empty());
+}
+
+#[tokio::test]
+async fn available_versions_answers_from_the_record_without_resolving() {
+    let path = temp_manifest_path("available-record");
+    seed_formula_record(&path, "ripgrep");
+    let fake = FakeRunner::new().strict().respond(
+        brew_info_token_spec("ripgrep"),
+        CommandOutput::from_stdout(
+            r#"{"formulae":[{"name":"ripgrep","versions":{"stable":"14.1.0"},"installed":[{"version":"14.1.0"}]}],"casks":[]}"#,
+        ),
+    );
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewFormula, Vec::new());
+    let apps = facade(&fake, macos(), &path, vec![adapter.clone()]);
+
+    let versions = apps
+        .available_versions(&id("ripgrep"))
+        .await
+        .expect("the recorded backend lists its offering");
+    assert_eq!(versions, vec![Version::new("14.1.0")]);
+    assert_eq!(
+        adapter.lookups().len(),
+        0,
+        "a record hit must not resolve through the registry"
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn available_versions_resolves_through_the_registry_when_unrecorded() {
+    let path = temp_manifest_path("available-resolve");
+    let fake = FakeRunner::new().strict().respond(
+        flatpak_remote_ls_spec("--user"),
+        CommandOutput::from_stdout(
+            "com.brave.Browser\tstable\ncom.brave.Browser\tbeta\norg.mozilla.firefox\tstable\n",
+        ),
+    );
+    let adapter = FixtureAdapter::new(
+        SourceKind::Flathub,
+        vec![app(
+            "brave",
+            "Brave Browser",
+            InstallMethod::Flatpak {
+                app_id: "com.brave.Browser".to_owned(),
+                remote: "flathub".to_owned(),
+            },
+        )],
+    );
+    let apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let versions = apps
+        .available_versions(&id("brave"))
+        .await
+        .expect("the resolved backend lists the remote's branches");
+    assert_eq!(
+        versions,
+        vec![Version::new("stable"), Version::new("beta")],
+        "the installable branches, remote order"
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn available_versions_of_an_unresolvable_app_is_the_typed_unresolved_error() {
+    let path = temp_manifest_path("available-unresolved");
+    let fake = FakeRunner::new().strict();
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let error = apps
+        .available_versions(&id("ghost"))
+        .await
+        .expect_err("nothing resolves the id");
+    assert!(matches!(error, AppsError::Unresolved { .. }), "{error:?}");
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn pin_and_unpin_run_the_recorded_tokens_argv_and_touch_no_manifest() {
+    let path = temp_manifest_path("pin-unpin");
+    seed_formula_record(&path, "ripgrep");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_pin_spec("--formula", "pin", "ripgrep"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_pin_spec("--formula", "unpin", "ripgrep"),
+            CommandOutput::from_stdout(""),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewFormula, Vec::new());
+    let apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    apps.pin(&id("ripgrep")).await.expect("formula pin runs");
+    fake.assert_called_with(&brew_pin_spec("--formula", "pin", "ripgrep"));
+    apps.unpin(&id("ripgrep"))
+        .await
+        .expect("formula unpin runs");
+    fake.assert_called_with(&brew_pin_spec("--formula", "unpin", "ripgrep"));
+    fake.assert_no_unmatched_calls();
+
+    let reloaded = InstallManifest::load(&path).expect("manifest reloads");
+    assert!(
+        reloaded.get(&id("ripgrep")).is_some(),
+        "pin state lives with brew, never in the manifest"
+    );
+}
+
+#[tokio::test]
+async fn pin_scopes_the_recorded_cask_kind() {
+    let path = temp_manifest_path("pin-cask");
+    seed_cask_record(&path, "firefox");
+    let fake = FakeRunner::new().strict().respond(
+        brew_pin_spec("--cask", "pin", "firefox"),
+        CommandOutput::from_stdout(""),
+    );
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    apps.pin(&id("firefox"))
+        .await
+        .expect("the recorded kind scopes the pin argv");
+    fake.assert_called_with(&brew_pin_spec("--cask", "pin", "firefox"));
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn pin_without_a_record_is_a_typed_error_and_dispatches_nothing() {
+    let path = temp_manifest_path("pin-unrecorded");
+    let fake = FakeRunner::new().strict();
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let error = apps
+        .pin(&id("firefox"))
+        .await
+        .expect_err("pin operates on what the manifest recorded");
+    assert!(
+        matches!(error, AppsError::UnrecordedPin { .. }),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("ensure_installed"), "{error}");
+    let error = apps
+        .unpin(&id("firefox"))
+        .await
+        .expect_err("unpin mirrors the record requirement");
+    assert!(
+        matches!(error, AppsError::UnrecordedUnpin { .. }),
+        "{error:?}"
+    );
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn pin_on_a_flatpak_record_surfaces_the_backend_refusal() {
+    let path = temp_manifest_path("pin-flatpak");
+    seed_flatpak_record(&path);
+    let fake = FakeRunner::new().strict();
+    let adapter = FixtureAdapter::new(SourceKind::Flathub, Vec::new());
+    let apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let error = apps
+        .pin(&id("brave"))
+        .await
+        .expect_err("flatpak has no pin concept");
+    assert!(
+        matches!(
+            error,
+            AppsError::Backend(ref inner)
+                if matches!(inner, toride_apps::Error::PinUnsupported { .. })
+        ),
+        "{error:?}"
+    );
+    assert!(fake.calls().is_empty(), "the refusal dispatches nothing");
+}
+
+// ---------------------------------------------------------------------------
 // Status and search
 // ---------------------------------------------------------------------------
 

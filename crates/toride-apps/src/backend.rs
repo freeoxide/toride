@@ -407,6 +407,52 @@ pub trait Backend: Send + Sync {
     async fn available_version(&self, _id: &str) -> Result<Option<Version>> {
         Ok(None)
     }
+
+    /// The versions the manager can install for `id` today, in the
+    /// manager's own order (brew's offered version per kind, flatpak's
+    /// branches for the app in its remote). The default reports none —
+    /// backends without a listing probe keep it.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the backend's listing probe fails or its
+    /// output cannot be parsed.
+    async fn available_versions(&self, _id: &str) -> Result<Vec<Version>> {
+        Ok(Vec::new())
+    }
+
+    /// Hold `id` back from the manager's upgrades (brew pins; brew itself
+    /// then skips the item, surfacing as `pinned` in
+    /// [`Backend::outdated`]). Backends whose manager has no pin concept
+    /// keep the default and refuse.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PinUnsupported`] by default; [`Error::Command`] when the
+    /// manager's pin command fails.
+    async fn pin(&self, id: &str) -> Result<()> {
+        Err(Error::PinUnsupported {
+            backend: self.id(),
+            operation: "pin",
+            id: id.to_owned(),
+            reason: "this backend has no pin concept".to_owned(),
+        })
+    }
+
+    /// Release a pin — same contract as [`Backend::pin`].
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PinUnsupported`] by default; [`Error::Command`] when the
+    /// manager's unpin command fails.
+    async fn unpin(&self, id: &str) -> Result<()> {
+        Err(Error::PinUnsupported {
+            backend: self.id(),
+            operation: "unpin",
+            id: id.to_owned(),
+            reason: "this backend has no pin concept".to_owned(),
+        })
+    }
 }
 
 /// Shared precondition check every [`Backend::install`] implementation must
@@ -490,7 +536,9 @@ fn ensure_execution_allowed(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{Operation, UninstallOptions, UpdatePlan, plan_install, plan_uninstall};
+    use crate::plan::{
+        InstallOptions, Operation, UninstallOptions, UpdatePlan, plan_install, plan_uninstall,
+    };
     use crate::runner::CommandRunner;
     use std::sync::Arc;
     use toride_registry::{App, Arch, DistroFamily, InstallMethod, Os, TorideId};
@@ -593,7 +641,9 @@ mod tests {
             repo: None,
             package: "probe".to_owned(),
         });
-        let plan = plan_install(&app, &linux_target()).unwrap().dry_run(true);
+        let plan = plan_install(&app, &linux_target(), &InstallOptions::default())
+            .unwrap()
+            .dry_run(true);
         let target = linux_target();
         let error = backend
             .install(InstallRequest::new(&plan, &target))
@@ -613,7 +663,7 @@ mod tests {
             repo: None,
             package: "probe".to_owned(),
         });
-        let plan = plan_install(&app, &linux_target()).unwrap();
+        let plan = plan_install(&app, &linux_target(), &InstallOptions::default()).unwrap();
         assert!(plan.requires_elevation);
         let target = linux_target();
         let error = backend
@@ -642,7 +692,7 @@ mod tests {
             repo: None,
             package: "probe".to_owned(),
         });
-        let plan = plan_install(&app, &linux_target()).unwrap();
+        let plan = plan_install(&app, &linux_target(), &InstallOptions::default()).unwrap();
         let target = linux_target();
         backend
             .install(InstallRequest::new(&plan, &target).elevated(true))
@@ -814,6 +864,35 @@ mod tests {
         );
         assert!(backend.outdated().await.unwrap().is_empty());
         assert_eq!(backend.available_version("firefox").await.unwrap(), None);
+        assert!(
+            backend
+                .available_versions("firefox")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn default_pin_and_unpin_refuse_with_the_typed_error() {
+        let backend = ProbeBackend::new(
+            CommandRunner::builder()
+                .runner(Arc::new(FakeRunner::new().strict()))
+                .build(),
+            Vec::new(),
+        );
+        for (operation, result) in [
+            ("pin", backend.pin("firefox").await),
+            ("unpin", backend.unpin("firefox").await),
+        ] {
+            let error = result.unwrap_err();
+            assert!(
+                matches!(error, Error::PinUnsupported { .. }),
+                "{operation}: {error:?}"
+            );
+            assert!(error.to_string().contains(operation), "{error}");
+            assert!(error.to_string().contains("firefox"), "{error}");
+        }
     }
 
     #[test]

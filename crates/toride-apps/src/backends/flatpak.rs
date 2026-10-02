@@ -55,10 +55,13 @@
 //!   [`FlatpakBackend::ensure_remote`] (probe + conditional add).
 //! - **Trait operations** — install/uninstall/update/list/status per the
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
-//!   installation-scoped [`FlatpakBackend::installed_version`] probe and
-//!   the richer [`FlatpakBackend::list_entries`].
-//! - **Column parsing** — the tab-separated listing parsed into typed
-//!   [`FlatpakEntry`] rows. Per-row tolerance: a malformed row (wrong cell
+//!   installation-scoped [`FlatpakBackend::installed_version`] probe, the
+//!   richer [`FlatpakBackend::list_entries`], and the branch listing
+//!   [`FlatpakBackend::available_versions`] (flatpak's installable
+//!   "versions" are the remote's branches — the ref segment a
+//!   version-pinned install selects).
+//! - **Column parsing** — the tab-separated listings (`list`, `remote-ls`)
+//!   parsed into typed rows. Per-row tolerance: a malformed row (wrong cell
 //!   count, empty application cell) is skipped, never fatal to the whole
 //!   listing; a non-empty document where *nothing* parses is treated as
 //!   unparseable output, not as an empty host.
@@ -98,7 +101,7 @@ use toride_registry::Os;
 
 use crate::backend::{
     Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, UninstallOutcome,
-    UninstallRequest, UpdateRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    UninstallRequest, UpdateRequest, Version, ensure_install_allowed, ensure_uninstall_allowed,
     ensure_update_allowed,
 };
 use crate::error::{Error, Result};
@@ -125,6 +128,11 @@ const LIST_COLUMNS_ARG: &str = "--columns=application,version,origin,installatio
 /// How many tab-separated cells a well-formed listing row carries (the
 /// number of requested columns).
 const LIST_COLUMN_COUNT: usize = 4;
+
+/// The `flatpak remote-ls` `--columns` argument: the app id and its branch —
+/// the branch is flatpak's installable "version" (the ref segment a
+/// version-pinned install selects).
+const REMOTE_LS_COLUMNS_ARG: &str = "--columns=application,branch";
 
 /// Markers whose presence on a flatpak **`error:` line** classifies a failed
 /// uninstall as "the app is simply not installed" rather than a real error.
@@ -295,6 +303,36 @@ impl FlatpakBackend {
             .and_then(|entry| entry.version))
     }
 
+    /// The branches flathub offers for `app_id` — the installable
+    /// "versions" a version-pinned flatpak install selects between
+    /// (`flatpak remote-ls <installation-flag> --app --columns=… flathub`,
+    /// the same tab-separated headerless printer the installed listing
+    /// rides). Scoped to `installation` because remotes are configured per
+    /// installation; an app absent from the remote yields an empty vec.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the listing fails or its output is
+    /// non-empty yet contains no parseable row.
+    pub async fn available_versions(
+        &self,
+        app_id: &str,
+        installation: FlatpakInstallation,
+    ) -> Result<Vec<Version>> {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                installation.flag(),
+                "--app",
+                REMOTE_LS_COLUMNS_ARG,
+                FLATHUB_REMOTE_NAME,
+            ],
+        );
+        let output = self.runner.run_checked(spec).await?;
+        parse_remote_branches(&output.stdout, app_id)
+    }
+
     /// Ensure the flathub remote exists in `installation` (see
     /// [`FLATHUB_REMOTE_NAME`] / [`FLATHUB_REPO_URL`]).
     ///
@@ -438,6 +476,13 @@ impl Backend for FlatpakBackend {
                 version: entry.version,
             })
             .collect())
+    }
+
+    // The kind-less trait ask rides the user installation — the planner's
+    // install scope — against the flathub remote; callers that know the
+    // recorded installation use the scoped inherent method.
+    async fn available_versions(&self, id: &str) -> Result<Vec<Version>> {
+        self.available_versions(id, FlatpakInstallation::User).await
     }
 
     // `status` keeps the trait's default list-derived implementation: one
@@ -601,6 +646,44 @@ fn parse_list_output(stdout: &str) -> Result<Vec<FlatpakEntry>> {
     Ok(entries)
 }
 
+/// Parse the tab-separated `flatpak remote-ls --app --columns=…` listing
+/// into the branches offered for `app_id`, skipping malformed rows and
+/// rows naming other apps. Same tolerance shape as
+/// [`parse_list_output`]: a non-empty document where no row parses is an
+/// error, not an empty offering.
+///
+/// # Errors
+///
+/// [`Error::Command`] wrapping `OutputParse` for the no-parseable-rows
+/// case above.
+fn parse_remote_branches(stdout: &str, app_id: &str) -> Result<Vec<Version>> {
+    let mut branches = Vec::new();
+    let mut well_formed = 0;
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some((application, branch)) = line.split_once('\t') else {
+            continue;
+        };
+        if application.trim().is_empty() {
+            continue;
+        }
+        well_formed += 1;
+        let branch = branch.trim();
+        if application.trim() == app_id && !branch.is_empty() {
+            branches.push(Version::new(branch));
+        }
+    }
+    if !stdout.trim().is_empty() && well_formed == 0 {
+        return Err(output_parse_error(
+            "flatpak remote-ls --columns=application,branch",
+            format!("no parseable tab-separated rows in {stdout:?}"),
+        ));
+    }
+    Ok(branches)
+}
+
 /// The app id segment of an install ref (`app/<id>/<arch>/<branch>` → the
 /// id). `None` for refs without the `app/` prefix (runtime refs, bare ids,
 /// garbage) — callers degrade rather than mis-verify.
@@ -660,7 +743,9 @@ fn output_parse_error(flatpak_command: &str, cause: impl std::fmt::Display) -> E
 mod tests {
     use super::*;
     use crate::backend::{BackendStatus, StatusQuery};
-    use crate::plan::{InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall};
+    use crate::plan::{
+        InstallOptions, InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall,
+    };
     use std::path::Path;
     use std::sync::Arc;
     use toride_registry::{App, Arch, Availability, DistroFamily, InstallMethod, TorideId};
@@ -719,7 +804,12 @@ mod tests {
     }
 
     fn install_plan_for() -> InstallPlan {
-        plan_install(&app_with(flatpak_method()), &linux_target()).unwrap()
+        plan_install(
+            &app_with(flatpak_method()),
+            &linux_target(),
+            &InstallOptions::default(),
+        )
+        .unwrap()
     }
 
     fn uninstall_plan_for() -> UninstallPlan {
@@ -1965,6 +2055,147 @@ mod tests {
                 .await
                 .unwrap(),
             None
+        );
+    }
+
+    // --- available-version listing ---------------------------------------------
+
+    #[tokio::test]
+    async fn available_versions_lists_the_remotes_branches_for_the_app() {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                "--user",
+                "--app",
+                "--columns=application,branch",
+                "flathub",
+            ],
+        );
+        let rows = "org.mozilla.firefox\tstable\n\
+                    com.brave.Browser\tstable\n\
+                    com.brave.Browser\tbeta\n";
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(rows.to_owned()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_versions("com.brave.Browser", FlatpakInstallation::User)
+                .await
+                .unwrap(),
+            vec![Version::new("stable"), Version::new("beta")],
+            "the app's rows only, remote order"
+        );
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn available_versions_scopes_the_listing_to_the_system_installation() {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                "--system",
+                "--app",
+                "--columns=application,branch",
+                "flathub",
+            ],
+        );
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("com.brave.Browser\tstable\n".to_owned()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_versions("com.brave.Browser", FlatpakInstallation::System)
+                .await
+                .unwrap(),
+            vec![Version::new("stable")]
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn available_versions_is_empty_for_an_app_absent_from_the_remote() {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                "--user",
+                "--app",
+                "--columns=application,branch",
+                "flathub",
+            ],
+        );
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout("org.mozilla.firefox\tstable\n".to_owned()),
+        );
+        let backend = backend(&fake);
+        assert!(
+            backend
+                .available_versions("com.brave.Browser", FlatpakInstallation::User)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_available_versions_rides_the_user_installation() {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                "--user",
+                "--app",
+                "--columns=application,branch",
+                "flathub",
+            ],
+        );
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("com.brave.Browser\tstable\n".to_owned()),
+        );
+        let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
+        assert_eq!(
+            dyn_backend
+                .available_versions("com.brave.Browser")
+                .await
+                .unwrap(),
+            vec![Version::new("stable")]
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[test]
+    fn parse_remote_branches_skips_malformed_rows_and_empty_branch_cells() {
+        let rows = "com.brave.Browser\tstable\n\
+                    no-tab-row\n\
+                    \t1.0\n\
+                    com.brave.Browser\t\n\
+                    com.brave.Browser\tbeta\n";
+        assert_eq!(
+            parse_remote_branches(rows, "com.brave.Browser").unwrap(),
+            vec![Version::new("stable"), Version::new("beta")]
+        );
+        assert_eq!(
+            parse_remote_branches("", "com.brave.Browser").unwrap(),
+            Vec::<Version>::new()
+        );
+    }
+
+    #[test]
+    fn parse_remote_branches_rejects_a_non_empty_document_with_no_parseable_rows() {
+        let error = parse_remote_branches("garbage without tabs", "com.brave.Browser").unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "{error:?}"
         );
     }
 

@@ -1,13 +1,13 @@
 //! # Planner
 //!
 //! Pure functions deriving a concrete [`InstallPlan`] / [`UninstallPlan`]
-//! from a registry [`App`] (its [`InstallMethod`]) plus a host [`Target`]:
-//! the concrete [`BackendId`] to route to, the exact operation args (cask
-//! token vs formula name, flatpak remote + ref (installs) or bare app id
-//! (uninstalls) + installation kind, distro manager + package name), a
-//! `dry_run` slot, and — for distro managers — an explicit
-//! `requires_elevation: true` requirement that toride never satisfies
-//! itself (no auto-sudo).
+//! from a registry [`App`] (its [`InstallMethod`]) plus a host [`Target`]
+//! and the caller's options: the concrete [`BackendId`] to route to, the
+//! exact operation args (cask token vs formula name, flatpak remote + ref
+//! (installs) or bare app id (uninstalls) + installation kind, distro
+//! manager + package name), a `dry_run` slot, and — for distro managers —
+//! an explicit `requires_elevation: true` requirement that toride never
+//! satisfies itself (no auto-sudo).
 //!
 //! Everything here is I/O-free: no clock, no filesystem, no processes. Input
 //! `App` in, plan or [`Error`] out, so every derivation is
@@ -31,13 +31,19 @@
 //!    (a `Direct` method, an unknown distro family, a host arch flatpak
 //!    cannot spell an install ref for) fails **here, at plan time** — never
 //!    deferred to a confusing execute-time error.
+//! 4. **Version selection** — [`InstallOptions::version`] spells the exact
+//!    thing to install in each method's native addressing: the brew token
+//!    becomes `token@<version>` (the versioned name brew itself manages),
+//!    the flatpak ref's branch segment becomes the version. Distro methods
+//!    take no version operand and refuse one here, at plan time
+//!    ([`Error::VersionNotSelectable`]).
 
 use serde::{Deserialize, Serialize};
 use toride_registry::{
     App, Arch, Availability, DistroFamily, InstallMethod, Os, Platform, TorideId,
 };
 
-use crate::backend::BackendId;
+use crate::backend::{BackendId, Version};
 use crate::error::{Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -431,6 +437,33 @@ impl Operation {
 // Plans
 // ---------------------------------------------------------------------------
 
+/// Options shaping [`plan_install`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstallOptions {
+    /// The exact thing to install, in the method's native version spelling
+    /// (`None` = whatever the manager considers current). Homebrew renders
+    /// it into the token (`token@<version>` — the versioned name brew
+    /// manages and every later probe addresses); flatpak renders it into
+    /// the install ref's branch segment. Distro methods cannot express a
+    /// version and refuse one at plan time.
+    pub version: Option<Version>,
+}
+
+impl InstallOptions {
+    /// All-default options (the manager's current version).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self { version: None }
+    }
+
+    /// Select an exact version — consume-and-return.
+    #[must_use]
+    pub fn version(mut self, version: Option<Version>) -> Self {
+        self.version = version;
+        self
+    }
+}
+
 /// Options shaping [`plan_uninstall`].
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UninstallOptions {
@@ -624,22 +657,32 @@ struct Resolved {
 ///
 /// Checks the app's availability (disabled apps are refused), its platform
 /// claims (skipped when the app declares none), then routes the app's
-/// [`InstallMethod`] to a backend operation with exact argv.
+/// [`InstallMethod`] to a backend operation with exact argv. A version in
+/// `options` is spelled into the operation's native addressing (see
+/// [`InstallOptions::version`]).
 ///
 /// # Errors
 ///
 /// - [`Error::AppDisabled`] when the source disabled the app;
 /// - [`Error::PlatformMismatch`] when the app's claims exclude the target;
 /// - [`Error::UnsupportedMethod`] when no backend applies (wrong OS or
-///   distro family, a `Direct` method, or an unrouted family).
-pub fn plan_install(app: &App, target: &Target) -> Result<InstallPlan> {
+///   distro family, a `Direct` method, or an unrouted family);
+/// - [`Error::VersionNotSelectable`] when `options` carries a version the
+///   routed method cannot express.
+pub fn plan_install(app: &App, target: &Target, options: &InstallOptions) -> Result<InstallPlan> {
     if app.availability == Availability::Disabled {
         return Err(Error::AppDisabled {
             app: app.id.as_str().to_owned(),
         });
     }
     check_platform_claims(app, *target)?;
-    let resolved = resolve_operation(app, *target, Action::Install)?;
+    let resolved = resolve_operation(
+        app,
+        *target,
+        Action::Install {
+            version: options.version.as_ref(),
+        },
+    )?;
     Ok(InstallPlan {
         app: app.id.clone(),
         backend: resolved.backend,
@@ -710,9 +753,12 @@ fn platform_matches(claim: &Platform, target: Target) -> bool {
 
 /// Which action a [`resolve_operation`] call is planning.
 #[derive(Debug, Clone, Copy)]
-enum Action {
-    /// Install verbs.
-    Install,
+enum Action<'a> {
+    /// Install verbs; `version` requests an exact thing to install.
+    Install {
+        /// The selected version, when the caller pinned one.
+        version: Option<&'a Version>,
+    },
     /// Uninstall verbs; `zap` requests homebrew cask full removal.
     Uninstall {
         /// Casks only: `brew uninstall --zap`.
@@ -723,7 +769,7 @@ enum Action {
 /// Route one install method on one target to its backend and operation,
 /// building the verb that matches `action`. Dispatch only — the per-method
 /// rules live in the `resolve_*` helpers below.
-fn resolve_operation(app: &App, target: Target, action: Action) -> Result<Resolved> {
+fn resolve_operation(app: &App, target: Target, action: Action<'_>) -> Result<Resolved> {
     match &app.install {
         InstallMethod::Homebrew { cask, token } => {
             resolve_homebrew(app, target, action, *cask, token)
@@ -766,7 +812,7 @@ fn unsupported(app: &App, target: Target, reason: &str) -> Error {
 fn resolve_homebrew(
     app: &App,
     target: Target,
-    action: Action,
+    action: Action<'_>,
     cask: bool,
     token: &str,
 ) -> Result<Resolved> {
@@ -777,9 +823,12 @@ fn resolve_homebrew(
         return Err(unsupported(app, target, "homebrew requires macOS or Linux"));
     }
     let operation = match action {
-        Action::Install => Operation::BrewInstall {
+        Action::Install { version } => Operation::BrewInstall {
             cask,
-            token: token.to_owned(),
+            // `token@<version>` IS the identity brew manages for a
+            // versioned item — every probe and record replays the
+            // joined spelling, baked here once.
+            token: pinned_brew_token(token, version),
         },
         Action::Uninstall { zap } => Operation::BrewUninstall {
             cask,
@@ -797,12 +846,18 @@ fn resolve_homebrew(
     })
 }
 
+/// The brew-native spelling of `token` at `version`: joined as
+/// `token@<version>` when one is selected, verbatim otherwise.
+fn pinned_brew_token(token: &str, version: Option<&Version>) -> String {
+    version.map_or_else(|| token.to_owned(), |version| format!("{token}@{version}"))
+}
+
 /// Flatpak arm: Linux-only; installs carry an arch-pinned ref, uninstalls
 /// the bare app id.
 fn resolve_flatpak(
     app: &App,
     target: Target,
-    action: Action,
+    action: Action<'_>,
     app_id: &str,
     remote: &str,
 ) -> Result<Resolved> {
@@ -811,7 +866,7 @@ fn resolve_flatpak(
     }
     let installation = FlatpakInstallation::User;
     let operation = match action {
-        Action::Install => {
+        Action::Install { version } => {
             let Some(arch_part) = flatpak_arch(target.arch) else {
                 // Fail loudly at plan time: `app/<id>/all/stable` is not an
                 // installable ref, so deferring an unmappable arch to
@@ -825,9 +880,10 @@ fn resolve_flatpak(
                     ),
                 ));
             };
+            let branch = version.map_or("stable", Version::as_str);
             Operation::FlatpakInstall {
                 remote: remote.to_owned(),
-                app_ref: format!("app/{app_id}/{arch_part}/stable"),
+                app_ref: format!("app/{app_id}/{arch_part}/{branch}"),
                 installation,
             }
         }
@@ -850,7 +906,7 @@ fn resolve_flatpak(
 fn resolve_distro(
     app: &App,
     target: Target,
-    action: Action,
+    action: Action<'_>,
     family: DistroFamily,
     package: &str,
 ) -> Result<Resolved> {
@@ -874,8 +930,18 @@ fn resolve_distro(
             &format!("no package manager routed for family {family:?}"),
         ));
     };
+    if let Action::Install {
+        version: Some(version),
+    } = action
+    {
+        return Err(Error::VersionNotSelectable {
+            app: app.id.as_str().to_owned(),
+            method: format!("{:?}", app.install),
+            version: version.as_str().to_owned(),
+        });
+    }
     let operation = match action {
-        Action::Install => Operation::DistroInstall {
+        Action::Install { .. } => Operation::DistroInstall {
             manager,
             package: package.to_owned(),
         },
@@ -971,7 +1037,12 @@ mod tests {
 
     #[test]
     fn plans_brew_cask_install_on_macos_with_cask_flag() {
-        let plan = plan_install(&app_with(brew_method(true)), &macos()).unwrap();
+        let plan = plan_install(
+            &app_with(brew_method(true)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert_eq!(plan.backend, BackendId::Homebrew);
         assert_eq!(
             plan.operation.argv(),
@@ -983,21 +1054,34 @@ mod tests {
 
     #[test]
     fn plans_brew_formula_install_on_macos_without_cask_flag() {
-        let plan = plan_install(&app_with(brew_method(false)), &macos()).unwrap();
+        let plan = plan_install(
+            &app_with(brew_method(false)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert_eq!(plan.operation.argv(), ["brew", "install", "brave-browser"]);
     }
 
     #[test]
     fn plans_brew_formula_install_on_linux_for_linuxbrew() {
-        let plan =
-            plan_install(&app_with(brew_method(false)), &linux(DistroFamily::Debian)).unwrap();
+        let plan = plan_install(
+            &app_with(brew_method(false)),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert_eq!(plan.backend, BackendId::Homebrew);
     }
 
     #[test]
     fn rejects_brew_cask_install_on_linux() {
-        let error =
-            plan_install(&app_with(brew_method(true)), &linux(DistroFamily::Debian)).unwrap_err();
+        let error = plan_install(
+            &app_with(brew_method(true)),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::UnsupportedMethod { .. }),
             "{error:?}"
@@ -1005,11 +1089,157 @@ mod tests {
         assert!(error.to_string().contains("cask requires macOS"), "{error}");
     }
 
+    // --- version selection ------------------------------------------------------
+
+    #[test]
+    fn plans_brew_cask_install_at_a_version_as_the_versioned_token() {
+        let options = InstallOptions::new().version(Some(Version::new("138.0.1")));
+        let plan = plan_install(&app_with(brew_method(true)), &macos(), &options).unwrap();
+        assert_eq!(
+            plan.operation.argv(),
+            ["brew", "install", "--cask", "brave-browser@138.0.1"]
+        );
+        assert_eq!(
+            plan.operation.description(),
+            "install homebrew cask `brave-browser@138.0.1`",
+            "the joined spelling is the identity brew addresses"
+        );
+    }
+
+    #[test]
+    fn plans_brew_formula_install_at_a_version_without_the_cask_flag() {
+        let options = InstallOptions::default().version(Some(Version::new("14.1.0")));
+        let plan = plan_install(&app_with(brew_method(false)), &macos(), &options).unwrap();
+        assert_eq!(
+            plan.operation.argv(),
+            ["brew", "install", "brave-browser@14.1.0"]
+        );
+    }
+
+    #[test]
+    fn brew_version_selection_joins_into_the_recordable_token() {
+        let options = InstallOptions::new().version(Some(Version::new("22")));
+        let plan = plan_install(&app_with(brew_method(false)), &macos(), &options).unwrap();
+        let Operation::BrewInstall { token, .. } = &plan.operation else {
+            panic!("brew plan carries a brew operation: {:?}", plan.operation);
+        };
+        assert_eq!(token, "brave-browser@22");
+    }
+
+    #[test]
+    fn plans_flatpak_install_at_a_version_as_the_ref_branch_segment() {
+        let options = InstallOptions::new().version(Some(Version::new("beta")));
+        let plan = plan_install(
+            &app_with(flatpak_method()),
+            &linux(DistroFamily::Debian),
+            &options,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.operation.argv(),
+            [
+                "flatpak",
+                "install",
+                "--user",
+                "flathub",
+                "app/com.brave.Browser/x86_64/beta"
+            ]
+        );
+    }
+
+    #[test]
+    fn flatpak_version_selection_keeps_the_host_arch_segment() {
+        let target = Target::linux(Arch::Aarch64, DistroFamily::Fedora);
+        let options = InstallOptions::new().version(Some(Version::new("stable")));
+        let plan = plan_install(&app_with(flatpak_method()), &target, &options).unwrap();
+        let Operation::FlatpakInstall { app_ref, .. } = &plan.operation else {
+            panic!("flatpak plan carries a flatpak operation");
+        };
+        assert_eq!(app_ref, "app/com.brave.Browser/aarch64/stable");
+    }
+
+    #[test]
+    fn refuses_a_version_for_a_distro_method_at_plan_time() {
+        let options = InstallOptions::new().version(Some(Version::new("1.4.2")));
+        let error = plan_install(
+            &app_with(distro_method(DistroFamily::Debian)),
+            &linux(DistroFamily::Debian),
+            &options,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::VersionNotSelectable { .. }),
+            "{error:?}"
+        );
+        let text = error.to_string();
+        assert!(text.contains("1.4.2"), "{text}");
+        assert!(text.contains("version: None"), "{text}");
+    }
+
+    #[test]
+    fn refuses_a_version_for_a_distro_method_before_the_family_routing() {
+        let options = InstallOptions::default().version(Some(Version::new("1.0")));
+        let error = plan_install(
+            &app_with(distro_method(DistroFamily::Debian)),
+            &macos(),
+            &options,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::UnsupportedMethod { .. }),
+            "routing failures outrank the version refusal: {error:?}"
+        );
+    }
+
+    #[test]
+    fn install_options_default_to_the_managers_current_and_set_fluently() {
+        assert_eq!(InstallOptions::default(), InstallOptions::new());
+        assert_eq!(InstallOptions::new().version, None);
+        let pinned = InstallOptions::new().version(Some(Version::new("1.0")));
+        assert_eq!(pinned.version, Some(Version::new("1.0")));
+        assert_eq!(pinned.version(None).version, None);
+    }
+
+    #[test]
+    fn unpinned_installs_keep_the_verbatim_token_and_stable_branch() {
+        let brew = plan_install(
+            &app_with(brew_method(true)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            brew.operation.argv(),
+            ["brew", "install", "--cask", "brave-browser"]
+        );
+        let flatpak = plan_install(
+            &app_with(flatpak_method()),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::new(),
+        )
+        .unwrap();
+        assert_eq!(
+            flatpak.operation.argv(),
+            [
+                "flatpak",
+                "install",
+                "--user",
+                "flathub",
+                "app/com.brave.Browser/x86_64/stable"
+            ]
+        );
+    }
+
     // --- flatpak derivations ---------------------------------------------------
 
     #[test]
     fn plans_flatpak_install_with_user_installation_and_stable_ref() {
-        let plan = plan_install(&app_with(flatpak_method()), &linux(DistroFamily::Debian)).unwrap();
+        let plan = plan_install(
+            &app_with(flatpak_method()),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert_eq!(plan.backend, BackendId::Flatpak);
         assert_eq!(
             plan.operation.argv(),
@@ -1027,7 +1257,12 @@ mod tests {
     #[test]
     fn derives_flatpak_ref_arch_from_target_arch() {
         let target = Target::linux(Arch::Aarch64, DistroFamily::Fedora);
-        let plan = plan_install(&app_with(flatpak_method()), &target).unwrap();
+        let plan = plan_install(
+            &app_with(flatpak_method()),
+            &target,
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert_eq!(
             plan.operation.argv(),
             [
@@ -1043,14 +1278,24 @@ mod tests {
     #[test]
     fn maps_x86_target_to_i386_flatpak_ref() {
         let target = Target::linux(Arch::X86, DistroFamily::Debian);
-        let plan = plan_install(&app_with(flatpak_method()), &target).unwrap();
+        let plan = plan_install(
+            &app_with(flatpak_method()),
+            &target,
+            &InstallOptions::default(),
+        )
+        .unwrap();
         let argv = plan.operation.argv();
         assert_eq!(argv[4], "app/com.brave.Browser/i386/stable");
     }
 
     #[test]
     fn rejects_flatpak_install_on_macos() {
-        let error = plan_install(&app_with(flatpak_method()), &macos()).unwrap_err();
+        let error = plan_install(
+            &app_with(flatpak_method()),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::UnsupportedMethod { .. }),
             "{error:?}"
@@ -1064,6 +1309,7 @@ mod tests {
         let plan = plan_install(
             &app_with(distro_method(DistroFamily::Debian)),
             &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
         )
         .unwrap();
         assert_eq!(plan.backend, BackendId::Distro(DistroFamily::Debian));
@@ -1076,6 +1322,7 @@ mod tests {
         let plan = plan_install(
             &app_with(distro_method(DistroFamily::Ubuntu)),
             &linux(DistroFamily::Ubuntu),
+            &InstallOptions::default(),
         )
         .unwrap();
         assert_eq!(plan.operation.argv(), ["apt", "install", "brave-browser"]);
@@ -1086,6 +1333,7 @@ mod tests {
         let plan = plan_install(
             &app_with(distro_method(DistroFamily::Fedora)),
             &linux(DistroFamily::Fedora),
+            &InstallOptions::default(),
         )
         .unwrap();
         assert_eq!(plan.operation.argv(), ["dnf", "install", "brave-browser"]);
@@ -1096,6 +1344,7 @@ mod tests {
         let plan = plan_install(
             &app_with(distro_method(DistroFamily::Arch)),
             &linux(DistroFamily::Arch),
+            &InstallOptions::default(),
         )
         .unwrap();
         assert_eq!(plan.operation.argv(), ["pacman", "--sync", "brave-browser"]);
@@ -1106,6 +1355,7 @@ mod tests {
         let plan = plan_install(
             &app_with(distro_method(DistroFamily::Alpine)),
             &linux(DistroFamily::Alpine),
+            &InstallOptions::default(),
         )
         .unwrap();
         assert_eq!(plan.operation.argv(), ["apk", "add", "brave-browser"]);
@@ -1116,6 +1366,7 @@ mod tests {
         let error = plan_install(
             &app_with(distro_method(DistroFamily::Debian)),
             &linux(DistroFamily::Fedora),
+            &InstallOptions::default(),
         )
         .unwrap_err();
         assert!(
@@ -1126,8 +1377,12 @@ mod tests {
 
     #[test]
     fn rejects_distro_install_on_macos() {
-        let error =
-            plan_install(&app_with(distro_method(DistroFamily::Debian)), &macos()).unwrap_err();
+        let error = plan_install(
+            &app_with(distro_method(DistroFamily::Debian)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::UnsupportedMethod { .. }),
             "{error:?}"
@@ -1137,8 +1392,12 @@ mod tests {
     #[test]
     fn rejects_distro_install_when_host_family_is_unknown() {
         let target = Target::new(Os::Linux, Arch::X86_64);
-        let error =
-            plan_install(&app_with(distro_method(DistroFamily::Debian)), &target).unwrap_err();
+        let error = plan_install(
+            &app_with(distro_method(DistroFamily::Debian)),
+            &target,
+            &InstallOptions::default(),
+        )
+        .unwrap_err();
         assert!(
             matches!(error, Error::UnsupportedMethod { .. }),
             "{error:?}"
@@ -1154,7 +1413,8 @@ mod tests {
             checksum: None,
             arch: None,
         };
-        let error = plan_install(&app_with(method), &macos()).unwrap_err();
+        let error =
+            plan_install(&app_with(method), &macos(), &InstallOptions::default()).unwrap_err();
         assert!(
             matches!(error, Error::UnsupportedMethod { .. }),
             "{error:?}"
@@ -1166,7 +1426,7 @@ mod tests {
     fn rejects_install_when_source_disabled() {
         let mut app = app_with(brew_method(false));
         app.availability = Availability::Disabled;
-        let error = plan_install(&app, &macos()).unwrap_err();
+        let error = plan_install(&app, &macos(), &InstallOptions::default()).unwrap_err();
         assert!(matches!(error, Error::AppDisabled { .. }), "{error:?}");
     }
 
@@ -1185,7 +1445,7 @@ mod tests {
     fn allows_install_when_source_deprecated() {
         let mut app = app_with(brew_method(false));
         app.availability = Availability::Deprecated;
-        assert!(plan_install(&app, &macos()).is_ok());
+        assert!(plan_install(&app, &macos(), &InstallOptions::default()).is_ok());
     }
 
     #[test]
@@ -1193,7 +1453,12 @@ mod tests {
         // The fixture declares no claims; a flatpak method on Linux plans
         // even though nothing claims anything (the model's "unknown, not
         // universal" rule: the method's own scope governs).
-        let plan = plan_install(&app_with(flatpak_method()), &linux(DistroFamily::Debian)).unwrap();
+        let plan = plan_install(
+            &app_with(flatpak_method()),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert_eq!(plan.backend, BackendId::Flatpak);
     }
 
@@ -1212,7 +1477,7 @@ mod tests {
                 min_release: None,
             },
         ];
-        let error = plan_install(&app, &macos()).unwrap_err();
+        let error = plan_install(&app, &macos(), &InstallOptions::default()).unwrap_err();
         assert!(matches!(error, Error::PlatformMismatch { .. }), "{error:?}");
     }
 
@@ -1256,7 +1521,12 @@ mod tests {
                 min_release: None,
             },
         ];
-        let plan = plan_install(&app, &linux(DistroFamily::Debian)).unwrap();
+        let plan = plan_install(
+            &app,
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert_eq!(plan.backend, BackendId::Flatpak);
     }
 
@@ -1269,7 +1539,7 @@ mod tests {
             min_release: None,
         }];
         let target = Target::linux(Arch::Aarch64, DistroFamily::Fedora);
-        assert!(plan_install(&app, &target).is_ok());
+        assert!(plan_install(&app, &target, &InstallOptions::default()).is_ok());
     }
 
     // --- uninstall derivations ---------------------------------------------------
@@ -1368,7 +1638,12 @@ mod tests {
 
     #[test]
     fn dry_run_defaults_false_and_setter_round_trips() {
-        let plan = plan_install(&app_with(brew_method(true)), &macos()).unwrap();
+        let plan = plan_install(
+            &app_with(brew_method(true)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         assert!(!plan.dry_run);
         let dry = plan.clone().dry_run(true);
         assert!(dry.dry_run);
@@ -1377,7 +1652,12 @@ mod tests {
 
     #[test]
     fn install_plans_round_trip_through_json() {
-        let plan = plan_install(&app_with(flatpak_method()), &linux(DistroFamily::Debian)).unwrap();
+        let plan = plan_install(
+            &app_with(flatpak_method()),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         let json = plan.to_json_string().unwrap();
         assert_eq!(InstallPlan::from_json_str(&json).unwrap(), plan);
     }
@@ -1396,7 +1676,12 @@ mod tests {
 
     #[test]
     fn summary_names_backend_description_and_argv() {
-        let plan = plan_install(&app_with(brew_method(true)), &macos()).unwrap();
+        let plan = plan_install(
+            &app_with(brew_method(true)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
         let summary = plan.summary();
         assert!(summary.contains("homebrew"), "{summary}");
         assert!(summary.contains("cask"), "{summary}");

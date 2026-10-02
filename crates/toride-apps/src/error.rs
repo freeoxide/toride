@@ -89,6 +89,39 @@ pub enum Error {
     /// which the manifest layer (A5) persists through.
     #[error("plan serialization failed: {0}")]
     PlanJson(#[from] serde_json::Error),
+
+    /// The install options requested a specific version and the routed
+    /// method cannot express one. Raised at the **plan** stage: distro
+    /// managers take no per-version install operand in this crate's argv
+    /// model, so the refusal happens before any backend is selected.
+    #[error(
+        "cannot install `{app}` at version {version} via {method}: the method takes no version operand — pass version: None"
+    )]
+    VersionNotSelectable {
+        /// Canonical toride id of the app.
+        app: String,
+        /// Debug rendering of the [`InstallMethod`] that cannot select a
+        /// version.
+        ///
+        /// [`InstallMethod`]: toride_registry::InstallMethod
+        method: String,
+        /// The requested version's native spelling.
+        version: String,
+    },
+
+    /// The backend cannot hold an item back from upgrades (or release that
+    /// hold): only homebrew has a pin concept among the wave-1 managers.
+    #[error("`{backend}` cannot {operation} `{id}`: {reason}")]
+    PinUnsupported {
+        /// Backend the pin or unpin was routed to.
+        backend: BackendId,
+        /// The refused action (`"pin"` / `"unpin"`).
+        operation: &'static str,
+        /// Backend-native id the action was requested for.
+        id: String,
+        /// Why the backend refuses (no pin concept, or the kind cannot pin).
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -124,5 +157,33 @@ mod tests {
             std::error::Error::source(&error).is_some(),
             "the wrapped runner error must remain reachable via source()"
         );
+    }
+
+    #[test]
+    fn display_names_method_and_version_for_not_selectable() {
+        let error = Error::VersionNotSelectable {
+            app: "brave".to_owned(),
+            method: "Distro { family: Debian, repo: None, package: \"brave-browser\" }".to_owned(),
+            version: "1.4.2".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("`brave`"), "{text}");
+        assert!(text.contains("1.4.2"), "{text}");
+        assert!(text.contains("version: None"), "{text}");
+    }
+
+    #[test]
+    fn display_names_backend_action_and_reason_for_pin_unsupported() {
+        let error = Error::PinUnsupported {
+            backend: BackendId::Flatpak,
+            operation: "pin",
+            id: "com.brave.Browser".to_owned(),
+            reason: "this backend has no pin concept".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("flatpak"), "{text}");
+        assert!(text.contains("pin"), "{text}");
+        assert!(text.contains("com.brave.Browser"), "{text}");
+        assert!(text.contains("no pin concept"), "{text}");
     }
 }

@@ -32,7 +32,8 @@ use toride_apps::backends::distro::detect_host_family;
 use toride_apps::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
 use toride_apps::runner::CommandRunner;
 use toride_apps::{
-    AppStatus, Apps, Backend, BackendId, BackendStatus, StatusQuery, Target, plan_install,
+    AppStatus, Apps, Backend, BackendId, BackendStatus, InstallOptions, StatusQuery, Target,
+    plan_install,
 };
 use toride_registry::sources::appstream::{AppstreamAdapter, AppstreamClient, DEBIAN_BASE_URL};
 use toride_registry::sources::flathub::FlathubAdapter;
@@ -179,8 +180,12 @@ async fn flathub_adapter_resolves_a_live_app_into_a_plannable_operation() {
     assert!(matches!(app.install, InstallMethod::Flatpak { .. }));
 
     // Pure planning against a Linux target — the host never needs flatpak.
-    let plan = plan_install(&app, &Target::linux(Arch::X86_64, DistroFamily::Debian))
-        .expect("a live flatpak app plans for a linux target");
+    let plan = plan_install(
+        &app,
+        &Target::linux(Arch::X86_64, DistroFamily::Debian),
+        &InstallOptions::default(),
+    )
+    .expect("a live flatpak app plans for a linux target");
     assert_eq!(plan.backend, BackendId::Flatpak);
     let owned = plan.operation.argv();
     let argv: Vec<&str> = owned.iter().map(String::as_str).collect();
@@ -211,8 +216,12 @@ async fn homebrew_adapter_resolves_a_live_formula_without_brew_installed() {
     ));
 
     // Formulae plan on Linux too (Linuxbrew); no brew binary is involved.
-    let plan = plan_install(&app, &Target::linux(Arch::X86_64, DistroFamily::Debian))
-        .expect("a live formula plans for a linux target");
+    let plan = plan_install(
+        &app,
+        &Target::linux(Arch::X86_64, DistroFamily::Debian),
+        &InstallOptions::default(),
+    )
+    .expect("a live formula plans for a linux target");
     assert_eq!(plan.backend, BackendId::Homebrew);
     let owned = plan.operation.argv();
     let argv: Vec<&str> = owned.iter().map(String::as_str).collect();
@@ -255,8 +264,12 @@ async fn appstream_fetch_normalizes_the_live_debian_catalog() {
         }
     ));
 
-    let plan = plan_install(&app, &Target::linux(Arch::X86_64, DistroFamily::Debian))
-        .expect("a live distro app plans for its own family");
+    let plan = plan_install(
+        &app,
+        &Target::linux(Arch::X86_64, DistroFamily::Debian),
+        &InstallOptions::default(),
+    )
+    .expect("a live distro app plans for its own family");
     assert_eq!(plan.backend, BackendId::Distro(DistroFamily::Debian));
     assert!(plan.requires_elevation, "distro plans never auto-sudo");
     let owned = plan.operation.argv();

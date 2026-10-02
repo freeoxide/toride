@@ -24,7 +24,8 @@
 //!   spawn processes directly;
 //! - the [`Apps`] **facade** composing all of the above with the install
 //!   manifest and the registry adapters into the user-facing operations
-//!   (ensure-installed, uninstall, status, search).
+//!   (ensure-installed at a version, uninstall, update, status, search,
+//!   available-version listing, pin/unpin).
 //!
 //! ## Pipeline
 //!
@@ -135,8 +136,8 @@ pub use backend::{
 pub use error::{Error, Result};
 pub use manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
 pub use plan::{
-    FlatpakInstallation, InstallPlan, Operation, PackageManager, Target, UninstallOptions,
-    UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
+    FlatpakInstallation, InstallOptions, InstallPlan, Operation, PackageManager, Target,
+    UninstallOptions, UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 pub use runner::{CommandRunner, CommandRunnerBuilder, command};
 pub use status::{AppStatus, BackendSet, app_status};

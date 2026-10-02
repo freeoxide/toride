@@ -17,8 +17,10 @@
 //! - **Trait operations** — install/uninstall/update/list/status per the
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
 //!   homebrew-specific [`HomebrewBackend::outdated`],
-//!   [`HomebrewBackend::installed_version`], and
-//!   [`HomebrewBackend::available_version`] probes.
+//!   [`HomebrewBackend::installed_version`],
+//!   [`HomebrewBackend::available_version`] /
+//!   [`HomebrewBackend::available_versions`] probes, and the kind-scoped
+//!   [`HomebrewBackend::pin`] / [`HomebrewBackend::unpin`] pair.
 //! - **JSON parsing** — `brew info --json=v2 --installed` and
 //!   `brew outdated --json=v2` documents parsed into typed entries.
 //!   Per-item tolerance: a malformed item (missing its identifying field,
@@ -293,6 +295,45 @@ impl HomebrewBackend {
         parse_offered_version(&output.stdout, kind, token).map(|version| version.map(Version::new))
     }
 
+    /// The versions brew can install for the `kind`-scoped `token` today:
+    /// the same `brew info --json=v2 <token>` document the singular probe
+    /// reads, as a listing. One element at most — brew offers exactly one
+    /// installable version per kind (older ones live under separate
+    /// versioned tokens, which are their own identities).
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::available_version`].
+    pub async fn available_versions(&self, kind: BrewKind, token: &str) -> Result<Vec<Version>> {
+        let offered = self.available_version(kind, token).await?;
+        Ok(offered.into_iter().collect())
+    }
+
+    /// Hold the `kind`-scoped `token` back from `brew upgrade`
+    /// (`brew pin [--cask|--formula] <token>`). Cask pinning is native
+    /// from Homebrew 6.0; an older brew refuses the cask-scoped ask with
+    /// its own error, which surfaces verbatim.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when brew fails (absent tokens, or older brews
+    /// without cask pinning).
+    pub async fn pin(&self, kind: BrewKind, token: &str) -> Result<()> {
+        let spec = command(BREW, ["pin", kind.flag(), token]);
+        self.runner.run_checked(spec).await.map(|_| ())
+    }
+
+    /// Release a pin — the mirror of [`HomebrewBackend::pin`]
+    /// (`brew unpin [--cask|--formula] <token>`).
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::pin`].
+    pub async fn unpin(&self, kind: BrewKind, token: &str) -> Result<()> {
+        let spec = command(BREW, ["unpin", kind.flag(), token]);
+        self.runner.run_checked(spec).await.map(|_| ())
+    }
+
     /// Read the memoized prefix without running brew (`None` until the
     /// first [`HomebrewBackend::prefix`] call succeeds).
     fn cached_prefix(&self) -> Result<Option<Utf8PathBuf>> {
@@ -378,6 +419,33 @@ impl Backend for HomebrewBackend {
         let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
         let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
         Ok(formula.or(cask).map(Version::new))
+    }
+
+    async fn available_versions(&self, id: &str) -> Result<Vec<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", id]);
+        let output = self.runner.run_checked(spec).await?;
+        let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
+        let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
+        let mut versions = Vec::new();
+        for offered in [formula, cask].into_iter().flatten() {
+            let version = Version::new(offered);
+            if !versions.contains(&version) {
+                versions.push(version);
+            }
+        }
+        Ok(versions)
+    }
+
+    // The kind-less pin asks ride the formula-scoped argv, matching the
+    // kind-less version probes' formulae-first resolution; callers that
+    // know the kind (manifest records) use the kind-scoped inherent
+    // methods.
+    async fn pin(&self, id: &str) -> Result<()> {
+        self.pin(BrewKind::Formula, id).await
+    }
+
+    async fn unpin(&self, id: &str) -> Result<()> {
+        self.unpin(BrewKind::Formula, id).await
     }
 
     async fn list_installed(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
@@ -816,7 +884,9 @@ fn cache_poisoned() -> Error {
 mod tests {
     use super::*;
     use crate::backend::{BackendStatus, StatusQuery};
-    use crate::plan::{InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall};
+    use crate::plan::{
+        InstallOptions, InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall,
+    };
     use std::path::Path;
     use std::sync::Arc;
     use toride_registry::{App, Arch, Availability, InstallMethod, TorideId};
@@ -896,7 +966,12 @@ mod tests {
     }
 
     fn install_plan_for(cask: bool) -> InstallPlan {
-        plan_install(&app_with(brew_method(cask)), &macos()).unwrap()
+        plan_install(
+            &app_with(brew_method(cask)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap()
     }
 
     fn uninstall_plan_for(cask: bool, zap: bool) -> UninstallPlan {
@@ -1818,6 +1893,147 @@ mod tests {
                 Error::Command(toride_runner::Error::CommandFailed { .. })
             ),
             "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_versions_lists_the_offered_version_for_the_kind() {
+        let spec = command(BREW, ["info", "--json=v2", "ripgrep"]);
+        let document = serde_json::json!({
+            "formulae": [{
+                "name": "ripgrep",
+                "versions": { "stable": "15.2.0" },
+                "installed": [{ "version": "15.1.0" }]
+            }],
+            "casks": []
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_versions(BrewKind::Formula, "ripgrep")
+                .await
+                .unwrap(),
+            vec![Version::new("15.2.0")],
+            "the offered stable — one element at most, never the installed keg"
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn available_versions_is_empty_when_the_kind_offers_nothing() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let document = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": null } }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert!(
+            backend
+                .available_versions(BrewKind::Formula, "widget")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a HEAD-only formula offers no installable version"
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_available_versions_collects_both_kinds_deduped() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let dual = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": "1.0" } }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let same = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": "1.0" } }],
+            "casks": [{ "token": "widget", "version": "1.0" }]
+        });
+        let output = toride_runner::CommandOutput::from_stdout(dual.to_string());
+        let deduped = toride_runner::CommandOutput::from_stdout(same.to_string());
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), output)
+            .respond(spec, deduped);
+        let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
+        assert_eq!(
+            dyn_backend.available_versions("widget").await.unwrap(),
+            vec![Version::new("1.0"), Version::new("2.0")],
+            "both kinds, document order"
+        );
+        assert_eq!(
+            dyn_backend.available_versions("widget").await.unwrap(),
+            vec![Version::new("1.0")],
+            "a dual-kind token offering the same version lists it once"
+        );
+    }
+
+    #[tokio::test]
+    async fn pin_runs_the_kind_scoped_argv_exactly() {
+        let spec = command(BREW, ["pin", "--formula", "ripgrep"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        backend.pin(BrewKind::Formula, "ripgrep").await.unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn unpin_scopes_the_cask_kind() {
+        let spec = command(BREW, ["unpin", "--cask", "firefox"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        backend.unpin(BrewKind::Cask, "firefox").await.unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn trait_pin_resolves_the_formula_scope() {
+        let spec = command(BREW, ["pin", "--formula", "ripgrep"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
+        dyn_backend.pin("ripgrep").await.unwrap();
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn pin_maps_failures_to_command_error_carrying_stderr() {
+        let spec = command(BREW, ["pin", "--formula", "ghost"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stderr(
+                "Error: No installed keg or formula with the name \"ghost\".",
+                1,
+            ),
+        );
+        let backend = backend(&fake);
+        let error = backend.pin(BrewKind::Formula, "ghost").await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed { .. })
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("No installed keg"),
+            "stderr tail must travel with the error: {error}"
         );
     }
 
