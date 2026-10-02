@@ -27,6 +27,9 @@
 //!   registry adapters into the user-facing operations (ensure-installed
 //!   at a version, uninstall, update, adopt, status, search,
 //!   available-version listing, pin/unpin);
+//! - the multi-source **detection** layer ([`Detector`],
+//!   [`MultiSourceDetector`]): every hit for one name across `$PATH`, mise
+//!   shims, and the backends' own listing probes, merged by canonical path;
 //! - the **sync execution path**: every [`Backend`] operation has a
 //!   `_sync` twin executing on the calling thread through
 //!   `toride-runner`'s DuctRunner-backed seam, and [`AppsBlocking`]
@@ -152,6 +155,7 @@
 pub mod apps;
 pub mod backend;
 pub mod backends;
+pub mod detect;
 pub mod error;
 pub mod manifest;
 pub mod plan;
@@ -168,6 +172,10 @@ pub use apps::{
 pub use backend::{
     Backend, BackendId, BackendStatus, InstallOutcome, InstallRequest, InstalledApp, ListQuery,
     OutdatedEntry, StatusQuery, UninstallOutcome, UninstallRequest, UpdateRequest, Version,
+};
+pub use detect::{
+    Detection, DetectionConfidence, DetectionSource, Detector, MultiSourceDetector,
+    MultiSourceDetectorBuilder, merge_by_canonical_path,
 };
 pub use error::{Error, Result};
 pub use manifest::{
