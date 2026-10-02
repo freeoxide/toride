@@ -93,7 +93,7 @@ use std::sync::Arc;
 
 use camino::Utf8PathBuf;
 use toride_registry::model::{App, InstallMethod, SourceRef};
-use toride_registry::{Adapter, TorideId};
+use toride_registry::{Adapter, Registry, TorideId};
 
 use crate::backend::{
     Backend, BackendId, BackendStatus, InstallRequest, StatusQuery, UninstallRequest,
@@ -602,9 +602,7 @@ pub struct Apps {
     /// Where a corrupt prior store document was quarantined at build;
     /// `None` when the store loaded cleanly.
     quarantined: Option<Utf8PathBuf>,
-    /// Registry adapters, consulted in registration order for resolve and
-    /// fanned out for search.
-    adapters: Vec<Arc<dyn Adapter>>,
+    registry: Registry,
 }
 
 impl Apps {
@@ -1262,21 +1260,13 @@ impl Apps {
         Ok(app_status(None, native.as_ref(), &self.backend_set()).await?)
     }
 
-    /// Free-text search across every registered adapter, hits
-    /// concatenated in registration order. Thin by design — matching,
-    /// ranking, and merge are the registry layer's job.
-    ///
-    /// # Errors
-    ///
-    /// [`AppsError::Registry`] when any adapter fails; earlier adapters'
-    /// hits are discarded with the error (a partial answer would look
-    /// complete).
+    /// Free-text search fanned out across every registered adapter,
+    /// hits in registration order; a failing source is skipped, its hits
+    /// lost, the rest kept. Errors: [`AppsError::Registry`] only when
+    /// every registered source fails.
     pub async fn search(&self, query: &str) -> AppsResult<Vec<App>> {
-        let mut hits = Vec::new();
-        for adapter in &self.adapters {
-            hits.extend(adapter.search(query).await?);
-        }
-        Ok(hits)
+        let outcome = self.registry.search(query).await?;
+        Ok(outcome.apps)
     }
 
     /// Resolve `id` to a registry [`App`]: each adapter, in registration
@@ -1286,7 +1276,7 @@ impl Apps {
     /// first `Some` wins; the resolved app's own id becomes the manifest
     /// key downstream.
     async fn resolve(&self, id: &TorideId) -> AppsResult<App> {
-        for adapter in &self.adapters {
+        for adapter in self.registry.adapters() {
             let reference = SourceRef {
                 source: adapter.source(),
                 id: id.as_str().to_owned(),
@@ -1967,7 +1957,7 @@ impl AppsBuilder {
             records: snapshot.into_records(),
             store,
             quarantined,
-            adapters: self.adapters,
+            registry: Registry::new(self.adapters),
         })
     }
 }

@@ -69,4 +69,30 @@ pub enum Error {
         /// The first grammar rule the input violated.
         reason: String,
     },
+
+    /// Every source the [`Registry`](crate::Registry) fan-out asked
+    /// failed — an empty hit list would look complete when it is not.
+    #[error("every registry source failed for `{context}`")]
+    AllSourcesFailed {
+        /// The query or id whose fan-out failed on every source.
+        context: String,
+        /// One failure per registered adapter, in registration order.
+        failures: Vec<SourceFailure>,
+    },
+}
+
+/// One adapter's failure inside a [`Registry`](crate::Registry) fan-out —
+/// which source failed and the error it failed with.
+#[derive(Debug)]
+pub struct SourceFailure {
+    /// The failed adapter's source kind.
+    pub source: crate::model::SourceKind,
+    /// The failure that adapter reported.
+    pub error: Error,
+}
+
+impl std::fmt::Display for SourceFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{:?}: {}", self.source, self.error)
+    }
 }

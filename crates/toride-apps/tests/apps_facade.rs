@@ -3246,6 +3246,112 @@ async fn search_fans_out_across_the_registered_adapters_in_order() {
     assert!(fake.calls().is_empty());
 }
 
+/// An adapter whose every operation fails — the per-source error the
+/// registry facade's fan-out must tolerate.
+struct FailingAdapter {
+    source: SourceKind,
+}
+
+impl FailingAdapter {
+    fn new(source: SourceKind) -> Arc<Self> {
+        Arc::new(Self { source })
+    }
+}
+
+#[async_trait]
+impl Adapter for FailingAdapter {
+    fn source(&self) -> SourceKind {
+        self.source
+    }
+
+    async fn lookup(&self, _id: &SourceRef) -> toride_registry::Result<Option<App>> {
+        Err(source_down())
+    }
+
+    async fn search(&self, _query: &str) -> toride_registry::Result<Vec<App>> {
+        Err(source_down())
+    }
+}
+
+fn source_down() -> toride_registry::Error {
+    toride_registry::Error::Http {
+        url: "https://registry.example".to_owned(),
+        message: "source down".to_owned(),
+    }
+}
+
+#[tokio::test]
+async fn search_keeps_earlier_hits_when_a_later_source_fails() {
+    let path = temp_manifest_path("search-partial-failure");
+    let fake = FakeRunner::new().strict();
+    let failing: Arc<dyn Adapter> = FailingAdapter::new(SourceKind::Flathub);
+    let adapters: Vec<Arc<dyn Adapter>> = vec![
+        FixtureAdapter::new(
+            SourceKind::HomebrewCask,
+            vec![app(
+                "firefox",
+                "Firefox Browser",
+                InstallMethod::Homebrew {
+                    cask: true,
+                    token: "firefox".to_owned(),
+                },
+            )],
+        ),
+        failing,
+    ];
+    let apps = facade(&fake, macos(), &path, adapters);
+
+    let hits = apps
+        .search("firefox browser")
+        .await
+        .expect("a failing source must not fail the whole search");
+    let names: Vec<&str> = hits.iter().map(|hit| hit.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["Firefox Browser"],
+        "the healthy source's hits survive"
+    );
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn search_errors_when_every_registered_source_fails() {
+    let path = temp_manifest_path("search-total-failure");
+    let fake = FakeRunner::new().strict();
+    let adapters: Vec<Arc<dyn Adapter>> = vec![
+        FailingAdapter::new(SourceKind::HomebrewCask),
+        FailingAdapter::new(SourceKind::Flathub),
+    ];
+    let apps = facade(&fake, macos(), &path, adapters);
+
+    let error = apps
+        .search("firefox browser")
+        .await
+        .expect_err("an all-sources-down search must not masquerade as zero hits");
+    assert!(
+        matches!(error, AppsError::Registry(_)),
+        "expected AppsError::Registry, got {error:?}"
+    );
+    assert!(
+        error.to_string().contains("every registry source failed"),
+        "the total-failure error names its shape: {error}"
+    );
+    assert!(fake.calls().is_empty());
+}
+
+#[tokio::test]
+async fn search_with_no_registered_adapters_is_an_empty_hit_list() {
+    let path = temp_manifest_path("search-empty");
+    let fake = FakeRunner::new().strict();
+    let apps = facade(&fake, macos(), &path, Vec::new());
+
+    let hits = apps
+        .search("anything")
+        .await
+        .expect("no sources means nothing to fail");
+    assert!(hits.is_empty());
+}
+
 #[tokio::test]
 async fn adopt_claims_a_foreign_install_and_the_uninstall_stops_refusing() {
     let path = temp_manifest_path("adopt-foreign");

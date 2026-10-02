@@ -188,6 +188,41 @@ pub enum Availability {
     Disabled,
 }
 
+impl App {
+    /// The best checksummed artifact for `os`/`arch` wrapped as an
+    /// [`InstallMethod::Direct`] — exact (os, arch) match preferred,
+    /// undeclared slots (`None`) as wildcards; `None` when no checksummed
+    /// artifact matches (DESIGN.md §3.3).
+    #[must_use]
+    pub fn direct_fallback(&self, os: Os, arch: Option<Arch>) -> Option<InstallMethod> {
+        let mut best: Option<(u8, &Artifact)> = None;
+        for artifact in &self.artifacts {
+            if artifact.checksum.is_none() {
+                continue;
+            }
+            let os_rank = match artifact.os {
+                Some(claimed) if claimed == os => 0,
+                None => 1,
+                Some(_) => continue,
+            };
+            let arch_rank = match (artifact.arch, arch) {
+                (Some(claimed), Some(wanted)) if claimed == wanted => 0,
+                (None, _) | (_, None) => 1,
+                (Some(_), Some(_)) => continue,
+            };
+            let rank = os_rank + arch_rank;
+            if best.is_none_or(|(best_rank, _)| rank < best_rank) {
+                best = Some((rank, artifact));
+            }
+        }
+        best.map(|(_, artifact)| InstallMethod::Direct {
+            url: artifact.url.clone(),
+            checksum: artifact.checksum.clone(),
+            arch: artifact.arch,
+        })
+    }
+}
+
 /// A version as an opaque string plus the extras sources publish.
 ///
 /// Deliberately no semver parsing in wave 1 (repology `origversion`
@@ -402,7 +437,123 @@ pub enum DistroFamily {
 
 #[cfg(test)]
 mod tests {
-    use super::TorideId;
+    use super::{
+        App, Arch, Artifact, ArtifactKind, Checksum, ChecksumAlgo, InstallMethod, Os, TorideId,
+    };
+
+    fn artifact(url: &str, digest: Option<&str>, os: Option<Os>, arch: Option<Arch>) -> Artifact {
+        Artifact {
+            url: url.to_owned(),
+            checksum: digest.map(|digest| Checksum {
+                algo: ChecksumAlgo::Sha256,
+                digest: digest.to_owned(),
+            }),
+            os,
+            arch,
+            kind: ArtifactKind::Package,
+        }
+    }
+
+    fn app_with(artifacts: Vec<Artifact>) -> App {
+        App {
+            id: TorideId::slugify("fixture"),
+            name: "fixture".to_owned(),
+            aliases: Vec::new(),
+            summary: None,
+            description: None,
+            homepage: None,
+            license: None,
+            developer: None,
+            binaries: Vec::new(),
+            latest: None,
+            platforms: Vec::new(),
+            artifacts,
+            install: InstallMethod::Homebrew {
+                cask: false,
+                token: "fixture".to_owned(),
+            },
+            sources: Vec::new(),
+            availability: super::Availability::Available,
+        }
+    }
+
+    #[test]
+    fn direct_fallback_prefers_the_exact_os_and_arch_artifact() {
+        let app = app_with(vec![
+            artifact("https://example.com/any", Some("wild"), None, None),
+            artifact(
+                "https://example.com/mac-arm",
+                Some("exact"),
+                Some(Os::MacOs),
+                Some(Arch::Aarch64),
+            ),
+            artifact(
+                "https://example.com/mac",
+                Some("os-only"),
+                Some(Os::MacOs),
+                None,
+            ),
+            artifact(
+                "https://example.com/linux",
+                Some("wrong-os"),
+                Some(Os::Linux),
+                Some(Arch::Aarch64),
+            ),
+        ]);
+        assert_eq!(
+            app.direct_fallback(Os::MacOs, Some(Arch::Aarch64)),
+            Some(InstallMethod::Direct {
+                url: "https://example.com/mac-arm".to_owned(),
+                checksum: Some(Checksum {
+                    algo: ChecksumAlgo::Sha256,
+                    digest: "exact".to_owned(),
+                }),
+                arch: Some(Arch::Aarch64),
+            })
+        );
+    }
+
+    #[test]
+    fn direct_fallback_uses_wildcards_when_no_exact_artifact_exists() {
+        let app = app_with(vec![
+            artifact(
+                "https://example.com/no-sha",
+                None,
+                Some(Os::MacOs),
+                Some(Arch::Aarch64),
+            ),
+            artifact(
+                "https://example.com/os-any-arch",
+                Some("os"),
+                Some(Os::MacOs),
+                None,
+            ),
+        ]);
+        assert_eq!(
+            app.direct_fallback(Os::MacOs, Some(Arch::Aarch64))
+                .map(|method| match method {
+                    InstallMethod::Direct { url, .. } => url,
+                    other => panic!("expected Direct, got {other:?}"),
+                }),
+            Some("https://example.com/os-any-arch".to_owned())
+        );
+        assert!(
+            app.direct_fallback(Os::Linux, Some(Arch::Aarch64))
+                .is_none(),
+            "no artifact claims or wildcards Linux"
+        );
+    }
+
+    #[test]
+    fn direct_fallback_skips_checksum_less_artifacts() {
+        let app = app_with(vec![artifact(
+            "https://example.com/unsigned",
+            None,
+            Some(Os::MacOs),
+            Some(Arch::Aarch64),
+        )]);
+        assert_eq!(app.direct_fallback(Os::MacOs, Some(Arch::Aarch64)), None);
+    }
 
     #[test]
     fn slugify_trims_leading_and_trailing_separators() {

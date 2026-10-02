@@ -25,6 +25,9 @@ async-trait = { workspace = true }
 tokio = { workspace = true, optional = true }
 # Typed UTF-8 cache paths in the appstream fetch client (DESIGN.md §9).
 camino = { workspace = true }
+# Platform cache dir for the homebrew catalog-index cache (`http` only;
+# the parse half never touches the filesystem).
+dirs = { workspace = true }
 # DEP-11 YAML catalogs (appstream.rs); upstream serde_yaml is archived,
 # swap the backend behind the `&str -> Result<Dep11Catalog>` signature if
 # that blocks (DESIGN.md §9, appstream.md §6).

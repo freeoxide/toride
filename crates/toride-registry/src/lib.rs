@@ -22,6 +22,9 @@
 //!   [`homebrew`][sources::homebrew], [`flathub`][sources::flathub],
 //!   [`appstream`][sources::appstream], and the parse-only Repology oracle
 //!   [`repology`][sources::repology];
+//! - the [`Registry`] facade (DESIGN.md §3.3) — search fan-out with
+//!   per-source error tolerance, resolve merging `sources` rows, and
+//!   `plan` rendering install descriptors per host platform;
 //! - the alias layer — [`TorideId`] derivation plus the Repology-filled
 //!   alias index mapping the canonical toride id to per-source ids
 //!   (DESIGN.md §5).
@@ -48,31 +51,49 @@
 //!
 //! ## Quick start
 //!
-//! The end-to-end flow (rust,ignore until the `Registry` facade of
-//! DESIGN.md §3.3 lands — the model, error, adapter trait, and all four
-//! `sources` modules are real today):
+//! The [`Registry`] facade is the entry point: adapters in via
+//! [`RegistryBuilder::with_adapter`] (the concrete `sources` adapters
+//! behind the `http` feature), normalized answers out. Offline example:
 //!
-//! ```rust,ignore
-//! use toride_registry::model::{Arch, Os, Platform, TorideId};
-//! use toride_registry::{App, Registry};
+//! ```
+//! use toride_registry::model::{App, Os, Platform};
+//! use toride_registry::{PlannedOp, Registry, TorideId};
 //!
-//! // One adapter per external source; wave 1 wires homebrew, flathub
-//! // and appstream (DESIGN.md §7).
-//! let registry = Registry::new(vec![
-//!     Box::new(toride_registry::sources::homebrew::HomebrewAdapter::default()),
-//!     Box::new(toride_registry::sources::flathub::FlathubAdapter::default()),
-//! ]);
+//! let registry = Registry::builder().build();
 //!
-//! // Free-text search fans out to every adapter, returning normalized apps.
-//! let hits: Vec<App> = registry.search("brave browser").await?;
+//! let outcome = tokio::runtime::Runtime::new()
+//!     .unwrap()
+//!     .block_on(registry.search("brave browser"))
+//!     .unwrap();
+//! assert!(outcome.apps.is_empty());
+//! assert!(outcome.failures.is_empty());
 //!
-//! // Canonical toride id → per-source identity rows (alias index).
-//! let id = TorideId::slugify("brave-browser");
-//! let rows = registry.resolve(&id)?;
+//! let rows = tokio::runtime::Runtime::new()
+//!     .unwrap()
+//!     .block_on(registry.resolve(&TorideId::slugify("brave-browser")))
+//!     .unwrap();
+//! assert!(rows.is_empty());
 //!
-//! // Install descriptor → concrete steps for the host platform.
-//! let host = Platform { os: Os::Linux, arch: Some(Arch::X86_64), min_release: None };
-//! let plan = registry.plan(&hits[0], &host)?;
+//! let app: App = serde_json::from_str(
+//!     r#"{"id":"brave","name":"Brave","aliases":[],"summary":null,"description":null,
+//!         "homepage":null,"license":null,"developer":null,"binaries":[],"latest":null,
+//!         "platforms":[],"artifacts":[],"sources":[],"availability":"Available",
+//!         "install":{"Flatpak":{"app_id":"com.brave.Browser","remote":"flathub"}}}"#,
+//! )
+//! .unwrap();
+//! let host = Platform { os: Os::Linux, arch: None, min_release: None };
+//! assert_eq!(
+//!     Registry::plan(&app, &host),
+//!     PlannedOp::Command {
+//!         program: "flatpak".to_owned(),
+//!         args: vec![
+//!             "install".to_owned(),
+//!             "--user".to_owned(),
+//!             "flathub".to_owned(),
+//!             "com.brave.Browser".to_owned(),
+//!         ],
+//!     }
+//! );
 //! ```
 
 #![deny(unsafe_code)]
@@ -89,8 +110,8 @@ pub mod model;
 pub mod sources;
 
 // Re-exports — the public API surface.
-pub use adapter::Adapter;
-pub use error::{Error, Result};
+pub use adapter::{Adapter, PlannedOp, Registry, RegistryBuilder, SearchOutcome};
+pub use error::{Error, Result, SourceFailure};
 pub use model::{
     App, Arch, Artifact, ArtifactKind, Availability, Checksum, ChecksumAlgo, DistroFamily,
     InstallMethod, Os, Platform, SourceKind, SourceRef, TorideId, Version,
