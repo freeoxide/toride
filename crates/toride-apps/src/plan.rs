@@ -60,6 +60,39 @@ use toride_registry::{Checksum, ChecksumAlgo};
 use crate::backend::{BackendId, Version};
 use crate::error::{Error, Result};
 
+fn argv(parts: &[&str]) -> Vec<String> {
+    parts.iter().map(|p| (*p).to_owned()).collect()
+}
+
+fn npm_argv(verb: &str, package: &str, version: Option<&Version>, global: bool) -> Vec<String> {
+    let mut parts = vec!["npm".to_owned(), verb.to_owned()];
+    if global {
+        parts.push("-g".to_owned());
+    }
+    parts.push(npm_spec(package, version));
+    parts
+}
+
+fn cargo_install_argv(crate_: &str, version: Option<&Version>, force: bool) -> Vec<String> {
+    let mut parts = vec!["cargo".to_owned(), "install".to_owned()];
+    if force {
+        parts.push("--force".to_owned());
+    }
+    if let Some(version) = version {
+        parts.push("--version".to_owned());
+        parts.push(version.to_string());
+    }
+    parts.push(crate_.to_owned());
+    parts
+}
+
+fn uv_install_argv(package: &str, version: Option<&Version>) -> Vec<String> {
+    match version {
+        Some(version) => argv(&["uv", "tool", "install", &format!("{package}=={version}")]),
+        None => argv(&["uv", "tool", "install", package]),
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Host target
 // ---------------------------------------------------------------------------
@@ -330,6 +363,110 @@ pub enum Operation {
         /// Package name the manager knows.
         package: String,
     },
+    /// `npm install [-g] <package>[@<version>]` — the `@`-joined spec is the
+    /// versioned name npm itself addresses.
+    NpmInstall {
+        /// npm package name.
+        package: String,
+        /// Exact version, spelled `package@<version>`; `None` takes the
+        /// registry's current.
+        version: Option<Version>,
+        /// `true` installs globally (`-g`) — the CLI-tool scope this crate's
+        /// npm backend manages.
+        global: bool,
+    },
+    /// `npm uninstall [-g] <package>`.
+    NpmUninstall {
+        /// npm package name.
+        package: String,
+        /// `true` removes the global install (`-g`) — must match the install
+        /// scope.
+        global: bool,
+    },
+    /// `npm update [-g] <package>` — npm's own per-package upgrade verb.
+    NpmUpdate {
+        /// npm package name.
+        package: String,
+        /// `true` updates the global install (`-g`).
+        global: bool,
+    },
+    /// `cargo install [--version <v>] <crate>` — cargo has no separate
+    /// upgrade verb; re-installing fetches the requested (or latest) version.
+    CargoInstall {
+        /// Crate name as published on crates.io.
+        crate_: String,
+        /// Exact version via `--version`; `None` takes the latest release.
+        version: Option<Version>,
+    },
+    /// `cargo uninstall <crate>`.
+    CargoUninstall {
+        /// Crate name cargo installed.
+        crate_: String,
+    },
+    /// `cargo install --force <crate>` — cargo's upgrade story: an installed
+    /// crate only re-installs (at latest) under `--force`.
+    CargoUpdate {
+        /// Crate name to upgrade.
+        crate_: String,
+    },
+    /// `pipx install <package>`.
+    PipxInstall {
+        /// Python package name (pipx takes no version operand in this
+        /// model).
+        package: String,
+    },
+    /// `pipx uninstall <package>`.
+    PipxUninstall {
+        /// Package name pipx installed.
+        package: String,
+    },
+    /// `pipx upgrade <package>`.
+    PipxUpdate {
+        /// Package name to upgrade.
+        package: String,
+    },
+    /// `uv tool install <package>[==<version>]`.
+    UvInstall {
+        /// Python package name.
+        package: String,
+        /// Exact version, spelled `package==<version>`; `None` takes the
+        /// latest release.
+        version: Option<Version>,
+    },
+    /// `uv tool uninstall <package>`.
+    UvUninstall {
+        /// Package name uv installed.
+        package: String,
+    },
+    /// `uv tool upgrade <package>`.
+    UvUpdate {
+        /// Package name to upgrade.
+        package: String,
+    },
+    /// `mise install <tool>[@<version>]` — the mise backend then runs
+    /// `mise use --global` with the same spec so the tool's shims are active
+    /// (gated with the `mise` feature). `None` addresses `tool@latest`, the
+    /// mise-native spelling of the manager's current.
+    #[cfg(feature = "mise")]
+    MiseInstall {
+        /// mise tool name (`node`, `npm:prettier`, `cargo:ripgrep`).
+        tool: String,
+        /// Version constraint; `None` addresses `@latest`.
+        version: Option<Version>,
+    },
+    /// `mise uninstall <tool>` (gated with the `mise` feature).
+    #[cfg(feature = "mise")]
+    MiseUninstall {
+        /// mise tool name.
+        tool: String,
+    },
+    /// `mise upgrade <tool>` — mise's own upgrade verb (gated with the
+    /// `mise` feature).
+    #[cfg(feature = "mise")]
+    MiseUpdate {
+        /// mise tool name.
+        tool: String,
+    },
     /// Direct download executed through toride-installer's verified
     /// pipeline — no manager argv exists, so the canonical render names
     /// the pipeline's own operands: fetch `url`, verify against
@@ -361,10 +498,6 @@ impl Operation {
     /// stable — the value dry-run rendering shows and argv tests pin.
     #[must_use]
     pub fn argv(&self) -> Vec<String> {
-        fn argv(parts: &[&str]) -> Vec<String> {
-            parts.iter().map(|p| (*p).to_owned()).collect()
-        }
-
         match self {
             Self::BrewInstall { cask, token } => {
                 let token = token.as_str();
@@ -419,6 +552,32 @@ impl Operation {
                 parts.push(package.as_str());
                 argv(&parts)
             }
+            Self::NpmInstall {
+                package,
+                version,
+                global,
+            } => npm_argv("install", package, version.as_ref(), *global),
+            Self::NpmUninstall { package, global } => npm_argv("uninstall", package, None, *global),
+            Self::NpmUpdate { package, global } => npm_argv("update", package, None, *global),
+            Self::CargoInstall { crate_, version } => {
+                cargo_install_argv(crate_, version.as_ref(), false)
+            }
+            Self::CargoUninstall { crate_ } => argv(&["cargo", "uninstall", crate_]),
+            Self::CargoUpdate { crate_ } => cargo_install_argv(crate_, None, true),
+            Self::PipxInstall { package } => argv(&["pipx", "install", package]),
+            Self::PipxUninstall { package } => argv(&["pipx", "uninstall", package]),
+            Self::PipxUpdate { package } => argv(&["pipx", "upgrade", package]),
+            Self::UvInstall { package, version } => uv_install_argv(package, version.as_ref()),
+            Self::UvUninstall { package } => argv(&["uv", "tool", "uninstall", package]),
+            Self::UvUpdate { package } => argv(&["uv", "tool", "upgrade", package]),
+            #[cfg(feature = "mise")]
+            Self::MiseInstall { tool, version } => {
+                argv(&["mise", "install", &mise_spec(tool, version.as_ref())])
+            }
+            #[cfg(feature = "mise")]
+            Self::MiseUninstall { tool } => argv(&["mise", "uninstall", tool]),
+            #[cfg(feature = "mise")]
+            Self::MiseUpdate { tool } => argv(&["mise", "upgrade", tool]),
             #[cfg(feature = "direct")]
             Self::DirectInstall {
                 url,
@@ -482,6 +641,45 @@ impl Operation {
             Self::DistroUpdate { manager, package } => {
                 format!("upgrade {} package `{package}`", manager.program())
             }
+            Self::NpmInstall {
+                package,
+                version,
+                global,
+            } => format!(
+                "install npm package `{}`{}",
+                npm_spec(package, version.as_ref()),
+                npm_scope(*global)
+            ),
+            Self::NpmUninstall { package, global } => {
+                format!("uninstall npm package `{package}`{}", npm_scope(*global))
+            }
+            Self::NpmUpdate { package, global } => {
+                format!("update npm package `{package}`{}", npm_scope(*global))
+            }
+            Self::CargoInstall { crate_, version } => match version {
+                Some(version) => format!("install cargo crate `{crate_}` at `{version}`"),
+                None => format!("install cargo crate `{crate_}`"),
+            },
+            Self::CargoUninstall { crate_ } => format!("uninstall cargo crate `{crate_}`"),
+            Self::CargoUpdate { crate_ } => format!("update cargo crate `{crate_}`"),
+            Self::PipxInstall { package } => format!("install pipx package `{package}`"),
+            Self::PipxUninstall { package } => format!("uninstall pipx package `{package}`"),
+            Self::PipxUpdate { package } => format!("upgrade pipx package `{package}`"),
+            Self::UvInstall { package, version } => match version {
+                Some(version) => format!("install uv tool `{package}` at `{version}`"),
+                None => format!("install uv tool `{package}`"),
+            },
+            Self::UvUninstall { package } => format!("uninstall uv tool `{package}`"),
+            Self::UvUpdate { package } => format!("upgrade uv tool `{package}`"),
+            #[cfg(feature = "mise")]
+            Self::MiseInstall { tool, version } => format!(
+                "install mise tool `{}` as the global default",
+                mise_spec(tool, version.as_ref())
+            ),
+            #[cfg(feature = "mise")]
+            Self::MiseUninstall { tool } => format!("uninstall mise tool `{tool}`"),
+            #[cfg(feature = "mise")]
+            Self::MiseUpdate { tool } => format!("upgrade mise tool `{tool}`"),
             #[cfg(feature = "direct")]
             Self::DirectInstall { url, bin_name, .. } => {
                 format!("install direct download `{bin_name}` from `{url}`")
@@ -940,6 +1138,25 @@ fn resolve_homebrew(
 /// `token@<version>` when one is selected, verbatim otherwise.
 fn pinned_brew_token(token: &str, version: Option<&Version>) -> String {
     version.map_or_else(|| token.to_owned(), |version| format!("{token}@{version}"))
+}
+
+fn npm_spec(package: &str, version: Option<&Version>) -> String {
+    version.map_or_else(
+        || package.to_owned(),
+        |version| format!("{package}@{version}"),
+    )
+}
+
+fn npm_scope(global: bool) -> &'static str {
+    if global { " globally" } else { "" }
+}
+
+#[cfg(feature = "mise")]
+pub(crate) fn mise_spec(tool: &str, version: Option<&Version>) -> String {
+    version.map_or_else(
+        || format!("{tool}@latest"),
+        |version| format!("{tool}@{version}"),
+    )
 }
 
 /// Refuse a version too empty to spell, inside a routed method's install
@@ -1817,6 +2034,233 @@ mod tests {
             matches!(error, Error::UnsupportedMethod { .. }),
             "{error:?}"
         );
+    }
+
+    // --- language-ecosystem operations -------------------------------------------
+
+    #[test]
+    fn npm_operations_render_the_plan_argv() {
+        let install = Operation::NpmInstall {
+            package: "typescript".to_owned(),
+            version: Some(Version::new("5.4.5")),
+            global: true,
+        };
+        assert_eq!(install.argv(), ["npm", "install", "-g", "typescript@5.4.5"]);
+        assert_eq!(
+            install.description(),
+            "install npm package `typescript@5.4.5` globally"
+        );
+        assert_eq!(
+            Operation::NpmInstall {
+                package: "typescript".to_owned(),
+                version: None,
+                global: false,
+            }
+            .argv(),
+            ["npm", "install", "typescript"]
+        );
+        assert_eq!(
+            Operation::NpmUninstall {
+                package: "typescript".to_owned(),
+                global: true,
+            }
+            .argv(),
+            ["npm", "uninstall", "-g", "typescript"]
+        );
+        assert_eq!(
+            Operation::NpmUpdate {
+                package: "typescript".to_owned(),
+                global: true,
+            }
+            .argv(),
+            ["npm", "update", "-g", "typescript"]
+        );
+    }
+
+    #[test]
+    fn cargo_operations_render_the_plan_argv() {
+        assert_eq!(
+            Operation::CargoInstall {
+                crate_: "ripgrep".to_owned(),
+                version: Some(Version::new("14.1.0")),
+            }
+            .argv(),
+            ["cargo", "install", "--version", "14.1.0", "ripgrep"]
+        );
+        assert_eq!(
+            Operation::CargoInstall {
+                crate_: "ripgrep".to_owned(),
+                version: None,
+            }
+            .argv(),
+            ["cargo", "install", "ripgrep"]
+        );
+        assert_eq!(
+            Operation::CargoUninstall {
+                crate_: "ripgrep".to_owned()
+            }
+            .argv(),
+            ["cargo", "uninstall", "ripgrep"]
+        );
+        assert_eq!(
+            Operation::CargoUpdate {
+                crate_: "ripgrep".to_owned()
+            }
+            .argv(),
+            ["cargo", "install", "--force", "ripgrep"]
+        );
+        assert_eq!(
+            Operation::CargoInstall {
+                crate_: "ripgrep".to_owned(),
+                version: Some(Version::new("14.1.0")),
+            }
+            .description(),
+            "install cargo crate `ripgrep` at `14.1.0`"
+        );
+    }
+
+    #[test]
+    fn pipx_operations_render_the_plan_argv() {
+        assert_eq!(
+            Operation::PipxInstall {
+                package: "black".to_owned()
+            }
+            .argv(),
+            ["pipx", "install", "black"]
+        );
+        assert_eq!(
+            Operation::PipxUninstall {
+                package: "black".to_owned()
+            }
+            .argv(),
+            ["pipx", "uninstall", "black"]
+        );
+        assert_eq!(
+            Operation::PipxUpdate {
+                package: "black".to_owned()
+            }
+            .argv(),
+            ["pipx", "upgrade", "black"]
+        );
+    }
+
+    #[test]
+    fn uv_operations_render_the_plan_argv() {
+        assert_eq!(
+            Operation::UvInstall {
+                package: "ruff".to_owned(),
+                version: Some(Version::new("0.4.4")),
+            }
+            .argv(),
+            ["uv", "tool", "install", "ruff==0.4.4"]
+        );
+        assert_eq!(
+            Operation::UvInstall {
+                package: "ruff".to_owned(),
+                version: None,
+            }
+            .argv(),
+            ["uv", "tool", "install", "ruff"]
+        );
+        assert_eq!(
+            Operation::UvUninstall {
+                package: "ruff".to_owned()
+            }
+            .argv(),
+            ["uv", "tool", "uninstall", "ruff"]
+        );
+        assert_eq!(
+            Operation::UvUpdate {
+                package: "ruff".to_owned()
+            }
+            .argv(),
+            ["uv", "tool", "upgrade", "ruff"]
+        );
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn mise_operations_render_the_plan_argv() {
+        assert_eq!(
+            Operation::MiseInstall {
+                tool: "node".to_owned(),
+                version: Some(Version::new("22.1.0")),
+            }
+            .argv(),
+            ["mise", "install", "node@22.1.0"]
+        );
+        assert_eq!(
+            Operation::MiseInstall {
+                tool: "node".to_owned(),
+                version: None,
+            }
+            .argv(),
+            ["mise", "install", "node@latest"],
+            "`None` addresses mise's own current spelling"
+        );
+        assert_eq!(
+            Operation::MiseUninstall {
+                tool: "node".to_owned()
+            }
+            .argv(),
+            ["mise", "uninstall", "node"]
+        );
+        assert_eq!(
+            Operation::MiseUpdate {
+                tool: "node".to_owned()
+            }
+            .argv(),
+            ["mise", "upgrade", "node"]
+        );
+        assert_eq!(
+            Operation::MiseInstall {
+                tool: "node".to_owned(),
+                version: None,
+            }
+            .description(),
+            "install mise tool `node@latest` as the global default"
+        );
+    }
+
+    #[test]
+    fn language_operations_round_trip_through_json() {
+        for operation in [
+            Operation::NpmInstall {
+                package: "typescript".to_owned(),
+                version: Some(Version::new("5.4.5")),
+                global: true,
+            },
+            Operation::CargoInstall {
+                crate_: "ripgrep".to_owned(),
+                version: None,
+            },
+            Operation::PipxInstall {
+                package: "black".to_owned(),
+            },
+            Operation::UvInstall {
+                package: "ruff".to_owned(),
+                version: Some(Version::new("0.4.4")),
+            },
+        ] {
+            let json = serde_json::to_string(&operation).unwrap();
+            assert_eq!(
+                operation,
+                serde_json::from_str::<Operation>(&json).unwrap(),
+                "round-trips: {json}"
+            );
+        }
+    }
+
+    #[test]
+    fn language_operations_render_command_specs_with_the_program_split_off() {
+        let spec = Operation::UvInstall {
+            package: "ruff".to_owned(),
+            version: None,
+        }
+        .command_spec();
+        assert_eq!(spec.program, "uv");
+        assert_eq!(spec.args, ["tool", "install", "ruff"]);
+        assert!(spec.stdin_null);
     }
 
     // --- direct + availability + platform claims -------------------------------

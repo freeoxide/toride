@@ -6,14 +6,26 @@
 //! the module path. A new backend wires in by adding its module here and
 //! extending the re-export list.
 
+pub mod cargo;
 #[cfg(feature = "direct")]
 pub mod direct;
 pub mod distro;
 pub mod flatpak;
 pub mod homebrew;
+#[cfg(feature = "mise")]
+pub mod mise;
+pub mod npm;
+pub mod pipx;
+pub mod uv;
 
+pub use cargo::CargoBackend;
 #[cfg(feature = "direct")]
 pub use direct::DirectBackend;
 pub use distro::DistroBackend;
 pub use flatpak::FlatpakBackend;
 pub use homebrew::HomebrewBackend;
+#[cfg(feature = "mise")]
+pub use mise::MiseBackend;
+pub use npm::NpmBackend;
+pub use pipx::PipxBackend;
+pub use uv::UvBackend;

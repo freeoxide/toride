@@ -124,6 +124,15 @@
 //!   [`Operation::DistroUpdate`] complete the lifecycle: update plans are
 //!   derived from the manifest record's own identifiers
 //!   ([`Apps::update`]), never re-resolved through the registry
+//! - Language-ecosystem operations — [`Operation::NpmInstall`] /
+//!   [`Operation::CargoInstall`] / [`Operation::PipxInstall`] /
+//!   [`Operation::UvInstall`] (with their uninstall and update verbs), and
+//!   `Operation::MiseInstall` delegating to toride-mise under the
+//!   non-default `mise` feature — are embedder-constructed operations
+//!   executed by [`NpmBackend`], [`CargoBackend`], [`PipxBackend`],
+//!   [`UvBackend`], and `MiseBackend`; the registry's `InstallMethod` has
+//!   no language-ecosystem variants, so the planner never routes them and
+//!   they are not registry-resolved
 //! - [`InstallMethod::Direct`] → `DirectInstall` / `DirectUninstall`
 //!   operations under the non-default `direct`
 //!   feature: toride-installer's sha256-enforcing pipeline (`Strict` by
@@ -171,6 +180,10 @@ pub use plan::{
 pub use runner::{CommandRunner, CommandRunnerBuilder, command};
 pub use status::{AppStatus, BackendSet, app_status};
 pub use store::{JsonRecordStore, RecordStore, StoreLoad};
+
+#[cfg(feature = "mise")]
+pub use backends::MiseBackend;
+pub use backends::{CargoBackend, NpmBackend, PipxBackend, UvBackend};
 
 // Re-exported host-side contract types callers need beside the planner.
 pub use toride_registry::{Arch, DistroFamily, InstallMethod, Os, TorideId};

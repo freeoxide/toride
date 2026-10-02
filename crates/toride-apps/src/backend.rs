@@ -49,6 +49,18 @@ pub enum BackendId {
     /// A distro's native package manager, selected by family (`apt`, `dnf`,
     /// `pacman`, `apk`).
     Distro(DistroFamily),
+    /// Global npm packages (`npm install -g`).
+    Npm,
+    /// Cargo-installed crates (`cargo install`).
+    Cargo,
+    /// pipx-installed Python apps (`pipx install`).
+    Pipx,
+    /// uv-managed Python tools (`uv tool install`).
+    Uv,
+    /// mise-managed tools, delegated to toride-mise (gated with the `mise`
+    /// feature — it carries tokio).
+    #[cfg(feature = "mise")]
+    Mise,
     /// Direct downloads over toride-installer's verified pipeline — the one
     /// backend every platform shares (gated with the `direct` feature).
     #[cfg(feature = "direct")]
@@ -66,6 +78,12 @@ impl std::fmt::Display for BackendId {
                 let slug = format!("distro-{family:?}").to_ascii_lowercase();
                 f.write_str(&slug)
             }
+            Self::Npm => f.write_str("npm"),
+            Self::Cargo => f.write_str("cargo"),
+            Self::Pipx => f.write_str("pipx"),
+            Self::Uv => f.write_str("uv"),
+            #[cfg(feature = "mise")]
+            Self::Mise => f.write_str("mise"),
             #[cfg(feature = "direct")]
             Self::Direct => f.write_str("direct"),
         }
@@ -1301,6 +1319,18 @@ mod tests {
             BackendId::Distro(DistroFamily::Debian).to_string(),
             "distro-debian"
         );
+        assert_eq!(BackendId::Npm.to_string(), "npm");
+        assert_eq!(BackendId::Cargo.to_string(), "cargo");
+        assert_eq!(BackendId::Pipx.to_string(), "pipx");
+        assert_eq!(BackendId::Uv.to_string(), "uv");
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn backend_id_mise_displays_and_round_trips() {
+        assert_eq!(BackendId::Mise.to_string(), "mise");
+        let json = serde_json::to_string(&BackendId::Mise).unwrap();
+        assert_eq!(json, r#""Mise""#);
     }
 
     #[cfg(feature = "direct")]
