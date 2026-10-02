@@ -1459,14 +1459,14 @@ impl Apps {
     /// parent dirs, write temp, rename) and must not run on an async
     /// worker — the standing don't-block rule; under the `tokio` feature
     /// the save is dispatched through
-    /// [`tokio::task::spawn_blocking`] (the crate-family precedent:
+    /// `tokio::task::spawn_blocking` (the crate-family precedent:
     /// toride-installer's extraction and detect) with the snapshot and
     /// the store's `Arc` cloned into the task, so no borrow is held
     /// across the await and a join failure (the blocking task was
     /// cancelled or panicked) maps to [`ManifestError::Io`] so callers'
     /// warning paths stay uniform. Without the feature there is no
     /// runtime to offload to: the save runs in-line (see `persist`),
-    /// exactly the path [`save_records_sync`] always takes. Error
+    /// exactly the path `save_records_sync` always takes. Error
     /// semantics are the store's own.
     async fn save_records(&self) -> ManifestResult<()> {
         let snapshot = RecordSnapshot {

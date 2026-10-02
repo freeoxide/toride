@@ -303,8 +303,7 @@ pub fn redact_output(spec: &CommandSpec, text: &str) -> String {
 
 /// Collect the *value* tokens that follow a sensitive flag, plus the value
 /// half of `--flag=value` pairs, into `out`. Mirrors the matching logic of
-/// [`redact_args`](crate::redact::redact_args) but returns the secrets rather
-/// than the redacted form.
+/// [`redact_args`] but returns the secrets rather than the redacted form.
 fn collect_arg_secret_values(args: &[String], out: &mut Vec<String>) {
     let mut redact_next = false;
     for arg in args {

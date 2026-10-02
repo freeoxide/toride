@@ -72,7 +72,7 @@ pub struct CommandSpec {
     /// byte-limit decision.
     ///
     /// This is a runtime safety policy, not command construction: it is
-    /// excluded from [`FakeRunner`](crate::fake::FakeRunner) exact matching,
+    /// excluded from `FakeRunner` (feature `fake`) exact matching,
     /// the same way [`CommandSpec::timeout`] is.
     pub output_limit: Option<usize>,
     /// Which side wins when `env` and `env_remove` name the same key.

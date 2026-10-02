@@ -48,13 +48,13 @@ env:
   # Every publishable workspace member (no manifest sets publish = false),
   # topologically sorted dependencies-first via cargo metadata --no-deps.
   PUBLISH_ORDER: >-
-    toride-diagnostic-types toride-fs toride-installer toride-runner
-    toride-mise toride-service toride-ssh-core toride-status toride-audit
-    toride-backup toride-cloud toride-fail2ban toride-harden toride-monitor
-    toride-proxy toride-ssh-agent toride-ssh-authorized-keys
-    toride-ssh-certificate toride-ssh-config toride-ssh-forward
-    toride-ssh-known-hosts toride-tailscale toride-updates toride-users
-    toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
+    toride-diagnostic-types toride-fs toride-runner toride-installer
+    toride-registry toride-mise toride-apps toride-service toride-ssh-core
+    toride-status toride-audit toride-backup toride-cloud toride-fail2ban
+    toride-harden toride-monitor toride-proxy toride-ssh-agent
+    toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
+    toride-ssh-forward toride-ssh-known-hosts toride-tailscale toride-updates
+    toride-users toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
     ufw-kit-test-support toride-ssh toride
 
 jobs:
@@ -216,14 +216,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo publish --dry-run (every publishable crate, dependency order)
         shell: bash
-        # Informational until the workspace first lands on crates.io: `cargo
-        # publish --dry-run` resolves intra-workspace deps against the live
-        # registry, so every crate with unpublished siblings fails with
-        # "no matching package" (order-blocked, not a manifest defect). Each
-        # such failure is downgraded to a warning annotation; tighten this to
-        # a hard gate after the first publish. The plan 3.1 release set
-        # (toride-runner/-fs/-registry/-installer/-mise/-apps) is uploaded by
-        # the publish-crates workflow, which dry-runs each crate in order.
+        # Informational until the workspace first lands on crates.io: dry-runs of
+        # crates with unpublished siblings fail "no matching package" (order-blocked,
+        # not a defect) and are downgraded to warnings; the 3.1 set uploads via publish.yml.
         run: |
           for crate in $PUBLISH_ORDER; do
             echo "::group::cargo publish --dry-run -p $crate"

@@ -12,13 +12,9 @@ categories = ["development-tools"]
 
 [features]
 default = []
-# The HTTP/archive install engine: reqwest download, sha256 hashing,
-# gzip/xz tarball extraction, and the concrete tool wiring that drives
-# them (`tools/mise`'s resolver + install/ensure paths). The offline
-# detector (`status` minus its install-on-miss path) is what the default
-# build carries, inheriting neither reqwest (rustls -> ring) nor xz2
-# (lzma-sys) — the two C build scripts that keep this crate off CI's
-# portable macOS/Windows lists (plan 3.1: heavy features off defaults).
+# The HTTP/archive install engine (reqwest download, digest verify, gzip/xz
+# extraction, tools/mise wiring); off the default set per plan 3.1 — the
+# default build is the offline detector only: no reqwest, no xz2, no C builds.
 http = ["dep:reqwest", "dep:sha2", "dep:tar", "dep:flate2", "dep:xz2", "dep:serde"]
 
 [dependencies]

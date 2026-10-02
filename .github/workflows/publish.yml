@@ -113,10 +113,9 @@ jobs:
               continue
             fi
             echo "==> publishing ${crate} ${version}"
-            # Before the first real publish, dry-run verification of a crate
-            # with unpublished intra-set deps fails with "no matching
-            # package" (order-blocked, not a manifest defect) — downgraded
-            # to a warning in dry-run mode only; strict once uploads run.
+            # Dry-run verification fails with "no matching package" while
+            # intra-set deps are unpublished (order-blocked, not a defect);
+            # warning in dry-run mode only, strict once uploads run.
             if [[ "$dry_run" == "true" ]]; then
               if ! cargo publish --dry-run -p "$crate"; then
                 echo "::warning::publish dry-run failed for ${crate} (expected while intra-set deps are unpublished)"

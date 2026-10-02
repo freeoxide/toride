@@ -5,7 +5,7 @@
 //! This crate provides:
 //!
 //! - A sync [`Runner`] trait for executing commands
-//! - An async [`AsyncRunner`] trait (feature `tokio-runner`)
+//! - An async `AsyncRunner` trait (feature `tokio-runner`)
 //! - [`CommandSpec`] for describing commands to run
 //! - Spec-level policy knobs ([`EnvPrecedence`], [`PathResolution`],
 //!   [`ArgvPolicy`], [`OutputCap`]) for embedder security postures

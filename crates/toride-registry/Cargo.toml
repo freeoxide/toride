@@ -58,15 +58,9 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 # parse half's dependency graph is unchanged.
 toride-installer = { path = "../toride-installer", version = "0.1.0", default-features = false }
 
-# F14 parse-half pin + F14 round-2 fetch-side cache pin: parse_dep11_catalog /
-# AppstreamAdapter::from_text over a synthetic dep11 fixture
-# (benches/fixtures/dep11-synthetic.yml), plus (with the non-default
-# `http` feature) the TTL-hit cache serving path `AppstreamClient::cached_catalog`
-# over a seeded cache dir — never a live 27 MB catalog. Hermetic
-# (compile-time fixture, pure parse + seeded gz cache, no network), with a
-# deterministic count/parity oracle inlined before any timing. Run scoped:
-# `cargo bench -p toride-registry --features http --bench dep11_parse`
-# (the fetch-side half needs the feature; the parse half runs either way).
+# F14 pins: parse_dep11_catalog / AppstreamAdapter::from_text over the synthetic
+# dep11 fixture, plus (feature `http`) the seeded-cache cached_catalog path — hermetic,
+# never a live catalog. Run: cargo bench -p toride-registry --features http --bench dep11_parse.
 [[bench]]
 name = "dep11_parse"
 harness = false

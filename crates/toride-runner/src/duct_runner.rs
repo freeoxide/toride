@@ -95,7 +95,7 @@ impl DuctRunnerBuilder {
 ///
 /// `DuctRunner` is a stateless unit struct, so it is [`Clone`]/[`Default`]
 /// (matching its configured sibling [`ConfiguredDuctRunner`] and the test
-/// [`FakeRunner`](crate::FakeRunner)). This lets a single shared runner be
+/// `FakeRunner`, feature `fake`). This lets a single shared runner be
 /// handed to several owning subsystems via `Clone`.
 #[derive(Debug, Clone, Default)]
 pub struct DuctRunner;
