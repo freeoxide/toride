@@ -315,7 +315,11 @@ impl FlatpakBackend {
     /// [`NativeIds::Flatpak`](crate::NativeIds::Flatpak) records no
     /// origin, so a record-driven ask cannot name another one — an app
     /// whose registry method names a different remote lists empty here,
-    /// not its own remote's branches.
+    /// not its own remote's branches. Unlike the install path this query
+    /// never configures the remote: a host without flathub in the probed
+    /// `installation` fails with flatpak's own remote-not-found error
+    /// instead of self-healing the way
+    /// [`FlatpakBackend::ensure_remote`] does — queries stay read-only.
     ///
     /// # Errors
     ///

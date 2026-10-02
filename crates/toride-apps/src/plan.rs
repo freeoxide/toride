@@ -38,8 +38,9 @@
 //!    cannot be spelled at all — empty ones, a brew token that already
 //!    names a versioned track, a flatpak version carrying the ref
 //!    separator — fail **here, at plan time**
-//!    ([`Error::InvalidVersion`]), like any other unroutable input; distro
-//!    methods take no version operand and refuse one the same way
+//!    ([`Error::InvalidVersion`]), inside the routed method's arm so that
+//!    routing refusals always outrank version refusals; distro methods
+//!    take no version operand and refuse one the same way
 //!    ([`Error::VersionNotSelectable`]).
 
 use serde::{Deserialize, Serialize};
@@ -684,16 +685,6 @@ pub fn plan_install(app: &App, target: &Target, options: &InstallOptions) -> Res
         });
     }
     check_platform_claims(app, *target)?;
-    if let Some(version) = options.version.as_ref()
-        && version.as_str().trim().is_empty()
-    {
-        return Err(Error::InvalidVersion {
-            app: app.id.as_str().to_owned(),
-            version: version.as_str().to_owned(),
-            reason: "the version is empty — it would address `token@` or a branchless ref"
-                .to_owned(),
-        });
-    }
     let resolved = resolve_operation(
         app,
         *target,
@@ -843,6 +834,7 @@ fn resolve_homebrew(
     let operation = match action {
         Action::Install { version } => {
             if let Some(version) = version {
+                ensure_spellable_version(app, version)?;
                 if token.contains('@') {
                     return Err(Error::InvalidVersion {
                         app: app.id.as_str().to_owned(),
@@ -889,6 +881,21 @@ fn pinned_brew_token(token: &str, version: Option<&Version>) -> String {
     version.map_or_else(|| token.to_owned(), |version| format!("{token}@{version}"))
 }
 
+/// Refuse a version too empty to spell, inside a routed method's install
+/// arm — routing refusals outrank version refusals for every method, so
+/// this check runs after the arm's own OS/family gates.
+fn ensure_spellable_version(app: &App, version: &Version) -> Result<()> {
+    if version.as_str().trim().is_empty() {
+        return Err(Error::InvalidVersion {
+            app: app.id.as_str().to_owned(),
+            version: version.as_str().to_owned(),
+            reason: "the version is empty — it would address `token@` or a branchless ref"
+                .to_owned(),
+        });
+    }
+    Ok(())
+}
+
 /// Flatpak arm: Linux-only; installs carry an arch-pinned ref, uninstalls
 /// the bare app id.
 fn resolve_flatpak(
@@ -917,15 +924,16 @@ fn resolve_flatpak(
                     ),
                 ));
             };
-            if let Some(version) = version
-                && version.as_str().contains('/')
-            {
-                return Err(Error::InvalidVersion {
-                    app: app.id.as_str().to_owned(),
-                    version: version.as_str().to_owned(),
-                    reason: "the version would add a ref segment — it cannot spell a branch"
-                        .to_owned(),
-                });
+            if let Some(version) = version {
+                ensure_spellable_version(app, version)?;
+                if version.as_str().contains('/') {
+                    return Err(Error::InvalidVersion {
+                        app: app.id.as_str().to_owned(),
+                        version: version.as_str().to_owned(),
+                        reason: "the version would add a ref segment — it cannot spell a branch"
+                            .to_owned(),
+                    });
+                }
             }
             let branch = version.map_or("stable", Version::as_str);
             Operation::FlatpakInstall {
@@ -1235,6 +1243,46 @@ mod tests {
         assert!(
             matches!(error, Error::UnsupportedMethod { .. }),
             "routing failures outrank the version refusal: {error:?}"
+        );
+    }
+
+    #[test]
+    fn routing_refusals_outrank_the_empty_version_refusal_too() {
+        let options = InstallOptions::new().version(Some(Version::new("")));
+        let error = plan_install(
+            &app_with(distro_method(DistroFamily::Debian)),
+            &macos(),
+            &options,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::UnsupportedMethod { .. }),
+            "the same precedence holds for a bogus version: {error:?}"
+        );
+        let error = plan_install(
+            &app_with(brew_method(true)),
+            &linux(DistroFamily::Debian),
+            &options,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::UnsupportedMethod { .. }),
+            "cask routing outranks the version shape: {error:?}"
+        );
+    }
+
+    #[test]
+    fn a_routed_distro_method_refuses_an_empty_version_as_not_selectable() {
+        let options = InstallOptions::new().version(Some(Version::new("")));
+        let error = plan_install(
+            &app_with(distro_method(DistroFamily::Debian)),
+            &linux(DistroFamily::Debian),
+            &options,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::VersionNotSelectable { .. }),
+            "distro refuses every version, empty included: {error:?}"
         );
     }
 
