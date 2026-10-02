@@ -1901,8 +1901,9 @@ fn default_target() -> Target {
 
 /// The sync twin of the [`Apps`] facade: the same verbs, executed on the
 /// calling thread through the backends' sync paths, with **in-line**
-/// manifest persistence (no runtime, no offloading — the shape an all-sync
-/// embedder drives with `default-features = false` and no tokio anywhere).
+/// manifest persistence (no runtime, no offloading — the default-build
+/// shape an all-sync embedder drives; the `tokio` feature only adds
+/// offloading for the async facade, never for this one).
 ///
 /// Build one from a built facade ([`Apps::blocking`], or
 /// [`AppsBlocking::new`]); every outcome type, option, and error is shared

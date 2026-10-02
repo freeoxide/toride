@@ -7,12 +7,16 @@ license.workspace = true
 repository.workspace = true
 
 [features]
-default = ["tokio"]
+default = []
 # Runtime offloading for the async facade: `spawn_blocking` dispatch of
-# backend commands and manifest saves. Without it the crate builds with no
-# tokio dependency at all — the sync execution path
-# (`Backend::*_sync`, `AppsBlocking`) is then the supported surface, and
-# async dispatch runs commands on the calling thread.
+# backend commands and manifest saves. Off by default (the plan's
+# "tokio facade behind a non-default feature"); without it, async dispatch
+# runs commands on the calling thread and the sync execution path
+# (`Backend::*_sync`, `AppsBlocking`) is the supported surface. This drops
+# tokio from THIS crate's dependency table only: toride-registry still
+# pulls it transitively (its tokio dep and default `http` feature are
+# unconditional), so a tokio-free embedder graph additionally needs that
+# crate to gate its own tokio usage.
 tokio = ["dep:tokio"]
 
 [dependencies]

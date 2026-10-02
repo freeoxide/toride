@@ -699,8 +699,6 @@ pub struct FlatpakEntry {
 // Output parsing
 // ---------------------------------------------------------------------------
 
-/// Build the `flatpak list` argv for a scope: verb, installation flag,
-/// `--app`, columns — options before the (empty) operand list.
 /// The canonical `flatpak install` spec the plan's operation executes.
 fn flatpak_install_spec(
     remote: &str,
@@ -764,6 +762,8 @@ fn classify_uninstall(
     }
 }
 
+/// Build the `flatpak list` argv for a scope: verb, installation flag,
+/// `--app`, columns — options before the (empty) operand list.
 fn list_args(scope: FlatpakListScope) -> Vec<&'static str> {
     let mut args = vec!["list"];
     if let Some(flag) = scope.flag() {

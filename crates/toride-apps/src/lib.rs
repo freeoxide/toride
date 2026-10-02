@@ -32,9 +32,12 @@
 //!   `toride-runner`'s DuctRunner-backed seam, and [`AppsBlocking`]
 //!   (via [`Apps::blocking`]) drives the same lifecycle verbs
 //!   synchronously with in-line manifest saves — the surface an all-sync
-//!   embedder uses with `default-features = false` (no tokio anywhere).
-//!   The `tokio` feature (on by default) adds runtime offloading for the
-//!   async facade's command dispatch and manifest saves.
+//!   embedder drives by default. The non-default `tokio` feature adds
+//!   runtime offloading (`spawn_blocking`) for the async facade's command
+//!   dispatch and manifest saves; without it they run on the calling
+//!   thread. (The feature drops tokio from this crate's own dependency
+//!   table; toride-registry still pulls it transitively until it gates
+//!   its own tokio usage.)
 //!
 //! ## Pipeline
 //!

@@ -555,13 +555,16 @@ fn adopt_claims_a_detected_install_and_persists_in_line() {
     );
 }
 
-/// A store whose saves always fail — the adopt rollback proof.
-struct FailingStore;
+/// A store that loads `snapshot` verbatim and whose saves always fail —
+/// the adopt-rollback and update-save-failure proofs.
+struct FailingStore {
+    snapshot: RecordSnapshot,
+}
 
 impl RecordStore for FailingStore {
     fn load(&self) -> ManifestResult<StoreLoad> {
         Ok(StoreLoad {
-            snapshot: RecordSnapshot::empty(),
+            snapshot: self.snapshot.clone(),
             quarantined: None,
         })
     }
@@ -581,7 +584,9 @@ fn adopt_rolls_back_when_the_in_line_save_fails() {
     let mut apps = Apps::builder()
         .runner(seam.clone())
         .target(Target::macos(toride_apps::Arch::X86_64))
-        .with_record_store(Arc::new(FailingStore))
+        .with_record_store(Arc::new(FailingStore {
+            snapshot: RecordSnapshot::empty(),
+        }))
         .homebrew(HomebrewBackend::new(seam))
         .build()
         .unwrap()
@@ -598,6 +603,56 @@ fn adopt_rolls_back_when_the_in_line_save_fails() {
         .unwrap_err();
     assert!(error.to_string().contains("disk full"), "{error}");
     assert!(apps.records().is_empty(), "the claim was rolled back");
+}
+
+#[test]
+fn update_surfaces_a_failed_save_after_the_upgrade_itself_succeeded() {
+    let outdated = r#"{"formulae":[],"casks":[{"name":"brave-browser","installed_versions":["1.90.0"],"current_version":"1.96.59","pinned":false}]}"#;
+    let fake = FakeRunner::new().strict();
+    let fake = fake
+        .respond(
+            brew_versions_cask_spec(),
+            CommandOutput::from_stdout("brave-browser 1.90.0\n"),
+        )
+        .respond(
+            brew_outdated_casks_spec(),
+            CommandOutput::from_stdout(outdated),
+        )
+        .respond(brew_upgrade_cask_spec(), CommandOutput::from_stdout(""))
+        .respond(
+            brew_versions_cask_spec(),
+            CommandOutput::from_stdout("brave-browser 1.96.59\n"),
+        );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(Target::macos(toride_apps::Arch::X86_64))
+        .with_record_store(Arc::new(FailingStore {
+            snapshot: RecordSnapshot::from(std::collections::BTreeMap::from([(
+                id("brave-browser"),
+                cask_record(Some("1.90.0")),
+            )])),
+        }))
+        .homebrew(HomebrewBackend::new(seam))
+        .build()
+        .unwrap()
+        .blocking();
+
+    let error = apps
+        .update(&id("brave-browser"), &AppUpdateOptions::new())
+        .unwrap_err();
+    assert!(matches!(error, AppsError::Manifest(_)), "{error:?}");
+    assert!(error.to_string().contains("disk full"), "{error}");
+    fake.assert_called_with(&brew_upgrade_cask_spec());
+    fake.assert_no_unmatched_calls();
+    assert_eq!(
+        apps.records()
+            .iter()
+            .find(|(record_id, _)| *record_id == &id("brave-browser"))
+            .and_then(|(_, record)| record.version.as_deref()),
+        Some("1.96.59"),
+        "the upgrade already succeeded — the in-memory record is rewritten"
+    );
 }
 
 #[test]

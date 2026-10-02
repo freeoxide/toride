@@ -3597,6 +3597,75 @@ async fn the_custom_store_receives_whole_snapshots_on_every_mutation() {
 }
 
 #[tokio::test]
+async fn update_surfaces_a_failed_save_after_the_upgrade_itself_succeeded() {
+    let map = Arc::new(MapStore::new());
+    let store: Arc<dyn RecordStore> = map.clone();
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        .respond(
+            brew_outdated_spec("--cask"),
+            CommandOutput::from_stdout(firefox_cask_outdated("138.0.1", "139.0")),
+        )
+        .respond(
+            brew_upgrade_cask_spec("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 139.0\n"),
+        );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(macos())
+        .with_record_store(Arc::clone(&store))
+        .homebrew(HomebrewBackend::new(seam.clone()))
+        .build()
+        .expect("facade builds");
+
+    apps.adopt(
+        &id("firefox"),
+        AdoptProvenance::new(NativeIds::Homebrew {
+            token: "firefox".to_owned(),
+            cask: true,
+        }),
+    )
+    .await
+    .expect("the record lands in the store");
+    let saves_before = map.save_count();
+    map.set_fail_saves(true);
+
+    let error = apps
+        .update(&id("firefox"), &AppUpdateOptions::new())
+        .await
+        .expect_err("the rewritten record cannot persist");
+    assert!(matches!(error, AppsError::Manifest(_)), "{error:?}");
+    assert!(
+        error.to_string().contains("map store write refused"),
+        "{error}"
+    );
+    fake.assert_called_with(&brew_upgrade_cask_spec("firefox"));
+    fake.assert_no_unmatched_calls();
+    assert_eq!(map.save_count(), saves_before, "the refused save never ran");
+    assert_eq!(
+        apps.records()
+            .iter()
+            .find(|(record_id, _)| *record_id == &id("firefox"))
+            .and_then(|(_, record)| record.version.as_deref()),
+        Some("139.0"),
+        "the upgrade already succeeded — the in-memory record is rewritten"
+    );
+}
+
+#[tokio::test]
 async fn update_replays_an_adopted_records_identifiers_and_keeps_it_plan_less() {
     let path = temp_manifest_path("adopt-update");
     let fake = FakeRunner::new()
