@@ -1815,11 +1815,15 @@ impl AppsBuilder {
     }
 
     /// Attach the direct-download backend — consume-and-return (the
-    /// `direct` feature). Without one attached, direct methods still plan,
-    /// but installs and uninstalls answer
-    /// [`AppsError::BackendUnavailable`], a direct record's update
-    /// refuses with [`AppsError::UnrecordableOperation`], and `status`
-    /// degrades to [`AppStatus::NotInstalled`] — no backend, no probe.
+    /// `direct` feature). Without one attached, direct methods still
+    /// plan, but installs and the record-replaying uninstalls of direct
+    /// records answer [`AppsError::BackendUnavailable`]; an unrecorded
+    /// direct app's uninstall never consults a backend at all (it answers
+    /// [`UninstallAppOutcome::AlreadyAbsent`],
+    /// [`AppsError::ForeignNotManaged`], or the plan-time refusal), a
+    /// direct record's update refuses with
+    /// [`AppsError::UnrecordableOperation`], and `status` degrades to
+    /// [`AppStatus::NotInstalled`] — no backend, no probe.
     #[cfg(feature = "direct")]
     #[must_use]
     pub fn direct(mut self, backend: DirectBackend) -> Self {
@@ -2415,7 +2419,8 @@ impl Apps {
             #[cfg(feature = "direct")]
             InstallMethod::Direct { url, checksum, .. } => {
                 let backend = self.backends.direct.as_ref()?;
-                let bin_name = crate::plan::direct_bin_name(app, url)?;
+                let bin_name =
+                    crate::plan::direct_bin_name(app, url, crate::plan::direct_artifact(url))?;
                 Some(NativeIds::Direct {
                     url: url.clone(),
                     checksum: crate::plan::direct_digest(checksum.as_ref()).ok().flatten(),
