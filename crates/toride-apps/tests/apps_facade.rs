@@ -307,8 +307,8 @@ fn apk_query_spec(package: &str) -> CommandSpec {
     command("apk", ["list", "--installed", "--quiet", package]).env("LC_ALL", "C")
 }
 
-fn brew_outdated_spec() -> CommandSpec {
-    command("brew", ["outdated", "--json=v2"])
+fn brew_outdated_spec(scope_flag: &str) -> CommandSpec {
+    command("brew", ["outdated", scope_flag, "--json=v2"])
 }
 
 fn brew_upgrade_cask_spec(token: &str) -> CommandSpec {
@@ -1818,7 +1818,7 @@ async fn update_brew_cask_stale_runs_the_upgrade_and_rewrites_the_manifest_versi
             CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
         .respond(
-            brew_outdated_spec(),
+            brew_outdated_spec("--cask"),
             CommandOutput::from_stdout(firefox_cask_outdated("138.0.1", "139.0")),
         )
         .respond(
@@ -1869,7 +1869,7 @@ async fn update_brew_cask_stale_runs_the_upgrade_and_rewrites_the_manifest_versi
 }
 
 #[tokio::test]
-async fn update_brew_up_to_date_reports_current_without_dispatching_anything_mutating() {
+async fn update_brew_reported_current_by_the_scoped_stale_signal_is_up_to_date() {
     let path = temp_manifest_path("update-cask-current");
     seed_cask_record(&path, "firefox");
     let fake = FakeRunner::new()
@@ -1879,12 +1879,8 @@ async fn update_brew_up_to_date_reports_current_without_dispatching_anything_mut
             CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
         .respond(
-            brew_outdated_spec(),
+            brew_outdated_spec("--cask"),
             CommandOutput::from_stdout(r#"{"formulae":[],"casks":[]}"#),
-        )
-        .respond(
-            brew_info_token_spec("firefox"),
-            CommandOutput::from_stdout(firefox_cask_available("138.0.1", "138.0.1")),
         );
     let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
     let mut apps = facade(&fake, macos(), &path, vec![adapter]);
@@ -1894,13 +1890,57 @@ async fn update_brew_up_to_date_reports_current_without_dispatching_anything_mut
         .await
         .expect("an up-to-date app answers, not errors");
     assert_eq!(outcome, UpdateOutcome::UpToDate);
+    fake.assert_called_with(&brew_outdated_spec("--cask"));
     fake.assert_no_unmatched_calls();
+    let calls = fake.calls();
+    assert_eq!(
+        calls.len(),
+        2,
+        "the kind-scoped manager verdict alone decides — no availability probe, no upgrade: {calls:?}"
+    );
 
     let reloaded = InstallManifest::load(&path).expect("manifest reloads");
     assert_eq!(
         reloaded
             .get(&id("firefox"))
             .expect("record survives")
+            .version
+            .as_deref(),
+        Some("138.0.1")
+    );
+}
+
+#[tokio::test]
+async fn update_brew_an_absent_token_is_never_up_to_date_and_the_upgrade_errors_honestly() {
+    let path = temp_manifest_path("update-cask-absent");
+    seed_cask_record(&path, "firefox");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            brew_silent_absent(),
+        )
+        .respond(
+            brew_upgrade_cask_spec("firefox"),
+            CommandOutput::from_stderr("Error: Cask 'firefox' is not installed.", 1),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let error = apps
+        .update(&id("firefox"), &AppUpdateOptions::new())
+        .await
+        .expect_err("an absent install is not up to date; the manager classifies");
+    assert!(
+        matches!(error, AppsError::Backend(ref inner) if matches!(inner, toride_apps::Error::Command(_))),
+        "{error:?}"
+    );
+    fake.assert_no_unmatched_calls();
+    assert_eq!(
+        InstallManifest::load(&path)
+            .expect("reload")
+            .get(&id("firefox"))
+            .expect("record untouched by the failed upgrade")
             .version
             .as_deref(),
         Some("138.0.1")
@@ -2089,6 +2129,52 @@ async fn update_flatpak_record_runs_flatpak_update_and_reports_both_versions() {
 }
 
 #[tokio::test]
+async fn update_flatpak_without_appdata_reports_none_to_none_and_records_a_null_version() {
+    let path = temp_manifest_path("update-flatpak-no-version");
+    seed_flatpak_record(&path);
+    let empty_cell = flatpak_row("com.brave.Browser", "");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            flatpak_list_spec(Some("--user")),
+            CommandOutput::from_stdout(empty_cell.clone()),
+        )
+        .respond(
+            flatpak_update_user_spec("com.brave.Browser"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            flatpak_list_spec(Some("--user")),
+            CommandOutput::from_stdout(empty_cell),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::Flathub, Vec::new());
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let outcome = apps
+        .update(&id("brave"), &AppUpdateOptions::new())
+        .await
+        .expect("an app without appdata metadata still updates");
+    assert_eq!(
+        outcome,
+        UpdateOutcome::Updated {
+            from: None,
+            to: None,
+        },
+        "present-without-a-version on both probes — the Option shape plan 4.1 exists for"
+    );
+    fake.assert_called_with(&flatpak_update_user_spec("com.brave.Browser"));
+    fake.assert_no_unmatched_calls();
+    assert_eq!(
+        InstallManifest::load(&path)
+            .expect("reload")
+            .get(&id("brave"))
+            .expect("record survives")
+            .version,
+        None
+    );
+}
+
+#[tokio::test]
 async fn a_failed_post_upgrade_probe_degrades_to_no_version_without_failing_the_update() {
     let path = temp_manifest_path("update-reprobe-failed");
     seed_cask_record(&path, "firefox");
@@ -2099,7 +2185,7 @@ async fn a_failed_post_upgrade_probe_degrades_to_no_version_without_failing_the_
             CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
         .respond(
-            brew_outdated_spec(),
+            brew_outdated_spec("--cask"),
             CommandOutput::from_stdout(firefox_cask_outdated("138.0.1", "139.0")),
         )
         .respond(

@@ -277,20 +277,20 @@ impl HomebrewBackend {
         parse_outdated_output(&output.stdout)
     }
 
-    /// The version brew currently offers for `token` (`brew info --json=v2
-    /// <token>`): the tap's `versions.stable` (formulae) / cask `version`,
-    /// never the `installed` fields the same document also carries for a
-    /// token brew has on disk — those report what is installed, not what
-    /// is offered.
+    /// The version brew currently offers for the `kind`-scoped `token`
+    /// (`brew info --json=v2 <token>`): the tap's `versions.stable`
+    /// (formulae) / cask `version`, never the `installed` fields the same
+    /// document also carries for a token brew has on disk — those report
+    /// what is installed, not what is offered.
     ///
     /// # Errors
     ///
     /// [`Error::Command`] when the probe fails (an unknown token exits 1
     /// with brew's no-formula error) or the document is unparseable.
-    pub async fn available_version(&self, token: &str) -> Result<Option<Version>> {
+    pub async fn available_version(&self, kind: BrewKind, token: &str) -> Result<Option<Version>> {
         let spec = command(BREW, ["info", "--json=v2", token]);
         let output = self.runner.run_checked(spec).await?;
-        parse_offered_version(&output.stdout, token).map(|version| version.map(Version::new))
+        parse_offered_version(&output.stdout, kind, token).map(|version| version.map(Version::new))
     }
 
     /// Read the memoized prefix without running brew (`None` until the
@@ -373,7 +373,11 @@ impl Backend for HomebrewBackend {
     }
 
     async fn available_version(&self, id: &str) -> Result<Option<Version>> {
-        self.available_version(id).await
+        let spec = command(BREW, ["info", "--json=v2", id]);
+        let output = self.runner.run_checked(spec).await?;
+        let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
+        let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
+        Ok(formula.or(cask).map(Version::new))
     }
 
     async fn list_installed(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
@@ -592,40 +596,47 @@ fn parse_installed_info_output(stdout: &str) -> Result<Vec<BrewEntry>> {
     Ok(entries)
 }
 
-/// Parse the version brew OFFERS for `token` out of a `brew info --json=v2
-/// <token>` document: the formula's `versions.stable` / the cask's
-/// `version`. The `installed` fields the document carries for a token brew
-/// has on disk are deliberately ignored — they report what is installed,
-/// not what is offered (unlike [`parse_installed_info_output`], which
-/// prefers them for exactly that reason).
+/// Parse the version brew OFFERS for the `kind`-scoped `token` out of a
+/// `brew info --json=v2 <token>` document: the formula's `versions.stable`
+/// / the cask's `version`. The `installed` fields the document carries for
+/// a token brew has on disk are deliberately ignored — they report what is
+/// installed, not what is offered (unlike [`parse_installed_info_output`],
+/// which prefers them for exactly that reason).
 ///
 /// # Errors
 ///
 /// [`Error::Command`] wrapping `OutputParse` when the payload is not a
 /// JSON object with the expected envelope shape.
-fn parse_offered_version(stdout: &str, token: &str) -> Result<Option<String>> {
+fn parse_offered_version(stdout: &str, kind: BrewKind, token: &str) -> Result<Option<String>> {
     let document: RawInstalledInfoDocument = serde_json::from_str(stdout)
         .map_err(|error| output_parse_error("brew info --json=v2", &error))?;
-    for value in document.formulae {
-        if let Ok(item) = serde_json::from_value::<RawFormulaItem>(value)
-            && item.name == token
-            && let Some(offered) = item
-                .versions
-                .and_then(|versions| versions.stable)
-                .filter(|version| !version.is_empty())
-        {
-            return Ok(Some(offered));
+    match kind {
+        BrewKind::Formula => {
+            for value in document.formulae {
+                if let Ok(item) = serde_json::from_value::<RawFormulaItem>(value)
+                    && item.name == token
+                    && let Some(offered) = item
+                        .versions
+                        .and_then(|versions| versions.stable)
+                        .filter(|version| !version.is_empty())
+                {
+                    return Ok(Some(offered));
+                }
+            }
+            Ok(None)
+        }
+        BrewKind::Cask => {
+            for value in document.casks {
+                if let Ok(item) = serde_json::from_value::<RawCaskItem>(value)
+                    && item.token == token
+                    && let Some(offered) = item.version.filter(|version| !version.is_empty())
+                {
+                    return Ok(Some(offered));
+                }
+            }
+            Ok(None)
         }
     }
-    for value in document.casks {
-        if let Ok(item) = serde_json::from_value::<RawCaskItem>(value)
-            && item.token == token
-            && let Some(offered) = item.version.filter(|version| !version.is_empty())
-        {
-            return Ok(Some(offered));
-        }
-    }
-    Ok(None)
 }
 
 /// Parse a `brew outdated --json=v2` document into typed entries, skipping
@@ -1626,7 +1637,10 @@ mod tests {
         );
         let backend = backend(&fake);
         assert_eq!(
-            backend.available_version("brave-browser").await.unwrap(),
+            backend
+                .available_version(BrewKind::Cask, "brave-browser")
+                .await
+                .unwrap(),
             Some(Version::new("1.96.59.0"))
         );
         fake.assert_called_with(&spec);
@@ -1649,7 +1663,10 @@ mod tests {
         );
         let backend = backend(&fake);
         assert_eq!(
-            backend.available_version("ripgrep").await.unwrap(),
+            backend
+                .available_version(BrewKind::Formula, "ripgrep")
+                .await
+                .unwrap(),
             Some(Version::new("15.2.0")),
             "the offered stable, never the installed keg's version"
         );
@@ -1672,9 +1689,43 @@ mod tests {
         );
         let backend = backend(&fake);
         assert_eq!(
-            backend.available_version("brave-browser").await.unwrap(),
+            backend
+                .available_version(BrewKind::Cask, "brave-browser")
+                .await
+                .unwrap(),
             Some(Version::new("139.0")),
             "the offered cask version, never the installed one"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_version_discriminates_dual_kind_tokens_by_the_requested_kind() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let document = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": "1.0" } }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let output = toride_runner::CommandOutput::from_stdout(document.to_string());
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), output.clone())
+            .respond(spec, output);
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Formula, "widget")
+                .await
+                .unwrap(),
+            Some(Version::new("1.0")),
+            "the formula arm answers a formula-scoped ask"
+        );
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Cask, "widget")
+                .await
+                .unwrap(),
+            Some(Version::new("2.0")),
+            "the cask arm answers a cask-scoped ask"
         );
     }
 
@@ -1685,14 +1736,46 @@ mod tests {
             "formulae": [{ "name": "widget", "versions": { "stable": null }, "installed": [] }],
             "casks": [{ "token": "widget", "version": "2.0" }]
         });
+        let output = toride_runner::CommandOutput::from_stdout(document.to_string());
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), output.clone())
+            .respond(spec, output);
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Formula, "widget")
+                .await
+                .unwrap(),
+            None,
+            "a HEAD-only formula offers no stable version"
+        );
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Cask, "widget")
+                .await
+                .unwrap(),
+            Some(Version::new("2.0"))
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_available_version_resolves_kind_less_formulae_first() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let document = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": "1.0" } }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
         let fake = FakeRunner::new().strict().respond(
             spec,
             toride_runner::CommandOutput::from_stdout(document.to_string()),
         );
         let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
         assert_eq!(
-            backend.available_version("widget").await.unwrap(),
-            Some(Version::new("2.0"))
+            dyn_backend.available_version("widget").await.unwrap(),
+            Some(Version::new("1.0")),
+            "the kind-less trait ask resolves formulae before casks, the listing's document order"
         );
     }
 
@@ -1705,7 +1788,13 @@ mod tests {
             toride_runner::CommandOutput::from_stdout(document.to_string()),
         );
         let backend = backend(&fake);
-        assert_eq!(backend.available_version("ghost").await.unwrap(), None);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Cask, "ghost")
+                .await
+                .unwrap(),
+            None
+        );
     }
 
     #[tokio::test]
@@ -1719,7 +1808,10 @@ mod tests {
             ),
         );
         let backend = backend(&fake);
-        let error = backend.available_version("ghost").await.unwrap_err();
+        let error = backend
+            .available_version(BrewKind::Cask, "ghost")
+            .await
+            .unwrap_err();
         assert!(
             matches!(
                 error,

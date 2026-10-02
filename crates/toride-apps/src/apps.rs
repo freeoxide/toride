@@ -83,7 +83,7 @@ use crate::backend::{
 };
 use crate::backends::distro::detect_host_family;
 use crate::backends::flatpak::FlatpakListScope;
-use crate::backends::homebrew::BrewKind;
+use crate::backends::homebrew::{BrewKind, OutdatedScope};
 use crate::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
 use crate::error::Error as BackendError;
 use crate::manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
@@ -714,11 +714,12 @@ impl Apps {
     /// manager already reports the app current — execute, re-probe the
     /// installed version, and rewrite it into the record.
     ///
-    /// The currency decision prefers the manager's own stale signal (brew
-    /// `outdated` answers per token) and falls back to installed-equals-
-    /// available where no signal exists; versions are compared as opaque
-    /// strings, never semver. A dry run executes nothing and touches no
-    /// state: it answers [`UpdateOutcome::Preview`] with the argv that
+    /// The currency decision is the manager's own stale signal where one
+    /// exists — brew's kind-scoped `outdated` verdict alone, with an
+    /// absent token never counting as current — and falls back to
+    /// installed-equals-available (opaque strings, never semver) for
+    /// backends without a signal. A dry run executes nothing and touches
+    /// no state: it answers [`UpdateOutcome::Preview`] with the argv that
     /// would run. A post-upgrade probe that fails degrades to
     /// `to: None` (the upgrade itself succeeded), matching the
     /// post-verify degradation of [`Apps::ensure_installed`].
@@ -752,23 +753,18 @@ impl Apps {
         let native = native_id(&record.ids);
         let from = self.record_installed_version(&record.ids).await?;
         if options.dry_run {
-            let to = backend.available_version(native).await?;
+            let to = self.record_available_version(&record.ids).await?;
             return Ok(UpdateOutcome::Preview(UpdatePreview {
                 argv: plan.operation.argv(),
                 from,
                 to,
             }));
         }
-        let reported_stale = backend
-            .outdated()
+        if self
+            .record_is_current(&record.ids, backend, from.as_ref(), native)
             .await?
-            .iter()
-            .any(|entry| entry.id == native);
-        if !reported_stale {
-            let to = backend.available_version(native).await?;
-            if from.is_some() && from == to {
-                return Ok(UpdateOutcome::UpToDate);
-            }
+        {
+            return Ok(UpdateOutcome::UpToDate);
         }
         backend
             .update(UpdateRequest::new(&plan, &self.target).elevated(options.elevated))
@@ -784,6 +780,35 @@ impl Apps {
         Ok(UpdateOutcome::Updated { from, to })
     }
 
+    /// Whether the record's manager already reports it current — brew's
+    /// kind-scoped stale signal answers alone (an absent token is never
+    /// current); signal-less backends compare installed against available.
+    async fn record_is_current(
+        &self,
+        ids: &NativeIds,
+        backend: &dyn Backend,
+        from: Option<&Version>,
+        native: &str,
+    ) -> AppsResult<bool> {
+        if let NativeIds::Homebrew { token, cask } = ids {
+            let scope = if *cask {
+                OutdatedScope::Casks
+            } else {
+                OutdatedScope::Formulae
+            };
+            Ok(from.is_some()
+                && !self
+                    .homebrew_backend()?
+                    .outdated(scope)
+                    .await?
+                    .iter()
+                    .any(|entry| entry.id == token.as_str()))
+        } else {
+            let to = backend.available_version(native).await?;
+            Ok(from.is_some() && from == to.as_ref())
+        }
+    }
+
     /// The record's installed version through the kind-aware presence
     /// probes (the recorded brew kind, flatpak installation, distro
     /// family), `None` covering absent and present-without-a-version
@@ -793,6 +818,29 @@ impl Apps {
             Presence::Present(version) => version.map(Version::new),
             Presence::Absent => None,
         })
+    }
+
+    /// The version the record's backend offers today — the brew ask
+    /// carries the recorded kind, so a dual-kind token answers for the
+    /// kind the record upgrades; kind-less backends keep the trait default.
+    async fn record_available_version(&self, ids: &NativeIds) -> AppsResult<Option<Version>> {
+        match ids {
+            NativeIds::Homebrew { token, cask } => {
+                let kind = if *cask {
+                    BrewKind::Cask
+                } else {
+                    BrewKind::Formula
+                };
+                Ok(self
+                    .homebrew_backend()?
+                    .available_version(kind, token)
+                    .await?)
+            }
+            _ => Ok(self
+                .backend_for(ids.backend())?
+                .available_version(native_id(ids))
+                .await?),
+        }
     }
 
     /// Where `id` stands on this host — the A5 status layer, delegated to.
