@@ -137,6 +137,25 @@ jobs:
           fi
           cargo test "${packages[@]}" --all-targets
 
+  toride-apps-features:
+    name: toride-apps feature gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: toride-apps-features
+      - name: Lint and test the non-default mise feature
+        run: |
+          cargo clippy -p toride-apps --all-targets --features mise -- -D warnings
+          cargo test -p toride-apps --all-targets --features mise
+      - name: Check the tokio-free default build
+        run: cargo check -p toride-apps --no-default-features
+
   check:
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
