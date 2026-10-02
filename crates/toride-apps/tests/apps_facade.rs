@@ -2594,6 +2594,323 @@ async fn pin_on_a_flatpak_record_surfaces_the_backend_refusal() {
     assert!(fake.calls().is_empty(), "the refusal dispatches nothing");
 }
 
+#[tokio::test]
+async fn ensure_installed_at_the_requested_version_on_a_matching_record_is_already_present() {
+    let path = temp_manifest_path("version-present-match");
+    seed_cask_record(&path, "firefox");
+    let fake = FakeRunner::new().strict().respond(
+        brew_versions_spec("--cask", "firefox"),
+        CommandOutput::from_stdout("firefox 138.0.1\n"),
+    );
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let mut apps = facade(&fake, macos(), &path, vec![adapter.clone()]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("firefox"),
+            AppInstallOptions::new().version(Some(Version::new("138.0.1"))),
+        )
+        .await
+        .expect("the record answers at exactly the requested version");
+
+    assert_eq!(
+        outcome,
+        EnsureAppOutcome::AlreadyPresent(AppStatus::Installed {
+            backend: BackendId::Homebrew,
+            version: Some("138.0.1".to_owned()),
+        })
+    );
+    let calls = fake.calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "one confirming probe, nothing else: {calls:?}"
+    );
+    assert_call_is(&calls[0], &brew_versions_spec("--cask", "firefox"));
+    assert_eq!(
+        adapter.lookups().len(),
+        0,
+        "the version-matched record answers without resolving"
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn ensure_installed_at_another_version_than_the_record_installs_the_requested_one() {
+    let path = temp_manifest_path("version-present-mismatch");
+    seed_cask_record(&path, "firefox");
+    let fake = FakeRunner::new()
+        .strict()
+        // Step 1's confirming probe: present, at 138.0.1 — not 139.0.
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        .respond(
+            brew_install_cask_spec("firefox@139.0"),
+            CommandOutput::from_stdout(""),
+        )
+        // The backend's post-install probe, then the facade's verify.
+        .respond(
+            brew_versions_spec("--cask", "firefox@139.0"),
+            CommandOutput::from_stdout("firefox@139.0 139.0\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox@139.0"),
+            CommandOutput::from_stdout("firefox@139.0 139.0\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("firefox"),
+            AppInstallOptions::new().version(Some(Version::new("139.0"))),
+        )
+        .await
+        .expect("presence at another version installs the requested one");
+
+    let EnsureAppOutcome::Installed { ids, version, .. } = outcome else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(
+        ids,
+        NativeIds::Homebrew {
+            token: "firefox@139.0".to_owned(),
+            cask: true,
+        },
+        "the record is replaced by the versioned identity that ran"
+    );
+    assert_eq!(version.as_deref(), Some("139.0"));
+    fake.assert_called_with(&brew_install_cask_spec("firefox@139.0"));
+    fake.assert_no_unmatched_calls();
+    let reloaded = InstallManifest::load(&path).expect("manifest reloads");
+    assert_eq!(
+        reloaded.get(&id("firefox")).expect("record present").ids,
+        NativeIds::Homebrew {
+            token: "firefox@139.0".to_owned(),
+            cask: true,
+        }
+    );
+}
+
+#[tokio::test]
+async fn ensure_installed_at_the_recorded_flatpak_branch_is_already_present() {
+    let path = temp_manifest_path("version-branch-match");
+    let mut manifest = InstallManifest::at(&path);
+    manifest.record(
+        InstallRecord::new(
+            toride_apps::InstallPlan {
+                app: id("brave"),
+                backend: BackendId::Flatpak,
+                operation: toride_apps::Operation::FlatpakInstall {
+                    remote: "flathub".to_owned(),
+                    app_ref: "app/com.brave.Browser/x86_64/beta".to_owned(),
+                    installation: toride_apps::FlatpakInstallation::User,
+                },
+                dry_run: false,
+                requires_elevation: false,
+            },
+            NativeIds::Flatpak {
+                app_id: "com.brave.Browser".to_owned(),
+                app_ref: Some("app/com.brave.Browser/x86_64/beta".to_owned()),
+                installation: toride_apps::FlatpakInstallation::User,
+            },
+            None,
+        )
+        .with_installed_at(1_700_000_000),
+    );
+    manifest.save().expect("seed manifest saves");
+    let fake = FakeRunner::new().strict().respond(
+        flatpak_list_spec(Some("--user")),
+        CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.2.3")),
+    );
+    let adapter = FixtureAdapter::new(SourceKind::Flathub, Vec::new());
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("brave"),
+            AppInstallOptions::new().version(Some(Version::new("beta"))),
+        )
+        .await
+        .expect("the recorded branch satisfies the request");
+    assert!(matches!(
+        outcome,
+        EnsureAppOutcome::AlreadyPresent(AppStatus::Installed { .. })
+    ));
+    let calls = fake.calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "one confirming listing, nothing else: {calls:?}"
+    );
+    assert_call_is(&calls[0], &flatpak_list_spec(Some("--user")));
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn ensure_installed_at_another_flatpak_branch_installs_that_branch() {
+    let path = temp_manifest_path("version-branch-mismatch");
+    seed_flatpak_record(&path);
+    let fake = FakeRunner::new()
+        .strict()
+        // Step 1's confirming listing: present (the record is stable).
+        .respond(
+            flatpak_list_spec(Some("--user")),
+            CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.2.3")),
+        )
+        .respond(
+            flatpak_remotes_spec(),
+            CommandOutput::from_stdout("flathub\n"),
+        )
+        .respond(
+            flatpak_install_user_spec("app/com.brave.Browser/x86_64/beta"),
+            CommandOutput::from_stdout(""),
+        )
+        // Backend post-verify + facade verify (both the user-scoped list).
+        .respond(
+            flatpak_list_spec(Some("--user")),
+            CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.3.0-beta")),
+        )
+        .respond(
+            flatpak_list_spec(Some("--user")),
+            CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.3.0-beta")),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::Flathub,
+        vec![app(
+            "brave",
+            "Brave Browser",
+            InstallMethod::Flatpak {
+                app_id: "com.brave.Browser".to_owned(),
+                remote: "flathub".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("brave"),
+            AppInstallOptions::new().version(Some(Version::new("beta"))),
+        )
+        .await
+        .expect("a stable-branch record does not satisfy a beta request");
+    assert!(matches!(outcome, EnsureAppOutcome::Installed { .. }));
+    fake.assert_called_with(&flatpak_install_user_spec(
+        "app/com.brave.Browser/x86_64/beta",
+    ));
+    fake.assert_no_unmatched_calls();
+    let reloaded = InstallManifest::load(&path).expect("manifest reloads");
+    let NativeIds::Flatpak { app_ref, .. } =
+        &reloaded.get(&id("brave")).expect("record present").ids
+    else {
+        panic!("flatpak record");
+    };
+    assert_eq!(
+        app_ref.as_deref(),
+        Some("app/com.brave.Browser/x86_64/beta")
+    );
+}
+
+#[tokio::test]
+async fn a_foreign_presence_does_not_vouch_for_a_requested_version() {
+    let path = temp_manifest_path("version-foreign");
+    let fake = FakeRunner::new()
+        .strict()
+        // The Foreign check: someone else's firefox is installed.
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(FIREFOX_CASK_INFO),
+        )
+        .respond(
+            brew_install_cask_spec("firefox@138.0.1"),
+            CommandOutput::from_stdout(""),
+        )
+        // The backend's post-install probe, then the facade's verify.
+        .respond(
+            brew_versions_spec("--cask", "firefox@138.0.1"),
+            CommandOutput::from_stdout("firefox@138.0.1 138.0.1\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox@138.0.1"),
+            CommandOutput::from_stdout("firefox@138.0.1 138.0.1\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("firefox"),
+            AppInstallOptions::new().version(Some(Version::new("138.0.1"))),
+        )
+        .await
+        .expect("a version-less Foreign state satisfies; a named version installs");
+    assert!(
+        matches!(outcome, EnsureAppOutcome::Installed { .. }),
+        "{outcome:?}"
+    );
+    fake.assert_called_with(&brew_install_cask_spec("firefox@138.0.1"));
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn a_distro_record_with_a_version_request_falls_through_to_the_plan_refusal() {
+    let path = temp_manifest_path("version-distro-record");
+    seed_distro_record(&path);
+    let fake = FakeRunner::new().strict().respond(
+        dpkg_query_spec("brave-browser"),
+        CommandOutput::from_stdout("ii brave-browser\t1.4.2\n"),
+    );
+    let adapter = FixtureAdapter::new(
+        SourceKind::Distro,
+        vec![brave_distro_app(DistroFamily::Debian)],
+    );
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let error = apps
+        .ensure_installed(
+            &id("brave"),
+            AppInstallOptions::new()
+                .elevated(true)
+                .version(Some(Version::new("1.5.0"))),
+        )
+        .await
+        .expect_err("a distro record cannot satisfy or express a version");
+    assert!(
+        matches!(
+            error,
+            AppsError::Backend(ref inner)
+                if matches!(inner, toride_apps::Error::VersionNotSelectable { .. })
+        ),
+        "{error:?}"
+    );
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1, "only the confirming probe ran: {calls:?}");
+    fake.assert_no_unmatched_calls();
+}
+
 // ---------------------------------------------------------------------------
 // Status and search
 // ---------------------------------------------------------------------------

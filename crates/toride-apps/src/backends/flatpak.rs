@@ -310,6 +310,13 @@ impl FlatpakBackend {
     /// rides). Scoped to `installation` because remotes are configured per
     /// installation; an app absent from the remote yields an empty vec.
     ///
+    /// The remote is flathub deliberately: it is the only remote toride
+    /// knows by name (see [`FLATHUB_REMOTE_NAME`]), and
+    /// [`NativeIds::Flatpak`](crate::NativeIds::Flatpak) records no
+    /// origin, so a record-driven ask cannot name another one — an app
+    /// whose registry method names a different remote lists empty here,
+    /// not its own remote's branches.
+    ///
     /// # Errors
     ///
     /// [`Error::Command`] when the listing fails or its output is
@@ -478,9 +485,6 @@ impl Backend for FlatpakBackend {
             .collect())
     }
 
-    // The kind-less trait ask rides the user installation — the planner's
-    // install scope — against the flathub remote; callers that know the
-    // recorded installation use the scoped inherent method.
     async fn available_versions(&self, id: &str) -> Result<Vec<Version>> {
         self.available_versions(id, FlatpakInstallation::User).await
     }

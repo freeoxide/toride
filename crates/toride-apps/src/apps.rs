@@ -231,8 +231,11 @@ pub struct AppInstallOptions {
     pub elevated: bool,
     /// The exact thing to install (`None` = whatever the manager considers
     /// current). Spelled into the plan's native addressing — see
-    /// [`InstallOptions::version`]. Distro methods cannot express a
-    /// version; the request is refused at plan time.
+    /// [`InstallOptions::version`]. Presence at another version does not
+    /// satisfy a request carrying one: the facade installs at the
+    /// requested version instead of answering
+    /// [`EnsureAppOutcome::AlreadyPresent`]. Distro methods cannot express
+    /// a version; the request is refused at plan time.
     pub version: Option<Version>,
 }
 
@@ -412,7 +415,13 @@ pub enum EnsureAppOutcome {
     /// [`AppStatus::Foreign`] (a backend reports the app's native
     /// identifiers present, but toride never recorded installing it — the
     /// copy is kept as-is, exactly like toride-installer keeps a
-    /// satisfying on-`$PATH` copy).
+    /// satisfying on-`$PATH` copy). When the options requested an exact
+    /// [`version`](AppInstallOptions::version), this arm fires only when
+    /// the record answers at exactly that version (brew's probed version
+    /// equals it; the recorded flatpak ref's branch equals it) — presence
+    /// at another version falls through and installs at the requested
+    /// one, and a Foreign copy never vouches for a version it did not
+    /// report.
     AlreadyPresent(AppStatus),
 
     /// Installed now. The identifiers are the **executed** ones (the
@@ -539,7 +548,11 @@ impl Apps {
     ///    [`EnsureAppOutcome::AlreadyPresent`] with the current-version
     ///    [`AppStatus::Installed`] (one confirming probe, no plan, no
     ///    execution — a stale record whose backend no longer reports the
-    ///    app falls through and re-installs).
+    ///    app falls through and re-installs). A requested version gates
+    ///    this arm: only a record answering at exactly that version
+    ///    (brew's probed version, the recorded flatpak ref's branch)
+    ///    satisfies; anything else falls through and installs at the
+    ///    requested version.
     /// 2. **Resolve** — ask each adapter, in registration order, to look
     ///    up its source-native id equal to the canonical slug; the first
     ///    hit wins ([`AppsError::Unresolved`] otherwise).
@@ -548,7 +561,9 @@ impl Apps {
     ///    else installed it: keep it and return
     ///    [`EnsureAppOutcome::AlreadyPresent`] with
     ///    [`AppStatus::Foreign`], exactly like toride-installer keeps a
-    ///    satisfying on-`$PATH` copy.
+    ///    satisfying on-`$PATH` copy — but only for a version-less
+    ///    request: a Foreign copy reports no version to vouch with, so an
+    ///    exact-version request falls through and installs.
     /// 4. **Plan and execute** — [`plan_install`] derives the exact
     ///    operation for [`Apps::target`], spelling a requested
     ///    [`AppInstallOptions::version`] into the method's native
@@ -577,20 +592,30 @@ impl Apps {
         options: AppInstallOptions,
     ) -> AppsResult<EnsureAppOutcome> {
         // 1. Detect before resolve: the manifest record plus one
-        //    confirming backend probe, zero adapter calls.
+        //    confirming backend probe, zero adapter calls — gated on the
+        //    requested version when one is named.
         let recorded = app_status(id, None, &self.manifest, &self.backend_set()).await?;
         if matches!(recorded, AppStatus::Installed { .. }) {
-            return Ok(EnsureAppOutcome::AlreadyPresent(recorded));
+            let satisfies = self.manifest.get(id).is_some_and(|record| {
+                requested_version_satisfied(&record.ids, &recorded, options.version.as_ref())
+            });
+            if satisfies {
+                return Ok(EnsureAppOutcome::AlreadyPresent(recorded));
+            }
         }
         // 2. Resolve through the registry adapters.
         let app = self.resolve(id).await?;
         // 3. Foreign presence (only meaningful without a record — a record
-        //    that failed confirmation in step 1 re-installs below).
+        //    that failed confirmation in step 1 re-installs below). A
+        //    Foreign copy reports no version, so it satisfies only a
+        //    version-less request; an exact-version request installs.
         if self.manifest.get(id).is_none() {
             let native = native_from_method(&app.install);
             let status =
                 app_status(id, native.as_ref(), &self.manifest, &self.backend_set()).await?;
-            if let AppStatus::Foreign { .. } = status {
+            if let AppStatus::Foreign { .. } = status
+                && options.version.is_none()
+            {
                 return Ok(EnsureAppOutcome::AlreadyPresent(status));
             }
         }
@@ -1637,6 +1662,43 @@ fn app_id_from_ref(app_ref: &str) -> Option<&str> {
     parts.next().filter(|id| !id.is_empty())
 }
 
+/// Whether a confirming presence answer satisfies a requested install
+/// version. `None` (the default) is satisfied by any presence. A named
+/// version is judged by the record's own kind: brew by the probed version
+/// (the listing always versions a present item), flatpak by the recorded
+/// ref's branch — the version slot a flatpak request selects — never by
+/// the appdata version the probe reports. Distro records never satisfy
+/// one: distro methods cannot express a version, and the fall-through
+/// plan refuses.
+fn requested_version_satisfied(
+    ids: &NativeIds,
+    recorded: &AppStatus,
+    requested: Option<&Version>,
+) -> bool {
+    let Some(requested) = requested else {
+        return true;
+    };
+    match ids {
+        NativeIds::Homebrew { .. } => match recorded {
+            AppStatus::Installed { version, .. } => version.as_deref() == Some(requested.as_str()),
+            AppStatus::Foreign { .. } | AppStatus::NotInstalled => false,
+        },
+        NativeIds::Flatpak { app_ref, .. } => {
+            app_ref.as_deref().and_then(ref_branch) == Some(requested.as_str())
+        }
+        NativeIds::Distro { .. } => false,
+    }
+}
+
+/// The branch segment of an install ref (`app/<id>/<arch>/<branch>` → the
+/// branch). `None` for malformed or non-app refs.
+fn ref_branch(app_ref: &str) -> Option<&str> {
+    app_ref
+        .split('/')
+        .nth(3)
+        .filter(|branch| !branch.is_empty())
+}
+
 /// A human-readable name for what a set of native identifiers addresses —
 /// the subject of the facade's warnings.
 fn native_subject(ids: &NativeIds) -> String {
@@ -2187,6 +2249,123 @@ mod tests {
             None
         );
         assert_eq!(app_id_from_ref("app//x86_64/stable"), None);
+    }
+
+    #[test]
+    fn ref_branch_extracts_and_rejects() {
+        assert_eq!(
+            ref_branch("app/com.brave.Browser/x86_64/beta"),
+            Some("beta")
+        );
+        assert_eq!(ref_branch("app/com.brave.Browser/x86_64"), None);
+        assert_eq!(ref_branch("com.brave.Browser"), None);
+        assert_eq!(ref_branch("app/com.brave.Browser/x86_64/"), None);
+    }
+
+    #[test]
+    fn requested_version_none_is_satisfied_by_any_presence() {
+        for ids in [
+            NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: true,
+            },
+            NativeIds::Distro {
+                package: "firefox".to_owned(),
+                family: DistroFamily::Debian,
+            },
+        ] {
+            assert!(requested_version_satisfied(
+                &ids,
+                &AppStatus::Installed {
+                    backend: ids.backend(),
+                    version: None,
+                },
+                None
+            ));
+        }
+    }
+
+    #[test]
+    fn brew_records_satisfy_a_version_by_the_probed_version() {
+        let ids = NativeIds::Homebrew {
+            token: "firefox@138.0.1".to_owned(),
+            cask: true,
+        };
+        let probed = AppStatus::Installed {
+            backend: BackendId::Homebrew,
+            version: Some("138.0.1".to_owned()),
+        };
+        assert!(requested_version_satisfied(
+            &ids,
+            &probed,
+            Some(&Version::new("138.0.1"))
+        ));
+        assert!(!requested_version_satisfied(
+            &ids,
+            &probed,
+            Some(&Version::new("139.0"))
+        ));
+        assert!(!requested_version_satisfied(
+            &ids,
+            &AppStatus::Installed {
+                backend: BackendId::Homebrew,
+                version: None,
+            },
+            Some(&Version::new("138.0.1"))
+        ));
+    }
+
+    #[test]
+    fn flatpak_records_satisfy_a_version_by_the_recorded_branch() {
+        let ids = NativeIds::Flatpak {
+            app_id: "com.brave.Browser".to_owned(),
+            app_ref: Some("app/com.brave.Browser/x86_64/beta".to_owned()),
+            installation: FlatpakInstallation::User,
+        };
+        let probed = AppStatus::Installed {
+            backend: BackendId::Flatpak,
+            version: Some("1.2.3".to_owned()),
+        };
+        assert!(
+            requested_version_satisfied(&ids, &probed, Some(&Version::new("beta"))),
+            "the recorded branch satisfies, never the appdata version"
+        );
+        assert!(!requested_version_satisfied(
+            &ids,
+            &probed,
+            Some(&Version::new("1.2.3")),
+        ));
+        assert!(!requested_version_satisfied(
+            &ids,
+            &probed,
+            Some(&Version::new("stable"))
+        ));
+        let no_ref = NativeIds::Flatpak {
+            app_id: "com.brave.Browser".to_owned(),
+            app_ref: None,
+            installation: FlatpakInstallation::User,
+        };
+        assert!(!requested_version_satisfied(
+            &no_ref,
+            &probed,
+            Some(&Version::new("beta"))
+        ));
+    }
+
+    #[test]
+    fn distro_records_never_satisfy_a_named_version() {
+        let ids = NativeIds::Distro {
+            package: "firefox".to_owned(),
+            family: DistroFamily::Debian,
+        };
+        assert!(!requested_version_satisfied(
+            &ids,
+            &AppStatus::Installed {
+                backend: ids.backend(),
+                version: Some("138.0".to_owned()),
+            },
+            Some(&Version::new("138.0"))
+        ));
     }
 
     #[test]

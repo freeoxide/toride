@@ -436,10 +436,6 @@ impl Backend for HomebrewBackend {
         Ok(versions)
     }
 
-    // The kind-less pin asks ride the formula-scoped argv, matching the
-    // kind-less version probes' formulae-first resolution; callers that
-    // know the kind (manifest records) use the kind-scoped inherent
-    // methods.
     async fn pin(&self, id: &str) -> Result<()> {
         self.pin(BrewKind::Formula, id).await
     }

@@ -34,8 +34,12 @@
 //! 4. **Version selection** — [`InstallOptions::version`] spells the exact
 //!    thing to install in each method's native addressing: the brew token
 //!    becomes `token@<version>` (the versioned name brew itself manages),
-//!    the flatpak ref's branch segment becomes the version. Distro methods
-//!    take no version operand and refuse one here, at plan time
+//!    the flatpak ref's branch segment becomes the version. Versions that
+//!    cannot be spelled at all — empty ones, a brew token that already
+//!    names a versioned track, a flatpak version carrying the ref
+//!    separator — fail **here, at plan time**
+//!    ([`Error::InvalidVersion`]), like any other unroutable input; distro
+//!    methods take no version operand and refuse one the same way
 //!    ([`Error::VersionNotSelectable`]).
 
 use serde::{Deserialize, Serialize};
@@ -444,8 +448,10 @@ pub struct InstallOptions {
     /// (`None` = whatever the manager considers current). Homebrew renders
     /// it into the token (`token@<version>` — the versioned name brew
     /// manages and every later probe addresses); flatpak renders it into
-    /// the install ref's branch segment. Distro methods cannot express a
-    /// version and refuse one at plan time.
+    /// the install ref's branch segment. An unspellable version (empty, a
+    /// brew token already carrying a versioned track, a flatpak version
+    /// with a ref separator) and distro methods' version-less operand
+    /// model are both refused at plan time.
     pub version: Option<Version>,
 }
 
@@ -668,7 +674,9 @@ struct Resolved {
 /// - [`Error::UnsupportedMethod`] when no backend applies (wrong OS or
 ///   distro family, a `Direct` method, or an unrouted family);
 /// - [`Error::VersionNotSelectable`] when `options` carries a version the
-///   routed method cannot express.
+///   routed method cannot express;
+/// - [`Error::InvalidVersion`] when `options` carries a version that
+///   cannot be spelled into any native address at all.
 pub fn plan_install(app: &App, target: &Target, options: &InstallOptions) -> Result<InstallPlan> {
     if app.availability == Availability::Disabled {
         return Err(Error::AppDisabled {
@@ -676,6 +684,16 @@ pub fn plan_install(app: &App, target: &Target, options: &InstallOptions) -> Res
         });
     }
     check_platform_claims(app, *target)?;
+    if let Some(version) = options.version.as_ref()
+        && version.as_str().trim().is_empty()
+    {
+        return Err(Error::InvalidVersion {
+            app: app.id.as_str().to_owned(),
+            version: version.as_str().to_owned(),
+            reason: "the version is empty — it would address `token@` or a branchless ref"
+                .to_owned(),
+        });
+    }
     let resolved = resolve_operation(
         app,
         *target,
@@ -823,13 +841,23 @@ fn resolve_homebrew(
         return Err(unsupported(app, target, "homebrew requires macOS or Linux"));
     }
     let operation = match action {
-        Action::Install { version } => Operation::BrewInstall {
-            cask,
-            // `token@<version>` IS the identity brew manages for a
-            // versioned item — every probe and record replays the
-            // joined spelling, baked here once.
-            token: pinned_brew_token(token, version),
-        },
+        Action::Install { version } => {
+            if let Some(version) = version
+                && token.contains('@')
+            {
+                return Err(Error::InvalidVersion {
+                    app: app.id.as_str().to_owned(),
+                    version: version.as_str().to_owned(),
+                    reason: format!(
+                        "the token `{token}` already names a versioned track — joining would address `{token}@{version}`"
+                    ),
+                });
+            }
+            Operation::BrewInstall {
+                cask,
+                token: pinned_brew_token(token, version),
+            }
+        }
         Action::Uninstall { zap } => Operation::BrewUninstall {
             cask,
             token: token.to_owned(),
@@ -880,6 +908,16 @@ fn resolve_flatpak(
                     ),
                 ));
             };
+            if let Some(version) = version
+                && version.as_str().contains('/')
+            {
+                return Err(Error::InvalidVersion {
+                    app: app.id.as_str().to_owned(),
+                    version: version.as_str().to_owned(),
+                    reason: "the version would add a ref segment — it cannot spell a branch"
+                        .to_owned(),
+                });
+            }
             let branch = version.map_or("stable", Version::as_str);
             Operation::FlatpakInstall {
                 remote: remote.to_owned(),
@@ -1198,6 +1236,49 @@ mod tests {
         let pinned = InstallOptions::new().version(Some(Version::new("1.0")));
         assert_eq!(pinned.version, Some(Version::new("1.0")));
         assert_eq!(pinned.version(None).version, None);
+    }
+
+    #[test]
+    fn refuses_an_empty_version_at_plan_time() {
+        let options = InstallOptions::new().version(Some(Version::new("  ")));
+        let error = plan_install(&app_with(brew_method(true)), &macos(), &options).unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+        let options = InstallOptions::new().version(Some(Version::new("")));
+        let error = plan_install(
+            &app_with(flatpak_method()),
+            &linux(DistroFamily::Debian),
+            &options,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+        assert!(error.to_string().contains("empty"), "{error}");
+    }
+
+    #[test]
+    fn refuses_a_version_for_a_token_already_naming_a_versioned_track() {
+        let method = InstallMethod::Homebrew {
+            cask: false,
+            token: "node@20".to_owned(),
+        };
+        let options = InstallOptions::new().version(Some(Version::new("22")));
+        let error = plan_install(&app_with(method), &macos(), &options).unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+        let text = error.to_string();
+        assert!(text.contains("node@20"), "{text}");
+        assert!(text.contains("node@20@22"), "{text}");
+    }
+
+    #[test]
+    fn refuses_a_flatpak_version_carrying_the_ref_separator() {
+        let options = InstallOptions::new().version(Some(Version::new("a/b")));
+        let error = plan_install(
+            &app_with(flatpak_method()),
+            &linux(DistroFamily::Debian),
+            &options,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+        assert!(error.to_string().contains("ref segment"), "{error}");
     }
 
     #[test]

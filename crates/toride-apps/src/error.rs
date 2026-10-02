@@ -109,6 +109,22 @@ pub enum Error {
         version: String,
     },
 
+    /// The requested install version cannot be spelled into the method's
+    /// native addressing (an empty version, a brew token that already
+    /// names a versioned track, a flatpak version carrying the ref
+    /// separator). Raised at the **plan** stage — the malformed address
+    /// (`token@`, `app/<id>/<arch>/`) is refused here rather than deferred
+    /// to a confusing execute-time error.
+    #[error("cannot install `{app}` at version {version}: {reason}")]
+    InvalidVersion {
+        /// Canonical toride id of the app.
+        app: String,
+        /// The requested version's spelling.
+        version: String,
+        /// Why the version cannot be addressed.
+        reason: String,
+    },
+
     /// The backend cannot hold an item back from upgrades (or release that
     /// hold): only homebrew has a pin concept among the wave-1 managers.
     #[error("`{backend}` cannot {operation} `{id}`: {reason}")]
@@ -170,6 +186,18 @@ mod tests {
         assert!(text.contains("`brave`"), "{text}");
         assert!(text.contains("1.4.2"), "{text}");
         assert!(text.contains("version: None"), "{text}");
+    }
+
+    #[test]
+    fn display_names_app_version_and_reason_for_invalid_version() {
+        let error = Error::InvalidVersion {
+            app: "brave".to_owned(),
+            version: "  ".to_owned(),
+            reason: "the version is empty".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("`brave`"), "{text}");
+        assert!(text.contains("the version is empty"), "{text}");
     }
 
     #[test]
