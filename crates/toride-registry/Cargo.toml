@@ -50,6 +50,10 @@ tokio = { workspace = true }
 # the bench compile lean; `cargo_bench_support` is required to run under
 # `cargo bench` at all.
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+# Cross-crate pin only (plan §3.12): the model's digest lengths must match
+# the installer parser/verifier constants. Dev-only and featureless, so the
+# parse half's dependency graph is unchanged.
+toride-installer = { path = "../toride-installer", version = "0.1.0", default-features = false }
 
 # F14 parse-half pin + F14 round-2 fetch-side cache pin: parse_dep11_catalog /
 # AppstreamAdapter::from_text over a synthetic dep11 fixture

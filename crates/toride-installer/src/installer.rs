@@ -119,9 +119,10 @@ fn build_http_client() -> reqwest::Client {
 #[cfg(feature = "http")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Verifier {
-    /// Verify the sha256 when the tool's descriptor carries one
-    /// ([`Checksum::Digest`] or [`Checksum::Url`]); otherwise fall back to
-    /// the documented size-floor sanity check. This is the default.
+    /// Verify the published digest when the tool's descriptor carries one
+    /// ([`Checksum::Digest`] or [`Checksum::Url`] — sha256, or sha512 for
+    /// 128-hex digests); otherwise fall back to the documented size-floor
+    /// sanity check. This is the default.
     #[default]
     Lenient,
 
@@ -310,7 +311,8 @@ impl Installer {
         // 5. verify + extract + write on a blocking thread.
         //
         // These three steps are CPU/IO-bound: verify hashes up to 256 MiB of
-        // downloaded bytes (sha256), extract decompresses a gzip/xz tarball
+        // downloaded bytes (sha256 or sha512 by digest length), extract
+        // decompresses a gzip/xz tarball
         // and walks it, and write does a full write + fsync. Running them
         // inline on the async task would block a runtime worker for the entire
         // duration; move the owned bytes onto a blocking thread so the public
@@ -456,7 +458,7 @@ impl Installer {
         Ok(buf)
     }
 
-    /// Resolve the expected sha256 digest for `tool`, performing any network
+    /// Resolve the expected digest for `tool`, performing any network
     /// I/O required to obtain it.
     ///
     /// This is the only step of verification that needs to run on the async
@@ -685,7 +687,7 @@ fn write_executable(dest: &Path, bytes: &[u8]) -> Result<()> {
 
 /// Pure-CPU verification step run on a blocking thread.
 ///
-/// Given the downloaded `bytes` and the (optional) expected sha256 `digest`
+/// Given the downloaded `bytes` and the (optional) expected `digest`
 /// resolved up front by [`Installer::resolve_expected_digest`], apply the
 /// verification policy:
 ///
@@ -750,14 +752,14 @@ fn verify_blocking(
     }
 }
 
-/// Hex length of a sha256 digest — the parser's and verifier's shared
-/// notion of "this token is a sha256 digest".
-const SHA256_HEX_LEN: usize = 64;
+/// The hex length the checksum-file parser and the verifier both treat
+/// as a sha256 digest.
+pub const SHA256_HEX_LEN: usize = 64;
 
-/// Hex length of a sha512 digest.
-const SHA512_HEX_LEN: usize = 128;
+/// The hex length the checksum-file parser and the verifier both treat
+/// as a sha512 digest; any other digest length verifies as sha256.
+pub const SHA512_HEX_LEN: usize = 128;
 
-/// Hex-encode the sha256 of `bytes`.
 #[cfg(feature = "http")]
 fn hex_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
@@ -765,7 +767,6 @@ fn hex_sha256(bytes: &[u8]) -> String {
     hex_encode(hasher.finalize().as_slice())
 }
 
-/// Hex-encode the sha512 of `bytes`.
 #[cfg(feature = "http")]
 fn hex_sha512(bytes: &[u8]) -> String {
     let mut hasher = Sha512::new();
@@ -773,8 +774,6 @@ fn hex_sha512(bytes: &[u8]) -> String {
     hex_encode(hasher.finalize().as_slice())
 }
 
-/// Lowercase hex of a digest slice — manual to stay off another tiny
-/// dependency.
 #[cfg(feature = "http")]
 fn hex_encode(digest: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -807,8 +806,6 @@ fn hex_encode(digest: &[u8]) -> String {
 /// `asset_name` is empty, any bare digest).
 #[cfg_attr(not(feature = "http"), allow(dead_code))]
 fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<String> {
-    /// True iff `s` is exactly a sha256 (64) or sha512 (128) hex digest,
-    /// case-insensitive.
     fn is_hex_digest(s: &str) -> bool {
         matches!(s.len(), SHA256_HEX_LEN | SHA512_HEX_LEN)
             && s.bytes().all(|b| b.is_ascii_hexdigit())
@@ -1428,8 +1425,6 @@ mod engine_tests {
         // exercises the exact `.timeout()`/`.connect_timeout()` calls wired
         // against the pinned constants above.
     }
-
-    // ---- Finding (2): Checksum::Url sha256 verification --------------------
 
     /// A tiny single-shot HTTP/1.0 server: serves `body` for the next GET,
     /// then stops accepting. Used to drive `Installer::verify` for the

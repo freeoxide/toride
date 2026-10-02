@@ -134,7 +134,8 @@ pub struct Tool {
     /// The file name of the installed executable on disk (e.g. `"mise"`).
     pub bin_name: String,
 
-    /// How to obtain the sha256 checksum, if at all.
+    /// How to obtain the checksum, if at all (see [`Checksum`] for how the
+    /// algorithm is picked).
     pub checksum: Checksum,
 
     /// Default install directory. When `None`, the installer falls back to

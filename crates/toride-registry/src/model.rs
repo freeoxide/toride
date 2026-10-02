@@ -630,6 +630,20 @@ mod tests {
     }
 
     #[test]
+    fn digest_hex_len_is_pinned_to_the_installer_contract() {
+        assert_eq!(
+            ChecksumAlgo::Sha256.digest_hex_len(),
+            toride_installer::SHA256_HEX_LEN,
+            "the model and the installer parser/verifier must agree on sha256"
+        );
+        assert_eq!(
+            ChecksumAlgo::Sha512.digest_hex_len(),
+            toride_installer::SHA512_HEX_LEN,
+            "the model and the installer parser/verifier must agree on sha512"
+        );
+    }
+
+    #[test]
     fn is_valid_digest_accepts_exact_length_hex_either_case() {
         let hex_64 = hex_row('1', 64);
         let hex_128 = hex_row('2', 128);

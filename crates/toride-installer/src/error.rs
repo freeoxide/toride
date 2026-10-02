@@ -97,8 +97,8 @@ pub enum Error {
 
     /// The downloaded artifact was smaller than the configured sane minimum.
     ///
-    /// Tools that publish no sha256 checksum are still guarded by a
-    /// non-zero size floor so that a 404 HTML body or an empty response is
+    /// Tools that publish no checksum are still guarded by a non-zero
+    /// size floor so that a 404 HTML body or an empty response is
     /// never silently written to disk as the "binary".
     #[error("artifact from {url} is only {size} bytes, below the {min} byte sanity floor")]
     TooSmall {
