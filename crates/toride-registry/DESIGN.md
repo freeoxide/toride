@@ -480,10 +480,33 @@ impl App {
 **Who constructs `InstallMethod::Direct`**: no wave-1 adapter does (§4
 maps never emit it; a cask's dmg stays an `Artifact`, never a second
 install method). The variant exists in the model as the target type for
-`direct_fallback`/`Plan::DirectDownload`; persisting a Direct method on
-an `App` is a wave-2 decision. The Repology oracle is *not* an `Adapter`
+`direct_fallback`/`Plan::DirectDownload`; persisting a Direct method on an
+`App` is a wave-2 decision. The Repology oracle is *not* an `Adapter`
 impl — it has no search/browse surface worth exposing and installs
 nothing; it feeds the AliasIndex.
+
+**As built (plan 3.8, wave 4 — `src/adapter.rs`)**: the facade holds
+`Vec<Arc<dyn Adapter>>` (an `Arc` so the toride-apps facade shares its
+adapters with a `Registry`), and three of the sketch's details above
+landed differently, deliberately:
+
+- fan-out is **sequential in registration order**, not `tokio::join!` —
+  a dynamic adapter vec has no `join_all` without adding `futures-util`
+  or hand-rolling a combinator, and `tokio::spawn` would force a tokio
+  runtime onto a facade the crate compiles without tokio (the `http`
+  feature owns it). Per-source error tolerance, hit order, and the
+  per-request timeouts are unaffected; only a slow source's latency
+  serializes onto later sources.
+- `PlannedOp::Command` stays a single `program` + `args` pair, so the
+  flatpak one-time `remote-add` is **omitted** and stated as omitted in
+  the variant's contract — the executor layers it, exactly like the
+  suppression flags toride-apps adds at execution time; `plan` is an
+  associated (pure) function, not a `&self` method.
+- same-app **merging via the §5 alias rules is not implemented** — no
+  `AliasIndex` exists yet (§5 is a later wave), so `search` concatenates
+  each source's hits in registration order and one app can appear once
+  per source that carries it; `resolve` does merge every hit's
+  `sources` rows, deduplicated, which is what plan 3.8 asked of it.
 
 ## 4. Field mappings (source → normalized)
 
