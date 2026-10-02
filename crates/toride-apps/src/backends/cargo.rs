@@ -21,7 +21,6 @@ use crate::error::{Error, Result};
 use crate::plan::{Operation, Target};
 use crate::runner::{CommandRunner, command};
 
-/// The cargo CLI binary every command in this module targets.
 const CARGO: &str = "cargo";
 
 /// cargo [`Backend`]: runs cargo crate installs/uninstalls and parses the
@@ -183,10 +182,10 @@ fn parse_cargo_list(stdout: &str) -> Result<Vec<InstalledApp>> {
             continue;
         }
         let mut tokens = line.split_whitespace();
-        if let (Some(id), Some(raw), None) = (tokens.next(), tokens.next(), tokens.next())
+        if let (Some(id), Some(raw)) = (tokens.next(), tokens.next())
             && let Some(version) = raw
                 .strip_prefix('v')
-                .and_then(|version| version.strip_suffix(':'))
+                .map(|version| version.trim_end_matches(':'))
         {
             apps.push(InstalledApp {
                 id: id.to_owned(),
@@ -299,6 +298,22 @@ mod tests {
                     version: Some("2.4.0".to_owned())
                 }
             ]
+        );
+    }
+
+    #[test]
+    fn parse_cargo_list_keeps_rows_carrying_a_source_annotation() {
+        let apps = parse_cargo_list(
+            "cargo-update v11.0.2 (from git+https://github.com/nabijaczleweli/cargo-update#7c2b4c1):\n    cargo-install-update\n",
+        )
+        .unwrap();
+        assert_eq!(
+            apps,
+            [InstalledApp {
+                id: "cargo-update".to_owned(),
+                version: Some("11.0.2".to_owned())
+            }],
+            "a git/path-sourced install is present, never silently absent"
         );
     }
 

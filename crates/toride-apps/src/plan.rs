@@ -2036,8 +2036,6 @@ mod tests {
         );
     }
 
-    // --- language-ecosystem operations -------------------------------------------
-
     #[test]
     fn npm_operations_render_the_plan_argv() {
         let install = Operation::NpmInstall {

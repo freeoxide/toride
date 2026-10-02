@@ -23,7 +23,6 @@ use crate::error::{Error, Result};
 use crate::plan::{Operation, Target};
 use crate::runner::{CommandRunner, command};
 
-/// The npm CLI binary every command in this module targets.
 const NPM: &str = "npm";
 
 /// npm [`Backend`]: runs global npm installs/uninstalls/updates and parses

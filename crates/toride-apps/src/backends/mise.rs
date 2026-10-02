@@ -23,7 +23,6 @@ use crate::error::{Error, Result};
 use crate::plan::{Operation, Target};
 use crate::runner::{CommandRunner, command};
 
-/// The mise CLI binary the sync twins dispatch.
 const MISE: &str = "mise";
 
 /// mise [`Backend`] delegating to a toride-mise client: install = `mise

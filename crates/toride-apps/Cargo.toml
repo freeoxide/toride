@@ -18,8 +18,6 @@ registry-http = ["toride-registry/http"]
 # pipeline (plan 3.5). Pulls tokio and reqwest/xz2 (the engine is async),
 # so it stays off the default set: the default graph remains tokio-free.
 direct = ["dep:toride-installer", "tokio"]
-# Opt in to the delegating mise backend (plan 3.3): toride-mise's client is
-# async over tokio, so this too stays off the default set.
 mise = ["dep:toride-mise", "toride-runner/tokio-runner"]
 
 [dependencies]
@@ -46,8 +44,6 @@ toride-registry = { path = "../toride-registry", version = "0.1.0", default-feat
 # toride-installer's verified pipeline: capped download, sha256 check,
 # tar.gz/tar.xz extraction, atomic 0o755 install write.
 toride-installer = { path = "../toride-installer", version = "0.1.0", optional = true, default-features = false, features = ["http"] }
-# The delegating mise backend (the `mise` feature) rides toride-mise's
-# typed client (default features: its json parse kernels + config surface).
 toride-mise = { path = "../toride-mise", version = "0.1.0", optional = true }
 
 [dev-dependencies]

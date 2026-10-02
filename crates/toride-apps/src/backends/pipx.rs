@@ -22,7 +22,6 @@ use crate::error::{Error, Result};
 use crate::plan::{Operation, Target};
 use crate::runner::{CommandRunner, command};
 
-/// The pipx CLI binary every command in this module targets.
 const PIPX: &str = "pipx";
 
 /// pipx [`Backend`]: runs pipx package installs/uninstalls/upgrades and

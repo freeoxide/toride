@@ -21,7 +21,6 @@ use crate::error::{Error, Result};
 use crate::plan::{Operation, Target};
 use crate::runner::{CommandRunner, command};
 
-/// The uv CLI binary every command in this module targets.
 const UV: &str = "uv";
 
 /// uv [`Backend`]: runs uv tool installs/uninstalls/upgrades and parses the
