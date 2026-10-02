@@ -92,9 +92,6 @@ impl JsonRecordStore {
         &self.path
     }
 
-    /// Where a corrupt document moves aside to: a sibling of the manifest
-    /// carrying `.corrupt-<pid>-<n>` — unique per process and per store
-    /// instance, so repeated recoveries never overwrite each other.
     fn quarantine_path(&self) -> ManifestResult<Utf8PathBuf> {
         let Some(name) = self.path.file_name() else {
             return Err(ManifestError::Io(std::io::Error::new(
@@ -138,10 +135,6 @@ impl RecordStore for JsonRecordStore {
         InstallManifest::from_snapshot(self.path.clone(), snapshot.clone()).save()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -199,8 +192,6 @@ mod tests {
         )
         .with_installed_at(1_700_000_001)
     }
-
-    // --- load ---------------------------------------------------------------
 
     #[test]
     fn load_answers_an_empty_snapshot_for_a_missing_file() {
@@ -313,8 +304,6 @@ mod tests {
             "the corrupt document is never saved over"
         );
     }
-
-    // --- save ---------------------------------------------------------------
 
     #[test]
     fn save_writes_the_document_the_strict_loader_reads_back() {

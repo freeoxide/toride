@@ -22,7 +22,7 @@ use toride_apps::apps::{
 use toride_apps::backends::flatpak::FLATHUB_REPO_URL;
 use toride_apps::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
 use toride_apps::manifest::{
-    InstallManifest, InstallRecord, ManifestResult, NativeIds, RecordSnapshot,
+    InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds, RecordSnapshot,
 };
 use toride_apps::runner::{CommandRunner, command};
 use toride_apps::store::{RecordStore, StoreLoad};
@@ -1577,10 +1577,6 @@ async fn uninstall_of_an_app_with_nothing_installed_is_already_absent() {
     fake.assert_no_unmatched_calls();
 }
 
-// ---------------------------------------------------------------------------
-// Quarantine — corrupt (newer-toride) manifest recovers instead of stopping
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn a_corrupt_newer_toride_manifest_is_quarantined_the_build_recovers_and_saves_fresh() {
     let path = temp_manifest_path("corrupt-newer");
@@ -1613,9 +1609,6 @@ async fn a_corrupt_newer_toride_manifest_is_quarantined_the_build_recovers_and_s
         "the original slot is free for the fresh document"
     );
 
-    // The recovered facade operates: a full install writes a fresh,
-    // loadable manifest at the original path, and the quarantined bytes
-    // are untouched by that save.
     let fake = FakeRunner::new()
         .strict()
         .respond(
@@ -3253,15 +3246,9 @@ async fn search_fans_out_across_the_registered_adapters_in_order() {
     assert!(fake.calls().is_empty());
 }
 
-// ---------------------------------------------------------------------------
-// Adopt — claim a detected-but-unrecorded install
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn adopt_claims_a_foreign_install_and_the_uninstall_stops_refusing() {
     let path = temp_manifest_path("adopt-foreign");
-    // The confirming probe, then the post-adopt uninstall and its
-    // absence verify.
     let fake = FakeRunner::new()
         .strict()
         .respond(
@@ -3298,7 +3285,6 @@ async fn adopt_claims_a_foreign_install_and_the_uninstall_stops_refusing() {
         "adoption is bookkeeping — zero adapter calls"
     );
 
-    // The persisted record carries a null plan and the probed version.
     let document: serde_json::Value = serde_json::from_str(
         &std::fs::read_to_string(path.as_std_path()).expect("manifest file written"),
     )
@@ -3309,8 +3295,6 @@ async fn adopt_claims_a_foreign_install_and_the_uninstall_stops_refusing() {
         serde_json::json!("138.0.1")
     );
 
-    // The claimed install uninstalls WITHOUT force — the exact refusal
-    // (ForeignNotManaged) adoption exists to retire.
     let outcome = apps
         .uninstall(&id("firefox"), AppUninstallOptions::new())
         .await
@@ -3377,7 +3361,6 @@ async fn adopt_on_an_already_recorded_app_is_a_typed_error_and_dispatches_nothin
         "{error:?}"
     );
     assert!(fake.calls().is_empty(), "no probe may run");
-    // The existing record is untouched.
     assert!(
         InstallManifest::load(&path)
             .expect("reload")
@@ -3453,20 +3436,27 @@ async fn adopt_on_a_distro_package_probes_the_recorded_family_and_persists() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// Custom record store — the embedder seam
-// ---------------------------------------------------------------------------
-
-/// An in-memory record store shared across facade instances: the shape an
-/// embedder mirrors its own receipts through.
 struct MapStore {
     snapshot: Mutex<RecordSnapshot>,
     saves: Mutex<usize>,
+    fail_saves: Mutex<bool>,
 }
 
 impl MapStore {
+    fn new() -> Self {
+        Self {
+            snapshot: Mutex::new(RecordSnapshot::empty()),
+            saves: Mutex::new(0),
+            fail_saves: Mutex::new(false),
+        }
+    }
+
     fn save_count(&self) -> usize {
         *self.saves.lock().expect("map store poisoned")
+    }
+
+    fn set_fail_saves(&self, fail: bool) {
+        *self.fail_saves.lock().expect("map store poisoned") = fail;
     }
 }
 
@@ -3479,6 +3469,11 @@ impl RecordStore for MapStore {
     }
 
     fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()> {
+        if *self.fail_saves.lock().expect("map store poisoned") {
+            return Err(ManifestError::Io(std::io::Error::other(
+                "map store write refused",
+            )));
+        }
         *self.snapshot.lock().expect("map store poisoned") = snapshot.clone();
         *self.saves.lock().expect("map store poisoned") += 1;
         Ok(())
@@ -3487,10 +3482,7 @@ impl RecordStore for MapStore {
 
 #[tokio::test]
 async fn a_custom_record_store_replaces_the_manifest_and_needs_no_path() {
-    let map = Arc::new(MapStore {
-        snapshot: Mutex::new(RecordSnapshot::empty()),
-        saves: Mutex::new(0),
-    });
+    let map = Arc::new(MapStore::new());
     let store: Arc<dyn RecordStore> = map.clone();
     let fake = FakeRunner::new()
         .strict()
@@ -3546,8 +3538,6 @@ async fn a_custom_record_store_replaces_the_manifest_and_needs_no_path() {
     assert!(map.save_count() > 0);
     fake.assert_no_unmatched_calls();
 
-    // A second facade over the same store sees the record — the ledger is
-    // the store's, not any manifest file's.
     let fake = FakeRunner::new().strict().respond(
         brew_versions_spec("--cask", "firefox"),
         CommandOutput::from_stdout("firefox 138.0.1\n"),
@@ -3575,10 +3565,7 @@ async fn a_custom_record_store_replaces_the_manifest_and_needs_no_path() {
 
 #[tokio::test]
 async fn the_custom_store_receives_whole_snapshots_on_every_mutation() {
-    let map = Arc::new(MapStore {
-        snapshot: Mutex::new(RecordSnapshot::empty()),
-        saves: Mutex::new(0),
-    });
+    let map = Arc::new(MapStore::new());
     let store: Arc<dyn RecordStore> = map.clone();
     let fake = FakeRunner::new().strict().respond(
         brew_versions_spec("--cask", "firefox"),
@@ -3614,12 +3601,10 @@ async fn update_replays_an_adopted_records_identifiers_and_keeps_it_plan_less() 
     let path = temp_manifest_path("adopt-update");
     let fake = FakeRunner::new()
         .strict()
-        // The adoption probe.
         .respond(
             brew_versions_spec("--cask", "firefox"),
             CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
-        // The update flow: from-probe, stale signal, upgrade, to-probe.
         .respond(
             brew_versions_spec("--cask", "firefox"),
             CommandOutput::from_stdout("firefox 138.0.1\n"),
@@ -3664,4 +3649,78 @@ async fn update_replays_an_adopted_records_identifiers_and_keeps_it_plan_less() 
     let record = reloaded.get(&id("firefox")).expect("record survives");
     assert_eq!(record.version.as_deref(), Some("139.0"));
     assert_eq!(record.plan, None, "still plan-less after the upgrade");
+}
+
+#[tokio::test]
+async fn a_failed_adopt_save_rolls_the_claim_back_and_a_retry_succeeds() {
+    let map = Arc::new(MapStore::new());
+    map.set_fail_saves(true);
+    let store: Arc<dyn RecordStore> = map.clone();
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(macos())
+        .with_record_store(Arc::clone(&store))
+        .homebrew(HomebrewBackend::new(seam))
+        .build()
+        .expect("facade builds");
+
+    let error = apps
+        .adopt(
+            &id("firefox"),
+            AdoptProvenance::new(NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: true,
+            }),
+        )
+        .await
+        .expect_err("a store that cannot persist refuses the claim");
+    assert!(
+        matches!(error, AppsError::Manifest(ManifestError::Io(_))),
+        "{error:?}"
+    );
+    assert!(
+        apps.records().is_empty(),
+        "the in-memory claim is rolled back — no AlreadyRecorded ghost"
+    );
+    assert!(
+        map.snapshot
+            .lock()
+            .expect("map store poisoned")
+            .records
+            .is_empty(),
+        "nothing was persisted"
+    );
+
+    map.set_fail_saves(false);
+    let record = apps
+        .adopt(
+            &id("firefox"),
+            AdoptProvenance::new(NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: true,
+            }),
+        )
+        .await
+        .expect("the retry claims cleanly once the store recovers");
+    assert_eq!(record.version.as_deref(), Some("138.0.1"));
+    assert_eq!(
+        map.snapshot
+            .lock()
+            .expect("map store poisoned")
+            .records
+            .len(),
+        1
+    );
+    fake.assert_no_unmatched_calls();
 }

@@ -937,7 +937,8 @@ impl Apps {
     /// for `id`; [`AppsError::AdoptionAbsent`] when the probe cannot
     /// confirm the asserted identifiers; [`AppsError::BackendUnavailable`]
     /// when their backend is not attached; [`AppsError::Manifest`] when
-    /// persisting the record fails.
+    /// persisting the record fails — the claim is rolled back, so nothing
+    /// stays recorded and a retry starts clean.
     pub async fn adopt(
         &mut self,
         id: &TorideId,
@@ -963,7 +964,10 @@ impl Apps {
             record = record.with_installed_at(installed_at);
         }
         self.records.insert(id.clone(), record.clone());
-        self.save_records().await?;
+        if let Err(error) = self.save_records().await {
+            self.records.remove(id);
+            return Err(error.into());
+        }
         Ok(record)
     }
 
@@ -2645,8 +2649,6 @@ mod tests {
         assert!(error.to_string().contains("record store"), "{error}");
     }
 
-    // --- adopt -----------------------------------------------------------------------
-
     #[test]
     fn already_recorded_names_the_app() {
         let error = AppsError::AlreadyRecorded {
@@ -2680,8 +2682,6 @@ mod tests {
         assert_eq!(provenance.ids.backend(), BackendId::Homebrew);
     }
 
-    /// An in-memory store for builder-level wiring tests (the full facade
-    /// flows over it live in `tests/apps_facade.rs`).
     struct MapStore {
         snapshot: std::sync::Mutex<RecordSnapshot>,
     }

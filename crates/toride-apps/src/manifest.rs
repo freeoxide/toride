@@ -88,6 +88,11 @@ pub const MANIFEST_FILE: &str = "apps-manifest.json";
 /// tolerated — additive same-version changes remain readable. When the
 /// schema grows, this constant, the reader, and an explicit migrate step
 /// move together.
+///
+/// The loosening of [`InstallRecord::plan`] to `Option` (adopted records
+/// serialize `"plan": null`) deliberately stayed within version 1: no
+/// published reader exists to be version-skewed, and bumping without a
+/// migration would quarantine every existing v1 document.
 const SCHEMA_VERSION: u32 = 1;
 
 /// Convenience alias for results of manifest persistence operations.
@@ -789,9 +794,6 @@ mod tests {
 
     #[test]
     fn record_keys_the_entry_by_the_explicit_id_not_the_token() {
-        // The join key against the outside world is the caller's TorideId;
-        // a token differing from the slug must not create a second
-        // identity, and a plan-less (adopted) record keys just the same.
         let mut manifest = InstallManifest::at(temp_manifest_path("keying"));
         manifest.record(
             &app_id("brave-browser"),
