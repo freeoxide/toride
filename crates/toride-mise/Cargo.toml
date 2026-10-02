@@ -5,6 +5,9 @@ edition.workspace = true
 description = "Typed mise integration: query tool versions, config files, and environment state"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["mise", "asdf", "toolchain", "version-manager", "dev-tools"]
+categories = ["development-tools"]
 
 [features]
 default = ["json", "toml", "diagnostics"]

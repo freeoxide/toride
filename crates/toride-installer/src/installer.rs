@@ -1,7 +1,8 @@
 //! The generic installation engine.
 //!
-//! [`Installer`] is tool-agnostic: given a [`Tool`] (or a
-//! custom [`ReleaseResolver`]), a [`Target`], and a
+//! `Installer` is tool-agnostic: given a [`Tool`] (or a
+//! custom [`crate::ReleaseResolver`]), a
+//! [`crate::Target`], and a
 //! version, it runs the full pipeline:
 //!
 //! 1. **resolve** the artifact URL (and the concrete version, when the
@@ -18,16 +19,18 @@
 //!
 //! ## Verification policy
 //!
-//! A tool whose descriptor pins no checksum ([`Checksum::None`]) is
+//! A tool whose descriptor pins no checksum
+//! ([`crate::Checksum::None`]) is
 //! verified with a **size floor** (default 1 MiB): a download smaller than
 //! the floor is rejected as suspicious (a 404 HTML page, an empty
 //! response, a redirect to a login screen, …). This is NOT a security
 //! guarantee — it is a sanity check. Tools that DO publish checksums —
-//! statically as [`Checksum::Digest`], or per-release as a
-//! [`Checksum::Url`] checksum file — are verified strictly against the
-//! published digest (sha256, or sha512 when the digest is 128 hex chars).
-//! Pass [`Verifier::Strict`] to refuse installs whose descriptor
-//! carries no checksum at all.
+//! statically as [`crate::Checksum::Digest`], or
+//! per-release as a
+//! [`crate::Checksum::Url`] checksum file — are verified
+//! strictly against the published digest (sha256, or sha512 when the
+//! digest is 128 hex chars). Pass `Verifier::Strict` to refuse installs
+//! whose descriptor carries no checksum at all.
 
 use std::io::Write;
 use std::path::Path;

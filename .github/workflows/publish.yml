@@ -1,0 +1,136 @@
+name: Publish crates
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Verify packaging and ordering without uploading"
+        type: boolean
+        default: true
+
+concurrency:
+  group: publish-crates
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  # The plan 3.1 release set, dependency-first: every intra-set path
+  # dependency must already be on the registry when its dependent's turn
+  # comes, so this order must not be changed.
+  PUBLISH_SET: >-
+    toride-fs toride-runner toride-installer toride-registry toride-mise
+    toride-apps
+
+jobs:
+  publish:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: publish
+      - name: Gate the release set
+        run: |
+          set -euo pipefail
+          packages=()
+          for crate in $PUBLISH_SET; do
+            packages+=(-p "$crate")
+          done
+          cargo fmt --all -- --check
+          cargo clippy "${packages[@]}" --all-targets -- -D warnings
+          cargo test "${packages[@]}" --all-targets
+          cargo clippy -p toride-apps --all-targets --features mise -- -D warnings
+          cargo test -p toride-apps --all-targets --features mise
+          cargo check -p toride-apps --no-default-features
+          cargo check -p toride-registry -p toride-installer --features http
+          cargo check -p toride-apps --features direct,registry-http,tokio
+      - name: Check intra-set version requirements match the released version
+        run: |
+          set -euo pipefail
+          cargo metadata --no-deps --format-version 1 > metadata.json
+          python3 - <<'PY'
+          import json, pathlib, sys
+          meta = json.loads(pathlib.Path("metadata.json").read_text())
+          set_names = "toride-fs toride-runner toride-installer toride-registry toride-mise toride-apps".split()
+          by_name = {p["name"]: p for p in meta["packages"] if p["name"] in set_names}
+          failed = False
+          for name in set_names:
+              version = by_name[name]["version"]
+              for dep in by_name[name]["dependencies"]:
+                  if dep["name"] in set_names and dep.get("path"):
+                      want = f"^{version}"
+                      if dep["req"] != want:
+                          print(f"{name} requires {dep['name']} {dep['req']!r}, expected {want!r}")
+                          failed = True
+          sys.exit(1 if failed else 0)
+          PY
+      - name: Publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: |
+          set -euo pipefail
+          dry_run="${{ inputs.dry_run }}"
+          version=$(python3 -c 'import json; ps=json.load(open("metadata.json"))["packages"]; print(next(p["version"] for p in ps if p["name"]=="toride-apps"))')
+          user_agent="toride-publish-workflow/0.1 (https://github.com/freeoxide/toride)"
+
+          already_published() {
+            local crate="$1" body
+            body=$(curl -sS --max-time 30 -A "$user_agent" \
+              "https://crates.io/api/v1/crates/${crate}") || return 1
+            python3 -c 'import json,sys; sys.exit(0 if any(v["num"] == sys.argv[1] for v in json.loads(sys.argv[2]).get("versions", [])) else 1)' \
+              "$version" "$body"
+          }
+
+          wait_until_resolvable() {
+            local crate="$1" status deadline
+            deadline=$((SECONDS + 60))
+            while :; do
+              status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -A "$user_agent" \
+                "https://crates.io/api/v1/crates/${crate}") || status="curl-error"
+              if [[ "$status" == "200" ]]; then
+                return 0
+              fi
+              if (( SECONDS >= deadline )); then
+                echo "error: ${crate} not resolvable on crates.io after 60s (last status: ${status})" >&2
+                return 1
+              fi
+              sleep 5
+            done
+          }
+
+          for crate in $PUBLISH_SET; do
+            if already_published "$crate"; then
+              echo "==> ${crate} ${version} already on crates.io, skipping"
+              continue
+            fi
+            echo "==> publishing ${crate} ${version}"
+            # Before the first real publish, dry-run verification of a crate
+            # with unpublished intra-set deps fails with "no matching
+            # package" (order-blocked, not a manifest defect) — downgraded
+            # to a warning in dry-run mode only; strict once uploads run.
+            if [[ "$dry_run" == "true" ]]; then
+              if ! cargo publish --dry-run -p "$crate"; then
+                echo "::warning::publish dry-run failed for ${crate} (expected while intra-set deps are unpublished)"
+              fi
+              echo "dry run: ${crate} not uploaded"
+              continue
+            fi
+            cargo publish --dry-run -p "$crate"
+            cargo publish -p "$crate"
+            wait_until_resolvable "$crate"
+          done
+
+          if [[ "$dry_run" == "true" ]]; then
+            echo "dry run complete; re-run with dry_run=false to upload"
+          else
+            echo "published the plan 3.1 release set"
+          fi

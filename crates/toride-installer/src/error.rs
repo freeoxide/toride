@@ -6,8 +6,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Errors that can occur while resolving, downloading, verifying, or
 /// extracting a release artifact.
 ///
-/// The variants mirror the stages of [`crate::Installer::install`] so callers
-/// can react to a specific failure (e.g. retry on [`Error::Download`] but
+/// The variants mirror the stages of `crate::Installer::install` so callers
+/// can react to a specific failure (e.g. retry on `Error::Download` but
 /// surface [`Error::ChecksumMismatch`] as a hard security failure).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -139,7 +139,7 @@ pub enum Error {
 
     /// The tool publishes no checksum; verification fell back to the size
     /// floor only. Returned only when a caller explicitly requests strict
-    /// verification via [`crate::Verifier::Strict`].
+    /// verification via `crate::Verifier::Strict`.
     #[error("no checksum source available for `{tool}`; cannot verify in strict mode")]
     NoChecksum {
         /// Tool name.

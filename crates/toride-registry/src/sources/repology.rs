@@ -15,8 +15,8 @@
 //!   insertion applies, and [`status_is_ignored`] names the statuses the
 //!   index drops at build time.
 //! - **Fetch half** (thin client, `http`-feature-gated):
-//!   [`RepologyClient::fetch_project`] and
-//!   [`RepologyClient::resolve_by_name`] (the `/tools/project-by` reverse
+//!   `RepologyClient::fetch_project` and
+//!   `RepologyClient::resolve_by_name` (the `/tools/project-by` reverse
 //!   oracle, 302/300/404), serialized to ≥1 request/second with a
 //!   descriptive User-Agent and an aggressive cache per the upstream
 //!   fair-use policy (repology.md §4).

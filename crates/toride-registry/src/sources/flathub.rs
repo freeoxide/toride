@@ -17,7 +17,7 @@
 //!   for the per-app `.flatpakref` pointer file consumed by the one-time
 //!   `flatpak remote-add` setup flow.
 //! - **Fetch half** (thin, raw body text out — never deserialized values,
-//!   DESIGN.md §3.1): [`FlathubClient`] and the [`FlathubAdapter`] that
+//!   DESIGN.md §3.1): `FlathubClient` and the `FlathubAdapter` that
 //!   binds it to the [`Adapter`](crate::adapter::Adapter) trait. Both live
 //!   behind the crate's `http` feature so the parsers build fully offline
 //!   (DESIGN.md §9).

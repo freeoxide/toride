@@ -6,17 +6,19 @@ rust-version = "1.91"
 description = "Tool-agnostic release-artifact installer framework (pure Rust, reqwest-based). Mise is the wired concrete tool."
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["installer", "downloader", "checksum", "tarball", "artifact"]
+categories = ["development-tools"]
 
 [features]
-default = ["http"]
+default = []
 # The HTTP/archive install engine: reqwest download, sha256 hashing,
 # gzip/xz tarball extraction, and the concrete tool wiring that drives
 # them (`tools/mise`'s resolver + install/ensure paths). The offline
-# detector (`status` minus its install-on-miss path) builds WITHOUT it, so
-# a consumer can take `toride-installer` with `default-features = false`
-# and inherit neither reqwest (rustls -> ring) nor xz2 (lzma-sys) — the
-# two C build scripts that keep this crate off CI's portable macOS/Windows
-# lists.
+# detector (`status` minus its install-on-miss path) is what the default
+# build carries, inheriting neither reqwest (rustls -> ring) nor xz2
+# (lzma-sys) — the two C build scripts that keep this crate off CI's
+# portable macOS/Windows lists (plan 3.1: heavy features off defaults).
 http = ["dep:reqwest", "dep:sha2", "dep:tar", "dep:flate2", "dep:xz2", "dep:serde"]
 
 [dependencies]

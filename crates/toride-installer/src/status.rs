@@ -31,11 +31,11 @@
 //! installed tool.
 //!
 //! On top of detection sits the install-on-missing front door,
-//! [`ensure_installed`]: detect first; keep an installed copy that already
-//! satisfies the request — `"latest"`, or a pinned semver the detected
-//! version meets — with zero network, and only on a true miss run the
-//! install pipeline, re-detecting afterwards for the freshly installed
-//! version ([`EnsureOutcome`]).
+//! `ensure_installed` (feature `http`): detect first; keep an installed
+//! copy that already satisfies the request — `"latest"`, or a pinned
+//! semver the detected version meets — with zero network, and only on a
+//! true miss run the install pipeline, re-detecting afterwards for the
+//! freshly installed version ([`EnsureOutcome`]).
 //!
 //! # Name collision
 //!
@@ -506,7 +506,7 @@ impl Default for DetectorBuilder {
 ///   [`Target::host`] cannot classify this platform;
 /// - whatever the resolver's contract allows — typically
 ///   [`Error::Resolve`](crate::Error::Resolve),
-///   [`Error::Download`](crate::Error::Download) or
+///   `Error::Download` (feature `http`) or
 ///   [`Error::HttpStatus`](crate::Error::HttpStatus).
 ///
 /// Callers must treat failure as non-fatal: release-API rate limiting

@@ -388,7 +388,8 @@ impl AppstreamAdapter {
     }
 
     /// Parse catalog text (raw, decompressed — what
-    /// [`AppstreamClient::fetch_catalog`] returns) into an adapter.
+    /// `AppstreamClient::fetch_catalog` (feature `http`) returns) into an
+    /// adapter.
     ///
     /// # Errors
     ///

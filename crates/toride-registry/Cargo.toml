@@ -5,12 +5,15 @@ edition.workspace = true
 description = "Normalizes external package registries (Homebrew, Flathub, AppStream/DEP-11, Repology) into a single `App` model behind per-source adapters."
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["homebrew", "flathub", "appstream", "repology", "package-registry"]
+categories = ["parser-implementations", "api-bindings"]
 
 [features]
-default = ["http"]
+default = []
 # The fetch half (reqwest + gzip + the tokio offloading they ride); the
-# pure parse half builds fully without it, so `default-features = false`
-# inherits none of the four.
+# pure parse half builds fully without it, so the default graph carries
+# none of the four (plan 3.1: heavy features off default feature sets).
 http = ["dep:reqwest", "dep:flate2", "dep:tokio", "dep:dirs"]
 
 [dependencies]
@@ -57,12 +60,13 @@ toride-installer = { path = "../toride-installer", version = "0.1.0", default-fe
 
 # F14 parse-half pin + F14 round-2 fetch-side cache pin: parse_dep11_catalog /
 # AppstreamAdapter::from_text over a synthetic dep11 fixture
-# (benches/fixtures/dep11-synthetic.yml), plus (with the default `http`
-# feature) the TTL-hit cache serving path `AppstreamClient::cached_catalog`
+# (benches/fixtures/dep11-synthetic.yml), plus (with the non-default
+# `http` feature) the TTL-hit cache serving path `AppstreamClient::cached_catalog`
 # over a seeded cache dir — never a live 27 MB catalog. Hermetic
 # (compile-time fixture, pure parse + seeded gz cache, no network), with a
 # deterministic count/parity oracle inlined before any timing. Run scoped:
-# `cargo bench -p toride-registry --bench dep11_parse`.
+# `cargo bench -p toride-registry --features http --bench dep11_parse`
+# (the fetch-side half needs the feature; the parse half runs either way).
 [[bench]]
 name = "dep11_parse"
 harness = false

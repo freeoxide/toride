@@ -12,7 +12,7 @@
 //! - a declarative [`Tool`] config (name, artifact kind, binary path,
 //!   checksum source, default install dir) plus a [`ReleaseResolver`]
 //!   trait for mapping `(Target, version) -> URL`;
-//! - a generic [`Installer`] engine that runs the pipeline below; and
+//! - a generic `Installer` engine that runs the pipeline below; and
 //! - a small set of **concrete tools** under [`tools`] (only [`mise`][tools::mise]
 //!   is wired today).
 //!
@@ -21,22 +21,22 @@
 //!
 //! ## Feature gate
 //!
-//! The `http` feature (enabled by default) carries the install engine and
+//! The `http` feature (off the default set) carries the install engine and
 //! everything that needs reqwest, sha2 hashing, or gzip/xz extraction. The
 //! offline detector ([`Detector`], [`ToolVersion`], [`Freshness`],
-//! [`latest`], [`LatestCache`]) builds without it — depend on this crate
-//! with `default-features = false` for a detection-only, C-build-script-free
-//! graph.
+//! [`latest`], [`LatestCache`]) is what the default build carries — a
+//! detection-only, C-build-script-free graph.
 //!
 //! ## Pipeline
 //!
 //! 1. **Resolve** the artifact URL (and the concrete version when the
 //!    request is `"latest"`).
 //! 2. **Download** via `reqwest`, following redirects, capped at
-//!    [`DEFAULT_MAX_BYTES`].
+//!    [`crate::installer::DEFAULT_MAX_BYTES`].
 //! 3. **Verify** — the published digest when the tool publishes one
 //!    (sha256, or sha512 for 128-hex digests); otherwise the documented
-//!    size-floor sanity check ([`DEFAULT_MIN_BYTES`]).
+//!    size-floor sanity check
+//!    ([`crate::installer::DEFAULT_MIN_BYTES`]).
 //! 4. **Extract** — [`Binary`][ArtifactKind::Binary] placed directly,
 //!    [`Tarball`][ArtifactKind::Tarball] decompressed (gzip **or** xz) and
 //!    the configured entry located. Both kinds are implemented so the

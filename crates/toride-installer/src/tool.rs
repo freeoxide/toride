@@ -10,7 +10,7 @@
 //! For tools whose release layout cannot be captured by a static template
 //! (e.g. an asset name that depends on a server-side lookup), implement the
 //! [`ReleaseResolver`] trait instead and pass it to
-//! [`Installer::install_with_resolver`](crate::Installer::install_with_resolver).
+//! `Installer::install_with_resolver` (feature `http`).
 
 use crate::error::{Error, Result};
 use crate::target::Target;
@@ -68,8 +68,8 @@ impl ArtifactKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Checksum {
     /// The tool publishes no checksum. The installer falls back to a sane
-    /// minimum-size check only (see [`Installer`](crate::Installer)
-    /// docs for the rationale).
+    /// minimum-size check only (see the `Installer` docs, feature `http`,
+    /// for the rationale).
     None,
 
     /// A fixed hex digest known ahead of time (e.g. pinned in config).

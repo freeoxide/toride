@@ -156,6 +156,23 @@ jobs:
       - name: Check the tokio-free default build
         run: cargo check -p toride-apps --no-default-features
 
+  publish-set-features:
+    name: Publish-set feature gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: publish-set-features
+      - name: Lint and test the non-default http feature
+        run: |
+          cargo clippy -p toride-registry -p toride-installer --all-targets --features http -- -D warnings
+          cargo test -p toride-registry -p toride-installer --all-targets --features http
+
   check:
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -204,7 +221,9 @@ jobs:
         # registry, so every crate with unpublished siblings fails with
         # "no matching package" (order-blocked, not a manifest defect). Each
         # such failure is downgraded to a warning annotation; tighten this to
-        # a hard gate after running scripts/publish-crates.sh once.
+        # a hard gate after the first publish. The plan 3.1 release set
+        # (toride-runner/-fs/-registry/-installer/-mise/-apps) is uploaded by
+        # the publish-crates workflow, which dry-runs each crate in order.
         run: |
           for crate in $PUBLISH_ORDER; do
             echo "::group::cargo publish --dry-run -p $crate"

@@ -5,6 +5,9 @@ edition.workspace = true
 description = "App install/uninstall execution layer: plans registry `App`s into concrete backend operations (homebrew, flatpak, distro) and runs them through the shared runner seam."
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["package-manager", "homebrew", "flatpak", "apt", "dnf"]
+categories = ["development-tools", "os"]
 
 [features]
 default = []

@@ -16,11 +16,11 @@
 //!   missing or `null` upstream must degrade to `None`, never error.
 //! - **Fetch half (thin client, gated behind the crate's `http` feature so
 //!   the parsers build fully offline, DESIGN.md §9):**
-//!   [`HomebrewClient`] GETs the two per-item endpoints and returns raw
-//!   body text; [`HomebrewAdapter`] implements
+//!   `HomebrewClient` GETs the two per-item endpoints and returns raw
+//!   body text; `HomebrewAdapter` implements
 //!   [`Adapter`](crate::adapter::Adapter) over them — `lookup` per-item,
 //!   search over the two full catalog indexes cached for one
-//!   [`INDEX_CACHE_TTL`] window and parsed through the same
+//!   `INDEX_CACHE_TTL` window and parsed through the same
 //!   normalization ([`search_index`]).
 //!
 //! ## Cask `variations` contract (DESIGN.md §4.1)
