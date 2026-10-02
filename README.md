@@ -6,7 +6,7 @@ It collects CPU, memory, disk, network, GPU, battery, sensor, and process metric
 
 ## Library crates on crates.io
 
-The app-management layer is published as six versioned 0.x crates, so embedders can depend on it instead of vendoring:
+The app-management layer is released on crates.io as six versioned 0.x crates — the first 0.1.0 upload is performed by the Publish crates workflow (see [docs/publishing.md](docs/publishing.md)) — so embedders can depend on it instead of vendoring:
 
 | Crate | Role |
 |-------|------|

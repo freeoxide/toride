@@ -63,6 +63,10 @@ jobs:
           set_names = "toride-fs toride-runner toride-installer toride-registry toride-mise toride-apps".split()
           by_name = {p["name"]: p for p in meta["packages"] if p["name"] in set_names}
           failed = False
+          versions = {by_name[name]["version"] for name in set_names}
+          if len(versions) != 1:
+              print("release-set versions disagree:", {n: by_name[n]["version"] for n in set_names})
+              failed = True
           for name in set_names:
               version = by_name[name]["version"]
               for dep in by_name[name]["dependencies"]:
@@ -79,28 +83,35 @@ jobs:
         run: |
           set -euo pipefail
           dry_run="${{ inputs.dry_run }}"
-          version=$(python3 -c 'import json; ps=json.load(open("metadata.json"))["packages"]; print(next(p["version"] for p in ps if p["name"]=="toride-apps"))')
           user_agent="toride-publish-workflow/0.1 (https://github.com/freeoxide/toride)"
 
-          already_published() {
-            local crate="$1" body
-            body=$(curl -sS --max-time 30 -A "$user_agent" \
-              "https://crates.io/api/v1/crates/${crate}") || return 1
-            python3 -c 'import json,sys; sys.exit(0 if any(v["num"] == sys.argv[1] for v in json.loads(sys.argv[2]).get("versions", [])) else 1)' \
-              "$version" "$body"
+          version_for() {
+            python3 -c 'import json,sys; ps=json.load(open("metadata.json"))["packages"]; print(next(p["version"] for p in ps if p["name"]==sys.argv[1]))' "$1"
           }
 
-          wait_until_resolvable() {
-            local crate="$1" status deadline
+          # The sparse index is what the next crate's cargo publish resolves
+          # against, so both the skip check and the post-upload wait gate on
+          # it carrying this exact version, not on the HTTP API.
+          index_has_version() {
+            local crate="$1" version="$2" prefix body
+            case ${#crate} in
+              1) prefix="1/${crate}" ;;
+              2) prefix="2/${crate}" ;;
+              3) prefix="3/${crate:0:1}/${crate}" ;;
+              *) prefix="${crate:0:2}/${crate:2:2}/${crate}" ;;
+            esac
+            body=$(curl -sS --max-time 30 -A "$user_agent" \
+              "https://index.crates.io/${prefix}") || return 1
+            [[ "$body" == *"\"vers\":\"${version}\""* ]]
+          }
+
+          wait_until_indexed() {
+            local crate="$1" version deadline
+            version="$(version_for "$crate")"
             deadline=$((SECONDS + 60))
-            while :; do
-              status=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 -A "$user_agent" \
-                "https://crates.io/api/v1/crates/${crate}") || status="curl-error"
-              if [[ "$status" == "200" ]]; then
-                return 0
-              fi
+            until index_has_version "$crate" "$version"; do
               if (( SECONDS >= deadline )); then
-                echo "error: ${crate} not resolvable on crates.io after 60s (last status: ${status})" >&2
+                echo "error: ${crate} ${version} absent from the sparse index after 60s" >&2
                 return 1
               fi
               sleep 5
@@ -108,8 +119,9 @@ jobs:
           }
 
           for crate in $PUBLISH_SET; do
-            if already_published "$crate"; then
-              echo "==> ${crate} ${version} already on crates.io, skipping"
+            version="$(version_for "$crate")"
+            if index_has_version "$crate" "$version"; then
+              echo "==> ${crate} ${version} already indexed, skipping"
               continue
             fi
             echo "==> publishing ${crate} ${version}"
@@ -125,7 +137,7 @@ jobs:
             fi
             cargo publish --dry-run -p "$crate"
             cargo publish -p "$crate"
-            wait_until_resolvable "$crate"
+            wait_until_indexed "$crate"
           done
 
           if [[ "$dry_run" == "true" ]]; then
