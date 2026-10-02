@@ -334,6 +334,129 @@ fn foreign_from(backend: BackendId, subject: &str, status: BackendStatus) -> App
     }
 }
 
+/// The sync twin of [`app_status`]: same precedence, same probe choices,
+/// same absent-backend-is-an-answer rule — the probes run on the calling
+/// thread through the backends' sync twins.
+///
+/// # Errors
+///
+/// [`Error::Command`](crate::Error::Command) when a backend that *is* in
+/// the set fails its probe. An absent backend is never an error.
+pub fn app_status_sync(
+    record: Option<&InstallRecord>,
+    native: Option<&NativeIds>,
+    backends: &BackendSet<'_>,
+) -> Result<AppStatus> {
+    if let Some(record) = record {
+        return toride_recorded_status_sync(record, backends);
+    }
+    match native {
+        Some(native) => foreign_status_sync(native, backends),
+        None => Ok(AppStatus::NotInstalled),
+    }
+}
+
+/// The sync twin of [`toride_recorded_status`].
+fn toride_recorded_status_sync(
+    record: &InstallRecord,
+    backends: &BackendSet<'_>,
+) -> Result<AppStatus> {
+    match &record.ids {
+        NativeIds::Homebrew { token, cask } => {
+            let Some(backend) = backends.homebrew else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let kind = if *cask {
+                BrewKind::Cask
+            } else {
+                BrewKind::Formula
+            };
+            Ok(match backend.installed_version_sync(kind, token)? {
+                Some(version) => AppStatus::Installed {
+                    backend: BackendId::Homebrew,
+                    version: Some(version),
+                },
+                None => AppStatus::NotInstalled,
+            })
+        }
+        NativeIds::Flatpak {
+            app_id,
+            installation,
+            ..
+        } => {
+            let Some(backend) = backends.flatpak else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let entries = backend.list_entries_sync(FlatpakListScope::from(*installation))?;
+            Ok(
+                match entries.iter().find(|entry| &entry.application == app_id) {
+                    Some(entry) => AppStatus::Installed {
+                        backend: BackendId::Flatpak,
+                        version: entry.version.clone(),
+                    },
+                    None => AppStatus::NotInstalled,
+                },
+            )
+        }
+        NativeIds::Distro { package, family } => {
+            let Some(backend) = backends.distro else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            if backend.family() != *family {
+                return Ok(AppStatus::NotInstalled);
+            }
+            Ok(match backend.status_sync(StatusQuery::new(package))? {
+                BackendStatus::Installed { version } => AppStatus::Installed {
+                    backend: BackendId::Distro(*family),
+                    version,
+                },
+                BackendStatus::NotInstalled => AppStatus::NotInstalled,
+            })
+        }
+    }
+}
+
+/// The sync twin of [`foreign_status`].
+fn foreign_status_sync(native: &NativeIds, backends: &BackendSet<'_>) -> Result<AppStatus> {
+    match native {
+        NativeIds::Homebrew { token, .. } => {
+            let Some(backend) = backends.homebrew else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = backend.status_sync(StatusQuery::new(token))?;
+            Ok(foreign_from(
+                BackendId::Homebrew,
+                &format!("brew token `{token}`"),
+                status,
+            ))
+        }
+        NativeIds::Flatpak { app_id, .. } => {
+            let Some(backend) = backends.flatpak else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = backend.status_sync(StatusQuery::new(app_id))?;
+            Ok(foreign_from(
+                BackendId::Flatpak,
+                &format!("flatpak app id `{app_id}`"),
+                status,
+            ))
+        }
+        NativeIds::Distro { package, family } => {
+            let Some(backend) = backends.distro else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            if backend.family() != *family {
+                return Ok(AppStatus::NotInstalled);
+            }
+            let status = backend.status_sync(StatusQuery::new(package))?;
+            Ok(foreign_from(
+                BackendId::Distro(*family),
+                &format!("package `{package}`"),
+                status,
+            ))
+        }
+    }
+}
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -944,5 +1067,88 @@ mod tests {
             "{error:?}"
         );
         fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn sync_manifest_hit_brew_record_reports_the_probed_version() {
+        let fake = FakeRunner::new().strict().respond(
+            brew_versions_spec(BrewKind::Cask, "firefox"),
+            CommandOutput::from_stdout("firefox 138.0\n"),
+        );
+        let brew = homebrew_backend(&fake);
+        let backends = BackendSet::new().homebrew(&brew);
+        let record = cask_record("firefox", "firefox");
+        let status = app_status_sync(Some(&record), None, &backends).unwrap();
+        assert_eq!(
+            status,
+            AppStatus::Installed {
+                backend: BackendId::Homebrew,
+                version: Some("138.0".to_owned()),
+            }
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn sync_manifest_hit_flatpak_record_without_a_version_still_reports_installed() {
+        let fake = FakeRunner::new().strict().respond(
+            flatpak_list_spec(FlatpakListScope::User),
+            CommandOutput::from_stdout(flatpak_row(
+                "io.gitlab.adwcustomizer.AdwCustomizer",
+                "",
+                "user",
+            )),
+        );
+        let flatpak = flatpak_backend(&fake);
+        let backends = BackendSet::new().flatpak(&flatpak);
+        let record = flatpak_record(
+            "adwcustomizer",
+            "io.gitlab.adwcustomizer.AdwCustomizer",
+            FlatpakInstallation::User,
+        );
+        let status = app_status_sync(Some(&record), None, &backends).unwrap();
+        assert_eq!(
+            status,
+            AppStatus::Installed {
+                backend: BackendId::Flatpak,
+                version: None,
+            }
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn sync_manifest_miss_with_brew_listing_the_token_reports_foreign() {
+        let fake = FakeRunner::new().strict().respond(
+            brew_info_spec(),
+            CommandOutput::from_stdout(brew_cask_installed_document("firefox", "138.0")),
+        );
+        let brew = homebrew_backend(&fake);
+        let backends = BackendSet::new().homebrew(&brew);
+        let native = NativeIds::Homebrew {
+            token: "firefox".to_owned(),
+            cask: true,
+        };
+        let status = app_status_sync(None, Some(&native), &backends).unwrap();
+        assert!(
+            matches!(
+                status,
+                AppStatus::Foreign {
+                    backend: BackendId::Homebrew,
+                    ..
+                }
+            ),
+            "{status:?}"
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn sync_absent_backends_answer_not_installed_without_dispatching() {
+        let record = cask_record("firefox", "firefox");
+        let status = app_status_sync(Some(&record), None, &BackendSet::new()).unwrap();
+        assert_eq!(status, AppStatus::NotInstalled);
+        let status = app_status_sync(None, None, &BackendSet::new()).unwrap();
+        assert_eq!(status, AppStatus::NotInstalled);
     }
 }

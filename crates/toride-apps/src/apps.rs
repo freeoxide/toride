@@ -60,6 +60,16 @@
 //!   [`Apps::adopt`] it first to claim the install — both explicit, typed
 //!   decisions, never silent ones.
 //!
+//! ## The blocking twin
+//!
+//! [`AppsBlocking`] (via [`Apps::blocking`]) exposes the same lifecycle
+//! verbs synchronously — every command on the calling thread, every
+//! manifest save in-line — for embedders without an async runtime. The
+//! registry's adapter trait is async, so the blocking surface takes
+//! resolved registry apps where this facade resolves ids, and its
+//! registry-dependent arms answer
+//! [`AppsError::BlockingResolveRequired`].
+//!
 //! ## Example
 //!
 //! ```rust,ignore
@@ -100,7 +110,7 @@ use crate::plan::{
     UninstallOptions, UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 use crate::runner::CommandRunner;
-use crate::status::{AppStatus, BackendSet, app_status};
+use crate::status::{AppStatus, BackendSet, app_status, app_status_sync};
 use crate::store::{JsonRecordStore, RecordStore, StoreLoad};
 
 // ---------------------------------------------------------------------------
@@ -245,6 +255,18 @@ pub enum AppsError {
     /// [`AppsError::UnrecordedPin`].
     #[error("cannot unpin `{id}`: toride has no install record for it — ensure_installed it first")]
     UnrecordedUnpin {
+        /// Canonical toride id of the app.
+        id: String,
+    },
+
+    /// The blocking facade was asked to resolve an id through the registry.
+    /// Registry adapters are async, so the blocking surface cannot resolve:
+    /// pass the resolved registry app (`AppsBlocking::ensure_installed` /
+    /// `AppsBlocking::uninstall_app`) or use the async facade.
+    #[error(
+        "cannot resolve `{id}` on the blocking facade: registry adapters are async — pass the resolved app or use the async facade"
+    )]
+    BlockingResolveRequired {
         /// Canonical toride id of the app.
         id: String,
     },
@@ -583,6 +605,13 @@ impl Apps {
     #[must_use]
     pub fn builder() -> AppsBuilder {
         AppsBuilder::new()
+    }
+
+    /// Wrap this facade in its blocking spelling — [`AppsBlocking`], the
+    /// sync twin sharing this instance's records, store, and backends.
+    #[must_use]
+    pub fn blocking(self) -> AppsBlocking {
+        AppsBlocking::new(self)
     }
 
     /// The host target this facade plans for.
@@ -1395,7 +1424,7 @@ impl Apps {
     }
 
     /// Persist the working records through the store, off the async
-    /// runtime.
+    /// runtime when the `tokio` feature supplies one to offload to.
     ///
     /// [`RecordStore::save`] is synchronous IO (the JSON store's create
     /// parent dirs, write temp, rename) and must not run on an async
@@ -1411,6 +1440,21 @@ impl Apps {
         let snapshot = RecordSnapshot {
             records: self.records.clone(),
         };
+        self.persist(snapshot).await
+    }
+
+    /// Persist the working records through the store, in-line on the
+    /// calling thread — the path [`AppsBlocking`] mutations take after
+    /// every successful operation.
+    fn save_records_sync(&self) -> ManifestResult<()> {
+        let snapshot = RecordSnapshot {
+            records: self.records.clone(),
+        };
+        self.store.save(&snapshot)
+    }
+
+    #[cfg(feature = "tokio")]
+    async fn persist(&self, snapshot: RecordSnapshot) -> ManifestResult<()> {
         let store = Arc::clone(&self.store);
         tokio::task::spawn_blocking(move || store.save(&snapshot))
             .await
@@ -1419,6 +1463,209 @@ impl Apps {
                     "record store save task failed to join: {error}"
                 )))
             })?
+    }
+
+    #[cfg(not(feature = "tokio"))]
+    #[expect(clippy::unused_async, clippy::unused_async_trait_impl)]
+    async fn persist(&self, snapshot: RecordSnapshot) -> ManifestResult<()> {
+        self.store.save(&snapshot)
+    }
+
+    /// The sync twin of [`Apps::record_is_current`]: brew's kind-scoped
+    /// stale signal answers alone; signal-less backends compare installed
+    /// against available.
+    fn record_is_current_sync(
+        &self,
+        ids: &NativeIds,
+        backend: &dyn Backend,
+        from: Option<&Version>,
+        native: &str,
+    ) -> AppsResult<bool> {
+        if let NativeIds::Homebrew { token, cask } = ids {
+            let scope = if *cask {
+                OutdatedScope::Casks
+            } else {
+                OutdatedScope::Formulae
+            };
+            Ok(from.is_some()
+                && !self
+                    .homebrew_backend()?
+                    .outdated_sync(scope)?
+                    .iter()
+                    .any(|entry| entry.id == token.as_str()))
+        } else {
+            let to = backend.available_version_sync(native)?;
+            Ok(from.is_some() && from == to.as_ref())
+        }
+    }
+
+    /// The sync twin of [`Apps::record_installed_version`].
+    fn record_installed_version_sync(&self, ids: &NativeIds) -> AppsResult<Option<Version>> {
+        Ok(match self.verify_presence_sync(ids)? {
+            Presence::Present(version) => version.map(Version::new),
+            Presence::Absent => None,
+        })
+    }
+
+    /// The sync twin of [`Apps::record_available_version`].
+    fn record_available_version_sync(&self, ids: &NativeIds) -> AppsResult<Option<Version>> {
+        match ids {
+            NativeIds::Homebrew { token, cask } => {
+                let kind = if *cask {
+                    BrewKind::Cask
+                } else {
+                    BrewKind::Formula
+                };
+                Ok(self
+                    .homebrew_backend()?
+                    .available_version_sync(kind, token)?)
+            }
+            _ => Ok(self
+                .backend_for(ids.backend())?
+                .available_version_sync(native_id(ids))?),
+        }
+    }
+
+    /// The sync twin of [`Apps::record_available_versions`].
+    fn record_available_versions_sync(&self, ids: &NativeIds) -> AppsResult<Vec<Version>> {
+        match ids {
+            NativeIds::Homebrew { token, cask } => {
+                let kind = if *cask {
+                    BrewKind::Cask
+                } else {
+                    BrewKind::Formula
+                };
+                Ok(self
+                    .homebrew_backend()?
+                    .available_versions_sync(kind, token)?)
+            }
+            NativeIds::Flatpak {
+                app_id,
+                installation,
+                ..
+            } => Ok(self
+                .flatpak_backend()?
+                .available_versions_sync(app_id, *installation)?),
+            NativeIds::Distro { .. } => Ok(self
+                .backend_for(ids.backend())?
+                .available_versions_sync(native_id(ids))?),
+        }
+    }
+
+    /// The sync twin of [`Apps::version_for_plan`].
+    fn version_for_plan_sync(&self, app: &App, requested: Option<Version>) -> Option<Version> {
+        let requested = requested?;
+        let Some(native) = native_from_method(&app.install) else {
+            return Some(requested);
+        };
+        match self.record_available_version_sync(&native) {
+            Ok(Some(offered)) if offered == requested => None,
+            _ => Some(requested),
+        }
+    }
+
+    /// The sync twin of [`Apps::set_pin_state`].
+    fn set_pin_state_sync(&self, id: &TorideId, pin: bool) -> AppsResult<()> {
+        let Some(record) = self.records.get(id) else {
+            return Err(if pin {
+                AppsError::UnrecordedPin {
+                    id: id.as_str().to_owned(),
+                }
+            } else {
+                AppsError::UnrecordedUnpin {
+                    id: id.as_str().to_owned(),
+                }
+            });
+        };
+        match &record.ids {
+            NativeIds::Homebrew { token, cask } => {
+                let backend = self.homebrew_backend()?;
+                let kind = if *cask {
+                    BrewKind::Cask
+                } else {
+                    BrewKind::Formula
+                };
+                let result = if pin {
+                    backend.pin_sync(kind, token)
+                } else {
+                    backend.unpin_sync(kind, token)
+                };
+                result.map_err(AppsError::from)
+            }
+            other => {
+                let backend = self.backend_for(other.backend())?;
+                let result = if pin {
+                    backend.pin_sync(native_id(other))
+                } else {
+                    backend.unpin_sync(native_id(other))
+                };
+                result.map_err(AppsError::from)
+            }
+        }
+    }
+
+    /// The sync twin of [`Apps::verify_presence`].
+    fn verify_presence_sync(&self, ids: &NativeIds) -> AppsResult<Presence> {
+        match ids {
+            NativeIds::Homebrew { token, cask } => {
+                let backend = self.homebrew_backend()?;
+                let kind = if *cask {
+                    BrewKind::Cask
+                } else {
+                    BrewKind::Formula
+                };
+                match backend.installed_version_sync(kind, token)? {
+                    Some(version) => Ok(Presence::Present(Some(version))),
+                    None => Ok(Presence::Absent),
+                }
+            }
+            NativeIds::Flatpak {
+                app_id,
+                installation,
+                ..
+            } => {
+                let backend = self.flatpak_backend()?;
+                let entries = backend.list_entries_sync(FlatpakListScope::from(*installation))?;
+                match entries.iter().find(|entry| entry.application == *app_id) {
+                    Some(entry) => Ok(Presence::Present(entry.version.clone())),
+                    None => Ok(Presence::Absent),
+                }
+            }
+            NativeIds::Distro { package, family } => {
+                let Some(backend) = self.backends.distro.as_ref() else {
+                    return Err(AppsError::BackendUnavailable {
+                        backend: BackendId::Distro(*family),
+                    });
+                };
+                if backend.family() != *family {
+                    return Ok(Presence::Absent);
+                }
+                match backend.status_sync(StatusQuery::new(package))? {
+                    BackendStatus::Installed { version } => Ok(Presence::Present(version)),
+                    BackendStatus::NotInstalled => Ok(Presence::Absent),
+                }
+            }
+        }
+    }
+
+    /// The sync twin of [`Apps::verify_absence`].
+    fn verify_absence_sync(&self, ids: &NativeIds) -> Option<String> {
+        match self.verify_presence_sync(ids) {
+            Ok(Presence::Absent) => None,
+            Ok(Presence::Present(version)) => Some(match version {
+                Some(version) => format!(
+                    "uninstalled, but the backend still reports {} at version {version}",
+                    native_subject(ids)
+                ),
+                None => format!(
+                    "uninstalled, but the backend still reports {} present",
+                    native_subject(ids)
+                ),
+            }),
+            Err(error) => Some(format!(
+                "uninstalled, but the post-uninstall verify probe failed: {error}"
+            )),
+        }
     }
 }
 
@@ -1448,8 +1695,8 @@ enum Presence {
 #[derive(Default)]
 pub struct AppsBuilder {
     /// The seam every attached backend executes through; defaults to a
-    /// fresh [`TokioRunner`](toride_runner::tokio_runner::TokioRunner)
-    /// seam when unset.
+    /// fresh [`DuctRunner`](toride_runner::DuctRunner)-backed seam when
+    /// unset.
     runner: Option<CommandRunner>,
     /// Host target; defaults to the host bootstrap —
     /// `Target::host()` with the distro family filled in from the
@@ -1649,6 +1896,410 @@ fn default_target() -> Target {
     match detect_host_family() {
         Some(family) => Target::host().with_distro(family),
         None => Target::host(),
+    }
+}
+
+/// The sync twin of the [`Apps`] facade: the same verbs, executed on the
+/// calling thread through the backends' sync paths, with **in-line**
+/// manifest persistence (no runtime, no offloading — the shape an all-sync
+/// embedder drives with `default-features = false` and no tokio anywhere).
+///
+/// Build one from a built facade ([`Apps::blocking`], or
+/// [`AppsBlocking::new`]); every outcome type, option, and error is shared
+/// with the async facade. One arm is structurally out of reach: resolving a
+/// bare [`TorideId`] through the registry adapters is async, so the
+/// blocking surface takes the resolved registry [`App`] where the async
+/// facade takes an id ([`AppsBlocking::ensure_installed`]), answers
+/// registry-dependent arms of the id-keyed verbs with
+/// [`AppsError::BlockingResolveRequired`], and offers no `search`.
+pub struct AppsBlocking {
+    /// The wrapped facade — one record store, one target, one backend set.
+    apps: Apps,
+}
+
+impl From<Apps> for AppsBlocking {
+    fn from(apps: Apps) -> Self {
+        Self::new(apps)
+    }
+}
+
+impl AppsBlocking {
+    /// Wrap a built facade.
+    #[must_use]
+    pub const fn new(apps: Apps) -> Self {
+        Self { apps }
+    }
+
+    /// Unwrap back to the async facade (records, store, and backends carry
+    /// over — both facades share one state).
+    #[must_use]
+    pub fn into_inner(self) -> Apps {
+        self.apps
+    }
+
+    /// The host target this facade plans for.
+    #[must_use]
+    pub fn target(&self) -> Target {
+        self.apps.target()
+    }
+
+    /// The working records this facade holds — see [`Apps::records`].
+    #[must_use]
+    pub fn records(&self) -> Vec<(&TorideId, &InstallRecord)> {
+        self.apps.records()
+    }
+
+    /// Where a corrupt prior store document was quarantined at build —
+    /// see [`Apps::quarantined`].
+    #[must_use]
+    pub fn quarantined(&self) -> Option<&Utf8PathBuf> {
+        self.apps.quarantined()
+    }
+
+    /// Ensure the resolved registry `app` is installed, on the calling
+    /// thread — the sync twin of [`Apps::ensure_installed`] with one
+    /// contract difference: the app arrives resolved (the registry's
+    /// adapter trait is async, so the blocking surface cannot resolve a
+    /// bare id itself). The detect-first arm is unchanged: a manifest
+    /// record the recorded backend still confirms answers
+    /// [`EnsureAppOutcome::AlreadyPresent`] with zero dispatch.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Apps::ensure_installed`] minus
+    /// [`AppsError::Unresolved`] / [`AppsError::Registry`] (nothing
+    /// resolves here).
+    pub fn ensure_installed(
+        &mut self,
+        app: &App,
+        options: &AppInstallOptions,
+    ) -> AppsResult<EnsureAppOutcome> {
+        let id = app.id.clone();
+        let mut present = false;
+        let recorded = app_status_sync(self.apps.records.get(&id), None, &self.apps.backend_set())?;
+        if matches!(recorded, AppStatus::Installed { .. }) {
+            present = true;
+            let satisfies = self.apps.records.get(&id).is_some_and(|record| {
+                requested_version_satisfied(&record.ids, &recorded, options.version.as_ref())
+            });
+            if satisfies {
+                return Ok(EnsureAppOutcome::AlreadyPresent(recorded));
+            }
+        }
+        if !self.apps.records.contains_key(&id) {
+            let native = native_from_method(&app.install);
+            let status = app_status_sync(None, native.as_ref(), &self.apps.backend_set())?;
+            if let AppStatus::Foreign { .. } = status {
+                if options.version.is_none() {
+                    return Ok(EnsureAppOutcome::AlreadyPresent(status));
+                }
+                present = true;
+            }
+        }
+        let version = if present {
+            options.version.clone()
+        } else {
+            self.apps
+                .version_for_plan_sync(app, options.version.clone())
+        };
+        let plan = plan_install(app, &self.apps.target, &InstallOptions { version })?;
+        let ids = native_ids_from_executed(&plan)?;
+        let backend = self.apps.backend_for(plan.backend)?;
+        let outcome = backend.install_sync(
+            InstallRequest::new(&plan, &self.apps.target).elevated(options.elevated),
+        )?;
+        let verification = self.apps.verify_presence_sync(&ids);
+        let verified = matches!(verification, Ok(Presence::Present(_)));
+        let subject = native_subject(&ids);
+        let mut warning = match &verification {
+            Ok(Presence::Present(_)) => None,
+            Ok(Presence::Absent) => Some(format!(
+                "installed, but the post-install verify no longer reports {subject} — recorded unverified"
+            )),
+            Err(error) => Some(format!(
+                "installed, but the post-install verify probe failed: {error} — recorded unverified"
+            )),
+        };
+        let verified_version = match verification {
+            Ok(Presence::Present(version)) => version,
+            _ => None,
+        };
+        let recorded_version = verified_version.or(outcome.version);
+        let record_key = plan.app.clone();
+        self.apps.records.insert(
+            record_key,
+            InstallRecord::new(plan, ids.clone(), recorded_version.clone()),
+        );
+        if let Err(error) = self.apps.save_records_sync() {
+            push_warning(
+                &mut warning,
+                format!("installed, but saving the install manifest failed: {error}"),
+            );
+        }
+        Ok(EnsureAppOutcome::Installed {
+            backend: ids.backend(),
+            version: recorded_version,
+            ids,
+            verified,
+            warning,
+        })
+    }
+
+    /// Uninstall `id`, on the calling thread: the record-replay arm of
+    /// [`Apps::uninstall`] verbatim (plan from the record's own
+    /// identifiers, execute, post-verify, remove the record, save
+    /// in-line). Without a record the blocking surface cannot probe for
+    /// Foreign presence (that arm resolves through the registry), so it
+    /// answers [`AppsError::BlockingResolveRequired`] — take the resolved
+    /// app to [`AppsBlocking::uninstall_app`] instead.
+    ///
+    /// # Errors
+    ///
+    /// [`AppsError::BlockingResolveRequired`] when toride has no record
+    /// for `id`; otherwise the same contract as [`Apps::uninstall`].
+    pub fn uninstall(
+        &mut self,
+        id: &TorideId,
+        options: AppUninstallOptions,
+    ) -> AppsResult<UninstallAppOutcome> {
+        let Some(record) = self.apps.records.get(id).cloned() else {
+            return Err(AppsError::BlockingResolveRequired {
+                id: id.as_str().to_owned(),
+            });
+        };
+        let plan = uninstall_plan_from_record(id, &record, options.zap)?;
+        let backend = self.apps.backend_for(plan.backend)?;
+        backend.uninstall_sync(
+            UninstallRequest::new(&plan, &self.apps.target).elevated(options.elevated),
+        )?;
+        let mut warning = self.apps.verify_absence_sync(&record.ids);
+        self.apps.records.remove(id);
+        if let Err(error) = self.apps.save_records_sync() {
+            push_warning(
+                &mut warning,
+                format!(
+                    "uninstalled, but saving the install manifest failed: {error} \
+                     (the record was removed in memory)"
+                ),
+            );
+        }
+        Ok(UninstallAppOutcome::Removed {
+            backend: record.backend,
+            ids: record.ids,
+            warning,
+        })
+    }
+
+    /// Remove an unrecorded install, on the calling thread — the sync twin
+    /// of the Foreign arm of [`Apps::uninstall`] over a caller-resolved
+    /// app: nothing present answers
+    /// [`UninstallAppOutcome::AlreadyAbsent`]; presence without a record
+    /// is refused with [`AppsError::ForeignNotManaged`] unless the options
+    /// carry `force`. No manifest record is fabricated.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Apps::uninstall`] minus
+    /// [`AppsError::Unresolved`] / [`AppsError::Registry`].
+    pub fn uninstall_app(
+        &mut self,
+        app: &App,
+        options: AppUninstallOptions,
+    ) -> AppsResult<UninstallAppOutcome> {
+        let id = app.id.clone();
+        let plan = plan_uninstall(
+            app,
+            &self.apps.target,
+            &UninstallOptions { zap: options.zap },
+        )?;
+        let Some(native) = native_from_method(&app.install) else {
+            return Err(AppsError::UnrecordableOperation {
+                app: id.as_str().to_owned(),
+                operation: format!("{:?} carries no native identity", app.install),
+            });
+        };
+        let status = app_status_sync(None, Some(&native), &self.apps.backend_set())?;
+        let present_detail = match status {
+            AppStatus::NotInstalled => return Ok(UninstallAppOutcome::AlreadyAbsent),
+            AppStatus::Foreign { detail, .. } => detail,
+            AppStatus::Installed { backend, .. } => format!(
+                "a {backend} probe reports the app present, though toride has no record for it"
+            ),
+        };
+        if !options.force {
+            return Err(AppsError::ForeignNotManaged {
+                id: id.as_str().to_owned(),
+                detail: present_detail,
+            });
+        }
+        let backend = self.apps.backend_for(plan.backend)?;
+        backend.uninstall_sync(
+            UninstallRequest::new(&plan, &self.apps.target).elevated(options.elevated),
+        )?;
+        let warning = self.apps.verify_absence_sync(&native);
+        Ok(UninstallAppOutcome::Removed {
+            backend: plan.backend,
+            ids: native,
+            warning,
+        })
+    }
+
+    /// Update `id` to its manager's current version, on the calling
+    /// thread — the exact sync twin of [`Apps::update`]: record-required,
+    /// planned from the record's own identifiers with zero registry round
+    /// trips, currency decided by the manager's stale signal, dry runs
+    /// previewing instead of executing, and the record rewritten in-line
+    /// after a successful upgrade.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Apps::update`].
+    pub fn update(
+        &mut self,
+        id: &TorideId,
+        options: &AppUpdateOptions,
+    ) -> AppsResult<UpdateOutcome> {
+        if let Some(target) = &options.target {
+            return Err(AppsError::UpdateTargetNotPinnable {
+                id: id.as_str().to_owned(),
+                target: target.to_string(),
+            });
+        }
+        let Some(record) = self.apps.records.get(id).cloned() else {
+            return Err(AppsError::UnrecordedUpdate {
+                id: id.as_str().to_owned(),
+            });
+        };
+        let plan = update_plan_from_record(id, &record)?.dry_run(options.dry_run);
+        let backend = self.apps.backend_for(plan.backend)?;
+        let native = native_id(&record.ids);
+        let from = self.apps.record_installed_version_sync(&record.ids)?;
+        if options.dry_run {
+            let to = self.apps.record_available_version_sync(&record.ids)?;
+            return Ok(UpdateOutcome::Preview(UpdatePreview {
+                argv: plan.operation.argv(),
+                from,
+                to,
+            }));
+        }
+        if self
+            .apps
+            .record_is_current_sync(&record.ids, backend, from.as_ref(), native)?
+        {
+            return Ok(UpdateOutcome::UpToDate);
+        }
+        backend
+            .update_sync(UpdateRequest::new(&plan, &self.apps.target).elevated(options.elevated))?;
+        let to = self
+            .apps
+            .record_installed_version_sync(&record.ids)
+            .ok()
+            .flatten();
+        self.apps.records.insert(
+            id.clone(),
+            record.with_version(to.as_ref().map(|version| version.as_str().to_owned())),
+        );
+        self.apps.save_records_sync()?;
+        Ok(UpdateOutcome::Updated { from, to })
+    }
+
+    /// Claim a detected-but-unrecorded install, on the calling thread —
+    /// the sync twin of [`Apps::adopt`], including the rollback when the
+    /// in-line save fails.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Apps::adopt`].
+    pub fn adopt(
+        &mut self,
+        id: &TorideId,
+        provenance: AdoptProvenance,
+    ) -> AppsResult<InstallRecord> {
+        if self.apps.records.contains_key(id) {
+            return Err(AppsError::AlreadyRecorded {
+                id: id.as_str().to_owned(),
+            });
+        }
+        let ids = provenance.ids;
+        let version = match self.apps.verify_presence_sync(&ids)? {
+            Presence::Present(version) => version,
+            Presence::Absent => {
+                return Err(AppsError::AdoptionAbsent {
+                    id: id.as_str().to_owned(),
+                    detail: format!("{} is not present", native_subject(&ids)),
+                });
+            }
+        };
+        let mut record = InstallRecord::adopted(ids, version);
+        if let Some(installed_at) = provenance.installed_at {
+            record = record.with_installed_at(installed_at);
+        }
+        self.apps.records.insert(id.clone(), record.clone());
+        if let Err(error) = self.apps.save_records_sync() {
+            self.apps.records.remove(id);
+            return Err(error.into());
+        }
+        Ok(record)
+    }
+
+    /// Where `id` stands on this host, on the calling thread — the sync
+    /// twin of [`Apps::status`]'s record arm: a record hit is answered
+    /// from local state alone. Without a record the blocking surface
+    /// cannot resolve native identifiers for `Foreign` detection, so it
+    /// answers [`AppStatus::NotInstalled`] — the same degraded answer the
+    /// async facade gives when a registry resolve fails.
+    ///
+    /// # Errors
+    ///
+    /// [`AppsError::Backend`] when a present backend fails its probe.
+    pub fn status(&self, id: &TorideId) -> AppsResult<AppStatus> {
+        match self.apps.records.get(id) {
+            Some(record) => Ok(app_status_sync(
+                Some(record),
+                None,
+                &self.apps.backend_set(),
+            )?),
+            None => Ok(AppStatus::NotInstalled),
+        }
+    }
+
+    /// The versions `id` can be installed at, on the calling thread — the
+    /// sync twin of [`Apps::available_versions`]'s record-first arm; an
+    /// unrecorded id needs the registry and answers
+    /// [`AppsError::BlockingResolveRequired`].
+    ///
+    /// # Errors
+    ///
+    /// [`AppsError::BlockingResolveRequired`] when toride has no record
+    /// for `id`; otherwise the same contract as
+    /// [`Apps::available_versions`].
+    pub fn available_versions(&self, id: &TorideId) -> AppsResult<Vec<Version>> {
+        if let Some(record) = self.apps.records.get(id) {
+            return self.apps.record_available_versions_sync(&record.ids);
+        }
+        Err(AppsError::BlockingResolveRequired {
+            id: id.as_str().to_owned(),
+        })
+    }
+
+    /// Hold `id` back from upgrades, on the calling thread — the sync twin
+    /// of [`Apps::pin`].
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Apps::pin`].
+    pub fn pin(&self, id: &TorideId) -> AppsResult<()> {
+        self.apps.set_pin_state_sync(id, true)
+    }
+
+    /// Release a pin, on the calling thread — the sync twin of
+    /// [`Apps::unpin`].
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Apps::unpin`].
+    pub fn unpin(&self, id: &TorideId) -> AppsResult<()> {
+        self.apps.set_pin_state_sync(id, false)
     }
 }
 
@@ -1987,6 +2638,18 @@ mod tests {
     fn no_manifest_path_explains_the_escape() {
         let text = AppsError::NoManifestPath.to_string();
         assert!(text.contains("explicit path"), "{text}");
+    }
+
+    #[test]
+    fn blocking_resolve_required_names_the_app_and_both_escapes() {
+        let error = AppsError::BlockingResolveRequired {
+            id: "brave".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("`brave`"), "{text}");
+        assert!(text.contains("adapters are async"), "{text}");
+        assert!(text.contains("resolved app"), "{text}");
+        assert!(text.contains("async facade"), "{text}");
     }
 
     #[test]

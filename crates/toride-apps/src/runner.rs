@@ -1,13 +1,18 @@
 //! # Command-execution seam
 //!
 //! [`CommandRunner`] is the single choke point every backend command flows
-//! through: it wraps an `Arc<dyn `[`AsyncRunner`]`>` (real
-//! [`TokioRunner`] by default, `FakeRunner` — toride-runner's `fake`
-//! feature — in tests), applies the seam's cwd/env policy to every spec,
-//! and maps runner failures into the crate's
-//! [`Error::Command`]. Backends never spawn processes directly — they build
-//! specs with [`command`] (or [`CommandRunner::command`]) and hand them to
-//! the seam.
+//! through: it wraps an `Arc<dyn `[`Runner`]`>` (real [`DuctRunner`] by
+//! default, `FakeRunner` — toride-runner's `fake` feature — in tests),
+//! applies the seam's cwd/env policy to every spec, and maps runner
+//! failures into the crate's [`Error::Command`]. Backends never spawn
+//! processes directly — they build specs with [`command`] (or
+//! [`CommandRunner::command`]) and hand them to the seam.
+//!
+//! The seam is dual-mode over one runner handle: [`CommandRunner::run_sync`]
+//! executes on the calling thread (the [`DuctRunner`] path the sync
+//! execution surface rides), while [`CommandRunner::run`] is the async
+//! spelling — offloaded to tokio's blocking pool under the `tokio` feature,
+//! and run in-line on the calling thread without it.
 //!
 //! The builder mirrors toride-mise's `MiseBuilder` injection pattern: set an
 //! explicit runner for tests, leave it unset for the production default.
@@ -18,8 +23,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use camino::Utf8PathBuf;
-use toride_runner::tokio_runner::TokioRunner;
-use toride_runner::{AsyncRunner, CommandOutput, CommandSpec};
+use toride_runner::{CommandOutput, CommandSpec, DuctRunner, Runner};
 
 use crate::error::Result;
 
@@ -49,19 +53,21 @@ pub fn command(
     CommandSpec::new(program).args(args).stdin_null(true)
 }
 
-/// Thin async command-execution seam over a shared runner.
+/// Thin dual-mode command-execution seam over one shared runner handle.
 ///
 /// Cloning produces a second handle to the same underlying runner (the
 /// runner lives behind an `Arc`), so backends can each hold a copy.
 ///
-/// All execution flows through [`CommandRunner::run`] /
-/// [`CommandRunner::run_checked`], which apply the seam's cwd/env policy
-/// (see [`CommandRunner::prepare`]) before dispatching and map runner
-/// failures into [`crate::Error::Command`].
+/// All execution flows through [`CommandRunner::run_sync`] /
+/// [`CommandRunner::run_checked_sync`] (calling thread) and
+/// [`CommandRunner::run`] / [`CommandRunner::run_checked`] (async spelling),
+/// which apply the seam's cwd/env policy (see
+/// [`CommandRunner::prepare`]) before dispatching and map runner failures
+/// into [`crate::Error::Command`].
 #[derive(Clone)]
 pub struct CommandRunner {
     /// The injectable command executor.
-    runner: Arc<dyn AsyncRunner>,
+    runner: Arc<dyn Runner>,
     /// Working directory applied to every command; `None` inherits the
     /// process cwd.
     cwd: Option<Utf8PathBuf>,
@@ -73,7 +79,7 @@ pub struct CommandRunner {
 impl CommandRunner {
     /// Create a seam over an explicit runner, with no cwd/env policy.
     #[must_use]
-    pub fn new(runner: Arc<dyn AsyncRunner>) -> Self {
+    pub fn new(runner: Arc<dyn Runner>) -> Self {
         Self {
             runner,
             cwd: None,
@@ -82,7 +88,7 @@ impl CommandRunner {
     }
 
     /// Start building a configured seam (runner defaults to
-    /// [`TokioRunner`] when left unset).
+    /// [`DuctRunner`] when left unset).
     #[must_use]
     pub fn builder() -> CommandRunnerBuilder {
         CommandRunnerBuilder::new()
@@ -114,19 +120,51 @@ impl CommandRunner {
         spec
     }
 
-    /// Execute a spec and return its output, success or not.
+    /// Execute a spec on the calling thread and return its output, success
+    /// or not.
     ///
     /// # Errors
     ///
     /// [`crate::Error::Command`] when the runner fails to spawn, wait, or
-    /// otherwise execute the command. A non-zero exit is *not* an error here — use
-    /// [`CommandRunner::run_checked`] for that.
-    pub async fn run(&self, spec: CommandSpec) -> Result<CommandOutput> {
+    /// otherwise execute the command. A non-zero exit is *not* an error
+    /// here — use [`CommandRunner::run_checked_sync`] for that.
+    pub fn run_sync(&self, spec: CommandSpec) -> Result<CommandOutput> {
         let spec = self.prepare(spec);
-        Ok(self.runner.run(&spec).await?)
+        Ok(self.runner.run(&spec)?)
     }
 
-    /// Execute a spec and fail on non-zero exits.
+    /// Execute a spec on the calling thread and fail on non-zero exits.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Command`] on execution failure or non-zero exit (the
+    /// runner's `run_checked` renders program, args, exit code, and scrubbed
+    /// stderr).
+    pub fn run_checked_sync(&self, spec: CommandSpec) -> Result<CommandOutput> {
+        let spec = self.prepare(spec);
+        Ok(self.runner.run_checked(&spec)?)
+    }
+
+    /// Execute a spec and return its output, success or not.
+    ///
+    /// Under the `tokio` feature the command is offloaded to tokio's
+    /// blocking pool (sync subprocess execution must not stall an async
+    /// worker); without it there is no runtime to offload to and the
+    /// command runs on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::Error::Command`] when the runner fails to spawn, wait, or
+    /// otherwise execute the command. A non-zero exit is *not* an error
+    /// here — use [`CommandRunner::run_checked`] for that.
+    pub async fn run(&self, spec: CommandSpec) -> Result<CommandOutput> {
+        let spec = self.prepare(spec);
+        self.dispatch(spec).await
+    }
+
+    /// Execute a spec and fail on non-zero exits — the async spelling of
+    /// [`CommandRunner::run_checked_sync`], same offloading contract as
+    /// [`CommandRunner::run`].
     ///
     /// # Errors
     ///
@@ -135,20 +173,66 @@ impl CommandRunner {
     /// stderr).
     pub async fn run_checked(&self, spec: CommandSpec) -> Result<CommandOutput> {
         let spec = self.prepare(spec);
-        Ok(self.runner.run_checked(&spec).await?)
+        self.dispatch_checked(spec).await
     }
+
+    #[cfg(feature = "tokio")]
+    async fn dispatch(&self, spec: CommandSpec) -> Result<CommandOutput> {
+        let runner = Arc::clone(&self.runner);
+        join(
+            tokio::task::spawn_blocking(move || runner.run(&spec)).await,
+            "run",
+        )
+    }
+
+    #[cfg(feature = "tokio")]
+    async fn dispatch_checked(&self, spec: CommandSpec) -> Result<CommandOutput> {
+        let runner = Arc::clone(&self.runner);
+        join(
+            tokio::task::spawn_blocking(move || runner.run_checked(&spec)).await,
+            "run_checked",
+        )
+    }
+
+    #[cfg(not(feature = "tokio"))]
+    #[expect(clippy::unused_async, clippy::unused_async_trait_impl)]
+    async fn dispatch(&self, spec: CommandSpec) -> Result<CommandOutput> {
+        Ok(self.runner.run(&spec)?)
+    }
+
+    #[cfg(not(feature = "tokio"))]
+    #[expect(clippy::unused_async, clippy::unused_async_trait_impl)]
+    async fn dispatch_checked(&self, spec: CommandSpec) -> Result<CommandOutput> {
+        Ok(self.runner.run_checked(&spec)?)
+    }
+}
+
+/// Flatten a joined blocking task's outcome: a join failure (task cancelled
+/// or panicked) becomes [`crate::Error::Command`], so callers' error paths
+/// stay uniform.
+#[cfg(feature = "tokio")]
+fn join(
+    joined: std::result::Result<toride_runner::Result<CommandOutput>, tokio::task::JoinError>,
+    operation: &'static str,
+) -> Result<CommandOutput> {
+    let outcome = joined.map_err(|error| {
+        crate::error::Error::Command(toride_runner::Error::Other(format!(
+            "blocking {operation} dispatch failed to join: {error}"
+        )))
+    })?;
+    Ok(outcome?)
 }
 
 /// Builder for constructing [`CommandRunner`] seams, modeled on toride-mise's
 /// `MiseBuilder` runner-injection pattern: consume-and-return setters, with
-/// the runner defaulting to a fresh [`TokioRunner`] when left unset (so,
-/// unlike mise's, [`CommandRunnerBuilder::build`] is infallible — there is no
-/// binary discovery to fail).
+/// the runner defaulting to a fresh [`DuctRunner`] when left unset (so,
+/// unlike mise's, [`CommandRunnerBuilder::build`] is infallible — there is
+/// no binary discovery to fail).
 #[derive(Default)]
 pub struct CommandRunnerBuilder {
-    /// The async command runner. Defaults to [`TokioRunner`] in
+    /// The command runner. Defaults to [`DuctRunner`] in
     /// [`CommandRunnerBuilder::build`].
-    runner: Option<Arc<dyn AsyncRunner>>,
+    runner: Option<Arc<dyn Runner>>,
     /// Working directory applied to every command.
     cwd: Option<Utf8PathBuf>,
     /// Extra environment variables applied to every command.
@@ -162,11 +246,10 @@ impl CommandRunnerBuilder {
         Self::default()
     }
 
-    /// Set the async command runner (a `FakeRunner` — toride-runner's
-    /// `fake` feature — in tests, a [`TokioRunner`] or wrapper in
-    /// production).
+    /// Set the command runner (a `FakeRunner` — toride-runner's `fake`
+    /// feature — in tests, a [`DuctRunner`] or wrapper in production).
     #[must_use]
-    pub fn runner(mut self, runner: Arc<dyn AsyncRunner>) -> Self {
+    pub fn runner(mut self, runner: Arc<dyn Runner>) -> Self {
         self.runner = Some(runner);
         self
     }
@@ -201,10 +284,10 @@ impl CommandRunnerBuilder {
     }
 
     /// Consume the builder and produce the seam, defaulting the runner to a
-    /// fresh [`TokioRunner`] when none was set.
+    /// fresh [`DuctRunner`] when none was set.
     #[must_use]
     pub fn build(self) -> CommandRunner {
-        let runner = self.runner.unwrap_or_else(|| Arc::new(TokioRunner));
+        let runner = self.runner.unwrap_or_else(|| Arc::new(DuctRunner));
         CommandRunner {
             runner,
             cwd: self.cwd,
@@ -234,6 +317,52 @@ mod tests {
             spec.stdin_null,
             "captured backend commands must not inherit stdin"
         );
+    }
+
+    #[test]
+    fn run_sync_returns_output_through_the_seam() {
+        let runner = seam(FakeRunner::new().push_response(CommandOutput::from_stdout("4.5.6")));
+        let output = runner.run_sync(command("brew", ["--version"])).unwrap();
+        assert_eq!(output.stdout_trimmed(), "4.5.6");
+    }
+
+    #[test]
+    fn run_sync_maps_runner_failure_to_command_error() {
+        let spec = command("brew", ["--version"]);
+        let runner = seam(FakeRunner::new().strict().respond_err(
+            spec.clone(),
+            toride_runner::Error::BinaryNotFound("brew".into()),
+        ));
+        let error = runner.run_sync(command("brew", ["--version"])).unwrap_err();
+        assert!(matches!(error, Error::Command(_)), "{error:?}");
+    }
+
+    #[test]
+    fn run_checked_sync_maps_nonzero_exit_to_command_error() {
+        let runner = seam(FakeRunner::new().push_response(CommandOutput::from_stderr("boom", 1)));
+        let error = runner
+            .run_checked_sync(command("brew", ["install", "nope"]))
+            .unwrap_err();
+        assert!(matches!(error, Error::Command(_)), "{error:?}");
+    }
+
+    #[test]
+    fn sync_dispatch_rides_the_seams_env_policy() {
+        let spec = command("brew", ["--prefix"]);
+        let expected = command("brew", ["--prefix"])
+            .cwd("/opt/brew")
+            .env("HOMEBREW_NO_AUTO_UPDATE", "1");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(expected.clone(), CommandOutput::from_stdout("/opt/brew"));
+        let runner = CommandRunner::builder()
+            .runner(Arc::new(fake.clone()))
+            .cwd("/opt/brew")
+            .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+            .build();
+        let output = runner.run_sync(spec).unwrap();
+        assert_eq!(output.stdout_trimmed(), "/opt/brew");
+        fake.assert_called_with(&expected);
     }
 
     #[tokio::test]

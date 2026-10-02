@@ -19,14 +19,22 @@
 //!   flatpak, a distro manager) implements: install, uninstall,
 //!   `list_installed`, status, plus an applicability probe;
 //! - a thin **runner seam** ([`CommandRunner`]) over
-//!   `toride_runner::AsyncRunner` so every backend command is constructed and
+//!   `toride_runner::Runner` so every backend command is constructed and
 //!   executed through one injectable, fake-able choke point — backends never
 //!   spawn processes directly;
 //! - the [`Apps`] **facade** composing all of the above with a
 //!   [`RecordStore`] (the default is the JSON install manifest) and the
 //!   registry adapters into the user-facing operations (ensure-installed
 //!   at a version, uninstall, update, adopt, status, search,
-//!   available-version listing, pin/unpin).
+//!   available-version listing, pin/unpin);
+//! - the **sync execution path**: every [`Backend`] operation has a
+//!   `_sync` twin executing on the calling thread through
+//!   `toride-runner`'s DuctRunner-backed seam, and [`AppsBlocking`]
+//!   (via [`Apps::blocking`]) drives the same lifecycle verbs
+//!   synchronously with in-line manifest saves — the surface an all-sync
+//!   embedder uses with `default-features = false` (no tokio anywhere).
+//!   The `tokio` feature (on by default) adds runtime offloading for the
+//!   async facade's command dispatch and manifest saves.
 //!
 //! ## Pipeline
 //!
@@ -132,8 +140,9 @@ pub mod store;
 
 // Re-exports — the public API surface.
 pub use apps::{
-    AdoptProvenance, AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBuilder,
-    AppsError, AppsResult, EnsureAppOutcome, UninstallAppOutcome, UpdateOutcome, UpdatePreview,
+    AdoptProvenance, AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBlocking,
+    AppsBuilder, AppsError, AppsResult, EnsureAppOutcome, UninstallAppOutcome, UpdateOutcome,
+    UpdatePreview,
 };
 pub use backend::{
     Backend, BackendId, BackendStatus, InstallOutcome, InstallRequest, InstalledApp, ListQuery,

@@ -22,6 +22,11 @@
 //! - **Seam-only execution** — all commands go through
 //!   [`CommandRunner`](crate::CommandRunner); backends never spawn processes
 //!   directly.
+//! - **Sync twins** — every operation exists twice: the `async` spelling
+//!   and a `_sync` twin ([`Backend::install_sync`] and friends) executing
+//!   on the calling thread through the seam's sync dispatch. Both honor
+//!   the same guards, argv, and classification; callers pick per their
+//!   runtime, never per semantics.
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -453,6 +458,140 @@ pub trait Backend: Send + Sync {
             reason: "this backend has no pin concept".to_owned(),
         })
     }
+
+    /// Execute an install plan on the calling thread — the sync twin of
+    /// [`Backend::install`]: same request type, same binding guard
+    /// convention (`ensure_install_allowed(&request)?` first), same argv
+    /// and classification, dispatched through the seam's
+    /// [`run_checked_sync`](crate::CommandRunner::run_checked_sync).
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Backend::install`].
+    fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome>;
+
+    /// Execute an uninstall plan on the calling thread — the sync twin of
+    /// [`Backend::uninstall`], same guard convention.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Backend::install_sync`].
+    fn uninstall_sync(&self, request: UninstallRequest<'_>) -> Result<UninstallOutcome>;
+
+    /// Execute an update plan on the calling thread — the sync twin of
+    /// [`Backend::update`], same guard convention.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Backend::install_sync`].
+    fn update_sync(&self, request: UpdateRequest<'_>) -> Result<()>;
+
+    /// List the apps this backend manages, on the calling thread — the
+    /// sync twin of [`Backend::list_installed`].
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`Backend::list_installed`].
+    fn list_installed_sync(&self, query: ListQuery) -> Result<Vec<InstalledApp>>;
+
+    /// Report the status of one backend-native id, on the calling thread —
+    /// the sync twin of [`Backend::status`], deriving from
+    /// [`Backend::list_installed_sync`] by default.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the underlying listing fails.
+    fn status_sync(&self, query: StatusQuery<'_>) -> Result<BackendStatus> {
+        let apps = self
+            .list_installed_sync(ListQuery::id(query.id))?
+            .into_iter()
+            .find(|app| app.id == query.id);
+        Ok(match apps {
+            Some(InstalledApp { version, .. }) => BackendStatus::Installed { version },
+            None => BackendStatus::NotInstalled,
+        })
+    }
+
+    /// Report every stale item the backend's manager flags, on the calling
+    /// thread — the sync twin of [`Backend::outdated`], none reported by
+    /// default.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the manager's stale probe fails or its
+    /// output cannot be parsed.
+    fn outdated_sync(&self) -> Result<Vec<OutdatedEntry>> {
+        Ok(Vec::new())
+    }
+
+    /// The installed version of one backend-native id, on the calling
+    /// thread — the sync twin of [`Backend::installed_version`], deriving
+    /// from [`Backend::status_sync`] by default.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the underlying listing fails.
+    fn installed_version_sync(&self, id: &str) -> Result<Option<Version>> {
+        Ok(match self.status_sync(StatusQuery::new(id))? {
+            BackendStatus::Installed { version } => version.map(Version::new),
+            BackendStatus::NotInstalled => None,
+        })
+    }
+
+    /// The version the manager would install for `id` today, on the
+    /// calling thread — the sync twin of [`Backend::available_version`];
+    /// `Ok(None)` is *unknown*, never "up to date".
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the backend's availability probe fails.
+    fn available_version_sync(&self, _id: &str) -> Result<Option<Version>> {
+        Ok(None)
+    }
+
+    /// The versions the manager can install for `id` today, on the calling
+    /// thread — the sync twin of [`Backend::available_versions`], none by
+    /// default.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the backend's listing probe fails or its
+    /// output cannot be parsed.
+    fn available_versions_sync(&self, _id: &str) -> Result<Vec<Version>> {
+        Ok(Vec::new())
+    }
+
+    /// Hold `id` back from the manager's upgrades, on the calling thread —
+    /// the sync twin of [`Backend::pin`], refused by default.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PinUnsupported`] by default; [`Error::Command`] when the
+    /// manager's pin command fails.
+    fn pin_sync(&self, id: &str) -> Result<()> {
+        Err(Error::PinUnsupported {
+            backend: self.id(),
+            operation: "pin",
+            id: id.to_owned(),
+            reason: "this backend has no pin concept".to_owned(),
+        })
+    }
+
+    /// Release a pin, on the calling thread — the sync twin of
+    /// [`Backend::unpin`], refused by default.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PinUnsupported`] by default; [`Error::Command`] when the
+    /// manager's unpin command fails.
+    fn unpin_sync(&self, id: &str) -> Result<()> {
+        Err(Error::PinUnsupported {
+            backend: self.id(),
+            operation: "unpin",
+            id: id.to_owned(),
+            reason: "this backend has no pin concept".to_owned(),
+        })
+    }
 }
 
 /// Shared precondition check every [`Backend::install`] implementation must
@@ -595,6 +734,39 @@ mod tests {
         }
 
         async fn list_installed(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
+            Ok(self
+                .installed
+                .iter()
+                .filter(|app| query.ids.is_empty() || query.ids.contains(&app.id))
+                .cloned()
+                .collect())
+        }
+
+        fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome> {
+            ensure_install_allowed(&request)?;
+            self.runner
+                .run_checked_sync(request.plan.operation.command_spec())?;
+            Ok(InstallOutcome {
+                version: None,
+                detail: format!("installed via {}", self.id()),
+            })
+        }
+
+        fn uninstall_sync(&self, request: UninstallRequest<'_>) -> Result<UninstallOutcome> {
+            ensure_uninstall_allowed(&request)?;
+            Ok(UninstallOutcome {
+                detail: format!("uninstalled via {}", self.id()),
+            })
+        }
+
+        fn update_sync(&self, request: UpdateRequest<'_>) -> Result<()> {
+            ensure_update_allowed(&request)?;
+            self.runner
+                .run_checked_sync(request.plan.operation.command_spec())?;
+            Ok(())
+        }
+
+        fn list_installed_sync(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
             Ok(self
                 .installed
                 .iter()
@@ -915,6 +1087,203 @@ mod tests {
         ));
         assert_eq!(backend.id(), BackendId::Homebrew);
         assert!(backend.supports(&linux_target()));
+    }
+
+    #[test]
+    fn install_sync_refuses_dry_run_plans_without_touching_the_runner() {
+        let runner = CommandRunner::builder()
+            .runner(Arc::new(FakeRunner::new().strict()))
+            .build();
+        let backend = ProbeBackend::new(runner, Vec::new());
+        let app = app_with(InstallMethod::Distro {
+            family: DistroFamily::Debian,
+            repo: None,
+            package: "probe".to_owned(),
+        });
+        let plan = plan_install(&app, &linux_target(), &InstallOptions::default())
+            .unwrap()
+            .dry_run(true);
+        let target = linux_target();
+        let error = backend
+            .install_sync(InstallRequest::new(&plan, &target))
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn install_sync_refuses_elevation_requiring_plans_without_a_grant() {
+        let runner = CommandRunner::builder()
+            .runner(Arc::new(FakeRunner::new().strict()))
+            .build();
+        let backend = ProbeBackend::new(runner, Vec::new());
+        let app = app_with(InstallMethod::Distro {
+            family: DistroFamily::Debian,
+            repo: None,
+            package: "probe".to_owned(),
+        });
+        let plan = plan_install(&app, &linux_target(), &InstallOptions::default()).unwrap();
+        let target = linux_target();
+        let error = backend
+            .install_sync(InstallRequest::new(&plan, &target))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn install_sync_executes_the_planned_argv_when_preconditions_hold() {
+        let spec = crate::runner::command("apt", ["install", "probe"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("ok"),
+        );
+        let runner = CommandRunner::builder()
+            .runner(Arc::new(fake.clone()))
+            .build();
+        let backend = ProbeBackend::new(runner, Vec::new());
+        let app = app_with(InstallMethod::Distro {
+            family: DistroFamily::Debian,
+            repo: None,
+            package: "probe".to_owned(),
+        });
+        let plan = plan_install(&app, &linux_target(), &InstallOptions::default()).unwrap();
+        let target = linux_target();
+        backend
+            .install_sync(InstallRequest::new(&plan, &target).elevated(true))
+            .unwrap();
+        fake.assert_called_with(&spec);
+    }
+
+    #[test]
+    fn uninstall_sync_refuses_elevation_requiring_plans_without_a_grant() {
+        let backend = ProbeBackend::new(
+            CommandRunner::builder()
+                .runner(Arc::new(FakeRunner::new().strict()))
+                .build(),
+            Vec::new(),
+        );
+        let app = app_with(InstallMethod::Distro {
+            family: DistroFamily::Debian,
+            repo: None,
+            package: "probe".to_owned(),
+        });
+        let plan = plan_uninstall(&app, &linux_target(), &UninstallOptions::default()).unwrap();
+        let target = linux_target();
+        let error = backend
+            .uninstall_sync(UninstallRequest::new(&plan, &target))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn update_sync_refuses_dry_run_plans_and_executes_when_preconditions_hold() {
+        let runner = CommandRunner::builder()
+            .runner(Arc::new(FakeRunner::new().strict()))
+            .build();
+        let backend = ProbeBackend::new(runner, Vec::new());
+        let plan = apt_update_plan(true);
+        let target = linux_target();
+        let error = backend
+            .update_sync(UpdateRequest::new(&plan, &target).elevated(true))
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+
+        let spec = crate::runner::command("apt", ["install", "--only-upgrade", "probe"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("ok"),
+        );
+        let runner = CommandRunner::builder()
+            .runner(Arc::new(fake.clone()))
+            .build();
+        let backend = ProbeBackend::new(runner, Vec::new());
+        backend
+            .update_sync(UpdateRequest::new(&apt_update_plan(false), &target).elevated(true))
+            .unwrap();
+        fake.assert_called_with(&spec);
+    }
+
+    #[test]
+    fn sync_trait_defaults_mirror_the_async_ones() {
+        let backend = ProbeBackend::new(
+            CommandRunner::builder()
+                .runner(Arc::new(FakeRunner::new().strict()))
+                .build(),
+            vec![
+                InstalledApp {
+                    id: "firefox".to_owned(),
+                    version: Some("138.0".to_owned()),
+                },
+                InstalledApp {
+                    id: "ripgrep".to_owned(),
+                    version: None,
+                },
+            ],
+        );
+        assert_eq!(
+            backend.status_sync(StatusQuery::new("firefox")).unwrap(),
+            BackendStatus::Installed {
+                version: Some("138.0".to_owned())
+            }
+        );
+        assert_eq!(
+            backend.status_sync(StatusQuery::new("nope")).unwrap(),
+            BackendStatus::NotInstalled
+        );
+        assert_eq!(
+            backend.installed_version_sync("firefox").unwrap(),
+            Some(Version::new("138.0"))
+        );
+        assert_eq!(backend.installed_version_sync("nope").unwrap(), None);
+        assert!(backend.outdated_sync().unwrap().is_empty());
+        assert_eq!(backend.available_version_sync("firefox").unwrap(), None);
+        assert!(
+            backend
+                .available_versions_sync("firefox")
+                .unwrap()
+                .is_empty()
+        );
+        for (operation, result) in [
+            ("pin", backend.pin_sync("firefox")),
+            ("unpin", backend.unpin_sync("firefox")),
+        ] {
+            let error = result.unwrap_err();
+            assert!(
+                matches!(error, Error::PinUnsupported { .. }),
+                "{operation}: {error:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn sync_methods_dispatch_through_the_boxed_trait_object() {
+        let spec = crate::runner::command("apt", ["install", "probe"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("ok"),
+        );
+        let backend: Box<dyn Backend> = Box::new(ProbeBackend::new(
+            CommandRunner::builder()
+                .runner(Arc::new(fake.clone()))
+                .build(),
+            Vec::new(),
+        ));
+        let app = app_with(InstallMethod::Distro {
+            family: DistroFamily::Debian,
+            repo: None,
+            package: "probe".to_owned(),
+        });
+        let plan = plan_install(&app, &linux_target(), &InstallOptions::default()).unwrap();
+        let target = linux_target();
+        backend
+            .install_sync(InstallRequest::new(&plan, &target).elevated(true))
+            .unwrap();
+        fake.assert_called_with(&spec);
     }
 
     #[test]

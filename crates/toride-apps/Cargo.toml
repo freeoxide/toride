@@ -6,8 +6,17 @@ description = "App install/uninstall execution layer: plans registry `App`s into
 license.workspace = true
 repository.workspace = true
 
+[features]
+default = ["tokio"]
+# Runtime offloading for the async facade: `spawn_blocking` dispatch of
+# backend commands and manifest saves. Without it the crate builds with no
+# tokio dependency at all — the sync execution path
+# (`Backend::*_sync`, `AppsBlocking`) is then the supported surface, and
+# async dispatch runs commands on the calling thread.
+tokio = ["dep:tokio"]
+
 [dependencies]
-tokio = { workspace = true }
+tokio = { workspace = true, optional = true }
 async-trait = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
@@ -17,10 +26,11 @@ camino = { workspace = true }
 # the A1 dep surface is stable for the backend rounds.
 dirs = { workspace = true }
 # All external command execution flows through the workspace's shared
-# `AsyncRunner` seam (cf. toride-mise's builder injection pattern). The
-# dep/dev-dep split keeps the test-only `fake` feature out of the normal
-# build, mirroring toride-installer's split.
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner"] }
+# `Runner` seam (cf. toride-mise's builder injection pattern): sync
+# `duct-runner` by default, a `FakeRunner` in tests. The dep/dev-dep split
+# keeps the test-only `fake` feature out of the normal build, mirroring
+# toride-installer's split.
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner"] }
 # The planner consumes the normalized `App`/`InstallMethod` contract, and
 # the facade round (A6) resolves apps through the registry's adapters — so
 # the workspace default (the `http` fetch engine) is taken deliberately.
@@ -28,7 +38,7 @@ toride-registry = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner", "fake"] }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["fake"] }
 
 [lints]
 workspace = true

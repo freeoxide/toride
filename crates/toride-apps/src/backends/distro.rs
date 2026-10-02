@@ -201,7 +201,6 @@ const RPM_QUERY_FORMAT: &str = "%{NAME}\\t%{VERSION}\\n";
 /// config-files left), `un ` (not installed) or the mid-install states
 /// (`iU` unpacked, `iH` half-installed, …).
 const DPKG_INSTALLED_STATUS_CHAR: u8 = b'i';
-
 // ---------------------------------------------------------------------------
 // Executors
 // ---------------------------------------------------------------------------
@@ -311,7 +310,6 @@ impl DistroExecutor {
         }
     }
 }
-
 // ---------------------------------------------------------------------------
 // Family detection
 // ---------------------------------------------------------------------------
@@ -404,7 +402,6 @@ fn unquote(value: &str) -> String {
         value.to_owned()
     }
 }
-
 // ---------------------------------------------------------------------------
 // Backend
 // ---------------------------------------------------------------------------
@@ -516,6 +513,22 @@ impl DistroBackend {
             .and_then(|app| app.version))
     }
 
+    /// The sync twin of [`DistroBackend::installed_version`] — same query
+    /// and classification, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`DistroBackend::installed_version`].
+    pub fn installed_version_sync(&self, package: &str) -> Result<Option<String>> {
+        let executor = self.executor()?;
+        let packages = [package.to_owned()];
+        let apps = self.query_packages_sync(executor, &packages)?;
+        Ok(apps
+            .into_iter()
+            .find(|app| app.id == package)
+            .and_then(|app| app.version))
+    }
+
     /// Query the family's package database for `packages` (all packages
     /// when empty) and parse the rows. A not-found exit (see the module
     /// docs) is an empty or partial answer, never an error; rows are
@@ -527,6 +540,21 @@ impl DistroBackend {
     ) -> Result<Vec<InstalledApp>> {
         let spec = query_spec(executor, packages);
         let output = self.runner.run(spec.clone()).await?;
+        if output.success || query_reports_not_found(executor, &output) {
+            return parse_query_output(executor, &output.stdout);
+        }
+        Err(command_failed_error(&spec, &output))
+    }
+
+    /// The sync twin of [`DistroBackend::query_packages`] — same spec,
+    /// classification, and parsing, executed on the calling thread.
+    fn query_packages_sync(
+        &self,
+        executor: DistroExecutor,
+        packages: &[String],
+    ) -> Result<Vec<InstalledApp>> {
+        let spec = query_spec(executor, packages);
+        let output = self.runner.run_sync(spec.clone())?;
         if output.success || query_reports_not_found(executor, &output) {
             return parse_query_output(executor, &output.stdout);
         }
@@ -606,12 +634,59 @@ impl Backend for DistroBackend {
         })
     }
 
+    fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome> {
+        ensure_install_allowed(&request)?;
+        let Operation::DistroInstall { manager, package } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let executor = self.executor_for(*manager)?;
+        self.runner
+            .run_checked_sync(mutating_spec(executor, manager.install_verb(), package))?;
+        let version = self.installed_version_sync(package).ok().flatten();
+        Ok(InstallOutcome {
+            version,
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn uninstall_sync(&self, request: UninstallRequest<'_>) -> Result<UninstallOutcome> {
+        ensure_uninstall_allowed(&request)?;
+        let Operation::DistroUninstall { manager, package } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let executor = self.executor_for(*manager)?;
+        self.runner
+            .run_checked_sync(mutating_spec(executor, manager.uninstall_verb(), package))?;
+        Ok(UninstallOutcome {
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn update_sync(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::DistroUpdate { manager, package } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let executor = self.executor_for(*manager)?;
+        self.runner
+            .run_checked_sync(update_spec(executor, *manager, package))?;
+        Ok(())
+    }
+
+    fn list_installed_sync(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
+        let executor = self.executor()?;
+        self.query_packages_sync(executor, &query.ids).map(|apps| {
+            apps.into_iter()
+                .filter(|app| query.ids.is_empty() || query.ids.contains(&app.id))
+                .collect()
+        })
+    }
+
     // `status` keeps the trait's default list-derived implementation: one
     // single-package query answers it, and not-found is NotInstalled, never
     // an error — the classification lives in `query_packages`. Callers that
     // want the raw probe call `installed_version(package)` directly.
 }
-
 // ---------------------------------------------------------------------------
 // Command construction
 // ---------------------------------------------------------------------------
@@ -679,7 +754,6 @@ fn query_spec(executor: DistroExecutor, packages: &[String]) -> toride_runner::C
     };
     spec.env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
 }
-
 // ---------------------------------------------------------------------------
 // Output parsing and failure classification
 // ---------------------------------------------------------------------------
@@ -2988,5 +3062,126 @@ mod tests {
                 "{call:?}"
             );
         }
+    }
+
+    #[test]
+    fn install_sync_refuses_dry_run_and_elevation_without_dispatching() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .install_sync(InstallRequest::new(
+                &install_plan_for(DistroFamily::Debian).dry_run(true),
+                &target,
+            ))
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        let error = backend
+            .install_sync(InstallRequest::new(
+                &install_plan_for(DistroFamily::Debian),
+                &target,
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty(), "no manager command may run");
+    }
+
+    #[test]
+    fn install_sync_runs_the_apt_argv_with_suppression_and_reports_the_version() {
+        let install_spec = command("apt-get", ["install", "-y", "brave-browser"])
+            .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                install_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                dpkg_query_spec(&["brave-browser"]),
+                toride_runner::CommandOutput::from_stdout("ii brave-browser\t1.96.59\n"),
+            );
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = install_plan_for(DistroFamily::Debian);
+        let target = target(DistroFamily::Debian);
+        let outcome = backend
+            .install_sync(InstallRequest::new(&plan, &target).elevated(true))
+            .unwrap();
+        assert_eq!(outcome.version.as_deref(), Some("1.96.59"));
+        fake.assert_called_with(&install_spec);
+    }
+
+    #[test]
+    fn uninstall_sync_and_update_sync_run_their_canonical_argv() {
+        let remove_spec = command("apt-get", ["remove", "-y", "brave-browser"])
+            .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1);
+        let upgrade_spec = command(
+            "apt-get",
+            ["install", "--only-upgrade", "-y", "brave-browser"],
+        )
+        .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                remove_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                upgrade_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            );
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let target = target(DistroFamily::Debian);
+        backend
+            .uninstall_sync(
+                UninstallRequest::new(&uninstall_plan_for(DistroFamily::Debian), &target)
+                    .elevated(true),
+            )
+            .unwrap();
+        backend
+            .update_sync(
+                UpdateRequest::new(&update_plan_for(DistroFamily::Debian), &target).elevated(true),
+            )
+            .unwrap();
+        fake.assert_called_with(&remove_spec);
+        fake.assert_called_with(&upgrade_spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn list_installed_and_installed_version_sync_classify_the_query_output() {
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                dpkg_query_spec(&["brave-browser"]),
+                toride_runner::CommandOutput::from_stdout("ii brave-browser\t1.96.59\n"),
+            )
+            .respond(
+                dpkg_query_spec(&["brave-browser"]),
+                toride_runner::CommandOutput::from_stdout("ii brave-browser\t1.96.59\n"),
+            )
+            .respond(
+                dpkg_query_spec(&["ghost"]),
+                toride_runner::CommandOutput::from_stderr(
+                    "dpkg-query: no packages found matching ghost\n",
+                    1,
+                ),
+            );
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        assert_eq!(
+            backend
+                .installed_version_sync("brave-browser")
+                .unwrap()
+                .as_deref(),
+            Some("1.96.59")
+        );
+        assert_eq!(backend.installed_version_sync("ghost").unwrap(), None);
+        let listed = backend
+            .list_installed_sync(ListQuery::id("brave-browser"))
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "brave-browser");
     }
 }

@@ -69,6 +69,7 @@ use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use serde::Deserialize;
 use toride_registry::Os;
+use toride_runner::CommandOutput;
 
 use crate::backend::{
     Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, OutdatedEntry,
@@ -101,7 +102,6 @@ const NOT_INSTALLED_MARKERS: [&str; 3] = [
     // `Error: No installed keg or formula with the name "x".`
     "no installed keg",
 ];
-
 // ---------------------------------------------------------------------------
 // Backend
 // ---------------------------------------------------------------------------
@@ -220,6 +220,18 @@ impl HomebrewBackend {
         parse_installed_info_output(&output.stdout)
     }
 
+    /// The sync twin of [`HomebrewBackend::list_entries`] — same listing,
+    /// same parsing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::list_entries`].
+    pub fn list_entries_sync(&self) -> Result<Vec<BrewEntry>> {
+        let spec = command(BREW, ["info", "--json=v2", "--installed"]);
+        let output = self.runner.run_checked_sync(spec)?;
+        parse_installed_info_output(&output.stdout)
+    }
+
     /// The installed version of one item, from the kind-scoped probe
     /// `brew list --cask|--formula --versions <token>`.
     ///
@@ -243,21 +255,18 @@ impl HomebrewBackend {
     /// neither a not-installed `Error:` line nor, at exit code 1, empty.
     pub async fn installed_version(&self, kind: BrewKind, token: &str) -> Result<Option<String>> {
         let spec = command(BREW, ["list", kind.flag(), "--versions", token]);
-        match self.runner.run_checked(spec).await {
-            Ok(output) => Ok(parse_versions_output(&output.stdout)),
-            // "Not installed" is an answer, not a failure: a marker-
-            // matching Error: line, or a silent exit 1 (empty stderr —
-            // the exit-code gate keeps signal kills as errors). Anything
-            // else escapes.
-            Err(Error::Command(toride_runner::Error::CommandFailed {
-                stderr, exit_code, ..
-            })) if stderr_says_not_installed(&stderr)
-                || (stderr.trim().is_empty() && exit_code == Some(1)) =>
-            {
-                Ok(None)
-            }
-            Err(error) => Err(error),
-        }
+        classify_version_probe(self.runner.run_checked(spec).await)
+    }
+
+    /// The sync twin of [`HomebrewBackend::installed_version`] — same probe,
+    /// same classification, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::installed_version`].
+    pub fn installed_version_sync(&self, kind: BrewKind, token: &str) -> Result<Option<String>> {
+        let spec = command(BREW, ["list", kind.flag(), "--versions", token]);
+        classify_version_probe(self.runner.run_checked_sync(spec))
     }
 
     /// Outdated packages (`brew outdated --json=v2`), optionally scoped to
@@ -279,6 +288,23 @@ impl HomebrewBackend {
         parse_outdated_output(&output.stdout)
     }
 
+    /// The sync twin of [`HomebrewBackend::outdated`] — same probe, same
+    /// parsing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::outdated`].
+    pub fn outdated_sync(&self, scope: OutdatedScope) -> Result<Vec<OutdatedEntry>> {
+        let mut args = vec!["outdated"];
+        if let Some(flag) = scope.flag() {
+            args.push(flag);
+        }
+        args.push("--json=v2");
+        let spec = command(BREW, args);
+        let output = self.runner.run_checked_sync(spec)?;
+        parse_outdated_output(&output.stdout)
+    }
+
     /// The version brew currently offers for the `kind`-scoped `token`
     /// (`brew info --json=v2 <token>`): the tap's `versions.stable`
     /// (formulae) / cask `version`, never the `installed` fields the same
@@ -295,6 +321,18 @@ impl HomebrewBackend {
         parse_offered_version(&output.stdout, kind, token).map(|version| version.map(Version::new))
     }
 
+    /// The sync twin of [`HomebrewBackend::available_version`] — same probe,
+    /// same parsing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::available_version`].
+    pub fn available_version_sync(&self, kind: BrewKind, token: &str) -> Result<Option<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", token]);
+        let output = self.runner.run_checked_sync(spec)?;
+        parse_offered_version(&output.stdout, kind, token).map(|version| version.map(Version::new))
+    }
+
     /// The versions brew can install for the `kind`-scoped `token` today:
     /// the same `brew info --json=v2 <token>` document the singular probe
     /// reads, as a listing. One element at most — brew offers exactly one
@@ -306,6 +344,17 @@ impl HomebrewBackend {
     /// Same contract as [`HomebrewBackend::available_version`].
     pub async fn available_versions(&self, kind: BrewKind, token: &str) -> Result<Vec<Version>> {
         let offered = self.available_version(kind, token).await?;
+        Ok(offered.into_iter().collect())
+    }
+
+    /// The sync twin of [`HomebrewBackend::available_versions`] — same
+    /// document, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::available_version`].
+    pub fn available_versions_sync(&self, kind: BrewKind, token: &str) -> Result<Vec<Version>> {
+        let offered = self.available_version_sync(kind, token)?;
         Ok(offered.into_iter().collect())
     }
 
@@ -332,6 +381,28 @@ impl HomebrewBackend {
     pub async fn unpin(&self, kind: BrewKind, token: &str) -> Result<()> {
         let spec = command(BREW, ["unpin", kind.flag(), token]);
         self.runner.run_checked(spec).await.map(|_| ())
+    }
+
+    /// The sync twin of [`HomebrewBackend::pin`] — same command, executed
+    /// on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::pin`].
+    pub fn pin_sync(&self, kind: BrewKind, token: &str) -> Result<()> {
+        let spec = command(BREW, ["pin", kind.flag(), token]);
+        self.runner.run_checked_sync(spec).map(|_| ())
+    }
+
+    /// The sync twin of [`HomebrewBackend::unpin`] — same command, executed
+    /// on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::pin`].
+    pub fn unpin_sync(&self, kind: BrewKind, token: &str) -> Result<()> {
+        let spec = command(BREW, ["unpin", kind.flag(), token]);
+        self.runner.run_checked_sync(spec).map(|_| ())
     }
 
     /// Read the memoized prefix without running brew (`None` until the
@@ -462,8 +533,95 @@ impl Backend for HomebrewBackend {
     // the `brew info --json=v2 --installed` listing. Callers that know
     // the kind (plan operations, manifest records) should call
     // `installed_version(kind, token)` directly.
-}
 
+    fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome> {
+        ensure_install_allowed(&request)?;
+        let Operation::BrewInstall { cask, token } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        self.runner
+            .run_checked_sync(request.plan.operation.command_spec())?;
+        let kind = if *cask {
+            BrewKind::Cask
+        } else {
+            BrewKind::Formula
+        };
+        let version = self.installed_version_sync(kind, token).ok().flatten();
+        Ok(InstallOutcome {
+            version,
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn uninstall_sync(&self, request: UninstallRequest<'_>) -> Result<UninstallOutcome> {
+        ensure_uninstall_allowed(&request)?;
+        let Operation::BrewUninstall { .. } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        self.runner
+            .run_checked_sync(request.plan.operation.command_spec())?;
+        Ok(UninstallOutcome {
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn update_sync(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::BrewUpgrade { .. } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        self.runner
+            .run_checked_sync(request.plan.operation.command_spec())?;
+        Ok(())
+    }
+
+    fn list_installed_sync(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
+        let entries = self.list_entries_sync()?;
+        Ok(entries
+            .into_iter()
+            .filter(|entry| query.ids.is_empty() || query.ids.contains(&entry.token))
+            .map(|entry| InstalledApp {
+                id: entry.token,
+                version: entry.version,
+            })
+            .collect())
+    }
+
+    fn outdated_sync(&self) -> Result<Vec<OutdatedEntry>> {
+        self.outdated_sync(OutdatedScope::All)
+    }
+
+    fn available_version_sync(&self, id: &str) -> Result<Option<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", id]);
+        let output = self.runner.run_checked_sync(spec)?;
+        let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
+        let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
+        Ok(formula.or(cask).map(Version::new))
+    }
+
+    fn available_versions_sync(&self, id: &str) -> Result<Vec<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", id]);
+        let output = self.runner.run_checked_sync(spec)?;
+        let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
+        let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
+        let mut versions = Vec::new();
+        for offered in [formula, cask].into_iter().flatten() {
+            let version = Version::new(offered);
+            if !versions.contains(&version) {
+                versions.push(version);
+            }
+        }
+        Ok(versions)
+    }
+
+    fn pin_sync(&self, id: &str) -> Result<()> {
+        self.pin_sync(BrewKind::Formula, id)
+    }
+
+    fn unpin_sync(&self, id: &str) -> Result<()> {
+        self.unpin_sync(BrewKind::Formula, id)
+    }
+}
 // ---------------------------------------------------------------------------
 // Typed query results
 // ---------------------------------------------------------------------------
@@ -540,7 +698,6 @@ impl OutdatedScope {
         }
     }
 }
-
 // ---------------------------------------------------------------------------
 // Raw JSON shapes (brew --json=v2 items)
 // ---------------------------------------------------------------------------
@@ -630,7 +787,6 @@ struct RawOutdatedItem {
     #[serde(default)]
     pinned: bool,
 }
-
 // ---------------------------------------------------------------------------
 // Output parsing
 // ---------------------------------------------------------------------------
@@ -722,6 +878,24 @@ fn parse_outdated_output(stdout: &str) -> Result<Vec<OutdatedEntry>> {
         }
     }
     Ok(entries)
+}
+
+/// Classify a dispatched `brew list --versions` probe: parse its stdout on
+/// success, and treat "not installed" — a marker-matching `Error:` line, or
+/// a silent exit 1 (empty stderr; the exit-code gate keeps signal kills as
+/// errors) — as `Ok(None)` instead of a failure. Anything else escapes.
+fn classify_version_probe(result: Result<CommandOutput>) -> Result<Option<String>> {
+    match result {
+        Ok(output) => Ok(parse_versions_output(&output.stdout)),
+        Err(Error::Command(toride_runner::Error::CommandFailed {
+            stderr, exit_code, ..
+        })) if stderr_says_not_installed(&stderr)
+            || (stderr.trim().is_empty() && exit_code == Some(1)) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 impl BrewEntry {
@@ -871,7 +1045,6 @@ fn cache_poisoned() -> Error {
         "homebrew prefix cache mutex poisoned".to_owned(),
     ))
 }
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -2346,5 +2519,196 @@ mod tests {
     fn brew_kind_flags_select_the_kind_scoped_probes() {
         assert_eq!(BrewKind::Cask.flag(), "--cask");
         assert_eq!(BrewKind::Formula.flag(), "--formula");
+    }
+
+    #[test]
+    fn install_sync_refuses_dry_run_plans_without_dispatching() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let target = macos();
+        let error = backend
+            .install_sync(InstallRequest::new(
+                &install_plan_for(true).dry_run(true),
+                &target,
+            ))
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        assert!(fake.calls().is_empty(), "no brew command may run");
+    }
+
+    #[test]
+    fn install_sync_runs_the_cask_argv_and_reports_the_probed_version() {
+        let install_spec = command(BREW, ["install", "--cask", "brave-browser"]);
+        let probe_spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                install_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                probe_spec.clone(),
+                toride_runner::CommandOutput::from_stdout("brave-browser 1.96.59.0\n"),
+            );
+        let backend = backend(&fake);
+        let plan = install_plan_for(true);
+        let target = macos();
+        let outcome = backend
+            .install_sync(InstallRequest::new(&plan, &target))
+            .unwrap();
+        assert_eq!(outcome.version.as_deref(), Some("1.96.59.0"));
+        fake.assert_called_with(&install_spec);
+        fake.assert_called_with(&probe_spec);
+    }
+
+    #[test]
+    fn uninstall_sync_runs_the_cask_argv_exactly() {
+        let spec = command(BREW, ["uninstall", "--cask", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = uninstall_plan_for(true, false);
+        let target = macos();
+        backend
+            .uninstall_sync(UninstallRequest::new(&plan, &target))
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn update_sync_runs_the_cask_upgrade_argv_exactly() {
+        let spec = command(BREW, ["upgrade", "--cask", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = update_plan_for(true);
+        let target = macos();
+        backend
+            .update_sync(UpdateRequest::new(&plan, &target))
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn list_installed_sync_maps_and_filters_the_typed_listing() {
+        let document = r#"{"formulae":[{"name":"ripgrep","versions":{"stable":"14.1.0"},"installed":[{"version":"14.1.0"}]}],"casks":[{"token":"brave-browser","name":["Brave"],"version":"1.96.59","installed":"1.96.59"}]}"#;
+        let spec = command(BREW, ["info", "--json=v2", "--installed"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                spec.clone(),
+                toride_runner::CommandOutput::from_stdout(document),
+            )
+            .respond(
+                spec.clone(),
+                toride_runner::CommandOutput::from_stdout(document),
+            );
+        let backend = backend(&fake);
+        let apps = backend.list_installed_sync(ListQuery::all()).unwrap();
+        assert_eq!(
+            apps,
+            vec![
+                InstalledApp {
+                    id: "ripgrep".to_owned(),
+                    version: Some("14.1.0".to_owned()),
+                },
+                InstalledApp {
+                    id: "brave-browser".to_owned(),
+                    version: Some("1.96.59".to_owned()),
+                },
+            ]
+        );
+        let only = backend
+            .list_installed_sync(ListQuery::id("brave-browser"))
+            .unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].id, "brave-browser");
+    }
+
+    #[test]
+    fn installed_version_sync_classifies_present_and_silently_absent_tokens() {
+        let present = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
+        let absent = command(BREW, ["list", "--formula", "--versions", "ghost"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                present.clone(),
+                toride_runner::CommandOutput::from_stdout("brave-browser 1.96.59\n"),
+            )
+            .respond(
+                absent.clone(),
+                toride_runner::CommandOutput::from_stderr("", 1),
+            );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .installed_version_sync(BrewKind::Cask, "brave-browser")
+                .unwrap()
+                .as_deref(),
+            Some("1.96.59")
+        );
+        assert_eq!(
+            backend
+                .installed_version_sync(BrewKind::Formula, "ghost")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn outdated_sync_parses_the_kind_scoped_document() {
+        let spec = command(BREW, ["outdated", "--cask", "--json=v2"]);
+        let document = r#"{"formulae":[],"casks":[{"name":"brave-browser","installed_versions":["1.90"],"current_version":"1.96","pinned":false}]}"#;
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(document),
+        );
+        let backend = backend(&fake);
+        let entries = backend.outdated_sync(OutdatedScope::Casks).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "brave-browser");
+        assert_eq!(entries[0].current_version.as_deref(), Some("1.96"));
+    }
+
+    #[test]
+    fn available_version_sync_reports_the_offered_cask_version() {
+        let spec = command(BREW, ["info", "--json=v2", "brave-browser"]);
+        let document = r#"{"formulae":[],"casks":[{"token":"brave-browser","version":"1.96.59","installed":"1.90"}]}"#;
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(document),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version_sync(BrewKind::Cask, "brave-browser")
+                .unwrap(),
+            Some(Version::new("1.96.59"))
+        );
+    }
+
+    #[test]
+    fn pin_sync_and_unpin_sync_run_the_kind_scoped_argv() {
+        let pin_spec = command(BREW, ["pin", "--formula", "ripgrep"]);
+        let unpin_spec = command(BREW, ["unpin", "--formula", "ripgrep"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                pin_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                unpin_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            );
+        let backend = backend(&fake);
+        backend.pin_sync(BrewKind::Formula, "ripgrep").unwrap();
+        backend.unpin_sync(BrewKind::Formula, "ripgrep").unwrap();
+        fake.assert_called_with(&pin_spec);
+        fake.assert_called_with(&unpin_spec);
     }
 }
