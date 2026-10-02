@@ -114,5 +114,5 @@ pub use adapter::{Adapter, PlannedOp, Registry, RegistryBuilder, SearchOutcome};
 pub use error::{Error, Result, SourceFailure};
 pub use model::{
     App, Arch, Artifact, ArtifactKind, Availability, Checksum, ChecksumAlgo, DistroFamily,
-    InstallMethod, Os, Platform, SourceKind, SourceRef, TorideId, Version,
+    InstallMethod, Os, Platform, SourceKind, SourceRef, TorideId, VerificationPolicy, Version,
 };

@@ -950,6 +950,7 @@ fn block_on_search(adapter: &AppstreamAdapter, query: &str) -> Vec<App> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::VerificationPolicy;
 
     const SYNTHETIC_CATALOG: &str = "%YAML 1.2
 ---
@@ -1281,6 +1282,22 @@ Launchable:
                 repo: Some("debian-bookworm-contrib".to_owned()),
                 package: "ripgrep".to_owned(),
             }
+        );
+    }
+
+    #[test]
+    fn dep11_apps_carry_the_out_of_band_marker() {
+        let adapter = synthetic_adapter();
+        let hits = block_on_search(&adapter, "ripgrep");
+        assert_eq!(
+            hits[0].artifacts,
+            Vec::new(),
+            "DEP-11 publishes no checksums"
+        );
+        assert_eq!(
+            hits[0].sources[0].source.verification_policy(),
+            VerificationPolicy::OutOfBand,
+            "the empty artifact list means unverifiable, not no downloads"
         );
     }
 

@@ -199,10 +199,20 @@ pub struct Platform {
     pub min_release: Option<String>,
 }
 
-/// A published download. Wave-1 sources publish sha256 only.
+/// A published download. Wave-1 sources publish sha256 only; Sha512 is
+/// modeled so a source that publishes one needs no model change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum ChecksumAlgo { Sha256 }
+pub enum ChecksumAlgo { Sha256, Sha512 }
+
+/// Whether a source publishes checksums at all — the per-source
+/// verification policy (plan §3.12): `OutOfBand` is the explicit marker
+/// that an empty `artifacts` list means "unverifiable", telling an
+/// embedder to demand an out-of-band digest rather than trust a size
+/// floor.
+pub enum VerificationPolicy { Inline, OutOfBand }
+
+impl SourceKind { pub fn verification_policy(self) -> VerificationPolicy }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checksum { pub algo: ChecksumAlgo, /// lowercase hex pub digest: String }
@@ -272,7 +282,13 @@ Design notes:
   client's GPG-based OSTree layer. DEP-11 publishes none either. The
   `Option<Checksum>` is the honest encoding of that asymmetry, and it maps
   1:1 onto toride-installer's existing `Checksum::Digest(String)`
-  (installer `src/tool.rs:67-86`).
+  (installer `src/tool.rs:67-86`). Sha512 is modeled for sources that
+  publish it (none in wave 1); toride-installer verifies it by digest
+  hex length (128), same as its checksum-file parser. The per-source
+  `VerificationPolicy` (`SourceKind::verification_policy()`, plan §3.12)
+  marks checksum-less sources `OutOfBand` — the explicit marker that an
+  empty `artifacts` list means "unverifiable, demand an out-of-band
+  digest", not "no downloads exist".
 - **Versions stay strings**: repology `origversion` (`1.83.112-1.fc44`,
   `1.83.120-r0`) and flathub `"51.0"` development releases are not
   semver; comparison across sources is the oracle's job, not the model's.

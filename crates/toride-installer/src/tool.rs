@@ -62,7 +62,9 @@ impl ArtifactKind {
     }
 }
 
-/// How the sha256 digest of an artifact is obtained.
+/// How the digest of an artifact is obtained. The algorithm is inferred
+/// from the digest's hex length at verify time: 64 characters = sha256,
+/// 128 = sha512.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Checksum {
     /// The tool publishes no checksum. The installer falls back to a sane
@@ -75,13 +77,13 @@ pub enum Checksum {
 
     /// A URL whose body is the checksum file. The installer fetches it (after
     /// the artifact download) and looks for a line whose filename component
-    /// matches `asset_name`, then verifies the artifact's sha256 against the
-    /// digest on that line.
+    /// matches `asset_name`, then verifies the artifact against the digest
+    /// on that line.
     ///
     /// The body may be either `<hex>  <filename>` (coreutils `sha256sum`
     /// format, two-space separated, filename optional) or a bare `<hex>`
-    /// line. Lines whose leading token is not a 64-char hex digest are
-    /// skipped.
+    /// line. Lines whose leading token is not a 64- (sha256) or 128-char
+    /// (sha512) hex digest are skipped.
     Url { url: String, asset_name: String },
 }
 

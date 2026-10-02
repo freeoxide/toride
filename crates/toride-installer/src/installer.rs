@@ -8,7 +8,8 @@
 //!    request is `"latest"`);
 //! 2. **download** the bytes via `reqwest`, following redirects, capped at
 //!    a configurable maximum size;
-//! 3. **verify** — sha256 when the tool's descriptor pins one, otherwise a
+//! 3. **verify** — the pinned digest when the tool's descriptor carries one
+//!    (sha256, or sha512 when the digest is 128 hex chars), otherwise a
 //!    sane non-zero size floor (documented below);
 //! 4. **extract** — a `Binary` is placed directly, a `Tarball` is
 //!    decompressed (gzip or xz) and the configured entry is read out;
@@ -24,7 +25,8 @@
 //! guarantee — it is a sanity check. Tools that DO publish checksums —
 //! statically as [`Checksum::Digest`], or per-release as a
 //! [`Checksum::Url`] checksum file — are verified strictly against the
-//! sha256. Pass [`Verifier::Strict`] to refuse installs whose descriptor
+//! published digest (sha256, or sha512 when the digest is 128 hex chars).
+//! Pass [`Verifier::Strict`] to refuse installs whose descriptor
 //! carries no checksum at all.
 
 use std::io::Write;
@@ -37,7 +39,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 #[cfg(feature = "http")]
-use sha2::{Digest, Sha256};
+use sha2::{Digest, Sha256, Sha512};
 
 use crate::error::{Error, Result};
 #[cfg(feature = "http")]
@@ -689,8 +691,9 @@ fn write_executable(dest: &Path, bytes: &[u8]) -> Result<()> {
 ///
 /// - No expected digest + [`Verifier::Strict`] -> [`Error::NoChecksum`].
 /// - No expected digest + [`Verifier::Lenient`] -> enforce the size floor only.
-/// - An expected digest -> hash the bytes (sha256) and compare
-///   case-insensitively, returning [`Error::ChecksumMismatch`] on divergence.
+/// - An expected digest -> hash the bytes (sha256, or sha512 when the
+///   digest is 128 hex chars) and compare case-insensitively, returning
+///   [`Error::ChecksumMismatch`] on divergence.
 ///
 /// This is split out of the async `verify` path so the heavy hashing (up to
 /// 256 MiB) can run on a [`tokio::task::spawn_blocking`] thread without
@@ -728,7 +731,11 @@ fn verify_blocking(
         // sanity check does NOT apply. The hash is computed here so it stays
         // off the async runtime.
         Some(expected) => {
-            let actual = hex_sha256(bytes);
+            let actual = if expected.len() == SHA512_HEX_LEN {
+                hex_sha512(bytes)
+            } else {
+                hex_sha256(bytes)
+            };
             if actual.eq_ignore_ascii_case(expected) {
                 Ok(())
             } else {
@@ -743,22 +750,42 @@ fn verify_blocking(
     }
 }
 
+/// Hex length of a sha256 digest — the parser's and verifier's shared
+/// notion of "this token is a sha256 digest".
+const SHA256_HEX_LEN: usize = 64;
+
+/// Hex length of a sha512 digest.
+const SHA512_HEX_LEN: usize = 128;
+
 /// Hex-encode the sha256 of `bytes`.
 #[cfg(feature = "http")]
 fn hex_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    let digest = hasher.finalize();
-    // Manual hex encode keeps us off another tiny dependency.
+    hex_encode(hasher.finalize().as_slice())
+}
+
+/// Hex-encode the sha512 of `bytes`.
+#[cfg(feature = "http")]
+fn hex_sha512(bytes: &[u8]) -> String {
+    let mut hasher = Sha512::new();
+    hasher.update(bytes);
+    hex_encode(hasher.finalize().as_slice())
+}
+
+/// Lowercase hex of a digest slice — manual to stay off another tiny
+/// dependency.
+#[cfg(feature = "http")]
+fn hex_encode(digest: &[u8]) -> String {
+    use std::fmt::Write as _;
     let mut out = String::with_capacity(digest.len() * 2);
     for b in digest {
-        use std::fmt::Write as _;
         let _ = write!(out, "{b:02x}");
     }
     out
 }
 
-/// Pull the expected sha256 digest for `asset_name` out of a published
+/// Pull the expected digest for `asset_name` out of a published
 /// checksum-file body.
 ///
 /// Accepts both coreutils `sha256sum` output (`<hex>  <filename>`, separated
@@ -767,8 +794,9 @@ fn hex_sha256(bytes: &[u8]) -> String {
 /// `./` (as emitted by `find`-style listings — mise's published
 /// `SHASUMS256.txt` carries `./`-prefixed names) is stripped before
 /// matching. The first matching line wins. Lines whose leading token is not
-/// a 64-character lowercase or uppercase hex digest are skipped, so
-/// banners/blanks/comments in the file cannot be mistaken for a digest.
+/// a 64-character (sha256) or 128-character (sha512) lowercase or
+/// uppercase hex digest are skipped, so banners/blanks/comments in the
+/// file cannot be mistaken for a digest.
 ///
 /// Deliberately ungated (like [`write_executable`]): the shared checksum
 /// parsing primitive, kept available to the offline
@@ -779,9 +807,11 @@ fn hex_sha256(bytes: &[u8]) -> String {
 /// `asset_name` is empty, any bare digest).
 #[cfg_attr(not(feature = "http"), allow(dead_code))]
 fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<String> {
-    /// True iff `s` is exactly 64 hex digits (case-insensitive).
-    fn is_hex64(s: &str) -> bool {
-        s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
+    /// True iff `s` is exactly a sha256 (64) or sha512 (128) hex digest,
+    /// case-insensitive.
+    fn is_hex_digest(s: &str) -> bool {
+        matches!(s.len(), SHA256_HEX_LEN | SHA512_HEX_LEN)
+            && s.bytes().all(|b| b.is_ascii_hexdigit())
     }
 
     for raw in body.lines() {
@@ -791,13 +821,13 @@ fn extract_digest_from_checksum_body(body: &str, asset_name: &str) -> Option<Str
         }
         // Bare `<hex>` line (no filename component): matches when the caller
         // did not pin a specific asset name.
-        if is_hex64(line) && asset_name.is_empty() {
+        if is_hex_digest(line) && asset_name.is_empty() {
             return Some(line.to_ascii_lowercase());
         }
         let Some((digest, rest)) = line.split_once(char::is_whitespace) else {
             continue;
         };
-        if !is_hex64(digest) {
+        if !is_hex_digest(digest) {
             continue;
         }
         let filename = rest.trim_start();
@@ -1063,6 +1093,36 @@ mod tests {
     }
 
     #[test]
+    fn checksum_body_parses_sha512_length_line() {
+        let digest_128 = "3".repeat(128);
+        let body = format!("{digest_128}  mise-1.0-linux-x64\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64").as_deref(),
+            Some(digest_128.as_str())
+        );
+    }
+
+    #[test]
+    fn checksum_body_parses_bare_sha512_line() {
+        let digest_128 = "3".repeat(128);
+        assert_eq!(
+            extract_digest_from_checksum_body(&digest_128, "").as_deref(),
+            Some(digest_128.as_str())
+        );
+    }
+
+    #[test]
+    fn checksum_body_skips_wrong_length_hex_tokens() {
+        let digest_96 = "4".repeat(96);
+        let body = format!("{digest_96}  mise-1.0-linux-x64\n");
+        assert_eq!(
+            extract_digest_from_checksum_body(&body, "mise-1.0-linux-x64"),
+            None,
+            "96 hex chars is neither a sha256 nor a sha512 digest"
+        );
+    }
+
+    #[test]
     fn checksum_body_strips_only_a_leading_dot_slash() {
         // The `./` strip must not loosen matching: a name that merely starts
         // with a dot once `./` is removed is still a different asset.
@@ -1116,6 +1176,50 @@ mod engine_tests {
         assert_eq!(
             h,
             "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
+        );
+    }
+
+    #[test]
+    fn hex_sha512_matches_known_vector() {
+        // sha512("hello") — vector computed independently of the crate
+        // (python hashlib).
+        let h = hex_sha512(b"hello");
+        assert_eq!(
+            h,
+            "9b71d224bd62f3785d96d46ad3ea3d73319bfbc2890caadae2dff72519673ca72323c3d99ba5c11d7c7acc6e14b8c5da0c4663475c2e5c3adef46f73bcdec043"
+        );
+    }
+
+    #[tokio::test]
+    async fn verifier_sha512_digest_matches() {
+        let installer = Installer::new();
+        let digest = hex_sha512(b"MATCH-512");
+        let tool = Tool {
+            name: "demo".into(),
+            checksum: Checksum::Digest(digest),
+            ..Default::default()
+        };
+        installer
+            .verify(&tool, "1.0", b"MATCH-512", "https://x")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn verifier_sha512_digest_mismatch_is_error() {
+        let installer = Installer::new();
+        let tool = Tool {
+            name: "demo".into(),
+            checksum: Checksum::Digest("5".repeat(128)),
+            ..Default::default()
+        };
+        let err = installer
+            .verify(&tool, "1.0", b"MISMATCH-512", "https://x")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, Error::ChecksumMismatch { ref actual, .. } if *actual == hex_sha512(b"MISMATCH-512")),
+            "a 128-hex digest must verify with sha512, got {err:?}"
         );
     }
 
@@ -1426,6 +1530,28 @@ mod engine_tests {
             .await
             .unwrap_err();
         assert!(matches!(err, Error::NoChecksumEntry { .. }));
+    }
+
+    #[tokio::test]
+    async fn checksum_url_verify_accepts_sha512_file() {
+        let artifact = b"REAL-ARTIFACT-BYTES";
+        let digest = hex_sha512(artifact);
+        let body = format!("{digest}  mise-1.0-linux-x64\n");
+        let url = serve_once(body).await;
+
+        let installer = Installer::new();
+        let tool = Tool {
+            name: "mise".into(),
+            checksum: Checksum::Url {
+                url,
+                asset_name: "mise-1.0-linux-x64".into(),
+            },
+            ..Default::default()
+        };
+        installer
+            .verify(&tool, "1.0", artifact, "https://x")
+            .await
+            .unwrap();
     }
 
     // ---- Progress reporting ------------------------------------------------

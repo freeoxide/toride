@@ -110,8 +110,9 @@ pub enum Error {
         min: u64,
     },
 
-    /// The sha256 checksum of the downloaded bytes did not match the
-    /// expected digest published by the tool.
+    /// The checksum of the downloaded bytes (sha256, or sha512 for
+    /// 128-hex expected digests) did not match the digest published by
+    /// the tool.
     #[error("checksum mismatch for {tool}@{version}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         /// Tool name.

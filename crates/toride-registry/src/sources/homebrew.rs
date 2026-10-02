@@ -1170,6 +1170,7 @@ impl crate::adapter::Adapter for HomebrewAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::VerificationPolicy;
 
     /// Manifest-dir-anchored fixture loading (conventions.md §7 — runtime
     /// read via `env!("CARGO_MANIFEST_DIR")`, deliberately not
@@ -1213,6 +1214,29 @@ mod tests {
             arch,
             kind,
         }
+    }
+
+    #[test]
+    fn cask_and_formula_apps_carry_the_inline_marker() {
+        let cask = parse_cask_json(&read_fixture("cask-brave-browser.json"))
+            .expect("brave fixture must parse");
+        assert!(
+            cask.artifacts
+                .iter()
+                .all(|artifact| artifact.checksum.is_some()),
+            "homebrew publishes a sha256 beside every cask artifact"
+        );
+        assert_eq!(
+            cask.sources[0].source.verification_policy(),
+            VerificationPolicy::Inline
+        );
+
+        let formula = parse_formula_json(&read_fixture("formula-ripgrep.json"))
+            .expect("ripgrep fixture must parse");
+        assert_eq!(
+            formula.sources[0].source.verification_policy(),
+            VerificationPolicy::Inline
+        );
     }
 
     #[test]

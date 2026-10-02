@@ -258,6 +258,47 @@ pub enum SourceKind {
     Repology,
 }
 
+/// Whether a source publishes checksums for the downloads it lists
+/// (plan gap 3.12): `OutOfBand` marks an empty [`App::artifacts`] list
+/// as unverifiable — demand an out-of-band digest, never a size floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum VerificationPolicy {
+    /// The source publishes a checksum beside its artifacts (homebrew
+    /// sha256); an artifact with `checksum: None` here is an upstream gap
+    /// for that one artifact, not a source-wide hole.
+    Inline,
+    /// The source publishes no checksums anywhere (flathub, DEP-11;
+    /// repology lists no artifacts at all): every download from it is
+    /// unverifiable against publisher material.
+    OutOfBand,
+}
+
+impl SourceKind {
+    /// The verification policy of every record this source publishes —
+    /// a fact about the source, not about any one app.
+    ///
+    /// ```
+    /// use toride_registry::{SourceKind, VerificationPolicy};
+    ///
+    /// assert_eq!(
+    ///     SourceKind::HomebrewCask.verification_policy(),
+    ///     VerificationPolicy::Inline
+    /// );
+    /// assert_eq!(
+    ///     SourceKind::Flathub.verification_policy(),
+    ///     VerificationPolicy::OutOfBand
+    /// );
+    /// ```
+    #[must_use]
+    pub const fn verification_policy(self) -> VerificationPolicy {
+        match self {
+            Self::HomebrewCask | Self::HomebrewFormula => VerificationPolicy::Inline,
+            Self::Flathub | Self::Distro | Self::Repology => VerificationPolicy::OutOfBand,
+        }
+    }
+}
+
 /// One per-source identity: the join key between the toride world and a
 /// source's native naming. Also the row format of the alias index
 /// (DESIGN.md §5).
@@ -321,8 +362,7 @@ pub struct Platform {
     pub min_release: Option<String>,
 }
 
-/// Hash algorithm of a published checksum. Wave-1 sources publish sha256
-/// only.
+/// Hash algorithm of a published checksum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ChecksumAlgo {
@@ -330,6 +370,29 @@ pub enum ChecksumAlgo {
     /// publishes (homebrew cask `sha256` + per-variation, formula bottle
     /// files; flathub and DEP-11 publish none at all).
     Sha256,
+    /// sha512, lowercase hex — modeled so a source that publishes one
+    /// needs no model change; no wave-1 adapter emits it yet.
+    Sha512,
+}
+
+impl ChecksumAlgo {
+    /// The exact hex length [`ChecksumAlgo::is_valid_digest`] demands:
+    /// 64 for sha256, 128 for sha512.
+    #[must_use]
+    pub const fn digest_hex_len(self) -> usize {
+        match self {
+            Self::Sha256 => 64,
+            Self::Sha512 => 128,
+        }
+    }
+
+    /// True iff `digest` is exactly [`ChecksumAlgo::digest_hex_len`] hex
+    /// digits (case-insensitive) — the same shape rule toride-installer's
+    /// checksum-file parser applies. Store normalized to lowercase.
+    #[must_use]
+    pub fn is_valid_digest(self, digest: &str) -> bool {
+        digest.len() == self.digest_hex_len() && digest.bytes().all(|b| b.is_ascii_hexdigit())
+    }
 }
 
 /// A published checksum.
@@ -438,7 +501,8 @@ pub enum DistroFamily {
 #[cfg(test)]
 mod tests {
     use super::{
-        App, Arch, Artifact, ArtifactKind, Checksum, ChecksumAlgo, InstallMethod, Os, TorideId,
+        App, Arch, Artifact, ArtifactKind, Checksum, ChecksumAlgo, InstallMethod, Os, SourceKind,
+        TorideId, VerificationPolicy,
     };
 
     fn artifact(url: &str, digest: Option<&str>, os: Option<Os>, arch: Option<Arch>) -> Artifact {
@@ -553,6 +617,85 @@ mod tests {
             Some(Arch::Aarch64),
         )]);
         assert_eq!(app.direct_fallback(Os::MacOs, Some(Arch::Aarch64)), None);
+    }
+
+    fn hex_row(ch: char, len: usize) -> String {
+        std::iter::repeat_n(ch, len).collect()
+    }
+
+    #[test]
+    fn digest_hex_len_matches_each_algo() {
+        assert_eq!(ChecksumAlgo::Sha256.digest_hex_len(), 64);
+        assert_eq!(ChecksumAlgo::Sha512.digest_hex_len(), 128);
+    }
+
+    #[test]
+    fn is_valid_digest_accepts_exact_length_hex_either_case() {
+        let hex_64 = hex_row('1', 64);
+        let hex_128 = hex_row('2', 128);
+        assert!(ChecksumAlgo::Sha256.is_valid_digest(&hex_64));
+        assert!(ChecksumAlgo::Sha512.is_valid_digest(&hex_128));
+        assert!(ChecksumAlgo::Sha256.is_valid_digest(&hex_64.to_uppercase()));
+    }
+
+    #[test]
+    fn is_valid_digest_rejects_wrong_length_non_hex_and_empty() {
+        let hex_63 = hex_row('1', 63);
+        let hex_64 = hex_row('1', 64);
+        let hex_129 = hex_row('2', 129);
+        assert!(!ChecksumAlgo::Sha256.is_valid_digest(&hex_64.replace('1', "z")));
+        assert!(!ChecksumAlgo::Sha256.is_valid_digest(""));
+        assert!(!ChecksumAlgo::Sha256.is_valid_digest(&hex_63));
+        assert!(!ChecksumAlgo::Sha512.is_valid_digest(&hex_129));
+    }
+
+    #[test]
+    fn checksum_algo_serde_round_trips_both_variants() {
+        for (algo, spelling) in [
+            (ChecksumAlgo::Sha256, "\"Sha256\""),
+            (ChecksumAlgo::Sha512, "\"Sha512\""),
+        ] {
+            assert_eq!(serde_json::to_string(&algo).unwrap(), spelling);
+            let back: ChecksumAlgo = serde_json::from_str(spelling).unwrap();
+            assert_eq!(back, algo);
+        }
+    }
+
+    #[test]
+    fn verification_policy_marks_checksum_publishers_inline() {
+        assert_eq!(
+            SourceKind::HomebrewCask.verification_policy(),
+            VerificationPolicy::Inline
+        );
+        assert_eq!(
+            SourceKind::HomebrewFormula.verification_policy(),
+            VerificationPolicy::Inline
+        );
+    }
+
+    #[test]
+    fn verification_policy_marks_checksum_less_sources_out_of_band() {
+        for source in [
+            SourceKind::Flathub,
+            SourceKind::Distro,
+            SourceKind::Repology,
+        ] {
+            assert_eq!(
+                source.verification_policy(),
+                VerificationPolicy::OutOfBand,
+                "{source:?} publishes no checksums"
+            );
+        }
+    }
+
+    #[test]
+    fn verification_policy_serde_round_trips() {
+        assert_eq!(
+            serde_json::to_string(&VerificationPolicy::Inline).unwrap(),
+            "\"Inline\""
+        );
+        let back: VerificationPolicy = serde_json::from_str("\"OutOfBand\"").unwrap();
+        assert_eq!(back, VerificationPolicy::OutOfBand);
     }
 
     #[test]

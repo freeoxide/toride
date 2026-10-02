@@ -799,7 +799,7 @@ fn http_error(url: &str, error: &reqwest::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Availability;
+    use crate::model::{Availability, VerificationPolicy};
 
     /// Manifest-dir-anchored fixture root (conventions.md §7: fixtures are
     /// loaded at runtime, never `include_str!`).
@@ -874,6 +874,30 @@ mod tests {
                 version: None,
                 provisional: false,
             }]
+        );
+    }
+
+    #[test]
+    fn search_and_detail_apps_carry_the_out_of_band_marker() {
+        let apps = parse_search_envelope(&read_fixture("search-brave-browser.json"))
+            .expect("brave search envelope parses");
+        assert_eq!(
+            apps[0].artifacts,
+            Vec::new(),
+            "flathub publishes no checksums"
+        );
+        assert_eq!(
+            apps[0].sources[0].source.verification_policy(),
+            VerificationPolicy::OutOfBand,
+            "the empty artifact list means unverifiable, not no downloads"
+        );
+
+        let detail = parse_appstream_detail(&read_fixture("appstream-com.brave.Browser.json"))
+            .expect("brave detail parses");
+        assert_eq!(detail.artifacts, Vec::new());
+        assert_eq!(
+            detail.sources[0].source.verification_policy(),
+            VerificationPolicy::OutOfBand
         );
     }
 
