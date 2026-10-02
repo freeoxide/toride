@@ -1818,10 +1818,10 @@ impl AppsBuilder {
     /// `direct` feature). Without one attached, direct methods still
     /// plan, but installs and the record-replaying uninstalls of direct
     /// records answer [`AppsError::BackendUnavailable`]; an unrecorded
-    /// direct app's uninstall never consults a backend at all (it answers
-    /// [`UninstallAppOutcome::AlreadyAbsent`],
-    /// [`AppsError::ForeignNotManaged`], or the plan-time refusal), a
-    /// direct record's update refuses with
+    /// direct app's uninstall never consults a backend at all (a direct
+    /// removal replays a record, so it refuses at plan time — or earlier
+    /// with [`AppsError::Unresolved`] / [`AppsError::Registry`] when the
+    /// id does not resolve), a direct record's update refuses with
     /// [`AppsError::UnrecordableOperation`], and `status` degrades to
     /// [`AppStatus::NotInstalled`] — no backend, no probe.
     #[cfg(feature = "direct")]

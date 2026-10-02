@@ -1103,6 +1103,13 @@ fn resolve_direct(
             ),
         ));
     }
+    if url_asset_name(url).is_none() {
+        return Err(unsupported(
+            app,
+            target,
+            "the URL names no file — a direct install downloads one named artifact",
+        ));
+    }
     let checksum = direct_digest(checksum).map_err(|reason| unsupported(app, target, reason))?;
     let artifact = direct_artifact(url);
     if artifact == DirectArtifact::Unsupported {
@@ -2538,6 +2545,24 @@ mod tests {
                 "{error:?}"
             );
             assert!(error.to_string().contains("Aarch64"), "{error}");
+        }
+
+        #[test]
+        fn refuses_a_url_that_names_no_file_even_with_declared_binaries() {
+            for url in ["https://example.com/d/", "https://example.com"] {
+                let app = direct_app(url, None, None, &["rg"]);
+                let error = plan_install(
+                    &app,
+                    &linux(DistroFamily::Debian),
+                    &InstallOptions::default(),
+                )
+                .unwrap_err();
+                assert!(
+                    matches!(error, Error::UnsupportedMethod { .. }),
+                    "{url}: {error:?}"
+                );
+                assert!(error.to_string().contains("names no file"), "{error}");
+            }
         }
 
         #[test]
