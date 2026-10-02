@@ -277,8 +277,10 @@ impl HomebrewBackend {
     }
 
     /// The version brew currently offers for `token` (`brew info --json=v2
-    /// <token>`), from the info envelope's tap notion — the same document
-    /// shape the installed listing parses, with `installed` null.
+    /// <token>`): the tap's `versions.stable` (formulae) / cask `version`,
+    /// never the `installed` fields the same document also carries for a
+    /// token brew has on disk — those report what is installed, not what
+    /// is offered.
     ///
     /// # Errors
     ///
@@ -287,12 +289,7 @@ impl HomebrewBackend {
     pub async fn available_version(&self, token: &str) -> Result<Option<Version>> {
         let spec = command(BREW, ["info", "--json=v2", token]);
         let output = self.runner.run_checked(spec).await?;
-        let entries = parse_installed_info_output(&output.stdout)?;
-        Ok(entries
-            .into_iter()
-            .find(|entry| entry.token == token)
-            .and_then(|entry| entry.version)
-            .map(Version::new))
+        parse_offered_version(&output.stdout, token).map(|version| version.map(Version::new))
     }
 
     /// Read the memoized prefix without running brew (`None` until the
@@ -592,6 +589,42 @@ fn parse_installed_info_output(stdout: &str) -> Result<Vec<BrewEntry>> {
         }
     }
     Ok(entries)
+}
+
+/// Parse the version brew OFFERS for `token` out of a `brew info --json=v2
+/// <token>` document: the formula's `versions.stable` / the cask's
+/// `version`. The `installed` fields the document carries for a token brew
+/// has on disk are deliberately ignored — they report what is installed,
+/// not what is offered (unlike [`parse_installed_info_output`], which
+/// prefers them for exactly that reason).
+///
+/// # Errors
+///
+/// [`Error::Command`] wrapping `OutputParse` when the payload is not a
+/// JSON object with the expected envelope shape.
+fn parse_offered_version(stdout: &str, token: &str) -> Result<Option<String>> {
+    let document: RawInstalledInfoDocument = serde_json::from_str(stdout)
+        .map_err(|error| output_parse_error("brew info --json=v2", &error))?;
+    for value in document.formulae {
+        if let Ok(item) = serde_json::from_value::<RawFormulaItem>(value)
+            && item.name == token
+            && let Some(offered) = item
+                .versions
+                .and_then(|versions| versions.stable)
+                .filter(|version| !version.is_empty())
+        {
+            return Ok(Some(offered));
+        }
+    }
+    for value in document.casks {
+        if let Ok(item) = serde_json::from_value::<RawCaskItem>(value)
+            && item.token == token
+            && let Some(offered) = item.version.filter(|version| !version.is_empty())
+        {
+            return Ok(Some(offered));
+        }
+    }
+    Ok(None)
 }
 
 /// Parse a `brew outdated --json=v2` document into typed entries, skipping
@@ -1599,10 +1632,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn available_version_falls_back_to_the_tap_version_for_formulae() {
+    async fn available_version_reports_the_offered_stable_over_an_installed_formula_keg() {
         let spec = command(BREW, ["info", "--json=v2", "ripgrep"]);
-        let formula = fixture_value("homebrew/formula-ripgrep.json");
-        let document = serde_json::json!({ "formulae": [formula], "casks": [] });
+        let document = serde_json::json!({
+            "formulae": [{
+                "name": "ripgrep",
+                "versions": { "stable": "15.2.0" },
+                "installed": [{ "version": "15.1.0" }]
+            }],
+            "casks": []
+        });
         let fake = FakeRunner::new().strict().respond(
             spec,
             toride_runner::CommandOutput::from_stdout(document.to_string()),
@@ -1610,7 +1649,49 @@ mod tests {
         let backend = backend(&fake);
         assert_eq!(
             backend.available_version("ripgrep").await.unwrap(),
-            Some(Version::new("15.2.0"))
+            Some(Version::new("15.2.0")),
+            "the offered stable, never the installed keg's version"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_version_reports_the_offered_cask_version_over_the_installed_one() {
+        let spec = command(BREW, ["info", "--json=v2", "brave-browser"]);
+        let document = serde_json::json!({
+            "formulae": [],
+            "casks": [{
+                "token": "brave-browser",
+                "version": "139.0",
+                "installed": "138.0.1"
+            }]
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend.available_version("brave-browser").await.unwrap(),
+            Some(Version::new("139.0")),
+            "the offered cask version, never the installed one"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_version_skips_a_matching_formula_without_a_stable_version() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let document = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": null }, "installed": [] }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend.available_version("widget").await.unwrap(),
+            Some(Version::new("2.0"))
         );
     }
 

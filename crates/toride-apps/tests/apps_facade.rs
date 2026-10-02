@@ -396,10 +396,14 @@ fn firefox_cask_outdated(installed: &str, current: &str) -> String {
     )
 }
 
-/// A `brew info --json=v2 firefox` envelope (tap notion only — the
-/// available-version probe's shape).
-fn firefox_cask_available(version: &str) -> String {
-    format!(r#"{{"formulae":[],"casks":[{{"token":"firefox","version":"{version}"}}]}}"#)
+/// A `brew info --json=v2 firefox` envelope as brew emits it for an
+/// installed token: `installed` is what brew has on disk, `version` the
+/// cask's offered version — the available probe must answer with the
+/// latter.
+fn firefox_cask_available(installed: &str, offered: &str) -> String {
+    format!(
+        r#"{{"formulae":[],"casks":[{{"token":"firefox","version":"{offered}","installed":"{installed}"}}]}}"#
+    )
 }
 
 /// Assert a recorded call matches `expected` on program + args
@@ -1765,10 +1769,6 @@ fn seed_flatpak_record(path: &Utf8PathBuf) {
     manifest.save().expect("seed manifest saves");
 }
 
-// ---------------------------------------------------------------------------
-// Update — record-sourced, stale-signal-driven, dry-run preview
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn update_without_a_record_is_a_typed_error_and_consults_nothing() {
     let path = temp_manifest_path("update-unrecorded");
@@ -1892,7 +1892,7 @@ async fn update_brew_up_to_date_reports_current_without_dispatching_anything_mut
         )
         .respond(
             brew_info_token_spec("firefox"),
-            CommandOutput::from_stdout(firefox_cask_available("138.0.1")),
+            CommandOutput::from_stdout(firefox_cask_available("138.0.1", "138.0.1")),
         );
     let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
     let mut apps = facade(&fake, macos(), &path, vec![adapter]);
@@ -1927,7 +1927,7 @@ async fn update_dry_run_previews_the_argv_and_versions_without_executing() {
         )
         .respond(
             brew_info_token_spec("firefox"),
-            CommandOutput::from_stdout(firefox_cask_available("139.0")),
+            CommandOutput::from_stdout(firefox_cask_available("138.0.1", "139.0")),
         );
     let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
     let mut apps = facade(&fake, macos(), &path, vec![adapter]);
@@ -1942,7 +1942,11 @@ async fn update_dry_run_previews_the_argv_and_versions_without_executing() {
     };
     assert_eq!(preview.argv, ["brew", "upgrade", "--cask", "firefox"]);
     assert_eq!(preview.from, Some(Version::new("138.0.1")));
-    assert_eq!(preview.to, Some(Version::new("139.0")));
+    assert_eq!(
+        preview.to,
+        Some(Version::new("139.0")),
+        "the OFFERED version — the same document carries installed 138.0.1"
+    );
     fake.assert_no_unmatched_calls();
 
     let calls = fake.calls();
