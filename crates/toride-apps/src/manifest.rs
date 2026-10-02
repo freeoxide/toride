@@ -200,6 +200,7 @@ pub enum NativeIds {
     /// A cargo-installed crate, by crate name.
     Cargo {
         /// Crate name as installed.
+        #[serde(rename = "crate")]
         crate_: String,
     },
     /// A pipx-installed Python app, by package name.
@@ -1415,6 +1416,22 @@ mod tests {
             back,
             NativeIds::Npm {
                 package: "typescript".to_owned()
+            }
+        );
+        let json = serde_json::to_value(&NativeIds::Cargo {
+            crate_: "ripgrep".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(
+            json["Cargo"]["crate"],
+            serde_json::json!("ripgrep"),
+            "the wire key is `crate`, never the Rust keyword escape"
+        );
+        let back: NativeIds = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            back,
+            NativeIds::Cargo {
+                crate_: "ripgrep".to_owned()
             }
         );
     }

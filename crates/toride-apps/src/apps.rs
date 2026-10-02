@@ -749,12 +749,7 @@ impl Apps {
         }
         // 4. Plan, then derive the record identity from the EXECUTED
         //    operation (before any mutation, so a malformed plan fails
-        //    with nothing dispatched). The offering check runs on the
-        //    fall-through path whether or not anything is present: a
-        //    record or Foreign copy at another version is exactly the
-        //    state where pinning the requested spelling verbatim would
-        //    hand the manager an address it refuses (brew resolves
-        //    `token@<v>` only for separately versioned tokens).
+        //    with nothing dispatched).
         let version = self.version_for_plan(&app, options.version.clone()).await;
         let plan = plan_install(&app, &self.target, &InstallOptions { version })?;
         let backend = self.backend_for(plan.backend)?;
@@ -1924,10 +1919,9 @@ impl AppsBuilder {
         self
     }
 
-    /// Attach the npm backend — consume-and-return. Without one attached,
-    /// npm methods still plan, but installs answer
-    /// [`AppsError::BackendUnavailable`] and status never probes npm
-    /// presence.
+    /// Attach the npm backend — consume-and-return; unattached, npm
+    /// methods still plan but installs answer
+    /// [`AppsError::BackendUnavailable`] and status never probes them.
     #[must_use]
     pub fn npm(mut self, backend: NpmBackend) -> Self {
         self.npm = Some(backend);
@@ -1958,11 +1952,9 @@ impl AppsBuilder {
         self
     }
 
-    /// Attach the mise backend — consume-and-return (the `mise` feature;
-    /// it carries tokio, which is exactly why the feature is not default).
-    /// Without one attached, mise methods still plan, but installs answer
-    /// [`AppsError::BackendUnavailable`] and status never probes mise
-    /// presence.
+    /// Attach the mise backend — consume-and-return (the `mise` feature,
+    /// non-default because its client carries tokio); unattached, mise
+    /// installs answer [`AppsError::BackendUnavailable`].
     #[cfg(feature = "mise")]
     #[must_use]
     pub fn mise(mut self, backend: MiseBackend) -> Self {

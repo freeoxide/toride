@@ -436,9 +436,8 @@ pub struct Artifact {
 }
 
 /// How to install — the descriptor install planning consumes. One variant
-/// per install technology: brew token / flatpak ref / distro package per
-/// family / direct URL / the language-ecosystem managers (npm, cargo, pipx,
-/// uv, mise).
+/// per install technology: brew / flatpak / distro / direct URL / the
+/// language managers (npm, cargo, pipx, uv, mise).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum InstallMethod {
@@ -492,6 +491,7 @@ pub enum InstallMethod {
     /// `cargo install [--version <v>] <crate>`.
     Cargo {
         /// Crate name as published on crates.io.
+        #[serde(rename = "crate")]
         crate_: String,
         /// Exact version pin; `None` takes the latest release.
         version: Option<String>,
@@ -793,7 +793,7 @@ mod tests {
                     crate_: "ripgrep".to_owned(),
                     version: None,
                 },
-                r#"{"Cargo":{"crate_":"ripgrep","version":null}}"#,
+                r#"{"Cargo":{"crate":"ripgrep","version":null}}"#,
             ),
             (
                 InstallMethod::Pipx {

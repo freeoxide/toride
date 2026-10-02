@@ -229,7 +229,7 @@ impl Registry {
                     ],
                 },
                 InstallMethod::Cargo { crate_, version } => {
-                    let mut args = Vec::new();
+                    let mut args = vec!["install".to_owned()];
                     if let Some(version) = version {
                         args.push("--version".to_owned());
                         args.push(version.clone());
@@ -766,11 +766,13 @@ mod tests {
             PlannedOp::Command {
                 program: "cargo".to_owned(),
                 args: vec![
+                    "install".to_owned(),
                     "--version".to_owned(),
                     "14.1.0".to_owned(),
                     "ripgrep".to_owned(),
                 ],
-            }
+            },
+            "the cargo arm renders the install verb like every sibling"
         );
 
         let mut pipx = stub_app("black", SourceKind::Distro);

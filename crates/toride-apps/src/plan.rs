@@ -394,6 +394,7 @@ pub enum Operation {
     /// upgrade verb; re-installing fetches the requested (or latest) version.
     CargoInstall {
         /// Crate name as published on crates.io.
+        #[serde(rename = "crate")]
         crate_: String,
         /// Exact version via `--version`; `None` takes the latest release.
         version: Option<Version>,
@@ -401,12 +402,14 @@ pub enum Operation {
     /// `cargo uninstall <crate>`.
     CargoUninstall {
         /// Crate name cargo installed.
+        #[serde(rename = "crate")]
         crate_: String,
     },
     /// `cargo install --force <crate>` — cargo's upgrade story: an installed
     /// crate only re-installs (at latest) under `--force`.
     CargoUpdate {
         /// Crate name to upgrade.
+        #[serde(rename = "crate")]
         crate_: String,
     },
     /// `pipx install <package>`.
@@ -1460,9 +1463,8 @@ fn resolve_mise(app: &App, action: Action<'_>, tool: &str, pin: Option<&str>) ->
 }
 
 /// The version a language arm plans at: the caller's request, the
-/// method's own pin, or — when both name one — only an equal pair (the
-/// two spell one address; a differing request would silently install
-/// something the descriptor never named).
+/// method's own pin, or — when both name one — only an equal pair (a
+/// differing request would silently install something never named).
 fn pinned_version(
     app: &App,
     requested: Option<&Version>,
@@ -1486,11 +1488,10 @@ fn pinned_version(
 }
 
 /// Whether an operand already carries its own version spec (`pkg@1.0`,
-/// `pkg==1.0`) — joining a requested version onto it would address
-/// something no manager resolves. A LEADING separator is npm's scope
-/// prefix (`@types/node`), not a spec.
+/// `pkg==1.0`); a separator at index 0 alone is npm's scope prefix
+/// (`@types/node`), while any LATER one is a spec (`@types/node@1.0`).
 fn spec_joined(operand: &str, sep: &str) -> bool {
-    operand.find(sep).is_some_and(|at| at > 0)
+    operand.match_indices(sep).any(|(at, _)| at > 0)
 }
 
 /// Refuse a requested version for an operand that already names one.
@@ -2095,6 +2096,20 @@ mod tests {
         .unwrap_err();
         assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
         assert!(error.to_string().contains("already names"), "{error}");
+        let error = plan_install(
+            &app_with(npm_method("@types/node@1.0.0", None)),
+            &macos(),
+            &InstallOptions::new().version(Some(Version::new("22.0.0"))),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidVersion { .. }),
+            "a later @ is a spec even on a scoped name: {error:?}"
+        );
+        assert!(
+            error.to_string().contains("@types/node@1.0.0@22.0.0"),
+            "the refusal names the invalid join: {error}"
+        );
     }
 
     #[test]
@@ -2763,6 +2778,16 @@ mod tests {
                 "round-trips: {json}"
             );
         }
+        let json = serde_json::to_value(&Operation::CargoInstall {
+            crate_: "ripgrep".to_owned(),
+            version: None,
+        })
+        .unwrap();
+        assert_eq!(
+            json["CargoInstall"]["crate"],
+            serde_json::json!("ripgrep"),
+            "the wire key is `crate`, never the Rust keyword escape"
+        );
     }
 
     #[test]
