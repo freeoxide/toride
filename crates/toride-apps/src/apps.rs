@@ -567,9 +567,12 @@ impl Apps {
     /// 4. **Plan and execute** — [`plan_install`] derives the exact
     ///    operation for [`Apps::target`], spelling a requested
     ///    [`AppInstallOptions::version`] into the method's native
-    ///    addressing; the routed backend executes it with the caller's
-    ///    elevation grant (distro plans without one are refused before any
-    ///    dispatch).
+    ///    addressing; when nothing is present and the backend's own
+    ///    offering equals the request, the manager's current installs
+    ///    instead (it lands exactly the requested thing where a pin could
+    ///    address a spelling the manager does not resolve); the routed
+    ///    backend executes it with the caller's elevation grant (distro
+    ///    plans without one are refused before any dispatch).
     /// 5. **Post-verify and record** — the facade's own kind-aware probe
     ///    (brew `list <kind> --versions`, the flatpak scoped listing, the
     ///    distro package query) confirms presence and reads the version;
@@ -594,8 +597,10 @@ impl Apps {
         // 1. Detect before resolve: the manifest record plus one
         //    confirming backend probe, zero adapter calls — gated on the
         //    requested version when one is named.
+        let mut present = false;
         let recorded = app_status(id, None, &self.manifest, &self.backend_set()).await?;
         if matches!(recorded, AppStatus::Installed { .. }) {
+            present = true;
             let satisfies = self.manifest.get(id).is_some_and(|record| {
                 requested_version_satisfied(&record.ids, &recorded, options.version.as_ref())
             });
@@ -606,29 +611,28 @@ impl Apps {
         // 2. Resolve through the registry adapters.
         let app = self.resolve(id).await?;
         // 3. Foreign presence (only meaningful without a record — a record
-        //    that failed confirmation in step 1 re-installs below). A
-        //    Foreign copy reports no version, so it satisfies only a
-        //    version-less request; an exact-version request installs.
+        //    that failed confirmation in step 1 re-installs below); a
+        //    Foreign copy satisfies only a version-less request.
         if self.manifest.get(id).is_none() {
             let native = native_from_method(&app.install);
             let status =
                 app_status(id, native.as_ref(), &self.manifest, &self.backend_set()).await?;
-            if let AppStatus::Foreign { .. } = status
-                && options.version.is_none()
-            {
-                return Ok(EnsureAppOutcome::AlreadyPresent(status));
+            if let AppStatus::Foreign { .. } = status {
+                if options.version.is_none() {
+                    return Ok(EnsureAppOutcome::AlreadyPresent(status));
+                }
+                present = true;
             }
         }
         // 4. Plan, then derive the record identity from the EXECUTED
         //    operation (before any mutation, so a malformed plan fails
         //    with nothing dispatched).
-        let plan = plan_install(
-            &app,
-            &self.target,
-            &InstallOptions {
-                version: options.version.clone(),
-            },
-        )?;
+        let version = if present {
+            options.version.clone()
+        } else {
+            self.version_for_plan(&app, options.version.clone()).await
+        };
+        let plan = plan_install(&app, &self.target, &InstallOptions { version })?;
         let ids = native_ids_from_executed(&plan)?;
         let backend = self.backend_for(plan.backend)?;
         let outcome = backend
@@ -941,6 +945,24 @@ impl Apps {
                 .backend_for(ids.backend())?
                 .available_versions(native_id(ids))
                 .await?),
+        }
+    }
+
+    /// The version to pin into an install plan for a requested one, when
+    /// nothing is present yet: `None` while the backend's own offering
+    /// already equals the request — installing the manager's current lands
+    /// exactly the requested thing, where a pin would address a spelling
+    /// the manager may not resolve (brew only resolves `token@<v>` for
+    /// separately versioned tokens). The requested version otherwise; a
+    /// failing offering probe degrades to it and the manager classifies.
+    async fn version_for_plan(&self, app: &App, requested: Option<Version>) -> Option<Version> {
+        let requested = requested?;
+        let Some(native) = native_from_method(&app.install) else {
+            return Some(requested);
+        };
+        match self.record_available_version(&native).await {
+            Ok(Some(offered)) if offered == requested => None,
+            _ => Some(requested),
         }
     }
 

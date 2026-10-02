@@ -652,9 +652,10 @@ fn parse_list_output(stdout: &str) -> Result<Vec<FlatpakEntry>> {
 
 /// Parse the tab-separated `flatpak remote-ls --app --columns=…` listing
 /// into the branches offered for `app_id`, skipping malformed rows and
-/// rows naming other apps. Same tolerance shape as
-/// [`parse_list_output`]: a non-empty document where no row parses is an
-/// error, not an empty offering.
+/// rows naming other apps, deduplicated in first-seen order (the listing
+/// emits one row per ref, so a multi-arch app repeats each branch). Same
+/// tolerance shape as [`parse_list_output`]: a non-empty document where no
+/// row parses is an error, not an empty offering.
 ///
 /// # Errors
 ///
@@ -676,7 +677,10 @@ fn parse_remote_branches(stdout: &str, app_id: &str) -> Result<Vec<Version>> {
         well_formed += 1;
         let branch = branch.trim();
         if application.trim() == app_id && !branch.is_empty() {
-            branches.push(Version::new(branch));
+            let version = Version::new(branch);
+            if !branches.contains(&version) {
+                branches.push(version);
+            }
         }
     }
     if !stdout.trim().is_empty() && well_formed == 0 {
@@ -2191,6 +2195,20 @@ mod tests {
         assert_eq!(
             parse_remote_branches("", "com.brave.Browser").unwrap(),
             Vec::<Version>::new()
+        );
+    }
+
+    #[test]
+    fn parse_remote_branches_dedupes_the_per_arch_ref_rows() {
+        // One row per ref: a multi-arch app repeats each branch.
+        let rows = "com.brave.Browser\tstable\n\
+                    com.brave.Browser\tstable\n\
+                    com.brave.Browser\tbeta\n\
+                    com.brave.Browser\tstable\n";
+        assert_eq!(
+            parse_remote_branches(rows, "com.brave.Browser").unwrap(),
+            vec![Version::new("stable"), Version::new("beta")],
+            "first-seen order, one entry per branch"
         );
     }
 

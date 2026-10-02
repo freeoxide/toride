@@ -2253,6 +2253,12 @@ async fn ensure_installed_with_a_version_installs_the_versioned_token_and_record
             brew_info_installed_spec(),
             CommandOutput::from_stdout(EMPTY_BREW_INFO),
         )
+        // The offering probe: brew offers 137.0, not the requested 138.0.1,
+        // so the request pins instead of riding the manager's current.
+        .respond(
+            brew_info_token_spec("firefox"),
+            CommandOutput::from_stdout(firefox_cask_available("137.0", "137.0")),
+        )
         .respond(
             brew_install_cask_spec("firefox@138.0.1"),
             CommandOutput::from_stdout(""),
@@ -2312,6 +2318,130 @@ async fn ensure_installed_with_a_version_installs_the_versioned_token_and_record
             cask: true,
         }
     );
+}
+
+#[tokio::test]
+async fn ensure_installed_at_the_offered_version_installs_the_managers_current() {
+    let path = temp_manifest_path("install-version-offered");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(EMPTY_BREW_INFO),
+        )
+        // The offering probe answers 139.0 — exactly the request.
+        .respond(
+            brew_info_token_spec("firefox"),
+            CommandOutput::from_stdout(firefox_cask_available("138.0.1", "139.0")),
+        )
+        .respond(
+            brew_install_cask_spec("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 139.0\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 139.0\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("firefox"),
+            AppInstallOptions::new().version(Some(Version::new("139.0"))),
+        )
+        .await
+        .expect("a request equal to the offering rides the manager's current");
+
+    let EnsureAppOutcome::Installed { ids, version, .. } = outcome else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(
+        ids,
+        NativeIds::Homebrew {
+            token: "firefox".to_owned(),
+            cask: true,
+        },
+        "the plain token — the current lands exactly the requested version"
+    );
+    assert_eq!(version.as_deref(), Some("139.0"));
+    fake.assert_called_with(&brew_info_token_spec("firefox"));
+    fake.assert_called_with(&brew_install_cask_spec("firefox"));
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| call.args.contains(&"firefox@139.0".to_owned())),
+        "no @-joined spelling may run: {:?}",
+        fake.calls()
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn a_failing_offering_probe_degrades_to_the_pinned_spelling() {
+    let path = temp_manifest_path("install-version-offer-failed");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(EMPTY_BREW_INFO),
+        )
+        // The offering probe fails outright — the pin proceeds and the
+        // manager classifies the joined name.
+        .respond(
+            brew_info_token_spec("firefox"),
+            CommandOutput::from_stderr("Error: brew exploded", 2),
+        )
+        .respond(
+            brew_install_cask_spec("firefox@138.0.1"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox@138.0.1"),
+            CommandOutput::from_stdout("firefox@138.0.1 138.0.1\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox@138.0.1"),
+            CommandOutput::from_stdout("firefox@138.0.1 138.0.1\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("firefox"),
+            AppInstallOptions::new().version(Some(Version::new("138.0.1"))),
+        )
+        .await
+        .expect("the offering probe degrades, never fails the install");
+    assert!(matches!(outcome, EnsureAppOutcome::Installed { .. }));
+    fake.assert_called_with(&brew_install_cask_spec("firefox@138.0.1"));
+    fake.assert_no_unmatched_calls();
 }
 
 #[tokio::test]

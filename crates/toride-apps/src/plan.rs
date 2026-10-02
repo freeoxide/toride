@@ -842,16 +842,25 @@ fn resolve_homebrew(
     }
     let operation = match action {
         Action::Install { version } => {
-            if let Some(version) = version
-                && token.contains('@')
-            {
-                return Err(Error::InvalidVersion {
-                    app: app.id.as_str().to_owned(),
-                    version: version.as_str().to_owned(),
-                    reason: format!(
-                        "the token `{token}` already names a versioned track — joining would address `{token}@{version}`"
-                    ),
-                });
+            if let Some(version) = version {
+                if token.contains('@') {
+                    return Err(Error::InvalidVersion {
+                        app: app.id.as_str().to_owned(),
+                        version: version.as_str().to_owned(),
+                        reason: format!(
+                            "the token `{token}` already names a versioned track — joining would address `{token}@{version}`"
+                        ),
+                    });
+                }
+                if version.as_str().contains('@') {
+                    return Err(Error::InvalidVersion {
+                        app: app.id.as_str().to_owned(),
+                        version: version.as_str().to_owned(),
+                        reason: format!(
+                            "the version carries brew's separator — joining would address `{token}@{version}`"
+                        ),
+                    });
+                }
             }
             Operation::BrewInstall {
                 cask,
@@ -1266,6 +1275,17 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("node@20"), "{text}");
         assert!(text.contains("node@20@22"), "{text}");
+    }
+
+    #[test]
+    fn refuses_a_brew_version_string_carrying_the_separator() {
+        let options = InstallOptions::new().version(Some(Version::new("1@2")));
+        let error = plan_install(&app_with(brew_method(false)), &macos(), &options).unwrap_err();
+        assert!(
+            matches!(error, Error::InvalidVersion { .. }),
+            "the mirror of the token-side check: {error:?}"
+        );
+        assert!(error.to_string().contains("brave-browser@1@2"), "{}", error);
     }
 
     #[test]
