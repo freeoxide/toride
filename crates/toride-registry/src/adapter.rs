@@ -220,6 +220,42 @@ impl Registry {
                     url: url.clone(),
                     checksum: checksum.clone(),
                 },
+                InstallMethod::Npm { package, version } => PlannedOp::Command {
+                    program: "npm".to_owned(),
+                    args: vec![
+                        "install".to_owned(),
+                        "-g".to_owned(),
+                        joined_spec(package, version.as_deref(), "@"),
+                    ],
+                },
+                InstallMethod::Cargo { crate_, version } => {
+                    let mut args = Vec::new();
+                    if let Some(version) = version {
+                        args.push("--version".to_owned());
+                        args.push(version.clone());
+                    }
+                    args.push(crate_.clone());
+                    PlannedOp::Command {
+                        program: "cargo".to_owned(),
+                        args,
+                    }
+                }
+                InstallMethod::Pipx { package } => PlannedOp::Command {
+                    program: "pipx".to_owned(),
+                    args: vec!["install".to_owned(), package.clone()],
+                },
+                InstallMethod::Uv { package, version } => PlannedOp::Command {
+                    program: "uv".to_owned(),
+                    args: vec![
+                        "tool".to_owned(),
+                        "install".to_owned(),
+                        joined_spec(package, version.as_deref(), "=="),
+                    ],
+                },
+                InstallMethod::Mise { tool, version } => PlannedOp::Command {
+                    program: "mise".to_owned(),
+                    args: vec!["install".to_owned(), mise_spec(tool, version.as_deref())],
+                },
             }
         } else {
             match app.direct_fallback(host.os, host.arch) {
@@ -278,8 +314,30 @@ fn method_covers_os(method: &InstallMethod, os: Os) -> bool {
     match method {
         InstallMethod::Homebrew { .. } => matches!(os, Os::MacOs | Os::Linux),
         InstallMethod::Flatpak { .. } | InstallMethod::Distro { .. } => os == Os::Linux,
-        InstallMethod::Direct { .. } => true,
+        InstallMethod::Direct { .. }
+        | InstallMethod::Npm { .. }
+        | InstallMethod::Cargo { .. }
+        | InstallMethod::Pipx { .. }
+        | InstallMethod::Uv { .. }
+        | InstallMethod::Mise { .. } => true,
     }
+}
+
+/// `<name><sep><version>` when a pin exists, the bare name otherwise.
+fn joined_spec(name: &str, version: Option<&str>, sep: &str) -> String {
+    version.map_or_else(
+        || name.to_owned(),
+        |version| format!("{name}{sep}{version}"),
+    )
+}
+
+/// The mise-native spec: `tool@latest` is the manager's current, a pin is
+/// the `@`-joined spelling.
+fn mise_spec(tool: &str, version: Option<&str>) -> String {
+    version.map_or_else(
+        || format!("{tool}@latest"),
+        |version| joined_spec(tool, Some(version), "@"),
+    )
 }
 
 fn distro_install(family: DistroFamily) -> (String, &'static str) {
@@ -676,6 +734,82 @@ mod tests {
                 url: "https://example.com/tool".to_owned(),
                 checksum: None,
             }
+        );
+    }
+
+    #[test]
+    fn plan_renders_the_language_manager_argv_per_method() {
+        let mut npm = stub_app("typescript", SourceKind::Distro);
+        npm.install = InstallMethod::Npm {
+            package: "typescript".to_owned(),
+            version: Some("5.4.5".to_owned()),
+        };
+        assert_eq!(
+            Registry::plan(&npm, &host(Os::MacOs, None)),
+            PlannedOp::Command {
+                program: "npm".to_owned(),
+                args: vec![
+                    "install".to_owned(),
+                    "-g".to_owned(),
+                    "typescript@5.4.5".to_owned(),
+                ],
+            }
+        );
+
+        let mut cargo = stub_app("ripgrep", SourceKind::Distro);
+        cargo.install = InstallMethod::Cargo {
+            crate_: "ripgrep".to_owned(),
+            version: Some("14.1.0".to_owned()),
+        };
+        assert_eq!(
+            Registry::plan(&cargo, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "cargo".to_owned(),
+                args: vec![
+                    "--version".to_owned(),
+                    "14.1.0".to_owned(),
+                    "ripgrep".to_owned(),
+                ],
+            }
+        );
+
+        let mut pipx = stub_app("black", SourceKind::Distro);
+        pipx.install = InstallMethod::Pipx {
+            package: "black".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan(&pipx, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "pipx".to_owned(),
+                args: vec!["install".to_owned(), "black".to_owned()],
+            }
+        );
+
+        let mut uv = stub_app("ruff", SourceKind::Distro);
+        uv.install = InstallMethod::Uv {
+            package: "ruff".to_owned(),
+            version: None,
+        };
+        assert_eq!(
+            Registry::plan(&uv, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "uv".to_owned(),
+                args: vec!["tool".to_owned(), "install".to_owned(), "ruff".to_owned()],
+            }
+        );
+
+        let mut mise = stub_app("node", SourceKind::Distro);
+        mise.install = InstallMethod::Mise {
+            tool: "node".to_owned(),
+            version: None,
+        };
+        assert_eq!(
+            Registry::plan(&mise, &host(Os::MacOs, None)),
+            PlannedOp::Command {
+                program: "mise".to_owned(),
+                args: vec!["install".to_owned(), "node@latest".to_owned()],
+            },
+            "the language managers cover every OS — no platform gate applies"
         );
     }
 

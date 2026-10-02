@@ -63,9 +63,14 @@
 use crate::backend::{Backend, BackendId, BackendStatus, StatusQuery};
 #[cfg(feature = "direct")]
 use crate::backends::DirectBackend;
+#[cfg(feature = "mise")]
+use crate::backends::MiseBackend;
 use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::BrewKind;
-use crate::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
+use crate::backends::{
+    CargoBackend, DistroBackend, FlatpakBackend, HomebrewBackend, NpmBackend, PipxBackend,
+    UvBackend,
+};
 use crate::error::Result;
 use crate::manifest::{InstallRecord, NativeIds};
 
@@ -121,6 +126,17 @@ pub struct BackendSet<'a> {
     /// Direct-download backend, when attached (the `direct` feature).
     #[cfg(feature = "direct")]
     direct: Option<&'a DirectBackend>,
+    /// npm backend, when attached.
+    npm: Option<&'a NpmBackend>,
+    /// cargo backend, when attached.
+    cargo: Option<&'a CargoBackend>,
+    /// pipx backend, when attached.
+    pipx: Option<&'a PipxBackend>,
+    /// uv backend, when attached.
+    uv: Option<&'a UvBackend>,
+    /// mise backend, when attached (the `mise` feature).
+    #[cfg(feature = "mise")]
+    mise: Option<&'a MiseBackend>,
 }
 
 /// Debug prints slot occupancy, not the backends (they are not `Debug` —
@@ -131,9 +147,15 @@ impl std::fmt::Debug for BackendSet<'_> {
         builder
             .field("homebrew", &self.homebrew.is_some())
             .field("flatpak", &self.flatpak.is_some())
-            .field("distro", &self.distro.is_some());
+            .field("distro", &self.distro.is_some())
+            .field("npm", &self.npm.is_some())
+            .field("cargo", &self.cargo.is_some())
+            .field("pipx", &self.pipx.is_some())
+            .field("uv", &self.uv.is_some());
         #[cfg(feature = "direct")]
         builder.field("direct", &self.direct.is_some());
+        #[cfg(feature = "mise")]
+        builder.field("mise", &self.mise.is_some());
         builder.finish()
     }
 }
@@ -173,6 +195,77 @@ impl<'a> BackendSet<'a> {
     pub const fn direct(mut self, backend: &'a DirectBackend) -> Self {
         self.direct = Some(backend);
         self
+    }
+
+    /// Attach the npm backend — consume-and-return.
+    #[must_use]
+    pub const fn npm(mut self, backend: &'a NpmBackend) -> Self {
+        self.npm = Some(backend);
+        self
+    }
+
+    /// Attach the cargo backend — consume-and-return.
+    #[must_use]
+    pub const fn cargo(mut self, backend: &'a CargoBackend) -> Self {
+        self.cargo = Some(backend);
+        self
+    }
+
+    /// Attach the pipx backend — consume-and-return.
+    #[must_use]
+    pub const fn pipx(mut self, backend: &'a PipxBackend) -> Self {
+        self.pipx = Some(backend);
+        self
+    }
+
+    /// Attach the uv backend — consume-and-return.
+    #[must_use]
+    pub const fn uv(mut self, backend: &'a UvBackend) -> Self {
+        self.uv = Some(backend);
+        self
+    }
+
+    /// Attach the mise backend — consume-and-return (the `mise` feature).
+    #[cfg(feature = "mise")]
+    #[must_use]
+    pub const fn mise(mut self, backend: &'a MiseBackend) -> Self {
+        self.mise = Some(backend);
+        self
+    }
+}
+
+/// The language-ecosystem slot a set of ids routes to — the one seam all
+/// five share (their trait `status` presence probe over the listing);
+/// `None` when that backend is not attached.
+fn language_backend<'a>(set: &BackendSet<'a>, ids: &NativeIds) -> Option<&'a dyn Backend> {
+    let backend: Option<&'a dyn Backend> = match ids {
+        NativeIds::Npm { .. } => set.npm.map(|backend| backend as &dyn Backend),
+        NativeIds::Cargo { .. } => set.cargo.map(|backend| backend as &dyn Backend),
+        NativeIds::Pipx { .. } => set.pipx.map(|backend| backend as &dyn Backend),
+        NativeIds::Uv { .. } => set.uv.map(|backend| backend as &dyn Backend),
+        #[cfg(feature = "mise")]
+        NativeIds::Mise { .. } => set.mise.map(|backend| backend as &dyn Backend),
+        NativeIds::Homebrew { .. } | NativeIds::Flatpak { .. } | NativeIds::Distro { .. } => {
+            return None;
+        }
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { .. } => return None,
+    };
+    backend
+}
+
+/// The language-ecosystem native id a presence probe keys on.
+fn language_native_id(ids: &NativeIds) -> &str {
+    match ids {
+        NativeIds::Npm { package } | NativeIds::Pipx { package } | NativeIds::Uv { package } => {
+            package
+        }
+        NativeIds::Cargo { crate_ } => crate_,
+        #[cfg(feature = "mise")]
+        NativeIds::Mise { tool } => tool,
+        NativeIds::Homebrew { .. } | NativeIds::Flatpak { .. } | NativeIds::Distro { .. } => "",
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { .. } => "",
     }
 }
 
@@ -292,7 +385,39 @@ async fn toride_recorded_status(
                 BackendStatus::NotInstalled => AppStatus::NotInstalled,
             })
         }
+        ids @ (NativeIds::Npm { .. }
+        | NativeIds::Cargo { .. }
+        | NativeIds::Pipx { .. }
+        | NativeIds::Uv { .. }) => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            recorded_via_status(backend, language_native_id(ids), ids.backend()).await
+        }
+        #[cfg(feature = "mise")]
+        ids @ NativeIds::Mise { .. } => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            recorded_via_status(backend, language_native_id(ids), ids.backend()).await
+        }
     }
+}
+
+/// The recorded-status answer for every backend whose presence rides the
+/// trait's own `status` probe (the language ecosystems).
+async fn recorded_via_status(
+    backend: &dyn Backend,
+    native: &str,
+    backend_id: BackendId,
+) -> Result<AppStatus> {
+    Ok(match backend.status(StatusQuery::new(native)).await? {
+        BackendStatus::Installed { version } => AppStatus::Installed {
+            backend: backend_id,
+            version,
+        },
+        BackendStatus::NotInstalled => AppStatus::NotInstalled,
+    })
 }
 
 /// Probe the caller-known native identifiers for presence without a
@@ -358,6 +483,45 @@ async fn foreign_status(native: &NativeIds, backends: &BackendSet<'_>) -> Result
                 status,
             ))
         }
+        ids @ (NativeIds::Npm { .. }
+        | NativeIds::Cargo { .. }
+        | NativeIds::Pipx { .. }
+        | NativeIds::Uv { .. }) => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = backend
+                .status(StatusQuery::new(language_native_id(ids)))
+                .await?;
+            Ok(foreign_from(ids.backend(), &language_subject(ids), status))
+        }
+        #[cfg(feature = "mise")]
+        ids @ NativeIds::Mise { .. } => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = backend
+                .status(StatusQuery::new(language_native_id(ids)))
+                .await?;
+            Ok(foreign_from(ids.backend(), &language_subject(ids), status))
+        }
+    }
+}
+
+/// The subject wording for a language-ecosystem `Foreign` hit.
+fn language_subject(ids: &NativeIds) -> String {
+    match ids {
+        NativeIds::Npm { package } => format!("npm package `{package}`"),
+        NativeIds::Cargo { crate_ } => format!("cargo crate `{crate_}`"),
+        NativeIds::Pipx { package } => format!("pipx package `{package}`"),
+        NativeIds::Uv { package } => format!("uv tool `{package}`"),
+        #[cfg(feature = "mise")]
+        NativeIds::Mise { tool } => format!("mise tool `{tool}`"),
+        NativeIds::Homebrew { .. } | NativeIds::Flatpak { .. } | NativeIds::Distro { .. } => {
+            String::new()
+        }
+        #[cfg(feature = "direct")]
+        NativeIds::Direct { .. } => String::new(),
     }
 }
 
@@ -470,7 +634,38 @@ fn toride_recorded_status_sync(
                 BackendStatus::NotInstalled => AppStatus::NotInstalled,
             })
         }
+        ids @ (NativeIds::Npm { .. }
+        | NativeIds::Cargo { .. }
+        | NativeIds::Pipx { .. }
+        | NativeIds::Uv { .. }) => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            recorded_via_status_sync(backend, language_native_id(ids), ids.backend())
+        }
+        #[cfg(feature = "mise")]
+        ids @ NativeIds::Mise { .. } => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            recorded_via_status_sync(backend, language_native_id(ids), ids.backend())
+        }
     }
+}
+
+/// The sync twin of [`recorded_via_status`].
+fn recorded_via_status_sync(
+    backend: &dyn Backend,
+    native: &str,
+    backend_id: BackendId,
+) -> Result<AppStatus> {
+    Ok(match backend.status_sync(StatusQuery::new(native))? {
+        BackendStatus::Installed { version } => AppStatus::Installed {
+            backend: backend_id,
+            version,
+        },
+        BackendStatus::NotInstalled => AppStatus::NotInstalled,
+    })
 }
 
 /// The sync twin of [`foreign_status`].
@@ -523,6 +718,24 @@ fn foreign_status_sync(native: &NativeIds, backends: &BackendSet<'_>) -> Result<
                 &format!("direct binary `{bin_path}`"),
                 status,
             ))
+        }
+        ids @ (NativeIds::Npm { .. }
+        | NativeIds::Cargo { .. }
+        | NativeIds::Pipx { .. }
+        | NativeIds::Uv { .. }) => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = backend.status_sync(StatusQuery::new(language_native_id(ids)))?;
+            Ok(foreign_from(ids.backend(), &language_subject(ids), status))
+        }
+        #[cfg(feature = "mise")]
+        ids @ NativeIds::Mise { .. } => {
+            let Some(backend) = language_backend(backends, ids) else {
+                return Ok(AppStatus::NotInstalled);
+            };
+            let status = backend.status_sync(StatusQuery::new(language_native_id(ids)))?;
+            Ok(foreign_from(ids.backend(), &language_subject(ids), status))
         }
     }
 }
@@ -1219,6 +1432,197 @@ mod tests {
         assert_eq!(status, AppStatus::NotInstalled);
         let status = app_status_sync(None, None, &BackendSet::new()).unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
+    }
+
+    // --- language ecosystems ------------------------------------------------------
+
+    fn npm_backend(fake: &FakeRunner) -> NpmBackend {
+        NpmBackend::new(CommandRunner::new(Arc::new(fake.clone())))
+    }
+
+    fn npm_list_spec() -> toride_runner::CommandSpec {
+        command("npm", ["list", "--global", "--depth=0", "--json"])
+    }
+
+    fn npm_record(slug: &str, package: &str) -> InstallRecord {
+        InstallRecord::new(
+            crate::plan::InstallPlan {
+                app: app_id(slug),
+                backend: BackendId::Npm,
+                operation: Operation::NpmInstall {
+                    package: package.to_owned(),
+                    version: None,
+                    global: true,
+                },
+                dry_run: false,
+                requires_elevation: false,
+            },
+            NativeIds::Npm {
+                package: package.to_owned(),
+            },
+            None,
+        )
+        .with_installed_at(1_700_000_000)
+    }
+
+    #[tokio::test]
+    async fn manifest_hit_npm_record_reports_installed_from_the_listing() {
+        let fake = FakeRunner::new().strict().respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(r#"{"dependencies": {"typescript": {"version": "5.4.5"}}}"#),
+        );
+        let npm = npm_backend(&fake);
+        let backends = BackendSet::new().npm(&npm);
+        let status = app_status(
+            Some(&npm_record("typescript", "typescript")),
+            None,
+            &backends,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status,
+            AppStatus::Installed {
+                backend: BackendId::Npm,
+                version: Some("5.4.5".to_owned()),
+            }
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn manifest_hit_npm_record_absent_from_the_listing_reports_not_installed() {
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(npm_list_spec(), CommandOutput::from_stdout("{}"));
+        let npm = npm_backend(&fake);
+        let backends = BackendSet::new().npm(&npm);
+        let status = app_status(
+            Some(&npm_record("typescript", "typescript")),
+            None,
+            &backends,
+        )
+        .await
+        .unwrap();
+        assert_eq!(status, AppStatus::NotInstalled);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn manifest_miss_with_npm_listing_the_package_reports_foreign() {
+        let fake = FakeRunner::new().strict().respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(r#"{"dependencies": {"typescript": {"version": "5.4.5"}}}"#),
+        );
+        let npm = npm_backend(&fake);
+        let backends = BackendSet::new().npm(&npm);
+        let native = NativeIds::Npm {
+            package: "typescript".to_owned(),
+        };
+        let status = app_status(None, Some(&native), &backends).await.unwrap();
+        match status {
+            AppStatus::Foreign { backend, detail } => {
+                assert_eq!(backend, BackendId::Npm);
+                assert!(detail.contains("npm package `typescript`"), "{detail}");
+                assert!(detail.contains("5.4.5"), "{detail}");
+                assert!(detail.contains("not by toride"), "{detail}");
+            }
+            other => panic!("expected Foreign, got {other:?}"),
+        }
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn an_absent_language_slot_skips_the_probe_entirely() {
+        let fake = FakeRunner::new().strict();
+        let backends = BackendSet::new();
+        assert_eq!(
+            app_status(
+                Some(&npm_record("typescript", "typescript")),
+                None,
+                &backends
+            )
+            .await
+            .unwrap(),
+            AppStatus::NotInstalled
+        );
+        let native = NativeIds::Npm {
+            package: "typescript".to_owned(),
+        };
+        assert_eq!(
+            app_status(None, Some(&native), &backends).await.unwrap(),
+            AppStatus::NotInstalled
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn sync_npm_record_and_foreign_mirror_the_async_probes() {
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                npm_list_spec(),
+                CommandOutput::from_stdout(
+                    r#"{"dependencies": {"typescript": {"version": "5.4.5"}}}"#,
+                ),
+            )
+            .respond(
+                npm_list_spec(),
+                CommandOutput::from_stdout(
+                    r#"{"dependencies": {"typescript": {"version": "5.4.5"}}}"#,
+                ),
+            );
+        let npm = npm_backend(&fake);
+        let backends = BackendSet::new().npm(&npm);
+        assert_eq!(
+            app_status_sync(
+                Some(&npm_record("typescript", "typescript")),
+                None,
+                &backends
+            )
+            .unwrap(),
+            AppStatus::Installed {
+                backend: BackendId::Npm,
+                version: Some("5.4.5".to_owned()),
+            }
+        );
+        let native = NativeIds::Npm {
+            package: "typescript".to_owned(),
+        };
+        assert!(
+            matches!(
+                app_status_sync(None, Some(&native), &backends).unwrap(),
+                AppStatus::Foreign {
+                    backend: BackendId::Npm,
+                    ..
+                }
+            ),
+            "the sync Foreign probe mirrors the async one"
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn manifest_miss_with_cargo_listing_the_crate_reports_foreign() {
+        let fake = FakeRunner::new().strict().respond(
+            command("cargo", ["install", "--list"]),
+            CommandOutput::from_stdout("ripgrep v14.1.0:\n    rg\n"),
+        );
+        let cargo = CargoBackend::new(CommandRunner::new(Arc::new(fake.clone())));
+        let backends = BackendSet::new().cargo(&cargo);
+        let native = NativeIds::Cargo {
+            crate_: "ripgrep".to_owned(),
+        };
+        let status = app_status(None, Some(&native), &backends).await.unwrap();
+        match status {
+            AppStatus::Foreign { backend, detail } => {
+                assert_eq!(backend, BackendId::Cargo);
+                assert!(detail.contains("cargo crate `ripgrep`"), "{detail}");
+                assert!(detail.contains("14.1.0"), "{detail}");
+            }
+            other => panic!("expected Foreign, got {other:?}"),
+        }
+        fake.assert_no_unmatched_calls();
     }
 
     #[cfg(feature = "direct")]

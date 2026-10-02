@@ -925,7 +925,8 @@ struct Resolved {
 /// - [`Error::AppDisabled`] when the source disabled the app;
 /// - [`Error::PlatformMismatch`] when the app's claims exclude the target;
 /// - [`Error::UnsupportedMethod`] when no backend applies (wrong OS or
-///   distro family, a `Direct` method, or an unrouted family);
+///   distro family, a `Direct` method without the `direct` feature, a
+///   `Mise` method without the `mise` feature, or an unrouted family);
 /// - [`Error::VersionNotSelectable`] when `options` carries a version the
 ///   routed method cannot express;
 /// - [`Error::InvalidVersion`] when `options` carries a version that
@@ -1055,6 +1056,26 @@ fn resolve_operation(app: &App, target: Target, action: Action<'_>) -> Result<Re
             checksum,
             arch,
         } => resolve_direct(app, target, action, url, checksum.as_ref(), *arch),
+        InstallMethod::Npm { package, version } => {
+            resolve_npm(app, action, package, version.as_deref())
+        }
+        InstallMethod::Cargo { crate_, version } => {
+            resolve_cargo(app, action, crate_, version.as_deref())
+        }
+        InstallMethod::Pipx { package } => resolve_pipx(app, action, package),
+        InstallMethod::Uv { package, version } => {
+            resolve_uv(app, action, package, version.as_deref())
+        }
+        #[cfg(feature = "mise")]
+        InstallMethod::Mise { tool, version } => {
+            resolve_mise(app, action, tool, version.as_deref())
+        }
+        #[cfg(not(feature = "mise"))]
+        InstallMethod::Mise { .. } => Err(unsupported(
+            app,
+            target,
+            "mise installs need the `mise` feature (it carries tokio)",
+        )),
         // `InstallMethod` is non_exhaustive upstream: unrouted future
         // variants fail loudly instead of guessing.
         _ => Err(unsupported(
@@ -1291,6 +1312,205 @@ fn resolve_distro(
         // executor must satisfy.
         requires_elevation: true,
     })
+}
+
+/// npm arm: global CLI-tool scope (`-g` — the npm backend's managed
+/// scope), the version spelled as the `@`-joined spec npm itself
+/// addresses.
+fn resolve_npm(
+    app: &App,
+    action: Action<'_>,
+    package: &str,
+    pin: Option<&str>,
+) -> Result<Resolved> {
+    let operation = match action {
+        Action::Install { version } => {
+            let version = pinned_version(app, version, pin)?;
+            if let Some(version) = version.as_ref() {
+                ensure_spellable_version(app, version)?;
+                ensure_bare_operand(app, "package", package, version, "@")?;
+            }
+            Operation::NpmInstall {
+                package: package.to_owned(),
+                version,
+                global: true,
+            }
+        }
+        Action::Uninstall { .. } => Operation::NpmUninstall {
+            package: package.to_owned(),
+            global: true,
+        },
+    };
+    Ok(Resolved {
+        backend: BackendId::Npm,
+        operation,
+        requires_elevation: false,
+    })
+}
+
+/// cargo arm: the version rides `--version`; re-install at latest is
+/// cargo's upgrade story, so the update verb maps to `--force`.
+fn resolve_cargo(
+    app: &App,
+    action: Action<'_>,
+    crate_: &str,
+    pin: Option<&str>,
+) -> Result<Resolved> {
+    let operation = match action {
+        Action::Install { version } => {
+            let version = pinned_version(app, version, pin)?;
+            if let Some(version) = version.as_ref() {
+                ensure_spellable_version(app, version)?;
+            }
+            Operation::CargoInstall {
+                crate_: crate_.to_owned(),
+                version,
+            }
+        }
+        Action::Uninstall { .. } => Operation::CargoUninstall {
+            crate_: crate_.to_owned(),
+        },
+    };
+    Ok(Resolved {
+        backend: BackendId::Cargo,
+        operation,
+        requires_elevation: false,
+    })
+}
+
+/// pipx arm: pipx takes no version operand in this model, so a requested
+/// version is refused at plan time exactly like a distro method's.
+fn resolve_pipx(app: &App, action: Action<'_>, package: &str) -> Result<Resolved> {
+    if let Action::Install {
+        version: Some(version),
+    } = action
+    {
+        return Err(Error::VersionNotSelectable {
+            app: app.id.as_str().to_owned(),
+            method: format!("{:?}", app.install),
+            version: version.as_str().to_owned(),
+        });
+    }
+    let operation = match action {
+        Action::Install { .. } => Operation::PipxInstall {
+            package: package.to_owned(),
+        },
+        Action::Uninstall { .. } => Operation::PipxUninstall {
+            package: package.to_owned(),
+        },
+    };
+    Ok(Resolved {
+        backend: BackendId::Pipx,
+        operation,
+        requires_elevation: false,
+    })
+}
+
+/// uv arm: the version spelled as the `==`-joined spec uv itself
+/// addresses.
+fn resolve_uv(app: &App, action: Action<'_>, package: &str, pin: Option<&str>) -> Result<Resolved> {
+    let operation = match action {
+        Action::Install { version } => {
+            let version = pinned_version(app, version, pin)?;
+            if let Some(version) = version.as_ref() {
+                ensure_spellable_version(app, version)?;
+                ensure_bare_operand(app, "package", package, version, "==")?;
+            }
+            Operation::UvInstall {
+                package: package.to_owned(),
+                version,
+            }
+        }
+        Action::Uninstall { .. } => Operation::UvUninstall {
+            package: package.to_owned(),
+        },
+    };
+    Ok(Resolved {
+        backend: BackendId::Uv,
+        operation,
+        requires_elevation: false,
+    })
+}
+
+/// mise arm (the `mise` feature): the version spelled as the `@`-joined
+/// spec, `None` addressing `tool@latest`.
+#[cfg(feature = "mise")]
+fn resolve_mise(app: &App, action: Action<'_>, tool: &str, pin: Option<&str>) -> Result<Resolved> {
+    let operation = match action {
+        Action::Install { version } => {
+            let version = pinned_version(app, version, pin)?;
+            if let Some(version) = version.as_ref() {
+                ensure_spellable_version(app, version)?;
+                ensure_bare_operand(app, "tool", tool, version, "@")?;
+            }
+            Operation::MiseInstall {
+                tool: tool.to_owned(),
+                version,
+            }
+        }
+        Action::Uninstall { .. } => Operation::MiseUninstall {
+            tool: tool.to_owned(),
+        },
+    };
+    Ok(Resolved {
+        backend: BackendId::Mise,
+        operation,
+        requires_elevation: false,
+    })
+}
+
+/// The version a language arm plans at: the caller's request, the
+/// method's own pin, or — when both name one — only an equal pair (the
+/// two spell one address; a differing request would silently install
+/// something the descriptor never named).
+fn pinned_version(
+    app: &App,
+    requested: Option<&Version>,
+    method_pin: Option<&str>,
+) -> Result<Option<Version>> {
+    let Some(method_pin) = method_pin else {
+        return Ok(requested.cloned());
+    };
+    let method_pin = Version::new(method_pin);
+    match requested {
+        None => Ok(Some(method_pin)),
+        Some(requested) if requested == &method_pin => Ok(Some(method_pin)),
+        Some(requested) => Err(Error::InvalidVersion {
+            app: app.id.as_str().to_owned(),
+            version: requested.as_str().to_owned(),
+            reason: format!(
+                "the method already pins `{method_pin}` — the request names a different one"
+            ),
+        }),
+    }
+}
+
+/// Whether an operand already carries its own version spec (`pkg@1.0`,
+/// `pkg==1.0`) — joining a requested version onto it would address
+/// something no manager resolves. A LEADING separator is npm's scope
+/// prefix (`@types/node`), not a spec.
+fn spec_joined(operand: &str, sep: &str) -> bool {
+    operand.find(sep).is_some_and(|at| at > 0)
+}
+
+/// Refuse a requested version for an operand that already names one.
+fn ensure_bare_operand(
+    app: &App,
+    kind: &str,
+    operand: &str,
+    version: &Version,
+    sep: &str,
+) -> Result<()> {
+    if spec_joined(operand, sep) {
+        return Err(Error::InvalidVersion {
+            app: app.id.as_str().to_owned(),
+            version: version.as_str().to_owned(),
+            reason: format!(
+                "the {kind} `{operand}` already names a versioned spec — joining would address `{operand}{sep}{version}`"
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Direct arm (the `direct` feature): the URL is the fully-resolved
@@ -1767,6 +1987,302 @@ mod tests {
             matches!(error, Error::VersionNotSelectable { .. }),
             "distro refuses every version, empty included: {error:?}"
         );
+    }
+
+    // --- language-ecosystem derivations ------------------------------------------
+
+    fn npm_method(package: &str, version: Option<&str>) -> InstallMethod {
+        InstallMethod::Npm {
+            package: package.to_owned(),
+            version: version.map(str::to_owned),
+        }
+    }
+
+    fn cargo_method(crate_: &str, version: Option<&str>) -> InstallMethod {
+        InstallMethod::Cargo {
+            crate_: crate_.to_owned(),
+            version: version.map(str::to_owned),
+        }
+    }
+
+    fn uv_method(package: &str, version: Option<&str>) -> InstallMethod {
+        InstallMethod::Uv {
+            package: package.to_owned(),
+            version: version.map(str::to_owned),
+        }
+    }
+
+    #[test]
+    fn plans_npm_install_globally_with_the_joined_spec() {
+        let plan = plan_install(
+            &app_with(npm_method("typescript", Some("5.4.5"))),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.backend, BackendId::Npm);
+        assert_eq!(
+            plan.operation.argv(),
+            ["npm", "install", "-g", "typescript@5.4.5"]
+        );
+        assert!(!plan.requires_elevation);
+    }
+
+    #[test]
+    fn plans_npm_install_without_a_pin_at_the_managers_current() {
+        let plan = plan_install(
+            &app_with(npm_method("typescript", None)),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.operation.argv(),
+            ["npm", "install", "-g", "typescript"]
+        );
+    }
+
+    #[test]
+    fn a_requested_npm_version_overrides_and_must_match_the_method_pin() {
+        let plan = plan_install(
+            &app_with(npm_method("typescript", None)),
+            &macos(),
+            &InstallOptions::new().version(Some(Version::new("5.3.3"))),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.operation.argv(),
+            ["npm", "install", "-g", "typescript@5.3.3"]
+        );
+        let error = plan_install(
+            &app_with(npm_method("typescript", Some("5.4.5"))),
+            &macos(),
+            &InstallOptions::new().version(Some(Version::new("5.3.3"))),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+        assert!(error.to_string().contains("already pins"), "{error}");
+        let matching = plan_install(
+            &app_with(npm_method("typescript", Some("5.4.5"))),
+            &macos(),
+            &InstallOptions::new().version(Some(Version::new("5.4.5"))),
+        )
+        .unwrap();
+        assert_eq!(
+            matching.operation.argv(),
+            ["npm", "install", "-g", "typescript@5.4.5"]
+        );
+    }
+
+    #[test]
+    fn npm_keeps_a_scoped_package_name_but_refuses_a_versioned_spec_operand() {
+        let scoped = plan_install(
+            &app_with(npm_method("@types/node", None)),
+            &macos(),
+            &InstallOptions::new().version(Some(Version::new("22.0.0"))),
+        )
+        .unwrap();
+        assert_eq!(
+            scoped.operation.argv(),
+            ["npm", "install", "-g", "@types/node@22.0.0"],
+            "a leading @ is npm's scope prefix, not a spec"
+        );
+        let error = plan_install(
+            &app_with(npm_method("typescript@5", None)),
+            &macos(),
+            &InstallOptions::new().version(Some(Version::new("5.4.5"))),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+        assert!(error.to_string().contains("already names"), "{error}");
+    }
+
+    #[test]
+    fn npm_and_uv_refuse_an_empty_version_like_every_routed_method() {
+        let options = InstallOptions::new().version(Some(Version::new(" ")));
+        let error = plan_install(
+            &app_with(npm_method("typescript", None)),
+            &macos(),
+            &options,
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+        let error =
+            plan_install(&app_with(uv_method("ruff", None)), &macos(), &options).unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+    }
+
+    #[test]
+    fn plans_npm_uninstall_replaying_the_global_scope() {
+        let plan = plan_uninstall(
+            &app_with(npm_method("typescript", Some("5.4.5"))),
+            &macos(),
+            &UninstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.operation.argv(),
+            ["npm", "uninstall", "-g", "typescript"],
+            "the uninstall addresses the name, never the versioned spec"
+        );
+        assert_eq!(plan.backend, BackendId::Npm);
+    }
+
+    #[test]
+    fn plans_cargo_install_with_the_version_flag() {
+        let plan = plan_install(
+            &app_with(cargo_method("ripgrep", Some("14.1.0"))),
+            &linux(DistroFamily::Arch),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.backend, BackendId::Cargo);
+        assert_eq!(
+            plan.operation.argv(),
+            ["cargo", "install", "--version", "14.1.0", "ripgrep"]
+        );
+        let unpinned = plan_install(
+            &app_with(cargo_method("ripgrep", None)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(unpinned.operation.argv(), ["cargo", "install", "ripgrep"]);
+        let uninstalled = plan_uninstall(
+            &app_with(cargo_method("ripgrep", None)),
+            &macos(),
+            &UninstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            uninstalled.operation.argv(),
+            ["cargo", "uninstall", "ripgrep"]
+        );
+    }
+
+    #[test]
+    fn plans_pipx_install_and_refuses_a_version_at_plan_time() {
+        let plan = plan_install(
+            &app_with(InstallMethod::Pipx {
+                package: "black".to_owned(),
+            }),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.backend, BackendId::Pipx);
+        assert_eq!(plan.operation.argv(), ["pipx", "install", "black"]);
+        let error = plan_install(
+            &app_with(InstallMethod::Pipx {
+                package: "black".to_owned(),
+            }),
+            &macos(),
+            &InstallOptions::new().version(Some(Version::new("24.0"))),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::VersionNotSelectable { .. }),
+            "{error:?}"
+        );
+        let uninstalled = plan_uninstall(
+            &app_with(InstallMethod::Pipx {
+                package: "black".to_owned(),
+            }),
+            &macos(),
+            &UninstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(uninstalled.operation.argv(), ["pipx", "uninstall", "black"]);
+    }
+
+    #[test]
+    fn plans_uv_install_with_the_double_equals_spec() {
+        let plan = plan_install(
+            &app_with(uv_method("ruff", Some("0.6.0"))),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.backend, BackendId::Uv);
+        assert_eq!(
+            plan.operation.argv(),
+            ["uv", "tool", "install", "ruff==0.6.0"]
+        );
+        let error = plan_install(
+            &app_with(uv_method("ruff==0.5.0", None)),
+            &macos(),
+            &InstallOptions::new().version(Some(Version::new("0.6.0"))),
+        )
+        .unwrap_err();
+        assert!(matches!(error, Error::InvalidVersion { .. }), "{error:?}");
+        let uninstalled = plan_uninstall(
+            &app_with(uv_method("ruff", None)),
+            &macos(),
+            &UninstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            uninstalled.operation.argv(),
+            ["uv", "tool", "uninstall", "ruff"]
+        );
+    }
+
+    #[cfg(feature = "mise")]
+    fn mise_method(tool: &str, version: Option<&str>) -> InstallMethod {
+        InstallMethod::Mise {
+            tool: tool.to_owned(),
+            version: version.map(str::to_owned),
+        }
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn plans_mise_install_with_the_at_latest_default() {
+        let plan = plan_install(
+            &app_with(mise_method("node", Some("22.1.0"))),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.backend, BackendId::Mise);
+        assert_eq!(plan.operation.argv(), ["mise", "install", "node@22.1.0"]);
+        let unpinned = plan_install(
+            &app_with(mise_method("node", None)),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            unpinned.operation.argv(),
+            ["mise", "install", "node@latest"],
+            "`None` addresses the mise-native spelling of the manager's current"
+        );
+        let uninstalled = plan_uninstall(
+            &app_with(mise_method("node", None)),
+            &linux(DistroFamily::Debian),
+            &UninstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(uninstalled.operation.argv(), ["mise", "uninstall", "node"]);
+    }
+
+    #[cfg(not(feature = "mise"))]
+    #[test]
+    fn a_mise_method_without_the_feature_is_refused_at_plan_time() {
+        let error = plan_install(
+            &app_with(InstallMethod::Mise {
+                tool: "node".to_owned(),
+                version: None,
+            }),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::UnsupportedMethod { .. }),
+            "{error:?}"
+        );
+        assert!(error.to_string().contains("`mise` feature"), "{error}");
     }
 
     #[test]

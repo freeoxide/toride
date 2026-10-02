@@ -374,6 +374,245 @@ fn ensure_installed_with_a_version_pins_the_versioned_token_when_the_offering_di
 }
 
 #[test]
+fn ensure_installed_at_the_offered_version_over_a_stale_record_rides_the_managers_current() {
+    let versioned_probe_spec = command("brew", ["list", "--cask", "--versions", "brave-browser"]);
+    let fake = FakeRunner::new().strict();
+    let fake = fake
+        // The record confirms present, at 1.90.0 — not the 1.96.59 ask.
+        .respond(
+            brew_versions_cask_spec(),
+            CommandOutput::from_stdout("brave-browser 1.90.0\n"),
+        )
+        // The offering probe answers 1.96.59 — exactly the request, so the
+        // plan rides the manager's current instead of the `@`-joined
+        // spelling brew refuses for a token without versioned tracks.
+        .respond(
+            brew_info_token_spec(),
+            CommandOutput::from_stdout(installed_cask_document("brave-browser", "1.96.59")),
+        )
+        .respond(brew_install_cask_spec(), CommandOutput::from_stdout(""))
+        .respond(
+            versioned_probe_spec.clone(),
+            CommandOutput::from_stdout("brave-browser 1.96.59\n"),
+        )
+        .respond(
+            versioned_probe_spec.clone(),
+            CommandOutput::from_stdout("brave-browser 1.96.59\n"),
+        );
+    let path = temp_manifest_path("version-present-offered");
+    seed_manifest(&path, cask_record(Some("1.90.0")));
+    let mut apps = blocking(&fake, &path);
+
+    let outcome = apps
+        .ensure_installed(
+            &cask_app(),
+            AppInstallOptions::new().version(Some(Version::new("1.96.59"))),
+        )
+        .unwrap();
+    match outcome {
+        EnsureAppOutcome::Installed { ids, version, .. } => {
+            assert_eq!(
+                ids,
+                NativeIds::Homebrew {
+                    token: "brave-browser".to_owned(),
+                    cask: true,
+                },
+                "the plain token — no @-joined spelling may run on a re-install"
+            );
+            assert_eq!(version.as_deref(), Some("1.96.59"));
+        }
+        other @ EnsureAppOutcome::AlreadyPresent(_) => panic!("expected Installed, got {other:?}"),
+    }
+    fake.assert_called_with(&brew_info_token_spec());
+    fake.assert_called_with(&brew_install_cask_spec());
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| call.args.contains(&"brave-browser@1.96.59".to_owned())),
+        "no @-joined spelling may run: {:?}",
+        fake.calls()
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[test]
+fn cargo_installs_records_and_reports_status_in_line() {
+    let list_spec = command("cargo", ["install", "--list"]);
+    let install_spec = command("cargo", ["install", "ripgrep"]);
+    let installed_list = "ripgrep v14.1.0:\n    rg\n";
+    let fake = FakeRunner::new().strict();
+    let fake = fake
+        // Foreign check: nothing cargo-installed yet.
+        .respond(list_spec.clone(), CommandOutput::from_stdout(""))
+        .respond(install_spec.clone(), CommandOutput::from_stdout(""))
+        // The facade's post-install verify.
+        .respond(
+            list_spec.clone(),
+            CommandOutput::from_stdout(installed_list),
+        )
+        // The status probe's listing.
+        .respond(
+            list_spec.clone(),
+            CommandOutput::from_stdout(installed_list),
+        );
+    let path = temp_manifest_path("cargo-install");
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(Target::linux(
+            toride_apps::Arch::X86_64,
+            DistroFamily::Debian,
+        ))
+        .manifest_path(&path)
+        .cargo(toride_apps::CargoBackend::new(seam))
+        .build()
+        .expect("facade builds with the cargo backend attached")
+        .blocking();
+
+    let cargo_app = app(
+        "ripgrep",
+        InstallMethod::Cargo {
+            crate_: "ripgrep".to_owned(),
+            version: None,
+        },
+    );
+    match apps
+        .ensure_installed(&cargo_app, AppInstallOptions::new())
+        .unwrap()
+    {
+        EnsureAppOutcome::Installed {
+            backend,
+            ids,
+            version,
+            ..
+        } => {
+            assert_eq!(backend, BackendId::Cargo);
+            assert_eq!(
+                ids,
+                NativeIds::Cargo {
+                    crate_: "ripgrep".to_owned()
+                }
+            );
+            assert_eq!(version.as_deref(), Some("14.1.0"));
+        }
+        other @ EnsureAppOutcome::AlreadyPresent(_) => panic!("expected Installed, got {other:?}"),
+    }
+    fake.assert_called_with(&install_spec);
+
+    assert_eq!(
+        apps.status(&id("ripgrep")).unwrap(),
+        AppStatus::Installed {
+            backend: BackendId::Cargo,
+            version: Some("14.1.0".to_owned()),
+        },
+        "status answers from the record through the listing probe"
+    );
+    assert_eq!(
+        apps.available_versions(&id("ripgrep")).unwrap(),
+        Vec::<Version>::new(),
+        "cargo reports no version listing — its offering probe is singular"
+    );
+    assert!(
+        std::fs::read_to_string(path.as_std_path())
+            .unwrap()
+            .contains("\"Cargo\""),
+        "the record persisted with the Cargo ids shape"
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[test]
+fn cargo_records_update_and_uninstall_replay_the_recorded_crate() {
+    let list_spec = command("cargo", ["install", "--list"]);
+    let search_spec = command("cargo", ["search", "ripgrep"]);
+    let force_spec = command("cargo", ["install", "--force", "ripgrep"]);
+    let uninstall_spec = command("cargo", ["uninstall", "ripgrep"]);
+    let installed_list = "ripgrep v14.1.0:\n    rg\n";
+    let upgraded_list = "ripgrep v15.2.0:\n    rg\n";
+    let fake = FakeRunner::new().strict();
+    let fake = fake
+        // Update: the installed-version probe, then the availability ask.
+        .respond(
+            list_spec.clone(),
+            CommandOutput::from_stdout(installed_list),
+        )
+        .respond(
+            search_spec.clone(),
+            CommandOutput::from_stdout("ripgrep = \"15.2.0\"         # search\n"),
+        )
+        .respond(force_spec.clone(), CommandOutput::from_stdout(""))
+        // The post-upgrade re-probe.
+        .respond(list_spec.clone(), CommandOutput::from_stdout(upgraded_list))
+        // Uninstall, then the post-uninstall absence verify.
+        .respond(uninstall_spec.clone(), CommandOutput::from_stdout(""))
+        .respond(list_spec.clone(), CommandOutput::from_stdout(""));
+    let path = temp_manifest_path("cargo-lifecycle");
+    let mut manifest = toride_apps::InstallManifest::at(&path);
+    manifest.record(
+        &id("ripgrep"),
+        InstallRecord::new(
+            toride_apps::InstallPlan {
+                app: id("ripgrep"),
+                backend: BackendId::Cargo,
+                operation: toride_apps::Operation::CargoInstall {
+                    crate_: "ripgrep".to_owned(),
+                    version: None,
+                },
+                dry_run: false,
+                requires_elevation: false,
+            },
+            NativeIds::Cargo {
+                crate_: "ripgrep".to_owned(),
+            },
+            Some("14.1.0".to_owned()),
+        )
+        .with_installed_at(1_700_000_000),
+    );
+    manifest.save().expect("seed manifest saves");
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(Target::linux(
+            toride_apps::Arch::X86_64,
+            DistroFamily::Debian,
+        ))
+        .manifest_path(&path)
+        .cargo(toride_apps::CargoBackend::new(seam))
+        .build()
+        .expect("facade builds with the cargo backend attached")
+        .blocking();
+
+    assert_eq!(
+        apps.update(&id("ripgrep"), &AppUpdateOptions::new())
+            .unwrap(),
+        UpdateOutcome::Updated {
+            from: Some(Version::new("14.1.0")),
+            to: Some(Version::new("15.2.0")),
+        }
+    );
+    fake.assert_called_with(&force_spec);
+    let on_disk = std::fs::read_to_string(path.as_std_path()).unwrap();
+    assert!(on_disk.contains("15.2.0"), "{on_disk}");
+
+    match apps
+        .uninstall(&id("ripgrep"), AppUninstallOptions::new())
+        .unwrap()
+    {
+        UninstallAppOutcome::Removed {
+            backend, warning, ..
+        } => {
+            assert_eq!(backend, BackendId::Cargo);
+            assert!(warning.is_none(), "{warning:?}");
+        }
+        other @ UninstallAppOutcome::AlreadyAbsent => panic!("expected Removed, got {other:?}"),
+    }
+    fake.assert_called_with(&uninstall_spec);
+    assert!(apps.records().is_empty());
+    fake.assert_no_unmatched_calls();
+}
+
+#[test]
 fn update_refuses_a_target_version_before_anything_runs() {
     let fake = FakeRunner::new().strict();
     let path = temp_manifest_path("update-target-refused");

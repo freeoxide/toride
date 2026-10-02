@@ -436,8 +436,9 @@ pub struct Artifact {
 }
 
 /// How to install — the descriptor install planning consumes. One variant
-/// per install technology, exactly the wave-1 set: brew token / flatpak
-/// ref / distro package per family / direct URL.
+/// per install technology: brew token / flatpak ref / distro package per
+/// family / direct URL / the language-ecosystem managers (npm, cargo, pipx,
+/// uv, mise).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum InstallMethod {
@@ -480,6 +481,39 @@ pub enum InstallMethod {
         checksum: Option<Checksum>,
         /// Arch the artifact targets, when known.
         arch: Option<Arch>,
+    },
+    /// `npm install -g <package>[@<version>]` — the global CLI-tool scope.
+    Npm {
+        /// npm package name.
+        package: String,
+        /// Exact version pin; `None` takes the registry's current.
+        version: Option<String>,
+    },
+    /// `cargo install [--version <v>] <crate>`.
+    Cargo {
+        /// Crate name as published on crates.io.
+        crate_: String,
+        /// Exact version pin; `None` takes the latest release.
+        version: Option<String>,
+    },
+    /// `pipx install <package>` (pipx takes no version operand).
+    Pipx {
+        /// Python package name.
+        package: String,
+    },
+    /// `uv tool install <package>[==<version>]`.
+    Uv {
+        /// Python package name.
+        package: String,
+        /// Exact version pin; `None` takes the latest release.
+        version: Option<String>,
+    },
+    /// `mise install <tool>[@<version>]` plus `mise use --global`.
+    Mise {
+        /// mise tool name (`node`, `npm:prettier`, `cargo:ripgrep`).
+        tool: String,
+        /// Version constraint; `None` addresses `@latest`.
+        version: Option<String>,
     },
 }
 
@@ -712,6 +746,120 @@ mod tests {
         );
         let back: VerificationPolicy = serde_json::from_str("\"OutOfBand\"").unwrap();
         assert_eq!(back, VerificationPolicy::OutOfBand);
+    }
+
+    #[test]
+    fn install_method_serde_round_trips_every_variant() {
+        for (method, json) in [
+            (
+                InstallMethod::Homebrew {
+                    cask: false,
+                    token: "ripgrep".to_owned(),
+                },
+                r#"{"Homebrew":{"cask":false,"token":"ripgrep"}}"#,
+            ),
+            (
+                InstallMethod::Flatpak {
+                    app_id: "com.brave.Browser".to_owned(),
+                    remote: "flathub".to_owned(),
+                },
+                r#"{"Flatpak":{"app_id":"com.brave.Browser","remote":"flathub"}}"#,
+            ),
+            (
+                InstallMethod::Distro {
+                    family: super::DistroFamily::Debian,
+                    repo: None,
+                    package: "firefox".to_owned(),
+                },
+                r#"{"Distro":{"family":"Debian","repo":null,"package":"firefox"}}"#,
+            ),
+            (
+                InstallMethod::Direct {
+                    url: "https://example.com/rg".to_owned(),
+                    checksum: None,
+                    arch: None,
+                },
+                r#"{"Direct":{"url":"https://example.com/rg","checksum":null,"arch":null}}"#,
+            ),
+            (
+                InstallMethod::Npm {
+                    package: "typescript".to_owned(),
+                    version: Some("5.4.5".to_owned()),
+                },
+                r#"{"Npm":{"package":"typescript","version":"5.4.5"}}"#,
+            ),
+            (
+                InstallMethod::Cargo {
+                    crate_: "ripgrep".to_owned(),
+                    version: None,
+                },
+                r#"{"Cargo":{"crate_":"ripgrep","version":null}}"#,
+            ),
+            (
+                InstallMethod::Pipx {
+                    package: "black".to_owned(),
+                },
+                r#"{"Pipx":{"package":"black"}}"#,
+            ),
+            (
+                InstallMethod::Uv {
+                    package: "ruff".to_owned(),
+                    version: Some("0.6.0".to_owned()),
+                },
+                r#"{"Uv":{"package":"ruff","version":"0.6.0"}}"#,
+            ),
+            (
+                InstallMethod::Mise {
+                    tool: "node".to_owned(),
+                    version: Some("22.1.0".to_owned()),
+                },
+                r#"{"Mise":{"tool":"node","version":"22.1.0"}}"#,
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&method).unwrap(), json);
+            let back: InstallMethod = serde_json::from_str(json).unwrap();
+            assert_eq!(back, method);
+        }
+    }
+
+    #[test]
+    fn install_method_reads_pre_language_variant_documents_identically() {
+        let legacy: [(&str, InstallMethod); 4] = [
+            (
+                r#"{"Homebrew":{"cask":true,"token":"firefox"}}"#,
+                InstallMethod::Homebrew {
+                    cask: true,
+                    token: "firefox".to_owned(),
+                },
+            ),
+            (
+                r#"{"Flatpak":{"app_id":"com.brave.Browser","remote":"flathub"}}"#,
+                InstallMethod::Flatpak {
+                    app_id: "com.brave.Browser".to_owned(),
+                    remote: "flathub".to_owned(),
+                },
+            ),
+            (
+                r#"{"Distro":{"family":"Alpine","repo":"alpine-edge-main","package":"ripgrep"}}"#,
+                InstallMethod::Distro {
+                    family: super::DistroFamily::Alpine,
+                    repo: Some("alpine-edge-main".to_owned()),
+                    package: "ripgrep".to_owned(),
+                },
+            ),
+            (
+                r#"{"Direct":{"url":"https://example.com/rg","checksum":null,"arch":null}}"#,
+                InstallMethod::Direct {
+                    url: "https://example.com/rg".to_owned(),
+                    checksum: None,
+                    arch: None,
+                },
+            ),
+        ];
+        for (json, method) in legacy {
+            let back: InstallMethod = serde_json::from_str(json).unwrap();
+            assert_eq!(back, method, "{json}");
+        }
     }
 
     #[test]

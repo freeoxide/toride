@@ -127,15 +127,21 @@
 //!   [`Operation::DistroUpdate`] complete the lifecycle: update plans are
 //!   derived from the manifest record's own identifiers
 //!   ([`Apps::update`]), never re-resolved through the registry
-//! - Language-ecosystem operations — [`Operation::NpmInstall`] /
-//!   [`Operation::CargoInstall`] / [`Operation::PipxInstall`] /
-//!   [`Operation::UvInstall`] (with their uninstall and update verbs), and
-//!   `Operation::MiseInstall` delegating to toride-mise under the
-//!   non-default `mise` feature — are embedder-constructed operations
-//!   executed by [`NpmBackend`], [`CargoBackend`], [`PipxBackend`],
-//!   [`UvBackend`], and `MiseBackend`; the registry's `InstallMethod` has
-//!   no language-ecosystem variants, so the planner never routes them and
-//!   they are not registry-resolved
+//! - Language ecosystems — [`InstallMethod::Npm`] / [`InstallMethod::Cargo`] /
+//!   [`InstallMethod::Pipx`] / [`InstallMethod::Uv`] (and
+//!   [`InstallMethod::Mise`] under the non-default `mise` feature) route
+//!   through the planner like every other method:
+//!   [`Operation::NpmInstall`] / [`Operation::CargoInstall`] /
+//!   [`Operation::PipxInstall`] / [`Operation::UvInstall`] with their
+//!   uninstall and update verbs, executed by [`NpmBackend`],
+//!   [`CargoBackend`], [`PipxBackend`], [`UvBackend`], and `MiseBackend`.
+//!   Their backends attach per-instance through the builder's
+//!   `npm`/`cargo`/`pipx`/`uv`/`mise` slots (not `detect_backends`), and
+//!   records carry their package/crate/tool names, so uninstall and
+//!   update replay the recorded identity exactly like brew and flatpak
+//!   records. npm, cargo, pipx, and uv stay default-feature and
+//!   tokio-free; mise rides the `mise` feature because its client needs
+//!   an async runtime.
 //! - [`InstallMethod::Direct`] → `DirectInstall` / `DirectUninstall`
 //!   operations under the non-default `direct`
 //!   feature: toride-installer's sha256-enforcing pipeline (`Strict` by

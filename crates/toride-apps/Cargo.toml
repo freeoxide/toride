@@ -21,6 +21,9 @@ registry-http = ["toride-registry/http"]
 # pipeline (plan 3.5). Pulls tokio and reqwest/xz2 (the engine is async),
 # so it stays off the default set: the default graph remains tokio-free.
 direct = ["dep:toride-installer", "tokio"]
+# mise installs delegate to toride-mise, whose client needs an async
+# runtime — this feature carries that tokio cost; npm/cargo/pipx/uv
+# routing stays default-feature and tokio-free.
 mise = ["dep:toride-mise", "toride-runner/tokio-runner"]
 
 [dependencies]

@@ -101,10 +101,15 @@ use crate::backend::{
 };
 #[cfg(feature = "direct")]
 use crate::backends::DirectBackend;
+#[cfg(feature = "mise")]
+use crate::backends::MiseBackend;
 use crate::backends::distro::detect_host_family;
 use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::{BrewKind, OutdatedScope};
-use crate::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
+use crate::backends::{
+    CargoBackend, DistroBackend, FlatpakBackend, HomebrewBackend, NpmBackend, PipxBackend,
+    UvBackend,
+};
 use crate::error::Error as BackendError;
 use crate::manifest::{
     InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds, RecordSnapshot,
@@ -573,6 +578,17 @@ struct AttachedBackends {
     /// Direct-download backend, when attached (the `direct` feature).
     #[cfg(feature = "direct")]
     direct: Option<DirectBackend>,
+    /// npm backend, when attached.
+    npm: Option<NpmBackend>,
+    /// cargo backend, when attached.
+    cargo: Option<CargoBackend>,
+    /// pipx backend, when attached.
+    pipx: Option<PipxBackend>,
+    /// uv backend, when attached.
+    uv: Option<UvBackend>,
+    /// mise backend, when attached (the `mise` feature).
+    #[cfg(feature = "mise")]
+    mise: Option<MiseBackend>,
 }
 
 /// The app install/uninstall front door: registry adapters for resolve,
@@ -678,8 +694,8 @@ impl Apps {
     /// 4. **Plan and execute** — [`plan_install`] derives the exact
     ///    operation for [`Apps::target`], spelling a requested
     ///    [`AppInstallOptions::version`] into the method's native
-    ///    addressing; when nothing is present and the backend's own
-    ///    offering equals the request, the manager's current installs
+    ///    addressing; whenever the backend's own offering equals the
+    ///    request — present arm or not — the manager's current installs
     ///    instead (it lands exactly the requested thing where a pin could
     ///    address a spelling the manager does not resolve); the routed
     ///    backend executes it with the caller's elevation grant (distro
@@ -708,10 +724,8 @@ impl Apps {
         // 1. Detect before resolve: the manifest record plus one
         //    confirming backend probe, zero adapter calls — gated on the
         //    requested version when one is named.
-        let mut present = false;
         let recorded = app_status(self.records.get(id), None, &self.backend_set()).await?;
         if matches!(recorded, AppStatus::Installed { .. }) {
-            present = true;
             let satisfies = self.records.get(id).is_some_and(|record| {
                 requested_version_satisfied(&record.ids, &recorded, options.version.as_ref())
             });
@@ -727,21 +741,21 @@ impl Apps {
         if !self.records.contains_key(id) {
             let native = self.native_ids_for(&app);
             let status = app_status(None, native.as_ref(), &self.backend_set()).await?;
-            if let AppStatus::Foreign { .. } = status {
-                if options.version.is_none() {
-                    return Ok(EnsureAppOutcome::AlreadyPresent(status));
-                }
-                present = true;
+            if let AppStatus::Foreign { .. } = status
+                && options.version.is_none()
+            {
+                return Ok(EnsureAppOutcome::AlreadyPresent(status));
             }
         }
         // 4. Plan, then derive the record identity from the EXECUTED
         //    operation (before any mutation, so a malformed plan fails
-        //    with nothing dispatched).
-        let version = if present {
-            options.version.clone()
-        } else {
-            self.version_for_plan(&app, options.version.clone()).await
-        };
+        //    with nothing dispatched). The offering check runs on the
+        //    fall-through path whether or not anything is present: a
+        //    record or Foreign copy at another version is exactly the
+        //    state where pinning the requested spelling verbatim would
+        //    hand the manager an address it refuses (brew resolves
+        //    `token@<v>` only for separately versioned tokens).
+        let version = self.version_for_plan(&app, options.version.clone()).await;
         let plan = plan_install(&app, &self.target, &InstallOptions { version })?;
         let backend = self.backend_for(plan.backend)?;
         let ids = self.native_ids_from_executed(&plan)?;
@@ -1112,16 +1126,30 @@ impl Apps {
                 .backend_for(ids.backend())?
                 .available_versions(native_id(ids))
                 .await?),
+            NativeIds::Npm { .. }
+            | NativeIds::Cargo { .. }
+            | NativeIds::Pipx { .. }
+            | NativeIds::Uv { .. } => Ok(self
+                .backend_for(ids.backend())?
+                .available_versions(native_id(ids))
+                .await?),
+            #[cfg(feature = "mise")]
+            NativeIds::Mise { .. } => Ok(self
+                .backend_for(ids.backend())?
+                .available_versions(native_id(ids))
+                .await?),
         }
     }
 
-    /// The version to pin into an install plan for a requested one, when
-    /// nothing is present yet: `None` while the backend's own offering
-    /// already equals the request — installing the manager's current lands
-    /// exactly the requested thing, where a pin would address a spelling
-    /// the manager may not resolve (brew only resolves `token@<v>` for
-    /// separately versioned tokens). The requested version otherwise; a
-    /// failing offering probe degrades to it and the manager classifies.
+    /// The version to pin into an install plan for a requested one, on
+    /// every fall-through path (nothing present, a record at another
+    /// version, or a Foreign copy): `None` while the backend's own
+    /// offering already equals the request — installing the manager's
+    /// current lands exactly the requested thing, where a pin would
+    /// address a spelling the manager may not resolve (brew only resolves
+    /// `token@<v>` for separately versioned tokens). The requested
+    /// version otherwise; a failing offering probe degrades to it and the
+    /// manager classifies.
     async fn version_for_plan(&self, app: &App, requested: Option<Version>) -> Option<Version> {
         let requested = requested?;
         let Some(native) = self.native_ids_for(app) else {
@@ -1310,6 +1338,22 @@ impl Apps {
         if let Some(backend) = &self.backends.direct {
             set = set.direct(backend);
         }
+        if let Some(backend) = &self.backends.npm {
+            set = set.npm(backend);
+        }
+        if let Some(backend) = &self.backends.cargo {
+            set = set.cargo(backend);
+        }
+        if let Some(backend) = &self.backends.pipx {
+            set = set.pipx(backend);
+        }
+        if let Some(backend) = &self.backends.uv {
+            set = set.uv(backend);
+        }
+        #[cfg(feature = "mise")]
+        if let Some(backend) = &self.backends.mise {
+            set = set.mise(backend);
+        }
         set
     }
 
@@ -1324,9 +1368,12 @@ impl Apps {
             BackendId::Distro(_) => self.backends.distro.as_ref().map(|b| b as &dyn Backend),
             #[cfg(feature = "direct")]
             BackendId::Direct => self.backends.direct.as_ref().map(|b| b as &dyn Backend),
-            BackendId::Npm | BackendId::Cargo | BackendId::Pipx | BackendId::Uv => None,
+            BackendId::Npm => self.backends.npm.as_ref().map(|b| b as &dyn Backend),
+            BackendId::Cargo => self.backends.cargo.as_ref().map(|b| b as &dyn Backend),
+            BackendId::Pipx => self.backends.pipx.as_ref().map(|b| b as &dyn Backend),
+            BackendId::Uv => self.backends.uv.as_ref().map(|b| b as &dyn Backend),
             #[cfg(feature = "mise")]
-            BackendId::Mise => None,
+            BackendId::Mise => self.backends.mise.as_ref().map(|b| b as &dyn Backend),
         };
         routed.ok_or(AppsError::BackendUnavailable { backend })
     }
@@ -1421,8 +1468,24 @@ impl Apps {
             #[cfg(feature = "direct")]
             NativeIds::Direct { bin_path, .. } => {
                 let backend = self.backend_for(BackendId::Direct)?;
-                Ok(direct_presence(
+                Ok(presence_from_status(
                     backend.status(StatusQuery::new(bin_path)).await?,
+                ))
+            }
+            NativeIds::Npm { .. }
+            | NativeIds::Cargo { .. }
+            | NativeIds::Pipx { .. }
+            | NativeIds::Uv { .. } => {
+                let backend = self.backend_for(ids.backend())?;
+                Ok(presence_from_status(
+                    backend.status(StatusQuery::new(native_id(ids))).await?,
+                ))
+            }
+            #[cfg(feature = "mise")]
+            NativeIds::Mise { .. } => {
+                let backend = self.backend_for(ids.backend())?;
+                Ok(presence_from_status(
+                    backend.status(StatusQuery::new(native_id(ids))).await?,
                 ))
             }
         }
@@ -1585,6 +1648,16 @@ impl Apps {
             NativeIds::Direct { .. } => Ok(self
                 .backend_for(ids.backend())?
                 .available_versions_sync(native_id(ids))?),
+            NativeIds::Npm { .. }
+            | NativeIds::Cargo { .. }
+            | NativeIds::Pipx { .. }
+            | NativeIds::Uv { .. } => Ok(self
+                .backend_for(ids.backend())?
+                .available_versions_sync(native_id(ids))?),
+            #[cfg(feature = "mise")]
+            NativeIds::Mise { .. } => Ok(self
+                .backend_for(ids.backend())?
+                .available_versions_sync(native_id(ids))?),
         }
     }
 
@@ -1684,8 +1757,24 @@ impl Apps {
             #[cfg(feature = "direct")]
             NativeIds::Direct { bin_path, .. } => {
                 let backend = self.backend_for(BackendId::Direct)?;
-                Ok(direct_presence(
+                Ok(presence_from_status(
                     backend.status_sync(StatusQuery::new(bin_path))?,
+                ))
+            }
+            NativeIds::Npm { .. }
+            | NativeIds::Cargo { .. }
+            | NativeIds::Pipx { .. }
+            | NativeIds::Uv { .. } => {
+                let backend = self.backend_for(ids.backend())?;
+                Ok(presence_from_status(
+                    backend.status_sync(StatusQuery::new(native_id(ids)))?,
+                ))
+            }
+            #[cfg(feature = "mise")]
+            NativeIds::Mise { .. } => {
+                let backend = self.backend_for(ids.backend())?;
+                Ok(presence_from_status(
+                    backend.status_sync(StatusQuery::new(native_id(ids)))?,
                 ))
             }
         }
@@ -1755,6 +1844,17 @@ pub struct AppsBuilder {
     /// The direct-download backend, when attached (the `direct` feature).
     #[cfg(feature = "direct")]
     direct: Option<DirectBackend>,
+    /// The npm backend, when attached.
+    npm: Option<NpmBackend>,
+    /// The cargo backend, when attached.
+    cargo: Option<CargoBackend>,
+    /// The pipx backend, when attached.
+    pipx: Option<PipxBackend>,
+    /// The uv backend, when attached.
+    uv: Option<UvBackend>,
+    /// The mise backend, when attached (the `mise` feature).
+    #[cfg(feature = "mise")]
+    mise: Option<MiseBackend>,
     /// Caller-supplied record-store persistence; takes precedence over
     /// `manifest_path` (which then names nothing).
     record_store: Option<Arc<dyn RecordStore>>,
@@ -1821,6 +1921,52 @@ impl AppsBuilder {
     #[must_use]
     pub fn direct(mut self, backend: DirectBackend) -> Self {
         self.direct = Some(backend);
+        self
+    }
+
+    /// Attach the npm backend — consume-and-return. Without one attached,
+    /// npm methods still plan, but installs answer
+    /// [`AppsError::BackendUnavailable`] and status never probes npm
+    /// presence.
+    #[must_use]
+    pub fn npm(mut self, backend: NpmBackend) -> Self {
+        self.npm = Some(backend);
+        self
+    }
+
+    /// Attach the cargo backend — consume-and-return (see
+    /// [`AppsBuilder::npm`] for the unattached behavior).
+    #[must_use]
+    pub fn cargo(mut self, backend: CargoBackend) -> Self {
+        self.cargo = Some(backend);
+        self
+    }
+
+    /// Attach the pipx backend — consume-and-return (see
+    /// [`AppsBuilder::npm`] for the unattached behavior).
+    #[must_use]
+    pub fn pipx(mut self, backend: PipxBackend) -> Self {
+        self.pipx = Some(backend);
+        self
+    }
+
+    /// Attach the uv backend — consume-and-return (see
+    /// [`AppsBuilder::npm`] for the unattached behavior).
+    #[must_use]
+    pub fn uv(mut self, backend: UvBackend) -> Self {
+        self.uv = Some(backend);
+        self
+    }
+
+    /// Attach the mise backend — consume-and-return (the `mise` feature;
+    /// it carries tokio, which is exactly why the feature is not default).
+    /// Without one attached, mise methods still plan, but installs answer
+    /// [`AppsError::BackendUnavailable`] and status never probes mise
+    /// presence.
+    #[cfg(feature = "mise")]
+    #[must_use]
+    pub fn mise(mut self, backend: MiseBackend) -> Self {
+        self.mise = Some(backend);
         self
     }
 
@@ -1953,6 +2099,12 @@ impl AppsBuilder {
                 distro: self.distro,
                 #[cfg(feature = "direct")]
                 direct: self.direct,
+                npm: self.npm,
+                cargo: self.cargo,
+                pipx: self.pipx,
+                uv: self.uv,
+                #[cfg(feature = "mise")]
+                mise: self.mise,
             },
             records: snapshot.into_records(),
             store,
@@ -2053,10 +2205,8 @@ impl AppsBlocking {
     ) -> AppsResult<EnsureAppOutcome> {
         let AppInstallOptions { elevated, version } = options;
         let id = app.id.clone();
-        let mut present = false;
         let recorded = app_status_sync(self.apps.records.get(&id), None, &self.apps.backend_set())?;
         if matches!(recorded, AppStatus::Installed { .. }) {
-            present = true;
             let satisfies = self.apps.records.get(&id).is_some_and(|record| {
                 requested_version_satisfied(&record.ids, &recorded, version.as_ref())
             });
@@ -2067,18 +2217,13 @@ impl AppsBlocking {
         if !self.apps.records.contains_key(&id) {
             let native = self.apps.native_ids_for(app);
             let status = app_status_sync(None, native.as_ref(), &self.apps.backend_set())?;
-            if let AppStatus::Foreign { .. } = status {
-                if version.is_none() {
-                    return Ok(EnsureAppOutcome::AlreadyPresent(status));
-                }
-                present = true;
+            if let AppStatus::Foreign { .. } = status
+                && version.is_none()
+            {
+                return Ok(EnsureAppOutcome::AlreadyPresent(status));
             }
         }
-        let version = if present {
-            version
-        } else {
-            self.apps.version_for_plan_sync(app, version)
-        };
+        let version = self.apps.version_for_plan_sync(app, version);
         let plan = plan_install(app, &self.apps.target, &InstallOptions { version })?;
         let backend = self.apps.backend_for(plan.backend)?;
         let ids = self.apps.native_ids_from_executed(&plan)?;
@@ -2420,6 +2565,20 @@ impl Apps {
                     bin_path: backend.install_dir().join(&bin_name).to_string(),
                 })
             }
+            InstallMethod::Npm { package, .. } => Some(NativeIds::Npm {
+                package: package.clone(),
+            }),
+            InstallMethod::Cargo { crate_, .. } => Some(NativeIds::Cargo {
+                crate_: crate_.clone(),
+            }),
+            InstallMethod::Pipx { package } => Some(NativeIds::Pipx {
+                package: package.clone(),
+            }),
+            InstallMethod::Uv { package, .. } => Some(NativeIds::Uv {
+                package: package.clone(),
+            }),
+            #[cfg(feature = "mise")]
+            InstallMethod::Mise { tool, .. } => Some(NativeIds::Mise { tool: tool.clone() }),
             // `InstallMethod` is non_exhaustive upstream: unmapped future
             // variants carry no native identity to probe.
             _ => None,
@@ -2489,6 +2648,20 @@ impl Apps {
                     bin_path: dir.join(bin_name).to_string(),
                 })
             }
+            Operation::NpmInstall { package, .. } => Ok(NativeIds::Npm {
+                package: package.clone(),
+            }),
+            Operation::CargoInstall { crate_, .. } => Ok(NativeIds::Cargo {
+                crate_: crate_.clone(),
+            }),
+            Operation::PipxInstall { package } => Ok(NativeIds::Pipx {
+                package: package.clone(),
+            }),
+            Operation::UvInstall { package, .. } => Ok(NativeIds::Uv {
+                package: package.clone(),
+            }),
+            #[cfg(feature = "mise")]
+            Operation::MiseInstall { tool, .. } => Ok(NativeIds::Mise { tool: tool.clone() }),
             other => Err(AppsError::UnrecordableOperation {
                 app: plan.app.as_str().to_owned(),
                 operation: format!("{other:?} is not an install operation"),
@@ -2539,6 +2712,21 @@ fn uninstall_plan_from_record(
         NativeIds::Direct { bin_path, .. } => Operation::DirectUninstall {
             bin_path: bin_path.clone(),
         },
+        NativeIds::Npm { package } => Operation::NpmUninstall {
+            package: package.clone(),
+            global: true,
+        },
+        NativeIds::Cargo { crate_ } => Operation::CargoUninstall {
+            crate_: crate_.clone(),
+        },
+        NativeIds::Pipx { package } => Operation::PipxUninstall {
+            package: package.clone(),
+        },
+        NativeIds::Uv { package } => Operation::UvUninstall {
+            package: package.clone(),
+        },
+        #[cfg(feature = "mise")]
+        NativeIds::Mise { tool } => Operation::MiseUninstall { tool: tool.clone() },
     };
     Ok(UninstallPlan {
         app: id.clone(),
@@ -2591,6 +2779,21 @@ fn update_plan_from_record(id: &TorideId, record: &InstallRecord) -> AppsResult<
                 ),
             });
         }
+        NativeIds::Npm { package } => Operation::NpmUpdate {
+            package: package.clone(),
+            global: true,
+        },
+        NativeIds::Cargo { crate_ } => Operation::CargoUpdate {
+            crate_: crate_.clone(),
+        },
+        NativeIds::Pipx { package } => Operation::PipxUpdate {
+            package: package.clone(),
+        },
+        NativeIds::Uv { package } => Operation::UvUpdate {
+            package: package.clone(),
+        },
+        #[cfg(feature = "mise")]
+        NativeIds::Mise { tool } => Operation::MiseUpdate { tool: tool.clone() },
     };
     Ok(UpdatePlan {
         app: id.clone(),
@@ -2611,6 +2814,12 @@ fn native_id(ids: &NativeIds) -> &str {
         NativeIds::Distro { package, .. } => package,
         #[cfg(feature = "direct")]
         NativeIds::Direct { bin_path, .. } => bin_path,
+        NativeIds::Npm { package } | NativeIds::Pipx { package } | NativeIds::Uv { package } => {
+            package
+        }
+        NativeIds::Cargo { crate_ } => crate_,
+        #[cfg(feature = "mise")]
+        NativeIds::Mise { tool } => tool,
     }
 }
 
@@ -2631,9 +2840,10 @@ fn app_id_from_ref(app_ref: &str) -> Option<&str> {
 /// version is judged by the record's own kind: brew by the probed version
 /// (the listing always versions a present item), flatpak by the recorded
 /// ref's branch — the version slot a flatpak request selects — never by
-/// the appdata version the probe reports. Distro records never satisfy
-/// one: distro methods cannot express a version, and the fall-through
-/// plan refuses.
+/// the appdata version the probe reports, and the language ecosystems by
+/// the version their listings report. Distro and direct records never
+/// satisfy one: their methods cannot express a version, and the
+/// fall-through plan refuses.
 fn requested_version_satisfied(
     ids: &NativeIds,
     recorded: &AppStatus,
@@ -2643,7 +2853,16 @@ fn requested_version_satisfied(
         return true;
     };
     match ids {
-        NativeIds::Homebrew { .. } => match recorded {
+        NativeIds::Homebrew { .. }
+        | NativeIds::Npm { .. }
+        | NativeIds::Cargo { .. }
+        | NativeIds::Pipx { .. }
+        | NativeIds::Uv { .. } => match recorded {
+            AppStatus::Installed { version, .. } => version.as_deref() == Some(requested.as_str()),
+            AppStatus::Foreign { .. } | AppStatus::NotInstalled => false,
+        },
+        #[cfg(feature = "mise")]
+        NativeIds::Mise { .. } => match recorded {
             AppStatus::Installed { version, .. } => version.as_deref() == Some(requested.as_str()),
             AppStatus::Foreign { .. } | AppStatus::NotInstalled => false,
         },
@@ -2665,11 +2884,10 @@ fn ref_branch(app_ref: &str) -> Option<&str> {
         .filter(|branch| !branch.is_empty())
 }
 
-/// The direct arm of both presence probes: the backend's own filesystem
-/// probe is the one answer, so the facade and the status layer can never
-/// drift apart.
-#[cfg(feature = "direct")]
-fn direct_presence(status: BackendStatus) -> Presence {
+/// The trait-status arm of the presence probes (the direct filesystem
+/// probe and every language backend's listing-derived status): one
+/// mapping, so the facade and the status layer can never drift apart.
+fn presence_from_status(status: BackendStatus) -> Presence {
     match status {
         BackendStatus::Installed { version } => Presence::Present(version),
         BackendStatus::NotInstalled => Presence::Absent,
@@ -2688,6 +2906,12 @@ fn native_subject(ids: &NativeIds) -> String {
         NativeIds::Distro { package, .. } => format!("package `{package}`"),
         #[cfg(feature = "direct")]
         NativeIds::Direct { bin_path, .. } => format!("direct binary `{bin_path}`"),
+        NativeIds::Npm { package } => format!("npm package `{package}`"),
+        NativeIds::Cargo { crate_ } => format!("cargo crate `{crate_}`"),
+        NativeIds::Pipx { package } => format!("pipx package `{package}`"),
+        NativeIds::Uv { package } => format!("uv tool `{package}`"),
+        #[cfg(feature = "mise")]
+        NativeIds::Mise { tool } => format!("mise tool `{tool}`"),
     }
 }
 
@@ -2890,6 +3114,276 @@ mod tests {
                 arch: None,
             })),
             None
+        );
+    }
+
+    #[test]
+    fn native_ids_for_maps_every_language_method() {
+        let apps = empty_apps();
+        assert_eq!(
+            apps.native_ids_for(&app_with_method(InstallMethod::Npm {
+                package: "typescript".to_owned(),
+                version: Some("5.4.5".to_owned()),
+            })),
+            Some(NativeIds::Npm {
+                package: "typescript".to_owned(),
+            })
+        );
+        assert_eq!(
+            apps.native_ids_for(&app_with_method(InstallMethod::Cargo {
+                crate_: "ripgrep".to_owned(),
+                version: None,
+            })),
+            Some(NativeIds::Cargo {
+                crate_: "ripgrep".to_owned(),
+            })
+        );
+        assert_eq!(
+            apps.native_ids_for(&app_with_method(InstallMethod::Pipx {
+                package: "black".to_owned(),
+            })),
+            Some(NativeIds::Pipx {
+                package: "black".to_owned(),
+            })
+        );
+        assert_eq!(
+            apps.native_ids_for(&app_with_method(InstallMethod::Uv {
+                package: "ruff".to_owned(),
+                version: None,
+            })),
+            Some(NativeIds::Uv {
+                package: "ruff".to_owned(),
+            })
+        );
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn native_ids_for_maps_the_mise_method() {
+        let apps = empty_apps();
+        assert_eq!(
+            apps.native_ids_for(&app_with_method(InstallMethod::Mise {
+                tool: "node".to_owned(),
+                version: None,
+            })),
+            Some(NativeIds::Mise {
+                tool: "node".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn native_ids_from_executed_read_the_language_operations() {
+        let apps = empty_apps();
+        let npm = InstallPlan {
+            app: TorideId::slugify("typescript"),
+            backend: BackendId::Npm,
+            operation: Operation::NpmInstall {
+                package: "typescript".to_owned(),
+                version: Some(Version::new("5.4.5")),
+                global: true,
+            },
+            dry_run: false,
+            requires_elevation: false,
+        };
+        assert_eq!(
+            apps.native_ids_from_executed(&npm).unwrap(),
+            NativeIds::Npm {
+                package: "typescript".to_owned(),
+            },
+            "the record carries the package name, never the joined spec"
+        );
+        let cargo = InstallPlan {
+            app: TorideId::slugify("ripgrep"),
+            backend: BackendId::Cargo,
+            operation: Operation::CargoInstall {
+                crate_: "ripgrep".to_owned(),
+                version: None,
+            },
+            dry_run: false,
+            requires_elevation: false,
+        };
+        assert_eq!(
+            apps.native_ids_from_executed(&cargo).unwrap(),
+            NativeIds::Cargo {
+                crate_: "ripgrep".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn record_sourced_plans_replay_the_language_ids_verbatim() {
+        let cases: [(NativeIds, Operation); 4] = [
+            (
+                NativeIds::Npm {
+                    package: "typescript".to_owned(),
+                },
+                Operation::NpmInstall {
+                    package: "typescript".to_owned(),
+                    version: None,
+                    global: true,
+                },
+            ),
+            (
+                NativeIds::Cargo {
+                    crate_: "ripgrep".to_owned(),
+                },
+                Operation::CargoInstall {
+                    crate_: "ripgrep".to_owned(),
+                    version: None,
+                },
+            ),
+            (
+                NativeIds::Pipx {
+                    package: "black".to_owned(),
+                },
+                Operation::PipxInstall {
+                    package: "black".to_owned(),
+                },
+            ),
+            (
+                NativeIds::Uv {
+                    package: "ruff".to_owned(),
+                },
+                Operation::UvInstall {
+                    package: "ruff".to_owned(),
+                    version: None,
+                },
+            ),
+        ];
+        for (ids, install) in cases {
+            let record = record_for(install, ids.clone());
+            let uninstall = uninstall_plan_from_record(&TorideId::slugify("brave"), &record, false)
+                .unwrap()
+                .operation;
+            assert_eq!(uninstall.argv().first(), Some(&ids.backend().to_string()));
+            assert!(
+                !uninstall
+                    .argv()
+                    .iter()
+                    .any(|part| part.contains('@') || part.contains("==")),
+                "the uninstall addresses the bare name: {:?}",
+                uninstall.argv()
+            );
+            let update_plan =
+                update_plan_from_record(&TorideId::slugify("brave"), &record).unwrap();
+            assert_eq!(
+                update_plan.operation.argv().first(),
+                Some(&ids.backend().to_string())
+            );
+            assert!(
+                !update_plan.requires_elevation,
+                "user-scope language tools never need root"
+            );
+        }
+        let npm_uninstall = uninstall_plan_from_record(
+            &TorideId::slugify("brave"),
+            &record_for(
+                Operation::NpmInstall {
+                    package: "typescript".to_owned(),
+                    version: None,
+                    global: true,
+                },
+                NativeIds::Npm {
+                    package: "typescript".to_owned(),
+                },
+            ),
+            false,
+        )
+        .unwrap()
+        .operation;
+        assert_eq!(
+            npm_uninstall.argv(),
+            ["npm", "uninstall", "-g", "typescript"],
+            "the npm uninstall replays the recorded global scope"
+        );
+    }
+
+    #[test]
+    fn language_records_satisfy_a_version_by_the_probed_one() {
+        let ids = NativeIds::Npm {
+            package: "typescript".to_owned(),
+        };
+        let probed = AppStatus::Installed {
+            backend: BackendId::Npm,
+            version: Some("5.4.5".to_owned()),
+        };
+        assert!(requested_version_satisfied(
+            &ids,
+            &probed,
+            Some(&Version::new("5.4.5"))
+        ));
+        assert!(!requested_version_satisfied(
+            &ids,
+            &probed,
+            Some(&Version::new("5.5.0"))
+        ));
+        assert!(
+            !requested_version_satisfied(
+                &ids,
+                &AppStatus::Foreign {
+                    backend: BackendId::Npm,
+                    detail: "npm package `typescript` is installed".to_owned(),
+                },
+                Some(&Version::new("5.4.5")),
+            ),
+            "a Foreign copy never vouches for a version it did not report"
+        );
+    }
+
+    #[test]
+    fn native_subject_names_each_language_kind() {
+        assert_eq!(
+            native_subject(&NativeIds::Npm {
+                package: "typescript".to_owned()
+            }),
+            "npm package `typescript`"
+        );
+        assert_eq!(
+            native_subject(&NativeIds::Cargo {
+                crate_: "ripgrep".to_owned()
+            }),
+            "cargo crate `ripgrep`"
+        );
+        assert_eq!(
+            native_subject(&NativeIds::Pipx {
+                package: "black".to_owned()
+            }),
+            "pipx package `black`"
+        );
+        assert_eq!(
+            native_subject(&NativeIds::Uv {
+                package: "ruff".to_owned()
+            }),
+            "uv tool `ruff`"
+        );
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn record_sourced_plans_replay_mise_ids_verbatim() {
+        let record = record_for(
+            Operation::MiseInstall {
+                tool: "node".to_owned(),
+                version: None,
+            },
+            NativeIds::Mise {
+                tool: "node".to_owned(),
+            },
+        );
+        assert_eq!(
+            uninstall_plan_from_record(&TorideId::slugify("brave"), &record, false)
+                .unwrap()
+                .operation
+                .argv(),
+            ["mise", "uninstall", "node"]
+        );
+        assert_eq!(
+            update_plan_from_record(&TorideId::slugify("brave"), &record)
+                .unwrap()
+                .operation
+                .argv(),
+            ["mise", "upgrade", "node"]
         );
     }
 

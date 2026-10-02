@@ -225,6 +225,20 @@ fn flatpak_remotes_spec() -> CommandSpec {
     command("flatpak", ["remotes", "--user", "--columns=name"])
 }
 
+/// The offering probe the version-pinning path rides for a flatpak record.
+fn flatpak_remote_ls_user_spec() -> CommandSpec {
+    command(
+        "flatpak",
+        [
+            "remote-ls",
+            "--user",
+            "--app",
+            "--columns=application,branch",
+            "flathub",
+        ],
+    )
+}
+
 fn flatpak_remote_add_spec() -> CommandSpec {
     command(
         "flatpak",
@@ -2866,6 +2880,12 @@ async fn ensure_installed_at_another_version_than_the_record_installs_the_reques
             brew_versions_spec("--cask", "firefox"),
             CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
+        // The offering probe answers 140.0 — the request differs from the
+        // current, so the pin proceeds.
+        .respond(
+            brew_info_token_spec("firefox"),
+            CommandOutput::from_stdout(firefox_cask_available("138.0.1", "140.0")),
+        )
         .respond(
             brew_install_cask_spec("firefox@139.0"),
             CommandOutput::from_stdout(""),
@@ -2912,6 +2932,7 @@ async fn ensure_installed_at_another_version_than_the_record_installs_the_reques
         "the record is replaced by the versioned identity that ran"
     );
     assert_eq!(version.as_deref(), Some("139.0"));
+    fake.assert_called_with(&brew_info_token_spec("firefox"));
     fake.assert_called_with(&brew_install_cask_spec("firefox@139.0"));
     fake.assert_no_unmatched_calls();
     let reloaded = InstallManifest::load(&path).expect("manifest reloads");
@@ -2922,6 +2943,83 @@ async fn ensure_installed_at_another_version_than_the_record_installs_the_reques
             cask: true,
         }
     );
+}
+
+#[tokio::test]
+async fn ensure_installed_at_the_offered_version_over_a_stale_record_rides_the_managers_current() {
+    let path = temp_manifest_path("version-present-offered");
+    seed_cask_record(&path, "firefox");
+    let fake = FakeRunner::new()
+        .strict()
+        // Step 1's confirming probe: present, at 138.0.1 — not 139.0.
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        // The offering probe answers 139.0 — exactly the request, so the
+        // plan must ride the manager's current instead of pinning
+        // `firefox@139.0`, the spelling brew refuses for a token without
+        // separately versioned tracks.
+        .respond(
+            brew_info_token_spec("firefox"),
+            CommandOutput::from_stdout(firefox_cask_available("138.0.1", "139.0")),
+        )
+        .respond(
+            brew_install_cask_spec("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 139.0\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 139.0\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("firefox"),
+            AppInstallOptions::new().version(Some(Version::new("139.0"))),
+        )
+        .await
+        .expect("the offering check covers the present arm too");
+
+    let EnsureAppOutcome::Installed { ids, version, .. } = outcome else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(
+        ids,
+        NativeIds::Homebrew {
+            token: "firefox".to_owned(),
+            cask: true,
+        },
+        "the plain token — no @-joined spelling may run on a re-install"
+    );
+    assert_eq!(version.as_deref(), Some("139.0"));
+    fake.assert_called_with(&brew_info_token_spec("firefox"));
+    fake.assert_called_with(&brew_install_cask_spec("firefox"));
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| call.args.contains(&"firefox@139.0".to_owned())),
+        "no @-joined spelling may run: {:?}",
+        fake.calls()
+    );
+    fake.assert_no_unmatched_calls();
 }
 
 #[tokio::test]
@@ -2991,6 +3089,12 @@ async fn ensure_installed_at_another_flatpak_branch_installs_that_branch() {
             flatpak_list_spec(Some("--user")),
             CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.2.3")),
         )
+        // The offering probe: the remote lists the stable branch only, so
+        // the requested `beta` branch stays pinned into the ref.
+        .respond(
+            flatpak_remote_ls_user_spec(),
+            CommandOutput::from_stdout("com.brave.Browser\tstable\n"),
+        )
         .respond(
             flatpak_remotes_spec(),
             CommandOutput::from_stdout("flathub\n"),
@@ -3055,6 +3159,12 @@ async fn a_foreign_presence_does_not_vouch_for_a_requested_version() {
             brew_info_installed_spec(),
             CommandOutput::from_stdout(FIREFOX_CASK_INFO),
         )
+        // The offering probe answers 139.0 — the 138.0.1 request differs,
+        // so the pin proceeds.
+        .respond(
+            brew_info_token_spec("firefox"),
+            CommandOutput::from_stdout(firefox_cask_available("138.0.1", "139.0")),
+        )
         .respond(
             brew_install_cask_spec("firefox@138.0.1"),
             CommandOutput::from_stdout(""),
@@ -3092,7 +3202,79 @@ async fn a_foreign_presence_does_not_vouch_for_a_requested_version() {
         matches!(outcome, EnsureAppOutcome::Installed { .. }),
         "{outcome:?}"
     );
+    fake.assert_called_with(&brew_info_token_spec("firefox"));
     fake.assert_called_with(&brew_install_cask_spec("firefox@138.0.1"));
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn a_foreign_presence_with_the_offering_equal_to_the_request_rides_the_managers_current() {
+    let path = temp_manifest_path("version-foreign-offered");
+    let fake = FakeRunner::new()
+        .strict()
+        // The Foreign check: someone else's firefox is installed.
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(FIREFOX_CASK_INFO),
+        )
+        // The offering probe answers 138.0.1 — exactly the request, so the
+        // plan rides the manager's current instead of the `@`-joined
+        // spelling brew refuses for this token.
+        .respond(
+            brew_info_token_spec("firefox"),
+            CommandOutput::from_stdout(firefox_cask_available("137.0", "138.0.1")),
+        )
+        .respond(
+            brew_install_cask_spec("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("firefox"),
+            AppInstallOptions::new().version(Some(Version::new("138.0.1"))),
+        )
+        .await
+        .expect("the offering check covers the Foreign fall-through arm");
+    let EnsureAppOutcome::Installed { ids, .. } = outcome else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(
+        ids,
+        NativeIds::Homebrew {
+            token: "firefox".to_owned(),
+            cask: true,
+        }
+    );
+    fake.assert_called_with(&brew_install_cask_spec("firefox"));
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| call.args.contains(&"firefox@138.0.1".to_owned())),
+        "no @-joined spelling may run: {:?}",
+        fake.calls()
+    );
     fake.assert_no_unmatched_calls();
 }
 
@@ -3895,5 +4077,379 @@ async fn a_failed_adopt_save_rolls_the_claim_back_and_a_retry_succeeds() {
             .len(),
         1
     );
+    fake.assert_no_unmatched_calls();
+}
+
+// ---------------------------------------------------------------------------
+// Language ecosystems through the facade — npm end to end
+// ---------------------------------------------------------------------------
+
+fn npm_list_spec() -> CommandSpec {
+    command("npm", ["list", "--global", "--depth=0", "--json"])
+}
+
+fn npm_install_global_spec(spec: &str) -> CommandSpec {
+    command("npm", ["install", "-g", spec])
+}
+
+fn npm_uninstall_global_spec(package: &str) -> CommandSpec {
+    command("npm", ["uninstall", "-g", package])
+}
+
+fn npm_update_global_spec(package: &str) -> CommandSpec {
+    command("npm", ["update", "-g", package])
+}
+
+fn npm_view_version_spec(package: &str) -> CommandSpec {
+    command("npm", ["view", package, "version"])
+}
+
+fn npm_view_versions_spec(package: &str) -> CommandSpec {
+    command("npm", ["view", package, "versions", "--json"])
+}
+
+fn npm_global_listing(package: &str, version: &str) -> String {
+    format!(r#"{{"dependencies": {{"{package}": {{"version": "{version}"}}}}}}"#)
+}
+
+fn typescript_npm_app() -> App {
+    app(
+        "typescript",
+        "TypeScript",
+        InstallMethod::Npm {
+            package: "typescript".to_owned(),
+            version: None,
+        },
+    )
+}
+
+fn npm_facade(
+    fake: &FakeRunner,
+    manifest_path: &Utf8PathBuf,
+    adapters: Vec<Arc<dyn Adapter>>,
+) -> Apps {
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    Apps::builder()
+        .runner(seam.clone())
+        .target(macos())
+        .manifest_path(manifest_path)
+        .npm(toride_apps::NpmBackend::new(seam))
+        .adapters(adapters)
+        .build()
+        .expect("facade builds with the npm backend attached")
+}
+
+#[tokio::test]
+async fn ensure_installed_npm_installs_globally_records_and_answers_present_twice() {
+    let path = temp_manifest_path("npm-installed");
+    let fake = FakeRunner::new()
+        .strict()
+        // The Foreign check: the global listing is empty.
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        .respond(
+            npm_install_global_spec("typescript"),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        // The facade's post-install verify.
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        )
+        // The second call's confirming probe.
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::Distro, vec![typescript_npm_app()]);
+    let mut apps = npm_facade(&fake, &path, vec![adapter.clone()]);
+
+    let outcome = apps
+        .ensure_installed(&id("typescript"), AppInstallOptions::new())
+        .await
+        .expect("npm install succeeds through the facade");
+    let EnsureAppOutcome::Installed {
+        backend,
+        ids,
+        version,
+        verified,
+        warning,
+    } = outcome
+    else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(backend, BackendId::Npm);
+    assert_eq!(
+        ids,
+        NativeIds::Npm {
+            package: "typescript".to_owned(),
+        }
+    );
+    assert_eq!(version.as_deref(), Some("5.4.5"));
+    assert!(verified);
+    assert_eq!(warning, None);
+    fake.assert_called_with(&npm_install_global_spec("typescript"));
+
+    let reloaded = InstallManifest::load(&path).expect("manifest reloads");
+    assert_eq!(
+        reloaded.get(&id("typescript")).expect("record present").ids,
+        NativeIds::Npm {
+            package: "typescript".to_owned(),
+        }
+    );
+
+    let second = apps
+        .ensure_installed(&id("typescript"), AppInstallOptions::new())
+        .await
+        .expect("second ensure succeeds");
+    assert_eq!(
+        second,
+        EnsureAppOutcome::AlreadyPresent(AppStatus::Installed {
+            backend: BackendId::Npm,
+            version: Some("5.4.5".to_owned()),
+        })
+    );
+    assert_eq!(adapter.lookups().len(), 1, "only the miss resolved");
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn ensure_installed_npm_at_a_version_rides_the_offering_when_it_matches() {
+    let path = temp_manifest_path("npm-installed-version");
+    let fake = FakeRunner::new()
+        .strict()
+        // The Foreign check.
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        // The offering probe answers exactly the request.
+        .respond(
+            npm_view_version_spec("typescript"),
+            CommandOutput::from_stdout("5.4.5\n"),
+        )
+        .respond(
+            npm_install_global_spec("typescript"),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::Distro, vec![typescript_npm_app()]);
+    let mut apps = npm_facade(&fake, &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("typescript"),
+            AppInstallOptions::new().version(Some(Version::new("5.4.5"))),
+        )
+        .await
+        .expect("an npm request equal to the offering rides the current");
+    assert!(matches!(outcome, EnsureAppOutcome::Installed { .. }));
+    fake.assert_called_with(&npm_view_version_spec("typescript"));
+    fake.assert_called_with(&npm_install_global_spec("typescript"));
+    assert!(
+        !fake
+            .calls()
+            .iter()
+            .any(|call| call.args.contains(&"typescript@5.4.5".to_owned())),
+        "no @-joined spelling is needed where npm's current IS the request: {:?}",
+        fake.calls()
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn ensure_installed_npm_at_a_version_pins_when_the_offering_differs() {
+    let path = temp_manifest_path("npm-installed-version-pin");
+    let fake = FakeRunner::new()
+        .strict()
+        // The Foreign check.
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        // The offering probe answers a newer current than the request.
+        .respond(
+            npm_view_version_spec("typescript"),
+            CommandOutput::from_stdout("5.5.0\n"),
+        )
+        .respond(
+            npm_install_global_spec("typescript@5.4.5"),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::Distro, vec![typescript_npm_app()]);
+    let mut apps = npm_facade(&fake, &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(
+            &id("typescript"),
+            AppInstallOptions::new().version(Some(Version::new("5.4.5"))),
+        )
+        .await
+        .expect("a request the current does not satisfy pins the spec");
+    let EnsureAppOutcome::Installed { ids, version, .. } = outcome else {
+        panic!("expected Installed, got {outcome:?}");
+    };
+    assert_eq!(
+        ids,
+        NativeIds::Npm {
+            package: "typescript".to_owned(),
+        },
+        "the record carries the package name, never the joined spec"
+    );
+    assert_eq!(version.as_deref(), Some("5.4.5"));
+    fake.assert_called_with(&npm_install_global_spec("typescript@5.4.5"));
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn npm_records_update_and_uninstall_replay_the_recorded_package() {
+    let path = temp_manifest_path("npm-lifecycle");
+    let mut manifest = InstallManifest::at(&path);
+    manifest.record(
+        &id("typescript"),
+        InstallRecord::new(
+            toride_apps::InstallPlan {
+                app: id("typescript"),
+                backend: BackendId::Npm,
+                operation: toride_apps::Operation::NpmInstall {
+                    package: "typescript".to_owned(),
+                    version: None,
+                    global: true,
+                },
+                dry_run: false,
+                requires_elevation: false,
+            },
+            NativeIds::Npm {
+                package: "typescript".to_owned(),
+            },
+            Some("5.4.5".to_owned()),
+        )
+        .with_installed_at(1_700_000_000),
+    );
+    manifest.save().expect("seed manifest saves");
+    let fake = FakeRunner::new()
+        .strict()
+        // Update: the installed-version probe, then the availability ask.
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        )
+        .respond(
+            npm_view_version_spec("typescript"),
+            CommandOutput::from_stdout("5.5.0\n"),
+        )
+        .respond(
+            npm_update_global_spec("typescript"),
+            CommandOutput::from_stdout(""),
+        )
+        // The post-upgrade re-probe.
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.5.0")),
+        )
+        // Uninstall, then the post-uninstall absence verify.
+        .respond(
+            npm_uninstall_global_spec("typescript"),
+            CommandOutput::from_stdout("removed 1 package"),
+        )
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"));
+    let adapter = FixtureAdapter::new(SourceKind::Distro, Vec::new());
+    let mut apps = npm_facade(&fake, &path, vec![adapter]);
+
+    assert_eq!(
+        apps.update(&id("typescript"), &AppUpdateOptions::new())
+            .await
+            .unwrap(),
+        UpdateOutcome::Updated {
+            from: Some(Version::new("5.4.5")),
+            to: Some(Version::new("5.5.0")),
+        }
+    );
+    fake.assert_called_with(&npm_update_global_spec("typescript"));
+    let on_disk = std::fs::read_to_string(path.as_std_path()).unwrap();
+    assert!(on_disk.contains("5.5.0"), "{on_disk}");
+
+    let outcome = apps
+        .uninstall(&id("typescript"), AppUninstallOptions::new())
+        .await
+        .unwrap();
+    let UninstallAppOutcome::Removed {
+        backend, warning, ..
+    } = outcome
+    else {
+        panic!("expected Removed, got {outcome:?}");
+    };
+    assert_eq!(backend, BackendId::Npm);
+    assert!(warning.is_none(), "{warning:?}");
+    fake.assert_called_with(&npm_uninstall_global_spec("typescript"));
+    assert!(apps.records().is_empty());
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn npm_status_and_available_versions_answer_through_the_backend() {
+    let path = temp_manifest_path("npm-probes");
+    let mut manifest = InstallManifest::at(&path);
+    manifest.record(
+        &id("typescript"),
+        InstallRecord::adopted(
+            NativeIds::Npm {
+                package: "typescript".to_owned(),
+            },
+            None,
+        )
+        .with_installed_at(1_700_000_000),
+    );
+    manifest.save().expect("seed manifest saves");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        )
+        .respond(
+            npm_view_versions_spec("typescript"),
+            CommandOutput::from_stdout(r#"["5.3.3","5.4.5"]"#),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::Distro, Vec::new());
+    let apps = npm_facade(&fake, &path, vec![adapter]);
+
+    assert_eq!(
+        apps.status(&id("typescript")).await.unwrap(),
+        AppStatus::Installed {
+            backend: BackendId::Npm,
+            version: Some("5.4.5".to_owned()),
+        }
+    );
+    assert_eq!(
+        apps.available_versions(&id("typescript")).await.unwrap(),
+        [Version::new("5.3.3"), Version::new("5.4.5")]
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn a_foreign_npm_install_reports_foreign_and_never_records() {
+    let path = temp_manifest_path("npm-foreign");
+    let fake = FakeRunner::new().strict().respond(
+        npm_list_spec(),
+        CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+    );
+    let adapter = FixtureAdapter::new(SourceKind::Distro, vec![typescript_npm_app()]);
+    let mut apps = npm_facade(&fake, &path, vec![adapter]);
+
+    let outcome = apps
+        .ensure_installed(&id("typescript"), AppInstallOptions::new())
+        .await
+        .unwrap();
+    match outcome {
+        EnsureAppOutcome::AlreadyPresent(AppStatus::Foreign { backend, detail }) => {
+            assert_eq!(backend, BackendId::Npm);
+            assert!(detail.contains("typescript"), "{detail}");
+            assert!(detail.contains("not by toride"), "{detail}");
+        }
+        other => panic!("expected Foreign, got {other:?}"),
+    }
+    assert!(apps.records().is_empty(), "nothing was recorded");
     fake.assert_no_unmatched_calls();
 }

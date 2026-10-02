@@ -191,6 +191,33 @@ pub enum NativeIds {
         /// The absolute install-dir path of the installed binary.
         bin_path: String,
     },
+    /// A globally-installed npm package, by package name.
+    Npm {
+        /// npm package name as installed (never the `@`-joined spec — the
+        /// version lives in the record's own version slot).
+        package: String,
+    },
+    /// A cargo-installed crate, by crate name.
+    Cargo {
+        /// Crate name as installed.
+        crate_: String,
+    },
+    /// A pipx-installed Python app, by package name.
+    Pipx {
+        /// Package name pipx installed.
+        package: String,
+    },
+    /// A uv-managed Python tool, by package name.
+    Uv {
+        /// Package name uv installed.
+        package: String,
+    },
+    /// A mise-managed tool, by tool name (gated with the `mise` feature).
+    #[cfg(feature = "mise")]
+    Mise {
+        /// mise tool name (`node`, `npm:prettier`, `cargo:ripgrep`).
+        tool: String,
+    },
 }
 
 impl NativeIds {
@@ -204,6 +231,12 @@ impl NativeIds {
             Self::Distro { family, .. } => BackendId::Distro(*family),
             #[cfg(feature = "direct")]
             Self::Direct { .. } => BackendId::Direct,
+            Self::Npm { .. } => BackendId::Npm,
+            Self::Cargo { .. } => BackendId::Cargo,
+            Self::Pipx { .. } => BackendId::Pipx,
+            Self::Uv { .. } => BackendId::Uv,
+            #[cfg(feature = "mise")]
+            Self::Mise { .. } => BackendId::Mise,
         }
     }
 }
@@ -1260,6 +1293,196 @@ mod tests {
             .backend(),
             BackendId::Distro(DistroFamily::Fedora)
         );
+    }
+
+    #[test]
+    fn language_native_ids_map_to_their_backend_ids() {
+        assert_eq!(
+            NativeIds::Npm {
+                package: "typescript".to_owned()
+            }
+            .backend(),
+            BackendId::Npm
+        );
+        assert_eq!(
+            NativeIds::Cargo {
+                crate_: "ripgrep".to_owned()
+            }
+            .backend(),
+            BackendId::Cargo
+        );
+        assert_eq!(
+            NativeIds::Pipx {
+                package: "black".to_owned()
+            }
+            .backend(),
+            BackendId::Pipx
+        );
+        assert_eq!(
+            NativeIds::Uv {
+                package: "ruff".to_owned()
+            }
+            .backend(),
+            BackendId::Uv
+        );
+    }
+
+    #[test]
+    fn language_records_round_trip_through_save_and_load() {
+        let path = temp_manifest_path("language-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        let language_records = [
+            (
+                app_id("typescript"),
+                InstallRecord::new(
+                    plan_for(
+                        "typescript",
+                        Operation::NpmInstall {
+                            package: "typescript".to_owned(),
+                            version: Some(crate::backend::Version::new("5.4.5")),
+                            global: true,
+                        },
+                    ),
+                    NativeIds::Npm {
+                        package: "typescript".to_owned(),
+                    },
+                    Some("5.4.5".to_owned()),
+                ),
+            ),
+            (
+                app_id("ripgrep"),
+                InstallRecord::new(
+                    plan_for(
+                        "ripgrep",
+                        Operation::CargoInstall {
+                            crate_: "ripgrep".to_owned(),
+                            version: None,
+                        },
+                    ),
+                    NativeIds::Cargo {
+                        crate_: "ripgrep".to_owned(),
+                    },
+                    None,
+                ),
+            ),
+            (
+                app_id("black"),
+                InstallRecord::adopted(
+                    NativeIds::Pipx {
+                        package: "black".to_owned(),
+                    },
+                    Some("24.0.0".to_owned()),
+                ),
+            ),
+            (
+                app_id("ruff"),
+                InstallRecord::new(
+                    plan_for(
+                        "ruff",
+                        Operation::UvInstall {
+                            package: "ruff".to_owned(),
+                            version: None,
+                        },
+                    ),
+                    NativeIds::Uv {
+                        package: "ruff".to_owned(),
+                    },
+                    None,
+                ),
+            ),
+        ];
+        for (id, record) in language_records.clone() {
+            manifest.record(&id, record);
+        }
+        manifest.save().unwrap();
+
+        let reloaded = InstallManifest::load(&path).unwrap();
+        assert_eq!(reloaded.len(), 4);
+        for (id, record) in &language_records {
+            assert_eq!(reloaded.get(id), Some(record));
+        }
+    }
+
+    #[test]
+    fn language_native_ids_serialize_as_the_tagged_enum_shape() {
+        let json = serde_json::to_value(&NativeIds::Npm {
+            package: "typescript".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(json["Npm"]["package"], serde_json::json!("typescript"));
+        let back: NativeIds = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            back,
+            NativeIds::Npm {
+                package: "typescript".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn native_ids_read_pre_language_variant_documents_identically() {
+        let legacy: [(&str, NativeIds); 4] = [
+            (
+                r#"{"Homebrew":{"token":"firefox","cask":true}}"#,
+                NativeIds::Homebrew {
+                    token: "firefox".to_owned(),
+                    cask: true,
+                },
+            ),
+            (
+                r#"{"Flatpak":{"app_id":"com.brave.Browser","app_ref":null,"installation":"User"}}"#,
+                NativeIds::Flatpak {
+                    app_id: "com.brave.Browser".to_owned(),
+                    app_ref: None,
+                    installation: FlatpakInstallation::User,
+                },
+            ),
+            (
+                r#"{"Distro":{"package":"firefox","family":"Debian"}}"#,
+                NativeIds::Distro {
+                    package: "firefox".to_owned(),
+                    family: DistroFamily::Debian,
+                },
+            ),
+            (
+                r#"{"Homebrew":{"token":"ripgrep","cask":false}}"#,
+                NativeIds::Homebrew {
+                    token: "ripgrep".to_owned(),
+                    cask: false,
+                },
+            ),
+        ];
+        for (json, ids) in legacy {
+            let back: NativeIds = serde_json::from_str(json).unwrap();
+            assert_eq!(back, ids, "{json}");
+        }
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn mise_records_round_trip_and_map_to_the_mise_backend() {
+        let path = temp_manifest_path("mise-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        let record = InstallRecord::new(
+            plan_for(
+                "node",
+                Operation::MiseInstall {
+                    tool: "node".to_owned(),
+                    version: Some(crate::backend::Version::new("22.1.0")),
+                },
+            ),
+            NativeIds::Mise {
+                tool: "node".to_owned(),
+            },
+            Some("22.1.0".to_owned()),
+        )
+        .with_installed_at(1_700_000_000);
+        manifest.record(&app_id("node"), record.clone());
+        manifest.save().unwrap();
+        let reloaded = InstallManifest::load(&path).unwrap();
+        assert_eq!(reloaded.get(&app_id("node")), Some(&record));
+        assert_eq!(record.backend, BackendId::Mise);
+        assert_eq!(record.ids.backend(), BackendId::Mise);
     }
 
     #[cfg(feature = "direct")]
