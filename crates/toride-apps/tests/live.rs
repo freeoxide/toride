@@ -2,11 +2,14 @@
 //!
 //! Gated behind `TORIDE_APPS_INTEGRATION=1` (the toride-installer
 //! `TORIDE_INSTALLER_INTEGRATION` precedent) so the normal gate run stays
-//! offline and side-effect-free:
+//! offline and side-effect-free, and compiled only with the
+//! `registry-http` feature (the registry's fetch engine is opt-in):
 //!
 //! ```text
-//! TORIDE_APPS_INTEGRATION=1 cargo test -p toride-apps --test live
+//! TORIDE_APPS_INTEGRATION=1 cargo test -p toride-apps --test live --features registry-http
 //! ```
+
+#![cfg(feature = "registry-http")]
 //!
 //! What runs when the gate is open (and what deliberately does not):
 //!

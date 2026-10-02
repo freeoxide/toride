@@ -204,7 +204,7 @@ fn ensure_installed_installs_verifies_records_and_answers_present_twice() {
     let mut apps = blocking(&fake, &path);
 
     match apps
-        .ensure_installed(&cask_app(), &AppInstallOptions::new())
+        .ensure_installed(&cask_app(), AppInstallOptions::new())
         .unwrap()
     {
         EnsureAppOutcome::Installed {
@@ -229,7 +229,7 @@ fn ensure_installed_installs_verifies_records_and_answers_present_twice() {
     );
 
     let second = apps
-        .ensure_installed(&cask_app(), &AppInstallOptions::new())
+        .ensure_installed(&cask_app(), AppInstallOptions::new())
         .unwrap();
     assert!(
         matches!(
@@ -259,7 +259,7 @@ fn ensure_installed_keeps_a_foreign_install_as_is() {
     let mut apps = blocking(&fake, &path);
 
     let outcome = apps
-        .ensure_installed(&cask_app(), &AppInstallOptions::new())
+        .ensure_installed(&cask_app(), AppInstallOptions::new())
         .unwrap();
     assert!(
         matches!(
@@ -272,6 +272,131 @@ fn ensure_installed_keeps_a_foreign_install_as_is() {
     assert!(
         !path.as_std_path().exists(),
         "the store was never saved over"
+    );
+}
+
+#[test]
+fn ensure_installed_at_the_requested_version_on_a_matching_record_is_already_present() {
+    let fake = FakeRunner::new().strict().respond(
+        brew_versions_cask_spec(),
+        CommandOutput::from_stdout("brave-browser 1.96.59\n"),
+    );
+    let path = temp_manifest_path("version-present-match");
+    seed_manifest(&path, cask_record(Some("1.96.59")));
+    let mut apps = blocking(&fake, &path);
+
+    let outcome = apps
+        .ensure_installed(
+            &cask_app(),
+            AppInstallOptions::new().version(Some(Version::new("1.96.59"))),
+        )
+        .unwrap();
+    assert_eq!(
+        outcome,
+        EnsureAppOutcome::AlreadyPresent(AppStatus::Installed {
+            backend: BackendId::Homebrew,
+            version: Some("1.96.59".to_owned()),
+        })
+    );
+    let calls = fake.calls();
+    assert_eq!(
+        calls.len(),
+        1,
+        "one confirming probe, nothing else: {calls:?}"
+    );
+    assert!(
+        calls[0].program == "brew"
+            && calls[0].args == ["list", "--cask", "--versions", "brave-browser"],
+        "{calls:?}"
+    );
+}
+
+#[test]
+fn ensure_installed_with_a_version_pins_the_versioned_token_when_the_offering_differs() {
+    let versioned_install_spec = command("brew", ["install", "--cask", "brave-browser@1.90.0"]);
+    let versioned_probe_spec = command(
+        "brew",
+        ["list", "--cask", "--versions", "brave-browser@1.90.0"],
+    );
+    let fake = FakeRunner::new().strict();
+    let fake = fake
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(empty_brew_document()),
+        )
+        .respond(
+            brew_info_token_spec(),
+            CommandOutput::from_stdout(installed_cask_document("brave-browser", "1.96.59")),
+        )
+        .respond(
+            versioned_install_spec.clone(),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            versioned_probe_spec.clone(),
+            CommandOutput::from_stdout("brave-browser@1.90.0 1.90.0\n"),
+        )
+        .respond(
+            versioned_probe_spec.clone(),
+            CommandOutput::from_stdout("brave-browser@1.90.0 1.90.0\n"),
+        );
+    let path = temp_manifest_path("version-pin");
+    let mut apps = blocking(&fake, &path);
+
+    let outcome = apps
+        .ensure_installed(
+            &cask_app(),
+            AppInstallOptions::new().version(Some(Version::new("1.90.0"))),
+        )
+        .unwrap();
+    match outcome {
+        EnsureAppOutcome::Installed { ids, version, .. } => {
+            assert_eq!(
+                ids,
+                NativeIds::Homebrew {
+                    token: "brave-browser@1.90.0".to_owned(),
+                    cask: true,
+                },
+                "the recorded identity is the versioned token brew manages"
+            );
+            assert_eq!(version.as_deref(), Some("1.90.0"));
+        }
+        other @ EnsureAppOutcome::AlreadyPresent(_) => panic!("expected Installed, got {other:?}"),
+    }
+    fake.assert_called_with(&versioned_install_spec);
+    fake.assert_no_unmatched_calls();
+    assert!(
+        std::fs::read_to_string(path.as_std_path())
+            .unwrap()
+            .contains("brave-browser@1.90.0"),
+        "the versioned identity persisted"
+    );
+}
+
+#[test]
+fn update_refuses_a_target_version_before_anything_runs() {
+    let fake = FakeRunner::new().strict();
+    let path = temp_manifest_path("update-target-refused");
+    seed_manifest(&path, cask_record(Some("1.96.59")));
+    let before = std::fs::read_to_string(path.as_std_path()).unwrap();
+    let mut apps = blocking(&fake, &path);
+
+    let error = apps
+        .update(
+            &id("brave-browser"),
+            &AppUpdateOptions::new().target(Some(Version::new("1.90.0"))),
+        )
+        .unwrap_err();
+    assert!(
+        matches!(error, AppsError::UpdateTargetNotPinnable { .. }),
+        "{error:?}"
+    );
+    assert!(error.to_string().contains("1.90.0"), "{error}");
+    assert!(fake.calls().is_empty(), "nothing was dispatched");
+    assert_eq!(
+        std::fs::read_to_string(path.as_std_path()).unwrap(),
+        before,
+        "the manifest is untouched"
     );
 }
 
@@ -751,7 +876,7 @@ fn blocking_wraps_and_unwraps_sharing_one_state() {
     let apps = {
         let mut blocking_facade = blocking(&fake, &path);
         blocking_facade
-            .ensure_installed(&cask_app(), &AppInstallOptions::new())
+            .ensure_installed(&cask_app(), AppInstallOptions::new())
             .unwrap();
         blocking_facade.into_inner()
     };

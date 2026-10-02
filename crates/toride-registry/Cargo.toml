@@ -8,12 +8,13 @@ repository.workspace = true
 
 [features]
 default = ["http"]
-# The fetch half: reqwest clients + gzip catalog decompression (DESIGN.md
-# §9, mirroring toride-installer's `http` gate, installer Cargo.toml:11-20).
-# The pure parse half builds fully WITHOUT it, so a consumer can take
-# `toride-registry` with `default-features = false` and inherit neither
-# reqwest (rustls -> ring) nor flate2.
-http = ["dep:reqwest", "dep:flate2"]
+# The fetch half: reqwest clients, gzip catalog decompression, and the
+# tokio offloading those clients ride (DESIGN.md §9, mirroring
+# toride-installer's `http` gate). The pure parse half builds fully
+# WITHOUT it, so a consumer can take `toride-registry` with
+# `default-features = false` and inherit neither reqwest (rustls -> ring),
+# flate2, nor tokio.
+http = ["dep:reqwest", "dep:flate2", "dep:tokio"]
 
 [dependencies]
 serde = { workspace = true }
@@ -23,8 +24,8 @@ thiserror = { workspace = true }
 # (DESIGN.md §3, house style per toride-installer's `ReleaseResolver`), so
 # it is needed by the trait itself, not only by the fetch layer.
 async-trait = { workspace = true }
-# Async fetch clients + the `#[tokio::test]` suites (DESIGN.md §9).
-tokio = { workspace = true }
+# Async fetch clients (`http` only) + the `#[tokio::test]` suites.
+tokio = { workspace = true, optional = true }
 # Typed UTF-8 cache paths in the appstream fetch client (DESIGN.md §9).
 camino = { workspace = true }
 # DEP-11 YAML catalogs (appstream.rs); upstream serde_yaml is archived,
@@ -40,6 +41,9 @@ flate2 = { version = "1", optional = true }
 # Snapshot tests of the normalized output per §7 fixture (DESIGN.md §9,
 # conventions.md §7); snapshots live in `tests/snapshots/`.
 insta = { workspace = true }
+# The `#[tokio::test]` suites and test runtimes, present even when the
+# `http` feature (and with it the tokio dependency) is off.
+tokio = { workspace = true }
 # Criterion bench of the DEP-11 parse half (benches/dep11_parse.rs, the
 # F14 pin). Default features off: the HTML-report stack (plotters) and
 # rayon are unneeded for stdout estimates + baseline save/load, keeping

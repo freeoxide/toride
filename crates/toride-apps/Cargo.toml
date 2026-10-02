@@ -8,16 +8,12 @@ repository.workspace = true
 
 [features]
 default = []
-# Runtime offloading for the async facade: `spawn_blocking` dispatch of
-# backend commands and manifest saves. Off by default (the plan's
-# "tokio facade behind a non-default feature"); without it, async dispatch
-# runs commands on the calling thread and the sync execution path
-# (`Backend::*_sync`, `AppsBlocking`) is the supported surface. This drops
-# tokio from THIS crate's dependency table only: toride-registry still
-# pulls it transitively (its tokio dep and default `http` feature are
-# unconditional), so a tokio-free embedder graph additionally needs that
-# crate to gate its own tokio usage.
+# spawn_blocking offloading for the async facade (see lib.rs for the
+# full story); the sync surface needs neither it nor tokio.
 tokio = ["dep:tokio"]
+# Opt in to the registry's fetch engine (reqwest + gzip + tokio): the
+# concrete source adapters a caller can register with `Apps::adapter`.
+registry-http = ["toride-registry/http"]
 
 [dependencies]
 tokio = { workspace = true, optional = true }
@@ -35,10 +31,12 @@ dirs = { workspace = true }
 # keeps the test-only `fake` feature out of the normal build, mirroring
 # toride-installer's split.
 toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner"] }
-# The planner consumes the normalized `App`/`InstallMethod` contract, and
-# the facade round (A6) resolves apps through the registry's adapters — so
-# the workspace default (the `http` fetch engine) is taken deliberately.
-toride-registry = { workspace = true }
+# The planner consumes the normalized `App`/`InstallMethod` contract; the
+# registry rides its parse half only by default (no reqwest, no tokio) —
+# the `registry-http` feature opts its fetch engine back in. Declared
+# directly (not inherited) because cargo only allows `default-features`
+# on the declaring manifest.
+toride-registry = { path = "../toride-registry", version = "0.1.0", default-features = false }
 
 [dev-dependencies]
 tokio = { workspace = true }

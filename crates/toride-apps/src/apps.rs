@@ -1428,14 +1428,17 @@ impl Apps {
     ///
     /// [`RecordStore::save`] is synchronous IO (the JSON store's create
     /// parent dirs, write temp, rename) and must not run on an async
-    /// worker — the standing don't-block rule; the crate-family precedent
-    /// (toride-installer's extraction and detect) wraps its blocking work
-    /// in [`tokio::task::spawn_blocking`] the same way. The snapshot and
-    /// the store's `Arc` are cloned into the task (small by construction
-    /// — one record per installed app), so no borrow is held across the
-    /// await. Error semantics are the store's own; a join failure (the
-    /// blocking task was cancelled or panicked) maps to
-    /// [`ManifestError::Io`] so callers' warning paths stay uniform.
+    /// worker — the standing don't-block rule; under the `tokio` feature
+    /// the save is dispatched through
+    /// [`tokio::task::spawn_blocking`] (the crate-family precedent:
+    /// toride-installer's extraction and detect) with the snapshot and
+    /// the store's `Arc` cloned into the task, so no borrow is held
+    /// across the await and a join failure (the blocking task was
+    /// cancelled or panicked) maps to [`ManifestError::Io`] so callers'
+    /// warning paths stay uniform. Without the feature there is no
+    /// runtime to offload to: the save runs in-line (see `persist`),
+    /// exactly the path [`save_records_sync`] always takes. Error
+    /// semantics are the store's own.
     async fn save_records(&self) -> ManifestResult<()> {
         let snapshot = RecordSnapshot {
             records: self.records.clone(),
@@ -1973,15 +1976,16 @@ impl AppsBlocking {
     pub fn ensure_installed(
         &mut self,
         app: &App,
-        options: &AppInstallOptions,
+        options: AppInstallOptions,
     ) -> AppsResult<EnsureAppOutcome> {
+        let AppInstallOptions { elevated, version } = options;
         let id = app.id.clone();
         let mut present = false;
         let recorded = app_status_sync(self.apps.records.get(&id), None, &self.apps.backend_set())?;
         if matches!(recorded, AppStatus::Installed { .. }) {
             present = true;
             let satisfies = self.apps.records.get(&id).is_some_and(|record| {
-                requested_version_satisfied(&record.ids, &recorded, options.version.as_ref())
+                requested_version_satisfied(&record.ids, &recorded, version.as_ref())
             });
             if satisfies {
                 return Ok(EnsureAppOutcome::AlreadyPresent(recorded));
@@ -1991,24 +1995,22 @@ impl AppsBlocking {
             let native = native_from_method(&app.install);
             let status = app_status_sync(None, native.as_ref(), &self.apps.backend_set())?;
             if let AppStatus::Foreign { .. } = status {
-                if options.version.is_none() {
+                if version.is_none() {
                     return Ok(EnsureAppOutcome::AlreadyPresent(status));
                 }
                 present = true;
             }
         }
         let version = if present {
-            options.version.clone()
+            version
         } else {
-            self.apps
-                .version_for_plan_sync(app, options.version.clone())
+            self.apps.version_for_plan_sync(app, version)
         };
         let plan = plan_install(app, &self.apps.target, &InstallOptions { version })?;
         let ids = native_ids_from_executed(&plan)?;
         let backend = self.apps.backend_for(plan.backend)?;
-        let outcome = backend.install_sync(
-            InstallRequest::new(&plan, &self.apps.target).elevated(options.elevated),
-        )?;
+        let outcome = backend
+            .install_sync(InstallRequest::new(&plan, &self.apps.target).elevated(elevated))?;
         let verification = self.apps.verify_presence_sync(&ids);
         let verified = matches!(verification, Ok(Presence::Present(_)));
         let subject = native_subject(&ids);
