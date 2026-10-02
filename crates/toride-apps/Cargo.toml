@@ -31,11 +31,9 @@ dirs = { workspace = true }
 # keeps the test-only `fake` feature out of the normal build, mirroring
 # toride-installer's split.
 toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner"] }
-# The planner consumes the normalized `App`/`InstallMethod` contract; the
-# registry rides its parse half only by default (no reqwest, no tokio) —
-# the `registry-http` feature opts its fetch engine back in. Declared
-# directly (not inherited) because cargo only allows `default-features`
-# on the declaring manifest.
+# Registry parse half only by default (no reqwest, no tokio); the
+# `registry-http` feature opts its fetch engine back in. Declared
+# directly: cargo allows `default-features` only on the declaring manifest.
 toride-registry = { path = "../toride-registry", version = "0.1.0", default-features = false }
 
 [dev-dependencies]

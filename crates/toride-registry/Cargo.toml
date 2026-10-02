@@ -8,12 +8,9 @@ repository.workspace = true
 
 [features]
 default = ["http"]
-# The fetch half: reqwest clients, gzip catalog decompression, and the
-# tokio offloading those clients ride (DESIGN.md §9, mirroring
-# toride-installer's `http` gate). The pure parse half builds fully
-# WITHOUT it, so a consumer can take `toride-registry` with
-# `default-features = false` and inherit neither reqwest (rustls -> ring),
-# flate2, nor tokio.
+# The fetch half (reqwest + gzip + the tokio offloading they ride); the
+# pure parse half builds fully without it, so `default-features = false`
+# inherits none of the three.
 http = ["dep:reqwest", "dep:flate2", "dep:tokio"]
 
 [dependencies]

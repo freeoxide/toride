@@ -66,9 +66,11 @@
 //! verbs synchronously — every command on the calling thread, every
 //! manifest save in-line — for embedders without an async runtime. The
 //! registry's adapter trait is async, so the blocking surface takes
-//! resolved registry apps where this facade resolves ids, and its
+//! resolved registry apps where this facade resolves ids, its
 //! registry-dependent arms answer
-//! [`AppsError::BlockingResolveRequired`].
+//! [`AppsError::BlockingResolveRequired`] (`status` alone degrades to
+//! `NotInstalled`, matching this facade's resolve-failure arm), and it
+//! offers no `search`.
 //!
 //! ## Example
 //!
@@ -1913,9 +1915,11 @@ fn default_target() -> Target {
 /// with the async facade. One arm is structurally out of reach: resolving a
 /// bare [`TorideId`] through the registry adapters is async, so the
 /// blocking surface takes the resolved registry [`App`] where the async
-/// facade takes an id ([`AppsBlocking::ensure_installed`]), answers
-/// registry-dependent arms of the id-keyed verbs with
-/// [`AppsError::BlockingResolveRequired`], and offers no `search`.
+/// facade takes an id ([`AppsBlocking::ensure_installed`]); the
+/// registry-dependent arms of the id-keyed verbs answer
+/// [`AppsError::BlockingResolveRequired`], except [`AppsBlocking::status`],
+/// which degrades to [`AppStatus::NotInstalled`] exactly like the async
+/// facade's resolve-failure arm; and there is no `search`.
 pub struct AppsBlocking {
     /// The wrapped facade — one record store, one target, one backend set.
     apps: Apps,
