@@ -156,6 +156,52 @@ jobs:
       - name: Check the tokio-free default build
         run: cargo check -p toride-apps --no-default-features
 
+  toride-apps-smoke-archlinux:
+    name: toride-apps live smoke (archlinux, pacman)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install toolchain (syncs the package database the smoke installs against)
+        run: |
+          pacman -Sy --noconfirm rust git
+          rustc --version
+          cargo --version
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-archlinux
+      - name: Pacman suppression-flag check
+        run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
+      - name: Env-gated pacman live smoke (facade install -> probe -> uninstall)
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --test live_smoke pacman
+
+  toride-apps-smoke-alpine:
+    name: toride-apps live smoke (alpine, apk)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    container:
+      image: alpine:latest
+    steps:
+      - name: Install toolchain (apk add refreshes the index the smoke installs against)
+        run: |
+          apk add --no-cache rust git build-base
+          rustc --version
+          cargo --version
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-alpine
+      - name: Apk suppression-flag check
+        run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
+      - name: Env-gated apk live smoke (facade install -> probe -> uninstall)
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --test live_smoke apk
+
   publish-set-features:
     name: Publish-set feature gates
     runs-on: ubuntu-latest
