@@ -1427,13 +1427,10 @@ impl Apps {
             }
             #[cfg(feature = "direct")]
             NativeIds::Direct { bin_path, .. } => {
-                // The file itself is the probe; a direct binary reports
-                // no version without executing it.
-                if std::path::Path::new(bin_path).is_file() {
-                    Ok(Presence::Present(None))
-                } else {
-                    Ok(Presence::Absent)
-                }
+                let backend = self.backend_for(BackendId::Direct)?;
+                Ok(direct_presence(
+                    backend.status(StatusQuery::new(bin_path)).await?,
+                ))
             }
         }
     }
@@ -1693,11 +1690,10 @@ impl Apps {
             }
             #[cfg(feature = "direct")]
             NativeIds::Direct { bin_path, .. } => {
-                if std::path::Path::new(bin_path).is_file() {
-                    Ok(Presence::Present(None))
-                } else {
-                    Ok(Presence::Absent)
-                }
+                let backend = self.backend_for(BackendId::Direct)?;
+                Ok(direct_presence(
+                    backend.status_sync(StatusQuery::new(bin_path))?,
+                ))
             }
         }
     }
@@ -1819,9 +1815,11 @@ impl AppsBuilder {
     }
 
     /// Attach the direct-download backend — consume-and-return (the
-    /// `direct` feature). Without one attached, direct methods plan but
-    /// every operation on them answers
-    /// [`AppsError::BackendUnavailable`].
+    /// `direct` feature). Without one attached, direct methods still plan,
+    /// but installs and uninstalls answer
+    /// [`AppsError::BackendUnavailable`], a direct record's update
+    /// refuses with [`AppsError::UnrecordableOperation`], and `status`
+    /// degrades to [`AppStatus::NotInstalled`] — no backend, no probe.
     #[cfg(feature = "direct")]
     #[must_use]
     pub fn direct(mut self, backend: DirectBackend) -> Self {
@@ -2667,6 +2665,17 @@ fn ref_branch(app_ref: &str) -> Option<&str> {
         .split('/')
         .nth(3)
         .filter(|branch| !branch.is_empty())
+}
+
+/// The direct arm of both presence probes: the backend's own filesystem
+/// probe is the one answer, so the facade and the status layer can never
+/// drift apart.
+#[cfg(feature = "direct")]
+fn direct_presence(status: BackendStatus) -> Presence {
+    match status {
+        BackendStatus::Installed { version } => Presence::Present(version),
+        BackendStatus::NotInstalled => Presence::Absent,
+    }
 }
 
 /// A human-readable name for what a set of native identifiers addresses —

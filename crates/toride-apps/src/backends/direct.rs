@@ -34,7 +34,9 @@ use crate::backend::{
     ensure_uninstall_allowed, ensure_update_allowed,
 };
 use crate::error::{Error, Result};
-use crate::plan::{Operation, Target, url_asset_name};
+use crate::plan::{
+    DirectArtifact, Operation, Target, direct_artifact, is_single_path_component, url_asset_name,
+};
 
 /// Direct-download installs over toride-installer's verified pipeline.
 ///
@@ -118,9 +120,23 @@ impl DirectBackend {
         else {
             return Err(misrouted_operation(&request.plan.operation));
         };
+        if !is_single_path_component(bin_name) {
+            return Err(Error::Command(toride_runner::Error::Other(format!(
+                "the direct bin_name `{bin_name}` is not a single path component — \
+                 refusing a destination outside the install dir"
+            ))));
+        }
+        let artifact = match direct_artifact(url) {
+            DirectArtifact::Binary => ArtifactKind::Binary,
+            DirectArtifact::TarballGz => ArtifactKind::tarball_gz(),
+            DirectArtifact::TarballXz => ArtifactKind::tarball_xz(),
+            DirectArtifact::Unsupported => {
+                return Err(unsupported_archive(url));
+            }
+        };
         let tool = Tool::builder()
             .name(bin_name.clone())
-            .artifact(artifact_kind(url))
+            .artifact(artifact)
             .bin_path(bin_name.clone())
             .bin_name(bin_name.clone())
             .checksum(checksum.clone().map_or(Checksum::None, Checksum::Digest))
@@ -292,28 +308,6 @@ fn probe(id: &str) -> BackendStatus {
     }
 }
 
-/// The artifact kind a URL addresses, by its conventional extension:
-/// gzip/xz tarballs decode to their entry, everything else installs
-/// verbatim as a single binary.
-fn artifact_kind(url: &str) -> ArtifactKind {
-    let name = url_asset_name(url).unwrap_or_default().to_ascii_lowercase();
-    let path = Path::new(&name);
-    let has_tar_stem = || {
-        path.file_stem().is_some_and(|stem| {
-            Path::new(stem)
-                .extension()
-                .is_some_and(|extension| extension == "tar")
-        })
-    };
-    match path.extension() {
-        Some(ext) if ext == "tgz" => ArtifactKind::tarball_gz(),
-        Some(ext) if ext == "txz" => ArtifactKind::tarball_xz(),
-        Some(ext) if ext == "gz" && has_tar_stem() => ArtifactKind::tarball_gz(),
-        Some(ext) if ext == "xz" && has_tar_stem() => ArtifactKind::tarball_xz(),
-        _ => ArtifactKind::Binary,
-    }
-}
-
 /// Forward the planning target to the installer's target type — inert for
 /// a fixed-URL resolver, but the honest relay of the request's context.
 fn artifact_target(target: Target) -> ArtifactTarget {
@@ -348,6 +342,13 @@ fn start_runtime() -> Result<tokio::runtime::Runtime> {
 fn misrouted_operation(operation: &Operation) -> Error {
     Error::Command(toride_runner::Error::Other(format!(
         "direct backend cannot execute non-direct operation: {operation:?}"
+    )))
+}
+
+fn unsupported_archive(url: &str) -> Error {
+    Error::Command(toride_runner::Error::Other(format!(
+        "the direct pipeline cannot extract the archive at {url} — \
+         it installs single binaries and tar.gz/tar.xz tarballs only"
     )))
 }
 
@@ -483,31 +484,6 @@ mod tests {
     }
 
     #[test]
-    fn artifact_kind_maps_urls_by_extension() {
-        assert_eq!(
-            artifact_kind("https://x.test/rg-1.0.tar.gz"),
-            ArtifactKind::tarball_gz()
-        );
-        assert_eq!(
-            artifact_kind("https://x.test/rg.tgz"),
-            ArtifactKind::tarball_gz()
-        );
-        assert_eq!(
-            artifact_kind("https://x.test/rg-1.0.tar.xz"),
-            ArtifactKind::tarball_xz()
-        );
-        assert_eq!(
-            artifact_kind("https://x.test/rg-1.0.txz"),
-            ArtifactKind::tarball_xz()
-        );
-        assert_eq!(artifact_kind("https://x.test/rg"), ArtifactKind::Binary);
-        assert_eq!(
-            artifact_kind("https://x.test/rg-1.0.dmg"),
-            ArtifactKind::Binary
-        );
-    }
-
-    #[test]
     fn artifact_target_forwards_the_planning_target() {
         let linux = artifact_target(Target::new(toride_registry::Os::Linux, Arch::Aarch64));
         assert_eq!(linux.keyword(), "linux-arm64");
@@ -619,6 +595,47 @@ mod tests {
             b"TAR-RG-BYTES",
             "the entry lands under its bare name, stripped of the archive prefix"
         );
+    }
+
+    #[tokio::test]
+    async fn install_refuses_a_bin_name_that_escapes_the_install_dir() {
+        let dir = temp_dir("escape");
+        let backend = DirectBackend::at(&dir);
+        for bin_name in ["sub/rg", "/etc/evil", ".."] {
+            let plan = install_plan("https://never-contacted.invalid/rg", None, bin_name);
+            let error = backend
+                .install(InstallRequest::new(&plan, &host_target()))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, Error::Command(_)), "{bin_name}: {error:?}");
+            assert!(
+                error.to_string().contains("single path component"),
+                "{error}"
+            );
+        }
+        assert!(
+            !dir.join("..").join("evil").exists(),
+            "nothing was written outside the install dir"
+        );
+    }
+
+    #[tokio::test]
+    async fn install_refuses_an_archive_the_pipeline_cannot_extract() {
+        let dir = temp_dir("zip-refusal");
+        let backend = DirectBackend::at(&dir);
+        for url in [
+            "https://never-contacted.invalid/rg.zip",
+            "https://never-contacted.invalid/rg.tar.bz2",
+        ] {
+            let plan = install_plan(url, None, "rg");
+            let error = backend
+                .install(InstallRequest::new(&plan, &host_target()))
+                .await
+                .unwrap_err();
+            assert!(matches!(error, Error::Command(_)), "{url}: {error:?}");
+            assert!(error.to_string().contains("cannot extract"), "{error}");
+        }
+        assert!(!dir.join("rg").exists());
     }
 
     #[tokio::test]

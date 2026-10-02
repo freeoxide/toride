@@ -29,8 +29,11 @@
 //!    (Linuxbrew); flatpak is Linux-only; distro methods plan only when the
 //!    host target's family equals the method's family; direct downloads
 //!    plan under the `direct` feature when the artifact's declared arch
-//!    matches the host and its checksum is a well-formed sha256 (without
-//!    the feature, or off those gates, `Direct` is unroutable here). All
+//!    matches the host, its checksum is a well-formed sha256, its URL
+//!    addresses a single binary or a tar.gz/tar.xz tarball (not an
+//!    archive the pipeline cannot extract), and a single-file binary
+//!    name is derivable (without the feature, or off those gates,
+//!    `Direct` is unroutable here). All
 //!    unroutable input (an unknown distro family, a host arch flatpak
 //!    cannot spell an install ref for) fails **here, at plan time** — never
 //!    deferred to a confusing execute-time error.
@@ -1074,10 +1077,11 @@ fn resolve_distro(
 }
 
 /// Direct arm (the `direct` feature): the URL is the fully-resolved
-/// artifact address, so the gates are about what the address claims — its
-/// arch, its checksum — and about deriving a name to install as. The
-/// install lands in the direct backend's install dir (never root-owned),
-/// so no elevation is required.
+/// artifact address, so the gates are about what the address claims —
+/// its arch, its checksum, its archive shape — and about deriving a
+/// single-file name to install as. The install lands in the direct
+/// backend's install dir (never root-owned), so no elevation is
+/// required.
 #[cfg(feature = "direct")]
 fn resolve_direct(
     app: &App,
@@ -1104,9 +1108,19 @@ fn resolve_direct(
         return Err(unsupported(
             app,
             target,
-            "neither the app's binaries nor the URL name a file to install as",
+            "neither the app's binaries nor the URL name a single file to install as",
         ));
     };
+    if direct_artifact(url) == DirectArtifact::Unsupported {
+        return Err(unsupported(
+            app,
+            target,
+            &format!(
+                "the artifact `{}` is an archive the direct pipeline cannot extract — it installs single binaries and tar.gz/tar.xz tarballs only",
+                url_asset_name(url).unwrap_or(url)
+            ),
+        ));
+    }
     match action {
         Action::Install {
             version: Some(version),
@@ -1153,15 +1167,31 @@ pub(crate) fn direct_digest(
     }
 }
 
-/// The on-disk name a direct install installs as: the first executable the
-/// app declares, else the URL's own asset name. `None` when neither names
-/// one.
+/// The on-disk name a direct install installs as: the first single-file
+/// executable the app declares, else the URL's own asset name when it too
+/// is one. `None` when neither names a single path component — a name
+/// carrying a separator (or an absolute path, or `.`/`..`) would join the
+/// install dir into a destination outside it.
 #[cfg(feature = "direct")]
 pub(crate) fn direct_bin_name(app: &App, url: &str) -> Option<String> {
-    app.binaries.iter().find(|bin| !bin.is_empty()).map_or_else(
-        || url_asset_name(url).map(str::to_owned),
-        |bin| Some(bin.to_owned()),
-    )
+    if app.binaries.is_empty() {
+        return url_asset_name(url)
+            .filter(|name| is_single_path_component(name))
+            .map(str::to_owned);
+    }
+    app.binaries
+        .iter()
+        .map(String::as_str)
+        .find(|bin| is_single_path_component(bin))
+        .map(str::to_owned)
+}
+
+/// Whether `name` is one plain path component — non-empty, no separator,
+/// not `.` or `..`. Only such a name can join an install dir without
+/// escaping it (`/base`.join(`/etc/evil`) is `/etc/evil`).
+#[cfg(feature = "direct")]
+pub(crate) fn is_single_path_component(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['/', '\\']) && !matches!(name, "." | "..")
 }
 
 /// The last path segment of `url` (query and fragment stripped) — the
@@ -1181,6 +1211,47 @@ pub(crate) fn url_asset_name(url: &str) -> Option<&str> {
 #[cfg(feature = "direct")]
 fn is_sha256_hex(digest: &str) -> bool {
     digest.len() == 64 && digest.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// What a direct URL's artifact is, by its conventional extension — one
+/// classification shared by the planner (which refuses
+/// [`DirectArtifact::Unsupported`] at plan time) and the backend (which
+/// maps it onto toride-installer's artifact kinds), so the two can never
+/// disagree.
+#[cfg(feature = "direct")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DirectArtifact {
+    /// A single prebuilt executable, installed verbatim.
+    Binary,
+    /// A gzip-compressed tarball.
+    TarballGz,
+    /// An xz-compressed tarball.
+    TarballXz,
+    /// A known archive or installer container the pipeline cannot extract
+    /// (zip, dmg, pkg, msi, bz2 families, …) — refused at plan time
+    /// rather than installed as broken bytes.
+    Unsupported,
+}
+
+#[cfg(feature = "direct")]
+pub(crate) fn direct_artifact(url: &str) -> DirectArtifact {
+    let name = url_asset_name(url).unwrap_or_default().to_ascii_lowercase();
+    let path = std::path::Path::new(&name);
+    let stem_is_tar = || {
+        path.file_stem().is_some_and(|stem| {
+            std::path::Path::new(stem)
+                .extension()
+                .is_some_and(|extension| extension == "tar")
+        })
+    };
+    match path.extension().and_then(std::ffi::OsStr::to_str) {
+        Some(ext) if ext == "tgz" || (ext == "gz" && stem_is_tar()) => DirectArtifact::TarballGz,
+        Some(ext) if ext == "txz" || (ext == "xz" && stem_is_tar()) => DirectArtifact::TarballXz,
+        Some(
+            "zip" | "dmg" | "pkg" | "msi" | "7z" | "rar" | "iso" | "bz2" | "tbz2" | "gz" | "xz",
+        ) => DirectArtifact::Unsupported,
+        _ => DirectArtifact::Binary,
+    }
 }
 
 /// The flatpak arch component of an install ref for a host arch
@@ -2263,6 +2334,87 @@ mod tests {
                 panic!("direct plan carries a direct operation");
             };
             assert_eq!(bin_name, "rg-14.1.0.tar.gz");
+        }
+
+        #[test]
+        fn direct_artifact_classifies_by_extension() {
+            let cases = [
+                ("https://x.test/rg-1.0.tar.gz", DirectArtifact::TarballGz),
+                ("https://x.test/rg.tgz", DirectArtifact::TarballGz),
+                ("https://x.test/rg-1.0.tar.xz", DirectArtifact::TarballXz),
+                ("https://x.test/rg-1.0.txz", DirectArtifact::TarballXz),
+                ("https://x.test/rg", DirectArtifact::Binary),
+                ("https://x.test/rg-1.0-x86_64", DirectArtifact::Binary),
+                ("https://x.test/rg.AppImage", DirectArtifact::Binary),
+                ("https://x.test/rg.zip", DirectArtifact::Unsupported),
+                ("https://x.test/rg-1.0.dmg", DirectArtifact::Unsupported),
+                ("https://x.test/rg.tar.bz2", DirectArtifact::Unsupported),
+                ("https://x.test/rg.tbz2", DirectArtifact::Unsupported),
+                ("https://x.test/rg.gz", DirectArtifact::Unsupported),
+                ("https://x.test/rg.pkg", DirectArtifact::Unsupported),
+                ("https://x.test/rg.msi", DirectArtifact::Unsupported),
+            ];
+            for (url, expected) in cases {
+                assert_eq!(direct_artifact(url), expected, "{url}");
+            }
+        }
+
+        #[test]
+        fn refuses_an_archive_url_the_pipeline_cannot_extract() {
+            let app = direct_app("https://example.com/rg-1.0.zip", None, None, &["rg"]);
+            let error = plan_install(
+                &app,
+                &linux(DistroFamily::Debian),
+                &InstallOptions::default(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::UnsupportedMethod { .. }),
+                "{error:?}"
+            );
+            let text = error.to_string();
+            assert!(text.contains("rg-1.0.zip"), "{text}");
+            assert!(text.contains("cannot extract"), "{text}");
+        }
+
+        #[test]
+        fn bin_name_is_only_ever_a_single_path_component() {
+            let mut app = direct_app("https://example.com/dist/rg-1.0", None, None, &[]);
+            app.binaries = vec!["sub/rg".to_owned()];
+            assert_eq!(
+                direct_bin_name(&app, "https://example.com/dist/rg-1.0"),
+                None
+            );
+            app.binaries = vec!["/etc/evil".to_owned(), "rg".to_owned()];
+            assert_eq!(
+                direct_bin_name(&app, "https://example.com/dist/rg-1.0"),
+                Some("rg".to_owned()),
+                "a declared separator-carrying name is skipped, not trusted"
+            );
+            app.binaries = Vec::new();
+            assert_eq!(direct_bin_name(&app, "https://example.com/a/.."), None);
+            assert_eq!(direct_bin_name(&app, "https://example.com/a/b/"), None);
+            assert_eq!(
+                direct_bin_name(&app, "https://example.com/a/rg"),
+                Some("rg".to_owned()),
+                "an ordinary asset name still installs"
+            );
+        }
+
+        #[test]
+        fn refuses_a_declared_binary_name_that_escapes_the_install_dir() {
+            let app = direct_app("https://example.com/dist/rg-1.0", None, None, &["sub/rg"]);
+            let error = plan_install(
+                &app,
+                &linux(DistroFamily::Debian),
+                &InstallOptions::default(),
+            )
+            .unwrap_err();
+            assert!(
+                matches!(error, Error::UnsupportedMethod { .. }),
+                "{error:?}"
+            );
+            assert!(error.to_string().contains("single file"), "{error}");
         }
 
         #[test]
