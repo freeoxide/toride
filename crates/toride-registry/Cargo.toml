@@ -10,8 +10,8 @@ repository.workspace = true
 default = ["http"]
 # The fetch half (reqwest + gzip + the tokio offloading they ride); the
 # pure parse half builds fully without it, so `default-features = false`
-# inherits none of the three.
-http = ["dep:reqwest", "dep:flate2", "dep:tokio"]
+# inherits none of the four.
+http = ["dep:reqwest", "dep:flate2", "dep:tokio", "dep:dirs"]
 
 [dependencies]
 serde = { workspace = true }
@@ -27,7 +27,7 @@ tokio = { workspace = true, optional = true }
 camino = { workspace = true }
 # Platform cache dir for the homebrew catalog-index cache (`http` only;
 # the parse half never touches the filesystem).
-dirs = { workspace = true }
+dirs = { workspace = true, optional = true }
 # DEP-11 YAML catalogs (appstream.rs); upstream serde_yaml is archived,
 # swap the backend behind the `&str -> Result<Dep11Catalog>` signature if
 # that blocks (DESIGN.md §9, appstream.md §6).

@@ -141,10 +141,10 @@ struct CaskPayload {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CaskArtifactEntry {
-    /// Payload paths of a `binary` stanza (linked into
-    /// `$HOMEBREW_PREFIX/bin`); may contain `$APPDIR`/`$HOMEBREW_PREFIX`
-    /// placeholders.
-    binary: Vec<String>,
+    /// Payload items of a `binary` stanza, kept raw: the live catalog
+    /// ships plain path strings (`$APPDIR/…`, `$HOMEBREW_PREFIX/…`) and
+    /// `{"target": …}` link maps in one array.
+    binary: Vec<Value>,
 }
 
 /// The cask `depends_on` object. Only the `macos` comparison map is read;
@@ -423,13 +423,20 @@ fn path_basename(path: &str) -> &str {
 }
 
 /// The `binaries` extraction pinned by DESIGN.md §4.1: for every `binary`
-/// artifact stanza, the basename of each payload string, deduplicated, in
-/// payload order (vscode → `["code", "code-tunnel"]`, brave → `[]`).
+/// stanza, the basename of each payload string — or of a `{"target": …}`
+/// payload's target, same rule — deduplicated, in payload order.
 fn binaries_from_cask_artifacts(entries: &[CaskArtifactEntry]) -> Vec<String> {
     let mut binaries: Vec<String> = Vec::new();
     for entry in entries {
         for payload in &entry.binary {
-            let name = path_basename(payload);
+            let name = match payload {
+                Value::String(path) => path_basename(path),
+                Value::Object(map) => match map.get("target") {
+                    Some(Value::String(target)) => path_basename(target),
+                    _ => continue,
+                },
+                _ => continue,
+            };
             if !binaries.iter().any(|known| known == name) {
                 binaries.push(name.to_owned());
             }
@@ -755,18 +762,23 @@ fn index_parse_error(id: &str, error: &serde_json::Error) -> Error {
 /// The hit cap [`search_index`] serves one query with.
 pub const MAX_SEARCH_HITS: usize = 50;
 
-/// Case-insensitive search over index apps by token, name, aliases, and
-/// summary — ranked exact < prefix < substring, id tie-break, capped at
-/// [`MAX_SEARCH_HITS`]; an empty or whitespace query returns no hits.
+/// Case-insensitive free-text search by token, name, aliases, and
+/// summary — every whitespace-separated word must match, a hit ranks by
+/// its worst word (exact < prefix < substring), capped, empty → none.
 #[must_use]
 pub fn search_index(apps: &[App], query: &str) -> Vec<App> {
-    let needle = query.trim().to_lowercase();
-    if needle.is_empty() {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
         return Vec::new();
     }
     let mut hits: Vec<(u8, &App)> = apps
         .iter()
-        .filter_map(|app| match_tier(app, &needle).map(|tier| (tier, app)))
+        .filter_map(|app| {
+            let rank = words.iter().try_fold(0u8, |worst, word| {
+                match_tier(app, word).map(|tier| worst.max(tier))
+            })?;
+            Some((rank, app))
+        })
         .collect();
     hits.sort_by(|left, right| {
         left.0
@@ -833,6 +845,11 @@ pub struct HomebrewClient {
 #[cfg(feature = "http")]
 pub const INDEX_CACHE_TTL: Duration = Duration::from_hours(1);
 
+/// Per-request timeout for the catalog-index downloads (tens of MB);
+/// the shared client default budgets per-item payloads of a few KB.
+#[cfg(feature = "http")]
+pub const INDEX_FETCH_TIMEOUT: Duration = Duration::from_secs(600);
+
 #[cfg(feature = "http")]
 impl HomebrewClient {
     /// Builds a client caching under the platform cache dir when one
@@ -888,10 +905,13 @@ impl HomebrewClient {
                 return Ok(text);
             }
         }
-        let body = self.fetch_body(url).await?.ok_or_else(|| Error::Http {
-            url: url.to_owned(),
-            message: "HTTP 404: catalog index missing".to_owned(),
-        })?;
+        let body = self
+            .fetch_body_with_timeout(url, INDEX_FETCH_TIMEOUT)
+            .await?
+            .ok_or_else(|| Error::Http {
+                url: url.to_owned(),
+                message: "HTTP 404: catalog index missing".to_owned(),
+            })?;
         let Some(path) = cache_path else {
             return Ok(body);
         };
@@ -996,6 +1016,15 @@ impl HomebrewClient {
     /// current [`Error::Http`] carries the cause as text in `message`
     /// (error.rs documents the future typed `#[source]` upgrade).
     async fn fetch_body(&self, url: &str) -> Result<Option<String>> {
+        self.fetch_body_with_timeout(url, crate::http::HTTP_TIMEOUT)
+            .await
+    }
+
+    async fn fetch_body_with_timeout(
+        &self,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<Option<String>> {
         let http_err = |message: String| Error::Http {
             url: url.to_owned(),
             message,
@@ -1003,6 +1032,7 @@ impl HomebrewClient {
         let response = self
             .http
             .get(url)
+            .timeout(timeout)
             .send()
             .await
             .map_err(|err| http_err(err.to_string()))?;
@@ -1493,6 +1523,33 @@ mod tests {
     }
 
     #[test]
+    fn cask_binary_stanzas_parse_the_live_string_and_target_map_shapes() {
+        let payload = r#"{
+            "token": "alacritty", "name": ["Alacritty"], "version": "1",
+            "url": "https://example.com/a", "sha256": "x",
+            "artifacts": [
+                {"app": ["Alacritty.app"]},
+                {"binary": ["$APPDIR/Alacritty.app/Contents/MacOS/alacritty",
+                            {"target": "~/.terminfo/61/alacritty"}]},
+                {"binary": [{"target": "/opt/homebrew/bin/extra"}, 42,
+                            {"target": 7}, {"unrelated": "map"}]}
+            ]
+        }"#;
+        let app = parse_cask_json(payload).expect("the live mixed shapes must parse");
+        assert_eq!(
+            app.binaries,
+            vec!["alacritty".to_owned(), "extra".to_owned(),],
+            "string payloads and target-map payloads yield basenames; \
+             non-string targets and other values are skipped"
+        );
+
+        let index = format!("[{payload}]");
+        let apps = parse_cask_index(&index).expect("the live shapes parse in the index too");
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].binaries, app.binaries);
+    }
+
+    #[test]
     fn formula_without_bottle_has_unknown_platforms_and_only_a_source_artifact() {
         let payload = r#"{
             "name": "tiny", "versions": {"stable": "0.1.0"},
@@ -1733,6 +1790,44 @@ mod tests {
     }
 
     #[test]
+    fn search_matches_free_text_queries_word_by_word() {
+        let apps = vec![
+            index_app(
+                "firefox",
+                "Mozilla Firefox",
+                &[],
+                Some("The fast, private web browser"),
+            ),
+            index_app("code", "Code", &[], None),
+            index_app(
+                "visual-studio-code",
+                "Microsoft Visual Studio Code",
+                &[],
+                None,
+            ),
+        ];
+        assert_eq!(
+            install_tokens(&search_index(&apps, "firefox browser")),
+            ["firefox".to_owned()],
+            "each word matches a different field of the same app"
+        );
+        assert_eq!(
+            install_tokens(&search_index(&apps, "VISUAL   studio\tcode")),
+            ["visual-studio-code".to_owned()],
+            "whitespace-separated words, any casing"
+        );
+        assert!(
+            search_index(&apps, "firefox spreadsheet").is_empty(),
+            "every word must match — one unmatched word excludes the app"
+        );
+        assert_eq!(
+            install_tokens(&search_index(&apps, "studio code")),
+            ["visual-studio-code".to_owned()],
+            "'code' alone matches the bare code app, but 'studio' excludes it"
+        );
+    }
+
+    #[test]
     fn search_caps_at_max_hits() {
         let apps: Vec<App> = (0..60)
             .map(|number| index_app(&format!("tool-{number:02}"), "Synthetic Tool", &[], None))
@@ -1752,7 +1847,7 @@ mod index_cache_tests {
     use super::{HomebrewAdapter, INDEX_CACHE_TTL, probe_index_cache, write_index_cache};
     use crate::adapter::Adapter as _;
 
-    const SYNTHETIC_CASK_INDEX: &str = r#"[{"token":"toride-probe-cask","name":["Toride Probe Cask"],"version":"1.0","desc":"Synthetic cask for offline cache tests"}]"#;
+    const SYNTHETIC_CASK_INDEX: &str = r#"[{"token":"toride-probe-cask","name":["Toride Probe Cask"],"version":"1.0","desc":"Synthetic cask for offline cache tests","artifacts":[{"binary":["$APPDIR/Probe.app/Contents/MacOS/toride-probe-bin",{"target":"/opt/homebrew/bin/toride-probe-target"}]}]}]"#;
     const SYNTHETIC_FORMULA_INDEX: &str = r#"[{"name":"toride-probe-formula","versions":{"stable":"0.1.0"},"desc":"Synthetic formula for offline cache tests"}]"#;
 
     fn scratch(label: &str) -> camino::Utf8PathBuf {
@@ -1787,6 +1882,14 @@ mod index_cache_tests {
             ids,
             ["toride-probe-cask", "toride-probe-formula"],
             "only the seeded synthetic index can answer with these tokens"
+        );
+        assert_eq!(
+            hits[0].binaries,
+            [
+                "toride-probe-bin".to_owned(),
+                "toride-probe-target".to_owned()
+            ],
+            "the seeded mixed string/target-map binary stanza parses through the cache path"
         );
     }
 
@@ -1989,6 +2092,15 @@ mod integration_tests {
         assert!(
             dir.join("homebrew/cask.json").exists() && dir.join("homebrew/formula.json").exists(),
             "both catalog payloads landed in the cache dir"
+        );
+
+        let browser_hits = adapter
+            .search("firefox browser")
+            .await
+            .expect("the in-memory index serves follow-up searches");
+        assert!(
+            browser_hits.iter().any(|app| app.id.as_str() == "firefox"),
+            "a free-text query matches per word across the cask's fields"
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -141,10 +141,9 @@ impl Registry {
             .map(|failures| SearchOutcome { apps, failures })
     }
 
-    /// Resolve `id` through every adapter, merging the `sources` rows of
-    /// every hit into one deduplicated list (empty = no source knows the
-    /// id). Errors: [`Error::AllSourcesFailed`] when every registered
-    /// source failed.
+    /// Resolve `id` per adapter under its own source kind, keyed on the slug
+    /// (dotted ids resolve only on slug coincidence), merging hits' `sources`
+    /// rows deduped; empty = unknown; all failed → [`Error::AllSourcesFailed`].
     pub async fn resolve(&self, id: &crate::model::TorideId) -> Result<Vec<SourceRef>> {
         let mut rows: Vec<SourceRef> = Vec::new();
         let mut failures = Vec::new();
@@ -237,8 +236,8 @@ impl Registry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlannedOp {
     /// argv for the native manager (`brew`, `flatpak`, `apt`, …) —
-    /// program first, the install argv only (no suppression flags; the
-    /// executor layers those).
+    /// program first, the install argv only: no suppression flags and no
+    /// one-time setup (flatpak's `remote-add`); the executor layers those.
     Command {
         /// The manager binary to run.
         program: String,
