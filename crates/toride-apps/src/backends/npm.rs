@@ -53,14 +53,14 @@ impl NpmBackend {
 
     async fn installed_apps(&self) -> Result<Vec<InstalledApp>> {
         let spec = command(NPM, ["list", "--global", "--depth=0", "--json"]);
-        let output = self.runner.run_checked(spec).await?;
-        parse_npm_list(&output.stdout)
+        let output = self.runner.run(spec).await?;
+        listing_from_npm_output(&output)
     }
 
     fn installed_apps_sync(&self) -> Result<Vec<InstalledApp>> {
         let spec = command(NPM, ["list", "--global", "--depth=0", "--json"]);
-        let output = self.runner.run_checked_sync(spec)?;
-        parse_npm_list(&output.stdout)
+        let output = self.runner.run_sync(spec)?;
+        listing_from_npm_output(&output)
     }
 }
 
@@ -187,6 +187,20 @@ impl Backend for NpmBackend {
         let output = self.runner.run_checked_sync(spec)?;
         parse_npm_latest(&output.stdout)
     }
+}
+
+fn listing_from_npm_output(output: &toride_runner::CommandOutput) -> Result<Vec<InstalledApp>> {
+    if output.stdout.trim().is_empty() {
+        if output.success {
+            return Ok(Vec::new());
+        }
+        return Err(Error::Command(toride_runner::Error::Other(format!(
+            "npm list --global exited {:?} with no JSON document: {}",
+            output.exit_code,
+            output.stderr.trim()
+        ))));
+    }
+    parse_npm_list(&output.stdout)
 }
 
 fn parse_npm_list(stdout: &str) -> Result<Vec<InstalledApp>> {
@@ -518,6 +532,66 @@ mod tests {
         let all = backend.list_installed(ListQuery::all()).await.unwrap();
         assert_eq!(all.len(), 2);
         fake.assert_called_with(&list_spec());
+    }
+
+    #[tokio::test]
+    async fn list_installed_answers_from_a_problems_tree_that_exits_one() {
+        let document = r#"{
+  "name": "lib",
+  "problems": [
+    "unmet dependency left-pad@^1.3.0"
+  ],
+  "dependencies": {
+    "typescript": { "version": "5.4.5", "overridden": false },
+    "broken": {
+      "version": "1.0.0",
+      "problems": ["UNMET DEPENDENCY left-pad@^1.3.0"]
+    }
+  }
+}"#;
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                list_spec(),
+                toride_runner::CommandOutput::new(document.to_owned(), String::new(), Some(1)),
+            )
+            .respond(
+                list_spec(),
+                toride_runner::CommandOutput::new(document.to_owned(), String::new(), Some(1)),
+            );
+        let backend = backend(&fake);
+        let apps = backend.list_installed(ListQuery::all()).await.unwrap();
+        assert_eq!(
+            apps,
+            [
+                InstalledApp {
+                    id: "broken".to_owned(),
+                    version: Some("1.0.0".to_owned())
+                },
+                InstalledApp {
+                    id: "typescript".to_owned(),
+                    version: Some("5.4.5".to_owned())
+                }
+            ],
+            "an ELSPROBLEMS exit never discards a complete document"
+        );
+        assert_eq!(
+            backend.list_installed_sync(ListQuery::all()).unwrap(),
+            apps,
+            "the sync twin answers the same way"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_installed_maps_a_failed_run_with_no_document_to_command_error() {
+        let fake = FakeRunner::new().strict().respond(
+            list_spec(),
+            toride_runner::CommandOutput::from_stderr("npm ERR! code ELSPROBLEMS", 1),
+        );
+        let backend = backend(&fake);
+        let error = backend.list_installed(ListQuery::all()).await.unwrap_err();
+        assert!(matches!(error, Error::Command(_)), "{error:?}");
+        assert!(error.to_string().contains("no JSON document"), "{error}");
     }
 
     #[tokio::test]
