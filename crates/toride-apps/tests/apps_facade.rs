@@ -16,13 +16,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use toride_apps::apps::{
-    AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsError, EnsureAppOutcome,
-    UninstallAppOutcome, UpdateOutcome,
+    AdoptProvenance, AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsError,
+    EnsureAppOutcome, UninstallAppOutcome, UpdateOutcome,
 };
 use toride_apps::backends::flatpak::FLATHUB_REPO_URL;
 use toride_apps::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
-use toride_apps::manifest::{InstallManifest, InstallRecord, ManifestError, NativeIds};
+use toride_apps::manifest::{
+    InstallManifest, InstallRecord, ManifestResult, NativeIds, RecordSnapshot,
+};
 use toride_apps::runner::{CommandRunner, command};
+use toride_apps::store::{RecordStore, StoreLoad};
 use toride_apps::{AppStatus, BackendId, Target, Version};
 use toride_registry::model::{App, InstallMethod, SourceKind, SourceRef};
 use toride_registry::{Adapter, Availability, DistroFamily, TorideId};
@@ -939,7 +942,12 @@ async fn ensure_installed_distro_with_the_grant_installs_and_post_verifies_via_d
     // carried (the record's source note).
     let reloaded = InstallManifest::load(&path).expect("manifest reloads");
     let record = reloaded.get(&id("brave")).expect("record present");
-    assert!(record.plan.requires_elevation);
+    assert!(
+        record
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.requires_elevation)
+    );
     assert_eq!(record.version.as_deref(), Some("1.4.2"));
 }
 
@@ -1137,6 +1145,7 @@ async fn ensure_installed_apk_with_the_grant_installs_and_records_without_a_vers
 fn seed_cask_record(path: &Utf8PathBuf, token: &str) {
     let mut manifest = InstallManifest::at(path);
     manifest.record(
+        &id("firefox"),
         InstallRecord::new(
             toride_apps::InstallPlan {
                 app: id("firefox"),
@@ -1163,6 +1172,7 @@ fn seed_cask_record(path: &Utf8PathBuf, token: &str) {
 fn seed_formula_record(path: &Utf8PathBuf, token: &str) {
     let mut manifest = InstallManifest::at(path);
     manifest.record(
+        &id("ripgrep"),
         InstallRecord::new(
             toride_apps::InstallPlan {
                 app: id("ripgrep"),
@@ -1190,6 +1200,7 @@ fn seed_formula_record(path: &Utf8PathBuf, token: &str) {
 fn seed_distro_record(path: &Utf8PathBuf) {
     let mut manifest = InstallManifest::at(path);
     manifest.record(
+        &id("brave"),
         InstallRecord::new(
             toride_apps::InstallPlan {
                 app: id("brave"),
@@ -1314,6 +1325,7 @@ async fn uninstall_of_a_flatpak_record_survives_an_already_absent_target() {
     let path = temp_manifest_path("uninstall-flatpak");
     let mut manifest = InstallManifest::at(&path);
     manifest.record(
+        &id("brave"),
         InstallRecord::new(
             toride_apps::InstallPlan {
                 app: id("brave"),
@@ -1566,32 +1578,111 @@ async fn uninstall_of_an_app_with_nothing_installed_is_already_absent() {
 }
 
 // ---------------------------------------------------------------------------
-// Hard stop — corrupt (newer-toride) manifest
+// Quarantine — corrupt (newer-toride) manifest recovers instead of stopping
 // ---------------------------------------------------------------------------
 
 #[tokio::test]
-async fn a_corrupt_newer_toride_manifest_fails_the_build_and_is_never_overwritten() {
+async fn a_corrupt_newer_toride_manifest_is_quarantined_the_build_recovers_and_saves_fresh() {
     let path = temp_manifest_path("corrupt-newer");
     let future_doc = r#"{"version":99,"entries":{"brave":{"something":"new"}}}"#;
     std::fs::write(path.as_std_path(), future_doc).expect("seed the future manifest");
 
-    let Err(error) = Apps::builder().manifest_path(&path).build() else {
-        panic!("a newer-toride manifest must hard-stop the build");
-    };
+    let apps = Apps::builder()
+        .manifest_path(&path)
+        .build()
+        .expect("a corrupt manifest is quarantined, never a fatal stop");
+    assert!(apps.records().is_empty(), "the facade starts from empty");
+    let quarantined = apps
+        .quarantined()
+        .expect("the recovery is surfaced")
+        .clone();
+    assert_ne!(quarantined, path);
     assert!(
-        matches!(error, AppsError::Manifest(ManifestError::Corrupt(_))),
-        "{error:?}"
+        quarantined
+            .file_name()
+            .is_some_and(|name| name.contains(".corrupt-")),
+        "recognizable quarantine name: {quarantined}"
+    );
+    assert_eq!(
+        std::fs::read_to_string(quarantined.as_std_path()).unwrap(),
+        future_doc,
+        "the unreadable bytes stay on disk for inspection"
     );
     assert!(
-        error.to_string().contains("newer toride"),
-        "the wording the A5 round pinned: {error}"
+        !path.as_std_path().exists(),
+        "the original slot is free for the fresh document"
     );
 
-    // The document is byte-identical — never saved over.
+    // The recovered facade operates: a full install writes a fresh,
+    // loadable manifest at the original path, and the quarantined bytes
+    // are untouched by that save.
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(EMPTY_BREW_INFO),
+        )
+        .respond(
+            brew_install_cask_spec("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let mut apps = Apps::builder()
+        .runner(CommandRunner::new(std::sync::Arc::new(fake.clone())))
+        .target(macos())
+        .manifest_path(&path)
+        .homebrew(HomebrewBackend::new(CommandRunner::new(
+            std::sync::Arc::new(fake.clone()),
+        )))
+        .flatpak(FlatpakBackend::new(CommandRunner::new(
+            std::sync::Arc::new(fake.clone()),
+        )))
+        .distro(DistroBackend::new(
+            DistroFamily::Debian,
+            CommandRunner::new(std::sync::Arc::new(fake.clone())),
+        ))
+        .adapter(adapter)
+        .build()
+        .expect("the recovered path builds");
+    assert!(
+        matches!(
+            apps.ensure_installed(&id("firefox"), AppInstallOptions::new())
+                .await,
+            Ok(EnsureAppOutcome::Installed { .. })
+        ),
+        "the facade operates after the recovery"
+    );
+    fake.assert_no_unmatched_calls();
+    let reloaded = InstallManifest::load(&path).expect("the fresh document loads");
     assert_eq!(
-        std::fs::read_to_string(path.as_std_path()).expect("file still readable"),
+        reloaded
+            .get(&id("firefox"))
+            .expect("record present")
+            .version,
+        Some("138.0.1".to_owned())
+    );
+    assert_eq!(
+        std::fs::read_to_string(quarantined.as_std_path()).unwrap(),
         future_doc,
-        "a corrupt manifest is a hard stop, never auto-saved"
+        "the quarantined bytes survive the fresh save"
     );
 }
 
@@ -1737,6 +1828,7 @@ async fn a_manifest_save_failure_after_a_successful_install_is_a_warning_not_a_f
 fn seed_flatpak_record(path: &Utf8PathBuf) {
     let mut manifest = InstallManifest::at(path);
     manifest.record(
+        &id("brave"),
         InstallRecord::new(
             toride_apps::InstallPlan {
                 app: id("brave"),
@@ -1862,10 +1954,12 @@ async fn update_brew_cask_stale_runs_the_upgrade_and_rewrites_the_manifest_versi
             cask: true,
         }
     );
-    assert!(matches!(
-        record.plan.operation,
-        toride_apps::Operation::BrewInstall { .. }
-    ));
+    assert!(
+        record.plan.as_ref().is_some_and(|plan| matches!(
+            plan.operation,
+            toride_apps::Operation::BrewInstall { .. }
+        ))
+    );
 }
 
 #[tokio::test]
@@ -2040,7 +2134,10 @@ async fn update_distro_record_with_the_grant_runs_only_upgrade_and_rewrites_the_
     let record = reloaded.get(&id("brave")).expect("record survives");
     assert_eq!(record.version.as_deref(), Some("1.5.0"));
     assert!(
-        record.plan.requires_elevation,
+        record
+            .plan
+            .as_ref()
+            .is_some_and(|plan| plan.requires_elevation),
         "the record keeps its original install plan"
     );
 }
@@ -2839,6 +2936,7 @@ async fn ensure_installed_at_the_recorded_flatpak_branch_is_already_present() {
     let path = temp_manifest_path("version-branch-match");
     let mut manifest = InstallManifest::at(&path);
     manifest.record(
+        &id("brave"),
         InstallRecord::new(
             toride_apps::InstallPlan {
                 app: id("brave"),
@@ -3153,4 +3251,417 @@ async fn search_fans_out_across_the_registered_adapters_in_order() {
     );
     // Search is registry-only: zero runner calls.
     assert!(fake.calls().is_empty());
+}
+
+// ---------------------------------------------------------------------------
+// Adopt — claim a detected-but-unrecorded install
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn adopt_claims_a_foreign_install_and_the_uninstall_stops_refusing() {
+    let path = temp_manifest_path("adopt-foreign");
+    // The confirming probe, then the post-adopt uninstall and its
+    // absence verify.
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        .respond(
+            brew_uninstall_cask_spec("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            brew_silent_absent(),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let mut apps = facade(&fake, macos(), &path, vec![adapter.clone()]);
+
+    let record = apps
+        .adopt(
+            &id("firefox"),
+            AdoptProvenance::new(NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: true,
+            }),
+        )
+        .await
+        .expect("a detected cask is claimable");
+    assert_eq!(record.plan, None, "adoption executed no plan");
+    assert_eq!(record.backend, BackendId::Homebrew);
+    assert_eq!(record.version.as_deref(), Some("138.0.1"));
+    assert_eq!(
+        adapter.lookups().len(),
+        0,
+        "adoption is bookkeeping — zero adapter calls"
+    );
+
+    // The persisted record carries a null plan and the probed version.
+    let document: serde_json::Value = serde_json::from_str(
+        &std::fs::read_to_string(path.as_std_path()).expect("manifest file written"),
+    )
+    .expect("manifest file is JSON");
+    assert_eq!(document["apps"]["firefox"]["plan"], serde_json::json!(null));
+    assert_eq!(
+        document["apps"]["firefox"]["version"],
+        serde_json::json!("138.0.1")
+    );
+
+    // The claimed install uninstalls WITHOUT force — the exact refusal
+    // (ForeignNotManaged) adoption exists to retire.
+    let outcome = apps
+        .uninstall(&id("firefox"), AppUninstallOptions::new())
+        .await
+        .expect("an adopted install is toride-managed");
+    assert!(matches!(
+        outcome,
+        UninstallAppOutcome::Removed {
+            backend: BackendId::Homebrew,
+            warning: None,
+            ..
+        }
+    ));
+    fake.assert_called_with(&brew_uninstall_cask_spec("firefox"));
+    fake.assert_no_unmatched_calls();
+    assert!(InstallManifest::load(&path).expect("reload").is_empty());
+}
+
+#[tokio::test]
+async fn adopt_honors_a_callers_install_stamp() {
+    let path = temp_manifest_path("adopt-stamp");
+    let fake = FakeRunner::new().strict().respond(
+        flatpak_list_spec(Some("--user")),
+        CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.2.3")),
+    );
+    let adapter = FixtureAdapter::new(SourceKind::Flathub, Vec::new());
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let mut provenance = AdoptProvenance::new(NativeIds::Flatpak {
+        app_id: "com.brave.Browser".to_owned(),
+        app_ref: None,
+        installation: toride_apps::FlatpakInstallation::User,
+    });
+    provenance.installed_at = Some(1_600_000_000);
+    let record = apps
+        .adopt(&id("brave"), provenance)
+        .await
+        .expect("a detected flatpak is claimable");
+    assert_eq!(record.installed_at, 1_600_000_000);
+    assert_eq!(record.plan, None);
+    assert_eq!(record.version.as_deref(), Some("1.2.3"));
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn adopt_on_an_already_recorded_app_is_a_typed_error_and_dispatches_nothing() {
+    let path = temp_manifest_path("adopt-recorded");
+    seed_cask_record(&path, "firefox");
+    let fake = FakeRunner::new().strict();
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let error = apps
+        .adopt(
+            &id("firefox"),
+            AdoptProvenance::new(NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: true,
+            }),
+        )
+        .await
+        .expect_err("a managed app is not adoptable");
+    assert!(
+        matches!(error, AppsError::AlreadyRecorded { .. }),
+        "{error:?}"
+    );
+    assert!(fake.calls().is_empty(), "no probe may run");
+    // The existing record is untouched.
+    assert!(
+        InstallManifest::load(&path)
+            .expect("reload")
+            .get(&id("firefox"))
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn adopt_of_an_absent_install_is_a_typed_error_and_records_nothing() {
+    let path = temp_manifest_path("adopt-absent");
+    let fake = FakeRunner::new().strict().respond(
+        brew_versions_spec("--cask", "firefox"),
+        brew_silent_absent(),
+    );
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    let error = apps
+        .adopt(
+            &id("firefox"),
+            AdoptProvenance::new(NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: true,
+            }),
+        )
+        .await
+        .expect_err("adoption claims an install that exists");
+    assert!(
+        matches!(error, AppsError::AdoptionAbsent { .. }),
+        "{error:?}"
+    );
+    let text = error.to_string();
+    assert!(text.contains("cask `firefox` is not present"), "{text}");
+    fake.assert_no_unmatched_calls();
+    assert!(apps.records().is_empty(), "nothing was recorded");
+    assert!(
+        !path.as_std_path().exists(),
+        "no manifest document was written"
+    );
+}
+
+#[tokio::test]
+async fn adopt_on_a_distro_package_probes_the_recorded_family_and_persists() {
+    let path = temp_manifest_path("adopt-distro");
+    let fake = FakeRunner::new().strict().respond(
+        dpkg_query_spec("brave-browser"),
+        CommandOutput::from_stdout("ii brave-browser\t1.4.2\n"),
+    );
+    let adapter = FixtureAdapter::new(SourceKind::Distro, Vec::new());
+    let mut apps = facade(&fake, linux(DistroFamily::Debian), &path, vec![adapter]);
+
+    let record = apps
+        .adopt(
+            &id("brave"),
+            AdoptProvenance::new(NativeIds::Distro {
+                package: "brave-browser".to_owned(),
+                family: DistroFamily::Debian,
+            }),
+        )
+        .await
+        .expect("a detected package is claimable");
+    assert_eq!(record.backend, BackendId::Distro(DistroFamily::Debian));
+    assert_eq!(record.version.as_deref(), Some("1.4.2"));
+    fake.assert_no_unmatched_calls();
+    assert_eq!(
+        InstallManifest::load(&path)
+            .expect("reload")
+            .get(&id("brave"))
+            .expect("record persisted")
+            .plan,
+        None
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Custom record store — the embedder seam
+// ---------------------------------------------------------------------------
+
+/// An in-memory record store shared across facade instances: the shape an
+/// embedder mirrors its own receipts through.
+struct MapStore {
+    snapshot: Mutex<RecordSnapshot>,
+    saves: Mutex<usize>,
+}
+
+impl MapStore {
+    fn save_count(&self) -> usize {
+        *self.saves.lock().expect("map store poisoned")
+    }
+}
+
+impl RecordStore for MapStore {
+    fn load(&self) -> ManifestResult<StoreLoad> {
+        Ok(StoreLoad {
+            snapshot: self.snapshot.lock().expect("map store poisoned").clone(),
+            quarantined: None,
+        })
+    }
+
+    fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()> {
+        *self.snapshot.lock().expect("map store poisoned") = snapshot.clone();
+        *self.saves.lock().expect("map store poisoned") += 1;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_custom_record_store_replaces_the_manifest_and_needs_no_path() {
+    let map = Arc::new(MapStore {
+        snapshot: Mutex::new(RecordSnapshot::empty()),
+        saves: Mutex::new(0),
+    });
+    let store: Arc<dyn RecordStore> = map.clone();
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(EMPTY_BREW_INFO),
+        )
+        .respond(
+            brew_install_cask_spec("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1"),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1"),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::HomebrewCask,
+        vec![app(
+            "firefox",
+            "Firefox",
+            InstallMethod::Homebrew {
+                cask: true,
+                token: "firefox".to_owned(),
+            },
+        )],
+    );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(macos())
+        .with_record_store(Arc::clone(&store))
+        .homebrew(HomebrewBackend::new(seam.clone()))
+        .flatpak(FlatpakBackend::new(seam.clone()))
+        .distro(DistroBackend::new(DistroFamily::Debian, seam))
+        .adapter(adapter)
+        .build()
+        .expect("a custom store needs no manifest path");
+    assert_eq!(apps.quarantined(), None);
+
+    apps.ensure_installed(&id("firefox"), AppInstallOptions::new())
+        .await
+        .expect("the install flows through the custom store");
+    let snapshot = store.load().unwrap().snapshot;
+    assert_eq!(snapshot.records.len(), 1, "the record landed in the store");
+    assert_eq!(
+        snapshot.records[&id("firefox")].version.as_deref(),
+        Some("138.0.1")
+    );
+    assert!(map.save_count() > 0);
+    fake.assert_no_unmatched_calls();
+
+    // A second facade over the same store sees the record — the ledger is
+    // the store's, not any manifest file's.
+    let fake = FakeRunner::new().strict().respond(
+        brew_versions_spec("--cask", "firefox"),
+        CommandOutput::from_stdout("firefox 138.0.1\n"),
+    );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let apps = Apps::builder()
+        .runner(seam.clone())
+        .target(macos())
+        .with_record_store(Arc::clone(&store))
+        .homebrew(HomebrewBackend::new(seam.clone()))
+        .flatpak(FlatpakBackend::new(seam.clone()))
+        .distro(DistroBackend::new(DistroFamily::Debian, seam))
+        .build()
+        .expect("the second facade builds over the same store");
+    assert_eq!(apps.records().len(), 1);
+    assert_eq!(
+        apps.status(&id("firefox")).await.unwrap(),
+        AppStatus::Installed {
+            backend: BackendId::Homebrew,
+            version: Some("138.0.1".to_owned()),
+        }
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn the_custom_store_receives_whole_snapshots_on_every_mutation() {
+    let map = Arc::new(MapStore {
+        snapshot: Mutex::new(RecordSnapshot::empty()),
+        saves: Mutex::new(0),
+    });
+    let store: Arc<dyn RecordStore> = map.clone();
+    let fake = FakeRunner::new().strict().respond(
+        brew_versions_spec("--cask", "firefox"),
+        CommandOutput::from_stdout("firefox 138.0.1\n"),
+    );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam.clone())
+        .target(macos())
+        .with_record_store(Arc::clone(&store))
+        .homebrew(HomebrewBackend::new(seam.clone()))
+        .build()
+        .expect("facade builds");
+
+    apps.adopt(
+        &id("firefox"),
+        AdoptProvenance::new(NativeIds::Homebrew {
+            token: "firefox".to_owned(),
+            cask: true,
+        }),
+    )
+    .await
+    .expect("adoption persists through the store");
+    let snapshot = store.load().unwrap().snapshot;
+    assert_eq!(snapshot.records.len(), 1);
+    assert_eq!(snapshot.records[&id("firefox")].plan, None);
+    assert_eq!(map.save_count(), 1, "one save per mutation");
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn update_replays_an_adopted_records_identifiers_and_keeps_it_plan_less() {
+    let path = temp_manifest_path("adopt-update");
+    let fake = FakeRunner::new()
+        .strict()
+        // The adoption probe.
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        // The update flow: from-probe, stale signal, upgrade, to-probe.
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
+        )
+        .respond(
+            brew_outdated_spec("--cask"),
+            CommandOutput::from_stdout(firefox_cask_outdated("138.0.1", "139.0")),
+        )
+        .respond(
+            brew_upgrade_cask_spec("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 139.0\n"),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
+    let mut apps = facade(&fake, macos(), &path, vec![adapter]);
+
+    apps.adopt(
+        &id("firefox"),
+        AdoptProvenance::new(NativeIds::Homebrew {
+            token: "firefox".to_owned(),
+            cask: true,
+        }),
+    )
+    .await
+    .expect("claim the detected cask");
+    let outcome = apps
+        .update(&id("firefox"), &AppUpdateOptions::new())
+        .await
+        .expect("an adopted record updates like an executed one");
+    assert_eq!(
+        outcome,
+        UpdateOutcome::Updated {
+            from: Some(Version::new("138.0.1")),
+            to: Some(Version::new("139.0")),
+        }
+    );
+    fake.assert_no_unmatched_calls();
+    let reloaded = InstallManifest::load(&path).expect("manifest reloads");
+    let record = reloaded.get(&id("firefox")).expect("record survives");
+    assert_eq!(record.version.as_deref(), Some("139.0"));
+    assert_eq!(record.plan, None, "still plan-less after the upgrade");
 }

@@ -2,9 +2,9 @@
 //!
 //! [`Apps`] is the front door of the execution layer: one call per user
 //! intent — ensure an app is installed (at a version, when asked), update
-//! it, uninstall it, ask where it stands, search the registries, list the
-//! versions its backend offers, pin and unpin — composing every lower
-//! layer this crate built:
+//! it, uninstall it, adopt an install someone else made, ask where it
+//! stands, search the registries, list the versions its backend offers,
+//! pin and unpin — composing every lower layer this crate built:
 //!
 //! 1. **Detect before resolve** (the toride-installer
 //!    `Detector`/`EnsureOutcome` rule): [`Apps::ensure_installed`] answers
@@ -33,16 +33,19 @@
 //!    succeeded but the manifest failed to save (surfaced, never claimed
 //!    as a failed install).
 //!
-//! ## Hard stops
+//! ## Record store and recovery
 //!
-//! The manifest is loaded once at [`AppsBuilder::build`] and held
-//! in memory (a single-process CLI assumption; concurrent writers are
-//! last-rename-wins per the manifest's contract). A
-//! [`ManifestError::Corrupt`] — above all the "written by a newer toride"
-//! schema rejection — **fails the build and every operation after it**; the
-//! facade never treats a corrupt document as empty and never saves over
-//! one. That is the data-loss path the manifest layer closes; the facade
-//! only re-persists after its own successful mutations.
+//! The durable ledger lives behind a [`RecordStore`]
+//! ([`AppsBuilder::with_record_store`]); the default is the crate's JSON
+//! manifest at the resolved path. It loads once at [`AppsBuilder::build`]
+//! and is held in memory (a single-process CLI assumption; concurrent
+//! writers are last-rename-wins per the manifest's contract). A corrupt
+//! document — above all one written by a newer toride — is **quarantined
+//! aside, never a fatal stop and never saved over**: the facade starts
+//! from empty, [`Apps::quarantined`] names the moved file, and the next
+//! successful mutation writes a fresh document.
+//!
+//! [`RecordStore`]: crate::store::RecordStore
 //!
 //! ## Elevation and Foreign removal
 //!
@@ -53,8 +56,9 @@
 //!   any dispatch.
 //! - Uninstalling an app toride has no record for (a `Foreign` install)
 //!   is refused by default with [`AppsError::ForeignNotManaged`]; pass
-//!   `force` on [`AppUninstallOptions`] to remove it anyway — an explicit,
-//!   typed decision, never a silent one.
+//!   `force` on [`AppUninstallOptions`] to remove it anyway, or
+//!   [`Apps::adopt`] it first to claim the install — both explicit, typed
+//!   decisions, never silent ones.
 //!
 //! ## Example
 //!
@@ -72,6 +76,7 @@
 //! # }
 //! ```
 
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use camino::Utf8PathBuf;
@@ -87,13 +92,16 @@ use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::{BrewKind, OutdatedScope};
 use crate::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
 use crate::error::Error as BackendError;
-use crate::manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
+use crate::manifest::{
+    InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds, RecordSnapshot,
+};
 use crate::plan::{
     FlatpakInstallation, InstallOptions, InstallPlan, Operation, PackageManager, Target,
     UninstallOptions, UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 use crate::runner::CommandRunner;
 use crate::status::{AppStatus, BackendSet, app_status};
+use crate::store::{JsonRecordStore, RecordStore, StoreLoad};
 
 // ---------------------------------------------------------------------------
 // Errors
@@ -168,13 +176,34 @@ pub enum AppsError {
         operation: String,
     },
 
-    /// The builder found no manifest to bind: no path was set and the
-    /// platform data directory (the manifest's default location) did not
-    /// resolve. Pass an explicit path.
+    /// The builder found no manifest to bind: no record store was
+    /// supplied, no path was set, and the platform data directory (the
+    /// manifest's default location) did not resolve. Pass an explicit
+    /// path or a record store.
     #[error(
-        "no manifest path: the platform data directory did not resolve; pass an explicit path to the builder"
+        "no manifest path: the platform data directory did not resolve; pass an explicit path or a record store to the builder"
     )]
     NoManifestPath,
+
+    /// The adopt target already carries a toride record: adoption claims
+    /// installs toride never recorded, so a managed app is a caller
+    /// mistake, not a state change.
+    #[error("cannot adopt `{id}`: toride already has a record for it")]
+    AlreadyRecorded {
+        /// Canonical toride id of the app.
+        id: String,
+    },
+
+    /// The adopt provenance names identifiers no attached backend reports
+    /// present: adoption claims a detected install, so an absent one is
+    /// refused rather than recorded.
+    #[error("cannot adopt `{id}`: {detail}")]
+    AdoptionAbsent {
+        /// Canonical toride id of the app.
+        id: String,
+        /// What the confirming probe found absent.
+        detail: String,
+    },
 
     /// The update target carries no toride install record: update replays
     /// the record's own identifiers, so an app toride never recorded
@@ -401,6 +430,31 @@ pub struct UpdatePreview {
     pub to: Option<Version>,
 }
 
+/// What [`Apps::adopt`] claims: the backend-native identifiers of the
+/// detected install, plus the install time when the detection knows one
+/// (the adoption moment otherwise).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdoptProvenance {
+    /// The detected install's backend-native identifiers — the identity
+    /// every later uninstall/update replays, exactly like an executed
+    /// record's.
+    pub ids: NativeIds,
+    /// When the claimed install happened, when the caller knows it (a
+    /// mirrored receipt's stamp); `None` stamps the adoption moment.
+    pub installed_at: Option<u64>,
+}
+
+impl AdoptProvenance {
+    /// Claim `ids`, installed at an unknown time.
+    #[must_use]
+    pub fn new(ids: NativeIds) -> Self {
+        Self {
+            ids,
+            installed_at: None,
+        }
+    }
+}
+
 /// Outcome of [`Apps::ensure_installed`] — the toride-installer
 /// `EnsureOutcome` semantics on this crate's seams: an already-satisfying
 /// state is kept with zero resolve/plan/execute work; a true miss is
@@ -490,10 +544,11 @@ struct AttachedBackends {
 
 /// The app install/uninstall front door: registry adapters for resolve,
 /// the planner for exact operations, the attached backends for execution,
-/// and the install manifest as the durable record of what toride did.
+/// and a [`RecordStore`] as the durable record of what toride did (the
+/// default is the crate's JSON manifest).
 ///
 /// Build one with [`Apps::builder`]; mutating operations take `&mut self`
-/// (the in-memory manifest is single-owner by design — see the module
+/// (the in-memory records are single-owner by design — see the module
 /// docs), while [`Apps::status`] and [`Apps::search`] take `&self`.
 pub struct Apps {
     /// The seam every attached backend executes through (each backend
@@ -504,9 +559,16 @@ pub struct Apps {
     target: Target,
     /// The long-lived backends, one optional slot per technology.
     backends: AttachedBackends,
-    /// The durable record of what toride installed on this host, loaded
-    /// once at build (missing file = empty; corrupt = the hard stop).
-    manifest: InstallManifest,
+    /// The durable ledger persistence — loaded once at build, saved after
+    /// each successful mutation.
+    store: Arc<dyn RecordStore>,
+    /// The working records, loaded from the store at build (missing
+    /// store = empty; corrupt prior state = quarantined, see the module
+    /// docs).
+    records: BTreeMap<TorideId, InstallRecord>,
+    /// Where a corrupt prior store document was quarantined at build;
+    /// `None` when the store loaded cleanly.
+    quarantined: Option<Utf8PathBuf>,
     /// Registry adapters, consulted in registration order for resolve and
     /// fanned out for search.
     adapters: Vec<Arc<dyn Adapter>>,
@@ -531,11 +593,19 @@ impl Apps {
         &self.runner
     }
 
-    /// The install manifest this facade holds (loaded at build; mutated by
-    /// [`Apps::ensure_installed`] / [`Apps::uninstall`]).
+    /// The working records this facade holds, ordered by app id (loaded
+    /// from the store at build; mutated by [`Apps::ensure_installed`] /
+    /// [`Apps::uninstall`] / [`Apps::adopt`]).
     #[must_use]
-    pub fn manifest(&self) -> &InstallManifest {
-        &self.manifest
+    pub fn records(&self) -> Vec<&InstallRecord> {
+        self.records.values().collect()
+    }
+
+    /// Where a corrupt prior store document was quarantined at build, when
+    /// recovery moved one aside — `None` when the store loaded cleanly.
+    #[must_use]
+    pub fn quarantined(&self) -> Option<&Utf8PathBuf> {
+        self.quarantined.as_ref()
     }
 
     /// Ensure `id` is installed on the host, installing it when missing.
@@ -598,10 +668,10 @@ impl Apps {
         //    confirming backend probe, zero adapter calls — gated on the
         //    requested version when one is named.
         let mut present = false;
-        let recorded = app_status(id, None, &self.manifest, &self.backend_set()).await?;
+        let recorded = app_status(self.records.get(id), None, &self.backend_set()).await?;
         if matches!(recorded, AppStatus::Installed { .. }) {
             present = true;
-            let satisfies = self.manifest.get(id).is_some_and(|record| {
+            let satisfies = self.records.get(id).is_some_and(|record| {
                 requested_version_satisfied(&record.ids, &recorded, options.version.as_ref())
             });
             if satisfies {
@@ -613,10 +683,9 @@ impl Apps {
         // 3. Foreign presence (only meaningful without a record — a record
         //    that failed confirmation in step 1 re-installs below); a
         //    Foreign copy satisfies only a version-less request.
-        if self.manifest.get(id).is_none() {
+        if !self.records.contains_key(id) {
             let native = native_from_method(&app.install);
-            let status =
-                app_status(id, native.as_ref(), &self.manifest, &self.backend_set()).await?;
+            let status = app_status(None, native.as_ref(), &self.backend_set()).await?;
             if let AppStatus::Foreign { .. } = status {
                 if options.version.is_none() {
                     return Ok(EnsureAppOutcome::AlreadyPresent(status));
@@ -656,12 +725,12 @@ impl Apps {
             _ => None,
         };
         let recorded_version = verified_version.or(outcome.version);
-        self.manifest.record(InstallRecord::new(
-            plan,
-            ids.clone(),
-            recorded_version.clone(),
-        ));
-        if let Err(error) = self.save_manifest().await {
+        let record_key = plan.app.clone();
+        self.records.insert(
+            record_key,
+            InstallRecord::new(plan, ids.clone(), recorded_version.clone()),
+        );
+        if let Err(error) = self.save_records().await {
             push_warning(
                 &mut warning,
                 format!("installed, but saving the install manifest failed: {error}"),
@@ -704,19 +773,19 @@ impl Apps {
         id: &TorideId,
         options: AppUninstallOptions,
     ) -> AppsResult<UninstallAppOutcome> {
-        let Some(record) = self.manifest.get(id).cloned() else {
+        let Some(record) = self.records.get(id).cloned() else {
             return self.uninstall_unrecorded(id, options).await;
         };
         // Plan from the record's ids — the executed install's own
         // identifiers, replayed verbatim.
-        let plan = uninstall_plan_from_record(&record, options.zap)?;
+        let plan = uninstall_plan_from_record(id, &record, options.zap)?;
         let backend = self.backend_for(plan.backend)?;
         backend
             .uninstall(UninstallRequest::new(&plan, &self.target).elevated(options.elevated))
             .await?;
         let mut warning = self.verify_absence(&record.ids).await;
-        self.manifest.remove(id);
-        if let Err(error) = self.save_manifest().await {
+        self.records.remove(id);
+        if let Err(error) = self.save_records().await {
             push_warning(
                 &mut warning,
                 format!(
@@ -750,7 +819,7 @@ impl Apps {
                 operation: format!("{:?} carries no native identity", app.install),
             });
         };
-        let status = app_status(id, Some(&native), &self.manifest, &self.backend_set()).await?;
+        let status = app_status(None, Some(&native), &self.backend_set()).await?;
         let present_detail = match status {
             AppStatus::NotInstalled => return Ok(UninstallAppOutcome::AlreadyAbsent),
             AppStatus::Foreign { detail, .. } => detail,
@@ -815,12 +884,12 @@ impl Apps {
                 target: target.to_string(),
             });
         }
-        let Some(record) = self.manifest.get(id).cloned() else {
+        let Some(record) = self.records.get(id).cloned() else {
             return Err(AppsError::UnrecordedUpdate {
                 id: id.as_str().to_owned(),
             });
         };
-        let plan = update_plan_from_record(&record)?.dry_run(options.dry_run);
+        let plan = update_plan_from_record(id, &record)?.dry_run(options.dry_run);
         let backend = self.backend_for(plan.backend)?;
         let native = native_id(&record.ids);
         let from = self.record_installed_version(&record.ids).await?;
@@ -846,10 +915,56 @@ impl Apps {
             .await
             .ok()
             .flatten();
-        self.manifest
-            .record(record.with_version(to.as_ref().map(|version| version.as_str().to_owned())));
-        self.save_manifest().await?;
+        self.records.insert(
+            id.clone(),
+            record.with_version(to.as_ref().map(|version| version.as_str().to_owned())),
+        );
+        self.save_records().await?;
         Ok(UpdateOutcome::Updated { from, to })
+    }
+
+    /// Claim a detected-but-unrecorded install: record `id` as
+    /// toride-managed under the backend-native identifiers `provenance`
+    /// asserts, after one confirming presence probe supplies the version.
+    /// Zero adapter calls and zero mutating commands run — adoption is
+    /// bookkeeping over a detection, so the record carries no source
+    /// plan, and later uninstalls/updates replay the adopted identifiers
+    /// exactly like executed ones.
+    ///
+    /// # Errors
+    ///
+    /// [`AppsError::AlreadyRecorded`] when toride already holds a record
+    /// for `id`; [`AppsError::AdoptionAbsent`] when the probe cannot
+    /// confirm the asserted identifiers; [`AppsError::BackendUnavailable`]
+    /// when their backend is not attached; [`AppsError::Manifest`] when
+    /// persisting the record fails.
+    pub async fn adopt(
+        &mut self,
+        id: &TorideId,
+        provenance: AdoptProvenance,
+    ) -> AppsResult<InstallRecord> {
+        if self.records.contains_key(id) {
+            return Err(AppsError::AlreadyRecorded {
+                id: id.as_str().to_owned(),
+            });
+        }
+        let ids = provenance.ids;
+        let version = match self.verify_presence(&ids).await? {
+            Presence::Present(version) => version,
+            Presence::Absent => {
+                return Err(AppsError::AdoptionAbsent {
+                    id: id.as_str().to_owned(),
+                    detail: format!("{} is not present", native_subject(&ids)),
+                });
+            }
+        };
+        let mut record = InstallRecord::adopted(ids, version);
+        if let Some(installed_at) = provenance.installed_at {
+            record = record.with_installed_at(installed_at);
+        }
+        self.records.insert(id.clone(), record.clone());
+        self.save_records().await?;
+        Ok(record)
     }
 
     /// Whether the record's manager already reports it current — brew's
@@ -979,7 +1094,7 @@ impl Apps {
     /// for probe failures; [`AppsError::BackendUnavailable`] when the
     /// routed backend is not attached.
     pub async fn available_versions(&self, id: &TorideId) -> AppsResult<Vec<Version>> {
-        if let Some(record) = self.manifest.get(id) {
+        if let Some(record) = self.records.get(id) {
             return self.record_available_versions(&record.ids).await;
         }
         let app = self.resolve(id).await?;
@@ -1027,7 +1142,7 @@ impl Apps {
     /// kind-aware for brew, the trait method (and its honest refusal)
     /// otherwise.
     async fn set_pin_state(&self, id: &TorideId, pin: bool) -> AppsResult<()> {
-        let Some(record) = self.manifest.get(id) else {
+        let Some(record) = self.records.get(id) else {
             return Err(if pin {
                 AppsError::UnrecordedPin {
                     id: id.as_str().to_owned(),
@@ -1082,15 +1197,15 @@ impl Apps {
     /// [`AppsError::Backend`] when a present backend fails its probe;
     /// never for an absent backend.
     pub async fn status(&self, id: &TorideId) -> AppsResult<AppStatus> {
-        if self.manifest.get(id).is_some() {
-            return Ok(app_status(id, None, &self.manifest, &self.backend_set()).await?);
+        if let Some(record) = self.records.get(id) {
+            return Ok(app_status(Some(record), None, &self.backend_set()).await?);
         }
         let native = self
             .resolve(id)
             .await
             .ok()
             .and_then(|app| native_from_method(&app.install));
-        Ok(app_status(id, native.as_ref(), &self.manifest, &self.backend_set()).await?)
+        Ok(app_status(None, native.as_ref(), &self.backend_set()).await?)
     }
 
     /// Free-text search across every registered adapter, hits
@@ -1267,25 +1382,29 @@ impl Apps {
         }
     }
 
-    /// Persist the manifest off the async runtime.
+    /// Persist the working records through the store, off the async
+    /// runtime.
     ///
-    /// [`InstallManifest::save`] is synchronous filesystem IO (create
+    /// [`RecordStore::save`] is synchronous IO (the JSON store's create
     /// parent dirs, write temp, rename) and must not run on an async
     /// worker — the standing don't-block rule; the crate-family precedent
     /// (toride-installer's extraction and detect) wraps its blocking work
-    /// in [`tokio::task::spawn_blocking`] the same way. The manifest is
-    /// cloned into the task (small by construction — one record per
-    /// installed app), so no borrow is held across the await. Error
-    /// semantics are `save`'s own; a join failure (the blocking task was
-    /// cancelled or panicked) maps to [`ManifestError::Io`] so callers'
-    /// warning paths stay uniform.
-    async fn save_manifest(&self) -> ManifestResult<()> {
-        let snapshot = self.manifest.clone();
-        tokio::task::spawn_blocking(move || snapshot.save())
+    /// in [`tokio::task::spawn_blocking`] the same way. The snapshot and
+    /// the store's `Arc` are cloned into the task (small by construction
+    /// — one record per installed app), so no borrow is held across the
+    /// await. Error semantics are the store's own; a join failure (the
+    /// blocking task was cancelled or panicked) maps to
+    /// [`ManifestError::Io`] so callers' warning paths stay uniform.
+    async fn save_records(&self) -> ManifestResult<()> {
+        let snapshot = RecordSnapshot {
+            records: self.records.clone(),
+        };
+        let store = Arc::clone(&self.store);
+        tokio::task::spawn_blocking(move || store.save(&snapshot))
             .await
             .map_err(|error| {
                 ManifestError::Io(std::io::Error::other(format!(
-                    "manifest save task failed to join: {error}"
+                    "record store save task failed to join: {error}"
                 )))
             })?
     }
@@ -1307,7 +1426,8 @@ enum Presence {
 
 /// Builder for [`Apps`], mirroring toride-mise's `MiseBuilder` shape:
 /// consume-and-return setters, everything optional, [`AppsBuilder::build`]
-/// loading the manifest (missing file = empty; corrupt = the hard stop).
+/// loading the record store (missing file = empty; corrupt prior state =
+/// quarantined, see [`crate::store`]).
 ///
 /// Backends are attached pre-built so both sanctioned constructions work:
 /// `detect()` in production (PATH checks), `new()` under a fake runner in
@@ -1330,8 +1450,11 @@ pub struct AppsBuilder {
     flatpak: Option<FlatpakBackend>,
     /// The distro backend, when a family manager is usable on this host.
     distro: Option<DistroBackend>,
-    /// Where the manifest loads from and saves to; defaults to
-    /// [`InstallManifest::default_path`].
+    /// Caller-supplied record-store persistence; takes precedence over
+    /// `manifest_path` (which then names nothing).
+    record_store: Option<Arc<dyn RecordStore>>,
+    /// Where the default JSON store's manifest loads from and saves to;
+    /// defaults to [`InstallManifest::default_path`].
     manifest_path: Option<Utf8PathBuf>,
     /// Registry adapters for resolve/search, consulted in order.
     adapters: Vec<Arc<dyn Adapter>>,
@@ -1379,9 +1502,20 @@ impl AppsBuilder {
         self
     }
 
-    /// Set the manifest location (loaded at
-    /// [`AppsBuilder::build`]; a missing file is an empty manifest) —
-    /// consume-and-return.
+    /// Replace the JSON-manifest persistence with a caller-supplied
+    /// record store — consume-and-return. An embedder keeping its own
+    /// receipts as source of truth supplies or mirrors them here. Takes
+    /// precedence over [`AppsBuilder::manifest_path`]: a custom store
+    /// needs no path at all, so
+    /// [`AppsError::NoManifestPath`] cannot fire when one is set.
+    #[must_use]
+    pub fn with_record_store(mut self, store: Arc<dyn RecordStore>) -> Self {
+        self.record_store = Some(store);
+        self
+    }
+
+    /// Set the manifest location the default JSON store loads from and
+    /// saves to (a missing file is an empty store) — consume-and-return.
     #[must_use]
     pub fn manifest_path(mut self, path: impl Into<Utf8PathBuf>) -> Self {
         self.manifest_path = Some(path.into());
@@ -1449,21 +1583,32 @@ impl AppsBuilder {
         Ok(builder)
     }
 
-    /// Consume the builder and produce the facade. The manifest loads
-    /// here — a missing file is an empty manifest, and a corrupt document
-    /// (including one written by a newer toride) **fails the build**: the
-    /// facade never treats it as empty and never saves over it.
+    /// Consume the builder and produce the facade. The record store loads
+    /// here — a missing document is an empty ledger, and a corrupt one
+    /// (including one written by a newer toride) is **quarantined aside,
+    /// never a fatal stop**: the facade starts from empty and
+    /// [`Apps::quarantined`] names the moved file.
     ///
     /// # Errors
     ///
-    /// [`AppsError::Manifest`] when the manifest cannot be loaded;
-    /// [`AppsError::NoManifestPath`] when no path was set and the
-    /// platform data directory did not resolve.
+    /// [`AppsError::Manifest`] when the store cannot be loaded (or its
+    /// corrupt prior state cannot be quarantined);
+    /// [`AppsError::NoManifestPath`] when no store was supplied, no path
+    /// was set, and the platform data directory did not resolve.
     pub fn build(self) -> AppsResult<Apps> {
-        let path = match self.manifest_path {
-            Some(path) => path,
-            None => InstallManifest::default_path().ok_or(AppsError::NoManifestPath)?,
+        let store: Arc<dyn RecordStore> = if let Some(store) = self.record_store {
+            store
+        } else {
+            let path = match self.manifest_path {
+                Some(path) => path,
+                None => InstallManifest::default_path().ok_or(AppsError::NoManifestPath)?,
+            };
+            Arc::new(JsonRecordStore::at(path))
         };
+        let StoreLoad {
+            snapshot,
+            quarantined,
+        } = store.load()?;
         Ok(Apps {
             runner: self
                 .runner
@@ -1476,7 +1621,9 @@ impl AppsBuilder {
                 flatpak: self.flatpak,
                 distro: self.distro,
             },
-            manifest: InstallManifest::load(path)?,
+            records: snapshot.into_records(),
+            store,
+            quarantined,
             adapters: self.adapters,
         })
     }
@@ -1575,12 +1722,17 @@ fn native_ids_from_executed(plan: &InstallPlan) -> AppsResult<NativeIds> {
     }
 }
 
-/// The uninstall plan for a toride-installed record: built from the
+/// The uninstall plan for a toride-managed record: built from the
 /// record's OWN identifiers — the source of truth, never re-planned (the
 /// A1 round-1 flatpak finding: a re-planned ref guesses the planning
 /// target's arch, not the installed one). `zap` mirrors the planner's
-/// rule: casks only.
-fn uninstall_plan_from_record(record: &InstallRecord, zap: bool) -> AppsResult<UninstallPlan> {
+/// rule: casks only. The plan's app slot is the caller's `id` — adopted
+/// records carry no plan to read it from.
+fn uninstall_plan_from_record(
+    id: &TorideId,
+    record: &InstallRecord,
+    zap: bool,
+) -> AppsResult<UninstallPlan> {
     let backend = record.ids.backend();
     let operation = match &record.ids {
         NativeIds::Homebrew { token, cask } => Operation::BrewUninstall {
@@ -1599,7 +1751,7 @@ fn uninstall_plan_from_record(record: &InstallRecord, zap: bool) -> AppsResult<U
         NativeIds::Distro { package, family } => {
             let manager = PackageManager::for_family(*family).ok_or_else(|| {
                 AppsError::UnrecordableOperation {
-                    app: record.plan.app.as_str().to_owned(),
+                    app: id.as_str().to_owned(),
                     operation: format!("distro family {family:?} has no routed manager"),
                 }
             })?;
@@ -1610,7 +1762,7 @@ fn uninstall_plan_from_record(record: &InstallRecord, zap: bool) -> AppsResult<U
         }
     };
     Ok(UninstallPlan {
-        app: record.plan.app.clone(),
+        app: id.clone(),
         backend,
         operation,
         dry_run: false,
@@ -1620,11 +1772,11 @@ fn uninstall_plan_from_record(record: &InstallRecord, zap: bool) -> AppsResult<U
     })
 }
 
-/// The update plan for a toride-installed record — the update-path mirror
+/// The update plan for a toride-managed record — the update-path mirror
 /// of [`uninstall_plan_from_record`]: built from the record's OWN
 /// identifiers, never re-planned through the registry (the update path
 /// makes zero adapter round trips).
-fn update_plan_from_record(record: &InstallRecord) -> AppsResult<UpdatePlan> {
+fn update_plan_from_record(id: &TorideId, record: &InstallRecord) -> AppsResult<UpdatePlan> {
     let backend = record.ids.backend();
     let operation = match &record.ids {
         NativeIds::Homebrew { token, cask } => Operation::BrewUpgrade {
@@ -1642,7 +1794,7 @@ fn update_plan_from_record(record: &InstallRecord) -> AppsResult<UpdatePlan> {
         NativeIds::Distro { package, family } => {
             let manager = PackageManager::for_family(*family).ok_or_else(|| {
                 AppsError::UnrecordableOperation {
-                    app: record.plan.app.as_str().to_owned(),
+                    app: id.as_str().to_owned(),
                     operation: format!("distro family {family:?} has no routed manager"),
                 }
             })?;
@@ -1653,7 +1805,7 @@ fn update_plan_from_record(record: &InstallRecord) -> AppsResult<UpdatePlan> {
         }
     };
     Ok(UpdatePlan {
-        app: record.plan.app.clone(),
+        app: id.clone(),
         backend,
         operation,
         dry_run: false,
@@ -2056,7 +2208,7 @@ mod tests {
                 installation: FlatpakInstallation::System,
             },
         );
-        let plan = uninstall_plan_from_record(&record, false).unwrap();
+        let plan = uninstall_plan_from_record(&TorideId::slugify("brave"), &record, false).unwrap();
         assert_eq!(
             plan.operation,
             Operation::FlatpakUninstall {
@@ -2070,7 +2222,7 @@ mod tests {
 
     #[test]
     fn uninstall_plan_from_record_ands_zap_with_cask() {
-        let zap = uninstall_plan_from_record(&cask_record(), true)
+        let zap = uninstall_plan_from_record(&TorideId::slugify("brave"), &cask_record(), true)
             .unwrap()
             .operation;
         assert_eq!(
@@ -2078,17 +2230,19 @@ mod tests {
             ["brew", "uninstall", "--zap", "brave-browser"],
             "zap applies to the recorded cask"
         );
-        let plain_formula = uninstall_plan_from_record(&formula_record(), true)
-            .unwrap()
-            .operation;
+        let plain_formula =
+            uninstall_plan_from_record(&TorideId::slugify("brave"), &formula_record(), true)
+                .unwrap()
+                .operation;
         assert_eq!(
             plain_formula.argv(),
             ["brew", "uninstall", "ripgrep"],
             "zap degrades to a plain uninstall for a recorded formula"
         );
-        let plain_cask = uninstall_plan_from_record(&cask_record(), false)
-            .unwrap()
-            .operation;
+        let plain_cask =
+            uninstall_plan_from_record(&TorideId::slugify("brave"), &cask_record(), false)
+                .unwrap()
+                .operation;
         assert_eq!(
             plain_cask.argv(),
             ["brew", "uninstall", "--cask", "brave-browser"]
@@ -2107,7 +2261,7 @@ mod tests {
                 family: DistroFamily::Debian,
             },
         );
-        let plan = uninstall_plan_from_record(&distro, false).unwrap();
+        let plan = uninstall_plan_from_record(&TorideId::slugify("brave"), &distro, false).unwrap();
         assert!(plan.requires_elevation);
         assert_eq!(
             plan.operation,
@@ -2117,7 +2271,7 @@ mod tests {
             }
         );
         assert!(
-            !uninstall_plan_from_record(&cask_record(), false)
+            !uninstall_plan_from_record(&TorideId::slugify("brave"), &cask_record(), false)
                 .unwrap()
                 .requires_elevation
         );
@@ -2177,20 +2331,23 @@ mod tests {
 
     fn update_plan_for_ids(ids: NativeIds) -> AppsResult<UpdatePlan> {
         let backend = ids.backend();
-        update_plan_from_record(&InstallRecord::new(
-            InstallPlan {
-                app: TorideId::slugify("brave"),
-                backend,
-                operation: Operation::BrewInstall {
-                    cask: false,
-                    token: "unused".to_owned(),
+        update_plan_from_record(
+            &TorideId::slugify("brave"),
+            &InstallRecord::new(
+                InstallPlan {
+                    app: TorideId::slugify("brave"),
+                    backend,
+                    operation: Operation::BrewInstall {
+                        cask: false,
+                        token: "unused".to_owned(),
+                    },
+                    dry_run: false,
+                    requires_elevation: false,
                 },
-                dry_run: false,
-                requires_elevation: false,
-            },
-            ids,
-            None,
-        ))
+                ids,
+                None,
+            ),
+        )
     }
 
     #[test]
@@ -2436,19 +2593,33 @@ mod tests {
     // --- builder wiring -------------------------------------------------------------
 
     #[test]
-    fn builder_preserves_the_attached_target_and_manifest_path() {
+    fn builder_preserves_the_target_and_loads_the_default_store_from_the_manifest_path() {
         use crate::{Arch, Os};
         let target = Target::new(Os::Linux, Arch::X86_64);
-        let manifest_path =
-            Utf8PathBuf::from_path_buf(std::env::temp_dir().join("toride-apps-wiring.json"))
-                .expect("system temp dir is valid UTF-8");
+        let path = Utf8PathBuf::from_path_buf(
+            std::env::temp_dir().join(format!("toride-apps-wiring-{}.json", std::process::id())),
+        )
+        .expect("system temp dir is valid UTF-8");
+        let mut manifest = InstallManifest::at(&path);
+        manifest.record(
+            &TorideId::slugify("brave"),
+            InstallRecord::adopted(
+                NativeIds::Homebrew {
+                    token: "brave-browser".to_owned(),
+                    cask: true,
+                },
+                None,
+            ),
+        );
+        manifest.save().expect("seed manifest saves");
         let apps = Apps::builder()
             .target(target)
-            .manifest_path(&manifest_path)
+            .manifest_path(&path)
             .build()
             .unwrap();
         assert_eq!(apps.target(), target);
-        assert_eq!(apps.manifest().path(), &manifest_path);
+        assert_eq!(apps.records().len(), 1, "the path feeds the default store");
+        assert_eq!(apps.quarantined(), None);
     }
 
     #[test]
@@ -2470,6 +2641,88 @@ mod tests {
         // No manifest_path set and the default data dir overridden away is
         // not constructible offline; pin the error shape directly instead.
         let error = AppsError::NoManifestPath;
-        assert!(error.to_string().contains("data directory"));
+        assert!(error.to_string().contains("data directory"), "{error}");
+        assert!(error.to_string().contains("record store"), "{error}");
+    }
+
+    // --- adopt -----------------------------------------------------------------------
+
+    #[test]
+    fn already_recorded_names_the_app() {
+        let error = AppsError::AlreadyRecorded {
+            id: "ghost".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("cannot adopt"), "{text}");
+        assert!(text.contains("`ghost`"), "{text}");
+        assert!(text.contains("already has a record"), "{text}");
+    }
+
+    #[test]
+    fn adoption_absent_names_the_app_and_the_absent_subject() {
+        let error = AppsError::AdoptionAbsent {
+            id: "ghost".to_owned(),
+            detail: "formula `ripgrep` is not present".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("cannot adopt"), "{text}");
+        assert!(text.contains("`ghost`"), "{text}");
+        assert!(text.contains("formula `ripgrep` is not present"), "{text}");
+    }
+
+    #[test]
+    fn adopt_provenance_new_defaults_to_an_unknown_install_time() {
+        let provenance = AdoptProvenance::new(NativeIds::Homebrew {
+            token: "firefox".to_owned(),
+            cask: true,
+        });
+        assert_eq!(provenance.installed_at, None);
+        assert_eq!(provenance.ids.backend(), BackendId::Homebrew);
+    }
+
+    /// An in-memory store for builder-level wiring tests (the full facade
+    /// flows over it live in `tests/apps_facade.rs`).
+    struct MapStore {
+        snapshot: std::sync::Mutex<RecordSnapshot>,
+    }
+
+    impl crate::store::RecordStore for MapStore {
+        fn load(&self) -> ManifestResult<crate::store::StoreLoad> {
+            Ok(crate::store::StoreLoad {
+                snapshot: self.snapshot.lock().expect("map store poisoned").clone(),
+                quarantined: None,
+            })
+        }
+
+        fn save(&self, snapshot: &RecordSnapshot) -> ManifestResult<()> {
+            *self.snapshot.lock().expect("map store poisoned") = snapshot.clone();
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn builder_with_record_store_builds_without_any_manifest_path() {
+        use crate::{Arch, Os};
+        let mut records = std::collections::BTreeMap::new();
+        records.insert(
+            TorideId::slugify("brave"),
+            InstallRecord::adopted(
+                NativeIds::Distro {
+                    package: "brave-browser".to_owned(),
+                    family: toride_registry::DistroFamily::Debian,
+                },
+                None,
+            ),
+        );
+        let store: std::sync::Arc<dyn RecordStore> = std::sync::Arc::new(MapStore {
+            snapshot: std::sync::Mutex::new(RecordSnapshot::from(records)),
+        });
+        let apps = Apps::builder()
+            .with_record_store(std::sync::Arc::clone(&store))
+            .target(Target::new(Os::Linux, Arch::X86_64))
+            .build()
+            .unwrap();
+        assert_eq!(apps.records().len(), 1);
+        assert_eq!(apps.quarantined(), None);
     }
 }

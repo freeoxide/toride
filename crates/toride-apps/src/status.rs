@@ -3,22 +3,23 @@
 //! [`app_status`] answers "where does this app stand on this host" for one
 //! [`TorideId`], combining the two sources the crate keeps:
 //!
-//! - the **install manifest** ([`InstallManifest`]) — the source of truth
-//!   for what *toride* installed: a record's identifiers are probed
-//!   verbatim, never re-planned (the A1 round-1 flatpak-ref finding);
+//! - the **install records** ([`InstallRecord`], the caller holds the
+//!   record the store loaded) — the source of truth for what *toride*
+//!   installed: a record's identifiers are probed verbatim, never
+//!   re-planned (the A1 round-1 flatpak-ref finding);
 //! - the **backends** ([`BackendSet`]) — each backend present on the host
 //!   confirms or refutes presence with its kind-aware offline probe.
 //!
 //! ## The three answers
 //!
-//! - [`AppStatus::Installed`] — the manifest has a record and the recorded
-//!   backend confirms the recorded identifiers are still present (with the
-//!   version its probe reports now, not the stale recorded one).
-//! - [`AppStatus::Foreign`] — no manifest record, but the app's
-//!   backend-native identifiers (supplied by the caller from the registry
-//!   app's install method, since a bare `TorideId` carries none) are
-//!   present through that backend: installed by someone else — the user,
-//!   the distro image, another tool.
+//! - [`AppStatus::Installed`] — a record was supplied and the recorded
+//!   backend confirms the recorded identifiers are still present (with
+//!   the version its probe reports now, not the stale recorded one).
+//! - [`AppStatus::Foreign`] — no record, but the app's backend-native
+//!   identifiers (supplied by the caller from the registry app's install
+//!   method, since a bare `TorideId` carries none) are present through
+//!   that backend: installed by someone else — the user, the distro
+//!   image, another tool.
 //! - [`AppStatus::NotInstalled`] — neither: no record, or the recorded
 //!   backend no longer (or never could) report the identifiers.
 //!
@@ -53,19 +54,18 @@
 //!   all-installations for flatpak, a single package query for distro.
 //!
 //! [`Error`]: crate::Error
+//! [`TorideId`]: toride_registry::TorideId
 //! [`HomebrewBackend::installed_version`]: crate::backends::homebrew::HomebrewBackend::installed_version
 //! [`FlatpakBackend::installed_version`]: crate::backends::flatpak::FlatpakBackend::installed_version
 //! [`FlatpakBackend::list_entries`]: crate::backends::flatpak::FlatpakBackend::list_entries
 //! [`DistroBackend::installed_version`]: crate::backends::distro::DistroBackend::installed_version
-
-use toride_registry::TorideId;
 
 use crate::backend::{Backend, BackendId, BackendStatus, StatusQuery};
 use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::BrewKind;
 use crate::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
 use crate::error::Result;
-use crate::manifest::{InstallManifest, InstallRecord, NativeIds};
+use crate::manifest::{InstallRecord, NativeIds};
 
 /// Where one app stands on this host, relative to toride's own record.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -159,13 +159,14 @@ impl<'a> BackendSet<'a> {
     }
 }
 
-/// Resolve `id`'s standing on this host.
+/// Resolve one app's standing on this host.
 ///
-/// Precedence: the manifest record (if any) is probed with its own
-/// recorded identifiers — the source of truth, never the caller's
-/// re-derived ones. Without a record, `native` (the registry app's
-/// backend-native identifiers, when the caller knows them) is probed for
-/// `Foreign` presence; without either, the answer is `NotInstalled`.
+/// Precedence: `record` (the manifest's record for the app, when the
+/// caller holds one) is probed with its own recorded identifiers — the
+/// source of truth, never the caller's re-derived ones. Without a record,
+/// `native` (the registry app's backend-native identifiers, when the
+/// caller knows them) is probed for `Foreign` presence; without either,
+/// the answer is `NotInstalled`.
 ///
 /// # Errors
 ///
@@ -173,12 +174,11 @@ impl<'a> BackendSet<'a> {
 /// the set fails its probe. An absent backend is never an error — it is
 /// skipped.
 pub async fn app_status(
-    id: &TorideId,
+    record: Option<&InstallRecord>,
     native: Option<&NativeIds>,
-    manifest: &InstallManifest,
     backends: &BackendSet<'_>,
 ) -> Result<AppStatus> {
-    if let Some(record) = manifest.get(id) {
+    if let Some(record) = record {
         return toride_recorded_status(record, backends).await;
     }
     match native {
@@ -344,9 +344,8 @@ mod tests {
     use crate::manifest::InstallRecord;
     use crate::plan::{FlatpakInstallation, Operation, PackageManager};
     use crate::runner::{CommandRunner, command};
-    use camino::Utf8PathBuf;
     use std::sync::Arc;
-    use toride_registry::DistroFamily;
+    use toride_registry::{DistroFamily, TorideId};
     use toride_runner::CommandOutput;
     use toride_runner::fake::FakeRunner;
 
@@ -354,14 +353,6 @@ mod tests {
 
     fn app_id(slug: &str) -> TorideId {
         TorideId::slugify(slug)
-    }
-
-    /// An empty manifest at a never-used temp path (no I/O happens — the
-    /// status layer only reads the in-memory entries).
-    fn empty_manifest() -> InstallManifest {
-        let path = Utf8PathBuf::from_path_buf(std::env::temp_dir().join("toride-apps-status.json"))
-            .expect("system temp dir is valid UTF-8");
-        InstallManifest::at(path)
     }
 
     /// A minimal brew-cask install plan for the slug.
@@ -519,11 +510,8 @@ mod tests {
         );
         let brew = homebrew_backend(&fake);
         let backends = BackendSet::new().homebrew(&brew);
-        let mut manifest = empty_manifest();
-        manifest.record(cask_record("firefox", "firefox"));
-        let status = app_status(&app_id("firefox"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        let record = cask_record("firefox", "firefox");
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(
             status,
             AppStatus::Installed {
@@ -544,18 +532,15 @@ mod tests {
         );
         let brew = homebrew_backend(&fake);
         let backends = BackendSet::new().homebrew(&brew);
-        let mut manifest = empty_manifest();
-        manifest.record(InstallRecord::new(
+        let record = InstallRecord::new(
             cask_plan("ripgrep", "ripgrep"),
             NativeIds::Homebrew {
                 token: "ripgrep".to_owned(),
                 cask: false,
             },
             None,
-        ));
-        let status = app_status(&app_id("ripgrep"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        );
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(
             status,
             AppStatus::Installed {
@@ -575,11 +560,8 @@ mod tests {
         );
         let brew = homebrew_backend(&fake);
         let backends = BackendSet::new().homebrew(&brew);
-        let mut manifest = empty_manifest();
-        manifest.record(cask_record("firefox", "firefox"));
-        let status = app_status(&app_id("firefox"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        let record = cask_record("firefox", "firefox");
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
         fake.assert_no_unmatched_calls();
     }
@@ -592,15 +574,12 @@ mod tests {
         );
         let flatpak = flatpak_backend(&fake);
         let backends = BackendSet::new().flatpak(&flatpak);
-        let mut manifest = empty_manifest();
-        manifest.record(flatpak_record(
+        let record = flatpak_record(
             "brave-browser",
             "com.brave.Browser",
             FlatpakInstallation::User,
-        ));
-        let status = app_status(&app_id("brave-browser"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        );
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(
             status,
             AppStatus::Installed {
@@ -626,15 +605,12 @@ mod tests {
         );
         let flatpak = flatpak_backend(&fake);
         let backends = BackendSet::new().flatpak(&flatpak);
-        let mut manifest = empty_manifest();
-        manifest.record(flatpak_record(
+        let record = flatpak_record(
             "adwcustomizer",
             "io.gitlab.adwcustomizer.AdwCustomizer",
             FlatpakInstallation::User,
-        ));
-        let status = app_status(&app_id("adwcustomizer"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        );
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(
             status,
             AppStatus::Installed {
@@ -655,15 +631,12 @@ mod tests {
         );
         let flatpak = flatpak_backend(&fake);
         let backends = BackendSet::new().flatpak(&flatpak);
-        let mut manifest = empty_manifest();
-        manifest.record(flatpak_record(
+        let record = flatpak_record(
             "firefox",
             "org.mozilla.firefox",
             FlatpakInstallation::System,
-        ));
-        let status = app_status(&app_id("firefox"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        );
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(
             status,
             AppStatus::Installed {
@@ -686,15 +659,12 @@ mod tests {
         );
         let flatpak = flatpak_backend(&fake);
         let backends = BackendSet::new().flatpak(&flatpak);
-        let mut manifest = empty_manifest();
-        manifest.record(flatpak_record(
+        let record = flatpak_record(
             "firefox",
             "org.mozilla.firefox",
             FlatpakInstallation::System,
-        ));
-        let status = app_status(&app_id("firefox"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        );
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
         fake.assert_no_unmatched_calls();
     }
@@ -707,15 +677,8 @@ mod tests {
         );
         let distro = distro_backend(DistroFamily::Debian, &fake);
         let backends = BackendSet::new().distro(&distro);
-        let mut manifest = empty_manifest();
-        manifest.record(distro_record(
-            "firefox-esr",
-            "firefox-esr",
-            DistroFamily::Debian,
-        ));
-        let status = app_status(&app_id("firefox-esr"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        let record = distro_record("firefox-esr", "firefox-esr", DistroFamily::Debian);
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(
             status,
             AppStatus::Installed {
@@ -736,15 +699,8 @@ mod tests {
         );
         let distro = distro_backend(DistroFamily::Debian, &fake);
         let backends = BackendSet::new().distro(&distro);
-        let mut manifest = empty_manifest();
-        manifest.record(distro_record(
-            "firefox-esr",
-            "firefox-esr",
-            DistroFamily::Debian,
-        ));
-        let status = app_status(&app_id("firefox-esr"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        let record = distro_record("firefox-esr", "firefox-esr", DistroFamily::Debian);
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
         fake.assert_no_unmatched_calls();
     }
@@ -757,15 +713,8 @@ mod tests {
         );
         let distro = distro_backend(DistroFamily::Alpine, &fake);
         let backends = BackendSet::new().distro(&distro);
-        let mut manifest = empty_manifest();
-        manifest.record(distro_record(
-            "brave",
-            "brave-browser",
-            DistroFamily::Alpine,
-        ));
-        let status = app_status(&app_id("brave"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        let record = distro_record("brave", "brave-browser", DistroFamily::Alpine);
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(
             status,
             AppStatus::Installed {
@@ -784,11 +733,8 @@ mod tests {
         );
         let distro = distro_backend(DistroFamily::Arch, &fake);
         let backends = BackendSet::new().distro(&distro);
-        let mut manifest = empty_manifest();
-        manifest.record(distro_record("firefox", "firefox", DistroFamily::Arch));
-        let status = app_status(&app_id("firefox"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        let record = distro_record("firefox", "firefox", DistroFamily::Arch);
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
         fake.assert_no_unmatched_calls();
     }
@@ -800,15 +746,8 @@ mod tests {
         let fake = FakeRunner::new().strict();
         let distro = distro_backend(DistroFamily::Fedora, &fake);
         let backends = BackendSet::new().distro(&distro);
-        let mut manifest = empty_manifest();
-        manifest.record(distro_record(
-            "firefox-esr",
-            "firefox-esr",
-            DistroFamily::Debian,
-        ));
-        let status = app_status(&app_id("firefox-esr"), None, &manifest, &backends)
-            .await
-            .unwrap();
+        let record = distro_record("firefox-esr", "firefox-esr", DistroFamily::Debian);
+        let status = app_status(Some(&record), None, &backends).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
         fake.assert_no_unmatched_calls();
     }
@@ -823,13 +762,12 @@ mod tests {
         );
         let brew = homebrew_backend(&fake);
         let backends = BackendSet::new().homebrew(&brew);
-        let mut manifest = empty_manifest();
-        manifest.record(cask_record("brave", "recorded-token"));
+        let record = cask_record("brave", "recorded-token");
         let native = NativeIds::Homebrew {
             token: "caller-guess".to_owned(),
             cask: true,
         };
-        let status = app_status(&app_id("brave"), Some(&native), &manifest, &backends)
+        let status = app_status(Some(&record), Some(&native), &backends)
             .await
             .unwrap();
         assert_eq!(
@@ -848,9 +786,8 @@ mod tests {
     async fn manifest_hit_with_the_recorded_backend_absent_reports_not_installed() {
         // No brew on this host (empty set): its records read NotInstalled,
         // and no error is raised for the absent backend.
-        let mut manifest = empty_manifest();
-        manifest.record(cask_record("firefox", "firefox"));
-        let status = app_status(&app_id("firefox"), None, &manifest, &BackendSet::new())
+        let record = cask_record("firefox", "firefox");
+        let status = app_status(Some(&record), None, &BackendSet::new())
             .await
             .unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
@@ -858,14 +795,7 @@ mod tests {
 
     #[tokio::test]
     async fn manifest_miss_without_native_ids_reports_not_installed() {
-        let status = app_status(
-            &app_id("ghost"),
-            None,
-            &empty_manifest(),
-            &BackendSet::new(),
-        )
-        .await
-        .unwrap();
+        let status = app_status(None, None, &BackendSet::new()).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
     }
 
@@ -877,14 +807,9 @@ mod tests {
             app_ref: None,
             installation: FlatpakInstallation::User,
         };
-        let status = app_status(
-            &app_id("brave-browser"),
-            Some(&native),
-            &empty_manifest(),
-            &BackendSet::new(),
-        )
-        .await
-        .unwrap();
+        let status = app_status(None, Some(&native), &BackendSet::new())
+            .await
+            .unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
     }
 
@@ -902,14 +827,7 @@ mod tests {
             token: "firefox".to_owned(),
             cask: true,
         };
-        let status = app_status(
-            &app_id("firefox"),
-            Some(&native),
-            &empty_manifest(),
-            &backends,
-        )
-        .await
-        .unwrap();
+        let status = app_status(None, Some(&native), &backends).await.unwrap();
         match status {
             AppStatus::Foreign { backend, detail } => {
                 assert_eq!(backend, BackendId::Homebrew);
@@ -936,14 +854,7 @@ mod tests {
             app_ref: None,
             installation: FlatpakInstallation::User,
         };
-        let status = app_status(
-            &app_id("firefox"),
-            Some(&native),
-            &empty_manifest(),
-            &backends,
-        )
-        .await
-        .unwrap();
+        let status = app_status(None, Some(&native), &backends).await.unwrap();
         match status {
             AppStatus::Foreign { backend, detail } => {
                 assert_eq!(backend, BackendId::Flatpak);
@@ -966,14 +877,7 @@ mod tests {
             package: "firefox-esr".to_owned(),
             family: DistroFamily::Debian,
         };
-        let status = app_status(
-            &app_id("firefox-esr"),
-            Some(&native),
-            &empty_manifest(),
-            &backends,
-        )
-        .await
-        .unwrap();
+        let status = app_status(None, Some(&native), &backends).await.unwrap();
         match status {
             AppStatus::Foreign { backend, detail } => {
                 assert_eq!(backend, BackendId::Distro(DistroFamily::Debian));
@@ -998,14 +902,7 @@ mod tests {
             token: "firefox".to_owned(),
             cask: true,
         };
-        let status = app_status(
-            &app_id("firefox"),
-            Some(&native),
-            &empty_manifest(),
-            &backends,
-        )
-        .await
-        .unwrap();
+        let status = app_status(None, Some(&native), &backends).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
         fake.assert_no_unmatched_calls();
     }
@@ -1021,14 +918,7 @@ mod tests {
             package: "firefox".to_owned(),
             family: DistroFamily::Fedora,
         };
-        let status = app_status(
-            &app_id("firefox"),
-            Some(&native),
-            &empty_manifest(),
-            &backends,
-        )
-        .await
-        .unwrap();
+        let status = app_status(None, Some(&native), &backends).await.unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
         fake.assert_no_unmatched_calls();
     }
@@ -1045,9 +935,8 @@ mod tests {
             .respond_err(spec, toride_runner::Error::BinaryNotFound("brew".into()));
         let brew = homebrew_backend(&fake);
         let backends = BackendSet::new().homebrew(&brew);
-        let mut manifest = empty_manifest();
-        manifest.record(cask_record("firefox", "firefox"));
-        let error = app_status(&app_id("firefox"), None, &manifest, &backends)
+        let record = cask_record("firefox", "firefox");
+        let error = app_status(Some(&record), None, &backends)
             .await
             .unwrap_err();
         assert!(

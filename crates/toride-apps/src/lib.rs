@@ -22,9 +22,10 @@
 //!   `toride_runner::AsyncRunner` so every backend command is constructed and
 //!   executed through one injectable, fake-able choke point — backends never
 //!   spawn processes directly;
-//! - the [`Apps`] **facade** composing all of the above with the install
-//!   manifest and the registry adapters into the user-facing operations
-//!   (ensure-installed at a version, uninstall, update, status, search,
+//! - the [`Apps`] **facade** composing all of the above with a
+//!   [`RecordStore`] (the default is the JSON install manifest) and the
+//!   registry adapters into the user-facing operations (ensure-installed
+//!   at a version, uninstall, update, adopt, status, search,
 //!   available-version listing, pin/unpin).
 //!
 //! ## Pipeline
@@ -45,9 +46,13 @@
 //! 4. **Execute** — the backend runs the operation's commands through the
 //!    shared [`CommandRunner`] seam, honoring the plan's `dry_run` and
 //!    elevation requirements.
-//! 5. **Record & verify** — post-install state is recorded and re-queried
-//!    (manifest + status layers, built on top of this crate's
-//!    [`Backend::list_installed`] / [`Backend::status`]).
+//! 5. **Record & verify** — post-install state is recorded through the
+//!    [`RecordStore`] seam (the default JSON manifest; a corrupt prior
+//!    document is quarantined aside, never a fatal stop) and re-queried
+//!    (status layers, built on top of this crate's
+//!    [`Backend::list_installed`] / [`Backend::status`]). A detected
+//!    install toride never recorded can be claimed with
+//!    [`Apps::adopt`] instead of being refused as foreign.
 //!
 //! ## Quick start
 //!
@@ -123,24 +128,28 @@ pub mod manifest;
 pub mod plan;
 pub mod runner;
 pub mod status;
+pub mod store;
 
 // Re-exports — the public API surface.
 pub use apps::{
-    AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBuilder, AppsError,
-    AppsResult, EnsureAppOutcome, UninstallAppOutcome, UpdateOutcome, UpdatePreview,
+    AdoptProvenance, AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBuilder,
+    AppsError, AppsResult, EnsureAppOutcome, UninstallAppOutcome, UpdateOutcome, UpdatePreview,
 };
 pub use backend::{
     Backend, BackendId, BackendStatus, InstallOutcome, InstallRequest, InstalledApp, ListQuery,
     OutdatedEntry, StatusQuery, UninstallOutcome, UninstallRequest, UpdateRequest, Version,
 };
 pub use error::{Error, Result};
-pub use manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
+pub use manifest::{
+    InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds, RecordSnapshot,
+};
 pub use plan::{
     FlatpakInstallation, InstallOptions, InstallPlan, Operation, PackageManager, Target,
     UninstallOptions, UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 pub use runner::{CommandRunner, CommandRunnerBuilder, command};
 pub use status::{AppStatus, BackendSet, app_status};
+pub use store::{JsonRecordStore, RecordStore, StoreLoad};
 
 // Re-exported host-side contract types callers need beside the planner.
 pub use toride_registry::{Arch, DistroFamily, InstallMethod, Os, TorideId};
