@@ -262,11 +262,21 @@ impl MultiSourceDetector {
         if let Some(dir) = &self.mise_shim_dir {
             return Some(dir.clone());
         }
+        // mise's Windows data dir is %LOCALAPPDATA%\mise, unlike the unix
+        // ${XDG_DATA_HOME:-~/.local/share}/mise (mise.jdx.dev/directories.html).
+        #[cfg(unix)]
+        let (xdg_data_home, default_base) = (
+            std::env::var_os("XDG_DATA_HOME"),
+            dirs::home_dir().map(|home| home.join(".local/share")),
+        );
+        #[cfg(not(unix))]
+        let (xdg_data_home, default_base) =
+            (None, std::env::var_os("LOCALAPPDATA").map(PathBuf::from));
         mise_shim_dir_from(
             std::env::var_os("MISE_SHIMS_DIR"),
             std::env::var_os("MISE_DATA_DIR"),
-            std::env::var_os("XDG_DATA_HOME"),
-            dirs::home_dir(),
+            xdg_data_home,
+            default_base,
         )
     }
 
@@ -448,7 +458,7 @@ fn mise_shim_dir_from(
     shims_dir: Option<std::ffi::OsString>,
     data_dir: Option<std::ffi::OsString>,
     xdg_data_home: Option<std::ffi::OsString>,
-    home: Option<PathBuf>,
+    default_base: Option<PathBuf>,
 ) -> Option<Utf8PathBuf> {
     if let Some(shims) = shims_dir {
         return Utf8PathBuf::from_path_buf(PathBuf::from(shims)).ok();
@@ -458,9 +468,7 @@ fn mise_shim_dir_from(
             .ok()
             .map(|dir| dir.join("shims"));
     }
-    let base = xdg_data_home
-        .map(PathBuf::from)
-        .or_else(|| home.map(|home| home.join(".local/share")));
+    let base = xdg_data_home.map(PathBuf::from).or(default_base);
     base.and_then(|base| Utf8PathBuf::from_path_buf(base).ok())
         .map(|base| base.join("mise/shims"))
 }
@@ -907,32 +915,62 @@ mod tests {
         let shims = std::ffi::OsString::from("/custom/shims");
         let data = std::ffi::OsString::from("/data/mise");
         let xdg = std::ffi::OsString::from("/xdg/data");
-        let home = Some(PathBuf::from("/home/u"));
+        let unix_base = Some(PathBuf::from("/home/u/.local/share"));
+        let windows_base = Some(PathBuf::from("/localappdata"));
         assert_eq!(
             mise_shim_dir_from(
                 Some(shims.clone()),
                 Some(data.clone()),
                 Some(xdg.clone()),
-                home.clone()
+                unix_base.clone()
             ),
             Some(Utf8PathBuf::from("/custom/shims")),
             "MISE_SHIMS_DIR wins outright"
         );
         assert_eq!(
-            mise_shim_dir_from(None, Some(data), Some(xdg.clone()), home.clone()),
+            mise_shim_dir_from(None, Some(data), Some(xdg.clone()), unix_base.clone()),
             Some(Utf8PathBuf::from("/data/mise/shims")),
             "MISE_DATA_DIR is the mise dir itself, so shims sit directly under it"
         );
         assert_eq!(
-            mise_shim_dir_from(None, None, Some(xdg), home.clone()),
+            mise_shim_dir_from(None, None, Some(xdg), unix_base.clone()),
             Some(Utf8PathBuf::from("/xdg/data/mise/shims")),
-            "XDG_DATA_HOME replaces the ~/.local/share base only"
+            "XDG_DATA_HOME replaces the default base only"
         );
         assert_eq!(
-            mise_shim_dir_from(None, None, None, home),
+            mise_shim_dir_from(None, None, None, unix_base),
             Some(Utf8PathBuf::from("/home/u/.local/share/mise/shims"))
         );
+        assert_eq!(
+            mise_shim_dir_from(None, None, None, windows_base),
+            Some(Utf8PathBuf::from("/localappdata/mise/shims")),
+            "the Windows default base is %LOCALAPPDATA%, joined the same way"
+        );
         assert_eq!(mise_shim_dir_from(None, None, None, None), None);
+    }
+
+    #[test]
+    fn attach_skips_absent_binaries_and_propagates_other_errors() {
+        let mut slot: Option<u8> = None;
+        attach(&mut slot, Ok(3)).expect("a successful detection attaches");
+        assert_eq!(slot, Some(3));
+        attach(
+            &mut slot,
+            Err(Error::Command(toride_runner::Error::BinaryNotFound(
+                "x".into(),
+            ))),
+        )
+        .expect("an absent binary is a skip, never an error");
+        assert_eq!(slot, Some(3), "the skip leaves the slot untouched");
+        let error = attach(
+            &mut slot,
+            Err(Error::Command(toride_runner::Error::Other("boom".into()))),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::Other(_))),
+            "{error:?}"
+        );
     }
 
     #[cfg(unix)]
