@@ -10,8 +10,10 @@
 //! the cache and UI format) and `#[non_exhaustive]` where the set may grow
 //! (new sources, new distro families, Windows later).
 //!
-//! Deliberately NOT in the model: categories/icons/screenshots/verification/
-//! popularity, local-state echoes (`installed`, `outdated`, `pinned`), and
+//! Deliberately NOT in the model: categories/icons/screenshots/
+//! verification badges (flathub `verification_verified` — distinct from
+//! the modeled [`VerificationPolicy`])/popularity, local-state echoes
+//! (`installed`, `outdated`, `pinned`), and
 //! repology per-repo `status` (lives at parse level in the oracle). Versions
 //! stay opaque strings — repology `origversion` suffixes and flathub
 //! development releases are not semver, and cross-source comparison is the

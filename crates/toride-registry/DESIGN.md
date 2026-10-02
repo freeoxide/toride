@@ -268,8 +268,11 @@ pub enum DistroFamily { Debian, Ubuntu, Fedora, Arch, Alpine }
 Design notes:
 
 - **What is deliberately NOT in the model**: categories/icons/screenshots/
-  verification/popularity (flathub `trending`, `installs_last_month`,
-  homebrew `analytics`), local-state echoes (`installed`, `outdated`,
+  verification badges (flathub `verification_verified` — the publisher
+  identity flag, distinct from the modeled `VerificationPolicy` of the
+  checksums note below)/popularity (flathub `trending`,
+  `installs_last_month`, homebrew `analytics`), local-state echoes
+  (`installed`, `outdated`,
   `pinned` — all null server-side per homebrew.md §3), repology
   `maintainers`, per-repo `status` (lives at parse level in the oracle;
   see §5). Categories may be added when a browse UI needs them; they are
