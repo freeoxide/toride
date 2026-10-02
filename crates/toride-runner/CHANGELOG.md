@@ -27,3 +27,4 @@ Initial crates.io release.
   `serde` feature.
 
 [Unreleased]: https://github.com/freeoxide/toride/compare/toride-runner-v0.1.0...HEAD
+[0.1.0]: https://github.com/freeoxide/toride/releases/tag/toride-runner-v0.1.0

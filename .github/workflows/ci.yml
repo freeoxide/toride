@@ -216,14 +216,21 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo publish --dry-run (every publishable crate, dependency order)
         shell: bash
-        # Informational until the workspace first lands on crates.io: dry-runs of
-        # crates with unpublished siblings fail "no matching package" (order-blocked,
-        # not a defect) and are downgraded to warnings; the 3.1 set uploads via publish.yml.
+        # Order-blocked dry-runs ("no matching package", unpublished siblings)
+        # downgrade to warnings; any other dry-run failure fails this job.
         run: |
+          set -euo pipefail
           for crate in $PUBLISH_ORDER; do
             echo "::group::cargo publish --dry-run -p $crate"
-            if ! cargo publish --dry-run -p "$crate"; then
-              echo "::warning::publish dry-run failed for $crate (expected: order-blocked until the first real publish)"
+            log="$(mktemp)"
+            if ! cargo publish --dry-run -p "$crate" 2>&1 | tee "$log"; then
+              if grep -q "no matching package" "$log"; then
+                echo "::warning::publish dry-run order-blocked for $crate (unpublished siblings)"
+              else
+                echo "::error::publish dry-run failed for $crate"
+                exit 1
+              fi
             fi
+            rm -f "$log"
             echo "::endgroup::"
           done

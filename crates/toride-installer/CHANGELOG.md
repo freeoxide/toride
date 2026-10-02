@@ -26,3 +26,4 @@ Initial crates.io release.
   scripts in its dependency graph.
 
 [Unreleased]: https://github.com/freeoxide/toride/compare/toride-installer-v0.1.0...HEAD
+[0.1.0]: https://github.com/freeoxide/toride/releases/tag/toride-installer-v0.1.0

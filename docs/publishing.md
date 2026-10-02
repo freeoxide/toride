@@ -52,14 +52,17 @@ and record the flip in the crate's CHANGELOG.
 3. Add a CHANGELOG.md entry to each crate that changed.
 4. Run the **Publish crates** workflow (Actions → Publish crates → Run
    workflow) with `dry_run` enabled. The gate step re-runs fmt, clippy
-   (`-D warnings`), tests, and the non-default feature configurations.
-   Note: before the first real publish, per-crate `cargo publish
-   --dry-run` fails for crates whose intra-set dependencies are not yet
-   on the registry ("no matching package", order-blocked); the workflow
-   downgrades exactly that case to a warning.
+   (`-D warnings`), tests, and the non-default feature configurations,
+   and fails the run if the `PUBLISH_SET` order, the version lockstep,
+   or the single-version rule regresses. Only the order-blocked dry-run
+   failure ("no matching package", unpublished intra-set dependency) is
+   downgraded to a warning; any other dry-run failure fails the run.
 5. Re-run with `dry_run` disabled. Each crate is verified with
    `cargo publish --dry-run`, uploaded, and held until crates.io
-   resolves it before the next crate starts.
+   resolves it before the next crate starts. Afterwards the workflow
+   tags each crate as `<crate>-v<version>` and pushes the tags — the
+   references the CHANGELOG `[Unreleased]` and `[0.1.0]` links point
+   at.
 
 Partial failures are safe to re-run: versions already on crates.io are
 detected and skipped.

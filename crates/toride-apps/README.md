@@ -24,12 +24,12 @@ manifest.
 
 ## Feature flags
 
-| Feature        | Default | Pulls in                        | What it gates                                    |
-|----------------|:-------:|---------------------------------|--------------------------------------------------|
-| `tokio`        | No      | tokio                           | `spawn_blocking` offload for the async facade    |
-| `registry-http`| No      | `toride-registry/http`          | Registering the concrete fetch adapters          |
-| `direct`       | No      | `toride-installer`, `tokio`     | Direct-download installs (verified pipeline)     |
-| `mise`         | No      | `toride-mise`                   | The mise-delegated language backend              |
+| Feature        | Default | Pulls in                                | What it gates                                    |
+|----------------|:-------:|-----------------------------------------|--------------------------------------------------|
+| `tokio`        | No      | tokio                                   | `spawn_blocking` offload for the async facade    |
+| `registry-http`| No      | `toride-registry/http`                  | Registering the concrete fetch adapters          |
+| `direct`       | No      | `toride-installer` (with `http`), tokio | Direct-download installs (verified pipeline)     |
+| `mise`         | No      | `toride-mise`, `toride-runner/tokio-runner` | The mise-delegated language backend         |
 
 ```toml
 [dependencies]

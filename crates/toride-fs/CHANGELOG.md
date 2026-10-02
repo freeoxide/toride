@@ -22,3 +22,4 @@ Initial crates.io release.
   `check_owner_is_root`).
 
 [Unreleased]: https://github.com/freeoxide/toride/compare/toride-fs-v0.1.0...HEAD
+[0.1.0]: https://github.com/freeoxide/toride/releases/tag/toride-fs-v0.1.0
