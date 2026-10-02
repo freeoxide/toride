@@ -34,13 +34,13 @@
 //!
 //! ## Conventions honored
 //!
-//! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] are the
-//!   first statement of the trait's mutating operations (dry-run refusal
-//!   + no auto-sudo).
-//! - Interactivity: brew's install/uninstall do not prompt y/n, so unlike
-//!   apt/flatpak there are **no** runtime flags layered onto the plan's
-//!   canonical argv — the executed spec is exactly the planned argv.
-//!   `--zap` is not an execution-time option: it is baked into the
+//! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] /
+//!   [`ensure_update_allowed`] are the first statement of the trait's
+//!   mutating operations (dry-run refusal + no auto-sudo).
+//! - Interactivity: brew's install/uninstall/upgrade do not prompt y/n, so
+//!   unlike apt/flatpak there are **no** runtime flags layered onto the
+//!   plan's canonical argv — the executed spec is exactly the planned
+//!   argv. `--zap` is not an execution-time option: it is baked into the
 //!   [`Operation::BrewUninstall`] argv at plan time via
 //!   [`UninstallOptions`](crate::UninstallOptions) `{ zap: true }`.
 //! - Error mapping: non-zero exits surface as
@@ -58,6 +58,7 @@
 //! [`Operation::BrewUninstall`]: crate::Operation::BrewUninstall
 //! [`ensure_install_allowed`]: crate::backend::ensure_install_allowed
 //! [`ensure_uninstall_allowed`]: crate::backend::ensure_uninstall_allowed
+//! [`ensure_update_allowed`]: crate::backend::ensure_update_allowed
 
 use std::path::PathBuf;
 use std::sync::Mutex;

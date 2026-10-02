@@ -65,18 +65,19 @@
 //!
 //! ## Conventions honored
 //!
-//! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] are the
-//!   first statement of the trait's mutating operations (dry-run refusal
-//!   + no auto-sudo) — before even the remote-ensure probe runs.
-//! - Interactivity: flatpak's install/uninstall prompt on questions, so
-//!   unlike homebrew the executed argv layers runtime flags onto the
-//!   plan's canonical argv — `--noninteractive` ("produce minimal output
-//!   and avoid most questions", flatpak-install(1)) on both mutating
-//!   commands, plus `--or-update` on install (see above). These are
-//!   execution-time ergonomics and stay **out** of the plan's argv; every
-//!   command is unambiguous anyway (a full ref + a named remote leave
-//!   nothing to search or choose). The `-y`/`--assumeyes` flag is not
-//!   used: it answers questions with "yes" rather than avoiding them.
+//! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] /
+//!   [`ensure_update_allowed`] are the first statement of the trait's
+//!   mutating operations (dry-run refusal + no auto-sudo) — before even
+//!   the remote-ensure probe runs.
+//! - Interactivity: flatpak's install/uninstall/update prompt on
+//!   questions, so unlike homebrew the executed argv layers runtime flags
+//!   onto the plan's canonical argv — `--noninteractive` ("produce minimal
+//!   output and avoid most questions", flatpak-install(1)) on every
+//!   mutating command, plus `--or-update` on install (see above). These
+//!   are execution-time ergonomics and stay **out** of the plan's argv;
+//!   every command is unambiguous anyway (a full ref + a named remote
+//!   leave nothing to search or choose). The `-y`/`--assumeyes` flag is
+//!   not used: it answers questions with "yes" rather than avoiding them.
 //! - Error mapping: non-zero exits surface as
 //!   [`Error::Command`] carrying flatpak's stderr.
 //!   One classification: a failed uninstall whose stderr carries flatpak's
@@ -90,6 +91,7 @@
 //! [`Operation::FlatpakUninstall`]: crate::Operation::FlatpakUninstall
 //! [`ensure_install_allowed`]: crate::backend::ensure_install_allowed
 //! [`ensure_uninstall_allowed`]: crate::backend::ensure_uninstall_allowed
+//! [`ensure_update_allowed`]: crate::backend::ensure_update_allowed
 
 use async_trait::async_trait;
 use toride_registry::Os;

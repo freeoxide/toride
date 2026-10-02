@@ -750,7 +750,7 @@ impl Apps {
         let plan = update_plan_from_record(&record)?.dry_run(options.dry_run);
         let backend = self.backend_for(plan.backend)?;
         let native = native_id(&record.ids);
-        let from = backend.installed_version(native).await?;
+        let from = self.record_installed_version(&record.ids).await?;
         if options.dry_run {
             let to = backend.available_version(native).await?;
             return Ok(UpdateOutcome::Preview(UpdatePreview {
@@ -773,11 +773,26 @@ impl Apps {
         backend
             .update(UpdateRequest::new(&plan, &self.target).elevated(options.elevated))
             .await?;
-        let to = backend.installed_version(native).await.ok().flatten();
+        let to = self
+            .record_installed_version(&record.ids)
+            .await
+            .ok()
+            .flatten();
         self.manifest
             .record(record.with_version(to.as_ref().map(|version| version.as_str().to_owned())));
         self.save_manifest().await?;
         Ok(UpdateOutcome::Updated { from, to })
+    }
+
+    /// The record's installed version through the kind-aware presence
+    /// probes (the recorded brew kind, flatpak installation, distro
+    /// family), `None` covering absent and present-without-a-version
+    /// alike.
+    async fn record_installed_version(&self, ids: &NativeIds) -> AppsResult<Option<Version>> {
+        Ok(match self.verify_presence(ids).await? {
+            Presence::Present(version) => version.map(Version::new),
+            Presence::Absent => None,
+        })
     }
 
     /// Where `id` stands on this host — the A5 status layer, delegated to.

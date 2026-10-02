@@ -380,14 +380,6 @@ fn flatpak_row(app_id: &str, version: &str) -> String {
     format!("{app_id}\t{version}\tflathub\tuser\n")
 }
 
-/// A `brew info --json=v2 --installed` envelope reporting the firefox cask
-/// at `version`.
-fn firefox_cask_installed(version: &str) -> String {
-    format!(
-        r#"{{"formulae":[],"casks":[{{"token":"firefox","version":"{version}","installed":"{version}"}}]}}"#
-    )
-}
-
 /// A `brew outdated --json=v2` envelope listing the firefox cask stale at
 /// `installed` with `current` available.
 fn firefox_cask_outdated(installed: &str, current: &str) -> String {
@@ -1822,8 +1814,8 @@ async fn update_brew_cask_stale_runs_the_upgrade_and_rewrites_the_manifest_versi
     let fake = FakeRunner::new()
         .strict()
         .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(firefox_cask_installed("138.0.1")),
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
         .respond(
             brew_outdated_spec(),
@@ -1834,8 +1826,8 @@ async fn update_brew_cask_stale_runs_the_upgrade_and_rewrites_the_manifest_versi
             CommandOutput::from_stdout(""),
         )
         .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(firefox_cask_installed("139.0")),
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 139.0\n"),
         );
     let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());
     let mut apps = facade(&fake, macos(), &path, vec![adapter.clone()]);
@@ -1883,8 +1875,8 @@ async fn update_brew_up_to_date_reports_current_without_dispatching_anything_mut
     let fake = FakeRunner::new()
         .strict()
         .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(firefox_cask_installed("138.0.1")),
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
         .respond(
             brew_outdated_spec(),
@@ -1922,8 +1914,8 @@ async fn update_dry_run_previews_the_argv_and_versions_without_executing() {
     let fake = FakeRunner::new()
         .strict()
         .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(firefox_cask_installed("138.0.1")),
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
         .respond(
             brew_info_token_spec("firefox"),
@@ -2058,7 +2050,7 @@ async fn update_flatpak_record_runs_flatpak_update_and_reports_both_versions() {
     let fake = FakeRunner::new()
         .strict()
         .respond(
-            flatpak_list_spec(None),
+            flatpak_list_spec(Some("--user")),
             CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.2.3")),
         )
         .respond(
@@ -2066,7 +2058,7 @@ async fn update_flatpak_record_runs_flatpak_update_and_reports_both_versions() {
             CommandOutput::from_stdout(""),
         )
         .respond(
-            flatpak_list_spec(None),
+            flatpak_list_spec(Some("--user")),
             CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.3.0")),
         );
     let adapter = FixtureAdapter::new(SourceKind::Flathub, Vec::new());
@@ -2103,8 +2095,8 @@ async fn a_failed_post_upgrade_probe_degrades_to_no_version_without_failing_the_
     let fake = FakeRunner::new()
         .strict()
         .respond(
-            brew_info_installed_spec(),
-            CommandOutput::from_stdout(firefox_cask_installed("138.0.1")),
+            brew_versions_spec("--cask", "firefox"),
+            CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
         .respond(
             brew_outdated_spec(),
@@ -2115,7 +2107,7 @@ async fn a_failed_post_upgrade_probe_degrades_to_no_version_without_failing_the_
             CommandOutput::from_stdout(""),
         )
         .respond(
-            brew_info_installed_spec(),
+            brew_versions_spec("--cask", "firefox"),
             CommandOutput::from_stderr("Error: brew exploded", 2),
         );
     let adapter = FixtureAdapter::new(SourceKind::HomebrewCask, Vec::new());

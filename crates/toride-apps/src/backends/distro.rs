@@ -50,6 +50,13 @@
 //!   packages only"), and pacman's carries the database sync because a
 //!   stale sync db cannot know about upgrades at all (`--refresh`,
 //!   pacman(8) — which is why it belongs here and never to install).
+//!   Embedded-use hazard: the pacman shape is the partial upgrade Arch
+//!   documents as unsupported (`wiki.archlinux.org/title/
+//!   System_maintenance#Partial_upgrades_are_unsupported`) — a refreshed
+//!   database plus one package can move a shared library past binaries
+//!   Arch expects built against the older one; embedders needing Arch's
+//!   supported-state currency should run the manager's own full
+//!   `pacman -Syu` outside this per-app verb.
 //! - **Queries** — Debian-like state comes from `dpkg-query --show
 //!   --showformat=${db:Status-Abbrev}${Package}\t${Version}\n <pkg...>`
 //!   (dpkg-query(1); the `\t`/`\n` escapes are dpkg's own format escapes,
@@ -131,15 +138,16 @@
 //! Every distro plan carries `requires_elevation: true` (A1 planner), and
 //! this backend never acquires root itself: without an explicit
 //! `elevated(true)` grant on the request, [`ensure_install_allowed`] /
-//! [`ensure_uninstall_allowed`] refuse with [`Error::ElevationRequired`]
-//! before any command is built — the caller arranges privileges (toride
-//! never constructs `sudo`).
+//! [`ensure_uninstall_allowed`] / [`ensure_update_allowed`] refuse with
+//! [`Error::ElevationRequired`] before any command is built — the caller
+//! arranges privileges (toride never constructs `sudo`).
 //!
 //! [`Operation::DistroInstall`]: crate::Operation::DistroInstall
 //! [`Operation::DistroUninstall`]: crate::Operation::DistroUninstall
 //! [`UninstallOptions`]: crate::UninstallOptions
 //! [`ensure_install_allowed`]: crate::backend::ensure_install_allowed
 //! [`ensure_uninstall_allowed`]: crate::backend::ensure_uninstall_allowed
+//! [`ensure_update_allowed`]: crate::backend::ensure_update_allowed
 
 use async_trait::async_trait;
 use toride_registry::{DistroFamily, Os};
