@@ -41,6 +41,15 @@
 //!   would break the plan-is-the-record invariant. `dnf remove` removes
 //!   dependent packages along with the named one (dnf(8)) — that is dnf's
 //!   own dependency semantics, not something toride opts into.
+//! - **Update** — `apt-get install --only-upgrade -y <pkg>` / `dnf
+//!   upgrade -y <pkg>` / `pacman --sync --refresh --noconfirm <pkg>` /
+//!   `apk upgrade <pkg>`. Per-package only: `apt-get upgrade` upgrades the
+//!   world, so apt's verb is `install --only-upgrade` (apt-get(8)
+//!   `--only-upgrade`: "Do not install new packages; when used with
+//!   install, only-upgrade will install upgrades for already-installed
+//!   packages only"), and pacman's carries the database sync because a
+//!   stale sync db cannot know about upgrades at all (`--refresh`,
+//!   pacman(8) — which is why it belongs here and never to install).
 //! - **Queries** — Debian-like state comes from `dpkg-query --show
 //!   --showformat=${db:Status-Abbrev}${Package}\t${Version}\n <pkg...>`
 //!   (dpkg-query(1); the `\t`/`\n` escapes are dpkg's own format escapes,
@@ -61,13 +70,17 @@
 //!   color escapes when stdout is not a tty — `src/pacman/conf.c` — so the
 //!   captured rows toride reads are plain text, `--color always` aside).
 //!   Alpine state comes from
-//!   `apk list --installed <pkg...>` (apk-list(8): patterns are fnmatch(3),
-//!   no pattern matches everything, and `--installed` restricts the query to
-//!   the local database), which at apk's default verbosity prints one bare
-//!   package name per line (`src/app_list.c`). Every apk spelling that carries
-//!   a version glues it to the name (`apk list -v`'s `name-version`) or
-//!   needs apk-tools 3.x (`apk list --manifest`), so Alpine rows report
-//!   `version: None` rather than splitting a glued token by guesswork.
+//!   `apk list --installed --quiet <pkg...>` (apk-list(8): patterns are
+//!   fnmatch(3), no pattern matches everything, and `--installed` restricts
+//!   the query to the local database). `--quiet` is load-bearing: apk's
+//!   verbosity defaults to 1 (`int apk_verbosity = 1;`, src/database.c:49;
+//!   `out.verbosity = 1`, src/context.c:29 on master), where `list` prints
+//!   `name-version arch {origin} (license) [installed]`; verbosity 0 is the
+//!   only level that prints one bare package name per line (`src/app_list.c`,
+//!   `print_package`). Every apk spelling that carries a version glues it
+//!   to the name (`name-version`) or needs apk-tools 3.x (`--manifest`), so
+//!   Alpine rows report `version: None` rather than splitting a glued token
+//!   by guesswork.
 //! - **Not installed is an answer, not an error** — `dpkg-query` exits 1
 //!   with `dpkg-query: no packages found matching <pkg>` on stderr
 //!   (dpkg-query(1): exit 1 = "the requested query failed either fully or
@@ -134,7 +147,8 @@ use toride_runner::CommandOutput;
 
 use crate::backend::{
     Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, UninstallOutcome,
-    UninstallRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    UninstallRequest, UpdateRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    ensure_update_allowed,
 };
 use crate::error::{Error, Result};
 use crate::plan::{Operation, PackageManager, Target};
@@ -560,6 +574,18 @@ impl Backend for DistroBackend {
         })
     }
 
+    async fn update(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::DistroUpdate { manager, package } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let executor = self.executor_for(*manager)?;
+        self.runner
+            .run_checked(update_spec(executor, *manager, package))
+            .await?;
+        Ok(())
+    }
+
     async fn list_installed(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
         let executor = self.executor()?;
         self.query_packages(executor, &query.ids).await.map(|apps| {
@@ -597,6 +623,23 @@ fn mutating_spec(
     }
 }
 
+fn update_spec(
+    executor: DistroExecutor,
+    manager: PackageManager,
+    package: &str,
+) -> toride_runner::CommandSpec {
+    let mut args = manager.update_verb().to_vec();
+    if let Some(flag) = executor.assume_yes_flag() {
+        args.push(flag);
+    }
+    args.push(package);
+    let spec = command(executor.program(), args);
+    match executor.noninteractive_env() {
+        Some((key, value)) => spec.env(key, value),
+        None => spec,
+    }
+}
+
 fn query_spec(executor: DistroExecutor, packages: &[String]) -> toride_runner::CommandSpec {
     let spec = match executor {
         DistroExecutor::Apt => {
@@ -621,7 +664,7 @@ fn query_spec(executor: DistroExecutor, packages: &[String]) -> toride_runner::C
             command(executor.query_program(), args)
         }
         DistroExecutor::Apk => {
-            let mut args = vec!["list", "--installed"];
+            let mut args = vec!["list", "--installed", "--quiet"];
             args.extend(packages.iter().map(String::as_str));
             command(executor.query_program(), args)
         }
@@ -903,6 +946,22 @@ mod tests {
         }
     }
 
+    /// A distro-backend update plan for `family`'s manager and package,
+    /// carrying the elevation requirement every distro update needs.
+    fn update_plan_for(family: DistroFamily) -> crate::plan::UpdatePlan {
+        let manager = PackageManager::for_family(family).expect("family routes to a manager");
+        crate::plan::UpdatePlan {
+            app: TorideId::slugify("brave-browser"),
+            backend: BackendId::Distro(family),
+            operation: Operation::DistroUpdate {
+                manager,
+                package: "brave-browser".to_owned(),
+            },
+            dry_run: false,
+            requires_elevation: true,
+        }
+    }
+
     /// The exact spec a mutating apt command runs.
     fn apt_get_spec(verb: &str, package: &str) -> toride_runner::CommandSpec {
         command("apt-get", [verb, "-y", package]).env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1)
@@ -953,7 +1012,7 @@ mod tests {
 
     /// The exact spec an apk listing uses for `packages` (all when empty).
     fn apk_query_spec(packages: &[&str]) -> toride_runner::CommandSpec {
-        let mut args = vec!["list", "--installed"];
+        let mut args = vec!["list", "--installed", "--quiet"];
         args.extend(packages.iter().copied());
         command("apk", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
@@ -1731,6 +1790,269 @@ mod tests {
         fake.assert_no_unmatched_calls();
     }
 
+    /// The exact spec a mutating apt update command runs.
+    fn apt_get_update_spec(package: &str) -> toride_runner::CommandSpec {
+        command("apt-get", ["install", "--only-upgrade", "-y", package])
+            .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1)
+    }
+
+    /// The exact spec a mutating dnf update command runs.
+    fn dnf_update_spec(package: &str) -> toride_runner::CommandSpec {
+        command("dnf", ["upgrade", "-y", package])
+    }
+
+    /// The exact spec a mutating pacman update command runs.
+    fn pacman_update_spec(package: &str) -> toride_runner::CommandSpec {
+        command("pacman", ["--sync", "--refresh", "--noconfirm", package])
+    }
+
+    /// The exact spec a mutating apk update command runs.
+    fn apk_update_spec(package: &str) -> toride_runner::CommandSpec {
+        command("apk", ["upgrade", package])
+    }
+
+    #[tokio::test]
+    async fn update_refuses_dry_run_plans_without_touching_the_runner() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = update_plan_for(DistroFamily::Debian).dry_run(true);
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        assert!(fake.calls().is_empty(), "no manager command may run");
+    }
+
+    #[tokio::test]
+    async fn update_refuses_elevation_requiring_plans_without_a_grant() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = update_plan_for(DistroFamily::Debian);
+        assert!(plan.requires_elevation);
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty(), "no manager command may run");
+    }
+
+    #[tokio::test]
+    async fn update_executes_apt_get_install_only_upgrade_y() {
+        let spec = apt_get_update_spec("brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = update_plan_for(DistroFamily::Debian);
+        let target = target(DistroFamily::Debian);
+        backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_executes_dnf_upgrade_y() {
+        let spec = dnf_update_spec("brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Fedora, &fake);
+        let plan = update_plan_for(DistroFamily::Fedora);
+        let target = target(DistroFamily::Fedora);
+        backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_executes_pacman_sync_refresh_noconfirm() {
+        let spec = pacman_update_spec("brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Arch, &fake);
+        let plan = update_plan_for(DistroFamily::Arch);
+        let target = target(DistroFamily::Arch);
+        backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_executes_apk_upgrade_with_no_suppression() {
+        let spec = apk_update_spec("brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        let plan = update_plan_for(DistroFamily::Alpine);
+        let target = target(DistroFamily::Alpine);
+        backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_rejects_a_manager_foreign_to_the_backends_family() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = crate::plan::UpdatePlan {
+            app: TorideId::slugify("brave-browser"),
+            backend: BackendId::Distro(DistroFamily::Debian),
+            operation: Operation::DistroUpdate {
+                manager: PackageManager::Dnf,
+                package: "brave-browser".to_owned(),
+            },
+            dry_run: false,
+            requires_elevation: true,
+        };
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::Other(_))),
+            "{error:?}"
+        );
+        assert!(
+            error
+                .to_string()
+                .contains("does not match this backend's family"),
+            "the refusal must name the misroute: {error}"
+        );
+        assert!(fake.calls().is_empty(), "no manager command may run");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_non_distro_operations() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = crate::plan::UpdatePlan {
+            app: TorideId::slugify("brave-browser"),
+            backend: BackendId::Distro(DistroFamily::Debian),
+            operation: Operation::BrewUpgrade {
+                cask: true,
+                token: "brave-browser".to_owned(),
+            },
+            dry_run: false,
+            requires_elevation: false,
+        };
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::Other(_))),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn update_specs_pin_the_per_manager_upgrade_argv_exactly() {
+        let apt = update_spec(DistroExecutor::Apt, PackageManager::Apt, "brave-browser");
+        assert_eq!(apt.program, "apt-get");
+        assert_eq!(
+            apt.args,
+            ["install", "--only-upgrade", "-y", "brave-browser"]
+        );
+        assert!(
+            apt.env
+                .contains(&("DEBIAN_FRONTEND".to_owned(), "noninteractive".to_owned())),
+            "apt keeps the debconf frontend silenced: {apt:?}"
+        );
+        assert!(apt.stdin_null);
+
+        let dnf = update_spec(DistroExecutor::Dnf, PackageManager::Dnf, "bash");
+        assert_eq!(dnf.program, "dnf");
+        assert_eq!(dnf.args, ["upgrade", "-y", "bash"]);
+        assert!(dnf.env.is_empty(), "{dnf:?}");
+
+        let pacman = update_spec(DistroExecutor::Pacman, PackageManager::Pacman, "bash");
+        assert_eq!(pacman.program, "pacman");
+        assert_eq!(pacman.args, ["--sync", "--refresh", "--noconfirm", "bash"]);
+        assert!(
+            pacman.args.iter().any(|arg| arg == "--noconfirm"),
+            "--noconfirm is pacman's assume-yes: {pacman:?}"
+        );
+        assert!(pacman.env.is_empty(), "{pacman:?}");
+
+        let apk = update_spec(DistroExecutor::Apk, PackageManager::Apk, "bash");
+        assert_eq!(apk.program, "apk");
+        assert_eq!(apk.args, ["upgrade", "bash"]);
+        assert!(apk.env.is_empty(), "apk has no suppression at all: {apk:?}");
+    }
+
+    #[test]
+    fn update_plan_argv_stays_canonical_while_execution_layers_the_runtime_flags() {
+        let plan = update_plan_for(DistroFamily::Debian);
+        assert_eq!(
+            plan.operation.argv(),
+            ["apt", "install", "--only-upgrade", "brave-browser"]
+        );
+        let executed = update_spec(DistroExecutor::Apt, PackageManager::Apt, "brave-browser");
+        assert_eq!(executed.program, "apt-get");
+        assert_eq!(
+            executed.args,
+            ["install", "--only-upgrade", "-y", "brave-browser"]
+        );
+
+        let pacman = update_plan_for(DistroFamily::Arch);
+        assert_eq!(
+            pacman.operation.argv(),
+            ["pacman", "--sync", "--refresh", "brave-browser"]
+        );
+        let executed = update_spec(
+            DistroExecutor::Pacman,
+            PackageManager::Pacman,
+            "brave-browser",
+        );
+        assert_eq!(
+            executed.args,
+            ["--sync", "--refresh", "--noconfirm", "brave-browser"]
+        );
+    }
+
+    #[test]
+    fn update_specs_never_carry_the_wrong_suppression_flags() {
+        for spec in [
+            update_spec(DistroExecutor::Apt, PackageManager::Apt, "bash"),
+            update_spec(DistroExecutor::Dnf, PackageManager::Dnf, "bash"),
+            update_spec(DistroExecutor::Pacman, PackageManager::Pacman, "bash"),
+            update_spec(DistroExecutor::Apk, PackageManager::Apk, "bash"),
+        ] {
+            assert!(
+                !spec.args.iter().any(|arg| arg == "-y") || spec.program != "pacman",
+                "pacman has no -y: {spec:?}"
+            );
+            assert!(
+                !spec.args.iter().any(|arg| arg == "--noconfirm") || spec.program == "pacman",
+                "--noconfirm is pacman's flag alone: {spec:?}"
+            );
+        }
+    }
+
     // --- query argv -----------------------------------------------------------------
 
     #[test]
@@ -1795,7 +2117,7 @@ mod tests {
         let pacman = pacman_query_spec(&[]);
         assert_eq!(pacman.args, ["--query"]);
         let apk = apk_query_spec(&[]);
-        assert_eq!(apk.args, ["list", "--installed"]);
+        assert_eq!(apk.args, ["list", "--installed", "--quiet"]);
     }
 
     #[test]
@@ -1807,10 +2129,14 @@ mod tests {
     }
 
     #[test]
-    fn apk_query_spec_pins_the_list_installed_argv_and_patterns() {
+    fn apk_query_spec_pins_the_list_installed_quiet_argv_and_patterns() {
         let spec = apk_query_spec(&["bash", "musl"]);
         assert_eq!(spec.program, "apk");
-        assert_eq!(spec.args, ["list", "--installed", "bash", "musl"]);
+        assert_eq!(
+            spec.args,
+            ["list", "--installed", "--quiet", "bash", "musl"],
+            "apk defaults to verbosity 1, whose rows carry no bare name to parse"
+        );
         assert!(spec.stdin_null);
     }
 
@@ -1893,9 +2219,7 @@ mod tests {
     }
 
     #[test]
-    fn parse_query_output_reads_bare_names_from_the_apk_fixture() {
-        // `apk list --installed` at apk's default verbosity prints one bare
-        // package name per line and never a version (src/app_list.c).
+    fn parse_query_output_reads_bare_names_from_the_apk_quiet_fixture() {
         let apps = parse_query_output(DistroExecutor::Apk, &apk_fixture_output()).unwrap();
         assert_eq!(apps.len(), 4, "{apps:?}");
         assert_eq!(
@@ -1906,6 +2230,16 @@ mod tests {
             }
         );
         assert!(apps.iter().all(|app| app.version.is_none()), "{apps:?}");
+    }
+
+    #[test]
+    fn parse_query_output_errors_loudly_on_apk_default_verbosity_rows() {
+        let document = "bash-5.2.26-r0 x86_64 {bash} (GPL-3.0-or-later) [installed]\n";
+        let error = parse_query_output(DistroExecutor::Apk, document).unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "a dropped --quiet must surface, never read as nothing installed: {error:?}"
+        );
     }
 
     #[test]
@@ -2566,6 +2900,10 @@ mod tests {
             mutating_spec(DistroExecutor::Pacman, "--remove", "bash"),
             mutating_spec(DistroExecutor::Apk, "add", "bash"),
             mutating_spec(DistroExecutor::Apk, "del", "bash"),
+            update_spec(DistroExecutor::Apt, PackageManager::Apt, "bash"),
+            update_spec(DistroExecutor::Dnf, PackageManager::Dnf, "bash"),
+            update_spec(DistroExecutor::Pacman, PackageManager::Pacman, "bash"),
+            update_spec(DistroExecutor::Apk, PackageManager::Apk, "bash"),
             dpkg_query_spec(&["bash"]),
             dpkg_query_spec(&[]),
             rpm_query_spec(&["bash"]),

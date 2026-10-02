@@ -494,7 +494,7 @@ mod tests {
 
     /// The exact apk listing spec the single-package probe runs.
     fn apk_query_spec(package: &str) -> toride_runner::CommandSpec {
-        command("apk", ["list", "--installed", package]).env("LC_ALL", "C")
+        command("apk", ["list", "--installed", "--quiet", package]).env("LC_ALL", "C")
     }
 
     /// The `brew info` document carrying one installed cask.
@@ -751,8 +751,6 @@ mod tests {
 
     #[tokio::test]
     async fn manifest_hit_apk_record_without_a_version_still_reports_installed() {
-        // apk's listing carries no version at all (src/app_list.c) — the
-        // exact case that rules out `installed_version` for distro records.
         let fake = FakeRunner::new().strict().respond(
             apk_query_spec("brave-browser"),
             CommandOutput::from_stdout("brave-browser\n"),
@@ -780,7 +778,6 @@ mod tests {
 
     #[tokio::test]
     async fn manifest_hit_pacman_record_when_the_package_is_missing_reports_not_installed() {
-        // pacman's not-found answer: exit 1 with the marker line on stderr.
         let fake = FakeRunner::new().strict().respond(
             pacman_query_spec("firefox"),
             CommandOutput::from_stderr("error: package 'firefox' was not found\n", 1),

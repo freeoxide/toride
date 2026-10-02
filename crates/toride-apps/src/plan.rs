@@ -192,6 +192,18 @@ impl PackageManager {
         }
     }
 
+    /// The per-package upgrade verb tokens — a slice because apt spells the
+    /// per-app verb `install --only-upgrade` (bare `upgrade` would upgrade
+    /// the world) and pacman's carries its database sync (`--sync --refresh`).
+    #[must_use]
+    pub const fn update_verb(self) -> &'static [&'static str] {
+        match self {
+            Self::Apt => &["install", "--only-upgrade"],
+            Self::Dnf | Self::Apk => &["upgrade"],
+            Self::Pacman => &["--sync", "--refresh"],
+        }
+    }
+
     /// The manager a distro family selects. `None` for families this crate
     /// does not route (future registry families — the planner then reports
     /// [`Error::UnsupportedMethod`] rather than guessing).
@@ -208,7 +220,7 @@ impl PackageManager {
     }
 }
 
-/// One concrete backend operation with its exact argv — the payload both
+/// One concrete backend operation with its exact argv — the payload the
 /// plan types carry.
 ///
 /// [`Operation::argv`] renders the *canonical* command. Backends may add
@@ -273,6 +285,31 @@ pub enum Operation {
         /// Package name the manager knows.
         package: String,
     },
+    /// `brew upgrade [--cask] <token>`. Brew itself skips pinned formulae;
+    /// pinned state surfaces through the outdated probe.
+    BrewUpgrade {
+        /// `true` upgrades a cask (`--cask`), `false` a formula.
+        cask: bool,
+        /// Cask token or formula name.
+        token: String,
+    },
+    /// `flatpak update <installation-flag> <app-id>`; `--noninteractive`
+    /// is layered on at execution.
+    FlatpakUpdate {
+        /// Dotted reverse-DNS app id (`com.brave.Browser`).
+        app_id: String,
+        /// User vs system installation.
+        installation: FlatpakInstallation,
+    },
+    /// `<manager> <update-verb-tokens> <package>` — apt `install
+    /// --only-upgrade`, dnf `upgrade`, pacman `--sync --refresh`, apk
+    /// `upgrade`. Requires elevation.
+    DistroUpdate {
+        /// The family's package manager.
+        manager: PackageManager,
+        /// Package name the manager knows.
+        package: String,
+    },
 }
 
 impl Operation {
@@ -320,6 +357,24 @@ impl Operation {
             Self::DistroUninstall { manager, package } => {
                 argv(&[manager.program(), manager.uninstall_verb(), package])
             }
+            Self::BrewUpgrade { cask, token } => {
+                let token = token.as_str();
+                if *cask {
+                    argv(&["brew", "upgrade", "--cask", token])
+                } else {
+                    argv(&["brew", "upgrade", token])
+                }
+            }
+            Self::FlatpakUpdate {
+                app_id,
+                installation,
+            } => argv(&["flatpak", "update", installation.flag(), app_id]),
+            Self::DistroUpdate { manager, package } => {
+                let mut parts = vec![manager.program()];
+                parts.extend(manager.update_verb().iter().copied());
+                parts.push(package.as_str());
+                argv(&parts)
+            }
         }
     }
 
@@ -359,6 +414,14 @@ impl Operation {
             }
             Self::DistroUninstall { manager, package } => {
                 format!("uninstall {} package `{package}`", manager.program())
+            }
+            Self::BrewUpgrade { cask, token } => format!(
+                "upgrade homebrew {} `{token}`",
+                if *cask { "cask" } else { "formula" }
+            ),
+            Self::FlatpakUpdate { app_id, .. } => format!("update flatpak `{app_id}`"),
+            Self::DistroUpdate { manager, package } => {
+                format!("upgrade {} package `{package}`", manager.program())
             }
         }
     }
@@ -478,6 +541,62 @@ impl UninstallPlan {
     }
 
     /// Deserialize a plan from its [`UninstallPlan::to_json_string`] form.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PlanJson`] when the payload is not a serialized plan.
+    pub fn from_json_str(json: &str) -> Result<Self> {
+        Ok(serde_json::from_str(json)?)
+    }
+}
+
+/// A concrete, executable upgrade derived from a manifest record — the
+/// update-path mirror of [`UninstallPlan`]: built from the record's own
+/// identifiers, never re-planned from registry data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UpdatePlan {
+    /// The app being updated.
+    pub app: TorideId,
+    /// Backend the operation routes to.
+    pub backend: BackendId,
+    /// The exact operation to perform.
+    pub operation: Operation,
+    /// Dry-run slot — same contract as [`InstallPlan::dry_run`].
+    pub dry_run: bool,
+    /// The operation requires root privileges (distro managers).
+    pub requires_elevation: bool,
+}
+
+impl UpdatePlan {
+    /// Mark this plan (not) a dry run — consume-and-return.
+    #[must_use]
+    pub const fn dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
+    }
+
+    /// Human summary for dry-run rendering — same shape as
+    /// [`InstallPlan::summary`].
+    #[must_use]
+    pub fn summary(&self) -> String {
+        format!(
+            "[{}] {} (would run: {})",
+            self.backend,
+            self.operation.description(),
+            self.operation.argv().join(" ")
+        )
+    }
+
+    /// Serialize the plan to a JSON string.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::PlanJson`] when serialization fails.
+    pub fn to_json_string(&self) -> Result<String> {
+        Ok(serde_json::to_string(self)?)
+    }
+
+    /// Deserialize a plan from its [`UpdatePlan::to_json_string`] form.
     ///
     /// # Errors
     ///
@@ -1313,5 +1432,115 @@ mod tests {
         for (family, expected) in cases {
             assert_eq!(PackageManager::for_family(family), Some(expected));
         }
+    }
+
+    #[test]
+    fn update_verbs_pin_the_per_manager_spelling() {
+        assert_eq!(
+            PackageManager::Apt.update_verb(),
+            &["install", "--only-upgrade"]
+        );
+        assert_eq!(PackageManager::Dnf.update_verb(), &["upgrade"]);
+        assert_eq!(
+            PackageManager::Pacman.update_verb(),
+            &["--sync", "--refresh"]
+        );
+        assert_eq!(PackageManager::Apk.update_verb(), &["upgrade"]);
+    }
+
+    #[test]
+    fn brew_upgrade_renders_the_cask_flag_for_casks_only() {
+        let cask = Operation::BrewUpgrade {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        };
+        assert_eq!(cask.argv(), ["brew", "upgrade", "--cask", "brave-browser"]);
+        let formula = Operation::BrewUpgrade {
+            cask: false,
+            token: "ripgrep".to_owned(),
+        };
+        assert_eq!(formula.argv(), ["brew", "upgrade", "ripgrep"]);
+        assert_eq!(formula.description(), "upgrade homebrew formula `ripgrep`");
+        assert_eq!(cask.description(), "upgrade homebrew cask `brave-browser`");
+    }
+
+    #[test]
+    fn flatpak_update_renders_the_installation_flag_and_bare_app_id() {
+        let user = Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::User,
+        };
+        assert_eq!(
+            user.argv(),
+            ["flatpak", "update", "--user", "com.brave.Browser"]
+        );
+        assert_eq!(user.description(), "update flatpak `com.brave.Browser`");
+        let system = Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::System,
+        };
+        assert_eq!(
+            system.argv(),
+            ["flatpak", "update", "--system", "com.brave.Browser"]
+        );
+    }
+
+    #[test]
+    fn distro_update_renders_every_managers_per_package_upgrade_verb() {
+        let cases = [
+            (
+                PackageManager::Apt,
+                vec!["apt", "install", "--only-upgrade", "brave-browser"],
+            ),
+            (PackageManager::Dnf, vec!["dnf", "upgrade", "brave-browser"]),
+            (
+                PackageManager::Pacman,
+                vec!["pacman", "--sync", "--refresh", "brave-browser"],
+            ),
+            (PackageManager::Apk, vec!["apk", "upgrade", "brave-browser"]),
+        ];
+        for (manager, expected) in cases {
+            let operation = Operation::DistroUpdate {
+                manager,
+                package: "brave-browser".to_owned(),
+            };
+            assert_eq!(operation.argv(), expected, "{manager:?}");
+            assert!(
+                operation.description().contains("upgrade"),
+                "{}",
+                operation.description()
+            );
+        }
+    }
+
+    #[test]
+    fn distro_update_command_spec_splits_program_from_the_multi_token_verb() {
+        let spec = Operation::DistroUpdate {
+            manager: PackageManager::Apt,
+            package: "firefox".to_owned(),
+        }
+        .command_spec();
+        assert_eq!(spec.program, "apt");
+        assert_eq!(spec.args, ["install", "--only-upgrade", "firefox"]);
+        assert!(spec.stdin_null);
+    }
+
+    #[test]
+    fn update_plans_round_trip_through_json_and_carry_the_dry_run_slot() {
+        let plan = UpdatePlan {
+            app: TorideId::slugify("brave"),
+            backend: BackendId::Homebrew,
+            operation: Operation::BrewUpgrade {
+                cask: true,
+                token: "brave-browser".to_owned(),
+            },
+            dry_run: false,
+            requires_elevation: false,
+        };
+        let json = plan.to_json_string().unwrap();
+        assert_eq!(UpdatePlan::from_json_str(&json).unwrap(), plan);
+        let dry = plan.clone().dry_run(true);
+        assert!(dry.dry_run);
+        assert!(dry.summary().contains("brew upgrade --cask brave-browser"));
     }
 }

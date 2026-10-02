@@ -32,6 +32,9 @@
 //!   resolves against the **installed** refs — toride never re-derives the
 //!   ref from the planning target's arch (the manifest is the source of
 //!   truth for what was actually installed).
+//! - **Update** — `flatpak update --user --noninteractive <app-id>`: the
+//!   same bare-id resolution against installed refs, with
+//!   `--noninteractive` layered on at execution like install/uninstall.
 //! - **Listing** — `flatpak list --app
 //!   --columns=application,version,origin,installation`. With captured
 //!   (non-TTY) output, flatpak's table printer emits **tab-separated,
@@ -50,7 +53,7 @@
 //!   `toride-runner`'s discovery helpers, no command executed),
 //!   [`FlatpakBackend::version`] (`flatpak --version`),
 //!   [`FlatpakBackend::ensure_remote`] (probe + conditional add).
-//! - **Trait operations** — install/uninstall/list/status per the
+//! - **Trait operations** — install/uninstall/update/list/status per the
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
 //!   installation-scoped [`FlatpakBackend::installed_version`] probe and
 //!   the richer [`FlatpakBackend::list_entries`].
@@ -93,7 +96,8 @@ use toride_registry::Os;
 
 use crate::backend::{
     Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, UninstallOutcome,
-    UninstallRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    UninstallRequest, UpdateRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    ensure_update_allowed,
 };
 use crate::error::{Error, Result};
 use crate::plan::{FlatpakInstallation, Operation, Target};
@@ -398,6 +402,28 @@ impl Backend for FlatpakBackend {
             }
             Err(error) => Err(error),
         }
+    }
+
+    async fn update(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::FlatpakUpdate {
+            app_id,
+            installation,
+        } = &request.plan.operation
+        else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let spec = command(
+            FLATPAK,
+            [
+                "update",
+                installation.flag(),
+                "--noninteractive",
+                app_id.as_str(),
+            ],
+        );
+        self.runner.run_checked(spec).await?;
+        Ok(())
     }
 
     async fn list_installed(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
@@ -719,6 +745,17 @@ mod tests {
     /// A flatpak-backend uninstall plan carrying a hand-picked operation.
     fn manual_uninstall_plan(operation: Operation) -> UninstallPlan {
         UninstallPlan {
+            app: TorideId::slugify("brave-browser"),
+            backend: BackendId::Flatpak,
+            operation,
+            dry_run: false,
+            requires_elevation: false,
+        }
+    }
+
+    /// A flatpak-backend update plan carrying a hand-picked operation.
+    fn manual_update_plan(operation: Operation) -> crate::plan::UpdatePlan {
+        crate::plan::UpdatePlan {
             app: TorideId::slugify("brave-browser"),
             backend: BackendId::Flatpak,
             operation,
@@ -1612,6 +1649,142 @@ mod tests {
             .await
             .unwrap();
         fake.assert_called_with(&spec);
+    }
+
+    fn update_spec(flag: &str, app_id: &str) -> toride_runner::CommandSpec {
+        command(FLATPAK, ["update", flag, "--noninteractive", app_id])
+    }
+
+    #[tokio::test]
+    async fn update_refuses_dry_run_plans_without_touching_the_runner() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::User,
+        })
+        .dry_run(true);
+        let target = linux_target();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        assert!(fake.calls().is_empty(), "no flatpak command may run");
+    }
+
+    #[tokio::test]
+    async fn update_refuses_elevation_requiring_plans_without_a_grant() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let mut plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        plan.requires_elevation = true;
+        let target = linux_target();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty(), "no flatpak command may run");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_non_flatpak_operations() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::BrewUpgrade {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        });
+        let target = linux_target();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::Other(_))),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_executes_the_user_installation_with_noninteractive() {
+        let spec = update_spec("--user", "com.brave.Browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        let target = linux_target();
+        backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_honors_the_system_installation_flag() {
+        let spec = update_spec("--system", "com.brave.Browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::System,
+        });
+        let target = linux_target();
+        backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_maps_nonzero_exit_to_command_error_carrying_stderr() {
+        let spec = update_spec("--user", "com.not.Installed");
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stderr(
+                "error: No installed refs found for \u{2018}com.not.Installed\u{2019}",
+                1,
+            ),
+        );
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.not.Installed".to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        let target = linux_target();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed { .. })
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("No installed refs found"),
+            "stderr tail must travel with the error: {error}"
+        );
     }
 
     // --- listing + status ----------------------------------------------------------

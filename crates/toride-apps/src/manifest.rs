@@ -234,6 +234,14 @@ impl InstallRecord {
         self.installed_at = installed_at;
         self
     }
+
+    /// Replace the recorded version — consume-and-return; the update path
+    /// rewrites what the backend reports after an upgrade.
+    #[must_use]
+    pub fn with_version(mut self, version: Option<String>) -> Self {
+        self.version = version;
+        self
+    }
 }
 
 /// Current Unix epoch seconds; `0` when the clock reads before 1970 (the

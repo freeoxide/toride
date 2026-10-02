@@ -99,6 +99,10 @@
 //! - [`InstallMethod::Distro`] → [`Operation::DistroInstall`] /
 //!   [`Operation::DistroUninstall`] with the family's manager verbs (apt,
 //!   dnf, pacman, apk) and a mandatory elevation requirement
+//! - [`Operation::BrewUpgrade`] / [`Operation::FlatpakUpdate`] /
+//!   [`Operation::DistroUpdate`] complete the lifecycle: update plans are
+//!   derived from the manifest record's own identifiers
+//!   ([`Apps::update`]), never re-resolved through the registry
 //! - [`InstallMethod::Direct`] is not yet executed here (wave 2: route it to
 //!   `toride-installer`); the planner reports
 //!   [`Error::UnsupportedMethod`] for it today.
@@ -121,18 +125,18 @@ pub mod status;
 
 // Re-exports — the public API surface.
 pub use apps::{
-    AppInstallOptions, AppUninstallOptions, Apps, AppsBuilder, AppsError, AppsResult,
-    EnsureAppOutcome, UninstallAppOutcome,
+    AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBuilder, AppsError,
+    AppsResult, EnsureAppOutcome, UninstallAppOutcome, UpdateOutcome, UpdatePreview,
 };
 pub use backend::{
     Backend, BackendId, BackendStatus, InstallOutcome, InstallRequest, InstalledApp, ListQuery,
-    StatusQuery, UninstallOutcome, UninstallRequest,
+    OutdatedEntry, StatusQuery, UninstallOutcome, UninstallRequest, UpdateRequest, Version,
 };
 pub use error::{Error, Result};
 pub use manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
 pub use plan::{
     FlatpakInstallation, InstallPlan, Operation, PackageManager, Target, UninstallOptions,
-    UninstallPlan, plan_install, plan_uninstall,
+    UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 pub use runner::{CommandRunner, CommandRunnerBuilder, command};
 pub use status::{AppStatus, BackendSet, app_status};

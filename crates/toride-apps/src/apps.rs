@@ -1,8 +1,9 @@
 //! # Apps facade
 //!
 //! [`Apps`] is the front door of the execution layer: one call per user
-//! intent — ensure an app is installed, uninstall it, ask where it stands,
-//! search the registries — composing every lower layer this crate built:
+//! intent — ensure an app is installed, update it, uninstall it, ask where
+//! it stands, search the registries — composing every lower layer this
+//! crate built:
 //!
 //! 1. **Detect before resolve** (the toride-installer
 //!    `Detector`/`EnsureOutcome` rule): [`Apps::ensure_installed`] answers
@@ -78,6 +79,7 @@ use toride_registry::{Adapter, TorideId};
 
 use crate::backend::{
     Backend, BackendId, BackendStatus, InstallRequest, StatusQuery, UninstallRequest,
+    UpdateRequest, Version,
 };
 use crate::backends::distro::detect_host_family;
 use crate::backends::flatpak::FlatpakListScope;
@@ -87,7 +89,7 @@ use crate::error::Error as BackendError;
 use crate::manifest::{InstallManifest, InstallRecord, ManifestError, ManifestResult, NativeIds};
 use crate::plan::{
     FlatpakInstallation, InstallPlan, Operation, PackageManager, Target, UninstallOptions,
-    UninstallPlan, plan_install, plan_uninstall,
+    UninstallPlan, UpdatePlan, plan_install, plan_uninstall,
 };
 use crate::runner::CommandRunner;
 use crate::status::{AppStatus, BackendSet, app_status};
@@ -172,6 +174,30 @@ pub enum AppsError {
         "no manifest path: the platform data directory did not resolve; pass an explicit path to the builder"
     )]
     NoManifestPath,
+
+    /// The update target carries no toride install record: update replays
+    /// the record's own identifiers, so an app toride never recorded
+    /// cannot be updated through this verb.
+    #[error(
+        "cannot update `{id}`: toride has no install record for it — ensure_installed it first"
+    )]
+    UnrecordedUpdate {
+        /// Canonical toride id of the app.
+        id: String,
+    },
+
+    /// The options name a target version this toride cannot pin to — the
+    /// wave-1 update verbs move to the manager's current only (version
+    /// selection and pinning arrive with the install-time half of 3.6).
+    #[error(
+        "cannot update `{id}` to {target}: target pinning is not implemented — updates move to the manager's current version"
+    )]
+    UpdateTargetNotPinnable {
+        /// Canonical toride id of the app.
+        id: String,
+        /// The requested target version's native spelling.
+        target: String,
+    },
 }
 
 // ---------------------------------------------------------------------------
@@ -254,6 +280,88 @@ impl AppUninstallOptions {
         self.force = force;
         self
     }
+}
+
+/// Options for [`Apps::update`].
+#[derive(Debug, Clone, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub struct AppUpdateOptions {
+    /// Elevation grant — see [`AppInstallOptions::elevated`]; distro
+    /// updates require it.
+    pub elevated: bool,
+    /// Preview the update instead of executing it: no command runs, the
+    /// manifest is untouched, and the outcome is
+    /// [`UpdateOutcome::Preview`].
+    pub dry_run: bool,
+    /// Target version to update to; `None` = whatever the manager
+    /// considers current. A `Some` target is refused while pinning is
+    /// unimplemented ([`AppsError::UpdateTargetNotPinnable`]).
+    pub target: Option<Version>,
+}
+
+impl AppUpdateOptions {
+    /// All-default options (no elevation grant, no dry run, manager's
+    /// current version).
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            elevated: false,
+            dry_run: false,
+            target: None,
+        }
+    }
+
+    /// Assert that elevation has been arranged — consume-and-return.
+    #[must_use]
+    pub const fn elevated(mut self, elevated: bool) -> Self {
+        self.elevated = elevated;
+        self
+    }
+
+    /// Preview instead of executing — consume-and-return.
+    #[must_use]
+    pub const fn dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
+    }
+
+    /// Pin the update to a target version — consume-and-return.
+    #[must_use]
+    pub fn target(mut self, target: Option<Version>) -> Self {
+        self.target = target;
+        self
+    }
+}
+
+/// Outcome of [`Apps::update`].
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum UpdateOutcome {
+    /// The manager already reports the app current (its stale signal
+    /// excludes the id, or installed equals available); nothing ran.
+    UpToDate,
+    /// The upgrade ran; `from`/`to` are the versions probed before and
+    /// after, `None` where the backend cannot report one (flatpak apps
+    /// without appdata metadata, apk's version-less listing).
+    Updated {
+        /// Version before the upgrade, when a probe reported one.
+        from: Option<Version>,
+        /// Version after the upgrade, when a probe reported one.
+        to: Option<Version>,
+    },
+    /// A dry run: nothing executed, nothing recorded — the argv that would
+    /// run plus the resolved versions.
+    Preview(UpdatePreview),
+}
+
+/// What a dry-run [`Apps::update`] would run — a thin render over the
+/// [`UpdatePlan`] plus the two resolved versions.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UpdatePreview {
+    /// The canonical argv the update would execute.
+    pub argv: Vec<String>,
+    /// The currently installed version, when a probe reported one.
+    pub from: Option<Version>,
+    /// The version the manager offers now, when a probe reported one.
+    pub to: Option<Version>,
 }
 
 /// Outcome of [`Apps::ensure_installed`] — the toride-installer
@@ -597,6 +705,79 @@ impl Apps {
             ids: native,
             warning,
         })
+    }
+
+    /// Update `id` to its manager's current version: read the manifest
+    /// record, plan the upgrade from the **record's own identifiers**
+    /// (never re-resolved through the adapters — zero registry round
+    /// trips), resolve installed versus available, and — unless the
+    /// manager already reports the app current — execute, re-probe the
+    /// installed version, and rewrite it into the record.
+    ///
+    /// The currency decision prefers the manager's own stale signal (brew
+    /// `outdated` answers per token) and falls back to installed-equals-
+    /// available where no signal exists; versions are compared as opaque
+    /// strings, never semver. A dry run executes nothing and touches no
+    /// state: it answers [`UpdateOutcome::Preview`] with the argv that
+    /// would run. A post-upgrade probe that fails degrades to
+    /// `to: None` (the upgrade itself succeeded), matching the
+    /// post-verify degradation of [`Apps::ensure_installed`].
+    ///
+    /// # Errors
+    ///
+    /// [`AppsError::UnrecordedUpdate`] when toride has no record for `id`;
+    /// [`AppsError::UpdateTargetNotPinnable`] when the options carry a
+    /// target version; [`AppsError::BackendUnavailable`] when the record's
+    /// backend is not attached; [`AppsError::Backend`] for guard refusals
+    /// and command failures; [`AppsError::Manifest`] when persisting the
+    /// rewritten record fails (the upgrade itself already succeeded).
+    pub async fn update(
+        &mut self,
+        id: &TorideId,
+        options: &AppUpdateOptions,
+    ) -> AppsResult<UpdateOutcome> {
+        if let Some(target) = &options.target {
+            return Err(AppsError::UpdateTargetNotPinnable {
+                id: id.as_str().to_owned(),
+                target: target.to_string(),
+            });
+        }
+        let Some(record) = self.manifest.get(id).cloned() else {
+            return Err(AppsError::UnrecordedUpdate {
+                id: id.as_str().to_owned(),
+            });
+        };
+        let plan = update_plan_from_record(&record)?.dry_run(options.dry_run);
+        let backend = self.backend_for(plan.backend)?;
+        let native = native_id(&record.ids);
+        let from = backend.installed_version(native).await?;
+        if options.dry_run {
+            let to = backend.available_version(native).await?;
+            return Ok(UpdateOutcome::Preview(UpdatePreview {
+                argv: plan.operation.argv(),
+                from,
+                to,
+            }));
+        }
+        let reported_stale = backend
+            .outdated()
+            .await?
+            .iter()
+            .any(|entry| entry.id == native);
+        if !reported_stale {
+            let to = backend.available_version(native).await?;
+            if from.is_some() && from == to {
+                return Ok(UpdateOutcome::UpToDate);
+            }
+        }
+        backend
+            .update(UpdateRequest::new(&plan, &self.target).elevated(options.elevated))
+            .await?;
+        let to = backend.installed_version(native).await.ok().flatten();
+        self.manifest
+            .record(record.with_version(to.as_ref().map(|version| version.as_str().to_owned())));
+        self.save_manifest().await?;
+        Ok(UpdateOutcome::Updated { from, to })
     }
 
     /// Where `id` stands on this host — the A5 status layer, delegated to.
@@ -1154,6 +1335,58 @@ fn uninstall_plan_from_record(record: &InstallRecord, zap: bool) -> AppsResult<U
     })
 }
 
+/// The update plan for a toride-installed record — the update-path mirror
+/// of [`uninstall_plan_from_record`]: built from the record's OWN
+/// identifiers, never re-planned through the registry (the update path
+/// makes zero adapter round trips).
+fn update_plan_from_record(record: &InstallRecord) -> AppsResult<UpdatePlan> {
+    let backend = record.ids.backend();
+    let operation = match &record.ids {
+        NativeIds::Homebrew { token, cask } => Operation::BrewUpgrade {
+            token: token.clone(),
+            cask: *cask,
+        },
+        NativeIds::Flatpak {
+            app_id,
+            installation,
+            ..
+        } => Operation::FlatpakUpdate {
+            app_id: app_id.clone(),
+            installation: *installation,
+        },
+        NativeIds::Distro { package, family } => {
+            let manager = PackageManager::for_family(*family).ok_or_else(|| {
+                AppsError::UnrecordableOperation {
+                    app: record.plan.app.as_str().to_owned(),
+                    operation: format!("distro family {family:?} has no routed manager"),
+                }
+            })?;
+            Operation::DistroUpdate {
+                manager,
+                package: package.clone(),
+            }
+        }
+    };
+    Ok(UpdatePlan {
+        app: record.plan.app.clone(),
+        backend,
+        operation,
+        dry_run: false,
+        requires_elevation: matches!(backend, BackendId::Distro(_)),
+    })
+}
+
+/// The backend-native id a record's identifiers key on — the join key the
+/// trait's version probes take (brew token, flatpak app id, distro
+/// package name).
+fn native_id(ids: &NativeIds) -> &str {
+    match ids {
+        NativeIds::Homebrew { token, .. } => token,
+        NativeIds::Flatpak { app_id, .. } => app_id,
+        NativeIds::Distro { package, .. } => package,
+    }
+}
+
 /// The app id segment of an install ref (`app/<id>/<arch>/<branch>` → the
 /// id) — this facade's mirror of the flatpak backend's private derivation,
 /// used to read the actually-installed id back out of the executed ref.
@@ -1554,6 +1787,126 @@ mod tests {
             !uninstall_plan_from_record(&cask_record(), false)
                 .unwrap()
                 .requires_elevation
+        );
+    }
+
+    #[test]
+    fn update_options_default_off_and_the_setters_are_fluent() {
+        let options = AppUpdateOptions::default();
+        assert!(!options.elevated && !options.dry_run && options.target.is_none());
+        assert_eq!(AppUpdateOptions::default(), AppUpdateOptions::new());
+        let pinned = AppUpdateOptions::new()
+            .elevated(true)
+            .dry_run(true)
+            .target(Some(Version::new("1.2.3")));
+        assert!(pinned.elevated && pinned.dry_run);
+        assert_eq!(pinned.target, Some(Version::new("1.2.3")));
+        let cleared = pinned.target(None);
+        assert!(cleared.target.is_none(), "the manager's current again");
+    }
+
+    #[test]
+    fn unrecorded_update_names_the_app_and_the_escape() {
+        let error = AppsError::UnrecordedUpdate {
+            id: "ghost".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("`ghost`"), "{text}");
+        assert!(text.contains("ensure_installed"), "{text}");
+    }
+
+    #[test]
+    fn update_target_not_pinnable_names_the_target() {
+        let error = AppsError::UpdateTargetNotPinnable {
+            id: "ghost".to_owned(),
+            target: "2.0.0".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("`ghost`"), "{text}");
+        assert!(text.contains("2.0.0"), "{text}");
+        assert!(text.contains("not implemented"), "{text}");
+    }
+
+    fn update_plan_for_ids(ids: NativeIds) -> AppsResult<UpdatePlan> {
+        let backend = ids.backend();
+        update_plan_from_record(&InstallRecord::new(
+            InstallPlan {
+                app: TorideId::slugify("brave"),
+                backend,
+                operation: Operation::BrewInstall {
+                    cask: false,
+                    token: "unused".to_owned(),
+                },
+                dry_run: false,
+                requires_elevation: false,
+            },
+            ids,
+            None,
+        ))
+    }
+
+    #[test]
+    fn update_plan_from_record_reads_the_record_ids_verbatim() {
+        let brew = update_plan_for_ids(NativeIds::Homebrew {
+            token: "brave-browser".to_owned(),
+            cask: true,
+        })
+        .unwrap();
+        assert_eq!(
+            brew.operation.argv(),
+            ["brew", "upgrade", "--cask", "brave-browser"]
+        );
+        assert_eq!(brew.backend, BackendId::Homebrew);
+        assert!(!brew.requires_elevation);
+        assert!(!brew.dry_run);
+
+        let flatpak = update_plan_for_ids(NativeIds::Flatpak {
+            app_id: "com.brave.Browser".to_owned(),
+            app_ref: Some("app/com.brave.Browser/x86_64/stable".to_owned()),
+            installation: FlatpakInstallation::System,
+        })
+        .unwrap();
+        assert_eq!(
+            flatpak.operation.argv(),
+            ["flatpak", "update", "--system", "com.brave.Browser"]
+        );
+
+        let distro = update_plan_for_ids(NativeIds::Distro {
+            package: "brave-browser".to_owned(),
+            family: DistroFamily::Arch,
+        })
+        .unwrap();
+        assert_eq!(
+            distro.operation.argv(),
+            ["pacman", "--sync", "--refresh", "brave-browser"]
+        );
+        assert_eq!(distro.backend, BackendId::Distro(DistroFamily::Arch));
+        assert!(distro.requires_elevation, "distro updates need root");
+    }
+
+    #[test]
+    fn native_id_keys_each_kind_on_its_backend_native_spelling() {
+        assert_eq!(
+            native_id(&NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: true,
+            }),
+            "firefox"
+        );
+        assert_eq!(
+            native_id(&NativeIds::Flatpak {
+                app_id: "com.brave.Browser".to_owned(),
+                app_ref: None,
+                installation: FlatpakInstallation::User,
+            }),
+            "com.brave.Browser"
+        );
+        assert_eq!(
+            native_id(&NativeIds::Distro {
+                package: "brave-browser".to_owned(),
+                family: DistroFamily::Debian,
+            }),
+            "brave-browser"
         );
     }
 
