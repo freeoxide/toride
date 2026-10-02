@@ -3246,8 +3246,6 @@ async fn search_fans_out_across_the_registered_adapters_in_order() {
     assert!(fake.calls().is_empty());
 }
 
-/// An adapter whose every operation fails — the per-source error the
-/// registry facade's fan-out must tolerate.
 struct FailingAdapter {
     source: SourceKind,
 }

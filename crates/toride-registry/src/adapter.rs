@@ -178,9 +178,9 @@ impl Registry {
         all_failed(self.adapters.len(), id.as_str().to_owned(), failures).map(|_| rows)
     }
 
-    /// Render `app`'s install descriptor for `host` (DESIGN.md §3.3) —
-    /// native-manager argv, checksummed direct-download fallback, or
-    /// [`PlannedOp::Unsupported`]; empty `platforms` skip the claim check.
+    /// Render `app`'s descriptor for `host` (DESIGN.md §3.3): native argv,
+    /// direct-download fallback, or [`PlannedOp::Unsupported`]; empty
+    /// `platforms` skip the claim check; `min_release` never enforced.
     #[must_use]
     pub fn plan(app: &App, host: &Platform) -> PlannedOp {
         let claimed = app.platforms.is_empty()

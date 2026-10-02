@@ -942,13 +942,31 @@ fn probe_index_cache(path: &camino::Utf8Path, ttl: Duration, now: SystemTime) ->
 }
 
 #[cfg(feature = "http")]
+fn part_path(path: &camino::Utf8Path) -> camino::Utf8PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    camino::Utf8PathBuf::from(format!("{path}.{}.{}.part", std::process::id(), unique))
+}
+
+#[cfg(feature = "http")]
 fn write_index_cache(path: &camino::Utf8Path, body: &str) -> std::io::Result<()> {
-    let part = camino::Utf8PathBuf::from(format!("{path}.part"));
-    if let Some(parent) = part.parent() {
-        std::fs::create_dir_all(parent)?;
+    let part = part_path(path);
+    let outcome = write_body_via_part(&part, path, body);
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(&part);
     }
-    std::fs::write(&part, body)?;
-    std::fs::rename(&part, path)
+    outcome
+}
+
+#[cfg(feature = "http")]
+fn write_body_via_part(
+    part: &camino::Utf8Path,
+    path: &camino::Utf8Path,
+    body: &str,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(part.parent().unwrap_or(part))?;
+    std::fs::write(part, body)?;
+    std::fs::rename(part, path)
 }
 
 #[cfg(feature = "http")]
@@ -1054,7 +1072,9 @@ impl HomebrewClient {
 /// implementation over the two per-item endpoints, serving both
 /// [`SourceKind::HomebrewCask`] and [`SourceKind::HomebrewFormula`] rows —
 /// [`Adapter::lookup`](crate::adapter::Adapter::lookup) dispatches on the
-/// row's kind. Gated behind the crate's `http` feature together with
+/// row's kind, and a cask-kind row whose token no cask answers falls
+/// through to the formula lookup (brew's own token namespace is unified).
+/// Gated behind the crate's `http` feature together with
 /// [`HomebrewClient`] (DESIGN.md §9: the parsers build fully offline).
 #[cfg(feature = "http")]
 pub struct HomebrewAdapter {
@@ -1115,9 +1135,11 @@ impl crate::adapter::Adapter for HomebrewAdapter {
     async fn lookup(&self, id: &SourceRef) -> Result<Option<App>> {
         match id.source {
             SourceKind::HomebrewCask => match self.client.fetch_cask_optional(&id.id).await? {
-                // HTTP 404: the source has no such cask.
-                None => Ok(None),
                 Some(body) => parse_cask_json(&body).map(Some),
+                None => match self.client.fetch_formula_optional(&id.id).await? {
+                    Some(body) => parse_formula_json(&body).map(Some),
+                    None => Ok(None),
+                },
             },
             SourceKind::HomebrewFormula => {
                 match self.client.fetch_formula_optional(&id.id).await? {
@@ -1838,13 +1860,11 @@ mod tests {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Tests — the http-gated index cache, offline over seeded scratch dirs
-// ---------------------------------------------------------------------------
-
 #[cfg(all(test, feature = "http"))]
 mod index_cache_tests {
-    use super::{HomebrewAdapter, INDEX_CACHE_TTL, probe_index_cache, write_index_cache};
+    use super::{
+        HomebrewAdapter, INDEX_CACHE_TTL, part_path, probe_index_cache, write_index_cache,
+    };
     use crate::adapter::Adapter as _;
 
     const SYNTHETIC_CASK_INDEX: &str = r#"[{"token":"toride-probe-cask","name":["Toride Probe Cask"],"version":"1.0","desc":"Synthetic cask for offline cache tests","artifacts":[{"binary":["$APPDIR/Probe.app/Contents/MacOS/toride-probe-bin",{"target":"/opt/homebrew/bin/toride-probe-target"}]}]}]"#;
@@ -1950,10 +1970,61 @@ mod index_cache_tests {
             std::fs::read_to_string(&path).expect("written payload readable"),
             "[]"
         );
+        let leftovers: Vec<String> = std::fs::read_dir(path.parent().expect("parent exists"))
+            .expect("cache dir listable")
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".part"))
+            .collect();
         assert!(
-            !camino::Utf8Path::new(&format!("{path}.part")).exists(),
-            "the atomic rename consumed the part file"
+            leftovers.is_empty(),
+            "the atomic rename consumed the part file: {leftovers:?}"
         );
+    }
+
+    #[test]
+    fn part_paths_differ_per_call_so_processes_never_share_one() {
+        let dir = scratch("parts");
+        let path = dir.join("homebrew/cask.json");
+        let first = part_path(&path);
+        let second = part_path(&path);
+        assert_ne!(first, second, "each write gets its own part file");
+        assert!(first.file_name().unwrap().contains(".part"));
+    }
+
+    #[test]
+    fn concurrent_writers_each_publish_a_whole_body() {
+        let dir = scratch("writers");
+        std::fs::create_dir_all(&dir).expect("scratch dir creatable");
+        let path = dir.join("homebrew/cask.json");
+        let body = "[".to_owned() + &"x".repeat(100_000) + "]";
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..8 {
+                        write_index_cache(&path, &body).expect("each write publishes");
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("writer finishes");
+        }
+        let published = std::fs::read_to_string(&path).expect("a whole body is published");
+        assert_eq!(
+            published.len(),
+            body.len(),
+            "interleaved writers must never publish a mixed body"
+        );
+        let leftovers: Vec<String> = std::fs::read_dir(dir.join("homebrew"))
+            .expect("cache dir listable")
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "failed writes clean their parts");
     }
 }
 
@@ -2052,6 +2123,25 @@ mod integration_tests {
             .await
             .expect("404 must not error");
         assert!(missing.is_none());
+
+        // A formula-only slug under the adapter's primary (cask) kind
+        // falls through to the formula endpoint — the cask namespace miss
+        // is not a source miss.
+        let formula = adapter
+            .lookup(&SourceRef {
+                source: SourceKind::HomebrewCask,
+                id: "ripgrep".to_owned(),
+                repo: None,
+                version: None,
+                provisional: false,
+            })
+            .await
+            .expect("fetch must succeed")
+            .expect("the ripgrep formula answers the cask-kind ref");
+        assert!(matches!(
+            formula.install,
+            crate::model::InstallMethod::Homebrew { cask: false, .. }
+        ));
     }
 
     #[tokio::test]
