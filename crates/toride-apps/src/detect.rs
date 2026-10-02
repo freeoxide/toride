@@ -250,12 +250,7 @@ impl MultiSourceDetector {
             return dirs.clone();
         }
         std::env::var_os("PATH")
-            .map(|path| {
-                std::env::split_paths(&path)
-                    .filter(|dir| !dir.as_os_str().is_empty())
-                    .filter_map(|dir| Utf8PathBuf::from_path_buf(dir).ok())
-                    .collect()
-            })
+            .map(|path| split_path_value(&path))
             .unwrap_or_default()
     }
 
@@ -263,14 +258,7 @@ impl MultiSourceDetector {
         if let Some(dir) = &self.mise_shim_dir {
             return Some(dir.clone());
         }
-        if let Some(data) = std::env::var_os("MISE_DATA_DIR") {
-            return Utf8PathBuf::from_path_buf(PathBuf::from(data))
-                .ok()
-                .map(|dir| dir.join("shims"));
-        }
-        dirs::home_dir()
-            .and_then(|home| Utf8PathBuf::from_path_buf(home).ok())
-            .map(|home| home.join(".local/share/mise/shims"))
+        mise_shim_dir_from(std::env::var_os("MISE_DATA_DIR"), dirs::home_dir())
     }
 
     fn path_hits(&self, name: &str) -> Vec<Detection> {
@@ -306,10 +294,8 @@ impl MultiSourceDetector {
         if !output.success {
             return false;
         }
-        match arch_from_file_output(&output.stdout) {
-            Some(arch) => arch != self.target.arch,
-            None => false,
-        }
+        let arches = arches_from_file_output(&output.stdout);
+        !arches.is_empty() && !arches.contains(&self.target.arch)
     }
 
     fn mise_shim_hits(&self, name: &str) -> Vec<Detection> {
@@ -422,21 +408,46 @@ fn is_executable_file(path: &Utf8PathBuf) -> bool {
     }
 }
 
-fn arch_from_file_output(stdout: &str) -> Option<Arch> {
+fn arches_from_file_output(stdout: &str) -> Vec<Arch> {
     let lower = stdout.to_ascii_lowercase();
-    if lower.contains("x86-64") || lower.contains("x86_64") || lower.contains("amd64") {
-        Some(Arch::X86_64)
-    } else if lower.contains("aarch64") || lower.contains("arm64") {
-        Some(Arch::Aarch64)
-    } else if lower.contains("80386")
-        || lower.contains("i386")
-        || lower.contains("i686")
-        || lower.contains("x86")
-    {
-        Some(Arch::X86)
-    } else {
-        None
+    let x86_64 = lower.contains("x86-64") || lower.contains("x86_64") || lower.contains("amd64");
+    let aarch64 = lower.contains("aarch64") || lower.contains("arm64");
+    let mut arches = Vec::new();
+    if x86_64 {
+        arches.push(Arch::X86_64);
     }
+    if aarch64 {
+        arches.push(Arch::Aarch64);
+    }
+    if !x86_64
+        && (lower.contains("80386")
+            || lower.contains("i386")
+            || lower.contains("i686")
+            || lower.contains("x86"))
+    {
+        arches.push(Arch::X86);
+    }
+    arches
+}
+
+fn split_path_value(value: &std::ffi::OsStr) -> Vec<Utf8PathBuf> {
+    std::env::split_paths(value)
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .filter_map(|dir| Utf8PathBuf::from_path_buf(dir).ok())
+        .collect()
+}
+
+fn mise_shim_dir_from(
+    data_dir: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<Utf8PathBuf> {
+    if let Some(data) = data_dir {
+        return Utf8PathBuf::from_path_buf(PathBuf::from(data))
+            .ok()
+            .map(|dir| dir.join("shims"));
+    }
+    home.and_then(|home| Utf8PathBuf::from_path_buf(home).ok())
+        .map(|home| home.join(".local/share/mise/shims"))
 }
 
 /// Builder for [`MultiSourceDetector`], mirroring [`crate::AppsBuilder`]:
@@ -828,6 +839,89 @@ mod tests {
             .path_dirs(vec![dir])
             .build();
         assert!(!detector.detect("tool")[0].arch_mismatch);
+    }
+
+    #[test]
+    fn arches_from_file_output_collects_every_arch_a_fat_binary_carries() {
+        assert_eq!(
+            arches_from_file_output(
+                "Mach-O 64-bit universal binary with 2 architectures: \
+                 (x86_64: Mach-O 64-bit executable x86_64) \
+                 (arm64: Mach-O 64-bit executable arm64)"
+            ),
+            vec![Arch::X86_64, Arch::Aarch64]
+        );
+        assert_eq!(
+            arches_from_file_output("ELF 64-bit LSB pie executable, x86-64, dynamically linked"),
+            vec![Arch::X86_64]
+        );
+        assert_eq!(
+            arches_from_file_output("Mach-O 64-bit arm64 executable, arm64"),
+            vec![Arch::Aarch64]
+        );
+        assert_eq!(
+            arches_from_file_output("ELF 32-bit LSB executable, Intel 80386"),
+            vec![Arch::X86]
+        );
+        assert!(
+            arches_from_file_output("a /usr/bin/python3 script text executable").is_empty(),
+            "an arch-less script reports no architecture"
+        );
+    }
+
+    #[test]
+    fn split_path_value_drops_empty_segments_and_keeps_order() {
+        let value = std::ffi::OsStr::new("/a::/b:");
+        assert_eq!(
+            split_path_value(value),
+            [Utf8PathBuf::from("/a"), Utf8PathBuf::from("/b")]
+        );
+        assert!(split_path_value(std::ffi::OsStr::new("")).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn split_path_value_skips_non_utf8_segments() {
+        use std::os::unix::ffi::OsStrExt;
+        let value = std::ffi::OsStr::from_bytes(b"/ok:/\xff\xfe");
+        assert_eq!(split_path_value(value), [Utf8PathBuf::from("/ok")]);
+    }
+
+    #[test]
+    fn mise_shim_dir_from_prefers_the_data_dir_over_the_home_default() {
+        assert_eq!(
+            mise_shim_dir_from(
+                Some(std::ffi::OsString::from("/data/mise")),
+                Some(PathBuf::from("/home/u"))
+            ),
+            Some(Utf8PathBuf::from("/data/mise/shims"))
+        );
+        assert_eq!(
+            mise_shim_dir_from(None, Some(PathBuf::from("/home/u"))),
+            Some(Utf8PathBuf::from("/home/u/.local/share/mise/shims"))
+        );
+        assert_eq!(mise_shim_dir_from(None, None), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_universal_binary_matching_the_host_arch_claims_no_mismatch() {
+        let dir = temp_dir("file-universal");
+        let bin = write_executable(&dir, "tool");
+        let universal = "Mach-O 64-bit universal binary with 2 architectures: \
+                         (x86_64: Mach-O 64-bit executable x86_64) \
+                         (arm64: Mach-O 64-bit executable arm64)";
+        let fake = FakeRunner::new().strict().respond(
+            file_spec(bin.as_str()),
+            CommandOutput::from_stdout(universal),
+        );
+        let detector = MultiSourceDetector::builder()
+            .runner(seam(&fake))
+            .target(aarch64_target())
+            .path_dirs(vec![dir])
+            .build();
+        let hits = detector.detect("tool");
+        assert!(!hits[0].arch_mismatch, "{hits:?}");
     }
 
     #[test]
