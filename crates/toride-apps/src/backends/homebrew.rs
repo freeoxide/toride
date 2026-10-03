@@ -273,10 +273,15 @@ impl HomebrewBackend {
     /// casks or formulae. Pinned items are listed with `pinned: true` —
     /// brew reports them stale but skips upgrading them itself.
     ///
+    /// `brew outdated` exits 1 whenever anything IS outdated — the entries
+    /// on stdout are the answer, not a failure — so exit 1 parses like
+    /// success.
+    ///
     /// # Errors
     ///
-    /// [`Error::Command`] when the command fails or its JSON document
-    /// cannot be parsed at all (malformed *entries* are skipped).
+    /// [`Error::Command`] when the command fails (any exit other than the
+    /// answered 0-and-1 pair) or its JSON document cannot be parsed at
+    /// all; malformed entries are skipped.
     pub async fn outdated(&self, scope: OutdatedScope) -> Result<Vec<OutdatedEntry>> {
         let mut args = vec!["outdated"];
         if let Some(flag) = scope.flag() {
@@ -284,8 +289,8 @@ impl HomebrewBackend {
         }
         args.push("--json=v2");
         let spec = command(BREW, args);
-        let output = self.runner.run_checked(spec).await?;
-        parse_outdated_output(&output.stdout)
+        let output = self.runner.run(spec.clone()).await?;
+        classify_outdated_probe(&spec, output)
     }
 
     /// The sync twin of [`HomebrewBackend::outdated`] — same probe, same
@@ -301,8 +306,8 @@ impl HomebrewBackend {
         }
         args.push("--json=v2");
         let spec = command(BREW, args);
-        let output = self.runner.run_checked_sync(spec)?;
-        parse_outdated_output(&output.stdout)
+        let output = self.runner.run_sync(spec.clone())?;
+        classify_outdated_probe(&spec, output)
     }
 
     /// The version brew currently offers for the `kind`-scoped `token`
@@ -896,6 +901,25 @@ fn classify_version_probe(result: Result<CommandOutput>) -> Result<Option<String
         }
         Err(error) => Err(error),
     }
+}
+
+/// Classify a dispatched `brew outdated --json=v2` probe: exit 0 and exit 1
+/// both carry the answer on stdout — brew exits 1 exactly when something is
+/// outdated — while any other exit (or an unparseable document at 0/1) is a
+/// real failure.
+fn classify_outdated_probe(
+    spec: &toride_runner::CommandSpec,
+    output: toride_runner::CommandOutput,
+) -> Result<Vec<OutdatedEntry>> {
+    if output.success || output.exit_code == Some(1) {
+        return parse_outdated_output(&output.stdout);
+    }
+    Err(Error::Command(toride_runner::Error::CommandFailed {
+        program: spec.program.clone(),
+        args: spec.args.join(" "),
+        exit_code: output.exit_code,
+        stderr: output.stderr,
+    }))
 }
 
 impl BrewEntry {
@@ -2492,6 +2516,76 @@ mod tests {
         );
         let backend = backend(&fake);
         backend.outdated(OutdatedScope::Formulae).await.unwrap();
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn outdated_treats_exit_one_with_entries_as_the_answer() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let raw = read_fixture("homebrew/outdated.json");
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::new(raw.trim().to_owned(), String::new(), Some(1)),
+        );
+        let backend = backend(&fake);
+        let entries = backend.outdated(OutdatedScope::All).await.unwrap();
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn outdated_treats_exit_one_with_unparseable_stdout_as_failure() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::new(String::new(), String::new(), Some(1)),
+        );
+        let backend = backend(&fake);
+        let error = backend.outdated(OutdatedScope::All).await.unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "{error:?}"
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn outdated_treats_other_exit_codes_as_failure() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::new(
+                String::new(),
+                "Error: unknown flag".to_owned(),
+                Some(64),
+            ),
+        );
+        let backend = backend(&fake);
+        let error = backend.outdated(OutdatedScope::All).await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed {
+                    exit_code: Some(64),
+                    ..
+                })
+            ),
+            "{error:?}"
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[test]
+    fn outdated_sync_treats_exit_one_with_entries_as_the_answer() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let raw = read_fixture("homebrew/outdated.json");
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::new(raw.trim().to_owned(), String::new(), Some(1)),
+        );
+        let backend = backend(&fake);
+        let entries = backend.outdated_sync(OutdatedScope::All).unwrap();
+        assert_eq!(entries.len(), 3, "{entries:?}");
         fake.assert_called_with(&spec);
     }
 

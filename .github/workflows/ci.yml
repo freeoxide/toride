@@ -24,7 +24,7 @@ env:
   # cannot be cross-verified on a Linux host; widen toward --workspace as
   # native runner evidence comes in. Space-separated; expanded to -p flags.
   PORTABLE_CRATES_MACOS: >-
-    toride-audit toride-backup toride-cloud toride-diagnostic-types
+    toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
     toride-fail2ban toride-fs toride-harden toride-mise toride-proxy
     toride-runner toride-service toride-ssh toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
@@ -205,6 +205,24 @@ jobs:
           TORIDE_APPS_INTEGRATION: "1"
           TORIDE_APPS_DISTRO_SMOKE: "1"
         run: cargo test -p toride-apps --test live_smoke apk -- --nocapture
+
+  toride-apps-smoke-macos:
+    name: toride-apps live smoke (macos, brew/cask)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-macos
+      - name: Brew offline suite check
+        run: cargo test -p toride-apps --lib homebrew
+      - name: Env-gated brew/cask live smoke (non-blocking annotation on first contact)
+        continue-on-error: true
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --all-features --test live_smoke brew -- --nocapture
 
   publish-set-features:
     name: Publish-set feature gates

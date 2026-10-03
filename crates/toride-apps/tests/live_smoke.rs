@@ -23,6 +23,11 @@
 //! `CARGO_INSTALL_ROOT` (the shared crates.io registry cache stays
 //! read-mostly, like any build), mise against isolated `MISE_DATA_DIR` /
 //! `MISE_CONFIG_FILE`, uv/pipx into scratch `UV_TOOL_DIR`/`PIPX_HOME`.
+//! brew has no scratch prefix, so its legs pour obscure tokens into the
+//! host's own Homebrew and remove them again — under
+//! `HOMEBREW_NO_AUTO_UPDATE=1` so nothing else on the host moves, and
+//! self-skipping when the token is already installed; cask legs
+//! additionally require macOS (`brew install --cask` refuses elsewhere).
 //! pacman/apk mutate the host's package database — never throwaway on a
 //! real machine — so they demand a second explicit opt-in,
 //! `TORIDE_APPS_DISTRO_SMOKE=1`, that only the CI archlinux/alpine
@@ -40,6 +45,7 @@ use toride_apps::apps::{
     UninstallAppOutcome, UpdateOutcome,
 };
 use toride_apps::backends::distro::detect_host_family;
+use toride_apps::backends::homebrew::{BrewKind, HomebrewBackend};
 use toride_apps::backends::{CargoBackend, DistroBackend, NpmBackend, PipxBackend, UvBackend};
 use toride_apps::manifest::{InstallRecord, NativeIds};
 use toride_apps::runner::CommandRunner;
@@ -826,6 +832,287 @@ async fn apk_facade_installs_probes_updates_and_uninstalls_a_real_package() {
             .await
             .expect("apk del tree succeeds in the container"),
         BackendId::Distro(DistroFamily::Alpine),
+    );
+    let after = apps.status(&id).await.expect("post-uninstall status");
+    assert_eq!(after, AppStatus::NotInstalled);
+}
+
+fn brew_runner() -> CommandRunner {
+    CommandRunner::builder()
+        .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+        .build()
+}
+
+fn macos_host() -> bool {
+    cfg!(target_os = "macos")
+}
+
+#[tokio::test]
+async fn brew_cask_facade_installs_probes_updates_and_uninstalls_a_real_cask() {
+    if !integration_enabled() {
+        eprintln!("TORIDE_APPS_INTEGRATION not set; skipping live smoke test");
+        return;
+    }
+    if !manager_on_path("brew") {
+        skip("brew");
+        return;
+    }
+    if !macos_host() {
+        skip("brew cask (host is not macOS)");
+        return;
+    }
+    let scratch = ScratchDir::new("brew-cask");
+    let runner = brew_runner();
+    let backend = HomebrewBackend::detect(runner.clone()).expect("brew was just found on PATH");
+    if backend
+        .installed_version(BrewKind::Cask, "stats")
+        .await
+        .expect("the cask presence probe succeeds")
+        .is_some()
+    {
+        skip("brew cask `stats` (already installed on this host)");
+        return;
+    }
+    let offered = backend
+        .available_version(BrewKind::Cask, "stats")
+        .await
+        .expect("the offering probe succeeds")
+        .expect("the tap knows the `stats` cask");
+    let id = TorideId::slugify("stats");
+    let app = language_app(
+        &id,
+        "Stats",
+        InstallMethod::Homebrew {
+            cask: true,
+            token: "stats".to_owned(),
+        },
+    );
+    let mut apps = facade_base(runner, scratch.path().join("apps-manifest.json"), app)
+        .homebrew(backend)
+        .build()
+        .expect("facade builds over the scratch manifest");
+
+    let version = assert_installed(
+        &apps
+            .ensure_installed(&id, AppInstallOptions::new())
+            .await
+            .expect("brew install --cask stats succeeds"),
+        BackendId::Homebrew,
+        &NativeIds::Homebrew {
+            token: "stats".to_owned(),
+            cask: true,
+        },
+    );
+    assert_eq!(
+        version.as_deref(),
+        Some(offered.as_str()),
+        "the probe read the poured version out of brew's own cask listing"
+    );
+    assert!(
+        matches!(
+            only_record(&apps)
+                .plan
+                .as_ref()
+                .expect("recorded plan")
+                .operation,
+            toride_apps::Operation::BrewInstall {
+                cask: true,
+                ref token,
+            } if token == "stats"
+        ),
+        "the executed plan addressed the unversioned cask token"
+    );
+
+    assert_reensure_at(&mut apps, &id, BackendId::Homebrew, Some(offered.as_str())).await;
+    let status = apps.status(&id).await.expect("status probes the record");
+    assert_eq!(
+        status,
+        AppStatus::Installed {
+            backend: BackendId::Homebrew,
+            version: Some(offered.as_str().to_owned()),
+        },
+        "status re-read the real cask listing"
+    );
+    assert_eq!(
+        apps.update(&id, &AppUpdateOptions::new())
+            .await
+            .expect("the kind-scoped stale probe succeeds"),
+        UpdateOutcome::UpToDate,
+        "a freshly poured cask is current, so update answers UpToDate without running"
+    );
+
+    assert_removed(
+        &apps
+            .uninstall(&id, AppUninstallOptions::new())
+            .await
+            .expect("brew uninstall --cask stats succeeds"),
+        BackendId::Homebrew,
+    );
+    let after = apps.status(&id).await.expect("post-uninstall status");
+    assert_eq!(after, AppStatus::NotInstalled);
+}
+
+#[tokio::test]
+async fn brew_formula_facade_installs_pins_updates_and_uninstalls_a_real_formula() {
+    if !integration_enabled() {
+        eprintln!("TORIDE_APPS_INTEGRATION not set; skipping live smoke test");
+        return;
+    }
+    if !manager_on_path("brew") {
+        skip("brew");
+        return;
+    }
+    let scratch = ScratchDir::new("brew-formula");
+    let runner = brew_runner();
+    let backend = HomebrewBackend::detect(runner.clone()).expect("brew was just found on PATH");
+    if backend
+        .installed_version(BrewKind::Formula, "sl")
+        .await
+        .expect("the formula presence probe succeeds")
+        .is_some()
+    {
+        skip("brew formula `sl` (already installed on this host)");
+        return;
+    }
+    let id = TorideId::slugify("sl");
+    let app = language_app(
+        &id,
+        "sl",
+        InstallMethod::Homebrew {
+            cask: false,
+            token: "sl".to_owned(),
+        },
+    );
+    let mut apps = facade_base(runner, scratch.path().join("apps-manifest.json"), app)
+        .homebrew(backend)
+        .build()
+        .expect("facade builds over the scratch manifest");
+
+    let version = assert_installed(
+        &apps
+            .ensure_installed(&id, AppInstallOptions::new())
+            .await
+            .expect("brew install sl succeeds"),
+        BackendId::Homebrew,
+        &NativeIds::Homebrew {
+            token: "sl".to_owned(),
+            cask: false,
+        },
+    );
+    assert!(
+        version
+            .as_deref()
+            .is_some_and(|version| !version.is_empty()),
+        "the probe read the version out of brew's own formula listing: {version:?}"
+    );
+
+    apps.pin(&id)
+        .await
+        .expect("brew pin sl succeeds through the facade");
+    apps.unpin(&id)
+        .await
+        .expect("brew unpin sl succeeds through the facade");
+    assert_eq!(
+        apps.update(&id, &AppUpdateOptions::new())
+            .await
+            .expect("the kind-scoped stale probe succeeds"),
+        UpdateOutcome::UpToDate,
+        "a freshly poured, unpinned formula is current, so update answers UpToDate without running"
+    );
+
+    assert_removed(
+        &apps
+            .uninstall(&id, AppUninstallOptions::new())
+            .await
+            .expect("brew uninstall sl succeeds"),
+        BackendId::Homebrew,
+    );
+    let after = apps.status(&id).await.expect("post-uninstall status");
+    assert_eq!(after, AppStatus::NotInstalled);
+}
+
+#[tokio::test]
+async fn brew_cask_requesting_the_offering_over_a_foreign_pour_dispatches_an_argv_brew_accepts() {
+    if !integration_enabled() {
+        eprintln!("TORIDE_APPS_INTEGRATION not set; skipping live smoke test");
+        return;
+    }
+    if !manager_on_path("brew") {
+        skip("brew");
+        return;
+    }
+    if !macos_host() {
+        skip("brew cask (host is not macOS)");
+        return;
+    }
+    let scratch = ScratchDir::new("brew-foreign");
+    let runner = brew_runner();
+    let backend = HomebrewBackend::detect(runner.clone()).expect("brew was just found on PATH");
+    let offered = backend
+        .available_version(BrewKind::Cask, "rectangle")
+        .await
+        .expect("the offering probe succeeds")
+        .expect("the tap knows the `rectangle` cask");
+    let id = TorideId::slugify("rectangle");
+    let app = language_app(
+        &id,
+        "Rectangle",
+        InstallMethod::Homebrew {
+            cask: true,
+            token: "rectangle".to_owned(),
+        },
+    );
+    let mut setup = facade_base(
+        runner.clone(),
+        scratch.path().join("setup-manifest.json"),
+        app.clone(),
+    )
+    .homebrew(HomebrewBackend::new(runner.clone()))
+    .build()
+    .expect("setup facade builds over the scratch manifest");
+    assert_installed(
+        &setup
+            .ensure_installed(&id, AppInstallOptions::new())
+            .await
+            .expect("the foreign pour itself succeeds"),
+        BackendId::Homebrew,
+        &NativeIds::Homebrew {
+            token: "rectangle".to_owned(),
+            cask: true,
+        },
+    );
+
+    let mut apps = facade_base(runner, scratch.path().join("apps-manifest.json"), app)
+        .homebrew(backend)
+        .build()
+        .expect("facade builds over the scratch manifest");
+    let outcome = apps
+        .ensure_installed(&id, AppInstallOptions::new().version(Some(offered.clone())))
+        .await
+        .expect(
+            "requesting the current offering over a foreign pour dispatches an argv brew accepts",
+        );
+    let version = assert_installed(
+        &outcome,
+        BackendId::Homebrew,
+        &NativeIds::Homebrew {
+            token: "rectangle".to_owned(),
+            cask: true,
+        },
+    );
+    assert_eq!(
+        version.as_deref(),
+        Some(offered.as_str()),
+        "the recorded identity is the unversioned token — the pre-fix code dispatched \
+         `rectangle@{offered}`, the spelling brew refuses for unversioned cask tokens"
+    );
+
+    assert_removed(
+        &apps
+            .uninstall(&id, AppUninstallOptions::new())
+            .await
+            .expect("brew uninstall --cask rectangle succeeds"),
+        BackendId::Homebrew,
     );
     let after = apps.status(&id).await.expect("post-uninstall status");
     assert_eq!(after, AppStatus::NotInstalled);
