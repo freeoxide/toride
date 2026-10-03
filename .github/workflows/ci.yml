@@ -35,7 +35,7 @@ env:
     toride-ssh-known-hosts toride-status toride-updates toride-users
     toride-wireguard ufw-kit ufw-kit-test-support
   PORTABLE_CRATES_WINDOWS: >-
-    toride-audit toride-backup toride-cloud toride-diagnostic-types
+    toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
     toride-fail2ban toride-fs toride-harden toride-mise toride-monitor
     toride-proxy toride-runner toride-service toride-ssh toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
@@ -237,6 +237,36 @@ jobs:
         env:
           TORIDE_APPS_INTEGRATION: "1"
         run: cargo test -p toride-apps --all-features --all-targets -- --nocapture --skip distro_detect_probes_this_host_through_its_real_package_manager
+
+  toride-apps-smoke-windows:
+    if: github.event_name == 'workflow_dispatch'
+    name: toride-apps live smoke (windows, npm/uv/pipx/cargo/direct)
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-windows
+      - name: Install uv and pipx (npm rides the runner's Node, cargo the toolchain)
+        run: python -m pip install --disable-pip-version-check uv pipx
+      - name: Require npm/cargo/uv/pipx on PATH (the legs self-skip, so gate them here)
+        run: |
+          $missing = @('npm','cargo','uv','pipx') | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
+          if ($missing) { throw "managers missing from PATH: $($missing -join ', ')" }
+      - name: PATHEXT bare-name spawn check (npm resolves to npm.cmd)
+        run: cargo test -p toride-runner --lib pathext
+      - name: Language-backend offline suite check
+        run: cargo test -p toride-apps --lib -- npm cargo pipx uv
+      - name: Clippy gate (toride-apps/toride-runner lints on Windows)
+        run: cargo clippy -p toride-apps -p toride-runner --all-targets -- -D warnings
+      - name: Direct-download smoke (loopback HTTP server, no managers)
+        run: cargo test -p toride-apps --features direct --test direct_install -- --nocapture
+      - name: Language-manager live smoke (npm/cargo/uv/pipx legs)
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --test live_smoke -- --nocapture npm cargo uv pipx
 
   publish-set-features:
     if: github.event_name != 'workflow_dispatch'

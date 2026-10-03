@@ -664,6 +664,7 @@ impl MultiSourceDetectorBuilder {
 mod tests {
     use super::*;
     use std::sync::Arc;
+    #[cfg(unix)]
     use toride_registry::Os;
     use toride_runner::CommandOutput;
     use toride_runner::fake::FakeRunner;
@@ -689,10 +690,12 @@ mod tests {
         CommandRunner::new(Arc::new(fake.clone()))
     }
 
+    #[cfg(unix)]
     fn file_spec(path: &str) -> toride_runner::CommandSpec {
         command("file", ["-b", path])
     }
 
+    #[cfg(unix)]
     fn aarch64_target() -> Target {
         Target::new(Os::Linux, Arch::Aarch64)
     }

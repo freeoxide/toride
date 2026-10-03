@@ -99,6 +99,10 @@ mod spawn_gate {
 
     fn resolve_program(spec: &CommandSpec) -> Result<PathBuf> {
         if spec.path_resolution == PathResolution::OsSearch {
+            #[cfg(windows)]
+            if let Some(resolved) = resolve_windows_bare_name(&spec.program) {
+                return Ok(resolved);
+            }
             return Ok(PathBuf::from(&spec.program));
         }
 
@@ -125,6 +129,14 @@ mod spawn_gate {
             composed_child_path(spec),
             std::env::var_os("PATH"),
         )
+    }
+
+    #[cfg(windows)]
+    fn resolve_windows_bare_name(program: &str) -> Option<PathBuf> {
+        if program.contains(['/', '\\']) {
+            return None;
+        }
+        which::which(program).ok()
     }
 
     fn resolve_bare_name(
@@ -289,6 +301,27 @@ mod spawn_gate {
         fn resolve_program_os_search_passes_through_verbatim() {
             let spec = CommandSpec::new("./tool");
             assert_eq!(resolve_program(&spec).unwrap(), PathBuf::from("./tool"));
+        }
+
+        #[cfg(windows)]
+        #[test]
+        fn resolve_program_os_search_resolves_bare_names_with_pathext_on_windows() {
+            let resolved = resolve_program(&CommandSpec::new("cmd")).unwrap();
+            assert!(
+                resolved.is_absolute(),
+                "the PATHEXT-aware search must return an absolute spawn path: {resolved:?}"
+            );
+            assert!(
+                resolved
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe")),
+                "cmd resolves through a real executable extension: {resolved:?}"
+            );
+            assert_eq!(
+                resolve_program(&CommandSpec::new("definitely_not_a_real_binary_xyz_123")).unwrap(),
+                PathBuf::from("definitely_not_a_real_binary_xyz_123"),
+                "an unresolvable bare name passes through verbatim, preserving the spawn error"
+            );
         }
 
         #[test]
