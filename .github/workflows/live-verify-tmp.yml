@@ -1,0 +1,190 @@
+name: Live verify (temporary, dispatch only)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ubuntu:
+        description: Run the ubuntu host leg (npm, cargo, uv, pipx, mise, flatpak)
+        type: boolean
+        default: false
+      windows:
+        description: Run the windows host leg (npm, cargo, uv, pipx)
+        type: boolean
+        default: false
+      macos:
+        description: Run the macos host leg (brew detect, formulae api, first toride-apps macos compile)
+        type: boolean
+        default: false
+      arch:
+        description: Run the archlinux container leg (pacman, blocking)
+        type: boolean
+        default: false
+      alpine:
+        description: Run the alpine container leg (apk, blocking)
+        type: boolean
+        default: false
+      debian:
+        description: Run the debian container leg (apt family dpkg probes, dep-11 catalog)
+        type: boolean
+        default: false
+
+concurrency:
+  group: live-verify-tmp-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  ubuntu:
+    if: ${{ inputs.ubuntu }}
+    name: Live verify (ubuntu host, npm/cargo/uv/pipx/mise + flatpak --user)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: live-verify-tmp-ubuntu
+      - name: Install the managers the runner lacks plus the flatpak user installation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pipx python3-venv flatpak
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          pipx install uv
+          curl https://mise.run | sh
+          export PATH="$HOME/.local/bin:$PATH"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          npm --version
+          uv --version
+          pipx --version
+          mise --version
+          flatpak --version
+          flatpak remotes --user
+      - name: Canonical gated smoke (every feature, every target)
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --all-features --all-targets -- --nocapture
+
+  windows:
+    if: ${{ inputs.windows }}
+    name: Live verify (windows host, npm/cargo/uv/pipx, first toride-apps windows compile)
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: live-verify-tmp-windows
+      - name: Install the managers the runner lacks (uv, pipx)
+        shell: pwsh
+        run: |
+          python -m pip install --user pipx
+          $userScripts = Join-Path (python -c 'import site; print(site.USER_BASE)') 'Scripts'
+          irm https://astral.sh/uv/install.ps1 | iex
+          $env:PATH = "$env:USERPROFILE\.local\bin;$userScripts;$env:PATH"
+          Add-Content $env:GITHUB_PATH "$env:USERPROFILE\.local\bin"
+          Add-Content $env:GITHUB_PATH $userScripts
+          npm --version
+          uv --version
+          pipx --version
+      - name: Canonical gated smoke minus the linux-host distro probe
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --all-features --all-targets -- --nocapture --skip distro_detect_probes_this_host_through_its_real_package_manager
+
+  macos:
+    if: ${{ inputs.macos }}
+    name: Live verify (macos host, brew detect + formulae api, first toride-apps macos compile)
+    runs-on: macos-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: live-verify-tmp-macos
+      - name: Canonical gated smoke minus the linux-host distro probe
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --all-features --all-targets -- --nocapture --skip distro_detect_probes_this_host_through_its_real_package_manager
+
+  arch:
+    if: ${{ inputs.arch }}
+    name: Live verify (archlinux container, pacman, blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    container:
+      image: archlinux:latest
+    steps:
+      - name: Install toolchain (full upgrade first, partial -Sy installs are unsupported)
+        run: |
+          pacman -Syu --noconfirm rust git
+          rustc --version
+          cargo --version
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: live-verify-tmp-arch
+      - name: Pacman suppression-flag check
+        run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
+      - name: Blocking pacman live smoke
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+          TORIDE_APPS_DISTRO_SMOKE: "1"
+        run: cargo test -p toride-apps --all-features --test live_smoke -- --nocapture
+
+  alpine:
+    if: ${{ inputs.alpine }}
+    name: Live verify (alpine container, apk, blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    container:
+      image: alpine:latest
+    steps:
+      - name: Install toolchain (bash/gcompat/libstdc++ for the runner shell and node-based actions)
+        run: |
+          apk add --no-cache bash gcompat libstdc++ rust git build-base
+          rustc --version
+          cargo --version
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: live-verify-tmp-alpine
+      - name: Apk suppression-flag check
+        run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
+      - name: Blocking apk live smoke
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+          TORIDE_APPS_DISTRO_SMOKE: "1"
+        run: cargo test -p toride-apps --all-features --test live_smoke -- --nocapture
+
+  debian:
+    if: ${{ inputs.debian }}
+    name: Live verify (debian container, dpkg probes + dep-11 catalog, blocking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    container:
+      image: debian:bookworm
+    steps:
+      - name: Install prerequisites (bookworm base ships no git; the toolchain comes from the action)
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends git ca-certificates build-essential
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: live-verify-tmp-debian
+      - name: Apt suppression-flag check
+        run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
+      - name: Canonical gated smoke (debian arm runs the dpkg probes live)
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --all-features --all-targets -- --nocapture
