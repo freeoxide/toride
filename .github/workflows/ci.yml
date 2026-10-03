@@ -1,5 +1,8 @@
 name: CI
 
+# A bare `workflow_dispatch` runs ONLY the macOS brew/cask leg below — ci.yml
+# is the one dispatchable workflow (default-branch registered; branch-only
+# files 404), so it doubles as the branch live-verify venue.
 on:
   push:
     branches: [master]
@@ -59,6 +62,7 @@ env:
 
 jobs:
   fmt:
+    if: github.event_name != 'workflow_dispatch'
     name: Format
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -70,6 +74,7 @@ jobs:
       - run: cargo fmt --all -- --check
 
   clippy:
+    if: github.event_name != 'workflow_dispatch'
     name: Clippy (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -105,6 +110,7 @@ jobs:
           cargo clippy "${packages[@]}" --all-targets -- -D warnings
 
   test:
+    if: github.event_name != 'workflow_dispatch'
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
@@ -138,6 +144,7 @@ jobs:
           cargo test "${packages[@]}" --all-targets
 
   toride-apps-features:
+    if: github.event_name != 'workflow_dispatch'
     name: toride-apps feature gates
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -157,6 +164,7 @@ jobs:
         run: cargo check -p toride-apps --no-default-features
 
   toride-apps-smoke-archlinux:
+    if: github.event_name != 'workflow_dispatch'
     name: toride-apps live smoke (archlinux, pacman)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -182,6 +190,7 @@ jobs:
         run: cargo test -p toride-apps --test live_smoke pacman -- --nocapture
 
   toride-apps-smoke-alpine:
+    if: github.event_name != 'workflow_dispatch'
     name: toride-apps live smoke (alpine, apk)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -218,13 +227,19 @@ jobs:
           key: smoke-macos
       - name: Brew offline suite check
         run: cargo test -p toride-apps --lib homebrew
-      - name: Env-gated brew/cask live smoke (non-blocking annotation on first contact)
-        continue-on-error: true
+      - name: Clippy gate (toride-apps lints on macOS)
+        run: cargo clippy -p toride-apps --all-targets -- -D warnings
+      - name: Live cask leg (real HomebrewCask resolution over formulae.brew.sh)
+        env:
+          TORIDE_REGISTRY_INTEGRATION: "1"
+        run: cargo test -p toride-registry --features http live_cask_lookup_matches_the_frozen_invariant_set -- --nocapture
+      - name: Canonical gated smoke minus the linux-host distro probe
         env:
           TORIDE_APPS_INTEGRATION: "1"
-        run: cargo test -p toride-apps --all-features --test live_smoke brew -- --nocapture
+        run: cargo test -p toride-apps --all-features --all-targets -- --nocapture --skip distro_detect_probes_this_host_through_its_real_package_manager
 
   publish-set-features:
+    if: github.event_name != 'workflow_dispatch'
     name: Publish-set feature gates
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -242,6 +257,7 @@ jobs:
           cargo test -p toride-registry -p toride-installer --all-targets --features http
 
   check:
+    if: github.event_name != 'workflow_dispatch'
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -275,6 +291,7 @@ jobs:
           cargo check "${packages[@]}" --all-targets
 
   publish-readiness:
+    if: github.event_name != 'workflow_dispatch'
     name: Publish readiness
     runs-on: ubuntu-latest
     timeout-minutes: 45
