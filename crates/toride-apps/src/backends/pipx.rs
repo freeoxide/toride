@@ -178,7 +178,8 @@ fn parse_pipx_list(stdout: &str) -> Result<Vec<InstalledApp>> {
         .map(|(name, venv)| InstalledApp {
             id: name.clone(),
             version: venv
-                .get("main_package")
+                .get("metadata")
+                .and_then(|metadata| metadata.get("main_package"))
                 .and_then(|main| main.get("package_version"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
@@ -231,21 +232,26 @@ mod tests {
     fn parse_pipx_list_reads_the_venvs_object() {
         let apps = parse_pipx_list(
             r#"{
-  "pipx_spec_version": "0.3",
+  "pipx_spec_version": "0.1",
   "venvs": {
     "black": {
-      "main_package": {
-        "package": "black",
-        "package_or_url": "black",
-        "package_version": "24.3.0"
+      "metadata": {
+        "main_package": {
+          "package": "black",
+          "package_or_url": "black",
+          "package_version": "24.3.0"
+        }
       }
     },
     "renamed-app": {
-      "main_package": {
-        "package": "real-name",
-        "package_version": "1.0.0"
+      "metadata": {
+        "main_package": {
+          "package": "real-name",
+          "package_version": "1.0.0"
+        }
       }
-    }
+    },
+    "metadata-less": {}
   }
 }"#,
         )
@@ -256,6 +262,10 @@ mod tests {
                 InstalledApp {
                     id: "black".to_owned(),
                     version: Some("24.3.0".to_owned())
+                },
+                InstalledApp {
+                    id: "metadata-less".to_owned(),
+                    version: None
                 },
                 InstalledApp {
                     id: "renamed-app".to_owned(),
@@ -355,7 +365,7 @@ mod tests {
             .respond(
                 list_spec(),
                 toride_runner::CommandOutput::from_stdout(
-                    r#"{"venvs": {"black": {"main_package": {"package": "black", "package_version": "24.3.0"}}}}"#,
+                    r#"{"venvs": {"black": {"metadata": {"main_package": {"package": "black", "package_version": "24.3.0"}}}}}"#,
                 ),
             );
         let backend = backend(&fake);

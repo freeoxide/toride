@@ -525,7 +525,7 @@ fn cargo_installs_records_and_reports_status_in_line() {
 #[test]
 fn cargo_records_update_and_uninstall_replay_the_recorded_crate() {
     let list_spec = command("cargo", ["install", "--list"]);
-    let search_spec = command("cargo", ["search", "ripgrep"]);
+    let info_spec = command("cargo", ["info", "ripgrep"]);
     let force_spec = command("cargo", ["install", "--force", "ripgrep"]);
     let uninstall_spec = command("cargo", ["uninstall", "ripgrep"]);
     let installed_list = "ripgrep v14.1.0:\n    rg\n";
@@ -538,8 +538,8 @@ fn cargo_records_update_and_uninstall_replay_the_recorded_crate() {
             CommandOutput::from_stdout(installed_list),
         )
         .respond(
-            search_spec.clone(),
-            CommandOutput::from_stdout("ripgrep = \"15.2.0\"         # search\n"),
+            info_spec.clone(),
+            CommandOutput::from_stdout("ripgrep\nsearch tool\nversion: 15.2.0\n"),
         )
         .respond(force_spec.clone(), CommandOutput::from_stdout(""))
         // The post-upgrade re-probe.

@@ -3,8 +3,11 @@
 //! [`CargoBackend`] executes the planner's [`Operation::CargoInstall`] /
 //! [`Operation::CargoUninstall`] / [`Operation::CargoUpdate`] operations
 //! through the shared [`CommandRunner`] seam and answers list queries from
-//! `cargo install --list`. Availability rides `cargo search` — the cargo CLI
-//! has no version-listing verb, so only the offered latest is reported.
+//! `cargo install --list`. Availability rides `cargo info` — the
+//! registry-index query answers the exact crate's current version, where
+//! `cargo search` is relevance-ranked over the rate-limited search API; the
+//! cargo CLI has no version-listing verb, so only the offered latest is
+//! reported.
 //!
 //! [`Operation::CargoInstall`]: crate::Operation::CargoInstall
 //! [`Operation::CargoUninstall`]: crate::Operation::CargoUninstall
@@ -24,7 +27,7 @@ use crate::runner::{CommandRunner, command};
 const CARGO: &str = "cargo";
 
 /// cargo [`Backend`]: runs cargo crate installs/uninstalls and parses the
-/// `cargo install --list` and `cargo search` output shapes.
+/// `cargo install --list` and `cargo info` output shapes.
 pub struct CargoBackend {
     runner: CommandRunner,
 }
@@ -120,9 +123,9 @@ impl Backend for CargoBackend {
     }
 
     async fn available_version(&self, id: &str) -> Result<Option<Version>> {
-        let spec = command(CARGO, ["search", id]);
+        let spec = command(CARGO, ["info", id]);
         let output = self.runner.run_checked(spec).await?;
-        parse_cargo_search(&output.stdout, id)
+        Ok(Some(parse_cargo_info(&output.stdout, id)?))
     }
 
     fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome> {
@@ -169,9 +172,9 @@ impl Backend for CargoBackend {
     }
 
     fn available_version_sync(&self, id: &str) -> Result<Option<Version>> {
-        let spec = command(CARGO, ["search", id]);
+        let spec = command(CARGO, ["info", id]);
         let output = self.runner.run_checked_sync(spec)?;
-        parse_cargo_search(&output.stdout, id)
+        Ok(Some(parse_cargo_info(&output.stdout, id)?))
     }
 }
 
@@ -202,36 +205,27 @@ fn parse_cargo_list(stdout: &str) -> Result<Vec<InstalledApp>> {
     Ok(apps)
 }
 
-fn parse_cargo_search(stdout: &str, crate_: &str) -> Result<Option<Version>> {
-    let mut well_formed = false;
-    for line in stdout.lines().map(str::trim) {
-        if line.is_empty() {
-            continue;
-        }
-        let mut tokens = line.split_whitespace();
-        let Some(name) = tokens.next() else { continue };
-        if tokens.next() != Some("=") {
-            continue;
-        }
-        let Some(version) = tokens
-            .next()
-            .and_then(|token| token.strip_prefix('"'))
-            .and_then(|token| token.strip_suffix('"'))
-        else {
-            continue;
-        };
-        well_formed = true;
-        if name == crate_ {
-            return Ok(Some(Version::new(version)));
-        }
-    }
-    if !well_formed && !stdout.trim().is_empty() {
+fn parse_cargo_info(stdout: &str, crate_: &str) -> Result<Version> {
+    let mut lines = stdout.lines().map(str::trim);
+    if lines.next() != Some(crate_) {
         return Err(output_parse_error(
-            "cargo search",
-            format_args!("no `name = \"version\"` rows in {stdout:?}"),
+            "cargo info",
+            format_args!("the leading crate row is not `{crate_}` in {stdout:?}"),
         ));
     }
-    Ok(None)
+    for line in lines {
+        let Some(version) = line.strip_prefix("version:").map(str::trim) else {
+            continue;
+        };
+        if version.is_empty() || version.contains(char::is_whitespace) {
+            continue;
+        }
+        return Ok(Version::new(version));
+    }
+    Err(output_parse_error(
+        "cargo info",
+        format_args!("no `version:` row in {stdout:?}"),
+    ))
 }
 
 fn misrouted_operation(operation: &Operation) -> Error {
@@ -347,30 +341,53 @@ mod tests {
     }
 
     #[test]
-    fn parse_cargo_search_answers_only_the_exact_crate_row() {
+    fn parse_cargo_info_reads_the_leading_crate_row_and_the_version_row() {
         let stdout = concat!(
-            "ripgrep = \"15.2.0\"         # ripgrep is a line-oriented search tool that recursively searches…\n",
-            "gist-search = \"1.3.1\"      # Indexed code search for Rust\n",
+            "ripgrep\n",
+            "ripgrep is a line-oriented search tool that recursively searches\n",
+            "version: 15.2.0\n",
+            "license: MIT OR UNLICENSE\n",
         );
         assert_eq!(
-            parse_cargo_search(stdout, "ripgrep").unwrap(),
-            Some(Version::new("15.2.0"))
+            parse_cargo_info(stdout, "ripgrep").unwrap(),
+            Version::new("15.2.0")
         );
-        assert_eq!(
-            parse_cargo_search(stdout, "gist-search").unwrap(),
-            Some(Version::new("1.3.1"))
-        );
-        assert_eq!(
-            parse_cargo_search(stdout, "other-crate").unwrap(),
-            None,
-            "a fuzzy match never vouches for another crate's version"
-        );
-        assert!(parse_cargo_search("", "ripgrep").unwrap().is_none());
     }
 
     #[test]
-    fn parse_cargo_search_errors_on_a_shapeless_non_empty_document() {
-        let error = parse_cargo_search("just words", "ripgrep").unwrap_err();
+    fn parse_cargo_info_answers_after_a_description_that_names_no_version_row() {
+        let stdout = concat!("ripgrep\n", "a tool that searches\n", "version: 15.2.0\n");
+        assert_eq!(
+            parse_cargo_info(stdout, "ripgrep").unwrap(),
+            Version::new("15.2.0")
+        );
+    }
+
+    #[test]
+    fn parse_cargo_info_errors_on_a_leading_row_for_another_crate() {
+        let error = parse_cargo_info("gist-search\nversion: 1.3.1\n", "ripgrep").unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn parse_cargo_info_skips_a_description_disguised_as_the_version_row() {
+        let stdout = concat!(
+            "ripgrep\n",
+            "version: prints file names as it goes\n",
+            "version: 15.2.0\n",
+        );
+        assert_eq!(
+            parse_cargo_info(stdout, "ripgrep").unwrap(),
+            Version::new("15.2.0")
+        );
+    }
+
+    #[test]
+    fn parse_cargo_info_errors_when_no_version_row_exists() {
+        let error = parse_cargo_info("ripgrep\njust a name\n", "ripgrep").unwrap_err();
         assert!(
             matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
             "{error:?}"
@@ -485,12 +502,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn available_version_probes_cargo_search() {
-        let spec = command("cargo", ["search", "ripgrep"]);
+    async fn available_version_probes_cargo_info() {
+        let spec = command("cargo", ["info", "ripgrep"]);
         let fake = FakeRunner::new().strict().respond(
             spec.clone(),
             toride_runner::CommandOutput::from_stdout(
-                "ripgrep = \"15.2.0\"         # ripgrep is a line-oriented search tool…\n",
+                "ripgrep\nline-oriented search tool\nversion: 15.2.0\n",
             ),
         );
         let backend = backend(&fake);
@@ -515,8 +532,8 @@ mod tests {
                 toride_runner::CommandOutput::from_stdout("ripgrep v14.1.0:\n"),
             )
             .respond(
-                command("cargo", ["search", "ripgrep"]),
-                toride_runner::CommandOutput::from_stdout("ripgrep = \"15.2.0\"\n"),
+                command("cargo", ["info", "ripgrep"]),
+                toride_runner::CommandOutput::from_stdout("ripgrep\nversion: 15.2.0\n"),
             );
         let backend = backend(&fake);
         backend
