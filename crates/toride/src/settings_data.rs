@@ -247,7 +247,10 @@ mod tests {
         let b = empty_bundle();
         assert!(!b.available);
         assert!(!b.config.exists);
-        assert!(b.config.raw_keys.is_empty());
+        assert_eq!(
+            b.config.raw_keys,
+            [] as [(std::string::String, std::string::String); 0]
+        );
         assert!(
             b.unavailable_reason.is_none(),
             "empty_bundle carries no reason; panics use empty_bundle_with_reason"

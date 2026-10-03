@@ -217,7 +217,7 @@ bob:x:1001:
 
         // A user with no supplementary-group memberships resolves to empty.
         let nobody_groups = get_user_groups(&group, "nobody").unwrap();
-        assert!(nobody_groups.is_empty());
+        assert_eq!(nobody_groups, Vec::<String>::new());
     }
 
     #[test]

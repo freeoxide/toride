@@ -69,9 +69,9 @@ fn new_sets_path_correctly() {
 fn load_nonexistent_returns_default() {
     let (_dir, store) = tmp_store();
     let data = store.load().unwrap();
-    assert!(data.active_bans.is_empty());
-    assert!(data.history.is_empty());
-    assert!(data.journals.is_empty());
+    assert_eq!(data.active_bans, Vec::new());
+    assert_eq!(data.history, Vec::new());
+    assert_eq!(data.journals, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -84,9 +84,9 @@ fn save_load_roundtrip_empty() {
     let data = StoreData::default();
     store.save(&data).unwrap();
     let loaded = store.load().unwrap();
-    assert!(loaded.active_bans.is_empty());
-    assert!(loaded.history.is_empty());
-    assert!(loaded.journals.is_empty());
+    assert_eq!(loaded.active_bans, Vec::new());
+    assert_eq!(loaded.history, Vec::new());
+    assert_eq!(loaded.journals, Vec::new());
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn save_overwrites_existing() {
     store.save(&data2).unwrap();
 
     let loaded = store.load().unwrap();
-    assert!(loaded.active_bans.is_empty());
+    assert_eq!(loaded.active_bans, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -205,7 +205,7 @@ fn remove_ban_success() {
 
     // Should be gone from active bans.
     let bans = store.get_bans(None).unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 
     // Should appear in history.
     let data = store.load().unwrap();
@@ -295,17 +295,17 @@ fn get_bans_filter_nonexistent_jail_returns_empty() {
     store.add_ban(&make_ban("10.0.0.1", "sshd")).unwrap();
 
     let bans = store.get_bans(Some("dovecot")).unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 }
 
 #[test]
 fn get_bans_empty_store() {
     let (_dir, store) = tmp_store();
     let bans = store.get_bans(None).unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 
     let bans = store.get_bans(Some("sshd")).unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -359,7 +359,7 @@ fn clear_expired_no_expired_bans() {
         .unwrap();
 
     let cleared = store.clear_expired().unwrap();
-    assert!(cleared.is_empty());
+    assert_eq!(cleared, Vec::new());
 
     let active = store.get_bans(None).unwrap();
     assert_eq!(active.len(), 1);
@@ -380,7 +380,7 @@ fn clear_expired_all_expired() {
     assert_eq!(cleared.len(), 2);
 
     let active = store.get_bans(None).unwrap();
-    assert!(active.is_empty());
+    assert_eq!(active, Vec::new());
 
     let data = store.load().unwrap();
     assert_eq!(data.history.len(), 2);
@@ -390,7 +390,7 @@ fn clear_expired_all_expired() {
 fn clear_expired_empty_store() {
     let (_dir, store) = tmp_store();
     let cleared = store.clear_expired().unwrap();
-    assert!(cleared.is_empty());
+    assert_eq!(cleared, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -614,7 +614,7 @@ fn trim_history_zero_max_removes_all() {
     store.trim_history(0).unwrap();
 
     let loaded = store.load().unwrap();
-    assert!(loaded.history.is_empty());
+    assert_eq!(loaded.history, Vec::new());
 }
 
 #[test]
@@ -623,7 +623,7 @@ fn trim_history_empty_history() {
     store.trim_history(10).unwrap();
 
     let loaded = store.load().unwrap();
-    assert!(loaded.history.is_empty());
+    assert_eq!(loaded.history, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -696,8 +696,8 @@ fn atomic_write_overwrite_is_seamless() {
         loaded.active_bans[0].ip,
         "192.168.0.1".parse::<IpAddr>().unwrap()
     );
-    assert!(loaded.history.is_empty());
-    assert!(loaded.journals.is_empty());
+    assert_eq!(loaded.history, Vec::new());
+    assert_eq!(loaded.journals, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -707,13 +707,13 @@ fn atomic_write_overwrite_is_seamless() {
 #[test]
 fn empty_store_get_bans_none() {
     let (_dir, store) = tmp_store();
-    assert!(store.get_bans(None).unwrap().is_empty());
+    assert_eq!(store.get_bans(None).unwrap(), Vec::new());
 }
 
 #[test]
 fn empty_store_get_bans_some_jail() {
     let (_dir, store) = tmp_store();
-    assert!(store.get_bans(Some("sshd")).unwrap().is_empty());
+    assert_eq!(store.get_bans(Some("sshd")).unwrap(), Vec::new());
 }
 
 #[test]
@@ -728,7 +728,7 @@ fn empty_store_remove_ban_errors() {
 #[test]
 fn empty_store_clear_expired_returns_empty() {
     let (_dir, store) = tmp_store();
-    assert!(store.clear_expired().unwrap().is_empty());
+    assert_eq!(store.clear_expired().unwrap(), Vec::new());
 }
 
 #[test]
@@ -769,7 +769,7 @@ fn multiple_jails_same_ip_independent_ban_lifecycle() {
     assert_eq!(dovecot_bans.len(), 1);
 
     let nginx_bans = store.get_bans(Some("nginx")).unwrap();
-    assert!(nginx_bans.is_empty());
+    assert_eq!(nginx_bans, Vec::new());
 
     // Removing from nginx again should fail.
     assert!(matches!(
@@ -828,7 +828,7 @@ fn clear_expired_ban_without_expiry_never_cleared() {
         .unwrap();
 
     let cleared = store.clear_expired().unwrap();
-    assert!(cleared.is_empty());
+    assert_eq!(cleared, Vec::new());
 
     let active = store.get_bans(None).unwrap();
     assert_eq!(active.len(), 1);
@@ -856,7 +856,7 @@ fn trim_history_zero_clears_all_history() {
     store.trim_history(0).unwrap();
 
     let loaded = store.load().unwrap();
-    assert!(loaded.history.is_empty());
+    assert_eq!(loaded.history, Vec::new());
 }
 
 // ---------------------------------------------------------------------------

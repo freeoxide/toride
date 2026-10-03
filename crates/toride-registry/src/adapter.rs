@@ -26,6 +26,7 @@ use crate::model::{
 /// `App` and [`SourceRef`]. Each adapter additionally keeps its parse and
 /// fetch halves strictly separated (DESIGN.md §3.1): only the fetch half
 /// touches the network; only the parse half is fixture-tested offline.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait Adapter: Send + Sync {
     /// Which source this adapter normalizes.
@@ -530,7 +531,7 @@ mod tests {
     async fn search_without_adapters_is_an_empty_ok() {
         let registry = Registry::new(Vec::<Arc<dyn Adapter>>::new());
         let outcome = registry.search("anything").await.expect("nothing to fail");
-        assert!(outcome.apps.is_empty());
+        assert_eq!(outcome.apps, Vec::new());
         assert!(outcome.failures.is_empty());
     }
 
@@ -604,7 +605,7 @@ mod tests {
             .resolve(&TorideId::slugify("unknown-app"))
             .await
             .expect("a failing source is skipped, not fatal");
-        assert!(rows.is_empty());
+        assert_eq!(rows, Vec::new());
     }
 
     #[tokio::test]

@@ -495,5 +495,8 @@ fn the_blocking_facade_installs_and_uninstalls_direct_downloads() {
         .unwrap();
     assert!(matches!(outcome, UninstallAppOutcome::Removed { .. }));
     assert!(!install_dir.join("rg").exists());
-    assert!(blocking.records().is_empty());
+    assert_eq!(
+        blocking.records(),
+        [] as [(&toride_apps::TorideId, &toride_apps::InstallRecord); 0]
+    );
 }

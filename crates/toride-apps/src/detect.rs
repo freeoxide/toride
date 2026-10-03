@@ -899,7 +899,10 @@ mod tests {
             split_path_value(value),
             [Utf8PathBuf::from("/a"), Utf8PathBuf::from("/b")]
         );
-        assert!(split_path_value(std::ffi::OsStr::new("")).is_empty());
+        assert_eq!(
+            split_path_value(std::ffi::OsStr::new("")),
+            Vec::<Utf8PathBuf>::new()
+        );
     }
 
     #[cfg(unix)]
@@ -1080,7 +1083,7 @@ mod tests {
             .path_dirs(Vec::new())
             .npm(NpmBackend::new(seam(&fake)))
             .build();
-        assert!(detector.detect("typescript").is_empty());
+        assert_eq!(detector.detect("typescript"), Vec::new());
     }
 
     #[test]
@@ -1257,7 +1260,7 @@ mod tests {
                 .mise_shim_dir(temp_dir("nothing"))
                 .build(),
         );
-        assert!(detector.detect("nothing-here").is_empty());
+        assert_eq!(detector.detect("nothing-here"), Vec::new());
     }
 
     #[test]
@@ -1268,10 +1271,9 @@ mod tests {
             .detect_backends()
             .expect("an absent binary or unknown family is a skip, never an error")
             .build();
-        assert!(
-            detector
-                .detect("definitely-not-an-installed-tool-xyzq")
-                .is_empty()
+        assert_eq!(
+            detector.detect("definitely-not-an-installed-tool-xyzq"),
+            Vec::new()
         );
     }
 }

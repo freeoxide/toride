@@ -628,7 +628,10 @@ mod tests {
         let c = SettingsContent::new();
         assert!(!c.available);
         assert!(!c.config.exists);
-        assert!(c.config.raw_keys.is_empty());
+        assert_eq!(
+            c.config.raw_keys,
+            [] as [(std::string::String, std::string::String); 0]
+        );
         assert!(c.runtime.rust_log.is_none());
         assert_eq!(c.active_theme, Theme::default());
         assert!(!c.has_modal());

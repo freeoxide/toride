@@ -625,7 +625,7 @@ mod tests {
         assert!(c.tools.is_empty());
         assert!(c.outdated.is_empty());
         assert!(c.findings.is_empty());
-        assert!(c.config_files.is_empty());
+        assert_eq!(c.config_files, Vec::<String>::new());
         assert!(!c.has_modal());
     }
 

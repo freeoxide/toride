@@ -122,7 +122,7 @@ mod tests {
             fstype: "tmpfs".into(),
             options: "rw,nosuid,nodev,noexec".into(),
         };
-        assert!(missing_security_options(&mount).is_empty());
+        assert_eq!(missing_security_options(&mount), [] as [&str; 0]);
     }
 
     #[test]

@@ -244,7 +244,7 @@ mod tests {
         let mgr = AclManager::new();
         let rules = vec![allow(&["autogroup:members"], &["*:*"])];
         let policy = mgr.generate_policy(&rules).unwrap();
-        assert!(!policy.is_empty());
+        assert_ne!(policy, "");
 
         let parsed: serde_json::Value = serde_json::from_str(&policy).unwrap();
         assert_eq!(parsed["acls"][0]["action"], "accept");

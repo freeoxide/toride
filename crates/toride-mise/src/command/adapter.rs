@@ -135,7 +135,7 @@ mod tests {
     fn build_spec_minimal() {
         let spec = build_spec("mise", &[], None, &[], None, false);
         assert_eq!(spec.program, "mise");
-        assert!(spec.args.is_empty());
+        assert_eq!(spec.args, Vec::<String>::new());
         assert!(spec.cwd.is_none());
         assert!(spec.timeout.is_none());
         assert!(!spec.redact);

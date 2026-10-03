@@ -231,7 +231,7 @@ mod tests {
         assert_eq!(parsed.len(), 2, "comments and @include skipped");
         assert_eq!(parsed[0].management_group, "auth");
         assert_eq!(parsed[0].module, "pam_unix.so");
-        assert!(parsed[0].arguments.is_empty());
+        assert_eq!(parsed[0].arguments, Vec::<String>::new());
     }
 
     #[test]

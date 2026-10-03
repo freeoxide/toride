@@ -3529,7 +3529,7 @@ async fn search_with_no_registered_adapters_is_an_empty_hit_list() {
         .search("anything")
         .await
         .expect("no sources means nothing to fail");
-    assert!(hits.is_empty());
+    assert_eq!(hits, Vec::new());
 }
 
 #[tokio::test]
@@ -4382,7 +4382,10 @@ async fn npm_records_update_and_uninstall_replay_the_recorded_package() {
     assert_eq!(backend, BackendId::Npm);
     assert!(warning.is_none(), "{warning:?}");
     fake.assert_called_with(&npm_uninstall_global_spec("typescript"));
-    assert!(apps.records().is_empty());
+    assert_eq!(
+        apps.records(),
+        [] as [(&toride_apps::TorideId, &toride_apps::InstallRecord); 0]
+    );
     fake.assert_no_unmatched_calls();
 }
 

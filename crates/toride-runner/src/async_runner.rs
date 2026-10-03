@@ -14,6 +14,7 @@ use crate::spec::CommandSpec;
 /// This mirrors the synchronous [`Runner`](crate::Runner) trait but uses
 /// `async` methods. Implementations should use `tokio::process` and must
 /// not block runtime worker threads.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait AsyncRunner: Send + Sync {
     /// Execute the given [`CommandSpec`] and return its output.

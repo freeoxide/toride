@@ -662,7 +662,7 @@ mod tests {
                 version: Some("22.1.0".to_owned())
             }]
         );
-        assert!(backend.outdated_sync().unwrap().is_empty());
+        assert_eq!(backend.outdated_sync().unwrap(), Vec::new());
         assert_eq!(
             backend.available_versions_sync("node").unwrap(),
             [Version::new("22.1.0")]

@@ -299,7 +299,7 @@ mod tests {
         let req = LockRequest::new(["node"]);
         assert_eq!(req.tools, vec!["node"]);
         assert!(!req.global);
-        assert!(req.platforms.is_empty());
+        assert_eq!(req.platforms, Vec::<String>::new());
         assert!(req.jobs.is_none());
         assert!(!req.dry_run);
     }

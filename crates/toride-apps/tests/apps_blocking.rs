@@ -608,7 +608,10 @@ fn cargo_records_update_and_uninstall_replay_the_recorded_crate() {
         other @ UninstallAppOutcome::AlreadyAbsent => panic!("expected Removed, got {other:?}"),
     }
     fake.assert_called_with(&uninstall_spec);
-    assert!(apps.records().is_empty());
+    assert_eq!(
+        apps.records(),
+        [] as [(&toride_apps::TorideId, &toride_apps::InstallRecord); 0]
+    );
     fake.assert_no_unmatched_calls();
 }
 
@@ -661,7 +664,10 @@ fn uninstall_replays_the_record_and_saves_the_removal_in_line() {
         }
         other @ UninstallAppOutcome::AlreadyAbsent => panic!("expected Removed, got {other:?}"),
     }
-    assert!(apps.records().is_empty());
+    assert_eq!(
+        apps.records(),
+        [] as [(&toride_apps::TorideId, &toride_apps::InstallRecord); 0]
+    );
     let on_disk = std::fs::read_to_string(path.as_std_path()).unwrap();
     assert!(!on_disk.contains("brave-browser"), "{on_disk}");
 }

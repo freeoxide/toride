@@ -194,7 +194,7 @@ mod tests {
             content: "# just comments\n# another comment\n".to_owned(),
         };
         let rules = file.rules();
-        assert!(rules.is_empty());
+        assert_eq!(rules, [] as [&str; 0]);
     }
 
     #[test]
@@ -232,7 +232,7 @@ mod tests {
     fn merge_rules_empty_files() {
         let files: Vec<AuditRuleFile> = vec![];
         let merged = merge_rules(&files);
-        assert!(merged.is_empty());
+        assert_eq!(merged, Vec::<String>::new());
     }
 
     #[test]

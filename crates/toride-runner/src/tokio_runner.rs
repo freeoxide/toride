@@ -1227,8 +1227,8 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.exit_code, Some(17));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "");
     }
 
     /// `OutputMode::Inherit` must ignore `output_limit` and still return the real
@@ -1244,8 +1244,8 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.exit_code, Some(17));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "");
     }
 
     /// `OutputMode::Stream` is rejected by the captured-output run path (it is

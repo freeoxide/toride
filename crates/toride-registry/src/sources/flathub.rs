@@ -949,7 +949,7 @@ mod tests {
         // A clean parse proves they are tolerated and dropped.
         let apps = parse_search_envelope(&read_fixture("search-brave-browser.json"))
             .expect("facet-bearing envelope parses");
-        assert!(!apps.is_empty());
+        assert_ne!(apps, Vec::<App>::new());
     }
 
     #[test]
@@ -1163,7 +1163,7 @@ mod tests {
         let payload = r#"{"id":"org.example.App","name":"Example","summary":"s",
             "description":"d","bundle":{"value":"app/org.example.App/riscv64/stable"}}"#;
         let app = parse_appstream_detail(payload).expect("parses");
-        assert!(app.platforms.is_empty());
+        assert_eq!(app.platforms, Vec::new());
     }
 
     #[test]

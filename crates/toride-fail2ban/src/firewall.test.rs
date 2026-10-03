@@ -71,7 +71,10 @@ fn firewall_checker_new_records_no_calls_at_construction() {
     let fake = FakeRunner::new();
     let _checker = FirewallChecker::new(&fake);
     // Construction should not invoke any commands.
-    assert!(fake.calls().is_empty());
+    assert_eq!(
+        fake.calls(),
+        [] as [(std::string::String, std::vec::Vec<std::string::String>); 0]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -357,7 +360,7 @@ fn diagnose_nftables_set_missing_produces_warning() {
         .find(|f| f.id == "firewall.nft.set-missing")
         .unwrap();
     assert_eq!(set_missing.severity, Severity::Warning);
-    assert!(!set_missing.detail.is_empty());
+    assert_ne!(set_missing.detail, "");
     assert!(set_missing.fix.is_some());
 }
 
@@ -461,7 +464,7 @@ fn diagnose_iptables_chain_missing_produces_warning() {
         .find(|f| f.id == "firewall.iptables.chain-missing")
         .unwrap();
     assert_eq!(chain_missing.severity, Severity::Warning);
-    assert!(!chain_missing.detail.is_empty());
+    assert_ne!(chain_missing.detail, "");
     assert!(chain_missing.fix.is_some());
 }
 
@@ -806,9 +809,9 @@ fn diagnose_nft_missing_finding_has_detail_and_fix() {
         .iter()
         .find(|f| f.id == "firewall.nft.missing")
         .unwrap();
-    assert!(!f.detail.is_empty());
+    assert_ne!(f.detail, "");
     assert!(f.fix.is_some());
-    assert!(!f.fix.as_ref().unwrap().is_empty());
+    assert_ne!(f.fix.as_ref().unwrap(), "");
 }
 
 #[test]
@@ -828,7 +831,7 @@ fn diagnose_nft_set_missing_finding_has_detail_and_fix() {
         .iter()
         .find(|f| f.id == "firewall.nft.set-missing")
         .unwrap();
-    assert!(!f.detail.is_empty());
+    assert_ne!(f.detail, "");
     assert!(f.fix.is_some());
 }
 
@@ -844,9 +847,9 @@ fn diagnose_iptables_missing_finding_has_detail_and_fix() {
         .iter()
         .find(|f| f.id == "firewall.iptables.missing")
         .unwrap();
-    assert!(!f.detail.is_empty());
+    assert_ne!(f.detail, "");
     assert!(f.fix.is_some());
-    assert!(!f.fix.as_ref().unwrap().is_empty());
+    assert_ne!(f.fix.as_ref().unwrap(), "");
 }
 
 // ---------------------------------------------------------------------------

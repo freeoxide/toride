@@ -177,7 +177,7 @@ mod tests {
         let report = CloudReport::new(CloudProvider::Aws);
         assert!(report.is_empty());
         assert!(report.findings.is_empty());
-        assert!(report.security_groups.is_empty());
+        assert_eq!(report.security_groups, Vec::new());
     }
 
     #[test]
@@ -234,7 +234,7 @@ mod tests {
         assert_eq!(f.id, "aws.sg.open");
         assert_eq!(f.severity, Severity::Warning);
         assert_eq!(f.title, "Open ingress");
-        assert!(f.detail.is_empty());
+        assert_eq!(f.detail, "");
         assert!(f.fix.is_none());
     }
 

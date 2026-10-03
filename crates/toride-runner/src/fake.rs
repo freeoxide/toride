@@ -321,7 +321,7 @@ mod tests {
         let runner = FakeRunner::new();
         let output = run_sync(&runner, &CommandSpec::new("cmd")).unwrap();
         assert!(output.success);
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, "");
     }
 
     #[test]

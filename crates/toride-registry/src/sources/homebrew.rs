@@ -1247,7 +1247,7 @@ mod tests {
         // Identity + install descriptor.
         assert_eq!(app.id.as_str(), "brave-browser");
         assert_eq!(app.name, "Brave");
-        assert!(app.aliases.is_empty());
+        assert_eq!(app.aliases, Vec::<String>::new());
         assert_eq!(
             app.summary.as_deref(),
             Some("Web browser focusing on privacy")
@@ -1310,7 +1310,7 @@ mod tests {
         );
 
         // brave has no `binary` artifact stanza → no PATH binaries.
-        assert!(app.binaries.is_empty());
+        assert_eq!(app.binaries, Vec::<String>::new());
     }
 
     #[test]
@@ -1830,9 +1830,9 @@ mod tests {
             ["ripgrep".to_owned()],
             "summaries match at the substring tier"
         );
-        assert!(search_index(&apps, "nothing-matches").is_empty());
-        assert!(search_index(&apps, "").is_empty());
-        assert!(search_index(&apps, "   ").is_empty());
+        assert_eq!(search_index(&apps, "nothing-matches"), Vec::new());
+        assert_eq!(search_index(&apps, ""), Vec::new());
+        assert_eq!(search_index(&apps, "   "), Vec::new());
     }
 
     #[test]

@@ -318,7 +318,7 @@ mod tests {
         let e = convert_peer(&p);
         assert_eq!(e.public_key, "KEY");
         assert_eq!(e.endpoint, None);
-        assert!(e.allowed_ips.is_empty());
+        assert_eq!(e.allowed_ips, Vec::<String>::new());
         assert_eq!(e.persistent_keepalive, None);
         assert_eq!(e.rx_bytes, 0);
         assert_eq!(e.tx_bytes, 0);

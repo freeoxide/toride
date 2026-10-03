@@ -1169,8 +1169,8 @@ mod tests {
 
     #[test]
     fn parse_list_output_returns_an_empty_listing_for_empty_output() {
-        assert!(parse_list_output("").unwrap().is_empty());
-        assert!(parse_list_output("  \n\n").unwrap().is_empty());
+        assert_eq!(parse_list_output("").unwrap(), Vec::new());
+        assert_eq!(parse_list_output("  \n\n").unwrap(), Vec::new());
     }
 
     #[test]
@@ -2345,12 +2345,12 @@ mod tests {
             toride_runner::CommandOutput::from_stdout("org.mozilla.firefox\tstable\n".to_owned()),
         );
         let backend = backend(&fake);
-        assert!(
+        assert_eq!(
             backend
                 .available_versions("com.brave.Browser", FlatpakInstallation::User)
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            Vec::<Version>::new()
         );
     }
 

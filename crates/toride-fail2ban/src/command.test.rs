@@ -44,8 +44,8 @@ fn duct_runner_dry_run_mode_returns_success_without_execution() {
         .run("this-binary-does-not-exist-at-all-xyz", &[])
         .unwrap();
     assert!(out.success);
-    assert!(out.stdout.is_empty());
-    assert!(out.stderr.is_empty());
+    assert_eq!(out.stdout, "");
+    assert_eq!(out.stderr, "");
     assert_eq!(out.exit_code, Some(0));
 }
 
@@ -58,7 +58,7 @@ fn duct_runner_dry_run_with_timeout_returns_success() {
         .run_with_timeout("nonexistent-binary", &["arg"], Duration::from_secs(5))
         .unwrap();
     assert!(out.success);
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, "");
 }
 
 #[test]
@@ -134,7 +134,10 @@ fn duct_runner_spawn_failure_returns_command_failed_error() {
 #[test]
 fn fake_runner_new_creates_empty_runner() {
     let fake = FakeRunner::new();
-    assert!(fake.calls().is_empty());
+    assert_eq!(
+        fake.calls(),
+        [] as [(std::string::String, std::vec::Vec<std::string::String>); 0]
+    );
     assert!(!fake.dry_run());
 }
 
@@ -177,7 +180,7 @@ fn fake_runner_records_multiple_calls_in_order() {
     assert_eq!(calls[1].1, vec!["arg2", "arg3"]);
 
     assert_eq!(calls[2].0, "cmd-c");
-    assert!(calls[2].1.is_empty());
+    assert_eq!(calls[2].1, Vec::<String>::new());
 }
 
 #[test]
@@ -210,8 +213,8 @@ fn fake_runner_returns_default_for_unknown_commands() {
     let fake = FakeRunner::new();
     let out = fake.run("unknown-cmd", &["--flag"]).unwrap();
     assert!(out.success);
-    assert!(out.stdout.is_empty());
-    assert!(out.stderr.is_empty());
+    assert_eq!(out.stdout, "");
+    assert_eq!(out.stderr, "");
     assert_eq!(out.exit_code, Some(0));
 }
 
@@ -338,8 +341,8 @@ fn command_output_new_success() {
     let out = CommandOutput::new(String::new(), String::new(), Some(0));
     assert!(out.success);
     assert_eq!(out.exit_code, Some(0));
-    assert!(out.stdout.is_empty());
-    assert!(out.stderr.is_empty());
+    assert_eq!(out.stdout, "");
+    assert_eq!(out.stderr, "");
 }
 
 #[cfg(unix)] // from_raw(0) encodes Unix raw status bits
@@ -359,7 +362,7 @@ fn command_output_from_raw_output_captures_fields() {
     assert!(out.success);
     assert_eq!(out.exit_code, Some(0));
     assert_eq!(out.stdout, "hello\n");
-    assert!(out.stderr.is_empty());
+    assert_eq!(out.stderr, "");
 }
 
 #[cfg(unix)] // from_raw(256) encodes Unix raw status bits

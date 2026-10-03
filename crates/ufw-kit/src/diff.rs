@@ -210,7 +210,7 @@ mod tests {
         let result = diff_firewall_configs(&files);
         assert_eq!(result.changed_files.len(), 1);
         assert_eq!(result.unchanged_files.len(), 1);
-        assert!(!result.findings.is_empty());
+        assert_ne!(result.findings, Vec::<Finding>::new());
     }
 
     #[test]
@@ -219,7 +219,7 @@ mod tests {
         let result = diff_firewall_configs(&files);
         assert!(result.changed_files.is_empty());
         assert_eq!(result.unchanged_files.len(), 1);
-        assert!(result.findings.is_empty());
+        assert_eq!(result.findings, Vec::new());
     }
 
     #[test]

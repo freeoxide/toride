@@ -241,6 +241,6 @@ mod tests {
     #[test]
     fn render_firewall_rules_empty_vec() {
         let rendered = render_firewall_rules(&[]);
-        assert!(rendered.is_empty());
+        assert_eq!(rendered, "");
     }
 }

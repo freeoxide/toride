@@ -242,7 +242,7 @@ another_key = world
             priority_boost: None,
             extra: BTreeMap::new(),
         };
-        assert!(config.render().is_empty());
+        assert_eq!(config.render(), "");
     }
 
     #[test]

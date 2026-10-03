@@ -239,11 +239,14 @@ mod tests {
     #[test]
     fn empty_config_is_zeroed() {
         let c = empty_config();
-        assert!(c.path.is_empty());
+        assert_eq!(c.path, "");
         assert!(!c.exists);
         assert!(c.active_theme_name.is_none());
         assert!(c.log_level.is_none());
-        assert!(c.raw_keys.is_empty());
+        assert_eq!(
+            c.raw_keys,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     #[test]

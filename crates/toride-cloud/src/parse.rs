@@ -892,7 +892,7 @@ mod tests {
     #[test]
     fn parse_auto_empty_string_returns_empty_vec() {
         let groups = parse_auto("").unwrap();
-        assert!(groups.is_empty());
+        assert_eq!(groups, Vec::new());
     }
 
     // -- shared helpers -------------------------------------------------------

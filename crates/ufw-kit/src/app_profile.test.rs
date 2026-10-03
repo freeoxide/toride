@@ -238,9 +238,9 @@ fn ensure_app_profile_should_validate_empty_ports() {
 fn parse_profile_should_handle_missing_fields() {
     let content = "[MyApp]\n";
     let spec = parse_profile("MyApp", content).unwrap();
-    assert!(spec.title.is_empty());
-    assert!(spec.description.is_empty());
-    assert!(spec.ports.is_empty());
+    assert_eq!(spec.title, "");
+    assert_eq!(spec.description, "");
+    assert_eq!(spec.ports, Vec::new());
 }
 
 #[test]

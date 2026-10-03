@@ -205,7 +205,7 @@ fn parse_status_verbose_should_handle_missing_fields() {
 fn parse_status_should_handle_empty_output() {
     let status = parse_status("").unwrap();
     assert!(!status.active);
-    assert!(status.rules.is_empty());
+    assert_eq!(status.rules, Vec::new());
 }
 
 #[test]
@@ -328,14 +328,14 @@ To                         Action      From
 #[test]
 fn parse_show_listening_should_parse_empty_input() {
     let ports = parse_show_listening("");
-    assert!(ports.is_empty());
+    assert_eq!(ports, Vec::new());
 }
 
 #[test]
 fn parse_show_listening_should_parse_header_only() {
     let output = "Listening:\n";
     let ports = parse_show_listening(output);
-    assert!(ports.is_empty());
+    assert_eq!(ports, Vec::new());
 }
 
 #[test]
@@ -399,14 +399,14 @@ Listening:
 #[test]
 fn parse_show_added_should_parse_empty_input() {
     let rules = parse_show_added("");
-    assert!(rules.is_empty());
+    assert_eq!(rules, Vec::new());
 }
 
 #[test]
 fn parse_show_added_should_parse_header_only() {
     let output = "Added user rules (see 'ufw status'):\n";
     let rules = parse_show_added(output);
-    assert!(rules.is_empty());
+    assert_eq!(rules, Vec::new());
 }
 
 #[test]

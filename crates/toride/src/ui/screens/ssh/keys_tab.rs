@@ -1207,7 +1207,7 @@ mod tests {
             } => {
                 assert_eq!(name, "id_deploy");
                 assert_eq!(key_type, "Ed25519");
-                assert!(comment.is_empty());
+                assert_eq!(comment, "");
                 assert_eq!(passphrase.as_deref(), Some("s3cr3t"));
             }
             other => panic!("expected KeyCreate, got {other:?}"),

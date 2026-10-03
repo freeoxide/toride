@@ -493,14 +493,14 @@ fn ban_manager_list_bans_filtered_by_jail() {
     assert_eq!(nginx_bans[0].ip, ip2);
 
     let unknown_bans = manager.list_bans(Some("nonexistent")).unwrap();
-    assert!(unknown_bans.is_empty());
+    assert_eq!(unknown_bans, Vec::new());
 }
 
 #[test]
 fn ban_manager_list_bans_empty() {
     let (manager, _dir) = setup_manager();
     let bans = manager.list_bans(None).unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 }
 
 #[test]
@@ -547,7 +547,7 @@ fn ban_manager_purge_expired_nothing_to_purge() {
         .unwrap();
 
     let purged = manager.purge_expired().unwrap();
-    assert!(purged.is_empty());
+    assert_eq!(purged, Vec::new());
 
     let active = manager.list_bans(None).unwrap();
     assert_eq!(active.len(), 1);
@@ -558,7 +558,7 @@ fn ban_manager_purge_expired_empty_store() {
     let (manager, _dir) = setup_manager();
 
     let purged = manager.purge_expired().unwrap();
-    assert!(purged.is_empty());
+    assert_eq!(purged, Vec::new());
 }
 
 #[test]

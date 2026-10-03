@@ -1010,8 +1010,8 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.exit_code, Some(17));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "");
     }
 
     #[test]
@@ -1144,8 +1144,8 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.exit_code, Some(17));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "");
     }
 
     #[test]

@@ -360,9 +360,9 @@ mod tests {
 
     #[test]
     fn parse_npm_list_takes_a_dependencies_free_document_as_empty() {
-        assert!(parse_npm_list("{}").unwrap().is_empty());
-        assert!(parse_npm_list("{\"name\":\"empty\"}").unwrap().is_empty());
-        assert!(parse_npm_list("").unwrap().is_empty());
+        assert_eq!(parse_npm_list("{}").unwrap(), Vec::new());
+        assert_eq!(parse_npm_list("{\"name\":\"empty\"}").unwrap(), Vec::new());
+        assert_eq!(parse_npm_list("").unwrap(), Vec::new());
     }
 
     #[test]

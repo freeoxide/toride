@@ -1185,7 +1185,7 @@ mod tests {
             "should contain CPU delta with sign"
         );
         // Should not panic on large values.
-        assert!(!output.is_empty());
+        assert_ne!(output, "");
     }
 
     #[test]

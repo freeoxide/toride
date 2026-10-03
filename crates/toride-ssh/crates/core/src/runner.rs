@@ -115,6 +115,7 @@ pub fn tool_exists(name: &str) -> bool {
 /// Abstraction over external command execution.
 ///
 /// Production code uses [`DefaultCliRunner`]; tests swap in [`MockCliRunner`].
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait CliRunner: Send + Sync {
     /// Run an external command and return its captured stdout.

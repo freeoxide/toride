@@ -684,7 +684,7 @@ fn check_ssh_structured_should_return_empty_on_status_failure() {
     let ufw = Ufw::with_runner(FailRunner);
     let result = ufw.check_ssh_lockout_structured(&[22]);
     assert!(!result.has_incoming_ssh_allow);
-    assert!(result.matching_rules.is_empty());
+    assert_eq!(result.matching_rules, Vec::new());
     assert_eq!(result.checked_ports, vec![22]);
 }
 
@@ -751,7 +751,7 @@ fn status_numbered_should_parse_empty_numbered_output() {
     let ufw = Ufw::with_runner(runner);
     let status = ufw.status_numbered().unwrap();
     assert!(status.active);
-    assert!(status.rules.is_empty());
+    assert_eq!(status.rules, Vec::new());
 }
 
 const ACTIVE_STATUS: &str = "Status: active\n\nTo                         Action      From\n--                         ------      ----\n22/tcp                     ALLOW IN    Anywhere\n";

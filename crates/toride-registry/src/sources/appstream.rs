@@ -1054,9 +1054,9 @@ Launchable:
         );
         assert_eq!(firefox_esr.project_license, None);
         assert_eq!(firefox_esr.developer, None);
-        assert!(firefox_esr.releases.is_empty());
+        assert_eq!(firefox_esr.releases, Vec::new());
         let provides = firefox_esr.provides.as_ref().expect("mediatypes present");
-        assert!(provides.binaries.is_empty());
+        assert_eq!(provides.binaries, Vec::<String>::new());
         assert_eq!(provides.mediatypes.len(), 12);
         assert!(
             provides
@@ -1259,21 +1259,18 @@ Launchable:
                 .len(),
             2
         );
-        assert!(
-            adapter
-                .search("zzz-no-such-app")
-                .await
-                .expect("search ok")
-                .is_empty()
+        assert_eq!(
+            adapter.search("zzz-no-such-app").await.expect("search ok"),
+            Vec::<App>::new()
         );
-        assert!(adapter.search("   ").await.expect("search ok").is_empty());
+        assert_eq!(adapter.search("   ").await.expect("search ok"), Vec::new());
     }
 
     #[test]
     fn synthetic_catalog_skips_empty_documents_and_filters_types() {
         let adapter = synthetic_adapter();
         assert_eq!(adapter.catalog().components.len(), 4);
-        assert!(block_on_search(&adapter, "Example Library").is_empty());
+        assert_eq!(block_on_search(&adapter, "Example Library"), Vec::new());
         let hits = block_on_search(&adapter, "ripgrep");
         assert_eq!(hits.len(), 1);
         assert_eq!(
@@ -1381,7 +1378,7 @@ Launchable:
     fn undecodable_arch_yields_unknown_platforms() {
         let adapter = AppstreamAdapter::from_text(&fixture(), None).expect("fixture parses");
         let apps = block_on_search(&adapter, "Firefox");
-        assert!(!apps.is_empty());
+        assert_ne!(apps, Vec::<App>::new());
         for app in apps {
             assert!(app.platforms.is_empty(), "no arch → platforms [] = unknown");
         }
@@ -1567,7 +1564,10 @@ Name:
             conditional_headers(None, Some(LAST_MODIFIED)),
             vec![("if-modified-since", LAST_MODIFIED.to_owned())]
         );
-        assert!(conditional_headers(None, None).is_empty());
+        assert_eq!(
+            conditional_headers(None, None),
+            [] as [(&str, std::string::String); 0]
+        );
     }
 
     #[test]
@@ -1690,7 +1690,7 @@ mod network_tests {
             };
             assert_eq!(family, &DistroFamily::Debian);
             assert_eq!(repo.as_deref(), Some(origin));
-            assert!(!package.is_empty());
+            assert_ne!(package, "");
             assert_eq!(
                 app.platforms,
                 [Platform {

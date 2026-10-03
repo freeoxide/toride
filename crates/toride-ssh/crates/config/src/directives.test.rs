@@ -241,7 +241,7 @@ Host *
 fn get_accumulative_directive_no_match() {
     let ast = make_ast("Host other\n    IdentityFile ~/.ssh/id_rsa\n");
     let vals = get_accumulative_directive(&ast, "example", "IdentityFile");
-    assert!(vals.is_empty());
+    assert_eq!(vals, Vec::<String>::new());
 }
 
 #[test]
@@ -452,14 +452,14 @@ fn get_directive_from_match_block() {
 fn get_all_directives_empty_ast() {
     let ast = make_ast("");
     let dirs = get_all_directives(&ast, "host");
-    assert!(dirs.is_empty());
+    assert_eq!(dirs, [] as [(std::string::String, std::string::String); 0]);
 }
 
 #[test]
 fn get_all_directives_no_match() {
     let ast = make_ast("Host other\n    User alice\n");
     let dirs = get_all_directives(&ast, "host");
-    assert!(dirs.is_empty());
+    assert_eq!(dirs, [] as [(std::string::String, std::string::String); 0]);
 }
 
 #[test]

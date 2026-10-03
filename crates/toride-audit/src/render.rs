@@ -104,7 +104,7 @@ mod tests {
     fn render_audit_rules_empty_vec() {
         let rules: Vec<String> = vec![];
         let output = render_audit_rules(&rules);
-        assert!(output.is_empty());
+        assert_eq!(output, "");
     }
 
     #[test]

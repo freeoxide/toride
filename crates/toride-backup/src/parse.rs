@@ -256,7 +256,7 @@ mod tests {
         let result = parse_restic_check("");
         assert!(result.passed);
         assert_eq!(result.error_count, 0);
-        assert!(result.output_lines.is_empty());
+        assert_eq!(result.output_lines, Vec::<String>::new());
     }
 
     #[test]
@@ -325,7 +325,7 @@ mod tests {
     #[test]
     fn restic_snapshots_empty_returns_empty_vec() {
         let result = parse_restic_snapshots("   ").unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result, Vec::new());
     }
 
     #[test]

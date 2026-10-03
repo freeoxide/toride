@@ -510,7 +510,10 @@ fn collect_matching_any_excludes_non_candidates() {
 fn collect_matching_any_missing_dir_is_empty() {
     let dir = tempfile::tempdir().expect("tempdir");
     let missing = dir.path().join("does-not-exist");
-    assert!(collect_matching_any(&missing, SSH_DIR_PREFIXES).is_empty());
+    assert_eq!(
+        collect_matching_any(&missing, SSH_DIR_PREFIXES),
+        Vec::<std::path::PathBuf>::new()
+    );
 }
 
 #[cfg(unix)]

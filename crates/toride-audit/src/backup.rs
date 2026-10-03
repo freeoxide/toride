@@ -249,7 +249,7 @@ mod tests {
         let dir = TempDir::new().expect("tempdir");
         let target = write_file(dir.path(), "audit.rules", "x");
         let backups = list_backups(&target).expect("list");
-        assert!(backups.is_empty());
+        assert_eq!(backups, Vec::<std::path::PathBuf>::new());
     }
 
     #[test]

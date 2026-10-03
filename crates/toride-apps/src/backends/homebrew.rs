@@ -2503,7 +2503,7 @@ mod tests {
         );
         let backend = backend(&fake);
         let entries = backend.outdated(OutdatedScope::Casks).await.unwrap();
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::new());
         fake.assert_called_with(&spec);
     }
 

@@ -420,7 +420,10 @@ mod tests {
         let runner = CommandRunner::builder().build();
         let spec = runner.prepare(command("brew", ["--version"]));
         assert_eq!(spec.cwd, None);
-        assert!(spec.env.is_empty());
+        assert_eq!(
+            spec.env,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     #[test]

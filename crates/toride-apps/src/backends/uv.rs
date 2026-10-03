@@ -249,8 +249,8 @@ mod tests {
             }],
             "uv's empty-listing wording never reads as a tool"
         );
-        assert!(parse_uv_list("plain words only\n").is_empty());
-        assert!(parse_uv_list("").is_empty());
+        assert_eq!(parse_uv_list("plain words only\n"), Vec::new());
+        assert_eq!(parse_uv_list(""), Vec::new());
     }
 
     #[tokio::test]
@@ -387,11 +387,9 @@ mod tests {
             ))
             .unwrap();
         fake.assert_called_with(&install_spec);
-        assert!(
-            backend
-                .list_installed_sync(ListQuery::all())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            backend.list_installed_sync(ListQuery::all()).unwrap(),
+            Vec::new()
         );
     }
 }

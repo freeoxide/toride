@@ -77,14 +77,14 @@ fn parse_keyscan_line_ecdsa() {
 #[test]
 fn parse_keyscan_output_empty() {
     let keys = parse_keyscan_output("host", "");
-    assert!(keys.is_empty());
+    assert_eq!(keys, Vec::new());
 }
 
 #[test]
 fn parse_keyscan_output_only_comments() {
     let output = "# comment 1\n# comment 2\n";
     let keys = parse_keyscan_output("host", output);
-    assert!(keys.is_empty());
+    assert_eq!(keys, Vec::new());
 }
 
 #[test]

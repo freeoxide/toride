@@ -306,17 +306,20 @@ mod tests {
 
     #[test]
     fn parse_passwd_empty_input_is_ok_empty() {
-        assert!(parse_passwd("").unwrap().is_empty());
+        assert_eq!(parse_passwd("").unwrap(), Vec::new());
     }
 
     #[test]
     fn parse_passwd_whitespace_only_input_is_ok_empty() {
-        assert!(parse_passwd("   \n\t\n  ").unwrap().is_empty());
+        assert_eq!(parse_passwd("   \n\t\n  ").unwrap(), Vec::new());
     }
 
     #[test]
     fn parse_passwd_comment_only_input_is_ok_empty() {
-        assert!(parse_passwd("# a comment\n# another\n").unwrap().is_empty());
+        assert_eq!(
+            parse_passwd("# a comment\n# another\n").unwrap(),
+            Vec::new()
+        );
     }
 
     #[test]
@@ -387,12 +390,12 @@ mod tests {
 
     #[test]
     fn parse_group_empty_input_is_ok_empty() {
-        assert!(parse_group("").unwrap().is_empty());
+        assert_eq!(parse_group("").unwrap(), Vec::new());
     }
 
     #[test]
     fn parse_group_comment_only_input_is_ok_empty() {
-        assert!(parse_group("# group file\n").unwrap().is_empty());
+        assert_eq!(parse_group("# group file\n").unwrap(), Vec::new());
     }
 
     #[test]
@@ -410,7 +413,7 @@ mod tests {
     fn parse_group_empty_members_field_is_ok_empty_vec() {
         let entries = parse_group("nogroup:x:65534:\n").expect("empty members parse");
         assert_eq!(entries.len(), 1);
-        assert!(entries[0].members.is_empty());
+        assert_eq!(entries[0].members, Vec::<String>::new());
     }
 
     #[test]
@@ -442,14 +445,14 @@ mod tests {
 
     #[test]
     fn parse_sudoers_empty_input_is_ok_empty() {
-        assert!(parse_sudoers("").unwrap().is_empty());
+        assert_eq!(parse_sudoers("").unwrap(), Vec::new());
     }
 
     #[test]
     fn parse_sudoers_comment_and_directive_only_is_ok_empty() {
         let input =
             "# comment\nDefaults env_reset\n@include /etc/sudoers.d\n@includedir /etc/sudoers.d\n";
-        assert!(parse_sudoers(input).unwrap().is_empty());
+        assert_eq!(parse_sudoers(input).unwrap(), Vec::new());
     }
 
     #[test]

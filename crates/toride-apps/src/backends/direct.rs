@@ -821,11 +821,9 @@ mod tests {
     fn list_installed_reports_nothing_by_design() {
         let dir = temp_dir("list");
         let backend = DirectBackend::at(&dir);
-        assert!(
-            backend
-                .list_installed_sync(ListQuery::all())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            backend.list_installed_sync(ListQuery::all()).unwrap(),
+            Vec::new()
         );
     }
 

@@ -42,6 +42,7 @@ pub enum CommandEvent {
 ///
 /// The sink is async to allow backpressure. A blocking sink in an async runner
 /// can stall process output handling and deadlock if buffers fill.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait CommandEventSink: Send {
     /// Handle a streaming event.
@@ -56,6 +57,7 @@ pub trait CommandEventSink: Send {
 /// Implementors provide real-time output streaming via a
 /// [`CommandEventSink`], in addition to the standard captured-output
 /// execution.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait AsyncStreamingRunner: AsyncRunner {
     /// Execute the given [`CommandSpec`] with streaming output events.

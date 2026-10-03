@@ -250,7 +250,7 @@ mod tests {
             .iter()
             .find(|p| p.name == "bare-peer-no-ips")
             .unwrap();
-        assert!(bare.ip_addresses.is_empty());
+        assert_eq!(bare.ip_addresses, Vec::<String>::new());
         assert!(!bare.online);
         assert!(!bare.exit_node);
     }
@@ -259,7 +259,7 @@ mod tests {
     fn empty_peer_map_yields_empty_topology() {
         let status = serde_json::json!({ "Self": { "HostName": "solo" } });
         let topo = TailnetTopology::from_status_json(&status).unwrap();
-        assert!(topo.peers().is_empty());
+        assert_eq!(topo.peers(), [] as [PeerInfo; 0]);
         assert_eq!(topo.self_name(), "solo");
     }
 
@@ -286,7 +286,7 @@ mod tests {
     #[test]
     fn parse_peers_returns_empty_when_no_peer_key() {
         let status = serde_json::json!({ "BackendState": "Running" });
-        assert!(parse_peers(&status).is_empty());
+        assert_eq!(parse_peers(&status), Vec::new());
     }
 
     #[test]

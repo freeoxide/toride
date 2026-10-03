@@ -81,9 +81,9 @@ pub(crate) fn parse_keyscan_line(original_host: &str, line: &str) -> Result<Scan
         ))
     };
     let mut parts = line.split_whitespace();
-    let raw_host = parts.next().ok_or_else(&err)?;
-    let key_type = parts.next().ok_or_else(&err)?;
-    let public_key = parts.next().ok_or_else(&err)?;
+    let raw_host = parts.next().ok_or_else(err)?;
+    let key_type = parts.next().ok_or_else(err)?;
+    let public_key = parts.next().ok_or_else(err)?;
 
     Ok(ScannedHostKey {
         host: original_host.to_owned(),

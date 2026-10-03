@@ -425,7 +425,7 @@ mod tests {
     fn list_live_certs_empty_dir() {
         let dir = assert_fs::TempDir::new().unwrap();
         let certs = list_live_certs(dir.path()).unwrap();
-        assert!(certs.is_empty());
+        assert_eq!(certs, Vec::new());
     }
 
     #[test]
@@ -482,7 +482,7 @@ mod tests {
     #[test]
     fn cert_expiry_unknown_is_unverified() {
         let e = CertExpiry::unknown();
-        assert!(e.not_after.is_empty());
+        assert_eq!(e.not_after, "");
         assert_eq!(e.days_remaining, 0);
         // The whole point of the fix: unknown expiry must NOT masquerade as valid.
         assert!(!e.is_valid, "unknown expiry must degrade to is_valid=false");
@@ -604,7 +604,7 @@ mod tests {
             e.days_remaining, e.not_after
         );
         assert_eq!(e.days_remaining, 0);
-        assert!(e.not_after.is_empty());
+        assert_eq!(e.not_after, "");
     }
 
     /// When openssl reports a real future expiry, `read_cert_expiry` surfaces it
@@ -655,7 +655,7 @@ mod tests {
             .expect("never errors");
         if which::which("openssl").is_ok() {
             assert!(!e.is_valid, "non-zero exit must degrade to unknown");
-            assert!(e.not_after.is_empty());
+            assert_eq!(e.not_after, "");
         } else {
             assert!(!e.is_valid, "absent openssl must degrade to unknown");
         }
@@ -699,6 +699,6 @@ mod tests {
         );
         // ~90 days minus the small generation latency.
         assert!(e.days_remaining >= 88 && e.days_remaining <= 90);
-        assert!(!e.not_after.is_empty());
+        assert_ne!(e.not_after, "");
     }
 }

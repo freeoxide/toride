@@ -827,7 +827,7 @@ mod tests {
         // from_openssh path succeeded) and the entry was appended + selected.
         assert_eq!(tab.entries.len(), 3);
         assert_eq!(tab.selected, 2);
-        assert!(!tab.entries[2].fingerprint.is_empty());
+        assert_ne!(tab.entries[2].fingerprint, "");
         assert_eq!(tab.entries[2].key_type, "ssh-ed25519");
         assert_eq!(tab.entries[2].comment.as_deref(), Some("test@fixture"));
     }

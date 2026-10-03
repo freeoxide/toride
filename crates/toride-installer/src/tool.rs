@@ -91,6 +91,7 @@ pub enum Checksum {
 /// installer. The default [`Checksum`] type implements this; tools with
 /// exotic schemes (e.g. a checksum embedded in a JSON manifest) can supply
 /// their own.
+#[allow(clippy::double_must_use)]
 #[async_trait::async_trait]
 pub trait ReleaseResolver: Send + Sync {
     /// Resolve the absolute download URL for `version` on `target`.

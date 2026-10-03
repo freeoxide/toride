@@ -334,7 +334,7 @@ mod tests {
 
     #[test]
     fn parse_cargo_list_returns_an_empty_listing_for_empty_output() {
-        assert!(parse_cargo_list("").unwrap().is_empty());
+        assert_eq!(parse_cargo_list("").unwrap(), Vec::new());
     }
 
     #[test]
@@ -474,12 +474,12 @@ mod tests {
                 version: Some("14.1.0".to_owned())
             }]
         );
-        assert!(
+        assert_eq!(
             backend
                 .list_installed(ListQuery::id("absent"))
                 .await
-                .unwrap()
-                .is_empty()
+                .unwrap(),
+            Vec::new()
         );
         fake.assert_called_with(&list_spec());
     }

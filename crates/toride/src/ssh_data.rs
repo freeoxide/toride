@@ -3409,8 +3409,8 @@ jS17uJqeK1rdQxFmtieIPp+gBl1QAAAAkPTsdRb/dX+52v+LSgi2fzPxv2q2iJd8uKr2Ee
         assert!(info.pubkey_auth, "pubkey_auth should default to true");
         assert!(info.password_auth, "password_auth should default to true");
         assert_eq!(info.permit_root_login, "prohibit-password");
-        assert!(info.allowed_users.is_empty());
-        assert!(info.denied_users.is_empty());
+        assert_eq!(info.allowed_users, Vec::<String>::new());
+        assert_eq!(info.denied_users, Vec::<String>::new());
     }
 
     #[test]

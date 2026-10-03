@@ -585,7 +585,7 @@ mod tests {
         let c = UpdatesContent::new();
         assert!(!c.available);
         assert!(c.findings.is_empty());
-        assert!(c.package_manager.is_empty());
+        assert_eq!(c.package_manager, "");
         assert!(!c.has_modal());
         assert_eq!(c.scroll(), 0);
     }

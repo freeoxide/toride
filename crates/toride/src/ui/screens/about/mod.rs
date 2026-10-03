@@ -549,9 +549,9 @@ mod tests {
     fn new_is_unavailable_and_empty() {
         let c = AboutContent::new();
         assert!(!c.available);
-        assert!(c.system.hostname.is_empty());
-        assert!(c.app.name.is_empty());
-        assert!(c.runtime.shell.is_empty());
+        assert_eq!(c.system.hostname, "");
+        assert_eq!(c.app.name, "");
+        assert_eq!(c.runtime.shell, "");
         assert!(!c.has_modal());
     }
 

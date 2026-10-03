@@ -2394,8 +2394,8 @@ mod tests {
     #[test]
     fn parse_query_output_returns_an_empty_listing_for_empty_output() {
         for executor in [DistroExecutor::Apt, DistroExecutor::Dnf] {
-            assert!(parse_query_output(executor, "").unwrap().is_empty());
-            assert!(parse_query_output(executor, "  \n\n").unwrap().is_empty());
+            assert_eq!(parse_query_output(executor, "").unwrap(), Vec::new());
+            assert_eq!(parse_query_output(executor, "  \n\n").unwrap(), Vec::new());
         }
     }
 
@@ -2416,7 +2416,7 @@ mod tests {
     fn parse_query_output_accepts_a_document_of_only_non_installed_states() {
         // Well-formed but all filtered: legitimately empty, not an error.
         let apps = parse_query_output(DistroExecutor::Apt, "rc one\t1.0\nrc two\t2.0\n").unwrap();
-        assert!(apps.is_empty());
+        assert_eq!(apps, Vec::new());
     }
 
     // --- not-found classification -------------------------------------------------------

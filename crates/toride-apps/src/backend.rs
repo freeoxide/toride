@@ -320,6 +320,7 @@ pub struct UninstallOutcome {
 /// mutating operations take typed requests (never raw strings) and return
 /// plain records; see the [module docs](self) for the dry-run and elevation
 /// contracts every implementation must honor.
+#[allow(clippy::double_must_use)]
 #[async_trait]
 pub trait Backend: Send + Sync {
     /// Stable identity of this backend — matches the routing slot on plan
@@ -1059,14 +1060,11 @@ mod tests {
                 .build(),
             Vec::new(),
         );
-        assert!(backend.outdated().await.unwrap().is_empty());
+        assert_eq!(backend.outdated().await.unwrap(), Vec::new());
         assert_eq!(backend.available_version("firefox").await.unwrap(), None);
-        assert!(
-            backend
-                .available_versions("firefox")
-                .await
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            backend.available_versions("firefox").await.unwrap(),
+            Vec::<Version>::new()
         );
     }
 
@@ -1265,13 +1263,11 @@ mod tests {
             Some(Version::new("138.0"))
         );
         assert_eq!(backend.installed_version_sync("nope").unwrap(), None);
-        assert!(backend.outdated_sync().unwrap().is_empty());
+        assert_eq!(backend.outdated_sync().unwrap(), Vec::new());
         assert_eq!(backend.available_version_sync("firefox").unwrap(), None);
-        assert!(
-            backend
-                .available_versions_sync("firefox")
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            backend.available_versions_sync("firefox").unwrap(),
+            Vec::<Version>::new()
         );
         for (operation, result) in [
             ("pin", backend.pin_sync("firefox")),

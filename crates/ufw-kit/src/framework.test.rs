@@ -97,7 +97,7 @@ content
 fn list_blocks_should_return_empty_for_no_blocks() {
     let content = "no managed blocks here\n";
     let blocks = list_blocks(content);
-    assert!(blocks.is_empty());
+    assert_eq!(blocks, Vec::<String>::new());
 }
 
 // ---------------------------------------------------------------------------

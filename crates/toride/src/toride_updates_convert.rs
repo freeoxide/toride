@@ -138,7 +138,7 @@ mod tests {
     fn convert_findings_none_detail_becomes_empty() {
         let f = Finding::new("id", Severity::Ok, "title");
         let entries = convert_findings(vec![f]);
-        assert!(entries[0].detail.is_empty());
+        assert_eq!(entries[0].detail, "");
         assert!(entries[0].fix.is_none());
     }
 

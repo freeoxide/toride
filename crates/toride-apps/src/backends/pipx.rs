@@ -268,12 +268,11 @@ mod tests {
 
     #[test]
     fn parse_pipx_list_takes_a_venvs_free_document_as_empty() {
-        assert!(
-            parse_pipx_list(r#"{"pipx_spec_version":"0.3"}"#)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            parse_pipx_list(r#"{"pipx_spec_version":"0.3"}"#).unwrap(),
+            Vec::new()
         );
-        assert!(parse_pipx_list("").unwrap().is_empty());
+        assert_eq!(parse_pipx_list("").unwrap(), Vec::new());
     }
 
     #[test]
@@ -419,11 +418,9 @@ mod tests {
             ))
             .unwrap();
         fake.assert_called_with(&install_spec);
-        assert!(
-            backend
-                .list_installed_sync(ListQuery::all())
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            backend.list_installed_sync(ListQuery::all()).unwrap(),
+            Vec::new()
         );
     }
 }
