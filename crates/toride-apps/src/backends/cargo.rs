@@ -3,11 +3,12 @@
 //! [`CargoBackend`] executes the planner's [`Operation::CargoInstall`] /
 //! [`Operation::CargoUninstall`] / [`Operation::CargoUpdate`] operations
 //! through the shared [`CommandRunner`] seam and answers list queries from
-//! `cargo install --list`. Availability rides `cargo info` — the
-//! registry-index query answers the exact crate's current version, where
-//! `cargo search` is relevance-ranked over the rate-limited search API; the
-//! cargo CLI has no version-listing verb, so only the offered latest is
-//! reported.
+//! `cargo install --list`. Availability rides `cargo info --color never` —
+//! the registry-index query answers the exact crate's current version (where
+//! `cargo search` is relevance-ranked over the rate-limited search API), and
+//! the flag keeps the name and `version:` rows parseable under a forced-color
+//! `CARGO_TERM_COLOR`; the cargo CLI has no version-listing verb, so only the
+//! offered latest is reported.
 //!
 //! [`Operation::CargoInstall`]: crate::Operation::CargoInstall
 //! [`Operation::CargoUninstall`]: crate::Operation::CargoUninstall
@@ -123,7 +124,7 @@ impl Backend for CargoBackend {
     }
 
     async fn available_version(&self, id: &str) -> Result<Option<Version>> {
-        let spec = command(CARGO, ["info", id]);
+        let spec = command(CARGO, ["info", "--color", "never", id]);
         let output = self.runner.run_checked(spec).await?;
         Ok(Some(parse_cargo_info(&output.stdout, id)?))
     }
@@ -172,7 +173,7 @@ impl Backend for CargoBackend {
     }
 
     fn available_version_sync(&self, id: &str) -> Result<Option<Version>> {
-        let spec = command(CARGO, ["info", id]);
+        let spec = command(CARGO, ["info", "--color", "never", id]);
         let output = self.runner.run_checked_sync(spec)?;
         Ok(Some(parse_cargo_info(&output.stdout, id)?))
     }
@@ -503,7 +504,7 @@ mod tests {
 
     #[tokio::test]
     async fn available_version_probes_cargo_info() {
-        let spec = command("cargo", ["info", "ripgrep"]);
+        let spec = command("cargo", ["info", "--color", "never", "ripgrep"]);
         let fake = FakeRunner::new().strict().respond(
             spec.clone(),
             toride_runner::CommandOutput::from_stdout(
@@ -532,7 +533,7 @@ mod tests {
                 toride_runner::CommandOutput::from_stdout("ripgrep v14.1.0:\n"),
             )
             .respond(
-                command("cargo", ["info", "ripgrep"]),
+                command("cargo", ["info", "--color", "never", "ripgrep"]),
                 toride_runner::CommandOutput::from_stdout("ripgrep\nversion: 15.2.0\n"),
             );
         let backend = backend(&fake);

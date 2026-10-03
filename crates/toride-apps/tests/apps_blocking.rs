@@ -525,7 +525,7 @@ fn cargo_installs_records_and_reports_status_in_line() {
 #[test]
 fn cargo_records_update_and_uninstall_replay_the_recorded_crate() {
     let list_spec = command("cargo", ["install", "--list"]);
-    let info_spec = command("cargo", ["info", "ripgrep"]);
+    let info_spec = command("cargo", ["info", "--color", "never", "ripgrep"]);
     let force_spec = command("cargo", ["install", "--force", "ripgrep"]);
     let uninstall_spec = command("cargo", ["uninstall", "ripgrep"]);
     let installed_list = "ripgrep v14.1.0:\n    rg\n";
