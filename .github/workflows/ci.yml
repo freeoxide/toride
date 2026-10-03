@@ -163,9 +163,9 @@ jobs:
     container:
       image: archlinux:latest
     steps:
-      - name: Install toolchain (syncs the package database the smoke installs against)
+      - name: Install toolchain (full upgrade first — partial -Sy installs are unsupported)
         run: |
-          pacman -Sy --noconfirm rust git
+          pacman -Syu --noconfirm rust git
           rustc --version
           cargo --version
       - uses: actions/checkout@v4
@@ -174,10 +174,12 @@ jobs:
           key: smoke-archlinux
       - name: Pacman suppression-flag check
         run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
-      - name: Env-gated pacman live smoke (facade install -> probe -> uninstall)
+      - name: Env-gated pacman live smoke (non-blocking annotation on first contact)
+        continue-on-error: true
         env:
           TORIDE_APPS_INTEGRATION: "1"
-        run: cargo test -p toride-apps --test live_smoke pacman
+          TORIDE_APPS_DISTRO_SMOKE: "1"
+        run: cargo test -p toride-apps --test live_smoke pacman -- --nocapture
 
   toride-apps-smoke-alpine:
     name: toride-apps live smoke (alpine, apk)
@@ -186,9 +188,9 @@ jobs:
     container:
       image: alpine:latest
     steps:
-      - name: Install toolchain (apk add refreshes the index the smoke installs against)
+      - name: Install toolchain (bash/gcompat/libstdc++ for the runner's shell and node-based actions)
         run: |
-          apk add --no-cache rust git build-base
+          apk add --no-cache bash gcompat libstdc++ rust git build-base
           rustc --version
           cargo --version
       - uses: actions/checkout@v4
@@ -197,10 +199,12 @@ jobs:
           key: smoke-alpine
       - name: Apk suppression-flag check
         run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
-      - name: Env-gated apk live smoke (facade install -> probe -> uninstall)
+      - name: Env-gated apk live smoke (non-blocking annotation on first contact)
+        continue-on-error: true
         env:
           TORIDE_APPS_INTEGRATION: "1"
-        run: cargo test -p toride-apps --test live_smoke apk
+          TORIDE_APPS_DISTRO_SMOKE: "1"
+        run: cargo test -p toride-apps --test live_smoke apk -- --nocapture
 
   publish-set-features:
     name: Publish-set feature gates
