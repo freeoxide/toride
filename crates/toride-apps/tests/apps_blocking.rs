@@ -378,14 +378,10 @@ fn ensure_installed_at_the_offered_version_over_a_stale_record_rides_the_manager
     let versioned_probe_spec = command("brew", ["list", "--cask", "--versions", "brave-browser"]);
     let fake = FakeRunner::new().strict();
     let fake = fake
-        // The record confirms present, at 1.90.0 — not the 1.96.59 ask.
         .respond(
             brew_versions_cask_spec(),
             CommandOutput::from_stdout("brave-browser 1.90.0\n"),
         )
-        // The offering probe answers 1.96.59 — exactly the request, so the
-        // plan rides the manager's current instead of the `@`-joined
-        // spelling brew refuses for a token without versioned tracks.
         .respond(
             brew_info_token_spec(),
             CommandOutput::from_stdout(installed_cask_document("brave-browser", "1.96.59")),
@@ -443,15 +439,12 @@ fn cargo_installs_records_and_reports_status_in_line() {
     let installed_list = "ripgrep v14.1.0:\n    rg\n";
     let fake = FakeRunner::new().strict();
     let fake = fake
-        // Foreign check: nothing cargo-installed yet.
         .respond(list_spec.clone(), CommandOutput::from_stdout(""))
         .respond(install_spec.clone(), CommandOutput::from_stdout(""))
-        // The facade's post-install verify.
         .respond(
             list_spec.clone(),
             CommandOutput::from_stdout(installed_list),
         )
-        // The status probe's listing.
         .respond(
             list_spec.clone(),
             CommandOutput::from_stdout(installed_list),
@@ -532,7 +525,6 @@ fn cargo_records_update_and_uninstall_replay_the_recorded_crate() {
     let upgraded_list = "ripgrep v15.2.0:\n    rg\n";
     let fake = FakeRunner::new().strict();
     let fake = fake
-        // Update: the installed-version probe, then the availability ask.
         .respond(
             list_spec.clone(),
             CommandOutput::from_stdout(installed_list),
@@ -544,9 +536,7 @@ fn cargo_records_update_and_uninstall_replay_the_recorded_crate() {
             ),
         )
         .respond(force_spec.clone(), CommandOutput::from_stdout(""))
-        // The post-upgrade re-probe.
         .respond(list_spec.clone(), CommandOutput::from_stdout(upgraded_list))
-        // Uninstall, then the post-uninstall absence verify.
         .respond(uninstall_spec.clone(), CommandOutput::from_stdout(""))
         .respond(list_spec.clone(), CommandOutput::from_stdout(""));
     let path = temp_manifest_path("cargo-lifecycle");
@@ -927,8 +917,6 @@ fn adopt_claims_a_detected_install_and_persists_in_line() {
     );
 }
 
-/// A store that loads `snapshot` verbatim and whose saves always fail —
-/// the adopt-rollback and update-save-failure proofs.
 struct FailingStore {
     snapshot: RecordSnapshot,
 }

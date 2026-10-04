@@ -375,8 +375,6 @@ async fn toride_recorded_status(
             let Some(backend) = backends.direct else {
                 return Ok(AppStatus::NotInstalled);
             };
-            // The file itself is the probe: a direct binary's version is
-            // only knowable by executing it, so presence reports none.
             Ok(match backend.status(StatusQuery::new(bin_path)).await? {
                 BackendStatus::Installed { version } => AppStatus::Installed {
                     backend: BackendId::Direct,
@@ -1433,8 +1431,6 @@ mod tests {
         let status = app_status_sync(None, None, &BackendSet::new()).unwrap();
         assert_eq!(status, AppStatus::NotInstalled);
     }
-
-    // --- language ecosystems ------------------------------------------------------
 
     fn npm_backend(fake: &FakeRunner) -> NpmBackend {
         NpmBackend::new(CommandRunner::new(Arc::new(fake.clone())))

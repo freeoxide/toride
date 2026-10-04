@@ -1875,8 +1875,6 @@ mod tests {
         assert!(error.to_string().contains("cask requires macOS"), "{error}");
     }
 
-    // --- version selection ------------------------------------------------------
-
     #[test]
     fn plans_brew_cask_install_at_a_version_as_the_versioned_token() {
         let options = InstallOptions::new().version(Some(Version::new("138.0.1")));
@@ -2016,8 +2014,6 @@ mod tests {
             "distro refuses every version, empty included: {error:?}"
         );
     }
-
-    // --- language-ecosystem derivations ------------------------------------------
 
     fn npm_method(package: &str, version: Option<&str>) -> InstallMethod {
         InstallMethod::Npm {

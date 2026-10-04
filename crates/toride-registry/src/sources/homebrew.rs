@@ -2378,8 +2378,6 @@ mod integration_tests {
             .expect("404 must not error");
         assert!(missing.is_none());
 
-        // A formula-only slug under the adapter's primary (cask) kind
-        // resolves through the formula endpoint first — formula before cask.
         let formula = adapter
             .lookup(&SourceRef {
                 source: SourceKind::HomebrewCask,

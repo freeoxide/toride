@@ -225,7 +225,6 @@ fn flatpak_remotes_spec() -> CommandSpec {
     command("flatpak", ["remotes", "--user", "--columns=name"])
 }
 
-/// The offering probe the version-pinning path rides for a flatpak record.
 fn flatpak_remote_ls_user_spec() -> CommandSpec {
     command(
         "flatpak",
@@ -1036,7 +1035,6 @@ async fn ensure_installed_pacman_with_the_grant_installs_and_post_verifies_via_p
             pacman_spec("--sync", "brave-browser"),
             CommandOutput::from_stdout(""),
         )
-        // Backend post-verify + facade verify.
         .respond(
             pacman_query_spec("brave-browser"),
             CommandOutput::from_stdout("brave-browser 1.4.2-1\n"),
@@ -1830,8 +1828,6 @@ async fn a_manifest_save_failure_after_a_successful_install_is_a_warning_not_a_f
     );
 }
 
-/// Seed a flatpak record: brave as the com.brave.Browser app in the user
-/// installation.
 fn seed_flatpak_record(path: &Utf8PathBuf) {
     let mut manifest = InstallManifest::at(path);
     manifest.record(
@@ -2327,10 +2323,6 @@ async fn a_failed_post_upgrade_probe_degrades_to_no_version_without_failing_the_
     );
 }
 
-// ---------------------------------------------------------------------------
-// Version selection, available-version listing, pin/unpin
-// ---------------------------------------------------------------------------
-
 fn brew_pin_spec(kind_flag: &str, verb: &str, token: &str) -> CommandSpec {
     command("brew", [verb, kind_flag, token])
 }
@@ -2357,8 +2349,6 @@ async fn ensure_installed_with_a_version_installs_the_versioned_token_and_record
             brew_info_installed_spec(),
             CommandOutput::from_stdout(EMPTY_BREW_INFO),
         )
-        // The offering probe: brew offers 137.0, not the requested 138.0.1,
-        // so the request pins instead of riding the manager's current.
         .respond(
             brew_info_token_spec("firefox"),
             CommandOutput::from_stdout(firefox_cask_available("137.0", "137.0")),
@@ -2367,9 +2357,6 @@ async fn ensure_installed_with_a_version_installs_the_versioned_token_and_record
             brew_install_cask_spec("firefox@138.0.1"),
             CommandOutput::from_stdout(""),
         )
-        // The backend's post-install probe, then the facade's verify — both
-        // address the joined token, because that is the identity brew
-        // manages for a versioned install.
         .respond(
             brew_versions_spec("--cask", "firefox@138.0.1"),
             CommandOutput::from_stdout("firefox@138.0.1 138.0.1\n"),
@@ -2433,7 +2420,6 @@ async fn ensure_installed_at_the_offered_version_installs_the_managers_current()
             brew_info_installed_spec(),
             CommandOutput::from_stdout(EMPTY_BREW_INFO),
         )
-        // The offering probe answers 139.0 — exactly the request.
         .respond(
             brew_info_token_spec("firefox"),
             CommandOutput::from_stdout(firefox_cask_available("138.0.1", "139.0")),
@@ -2505,8 +2491,6 @@ async fn a_failing_offering_probe_degrades_to_the_pinned_spelling() {
             brew_info_installed_spec(),
             CommandOutput::from_stdout(EMPTY_BREW_INFO),
         )
-        // The offering probe fails outright — the pin proceeds and the
-        // manager classifies the joined name.
         .respond(
             brew_info_token_spec("firefox"),
             CommandOutput::from_stderr("Error: brew exploded", 2),
@@ -2612,13 +2596,10 @@ async fn ensure_installed_flatpak_with_a_version_selects_the_ref_branch() {
 #[tokio::test]
 async fn ensure_installed_distro_with_a_version_is_refused_at_plan_time() {
     let path = temp_manifest_path("install-version-distro");
-    let fake = FakeRunner::new()
-        .strict()
-        // The Foreign check's dpkg-query: not found → NotInstalled.
-        .respond(
-            dpkg_query_spec("brave-browser"),
-            dpkg_not_found("brave-browser"),
-        );
+    let fake = FakeRunner::new().strict().respond(
+        dpkg_query_spec("brave-browser"),
+        dpkg_not_found("brave-browser"),
+    );
     let adapter = FixtureAdapter::new(
         SourceKind::Distro,
         vec![brave_distro_app(DistroFamily::Debian)],
@@ -2875,13 +2856,10 @@ async fn ensure_installed_at_another_version_than_the_record_installs_the_reques
     seed_cask_record(&path, "firefox");
     let fake = FakeRunner::new()
         .strict()
-        // Step 1's confirming probe: present, at 138.0.1 — not 139.0.
         .respond(
             brew_versions_spec("--cask", "firefox"),
             CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
-        // The offering probe answers 140.0 — the request differs from the
-        // current, so the pin proceeds.
         .respond(
             brew_info_token_spec("firefox"),
             CommandOutput::from_stdout(firefox_cask_available("138.0.1", "140.0")),
@@ -2890,7 +2868,6 @@ async fn ensure_installed_at_another_version_than_the_record_installs_the_reques
             brew_install_cask_spec("firefox@139.0"),
             CommandOutput::from_stdout(""),
         )
-        // The backend's post-install probe, then the facade's verify.
         .respond(
             brew_versions_spec("--cask", "firefox@139.0"),
             CommandOutput::from_stdout("firefox@139.0 139.0\n"),
@@ -2951,15 +2928,10 @@ async fn ensure_installed_at_the_offered_version_over_a_stale_record_rides_the_m
     seed_cask_record(&path, "firefox");
     let fake = FakeRunner::new()
         .strict()
-        // Step 1's confirming probe: present, at 138.0.1 — not 139.0.
         .respond(
             brew_versions_spec("--cask", "firefox"),
             CommandOutput::from_stdout("firefox 138.0.1\n"),
         )
-        // The offering probe answers 139.0 — exactly the request, so the
-        // plan must ride the manager's current instead of pinning
-        // `firefox@139.0`, the spelling brew refuses for a token without
-        // separately versioned tracks.
         .respond(
             brew_info_token_spec("firefox"),
             CommandOutput::from_stdout(firefox_cask_available("138.0.1", "139.0")),
@@ -3084,13 +3056,10 @@ async fn ensure_installed_at_another_flatpak_branch_installs_that_branch() {
     seed_flatpak_record(&path);
     let fake = FakeRunner::new()
         .strict()
-        // Step 1's confirming listing: present (the record is stable).
         .respond(
             flatpak_list_spec(Some("--user")),
             CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.2.3")),
         )
-        // The offering probe: the remote lists the stable branch only, so
-        // the requested `beta` branch stays pinned into the ref.
         .respond(
             flatpak_remote_ls_user_spec(),
             CommandOutput::from_stdout("com.brave.Browser\tstable\n"),
@@ -3103,7 +3072,6 @@ async fn ensure_installed_at_another_flatpak_branch_installs_that_branch() {
             flatpak_install_user_spec("app/com.brave.Browser/x86_64/beta"),
             CommandOutput::from_stdout(""),
         )
-        // Backend post-verify + facade verify (both the user-scoped list).
         .respond(
             flatpak_list_spec(Some("--user")),
             CommandOutput::from_stdout(flatpak_row("com.brave.Browser", "1.3.0-beta")),
@@ -3154,13 +3122,10 @@ async fn a_foreign_presence_does_not_vouch_for_a_requested_version() {
     let path = temp_manifest_path("version-foreign");
     let fake = FakeRunner::new()
         .strict()
-        // The Foreign check: someone else's firefox is installed.
         .respond(
             brew_info_installed_spec(),
             CommandOutput::from_stdout(FIREFOX_CASK_INFO),
         )
-        // The offering probe answers 139.0 — the 138.0.1 request differs,
-        // so the pin proceeds.
         .respond(
             brew_info_token_spec("firefox"),
             CommandOutput::from_stdout(firefox_cask_available("138.0.1", "139.0")),
@@ -3169,7 +3134,6 @@ async fn a_foreign_presence_does_not_vouch_for_a_requested_version() {
             brew_install_cask_spec("firefox@138.0.1"),
             CommandOutput::from_stdout(""),
         )
-        // The backend's post-install probe, then the facade's verify.
         .respond(
             brew_versions_spec("--cask", "firefox@138.0.1"),
             CommandOutput::from_stdout("firefox@138.0.1 138.0.1\n"),
@@ -3212,14 +3176,10 @@ async fn a_foreign_presence_with_the_offering_equal_to_the_request_rides_the_man
     let path = temp_manifest_path("version-foreign-offered");
     let fake = FakeRunner::new()
         .strict()
-        // The Foreign check: someone else's firefox is installed.
         .respond(
             brew_info_installed_spec(),
             CommandOutput::from_stdout(FIREFOX_CASK_INFO),
         )
-        // The offering probe answers 138.0.1 — exactly the request, so the
-        // plan rides the manager's current instead of the `@`-joined
-        // spelling brew refuses for this token.
         .respond(
             brew_info_token_spec("firefox"),
             CommandOutput::from_stdout(firefox_cask_available("137.0", "138.0.1")),
@@ -4080,10 +4040,6 @@ async fn a_failed_adopt_save_rolls_the_claim_back_and_a_retry_succeeds() {
     fake.assert_no_unmatched_calls();
 }
 
-// ---------------------------------------------------------------------------
-// Language ecosystems through the facade — npm end to end
-// ---------------------------------------------------------------------------
-
 fn npm_list_spec() -> CommandSpec {
     command("npm", ["list", "--global", "--depth=0", "--json"])
 }
@@ -4144,18 +4100,15 @@ async fn ensure_installed_npm_installs_globally_records_and_answers_present_twic
     let path = temp_manifest_path("npm-installed");
     let fake = FakeRunner::new()
         .strict()
-        // The Foreign check: the global listing is empty.
         .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
         .respond(
             npm_install_global_spec("typescript"),
             CommandOutput::from_stdout("added 1 package"),
         )
-        // The facade's post-install verify.
         .respond(
             npm_list_spec(),
             CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
         )
-        // The second call's confirming probe.
         .respond(
             npm_list_spec(),
             CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
@@ -4217,9 +4170,7 @@ async fn ensure_installed_npm_at_a_version_rides_the_offering_when_it_matches() 
     let path = temp_manifest_path("npm-installed-version");
     let fake = FakeRunner::new()
         .strict()
-        // The Foreign check.
         .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
-        // The offering probe answers exactly the request.
         .respond(
             npm_view_version_spec("typescript"),
             CommandOutput::from_stdout("5.4.5\n"),
@@ -4261,9 +4212,7 @@ async fn ensure_installed_npm_at_a_version_pins_when_the_offering_differs() {
     let path = temp_manifest_path("npm-installed-version-pin");
     let fake = FakeRunner::new()
         .strict()
-        // The Foreign check.
         .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
-        // The offering probe answers a newer current than the request.
         .respond(
             npm_view_version_spec("typescript"),
             CommandOutput::from_stdout("5.5.0\n"),
@@ -4329,7 +4278,6 @@ async fn npm_records_update_and_uninstall_replay_the_recorded_package() {
     manifest.save().expect("seed manifest saves");
     let fake = FakeRunner::new()
         .strict()
-        // Update: the installed-version probe, then the availability ask.
         .respond(
             npm_list_spec(),
             CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
@@ -4342,12 +4290,10 @@ async fn npm_records_update_and_uninstall_replay_the_recorded_package() {
             npm_update_global_spec("typescript"),
             CommandOutput::from_stdout(""),
         )
-        // The post-upgrade re-probe.
         .respond(
             npm_list_spec(),
             CommandOutput::from_stdout(npm_global_listing("typescript", "5.5.0")),
         )
-        // Uninstall, then the post-uninstall absence verify.
         .respond(
             npm_uninstall_global_spec("typescript"),
             CommandOutput::from_stdout("removed 1 package"),
