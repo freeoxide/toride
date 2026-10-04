@@ -22,12 +22,19 @@
 //! `npm_config_prefix`, `cargo install` into a scratch
 //! `CARGO_INSTALL_ROOT` (the shared crates.io registry cache stays
 //! read-mostly, like any build), mise against isolated `MISE_DATA_DIR` /
-//! `MISE_CONFIG_FILE`, uv/pipx into scratch `UV_TOOL_DIR`/`PIPX_HOME`.
-//! brew has no scratch prefix, so its legs pour obscure tokens into the
-//! host's own Homebrew and remove them again — under
-//! `HOMEBREW_NO_AUTO_UPDATE=1` so nothing else on the host moves, and
-//! self-skipping when the token is already installed; cask legs
-//! additionally require macOS (`brew install --cask` refuses elsewhere).
+//! `MISE_CONFIG_FILE`, uv/pipx into scratch `UV_TOOL_DIR`/`PIPX_HOME`,
+//! the direct leg's release artifact into a scratch install dir. brew is
+//! per-OS: on macOS its legs pour obscure tokens into the host's own
+//! Homebrew and remove them again — under `HOMEBREW_NO_AUTO_UPDATE=1` so
+//! nothing else on the host moves, self-skipping when the token is
+//! already installed, and cask legs additionally require macOS (`brew
+//! install --cask` refuses elsewhere); on Linux the formula leg pours
+//! into a throwaway scratch-prefix Homebrew — a shallow `git clone` of
+//! Homebrew/brew with `HOMEBREW_PREFIX`, `HOMEBREW_CACHE`,
+//! `HOMEBREW_TEMP`, `HOMEBREW_USER_CONFIG_HOME`, and `HOME` all
+//! redirected into the scratch dir, so a host brew that is absent — or
+//! broken by Homebrew's own master→main migration — is never touched;
+//! that leg self-skips when `git` is absent.
 //! pacman/apk mutate the host's package database — never throwaway on a
 //! real machine — so they demand a second explicit opt-in,
 //! `TORIDE_APPS_DISTRO_SMOKE=1`, that only the CI archlinux/alpine
@@ -44,6 +51,8 @@ use toride_apps::apps::{
     AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBuilder, EnsureAppOutcome,
     UninstallAppOutcome, UpdateOutcome,
 };
+#[cfg(all(feature = "direct", target_os = "linux"))]
+use toride_apps::backends::DirectBackend;
 use toride_apps::backends::distro::detect_host_family;
 use toride_apps::backends::homebrew::{BrewKind, HomebrewBackend};
 use toride_apps::backends::{CargoBackend, DistroBackend, NpmBackend, PipxBackend, UvBackend};
@@ -51,6 +60,8 @@ use toride_apps::manifest::{InstallRecord, NativeIds};
 use toride_apps::runner::CommandRunner;
 use toride_apps::{AppStatus, BackendId, Version};
 use toride_registry::model::{App, InstallMethod, SourceKind, SourceRef};
+#[cfg(all(feature = "direct", target_os = "linux"))]
+use toride_registry::model::{Checksum, ChecksumAlgo};
 use toride_registry::{Adapter, Availability, DistroFamily, TorideId};
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -680,6 +691,126 @@ async fn pipx_facade_installs_probes_updates_and_uninstalls_a_real_tool() {
     assert_eq!(after, AppStatus::NotInstalled);
 }
 
+#[cfg(all(feature = "direct", target_os = "linux"))]
+#[tokio::test]
+async fn direct_facade_downloads_verifies_extracts_and_uninstalls_a_real_release_artifact() {
+    const URL: &str = "https://github.com/BurntSushi/ripgrep/releases/download/14.1.0/\
+                       ripgrep-14.1.0-x86_64-unknown-linux-musl.tar.gz";
+    const SHA256: &str = "f84757b07f425fe5cf11d87df6644691c644a5cd2348a2c670894272999d3ba7";
+    if !integration_enabled() {
+        eprintln!("TORIDE_APPS_INTEGRATION not set; skipping live smoke test");
+        return;
+    }
+    let scratch = ScratchDir::new("direct");
+    let install_dir = scratch.path().join("bin");
+    std::fs::create_dir_all(&install_dir).expect("scratch direct install dir is creatable");
+    let id = TorideId::slugify("ripgrep");
+    let mut app = language_app(
+        &id,
+        "Ripgrep",
+        InstallMethod::Direct {
+            url: URL.to_owned(),
+            checksum: Some(Checksum {
+                algo: ChecksumAlgo::Sha256,
+                digest: SHA256.to_owned(),
+            }),
+            arch: None,
+        },
+    );
+    app.binaries = vec!["rg".to_owned()];
+    let mut apps = facade_base(
+        CommandRunner::builder().build(),
+        scratch.path().join("apps-manifest.json"),
+        app,
+    )
+    .direct(DirectBackend::at(install_dir.clone()))
+    .build()
+    .expect("facade builds over the scratch manifest");
+
+    let rg = install_dir.join("rg");
+    assert!(
+        !rg.exists(),
+        "the scratch install dir starts empty, so nothing foreign can be clobbered"
+    );
+    let version = assert_installed(
+        &apps
+            .ensure_installed(&id, AppInstallOptions::new())
+            .await
+            .expect("the real download → sha256 verify → tarball extract → install succeeds"),
+        BackendId::Direct,
+        &NativeIds::Direct {
+            url: URL.to_owned(),
+            checksum: Some(SHA256.to_owned()),
+            bin_path: rg.to_string(),
+        },
+    );
+    assert_eq!(version, None, "a direct binary reports no version");
+    assert!(
+        matches!(
+            only_record(&apps)
+                .plan
+                .as_ref()
+                .expect("recorded plan")
+                .operation,
+            toride_apps::Operation::DirectInstall { ref bin_name, .. } if bin_name == "rg"
+        ),
+        "the executed plan installed the tarball's real entry name"
+    );
+
+    assert_installed_release_binary_runs(&rg);
+
+    assert_reensure_at(&mut apps, &id, BackendId::Direct, None).await;
+    assert_eq!(
+        apps.status(&id).await.expect("status probes the record"),
+        AppStatus::Installed {
+            backend: BackendId::Direct,
+            version: None,
+        },
+        "status re-read the installed file"
+    );
+
+    assert_removed(
+        &apps
+            .uninstall(&id, AppUninstallOptions::new())
+            .await
+            .expect("the recorded binary removal succeeds"),
+        BackendId::Direct,
+    );
+    assert!(!rg.exists());
+    let after = apps.status(&id).await.expect("post-uninstall status");
+    assert_eq!(after, AppStatus::NotInstalled);
+}
+
+#[cfg(all(feature = "direct", target_os = "linux"))]
+fn assert_installed_release_binary_runs(rg: &Utf8PathBuf) {
+    let bytes = std::fs::read(rg.as_std_path()).expect("the installed artifact is readable");
+    assert!(
+        bytes.starts_with(b"\x7fELF"),
+        "the extracted entry is the real ELF binary, not a sibling doc file"
+    );
+    let mode = std::fs::metadata(rg.as_std_path())
+        .expect("the installed artifact is statable")
+        .permissions();
+    assert_eq!(
+        std::os::unix::fs::PermissionsExt::mode(&mode) & 0o777,
+        0o755,
+        "the atomic install write made the binary executable"
+    );
+    #[cfg(target_arch = "x86_64")]
+    {
+        let run = std::process::Command::new(rg.as_std_path())
+            .arg("--version")
+            .output()
+            .expect("the downloaded musl binary executes on this host");
+        assert!(run.status.success(), "rg --version must exit 0");
+        let stdout = String::from_utf8_lossy(&run.stdout);
+        assert!(
+            stdout.contains("ripgrep 14.1.0"),
+            "the binary reports its own release: {stdout}"
+        );
+    }
+}
+
 #[tokio::test]
 async fn pacman_facade_installs_probes_updates_and_uninstalls_a_real_package() {
     if !integration_enabled() || !distro_smoke_enabled() {
@@ -843,6 +974,67 @@ fn brew_runner() -> CommandRunner {
         .build()
 }
 
+#[cfg(target_os = "linux")]
+fn scratch_linuxbrew_runner() -> (ScratchDir, CommandRunner) {
+    let mut unique = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    let root = loop {
+        let candidate = std::env::temp_dir().join(format!("tb{}{unique}", std::process::id()));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => {
+                break Utf8PathBuf::from_path_buf(candidate)
+                    .expect("the system temp dir is valid UTF-8");
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => unique += 1,
+            Err(error) => panic!("reserving the scratch linuxbrew root failed: {error}"),
+        }
+    };
+    let prefix = root.join("pfx");
+    assert!(
+        prefix.as_str().len() <= 26,
+        "linuxbrew bottles relocate only into prefixes of at most 26 characters: {}",
+        prefix.as_str()
+    );
+    let state = root.join("s");
+    for dir in ["cache", "tmp", "home", "user-config"] {
+        std::fs::create_dir_all(state.join(dir))
+            .expect("the scratch linuxbrew state dirs are creatable");
+    }
+    let clone = std::process::Command::new("git")
+        .args(["clone", "--depth=1", "--quiet"])
+        .arg("https://github.com/Homebrew/brew")
+        .arg(prefix.as_str())
+        .output()
+        .expect("git spawns for the scratch linuxbrew clone");
+    assert!(
+        clone.status.success(),
+        "the shallow Homebrew clone into the scratch prefix failed: {}",
+        String::from_utf8_lossy(&clone.stderr)
+    );
+    let runner = CommandRunner::builder()
+        .env(
+            "PATH",
+            format!(
+                "{}:{}",
+                prefix.join("bin"),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("HOMEBREW_PREFIX", prefix.as_str())
+        .env("HOMEBREW_CACHE", state.join("cache").as_str())
+        .env("HOMEBREW_TEMP", state.join("tmp").as_str())
+        .env(
+            "HOMEBREW_USER_CONFIG_HOME",
+            state.join("user-config").as_str(),
+        )
+        .env("HOME", state.join("home").as_str())
+        .env("HOMEBREW_NO_AUTO_UPDATE", "1")
+        .build();
+    runner
+        .run_checked_sync(runner.command("brew", ["config"]))
+        .expect("the scratch linuxbrew bootstraps (portable ruby + API data)");
+    (ScratchDir { path: root }, runner)
+}
+
 fn macos_host() -> bool {
     cfg!(target_os = "macos")
 }
@@ -958,13 +1150,26 @@ async fn brew_formula_facade_installs_pins_updates_and_uninstalls_a_real_formula
         eprintln!("TORIDE_APPS_INTEGRATION not set; skipping live smoke test");
         return;
     }
-    if !manager_on_path("brew") {
-        skip("brew");
-        return;
+    #[cfg(target_os = "linux")]
+    {
+        if !manager_on_path("git") {
+            skip("linuxbrew (git is absent, so no scratch prefix can be cloned)");
+            return;
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        if !manager_on_path("brew") {
+            skip("brew");
+            return;
+        }
     }
     let scratch = ScratchDir::new("brew-formula");
+    #[cfg(target_os = "linux")]
+    let (_linuxbrew_state, runner) = scratch_linuxbrew_runner();
+    #[cfg(not(target_os = "linux"))]
     let runner = brew_runner();
-    let backend = HomebrewBackend::detect(runner.clone()).expect("brew was just found on PATH");
+    let backend = HomebrewBackend::new(runner.clone());
     if backend
         .installed_version(BrewKind::Formula, "sl")
         .await
