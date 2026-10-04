@@ -217,7 +217,8 @@ jobs:
       - name: cargo publish --dry-run (every publishable crate, dependency order)
         shell: bash
         # Order-blocked dry-runs (an intra-workspace sibling absent from
-        # crates.io, matched by name) downgrade to warnings; others fail.
+        # crates.io, or published only at older versions than the local
+        # requirement) downgrade to warnings; any other failure fails.
         run: |
           set -euo pipefail
           order_members="$(printf '%s' "$PUBLISH_ORDER" | tr ' ' '|')"
