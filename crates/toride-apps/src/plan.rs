@@ -498,7 +498,8 @@ pub enum Operation {
 
 impl Operation {
     /// The canonical argv for this operation, program first. Exact and
-    /// stable — the value dry-run rendering shows and argv tests pin.
+    /// stable — argv tests pin it. Previews render
+    /// [`Operation::execution_steps`], which can append further steps.
     #[must_use]
     pub fn argv(&self) -> Vec<String> {
         match self {
@@ -597,6 +598,23 @@ impl Operation {
             #[cfg(feature = "direct")]
             Self::DirectUninstall { bin_path } => argv(&["direct", "uninstall", bin_path]),
         }
+    }
+
+    /// Every command execution runs for this operation, in order — the
+    /// value previews render. Defaults to [`Operation::argv`] alone;
+    /// multi-command operations override with every step, so previews
+    /// never understate mutations.
+    #[must_use]
+    pub fn execution_steps(&self) -> Vec<Vec<String>> {
+        #[cfg(feature = "mise")]
+        if let Self::MiseInstall { tool, version } = self {
+            let spec = mise_spec(tool, version.as_ref());
+            return vec![
+                argv(&["mise", "install", &spec]),
+                argv(&["mise", "use", "--global", &spec]),
+            ];
+        }
+        vec![self.argv()]
     }
 
     /// Build a ready-to-dispatch [`CommandSpec`](toride_runner::CommandSpec)
@@ -753,6 +771,15 @@ pub struct InstallPlan {
     pub requires_elevation: bool,
 }
 
+fn rendered_steps(operation: &Operation) -> String {
+    operation
+        .execution_steps()
+        .iter()
+        .map(|argv| argv.join(" "))
+        .collect::<Vec<_>>()
+        .join(" && ")
+}
+
 impl InstallPlan {
     /// Mark this plan (not) a dry run — consume-and-return.
     #[must_use]
@@ -761,14 +788,15 @@ impl InstallPlan {
         self
     }
 
-    /// Human summary for dry-run rendering: description + backend + argv.
+    /// Human summary for dry-run rendering: description + backend + every
+    /// command execution runs.
     #[must_use]
     pub fn summary(&self) -> String {
         format!(
             "[{}] {} (would run: {})",
             self.backend,
             self.operation.description(),
-            self.operation.argv().join(" ")
+            rendered_steps(&self.operation)
         )
     }
 
@@ -822,7 +850,7 @@ impl UninstallPlan {
             "[{}] {} (would run: {})",
             self.backend,
             self.operation.description(),
-            self.operation.argv().join(" ")
+            rendered_steps(&self.operation)
         )
     }
 
@@ -878,7 +906,7 @@ impl UpdatePlan {
             "[{}] {} (would run: {})",
             self.backend,
             self.operation.description(),
-            self.operation.argv().join(" ")
+            rendered_steps(&self.operation)
         )
     }
 
@@ -2279,6 +2307,61 @@ mod tests {
         )
         .unwrap();
         assert_eq!(uninstalled.operation.argv(), ["mise", "uninstall", "node"]);
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn mise_install_execution_steps_disclose_the_use_global_rewrite() {
+        let plan = plan_install(
+            &app_with(mise_method("node", Some("22.1.0"))),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.operation
+                .execution_steps()
+                .iter()
+                .map(|argv| argv.join(" "))
+                .collect::<Vec<_>>(),
+            ["mise install node@22.1.0", "mise use --global node@22.1.0"]
+        );
+        assert!(
+            plan.summary()
+                .contains("would run: mise install node@22.1.0 && mise use --global node@22.1.0"),
+            "{}",
+            plan.summary()
+        );
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn mise_install_steps_address_latest_when_unpinned() {
+        let plan = plan_install(
+            &app_with(mise_method("node", None)),
+            &linux(DistroFamily::Debian),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            plan.operation
+                .execution_steps()
+                .iter()
+                .map(|argv| argv.join(" "))
+                .collect::<Vec<_>>(),
+            ["mise install node@latest", "mise use --global node@latest"]
+        );
+    }
+
+    #[test]
+    fn single_command_operations_keep_one_execution_step() {
+        let plan = plan_install(
+            &app_with(brew_method(true)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.operation.execution_steps(), [plan.operation.argv()]);
     }
 
     #[cfg(not(feature = "mise"))]

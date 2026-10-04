@@ -277,6 +277,51 @@ mod tests {
     }
 
     #[test]
+    fn parse_pipx_list_reads_the_zero_x_metadata_nesting() {
+        let apps = parse_pipx_list(
+            r#"{
+    "pipx_spec_version": "0.1",
+    "venvs": {
+        "cogapp": {
+            "metadata": {
+                "injected_packages": {},
+                "main_package": {
+                    "app_paths": [
+                        "/tmp/pipx016-home/venvs/cogapp/bin/cog"
+                    ],
+                    "app_paths_of_dependencies": {},
+                    "apps": [
+                        "cog"
+                    ],
+                    "apps_of_dependencies": [],
+                    "include_apps": true,
+                    "include_dependencies": false,
+                    "package": "cogapp",
+                    "package_or_url": "cogapp",
+                    "package_version": "3.3.0",
+                    "pip_args": [],
+                    "suffix": ""
+                },
+                "pipx_metadata_version": "0.2",
+                "python_version": "3.13.5",
+                "venv_args": []
+            }
+        }
+    }
+}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            apps,
+            [InstalledApp {
+                id: "cogapp".to_owned(),
+                version: Some("3.3.0".to_owned())
+            }],
+            "pipx 0.16.5 emitted this document verbatim; its nesting is the 1.x one"
+        );
+    }
+
+    #[test]
     fn parse_pipx_list_takes_a_venvs_free_document_as_empty() {
         assert_eq!(
             parse_pipx_list(r#"{"pipx_spec_version":"0.3"}"#).unwrap(),

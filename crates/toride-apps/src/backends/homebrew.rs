@@ -273,9 +273,10 @@ impl HomebrewBackend {
     /// casks or formulae. Pinned items are listed with `pinned: true` —
     /// brew reports them stale but skips upgrading them itself.
     ///
-    /// `brew outdated` exits 1 whenever anything IS outdated — the entries
-    /// on stdout are the answer, not a failure — so exit 1 parses like
-    /// success.
+    /// `brew outdated` sets exit 1 only when the invocation names
+    /// formula/cask operands and any named one is outdated — this
+    /// backend's operand-less probes exit 0 either way, and exit 1
+    /// still parses like success.
     ///
     /// # Errors
     ///
@@ -903,10 +904,6 @@ fn classify_version_probe(result: Result<CommandOutput>) -> Result<Option<String
     }
 }
 
-/// Classify a dispatched `brew outdated --json=v2` probe: exit 0 and exit 1
-/// both carry the answer on stdout — brew exits 1 exactly when something is
-/// outdated — while any other exit (or an unparseable document at 0/1) is a
-/// real failure.
 fn classify_outdated_probe(
     spec: &toride_runner::CommandSpec,
     output: toride_runner::CommandOutput,
