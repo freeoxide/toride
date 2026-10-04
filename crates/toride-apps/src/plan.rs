@@ -498,7 +498,7 @@ pub enum Operation {
 
 impl Operation {
     /// The canonical argv for this operation, program first. Exact and
-    /// stable — argv tests pin it. Previews render
+    /// stable — argv tests pin it. Plan summaries render
     /// [`Operation::execution_steps`], which can append further steps.
     #[must_use]
     pub fn argv(&self) -> Vec<String> {
@@ -600,9 +600,9 @@ impl Operation {
         }
     }
 
-    /// Every command execution runs for this operation, in order —
-    /// the value previews render. Defaults to [`Operation::argv`];
-    /// multi-command operations append their further steps.
+    /// Every command execution unconditionally runs for this operation,
+    /// in order — the value previews render. Defaults to
+    /// [`Operation::argv`]; multi-command operations append steps.
     #[must_use]
     pub fn execution_steps(&self) -> Vec<Vec<String>> {
         #[cfg(feature = "mise")]
