@@ -371,13 +371,10 @@ fn rpm_not_found(package: &str) -> CommandOutput {
     CommandOutput::from_stderr(format!("package {package} is not installed"), 1)
 }
 
-/// pacman's not-found answer: exit 1 + `error: package '<pkg>' was not
-/// found` on stderr (`src/pacman/query.c`).
 fn pacman_not_found(package: &str) -> CommandOutput {
     CommandOutput::from_stderr(format!("error: package '{package}' was not found"), 1)
 }
 
-/// apk's not-found answer: an empty exit-0 listing (`src/app_list.c`).
 fn apk_not_found() -> CommandOutput {
     CommandOutput::from_stdout("")
 }
@@ -396,18 +393,12 @@ fn flatpak_row(app_id: &str, version: &str) -> String {
     format!("{app_id}\t{version}\tflathub\tuser\n")
 }
 
-/// A `brew outdated --json=v2` envelope listing the firefox cask stale at
-/// `installed` with `current` available.
 fn firefox_cask_outdated(installed: &str, current: &str) -> String {
     format!(
         r#"{{"formulae":[],"casks":[{{"name":"firefox","installed_versions":["{installed}"],"current_version":"{current}"}}]}}"#
     )
 }
 
-/// A `brew info --json=v2 firefox` envelope as brew emits it for an
-/// installed token: `installed` is what brew has on disk, `version` the
-/// cask's offered version — the available probe must answer with the
-/// latter.
 fn firefox_cask_available(installed: &str, offered: &str) -> String {
     format!(
         r#"{{"formulae":[],"casks":[{{"token":"firefox","version":"{offered}","installed":"{installed}"}}]}}"#
