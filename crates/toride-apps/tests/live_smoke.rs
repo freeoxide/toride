@@ -2,9 +2,10 @@
 //! managers, real network, throwaway state only.
 //!
 //! Gated behind `TORIDE_APPS_INTEGRATION=1` (the `tests/live.rs` env-gate
-//! precedent), and every test additionally self-skips when its manager is
-//! absent from the PATH, so the plain gate run — and any host — stays
-//! side-effect-free:
+//! precedent), and every manager leg self-skips when its manager — or,
+//! for the linuxbrew leg, `git` — is absent from the PATH, so the plain
+//! gate run stays side-effect-free (the direct leg has no manager: it
+//! needs the network and fails without it):
 //!
 //! ```text
 //! TORIDE_APPS_INTEGRATION=1 cargo test -p toride-apps --all-features --all-targets
@@ -23,18 +24,14 @@
 //! `CARGO_INSTALL_ROOT` (the shared crates.io registry cache stays
 //! read-mostly, like any build), mise against isolated `MISE_DATA_DIR` /
 //! `MISE_CONFIG_FILE`, uv/pipx into scratch `UV_TOOL_DIR`/`PIPX_HOME`,
-//! the direct leg's release artifact into a scratch install dir. brew is
-//! per-OS: on macOS its legs pour obscure tokens into the host's own
-//! Homebrew and remove them again — under `HOMEBREW_NO_AUTO_UPDATE=1` so
-//! nothing else on the host moves, self-skipping when the token is
-//! already installed, and cask legs additionally require macOS (`brew
-//! install --cask` refuses elsewhere); on Linux the formula leg pours
-//! into a throwaway scratch-prefix Homebrew — a shallow `git clone` of
-//! Homebrew/brew with `HOMEBREW_PREFIX`, `HOMEBREW_CACHE`,
-//! `HOMEBREW_TEMP`, `HOMEBREW_USER_CONFIG_HOME`, and `HOME` all
-//! redirected into the scratch dir, so a host brew that is absent — or
-//! broken by Homebrew's own master→main migration — is never touched;
-//! that leg self-skips when `git` is absent.
+//! the direct leg's release artifact into a scratch install dir. On
+//! macOS the brew legs pour obscure tokens into the host's own Homebrew
+//! under `HOMEBREW_NO_AUTO_UPDATE=1` and remove them again, self-skipping
+//! when the token is already installed (cask legs additionally require
+//! macOS, since `brew install --cask` refuses elsewhere); on Linux the
+//! formula leg pours into a scratch-prefix Homebrew — a shallow `git
+//! clone` with every `HOMEBREW_*` state var and `HOME` redirected into
+//! the scratch dir, never the host's brew.
 //! pacman/apk mutate the host's package database — never throwaway on a
 //! real machine — so they demand a second explicit opt-in,
 //! `TORIDE_APPS_DISTRO_SMOKE=1`, that only the CI archlinux/alpine
@@ -99,6 +96,25 @@ impl ScratchDir {
         std::fs::create_dir_all(&path).expect("scratch dir is creatable");
         Self {
             path: Utf8PathBuf::from_path_buf(path).expect("system temp dir is valid UTF-8"),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn short(label: &str) -> Self {
+        let mut unique = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+        loop {
+            let candidate =
+                std::env::temp_dir().join(format!("{label}{}{unique}", std::process::id()));
+            match std::fs::create_dir(&candidate) {
+                Ok(()) => {
+                    return Self {
+                        path: Utf8PathBuf::from_path_buf(candidate)
+                            .expect("system temp dir is valid UTF-8"),
+                    };
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => unique += 1,
+                Err(error) => panic!("reserving the short scratch dir failed: {error}"),
+            }
         }
     }
 
@@ -976,25 +992,14 @@ fn brew_runner() -> CommandRunner {
 
 #[cfg(target_os = "linux")]
 fn scratch_linuxbrew_runner() -> (ScratchDir, CommandRunner) {
-    let mut unique = DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
-    let root = loop {
-        let candidate = std::env::temp_dir().join(format!("tb{}{unique}", std::process::id()));
-        match std::fs::create_dir(&candidate) {
-            Ok(()) => {
-                break Utf8PathBuf::from_path_buf(candidate)
-                    .expect("the system temp dir is valid UTF-8");
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => unique += 1,
-            Err(error) => panic!("reserving the scratch linuxbrew root failed: {error}"),
-        }
-    };
-    let prefix = root.join("pfx");
+    let root = ScratchDir::short("tb");
+    let prefix = root.path().join("pfx");
     assert!(
         prefix.as_str().len() <= 26,
         "linuxbrew bottles relocate only into prefixes of at most 26 characters: {}",
         prefix.as_str()
     );
-    let state = root.join("s");
+    let state = root.path().join("s");
     for dir in ["cache", "tmp", "home", "user-config"] {
         std::fs::create_dir_all(state.join(dir))
             .expect("the scratch linuxbrew state dirs are creatable");
@@ -1032,7 +1037,7 @@ fn scratch_linuxbrew_runner() -> (ScratchDir, CommandRunner) {
     runner
         .run_checked_sync(runner.command("brew", ["config"]))
         .expect("the scratch linuxbrew bootstraps (portable ruby + API data)");
-    (ScratchDir { path: root }, runner)
+    (root, runner)
 }
 
 fn macos_host() -> bool {
