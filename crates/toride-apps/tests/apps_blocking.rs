@@ -539,7 +539,9 @@ fn cargo_records_update_and_uninstall_replay_the_recorded_crate() {
         )
         .respond(
             info_spec.clone(),
-            CommandOutput::from_stdout("ripgrep\nsearch tool\nversion: 15.2.0\n"),
+            CommandOutput::from_stdout(
+                "ripgrep #regex #grep #egrep #search #pattern\nripgrep is a line-oriented search tool\nversion: 15.2.0\n",
+            ),
         )
         .respond(force_spec.clone(), CommandOutput::from_stdout(""))
         // The post-upgrade re-probe.

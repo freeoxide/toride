@@ -208,25 +208,42 @@ fn parse_cargo_list(stdout: &str) -> Result<Vec<InstalledApp>> {
 
 fn parse_cargo_info(stdout: &str, crate_: &str) -> Result<Version> {
     let mut lines = stdout.lines().map(str::trim);
-    if lines.next() != Some(crate_) {
+    if !lines
+        .next()
+        .is_some_and(|row| is_cargo_info_leading_row(row, crate_))
+    {
         return Err(output_parse_error(
             "cargo info",
             format_args!("the leading crate row is not `{crate_}` in {stdout:?}"),
         ));
     }
     for line in lines {
-        let Some(version) = line.strip_prefix("version:").map(str::trim) else {
+        let Some(rest) = line.strip_prefix("version:").map(str::trim) else {
             continue;
         };
-        if version.is_empty() || version.contains(char::is_whitespace) {
+        let Some(version) = cargo_info_version(rest) else {
             continue;
-        }
+        };
         return Ok(Version::new(version));
     }
     Err(output_parse_error(
         "cargo info",
         format_args!("no `version:` row in {stdout:?}"),
     ))
+}
+
+fn is_cargo_info_leading_row(row: &str, crate_: &str) -> bool {
+    let mut tokens = row.split_whitespace();
+    tokens.next() == Some(crate_) && tokens.all(|tag| tag.starts_with('#') && tag.len() > 1)
+}
+
+fn cargo_info_version(rest: &str) -> Option<&str> {
+    let (version, suffix) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+    if !version.starts_with(|c: char| c.is_ascii_digit()) {
+        return None;
+    }
+    (suffix.is_empty() || (suffix.starts_with("(latest ") && suffix.ends_with(')')))
+        .then_some(version)
 }
 
 fn misrouted_operation(operation: &Operation) -> Error {
@@ -344,10 +361,19 @@ mod tests {
     #[test]
     fn parse_cargo_info_reads_the_leading_crate_row_and_the_version_row() {
         let stdout = concat!(
-            "ripgrep\n",
-            "ripgrep is a line-oriented search tool that recursively searches\n",
+            "ripgrep #regex #grep #egrep #search #pattern\n",
+            "ripgrep is a line-oriented search tool that recursively searches the current\n",
+            "directory for a regex pattern while respecting gitignore rules. ripgrep has\n",
+            "first class support on Windows, macOS and Linux.\n",
             "version: 15.2.0\n",
-            "license: MIT OR UNLICENSE\n",
+            "license: Unlicense OR MIT\n",
+            "rust-version: 1.85\n",
+            "documentation: https://github.com/BurntSushi/ripgrep\n",
+            "homepage: https://github.com/BurntSushi/ripgrep\n",
+            "repository: https://github.com/BurntSushi/ripgrep\n",
+            "crates.io: https://crates.io/crates/ripgrep/15.2.0\n",
+            "features:\n",
+            "  pcre2 = [grep/pcre2]\n",
         );
         assert_eq!(
             parse_cargo_info(stdout, "ripgrep").unwrap(),
@@ -357,10 +383,64 @@ mod tests {
 
     #[test]
     fn parse_cargo_info_answers_after_a_description_that_names_no_version_row() {
-        let stdout = concat!("ripgrep\n", "a tool that searches\n", "version: 15.2.0\n");
+        let stdout = concat!(
+            "serde #serde #serialization #no_std\n",
+            "A generic serialization/deserialization framework\n",
+            "version: 1.0.229\n",
+        );
         assert_eq!(
-            parse_cargo_info(stdout, "ripgrep").unwrap(),
-            Version::new("15.2.0")
+            parse_cargo_info(stdout, "serde").unwrap(),
+            Version::new("1.0.229")
+        );
+    }
+
+    #[test]
+    fn parse_cargo_info_reads_the_queried_version_before_the_latest_parenthetical() {
+        let stdout = concat!(
+            "serde #serde #serialization #no_std\n",
+            "A generic serialization/deserialization framework\n",
+            "version: 1.0.228 (latest 1.0.229)\n",
+            "license: MIT OR Apache-2.0\n",
+            "rust-version: 1.56\n",
+            "documentation: https://docs.rs/serde\n",
+            "homepage: https://serde.rs\n",
+            "repository: https://github.com/serde-rs/serde\n",
+            "crates.io: https://crates.io/crates/serde/1.0.228\n",
+        );
+        assert_eq!(
+            parse_cargo_info(stdout, "serde").unwrap(),
+            Version::new("1.0.228")
+        );
+    }
+
+    #[test]
+    fn parse_cargo_info_reads_a_prerelease_offering_before_the_latest_parenthetical() {
+        let stdout = concat!(
+            "rand_core #random #rng\n",
+            "Core random number generation traits and tools for implementation.\n",
+            "version: 0.10.0-rc-6 (latest 0.10.1)\n",
+        );
+        assert_eq!(
+            parse_cargo_info(stdout, "rand_core").unwrap(),
+            Version::new("0.10.0-rc-6")
+        );
+    }
+
+    #[test]
+    fn parse_cargo_info_reads_the_bare_leading_row_of_a_crate_with_no_keyword_tags() {
+        let stdout = concat!(
+            "leave\n",
+            "Inverted rm(1) command - Remove everything except the given files\n",
+            "version: 0.1.0\n",
+            "license: GPL-3.0-or-later\n",
+            "rust-version: unknown\n",
+            "documentation: https://docs.rs/leave/0.1.0\n",
+            "repository: https://github.com/kdkasad/leave\n",
+            "crates.io: https://crates.io/crates/leave/0.1.0\n",
+        );
+        assert_eq!(
+            parse_cargo_info(stdout, "leave").unwrap(),
+            Version::new("0.1.0")
         );
     }
 
@@ -374,9 +454,22 @@ mod tests {
     }
 
     #[test]
+    fn parse_cargo_info_errors_on_a_leading_row_whose_second_token_is_not_a_keyword_tag() {
+        let error = parse_cargo_info(
+            "ripgrep is a line-oriented search tool\nversion: 15.2.0\n",
+            "ripgrep",
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn parse_cargo_info_skips_a_description_disguised_as_the_version_row() {
         let stdout = concat!(
-            "ripgrep\n",
+            "ripgrep #regex #grep #egrep #search #pattern\n",
             "version: prints file names as it goes\n",
             "version: 15.2.0\n",
         );
@@ -387,8 +480,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_cargo_info_skips_a_version_row_followed_by_unrecognized_prose() {
+        let stdout = concat!(
+            "serde #serde #serialization #no_std\n",
+            "version: 1 password manager for the command line\n",
+            "version: 1.0.229\n",
+        );
+        assert_eq!(
+            parse_cargo_info(stdout, "serde").unwrap(),
+            Version::new("1.0.229")
+        );
+    }
+
+    #[test]
+    fn parse_cargo_info_errors_when_every_version_row_is_rejected() {
+        let stdout = concat!(
+            "serde #serde #serialization #no_std\n",
+            "version: 1 password manager for the command line\n",
+        );
+        let error = parse_cargo_info(stdout, "serde").unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "{error:?}"
+        );
+    }
+
+    #[test]
     fn parse_cargo_info_errors_when_no_version_row_exists() {
-        let error = parse_cargo_info("ripgrep\njust a name\n", "ripgrep").unwrap_err();
+        let error = parse_cargo_info("ripgrep #regex #grep #egrep #search #pattern\n", "ripgrep")
+            .unwrap_err();
         assert!(
             matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
             "{error:?}"
@@ -508,7 +628,7 @@ mod tests {
         let fake = FakeRunner::new().strict().respond(
             spec.clone(),
             toride_runner::CommandOutput::from_stdout(
-                "ripgrep\nline-oriented search tool\nversion: 15.2.0\n",
+                "ripgrep #regex #grep #egrep #search #pattern\nripgrep is a line-oriented search tool\nversion: 15.2.0\n",
             ),
         );
         let backend = backend(&fake);
@@ -534,7 +654,9 @@ mod tests {
             )
             .respond(
                 command("cargo", ["info", "--color", "never", "ripgrep"]),
-                toride_runner::CommandOutput::from_stdout("ripgrep\nversion: 15.2.0\n"),
+                toride_runner::CommandOutput::from_stdout(
+                    "ripgrep #regex #grep #egrep #search #pattern\nversion: 15.2.0\n",
+                ),
             );
         let backend = backend(&fake);
         backend
