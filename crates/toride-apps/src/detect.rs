@@ -100,9 +100,9 @@ pub struct Detection {
     pub confidence: DetectionConfidence,
     /// Zero-based `$PATH` rank when the path sits on `$PATH`; `None` otherwise.
     pub path_rank: Option<usize>,
-    /// An earlier `$PATH` rank resolved to a **different** artifact for the
-    /// name, so this copy cannot run; the same file sighted again through a
-    /// duplicate or symlinked `$PATH` entry never shadows.
+    /// An earlier `$PATH` rank — or an earlier PATHEXT candidate within one
+    /// rank — resolved to a **different** artifact, so this copy cannot run;
+    /// the same file sighted again never shadows.
     pub shadowed: bool,
     /// The artifact exists but its source reports it unusable (broken shim).
     pub broken: bool,
@@ -491,13 +491,20 @@ fn parse_pathext(pathext: &str) -> Vec<String> {
 }
 
 fn executable_candidates(name: &str, pathext: &str) -> Vec<String> {
-    let mut candidates = vec![name.to_owned()];
-    candidates.extend(
-        parse_pathext(pathext)
-            .iter()
-            .map(|extension| format!("{name}{extension}")),
-    );
-    candidates
+    let extensions = parse_pathext(pathext);
+    if extensions.is_empty() || name_carries_extension(name) {
+        return vec![name.to_owned()];
+    }
+    extensions
+        .iter()
+        .map(|extension| format!("{name}{extension}"))
+        .collect()
+}
+
+fn name_carries_extension(name: &str) -> bool {
+    name.rsplit(['/', '\\'])
+        .next()
+        .is_some_and(|file_name| file_name.contains('.'))
 }
 
 fn mise_shim_dir_from(
@@ -955,11 +962,8 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_default_pathext_parses_to_the_documented_extension_order() {
-        assert_eq!(
-            parse_pathext(DEFAULT_PATHEXT),
-            [".COM", ".EXE", ".BAT", ".CMD"]
-        );
+    fn the_windows_default_pathext_is_the_documented_four_entry_core() {
+        assert_eq!(DEFAULT_PATHEXT, ".COM;.EXE;.BAT;.CMD");
     }
 
     #[test]
@@ -971,11 +975,20 @@ mod tests {
     }
 
     #[test]
-    fn executable_candidates_lead_with_the_bare_name_then_every_pathext_extension() {
+    fn executable_candidates_probe_only_pathext_extensions_for_an_extensionless_name() {
         assert_eq!(
             executable_candidates("npm", ".COM;.EXE;.BAT;.CMD"),
-            ["npm", "npm.COM", "npm.EXE", "npm.BAT", "npm.CMD"]
+            ["npm.COM", "npm.EXE", "npm.BAT", "npm.CMD"]
         );
+    }
+
+    #[test]
+    fn executable_candidates_probe_an_extensioned_name_verbatim() {
+        assert_eq!(
+            executable_candidates("npm.cmd", ".COM;.EXE;.BAT;.CMD"),
+            ["npm.cmd"]
+        );
+        assert_eq!(executable_candidates("tool.sh", ".COM;.EXE"), ["tool.sh"]);
     }
 
     #[test]
