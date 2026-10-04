@@ -281,24 +281,28 @@ impl MultiSourceDetector {
     }
 
     fn path_hits(&self, name: &str) -> Vec<Detection> {
+        let candidates = executable_candidates(name, &resolve_pathext());
         let mut seen: Vec<PathBuf> = Vec::new();
         let mut hits: Vec<Detection> = Vec::new();
         for (rank, dir) in self.resolve_path_dirs().iter().enumerate() {
-            let candidate = dir.join(name);
-            if !is_executable_file(&candidate) {
-                continue;
+            for file_name in &candidates {
+                let candidate = dir.join(file_name.as_str());
+                if !is_executable_file(&candidate) {
+                    continue;
+                }
+                let artifact = canonical(candidate.as_str());
+                if seen.contains(&artifact) {
+                    continue;
+                }
+                seen.push(artifact);
+                let mut hit =
+                    Detection::new(name, DetectionSource::Path, DetectionConfidence::Medium)
+                        .with_path(candidate.to_string())
+                        .with_path_rank(rank);
+                hit.shadowed = !hits.is_empty();
+                hit.arch_mismatch = self.probe_arch_mismatch(candidate.as_str());
+                hits.push(hit);
             }
-            let artifact = canonical(candidate.as_str());
-            if seen.contains(&artifact) {
-                continue;
-            }
-            seen.push(artifact);
-            let mut hit = Detection::new(name, DetectionSource::Path, DetectionConfidence::Medium)
-                .with_path(candidate.to_string())
-                .with_path_rank(rank);
-            hit.shadowed = !hits.is_empty();
-            hit.arch_mismatch = self.probe_arch_mismatch(candidate.as_str());
-            hits.push(hit);
         }
         hits
     }
@@ -319,10 +323,13 @@ impl MultiSourceDetector {
         let Some(dir) = self.resolve_mise_shim_dir() else {
             return Vec::new();
         };
-        let candidate = dir.join(name);
-        if !is_executable_file(&candidate) {
+        let Some(candidate) = executable_candidates(name, &resolve_pathext())
+            .into_iter()
+            .map(|file_name| dir.join(file_name.as_str()))
+            .find(is_executable_file)
+        else {
             return Vec::new();
-        }
+        };
         let mut hit = Detection::new(name, DetectionSource::MiseShim, DetectionConfidence::Medium)
             .with_path(candidate.to_string());
         self.refine_mise_shim(&mut hit);
@@ -452,6 +459,45 @@ fn split_path_value(value: &std::ffi::OsStr) -> Vec<Utf8PathBuf> {
         .filter(|dir| !dir.as_os_str().is_empty())
         .filter_map(|dir| Utf8PathBuf::from_path_buf(dir).ok())
         .collect()
+}
+
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+
+fn resolve_pathext() -> String {
+    if cfg!(windows) {
+        std::env::var_os("PATHEXT")
+            .and_then(|value| value.into_string().ok())
+            .unwrap_or_else(|| DEFAULT_PATHEXT.to_owned())
+    } else {
+        String::new()
+    }
+}
+
+fn parse_pathext(pathext: &str) -> Vec<String> {
+    let mut extensions: Vec<String> = Vec::new();
+    for entry in pathext.split(';') {
+        let extension = entry.trim();
+        if extension.len() < 2
+            || !extension.starts_with('.')
+            || extensions
+                .iter()
+                .any(|seen| seen.eq_ignore_ascii_case(extension))
+        {
+            continue;
+        }
+        extensions.push(extension.to_owned());
+    }
+    extensions
+}
+
+fn executable_candidates(name: &str, pathext: &str) -> Vec<String> {
+    let mut candidates = vec![name.to_owned()];
+    candidates.extend(
+        parse_pathext(pathext)
+            .iter()
+            .map(|extension| format!("{name}{extension}")),
+    );
+    candidates
 }
 
 fn mise_shim_dir_from(
@@ -905,6 +951,58 @@ mod tests {
         assert_eq!(
             split_path_value(std::ffi::OsStr::new("")),
             Vec::<Utf8PathBuf>::new()
+        );
+    }
+
+    #[test]
+    fn the_windows_default_pathext_parses_to_the_documented_extension_order() {
+        assert_eq!(
+            parse_pathext(DEFAULT_PATHEXT),
+            [".COM", ".EXE", ".BAT", ".CMD"]
+        );
+    }
+
+    #[test]
+    fn pathext_parsing_trims_keeps_order_and_dedups_case_insensitively() {
+        assert_eq!(
+            parse_pathext(" .SH ;.exe;.EXE;;exe;.CMD "),
+            [".SH", ".exe", ".CMD"]
+        );
+    }
+
+    #[test]
+    fn executable_candidates_lead_with_the_bare_name_then_every_pathext_extension() {
+        assert_eq!(
+            executable_candidates("npm", ".COM;.EXE;.BAT;.CMD"),
+            ["npm", "npm.COM", "npm.EXE", "npm.BAT", "npm.CMD"]
+        );
+    }
+
+    #[test]
+    fn executable_candidates_without_dotted_extensions_answer_the_bare_name_alone() {
+        assert_eq!(executable_candidates("tool", ""), ["tool"]);
+        assert_eq!(executable_candidates("tool", "EXE;cmd; ;."), ["tool"]);
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn resolve_pathext_answers_no_extensions_off_windows() {
+        assert_eq!(resolve_pathext(), "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_hits_never_match_an_extensioned_sibling_off_windows() {
+        let dir = temp_dir("pathext-off");
+        write_executable(&dir, "npm.cmd");
+        let detector = MultiSourceDetector::builder()
+            .runner(seam(&FakeRunner::new().strict()))
+            .path_dirs(vec![dir])
+            .mise_shim_dir(temp_dir("pathext-off-shims"))
+            .build();
+        assert!(
+            detector.detect("npm").is_empty(),
+            "an npm.cmd sibling is not a hit for npm off Windows"
         );
     }
 
