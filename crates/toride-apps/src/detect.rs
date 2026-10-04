@@ -1063,11 +1063,20 @@ mod tests {
             on_disk_casing(&dir.join("absent.CMD")),
             dir.join("absent.CMD").to_string()
         );
-        write_executable(&dir, "npm.CMD");
+        let case_distinguishing_fs = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(dir.join("npm.CMD").as_std_path())
+            .is_ok();
+        let exact_name_entry = if case_distinguishing_fs {
+            dir.join("npm.CMD")
+        } else {
+            dir.join("npm.cmd")
+        };
         assert_eq!(
             on_disk_casing(&dir.join("npm.CMD")),
-            dir.join("npm.CMD").to_string(),
-            "an exact-name entry wins over a case-variant sibling on a case-sensitive filesystem"
+            exact_name_entry.to_string(),
+            "an exact-name entry wins over a case-variant sibling wherever the filesystem distinguishes case"
         );
     }
 
