@@ -30,8 +30,9 @@
 //! when the token is already installed (cask legs additionally require
 //! macOS, since `brew install --cask` refuses elsewhere); on Linux the
 //! formula leg pours into a scratch-prefix Homebrew — a shallow `git
-//! clone` with every `HOMEBREW_*` state var and `HOME` redirected into
-//! the scratch dir, never the host's brew.
+//! clone` whose `HOMEBREW_CACHE`/`TEMP`/`LOGS`, `HOME`, and
+//! `XDG_CONFIG_HOME` all point into the scratch dir, never the host's
+//! brew state.
 //! pacman/apk mutate the host's package database — never throwaway on a
 //! real machine — so they demand a second explicit opt-in,
 //! `TORIDE_APPS_DISTRO_SMOKE=1`, that only the CI archlinux/alpine
@@ -1000,7 +1001,7 @@ fn scratch_linuxbrew_runner() -> (ScratchDir, CommandRunner) {
         prefix.as_str()
     );
     let state = root.path().join("s");
-    for dir in ["cache", "tmp", "home", "user-config"] {
+    for dir in ["cache", "tmp", "home", "xdg"] {
         std::fs::create_dir_all(state.join(dir))
             .expect("the scratch linuxbrew state dirs are creatable");
     }
@@ -1027,10 +1028,8 @@ fn scratch_linuxbrew_runner() -> (ScratchDir, CommandRunner) {
         .env("HOMEBREW_PREFIX", prefix.as_str())
         .env("HOMEBREW_CACHE", state.join("cache").as_str())
         .env("HOMEBREW_TEMP", state.join("tmp").as_str())
-        .env(
-            "HOMEBREW_USER_CONFIG_HOME",
-            state.join("user-config").as_str(),
-        )
+        .env("HOMEBREW_LOGS", state.join("logs").as_str())
+        .env("XDG_CONFIG_HOME", state.join("xdg").as_str())
         .env("HOME", state.join("home").as_str())
         .env("HOMEBREW_NO_AUTO_UPDATE", "1")
         .build();
