@@ -600,10 +600,9 @@ impl Operation {
         }
     }
 
-    /// Every command execution runs for this operation, in order — the
-    /// value previews render. Defaults to [`Operation::argv`] alone;
-    /// multi-command operations override with every step, so previews
-    /// never understate mutations.
+    /// Every command execution runs for this operation, in order —
+    /// the value previews render. Defaults to [`Operation::argv`];
+    /// multi-command operations append their further steps.
     #[must_use]
     pub fn execution_steps(&self) -> Vec<Vec<String>> {
         #[cfg(feature = "mise")]

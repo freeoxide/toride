@@ -274,9 +274,8 @@ impl HomebrewBackend {
     /// brew reports them stale but skips upgrading them itself.
     ///
     /// `brew outdated` sets exit 1 only when the invocation names
-    /// formula/cask operands and any named one is outdated — this
-    /// backend's operand-less probes exit 0 either way, and exit 1
-    /// still parses like success.
+    /// operands and any named one is outdated — the operand-less
+    /// probes here exit 0, and exit 1 still parses like success.
     ///
     /// # Errors
     ///
