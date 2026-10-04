@@ -25,16 +25,18 @@ env:
   # native runner evidence comes in. Space-separated; expanded to -p flags.
   PORTABLE_CRATES_MACOS: >-
     toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
-    toride-fail2ban toride-fs toride-harden toride-mise toride-proxy
-    toride-registry toride-runner toride-service toride-ssh toride-ssh-agent
+    toride-fail2ban toride-fs toride-harden toride-installer toride-mise
+    toride-proxy toride-registry toride-runner toride-service toride-ssh
+    toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
     toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
     toride-ssh-known-hosts toride-status toride-updates toride-users
     toride-wireguard ufw-kit ufw-kit-test-support
   PORTABLE_CRATES_WINDOWS: >-
     toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
-    toride-fail2ban toride-fs toride-harden toride-mise toride-monitor
-    toride-proxy toride-registry toride-runner toride-service toride-ssh toride-ssh-agent
+    toride-fail2ban toride-fs toride-harden toride-installer toride-mise
+    toride-monitor toride-proxy toride-registry toride-runner toride-service
+    toride-ssh toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
     toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
     toride-ssh-known-hosts toride-status toride-updates toride-users
@@ -221,13 +223,14 @@ jobs:
         # requirement) downgrade to warnings; any other failure fails.
         run: |
           set -euo pipefail
+          cargo metadata --format-version 1 >/dev/null
           order_members="$(printf '%s' "$PUBLISH_ORDER" | tr ' ' '|')"
           for crate in $PUBLISH_ORDER; do
             echo "::group::cargo publish --dry-run -p $crate"
             log="$(mktemp)"
             if ! cargo publish --dry-run -p "$crate" 2>&1 | tee "$log"; then
               if grep -qE "no matching package named \`(${order_members})\` found|failed to select a version for the requirement \`(${order_members}) = " "$log"; then
-                echo "::warning::publish dry-run order-blocked for $crate (unpublished siblings)"
+                echo "::warning::publish dry-run order-blocked for $crate (sibling not on crates.io at the required version)"
               else
                 echo "::error::publish dry-run failed for $crate"
                 exit 1
