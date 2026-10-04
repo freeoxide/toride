@@ -33,10 +33,15 @@
 //! clone` whose `HOMEBREW_CACHE`/`TEMP`/`LOGS`, `HOME`, and
 //! `XDG_CONFIG_HOME` all point into the scratch dir, never the host's
 //! brew state.
-//! pacman/apk mutate the host's package database — never throwaway on a
-//! real machine — so they demand a second explicit opt-in,
-//! `TORIDE_APPS_DISTRO_SMOKE=1`, that only the CI archlinux/alpine
-//! container jobs set; on any long-lived Arch/Alpine host both legs skip.
+//! pacman/apk/apt mutate the host's package database — never throwaway
+//! on a real machine — so they demand a second explicit opt-in,
+//! `TORIDE_APPS_DISTRO_SMOKE=1`, that only the ephemeral CI venues set
+//! (the archlinux/alpine container jobs, the ubuntu dispatch runner);
+//! apt additionally self-skips without root, and on any long-lived host
+//! all three legs skip. The flatpak leg pours a small flathub app into
+//! the user installation (`~/.local/share/flatpak`) and removes it
+//! again, self-skipping when flatpak is absent or the app already
+//! installed for that user.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -54,10 +59,12 @@ use toride_apps::backend::Backend;
 use toride_apps::backends::DirectBackend;
 use toride_apps::backends::distro::detect_host_family;
 use toride_apps::backends::homebrew::{BrewKind, HomebrewBackend};
-use toride_apps::backends::{CargoBackend, DistroBackend, NpmBackend, PipxBackend, UvBackend};
+use toride_apps::backends::{
+    CargoBackend, DistroBackend, FlatpakBackend, NpmBackend, PipxBackend, UvBackend,
+};
 use toride_apps::manifest::{InstallRecord, NativeIds};
 use toride_apps::runner::CommandRunner;
-use toride_apps::{AppStatus, AppsError, BackendId, Version};
+use toride_apps::{AppStatus, AppsError, BackendId, FlatpakInstallation, Version};
 use toride_registry::model::{App, InstallMethod, SourceKind, SourceRef};
 #[cfg(all(feature = "direct", target_os = "linux"))]
 use toride_registry::model::{Checksum, ChecksumAlgo};
@@ -82,6 +89,14 @@ fn skip(manager: &str) {
 
 fn manager_on_path(binary: &str) -> bool {
     toride_runner::discovery::find_binary(binary).is_ok()
+}
+
+fn running_as_root() -> bool {
+    std::fs::read_to_string("/proc/self/status").is_ok_and(|status| {
+        status
+            .lines()
+            .any(|line| line.starts_with("Uid:") && line.split_whitespace().nth(1) == Some("0"))
+    })
 }
 
 struct ScratchDir {
@@ -1011,6 +1026,192 @@ async fn apk_facade_installs_probes_updates_and_uninstalls_a_real_package() {
     );
     let after = apps.status(&id).await.expect("post-uninstall status");
     assert_eq!(after, AppStatus::NotInstalled);
+}
+
+/// The apt lifecycle through the facade on the ephemeral ubuntu dispatch
+/// runner: install, dpkg-query probe, remove of `tree`. Double-gated like
+/// pacman/apk; self-skips without root or when `tree` is installed.
+#[tokio::test]
+async fn apt_facade_installs_probes_and_uninstalls_a_real_package() {
+    if !integration_enabled() || !distro_smoke_enabled() {
+        eprintln!(
+            "TORIDE_APPS_INTEGRATION/TORIDE_APPS_DISTRO_SMOKE not both set; skipping \
+             distro-db smoke test (throwaway hosts only)"
+        );
+        return;
+    }
+    let Some(family @ (DistroFamily::Debian | DistroFamily::Ubuntu)) = detect_host_family() else {
+        skip("apt-get (host is not Debian family)");
+        return;
+    };
+    if !manager_on_path("apt-get") {
+        skip("apt-get");
+        return;
+    }
+    if !running_as_root() {
+        eprintln!("not running as root; apt-get needs the dpkg lock; skipping live smoke test");
+        return;
+    }
+    let runner = CommandRunner::builder().build();
+    let backend = DistroBackend::detect(runner.clone()).expect("apt-get was just found on PATH");
+    if backend
+        .installed_version("tree")
+        .await
+        .expect("the dpkg presence probe succeeds")
+        .is_some()
+    {
+        eprintln!("apt `tree` already installed on this host; skipping live smoke test");
+        return;
+    }
+    let id = TorideId::slugify("tree");
+    let app = language_app(
+        &id,
+        "tree",
+        InstallMethod::Distro {
+            family,
+            repo: None,
+            package: "tree".to_owned(),
+        },
+    );
+    let scratch = ScratchDir::new("apt");
+    let mut apps = facade_base(runner, scratch.path().join("apps-manifest.json"), app)
+        .distro(backend)
+        .build()
+        .expect("facade builds over the scratch manifest");
+
+    let version = assert_installed(
+        &apps
+            .ensure_installed(&id, AppInstallOptions::new().elevated(true))
+            .await
+            .expect("apt-get install -y tree succeeds on the throwaway host"),
+        BackendId::Distro(family),
+        &NativeIds::Distro {
+            package: "tree".to_owned(),
+            family,
+        },
+    );
+    assert!(
+        version
+            .as_deref()
+            .is_some_and(|version| !version.is_empty()),
+        "the probe read the version out of dpkg-query: {version:?}"
+    );
+    let status = apps.status(&id).await.expect("status probes the record");
+    assert_eq!(
+        status,
+        AppStatus::Installed {
+            backend: BackendId::Distro(family),
+            version,
+        },
+        "status re-read the real dpkg database"
+    );
+
+    assert_removed(
+        &apps
+            .uninstall(&id, AppUninstallOptions::new().elevated(true))
+            .await
+            .expect("apt-get remove -y tree succeeds on the throwaway host"),
+        BackendId::Distro(family),
+    );
+    let after = apps.status(&id).await.expect("post-uninstall status");
+    assert_eq!(after, AppStatus::NotInstalled);
+}
+
+/// A small real flathub app through the facade's user installation:
+/// install, scoped-listing probe, uninstall. Self-skips when flatpak is
+/// absent or the app already sits in this user's installation.
+#[tokio::test]
+async fn flatpak_facade_installs_probes_and_uninstalls_a_real_app() {
+    const APP_ID: &str = "org.gnome.Calculator";
+    if !integration_enabled() {
+        eprintln!("TORIDE_APPS_INTEGRATION not set; skipping live smoke test");
+        return;
+    }
+    if !manager_on_path("flatpak") {
+        skip("flatpak");
+        return;
+    }
+    let scratch = ScratchDir::new("flatpak");
+    let runner = CommandRunner::builder().build();
+    let backend = FlatpakBackend::detect(runner.clone()).expect("flatpak was just found on PATH");
+    if backend
+        .installed_version(APP_ID, FlatpakInstallation::User)
+        .await
+        .expect("the user-installation presence probe succeeds")
+        .is_some()
+    {
+        eprintln!("{APP_ID} already installed for this user; skipping live smoke test");
+        return;
+    }
+    let id = TorideId::slugify(APP_ID);
+    let app = language_app(
+        &id,
+        "GNOME Calculator",
+        InstallMethod::Flatpak {
+            app_id: APP_ID.to_owned(),
+            remote: "flathub".to_owned(),
+        },
+    );
+    let mut apps = facade_base(runner, scratch.path().join("apps-manifest.json"), app)
+        .flatpak(backend)
+        .build()
+        .expect("facade builds over the scratch manifest");
+
+    let version = assert_installed(
+        &apps
+            .ensure_installed(&id, AppInstallOptions::new())
+            .await
+            .expect("flatpak install --user of the small flathub app succeeds"),
+        BackendId::Flatpak,
+        &NativeIds::Flatpak {
+            app_id: APP_ID.to_owned(),
+            app_ref: Some(executed_flatpak_ref(&apps, APP_ID)),
+            installation: FlatpakInstallation::User,
+        },
+    );
+    assert!(
+        version
+            .as_deref()
+            .is_some_and(|version| !version.is_empty()),
+        "the probe read the version out of flatpak's own listing: {version:?}"
+    );
+    let status = apps.status(&id).await.expect("status probes the record");
+    assert_eq!(
+        status,
+        AppStatus::Installed {
+            backend: BackendId::Flatpak,
+            version,
+        },
+        "status re-read the real user-installation listing"
+    );
+
+    assert_removed(
+        &apps
+            .uninstall(&id, AppUninstallOptions::new())
+            .await
+            .expect("flatpak uninstall --user succeeds"),
+        BackendId::Flatpak,
+    );
+    let after = apps.status(&id).await.expect("post-uninstall status");
+    assert_eq!(after, AppStatus::NotInstalled);
+}
+
+fn executed_flatpak_ref(apps: &Apps, app_id: &str) -> String {
+    let plan = only_record(apps)
+        .plan
+        .as_ref()
+        .expect("the install wrote a manifest record with its plan");
+    let toride_apps::Operation::FlatpakInstall { app_ref, .. } = &plan.operation else {
+        panic!(
+            "the executed plan was a flatpak install: {:?}",
+            plan.operation
+        )
+    };
+    assert!(
+        app_ref.starts_with(&format!("app/{app_id}/")) && app_ref.ends_with("/stable"),
+        "the executed ref is the live app's stable ref: {app_ref}"
+    );
+    app_ref.clone()
 }
 
 fn brew_runner() -> CommandRunner {

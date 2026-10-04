@@ -128,8 +128,10 @@ fn brew_and_flatpak_detect_track_the_real_host_path() {
 /// `detect()` succeeds with family Debian and the dpkg-backed probes
 /// answer live queries: an absent package is `NotInstalled` (dpkg-query's
 /// documented exit-1 shape), a package every Debian host carries (`dpkg`
-/// itself) reports a version. Non-Debian hosts only get the detect smoke
-/// assert, honestly labeled.
+/// itself) reports a version. Both apt families qualify — ubuntu-latest
+/// detects as Ubuntu, and Mint and kin reach Ubuntu through `ID_LIKE` —
+/// so the dpkg probes run there too; hosts outside the apt family only
+/// get the detect smoke assert, honestly labeled.
 #[tokio::test]
 async fn distro_detect_probes_this_host_through_its_real_package_manager() {
     if !integration_enabled() {
@@ -141,7 +143,7 @@ async fn distro_detect_probes_this_host_through_its_real_package_manager() {
         .expect("this host's family is detectable and its executor is on PATH");
 
     match family {
-        Some(DistroFamily::Debian) => {
+        Some(DistroFamily::Debian | DistroFamily::Ubuntu) => {
             let absent = backend
                 .status(StatusQuery::new("toride-live-absent-package"))
                 .await
