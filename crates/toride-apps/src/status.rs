@@ -881,12 +881,10 @@ mod tests {
         .env("LC_ALL", "C")
     }
 
-    /// The exact pacman query spec the single-package probe runs.
     fn pacman_query_spec(package: &str) -> toride_runner::CommandSpec {
         command("pacman", ["--query", package]).env("LC_ALL", "C")
     }
 
-    /// The exact apk listing spec the single-package probe runs.
     fn apk_query_spec(package: &str) -> toride_runner::CommandSpec {
         command("apk", ["list", "--installed", "--quiet", package]).env("LC_ALL", "C")
     }

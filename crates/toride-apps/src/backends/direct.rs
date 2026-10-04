@@ -365,8 +365,6 @@ mod tests {
     use sha2::{Digest, Sha256};
     use toride_registry::{Arch, TorideId};
 
-    /// sha256("hello"), the same known vector toride-installer's own
-    /// engine tests pin — no hashing dependency needed for it.
     const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
     fn temp_dir(label: &str) -> camino::Utf8PathBuf {
@@ -404,10 +402,6 @@ mod tests {
         Target::new(toride_registry::Os::Linux, Arch::X86_64)
     }
 
-    /// A single-shot HTTP/1.0 server for the async install tests — the
-    /// same shape toride-installer's engine tests use, so the pipeline is
-    /// exercised against a real socket with no external network. `name`
-    /// is the served path (its extension drives artifact-kind inference).
     async fn serve_body_once(body: Vec<u8>, name: &str) -> String {
         use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -429,8 +423,6 @@ mod tests {
         url
     }
 
-    /// The std-thread spelling of [`serve_body_once`], for the sync-twin
-    /// test — no async runtime anywhere near it.
     fn serve_body_once_sync(body: Vec<u8>, name: &str) -> String {
         use std::io::{Read as _, Write as _};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

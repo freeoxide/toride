@@ -1035,8 +1035,6 @@ mod tests {
         }
     }
 
-    /// A distro-backend update plan for `family`'s manager and package,
-    /// carrying the elevation requirement every distro update needs.
     fn update_plan_for(family: DistroFamily) -> crate::plan::UpdatePlan {
         let manager = PackageManager::for_family(family).expect("family routes to a manager");
         crate::plan::UpdatePlan {
@@ -1081,25 +1079,20 @@ mod tests {
         command("rpm", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
 
-    /// The exact spec a mutating pacman command runs.
     fn pacman_spec(verb: &str, package: &str) -> toride_runner::CommandSpec {
         command("pacman", [verb, "--noconfirm", package])
     }
 
-    /// The exact spec a mutating apk command runs (no suppression at all).
     fn apk_spec(verb: &str, package: &str) -> toride_runner::CommandSpec {
         command("apk", [verb, package])
     }
 
-    /// The exact spec a pacman query run uses for `packages` (all when
-    /// empty).
     fn pacman_query_spec(packages: &[&str]) -> toride_runner::CommandSpec {
         let mut args = vec!["--query"];
         args.extend(packages.iter().copied());
         command("pacman", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
 
-    /// The exact spec an apk listing uses for `packages` (all when empty).
     fn apk_query_spec(packages: &[&str]) -> toride_runner::CommandSpec {
         let mut args = vec!["list", "--installed", "--quiet"];
         args.extend(packages.iter().copied());
@@ -1117,12 +1110,10 @@ mod tests {
         read_fixture("distro/rpm-query.txt")
     }
 
-    /// The fixture pacman document's contents, ready to serve as stdout.
     fn pacman_fixture_output() -> String {
         read_fixture("distro/pacman-query.txt")
     }
 
-    /// The fixture apk document's contents, ready to serve as stdout.
     fn apk_fixture_output() -> String {
         read_fixture("distro/apk-list.txt")
     }
@@ -1879,23 +1870,19 @@ mod tests {
         fake.assert_no_unmatched_calls();
     }
 
-    /// The exact spec a mutating apt update command runs.
     fn apt_get_update_spec(package: &str) -> toride_runner::CommandSpec {
         command("apt-get", ["install", "--only-upgrade", "-y", package])
             .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1)
     }
 
-    /// The exact spec a mutating dnf update command runs.
     fn dnf_update_spec(package: &str) -> toride_runner::CommandSpec {
         command("dnf", ["upgrade", "-y", package])
     }
 
-    /// The exact spec a mutating pacman update command runs.
     fn pacman_update_spec(package: &str) -> toride_runner::CommandSpec {
         command("pacman", ["--sync", "--refresh", "--noconfirm", package])
     }
 
-    /// The exact spec a mutating apk update command runs.
     fn apk_update_spec(package: &str) -> toride_runner::CommandSpec {
         command("apk", ["upgrade", package])
     }

@@ -1054,7 +1054,6 @@ mod tests {
         }
     }
 
-    /// A flatpak-backend update plan carrying a hand-picked operation.
     fn manual_update_plan(operation: Operation) -> crate::plan::UpdatePlan {
         crate::plan::UpdatePlan {
             app: TorideId::slugify("brave-browser"),
@@ -2267,8 +2266,6 @@ mod tests {
         );
     }
 
-    // --- available-version listing ---------------------------------------------
-
     #[tokio::test]
     async fn available_versions_lists_the_remotes_branches_for_the_app() {
         let spec = command(
@@ -2401,7 +2398,6 @@ mod tests {
 
     #[test]
     fn parse_remote_branches_dedupes_the_per_arch_ref_rows() {
-        // One row per ref: a multi-arch app repeats each branch.
         let rows = "com.brave.Browser\tstable\n\
                     com.brave.Browser\tstable\n\
                     com.brave.Browser\tbeta\n\

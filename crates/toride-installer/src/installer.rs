@@ -1181,8 +1181,6 @@ mod engine_tests {
 
     #[test]
     fn hex_sha512_matches_known_vector() {
-        // sha512("hello") — vector computed independently of the crate
-        // (python hashlib).
         let h = hex_sha512(b"hello");
         assert_eq!(
             h,

@@ -2929,7 +2929,6 @@ mod tests {
     use crate::plan::FlatpakInstallation;
     use toride_registry::{DistroFamily, SourceKind};
 
-    /// An empty facade over a unique temp manifest, no backends attached.
     fn empty_apps() -> Apps {
         let path = std::env::temp_dir().join(format!(
             "toride-apps-unit-{}-{}.json",

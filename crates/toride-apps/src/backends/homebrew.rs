@@ -1185,7 +1185,6 @@ mod tests {
         }
     }
 
-    /// A homebrew-backend update plan carrying a hand-picked operation.
     fn manual_update_plan(operation: Operation) -> crate::plan::UpdatePlan {
         crate::plan::UpdatePlan {
             app: TorideId::slugify("brave-browser"),

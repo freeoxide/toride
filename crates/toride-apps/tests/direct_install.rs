@@ -23,7 +23,6 @@ use toride_apps::{AppStatus, BackendId, Target};
 use toride_registry::model::{App, InstallMethod, SourceRef};
 use toride_registry::{Adapter, Availability, Checksum, ChecksumAlgo, SourceKind, TorideId};
 
-/// sha256("hello") — the served artifact is `b"hello"` verbatim.
 const HELLO_SHA256: &str = "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824";
 
 static DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -38,9 +37,6 @@ fn temp_dir(label: &str) -> Utf8PathBuf {
     Utf8PathBuf::from_path_buf(dir).expect("system temp dir is valid UTF-8")
 }
 
-/// A one-shot loopback HTTP/1.0 server serving `body` to the next GET —
-/// a second fetch would find nothing listening, so tests that must not
-/// download again fail loudly if they do.
 async fn serve_body_once(body: Vec<u8>) -> String {
     use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -62,7 +58,6 @@ async fn serve_body_once(body: Vec<u8>) -> String {
     url
 }
 
-/// The std-thread spelling, for the blocking facade — no runtime anywhere.
 fn serve_body_once_sync(body: Vec<u8>) -> String {
     use std::io::{Read as _, Write as _};
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
@@ -107,8 +102,6 @@ impl Adapter for FixtureAdapter {
     }
 }
 
-/// A direct-method registry app for `url`, verified against `digest`,
-/// declaring `binaries` as its executable names.
 fn direct_app(url: &str, digest: Option<&str>, binaries: &[&str]) -> App {
     App {
         id: TorideId::slugify("ripgrep"),
@@ -221,7 +214,6 @@ async fn re_ensure_answers_already_present_from_local_state_alone() {
         .await
         .unwrap();
 
-    // The one-shot server is gone: any second download would fail loudly.
     let second = apps
         .ensure_installed(&id(), AppInstallOptions::new())
         .await
