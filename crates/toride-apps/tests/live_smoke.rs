@@ -1029,8 +1029,8 @@ async fn apk_facade_installs_probes_updates_and_uninstalls_a_real_package() {
 }
 
 /// The apt lifecycle through the facade on the ephemeral ubuntu dispatch
-/// runner: install, dpkg-query probe, remove of `tree`. Double-gated like
-/// pacman/apk; self-skips without root or when `tree` is installed.
+/// runner: install, dpkg-query probe, remove of `sl`. Double-gated like
+/// pacman/apk; self-skips without root or when `sl` is installed.
 #[tokio::test]
 async fn apt_facade_installs_probes_and_uninstalls_a_real_package() {
     if !integration_enabled() || !distro_smoke_enabled() {
@@ -1055,22 +1055,22 @@ async fn apt_facade_installs_probes_and_uninstalls_a_real_package() {
     let runner = CommandRunner::builder().build();
     let backend = DistroBackend::detect(runner.clone()).expect("apt-get was just found on PATH");
     if backend
-        .installed_version("tree")
+        .installed_version("sl")
         .await
         .expect("the dpkg presence probe succeeds")
         .is_some()
     {
-        eprintln!("apt `tree` already installed on this host; skipping live smoke test");
+        eprintln!("apt `sl` already installed on this host; skipping live smoke test");
         return;
     }
-    let id = TorideId::slugify("tree");
+    let id = TorideId::slugify("sl");
     let app = language_app(
         &id,
-        "tree",
+        "sl",
         InstallMethod::Distro {
             family,
             repo: None,
-            package: "tree".to_owned(),
+            package: "sl".to_owned(),
         },
     );
     let scratch = ScratchDir::new("apt");
@@ -1083,10 +1083,10 @@ async fn apt_facade_installs_probes_and_uninstalls_a_real_package() {
         &apps
             .ensure_installed(&id, AppInstallOptions::new().elevated(true))
             .await
-            .expect("apt-get install -y tree succeeds on the throwaway host"),
+            .expect("apt-get install -y sl succeeds on the throwaway host"),
         BackendId::Distro(family),
         &NativeIds::Distro {
-            package: "tree".to_owned(),
+            package: "sl".to_owned(),
             family,
         },
     );
@@ -1110,7 +1110,7 @@ async fn apt_facade_installs_probes_and_uninstalls_a_real_package() {
         &apps
             .uninstall(&id, AppUninstallOptions::new().elevated(true))
             .await
-            .expect("apt-get remove -y tree succeeds on the throwaway host"),
+            .expect("apt-get remove -y sl succeeds on the throwaway host"),
         BackendId::Distro(family),
     );
     let after = apps.status(&id).await.expect("post-uninstall status");
