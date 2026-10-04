@@ -26,7 +26,7 @@ env:
   PORTABLE_CRATES_MACOS: >-
     toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
     toride-fail2ban toride-fs toride-harden toride-mise toride-proxy
-    toride-runner toride-service toride-ssh toride-ssh-agent
+    toride-registry toride-runner toride-service toride-ssh toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
     toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
     toride-ssh-known-hosts toride-status toride-updates toride-users
@@ -34,7 +34,7 @@ env:
   PORTABLE_CRATES_WINDOWS: >-
     toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
     toride-fail2ban toride-fs toride-harden toride-mise toride-monitor
-    toride-proxy toride-runner toride-service toride-ssh toride-ssh-agent
+    toride-proxy toride-registry toride-runner toride-service toride-ssh toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
     toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
     toride-ssh-known-hosts toride-status toride-updates toride-users

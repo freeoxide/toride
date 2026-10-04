@@ -124,6 +124,7 @@ jobs:
             done
           }
 
+          intra_set="$(printf '%s' "$PUBLISH_SET" | tr ' ' '|')"
           for crate in $PUBLISH_SET; do
             version="$(version_for "$crate")"
             if index_has_version "$crate" "$version"; then
@@ -134,7 +135,7 @@ jobs:
             if [[ "$dry_run" == "true" ]]; then
               log="$(mktemp)"
               if ! cargo publish --dry-run -p "$crate" 2>&1 | tee "$log"; then
-                if grep -q "no matching package" "$log"; then
+                if grep -qE "no matching package named \`(${intra_set})\` found" "$log"; then
                   echo "::warning::publish dry-run order-blocked for ${crate} (intra-set deps still unpublished)"
                 else
                   echo "error: publish dry-run failed for ${crate} for a reason other than order-blocking" >&2
