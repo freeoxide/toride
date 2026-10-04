@@ -19,7 +19,7 @@ use crate::model::{
     App, Checksum, DistroFamily, InstallMethod, Os, Platform, SourceKind, SourceRef,
 };
 
-/// Normalizes one external repository into [`App`](crate::App)s.
+/// Normalizes one external repository into [`App`]s.
 ///
 /// Contract: ALL source-specific knowledge lives in the implementing
 /// module — wire structs, endpoints, quirk handling. Callers see only
@@ -181,7 +181,7 @@ impl Registry {
 
     /// Render `app`'s descriptor for `host` (DESIGN.md §3.3): native argv,
     /// direct-download fallback, or [`PlannedOp::Unsupported`]; empty
-    /// `platforms` skip the claim check; `min_release` never enforced.
+    /// `platforms` skip the claim check; `min_release` is not yet enforced — no caller models the host release (the toride-apps planner's documented stance).
     #[must_use]
     pub fn plan(app: &App, host: &Platform) -> PlannedOp {
         let claimed = app.platforms.is_empty()
@@ -953,6 +953,54 @@ mod tests {
                 ],
             },
             "an arch-independent claim matches any host arch"
+        );
+    }
+
+    #[test]
+    fn plan_ignores_min_release_claims_and_host_release_slots_for_now() {
+        let mut app = stub_app("brave-browser", SourceKind::HomebrewCask);
+        app.install = InstallMethod::Homebrew {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        };
+        app.platforms = vec![
+            Platform {
+                os: Os::MacOs,
+                arch: Some(Arch::X86_64),
+                min_release: Some("13".to_owned()),
+            },
+            Platform {
+                os: Os::MacOs,
+                arch: Some(Arch::Aarch64),
+                min_release: Some("13".to_owned()),
+            },
+        ];
+        let mut host_below_the_floor = host(Os::MacOs, Some(Arch::Aarch64));
+        host_below_the_floor.min_release = Some("11".to_owned());
+        let mut host_above_the_floor = host(Os::MacOs, Some(Arch::Aarch64));
+        host_above_the_floor.min_release = Some("15".to_owned());
+        let native = PlannedOp::Command {
+            program: "brew".to_owned(),
+            args: vec![
+                "install".to_owned(),
+                "--cask".to_owned(),
+                "brave-browser".to_owned(),
+            ],
+        };
+        assert_eq!(
+            Registry::plan(&app, &host_below_the_floor),
+            native,
+            "a host below the claim floor still plans — min_release is the toride-apps-planner-aligned not-yet-enforced claim"
+        );
+        assert_eq!(
+            Registry::plan(&app, &host_above_the_floor),
+            native.clone(),
+            "the host's release slot never gates either — comparison is not implemented, matching the apps planner's documented punt"
+        );
+        assert_eq!(
+            Registry::plan(&app, &host(Os::MacOs, Some(Arch::Aarch64))),
+            native,
+            "a host that declares no release at all — today's every caller — plans the native method"
         );
     }
 }

@@ -837,6 +837,7 @@ const API_BASE: &str = "https://formulae.brew.sh";
 pub struct HomebrewClient {
     http: reqwest::Client,
     cache_dir: Option<camino::Utf8PathBuf>,
+    api_base: String,
 }
 
 /// How long a cached catalog index is served with no network round-trip;
@@ -859,6 +860,7 @@ impl HomebrewClient {
         Self {
             http: crate::http::build_http_client(USER_AGENT),
             cache_dir: default_cache_dir(),
+            api_base: API_BASE.to_owned(),
         }
     }
 
@@ -869,21 +871,34 @@ impl HomebrewClient {
         Self {
             http: crate::http::build_http_client(USER_AGENT),
             cache_dir: Some(cache_dir.into()),
+            api_base: API_BASE.to_owned(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_api_base(api_base: impl Into<String>) -> Self {
+        Self {
+            http: crate::http::build_http_client(USER_AGENT),
+            cache_dir: None,
+            api_base: api_base.into(),
         }
     }
 
     /// `GET /api/cask.json` — the full cask catalog, served from a fresh
     /// cache entry when one exists. Errors: [`Error::Http`].
     pub async fn fetch_cask_index(&self) -> Result<String> {
-        self.fetch_index_cached(&format!("{API_BASE}/api/cask.json"), "cask.json")
+        self.fetch_index_cached(&format!("{}/api/cask.json", self.api_base), "cask.json")
             .await
     }
 
     /// `GET /api/formula.json` — the full formula catalog, served from a
     /// fresh cache entry when one exists. Errors: [`Error::Http`].
     pub async fn fetch_formula_index(&self) -> Result<String> {
-        self.fetch_index_cached(&format!("{API_BASE}/api/formula.json"), "formula.json")
-            .await
+        self.fetch_index_cached(
+            &format!("{}/api/formula.json", self.api_base),
+            "formula.json",
+        )
+        .await
     }
 
     async fn fetch_index_cached(&self, url: &str, cache_file: &str) -> Result<String> {
@@ -991,7 +1006,7 @@ impl HomebrewClient {
     /// [`Error::Http`] on transport failures and non-success statuses —
     /// including 404, which means "no such cask".
     pub async fn fetch_cask(&self, token: &str) -> Result<String> {
-        let url = format!("{API_BASE}/api/cask/{token}.json");
+        let url = format!("{}/api/cask/{token}.json", self.api_base);
         self.fetch_body(&url).await?.ok_or_else(|| Error::Http {
             url: url.clone(),
             message: format!("HTTP 404: no cask named `{token}`"),
@@ -1006,7 +1021,7 @@ impl HomebrewClient {
     /// [`Error::Http`] on transport failures and non-success statuses —
     /// including 404, which means "no such formula".
     pub async fn fetch_formula(&self, name: &str) -> Result<String> {
-        let url = format!("{API_BASE}/api/formula/{name}.json");
+        let url = format!("{}/api/formula/{name}.json", self.api_base);
         self.fetch_body(&url).await?.ok_or_else(|| Error::Http {
             url: url.clone(),
             message: format!("HTTP 404: no formula named `{name}`"),
@@ -1018,14 +1033,14 @@ impl HomebrewClient {
     /// outcome, not a failure). Private because the pinned public surface
     /// of the client is the `Result<String>` pair above (DESIGN.md §3.1).
     async fn fetch_cask_optional(&self, token: &str) -> Result<Option<String>> {
-        self.fetch_body(&format!("{API_BASE}/api/cask/{token}.json"))
+        self.fetch_body(&format!("{}/api/cask/{token}.json", self.api_base))
             .await
     }
 
     /// 404-aware variant of [`Self::fetch_formula`] — see
     /// [`Self::fetch_cask_optional`].
     async fn fetch_formula_optional(&self, name: &str) -> Result<Option<String>> {
-        self.fetch_body(&format!("{API_BASE}/api/formula/{name}.json"))
+        self.fetch_body(&format!("{}/api/formula/{name}.json", self.api_base))
             .await
     }
 
@@ -1072,8 +1087,9 @@ impl HomebrewClient {
 /// implementation over the two per-item endpoints, serving both
 /// [`SourceKind::HomebrewCask`] and [`SourceKind::HomebrewFormula`] rows —
 /// [`Adapter::lookup`](crate::adapter::Adapter::lookup) dispatches on the
-/// row's kind, and a cask-kind row whose token no cask answers falls
-/// through to the formula lookup (brew's own token namespace is unified).
+/// row's kind; a cask-kind row (the adapter's primary, unqualified kind)
+/// resolves the unified token namespace formula first with cask fallback —
+/// `brew install`'s own order.
 /// Gated behind the crate's `http` feature together with
 /// [`HomebrewClient`] (DESIGN.md §9: the parsers build fully offline).
 #[cfg(feature = "http")]
@@ -1099,6 +1115,14 @@ impl HomebrewAdapter {
     pub fn with_cache_dir(cache_dir: impl Into<camino::Utf8PathBuf>) -> Self {
         Self {
             client: HomebrewClient::with_cache_dir(cache_dir),
+            index: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_api_base(api_base: impl Into<String>) -> Self {
+        Self {
+            client: HomebrewClient::with_api_base(api_base),
             index: tokio::sync::Mutex::new(None),
         }
     }
@@ -1134,10 +1158,10 @@ impl crate::adapter::Adapter for HomebrewAdapter {
 
     async fn lookup(&self, id: &SourceRef) -> Result<Option<App>> {
         match id.source {
-            SourceKind::HomebrewCask => match self.client.fetch_cask_optional(&id.id).await? {
-                Some(body) => parse_cask_json(&body).map(Some),
-                None => match self.client.fetch_formula_optional(&id.id).await? {
-                    Some(body) => parse_formula_json(&body).map(Some),
+            SourceKind::HomebrewCask => match self.client.fetch_formula_optional(&id.id).await? {
+                Some(body) => parse_formula_json(&body).map(Some),
+                None => match self.client.fetch_cask_optional(&id.id).await? {
+                    Some(body) => parse_cask_json(&body).map(Some),
                     None => Ok(None),
                 },
             },
@@ -2052,6 +2076,212 @@ mod index_cache_tests {
     }
 }
 
+#[cfg(all(test, feature = "http"))]
+mod lookup_dispatch_tests {
+    use super::HomebrewAdapter;
+    use crate::adapter::Adapter as _;
+    use crate::error::Error;
+    use crate::model::{InstallMethod, SourceKind, SourceRef};
+    use std::collections::HashMap;
+    use std::io::{Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+
+    fn spawn_stub_api(routes: &[(&str, u16, String)]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback listener binds");
+        let addr = listener
+            .local_addr()
+            .expect("the bound address is readable");
+        let routes: HashMap<String, (u16, String)> = routes
+            .iter()
+            .cloned()
+            .map(|(path, status, body)| (path.to_owned(), (status, body)))
+            .collect();
+        let routes = Arc::new(routes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let routes = Arc::clone(&routes);
+                std::thread::spawn(move || serve_request(&mut stream, &routes));
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn serve_request(stream: &mut TcpStream, routes: &HashMap<String, (u16, String)>) {
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|end| end == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&request);
+        let path = head
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned();
+        match routes.get(&path) {
+            Some((status, body)) => respond(stream, *status, body),
+            None => respond(stream, 404, "{}"),
+        }
+    }
+
+    fn respond(stream: &mut TcpStream, status: u16, body: &str) {
+        let reason = if status == 404 { "Not Found" } else { "OK" };
+        let response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    }
+
+    fn formula_body(name: &str) -> String {
+        format!(
+            r#"{{"name":"{name}","full_name":"{name}","versions":{{"stable":"1.0"}},"executables":["{name}-bin"]}}"#
+        )
+    }
+
+    fn cask_body(token: &str) -> String {
+        format!(
+            r#"{{"token":"{token}","name":["Stub {token}"],"version":"1.0","url":"https://example.com/{token}.dmg","sha256":"x"}}"#
+        )
+    }
+
+    fn row(source: SourceKind, id: &str) -> SourceRef {
+        SourceRef {
+            source,
+            id: id.to_owned(),
+            repo: None,
+            version: None,
+            provisional: false,
+        }
+    }
+
+    fn stubbed_adapter(routes: &[(&str, u16, String)]) -> HomebrewAdapter {
+        HomebrewAdapter::with_api_base(spawn_stub_api(routes))
+    }
+
+    #[tokio::test]
+    async fn lookup_prefers_the_formula_when_both_kinds_answer_the_same_slug() {
+        let adapter = stubbed_adapter(&[
+            (
+                "/api/formula/toride-both.json",
+                200,
+                formula_body("toride-both"),
+            ),
+            ("/api/cask/toride-both.json", 200, cask_body("toride-both")),
+        ]);
+        let app = adapter
+            .lookup(&row(SourceKind::HomebrewCask, "toride-both"))
+            .await
+            .expect("the stub answers both endpoints")
+            .expect("both kinds answer the slug");
+        assert!(
+            matches!(
+                app.install,
+                InstallMethod::Homebrew { cask: false, token } if token == "toride-both"
+            ),
+            "the primary-kind row must resolve the shared slug the way \
+             `brew install <token>` would: the formula wins"
+        );
+        assert_eq!(app.sources[0].source, SourceKind::HomebrewFormula);
+    }
+
+    #[tokio::test]
+    async fn lookup_answers_a_formula_only_slug_under_the_primary_kind() {
+        let adapter = stubbed_adapter(&[
+            (
+                "/api/formula/toride-only-formula.json",
+                200,
+                formula_body("toride-only-formula"),
+            ),
+            ("/api/cask/toride-only-formula.json", 404, String::new()),
+        ]);
+        let app = adapter
+            .lookup(&row(SourceKind::HomebrewCask, "toride-only-formula"))
+            .await
+            .expect("the stub answers")
+            .expect("the formula alone answers the slug");
+        assert!(
+            matches!(app.install, InstallMethod::Homebrew { cask: false, .. }),
+            "a formula-only slug resolves through the primary kind"
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_falls_back_to_the_cask_after_the_formula_misses() {
+        let adapter = stubbed_adapter(&[
+            ("/api/formula/toride-only-cask.json", 404, String::new()),
+            (
+                "/api/cask/toride-only-cask.json",
+                200,
+                cask_body("toride-only-cask"),
+            ),
+        ]);
+        let app = adapter
+            .lookup(&row(SourceKind::HomebrewCask, "toride-only-cask"))
+            .await
+            .expect("the stub answers")
+            .expect("the cask alone answers the slug");
+        assert!(matches!(
+            app.install,
+            InstallMethod::Homebrew { cask: true, token } if token == "toride-only-cask"
+        ));
+        assert_eq!(app.sources[0].source, SourceKind::HomebrewCask);
+    }
+
+    #[tokio::test]
+    async fn lookup_returns_none_when_neither_kind_answers() {
+        let adapter = stubbed_adapter(&[
+            ("/api/formula/toride-absent.json", 404, String::new()),
+            ("/api/cask/toride-absent.json", 404, String::new()),
+        ]);
+        let missing = adapter
+            .lookup(&row(SourceKind::HomebrewCask, "toride-absent"))
+            .await
+            .expect("404s must not error");
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn lookup_keeps_a_formula_kind_row_scoped_to_the_formula_endpoint() {
+        let adapter = stubbed_adapter(&[
+            ("/api/formula/toride-only-cask.json", 404, String::new()),
+            (
+                "/api/cask/toride-only-cask.json",
+                200,
+                cask_body("toride-only-cask"),
+            ),
+        ]);
+        let none = adapter
+            .lookup(&row(SourceKind::HomebrewFormula, "toride-only-cask"))
+            .await
+            .expect("the formula endpoint answers 404");
+        assert!(
+            none.is_none(),
+            "the exact-kind formula row never falls through to the cask endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_refuses_a_row_from_a_foreign_source_kind() {
+        let adapter = stubbed_adapter(&[]);
+        let error = adapter
+            .lookup(&row(SourceKind::Flathub, "com.example.App"))
+            .await
+            .expect_err("a foreign kind must be refused before any endpoint is built");
+        assert!(matches!(error, Error::UnsupportedSource { .. }));
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Tests — fetch half, env-gated live round-trip (DESIGN.md §9)
 // ---------------------------------------------------------------------------
@@ -2149,8 +2379,7 @@ mod integration_tests {
         assert!(missing.is_none());
 
         // A formula-only slug under the adapter's primary (cask) kind
-        // falls through to the formula endpoint — the cask namespace miss
-        // is not a source miss.
+        // resolves through the formula endpoint first — formula before cask.
         let formula = adapter
             .lookup(&SourceRef {
                 source: SourceKind::HomebrewCask,
