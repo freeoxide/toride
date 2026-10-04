@@ -49,6 +49,7 @@ use toride_apps::apps::{
     AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBuilder, EnsureAppOutcome,
     UninstallAppOutcome, UpdateOutcome,
 };
+use toride_apps::backend::Backend;
 #[cfg(all(feature = "direct", target_os = "linux"))]
 use toride_apps::backends::DirectBackend;
 use toride_apps::backends::distro::detect_host_family;
@@ -425,7 +426,7 @@ async fn cargo_facade_installs_probes_updates_and_uninstalls_a_real_crate() {
         scratch.path().join("apps-manifest.json"),
         app,
     )
-    .cargo(CargoBackend::detect(runner).expect("cargo was just found on PATH"))
+    .cargo(CargoBackend::detect(runner.clone()).expect("cargo was just found on PATH"))
     .build()
     .expect("facade builds over the scratch manifest");
 
@@ -464,6 +465,16 @@ async fn cargo_facade_installs_probes_updates_and_uninstalls_a_real_crate() {
             .expect("the currency probe itself must succeed"),
         UpdateOutcome::UpToDate,
         "the registry's only version is installed, so update answers UpToDate without running"
+    );
+
+    let offered = CargoBackend::detect(runner.clone())
+        .expect("cargo was just found on PATH")
+        .available_version("ripgrep")
+        .await
+        .expect("the keyworded leading row of `cargo info --color never ripgrep` parses");
+    assert!(
+        offered.is_some(),
+        "a crate whose header carries #keyword tags answers a registry offering"
     );
 
     assert_removed(
