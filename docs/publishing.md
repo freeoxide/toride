@@ -55,8 +55,10 @@ and record the flip in the crate's CHANGELOG.
    (`-D warnings`), tests, and the non-default feature configurations,
    and fails the run if the `PUBLISH_SET` order, the version lockstep,
    or the single-version rule regresses. Only the order-blocked dry-run
-   failure ("no matching package", unpublished intra-set dependency) is
-   downgraded to a warning; any other dry-run failure fails the run.
+   failure — an intra-set dependency absent from crates.io ("no matching
+   package") or not yet published at the required version ("failed to
+   select a version") — is downgraded to a warning; any other dry-run
+   failure fails the run.
 5. Re-run with `dry_run` disabled. Each crate is verified with
    `cargo publish --dry-run`, uploaded, and held until crates.io
    resolves it before the next crate starts. Afterwards the workflow

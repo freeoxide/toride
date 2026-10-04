@@ -135,8 +135,8 @@ jobs:
             if [[ "$dry_run" == "true" ]]; then
               log="$(mktemp)"
               if ! cargo publish --dry-run -p "$crate" 2>&1 | tee "$log"; then
-                if grep -qE "no matching package named \`(${intra_set})\` found" "$log"; then
-                  echo "::warning::publish dry-run order-blocked for ${crate} (intra-set deps still unpublished)"
+                if grep -qE "no matching package named \`(${intra_set})\` found|failed to select a version for the requirement \`(${intra_set}) = " "$log"; then
+                  echo "::warning::publish dry-run order-blocked for ${crate} (intra-set dep not on crates.io at the required version)"
                 else
                   echo "error: publish dry-run failed for ${crate} for a reason other than order-blocking" >&2
                   exit 1
