@@ -1,8 +1,9 @@
 name: CI
 
-# A bare `workflow_dispatch` runs ONLY the macOS brew/cask leg below — ci.yml
-# is the one dispatchable workflow (default-branch registered; branch-only
-# files 404), so it doubles as the branch live-verify venue.
+# ci.yml is the one dispatchable workflow (default-branch registered;
+# branch-only files 404), so a `workflow_dispatch` doubles as the branch
+# live-verify venue: the dispatch-gated live-smoke legs run blocking and the
+# push/PR gates (fmt, clippy, test, check, feature, publish) skip.
 on:
   push:
     branches: [master]
@@ -164,7 +165,7 @@ jobs:
         run: cargo check -p toride-apps --no-default-features
 
   toride-apps-smoke-archlinux:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     name: toride-apps live smoke (archlinux, pacman)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -182,15 +183,14 @@ jobs:
           key: smoke-archlinux
       - name: Pacman suppression-flag check
         run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
-      - name: Env-gated pacman live smoke (non-blocking annotation on first contact)
-        continue-on-error: true
+      - name: Pacman live smoke (throwaway container db)
         env:
           TORIDE_APPS_INTEGRATION: "1"
           TORIDE_APPS_DISTRO_SMOKE: "1"
         run: cargo test -p toride-apps --test live_smoke pacman -- --nocapture
 
   toride-apps-smoke-alpine:
-    if: github.event_name != 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch'
     name: toride-apps live smoke (alpine, apk)
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -208,8 +208,7 @@ jobs:
           key: smoke-alpine
       - name: Apk suppression-flag check
         run: cargo test -p toride-apps executor_suppression_is_per_manager_and_apk_carries_no_flag
-      - name: Env-gated apk live smoke (non-blocking annotation on first contact)
-        continue-on-error: true
+      - name: Apk live smoke (throwaway container db)
         env:
           TORIDE_APPS_INTEGRATION: "1"
           TORIDE_APPS_DISTRO_SMOKE: "1"
@@ -267,6 +266,37 @@ jobs:
         env:
           TORIDE_APPS_INTEGRATION: "1"
         run: cargo test -p toride-apps --test live_smoke -- --nocapture npm cargo uv pipx
+
+  toride-apps-smoke-ubuntu:
+    if: github.event_name == 'workflow_dispatch'
+    name: toride-apps live smoke (ubuntu, apt+flatpak)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: smoke-ubuntu
+      - name: Install the managers the runner lacks plus the flatpak user installation
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pipx python3-venv flatpak
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          pipx install uv
+          curl https://mise.run | sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          export PATH="$HOME/.local/bin:$PATH"
+          npm --version
+          uv --version
+          pipx --version
+          mise --version
+          flatpak --version
+          flatpak remotes --user
+      - name: Canonical gated smoke (every feature, every target, apt host probe included)
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: cargo test -p toride-apps --all-features --all-targets -- --nocapture
 
   publish-set-features:
     if: github.event_name != 'workflow_dispatch'
