@@ -461,7 +461,7 @@ fn split_path_value(value: &std::ffi::OsStr) -> Vec<Utf8PathBuf> {
         .collect()
 }
 
-const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD";
+const DEFAULT_PATHEXT: &str = ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC";
 
 fn resolve_pathext() -> String {
     if cfg!(windows) {
@@ -986,8 +986,11 @@ mod tests {
     }
 
     #[test]
-    fn the_windows_default_pathext_is_the_documented_four_entry_core() {
-        assert_eq!(DEFAULT_PATHEXT, ".COM;.EXE;.BAT;.CMD");
+    fn the_windows_default_pathext_is_the_learn_microsoft_com_start_command_docs_machine_value() {
+        assert_eq!(
+            DEFAULT_PATHEXT,
+            ".COM;.EXE;.BAT;.CMD;.VBS;.VBE;.JS;.JSE;.WSF;.WSH;.MSC"
+        );
     }
 
     #[test]
