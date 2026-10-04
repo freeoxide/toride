@@ -56,7 +56,7 @@ use toride_apps::backends::homebrew::{BrewKind, HomebrewBackend};
 use toride_apps::backends::{CargoBackend, DistroBackend, NpmBackend, PipxBackend, UvBackend};
 use toride_apps::manifest::{InstallRecord, NativeIds};
 use toride_apps::runner::CommandRunner;
-use toride_apps::{AppStatus, BackendId, Version};
+use toride_apps::{AppStatus, AppsError, BackendId, Version};
 use toride_registry::model::{App, InstallMethod, SourceKind, SourceRef};
 #[cfg(all(feature = "direct", target_os = "linux"))]
 use toride_registry::model::{Checksum, ChecksumAlgo};
@@ -880,13 +880,30 @@ async fn pacman_facade_installs_probes_updates_and_uninstalls_a_real_package() {
         "the probe read the version out of pacman --query: {version:?}"
     );
 
-    assert_reensure_at(
-        &mut apps,
-        &id,
-        BackendId::Distro(DistroFamily::Arch),
+    let again = apps
+        .ensure_installed(&id, AppInstallOptions::new())
+        .await
+        .expect("unversioned re-ensure probes");
+    assert_eq!(
+        assert_already_present_at(&again, BackendId::Distro(DistroFamily::Arch)).as_deref(),
         version.as_deref(),
-    )
-    .await;
+        "a version-less request must answer AlreadyPresent at the recorded version"
+    );
+    let refused = apps
+        .ensure_installed(
+            &id,
+            AppInstallOptions::new().version(Some(Version::new(version.as_deref().unwrap_or("0")))),
+        )
+        .await
+        .expect_err("distro methods are pin-less, so a versioned request refuses at plan time");
+    assert!(
+        matches!(
+            refused,
+            AppsError::Backend(ref inner)
+                if matches!(inner, toride_apps::Error::VersionNotSelectable { .. })
+        ),
+        "{refused:?}"
+    );
     let updated = apps
         .update(&id, &AppUpdateOptions::new().elevated(true))
         .await

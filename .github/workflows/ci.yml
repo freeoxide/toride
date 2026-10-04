@@ -199,7 +199,7 @@ jobs:
     steps:
       - name: Install toolchain (bash/gcompat/libstdc++ for the runner's shell and node-based actions)
         run: |
-          apk add --no-cache bash gcompat libstdc++ rust git build-base
+          apk add --no-cache bash gcompat libstdc++ rust cargo git build-base
           rustc --version
           cargo --version
       - uses: actions/checkout@v4
