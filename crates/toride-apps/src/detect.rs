@@ -297,7 +297,7 @@ impl MultiSourceDetector {
                 seen.push(artifact);
                 let mut hit =
                     Detection::new(name, DetectionSource::Path, DetectionConfidence::Medium)
-                        .with_path(candidate.to_string())
+                        .with_path(on_disk_casing(&candidate))
                         .with_path_rank(rank);
                 hit.shadowed = !hits.is_empty();
                 hit.arch_mismatch = self.probe_arch_mismatch(candidate.as_str());
@@ -331,7 +331,7 @@ impl MultiSourceDetector {
             return Vec::new();
         };
         let mut hit = Detection::new(name, DetectionSource::MiseShim, DetectionConfidence::Medium)
-            .with_path(candidate.to_string());
+            .with_path(on_disk_casing(&candidate));
         self.refine_mise_shim(&mut hit);
         vec![hit]
     }
@@ -505,6 +505,30 @@ fn name_carries_extension(name: &str) -> bool {
     name.rsplit(['/', '\\'])
         .next()
         .is_some_and(|file_name| file_name.contains('.'))
+}
+
+fn on_disk_casing(candidate: &Utf8PathBuf) -> String {
+    let Some(file_name) = candidate.file_name() else {
+        return candidate.to_string();
+    };
+    let Some(dir) = candidate.parent() else {
+        return candidate.to_string();
+    };
+    let names: Vec<String> = std::fs::read_dir(dir.as_std_path())
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|entry| entry.file_name().into_string().ok())
+                .collect()
+        })
+        .unwrap_or_default();
+    if names.iter().any(|name| name == file_name) {
+        return candidate.to_string();
+    }
+    names
+        .iter()
+        .find(|name| name.eq_ignore_ascii_case(file_name))
+        .map_or_else(|| candidate.to_string(), |name| dir.join(name).to_string())
 }
 
 fn mise_shim_dir_from(
@@ -1016,6 +1040,31 @@ mod tests {
         assert!(
             detector.detect("npm").is_empty(),
             "an npm.cmd sibling is not a hit for npm off Windows"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reported_hit_carries_the_on_disk_file_name_casing() {
+        let dir = temp_dir("on-disk-casing");
+        write_executable(&dir, "npm.cmd");
+        assert_eq!(
+            on_disk_casing(&dir.join("npm.CMD")),
+            dir.join("npm.cmd").to_string()
+        );
+        assert_eq!(
+            on_disk_casing(&dir.join("npm.cmd")),
+            dir.join("npm.cmd").to_string()
+        );
+        assert_eq!(
+            on_disk_casing(&dir.join("absent.CMD")),
+            dir.join("absent.CMD").to_string()
+        );
+        write_executable(&dir, "npm.CMD");
+        assert_eq!(
+            on_disk_casing(&dir.join("npm.CMD")),
+            dir.join("npm.CMD").to_string(),
+            "an exact-name entry wins over a case-variant sibling on a case-sensitive filesystem"
         );
     }
 
