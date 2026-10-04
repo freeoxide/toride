@@ -1287,8 +1287,6 @@ mod tests {
     #[tokio::test]
     async fn stdin_to_exiting_command_succeeds() {
         let runner = TokioRunner;
-        // The child drains stdin before exiting, so the write cannot race
-        // the exit into a broken pipe.
         let spec = CommandSpec::new("bash")
             .args(["-c", "cat > /dev/null"])
             .stdin("data");

@@ -1690,8 +1690,6 @@ mod tests {
 
     #[tokio::test]
     async fn install_rejects_a_manager_foreign_to_the_backends_family() {
-        // A dnf/pacman/apk operation routed to the Debian backend is a
-        // misroute, not something to execute against the wrong distro.
         for manager in [
             PackageManager::Dnf,
             PackageManager::Pacman,
@@ -2188,8 +2186,6 @@ mod tests {
                 "%{NAME}\\t%{VERSION}\\n"
             ]
         );
-        // A bare pacman --query lists every installed package, and a bare
-        // apk list matches everything installed — no operand needed.
         let pacman = pacman_query_spec(&[]);
         assert_eq!(pacman.args, ["--query"]);
         let apk = apk_query_spec(&[]);
@@ -2218,9 +2214,6 @@ mod tests {
 
     #[test]
     fn every_query_spec_pins_the_c_locale() {
-        // dpkg-query, rpm, and pacman translate their stderr (pacman's
-        // German po renders the not-found line as `Paket »…« wurde nicht
-        // gefunden`), so the not-found markers only match C-locale output.
         let specs = [
             dpkg_query_spec(&["bash"]),
             dpkg_query_spec(&[]),
@@ -2241,8 +2234,6 @@ mod tests {
 
     #[test]
     fn mutating_specs_leave_the_host_locale_alone() {
-        // Only classified stderr needs the C locale: a mutating command's
-        // failure wording travels verbatim to the user, in their language.
         for executor in [
             DistroExecutor::Apt,
             DistroExecutor::Dnf,
@@ -2273,8 +2264,6 @@ mod tests {
 
     #[test]
     fn parse_query_output_reads_rows_from_the_pacman_fixture() {
-        // The documented `pacman --query` shape: one `name version` row per
-        // installed package, space-separated (src/pacman/query.c).
         let apps = parse_query_output(DistroExecutor::Pacman, &pacman_fixture_output()).unwrap();
         assert_eq!(apps.len(), 4, "{apps:?}");
         assert_eq!(
@@ -2459,8 +2448,6 @@ mod tests {
     fn query_reports_not_found_gates_pacman_on_exit_one_and_the_marker() {
         let marker = CommandOutput::from_stderr("error: package 'ghost' was not found", 1);
         assert!(query_reports_not_found(DistroExecutor::Pacman, &marker));
-        // A not-found wording next to a real database failure must stay an
-        // error (exit class alone is not pacman's signal).
         let fatal = CommandOutput::from_stderr(
             "error: package 'ghost' was not found\nerror: failed to initialize alpm library",
             1,
@@ -2470,8 +2457,6 @@ mod tests {
 
     #[test]
     fn query_reports_not_found_never_classifies_an_apk_failure() {
-        // apk's list cannot fail on a no-match: an empty exit-0 answer is
-        // its not-found signal, so every apk failure stays a real error.
         let failed = CommandOutput::from_stderr("ERROR: unable to open database", 1);
         assert!(!query_reports_not_found(DistroExecutor::Apk, &failed));
     }
@@ -2594,7 +2579,6 @@ mod tests {
 
     #[tokio::test]
     async fn installed_version_maps_an_empty_apk_answer_to_none() {
-        // apk's not-found signal: an empty exit-0 listing, never an error.
         let fake = FakeRunner::new()
             .strict()
             .respond(apk_query_spec(&["ghost"]), CommandOutput::from_stdout(""));
