@@ -187,7 +187,7 @@ fn scan_empty_log_returns_zero_counts() {
     let result = jail.scan(ExecutionMode::DryRun).unwrap();
     assert_eq!(result.lines_scanned, 0);
     assert_eq!(result.matches_found, 0);
-    assert!(result.new_bans.is_empty());
+    assert_eq!(result.new_bans, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -228,7 +228,7 @@ fn scan_no_matches_when_lines_do_not_match_pattern() {
     let result = jail.scan(ExecutionMode::DryRun).unwrap();
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 0);
-    assert!(result.new_bans.is_empty());
+    assert_eq!(result.new_bans, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -408,7 +408,7 @@ fn unban_ip_removes_ban_entry() {
 
     // Should no longer be in the ban list.
     let bans = jail.list_bans().unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 }
 
 #[test]
@@ -481,7 +481,7 @@ fn unban_ip_wrong_jail_returns_not_banned() {
 fn list_bans_returns_empty_when_no_bans() {
     let (jail, _log, _dir) = setup_test_jail();
     let bans = jail.list_bans().unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 }
 
 #[test]
@@ -893,7 +893,7 @@ fn test_scan_max_retry_below_threshold_no_ban() {
 
     // Nothing persisted.
     let bans = jail.list_bans().unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -973,7 +973,7 @@ fn test_unban_then_scan_same_ip_rebanned() {
 
     // Unban it.
     jail.unban_ip(ip, ExecutionMode::DryRun).unwrap();
-    assert!(jail.list_bans().unwrap().is_empty());
+    assert_eq!(jail.list_bans().unwrap(), Vec::new());
 
     // Write the same IP again and scan -- it should get re-banned.
     writeln!(log_file, "Failed login from 192.168.1.10").unwrap();
@@ -1025,7 +1025,7 @@ fn test_scan_with_pattern_matching_everything() {
     assert_eq!(result.new_bans.len(), 0);
 
     let bans = jail.list_bans().unwrap();
-    assert!(bans.is_empty());
+    assert_eq!(bans, Vec::new());
 }
 
 // ---------------------------------------------------------------------------
@@ -1227,5 +1227,5 @@ fn scan_ban_action_error_still_persists_journal() {
         "journal must have been persisted so the line is not re-scanned"
     );
     assert_eq!(r2.matches_found, 0);
-    assert!(r2.new_bans.is_empty());
+    assert_eq!(r2.new_bans, Vec::new());
 }

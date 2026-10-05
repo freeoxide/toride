@@ -107,7 +107,7 @@ mod tests {
             } => {
                 assert_eq!(command, "mise ls --output=json");
                 assert_eq!(exit_code, Some(1));
-                assert!(stdout.is_empty());
+                assert_eq!(stdout, "");
                 assert_eq!(stderr, "error: unknown flag");
             }
             other => panic!("expected CommandFailed, got {other:?}"),

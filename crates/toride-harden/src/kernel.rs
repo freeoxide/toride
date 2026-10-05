@@ -137,7 +137,7 @@ mod tests {
     #[test]
     fn baseline_params_are_nonempty() {
         let params = baseline_params();
-        assert!(!params.is_empty());
+        assert_ne!(params, Vec::<SysctlParam>::new());
         assert!(params.iter().any(|p| p.key == keys::ASLR));
         assert!(params.iter().any(|p| p.key == keys::KPTR_RESTRICT));
     }

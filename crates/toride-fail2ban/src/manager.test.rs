@@ -457,7 +457,7 @@ fn jail_status_returns_status_for_existing_jail() {
     let js = manager.jail_status("sshd").unwrap();
     assert_eq!(js.name, "sshd");
     assert!(js.active);
-    assert!(js.banned_ips.is_empty());
+    assert_eq!(js.banned_ips, Vec::new());
 }
 
 #[test]
@@ -489,7 +489,7 @@ fn purge_expired_returns_empty_when_no_expired_bans() {
     let (_dir, manager) = setup();
 
     let expired = manager.purge_expired().unwrap();
-    assert!(expired.is_empty());
+    assert_eq!(expired, Vec::new());
 }
 
 #[test]
@@ -602,7 +602,7 @@ fn ban_then_unban_reflects_in_status() {
         )
         .unwrap();
     let js = manager.jail_status("sshd").unwrap();
-    assert!(js.banned_ips.is_empty());
+    assert_eq!(js.banned_ips, Vec::new());
 }
 
 #[test]
@@ -847,7 +847,7 @@ fn test_remove_then_add_same_name_succeeds() {
     let mut manager = Fail2BanManager::new(config, paths).unwrap();
 
     manager.remove_jail("sshd").unwrap();
-    assert!(manager.status().unwrap().jails.is_empty());
+    assert_eq!(manager.status().unwrap().jails, Vec::new());
 
     let log_path2 = dir.path().join("new_auth.log");
     write_sample_log(&log_path2);

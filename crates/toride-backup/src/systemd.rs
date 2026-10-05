@@ -570,7 +570,7 @@ mod tests {
 
     #[test]
     fn base_units_are_nonempty() {
-        assert!(!BASE_BACKUP_TIMER_UNITS.is_empty());
+        assert_ne!(BASE_BACKUP_TIMER_UNITS, Vec::<&str>::new());
         assert!(BASE_BACKUP_TIMER_UNITS.iter().all(|u| {
             std::path::Path::new(u)
                 .extension()
@@ -580,7 +580,7 @@ mod tests {
 
     #[test]
     fn prefixes_are_nonempty() {
-        assert!(!BACKUP_TIMER_PREFIXES.is_empty());
+        assert_ne!(BACKUP_TIMER_PREFIXES, Vec::<&str>::new());
     }
 
     #[test]

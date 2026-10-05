@@ -424,9 +424,9 @@ fn default_unban_commands_windows_firewall() {
 #[test]
 fn default_unban_commands_unknown_returns_empty() {
     let cmds = default_unban_commands(Firewall::Unknown);
-    assert!(cmds.linux.is_empty());
-    assert!(cmds.macos.is_empty());
-    assert!(cmds.freebsd.is_empty());
+    assert_eq!(cmds.linux, Vec::<String>::new());
+    assert_eq!(cmds.macos, Vec::<String>::new());
+    assert_eq!(cmds.freebsd, Vec::<String>::new());
 }
 
 #[test]
@@ -456,7 +456,7 @@ fn for_current_platform_empty_commands() {
 
     let cmds = PlatformCommands::new(vec![], vec![], vec![]);
     let platform_cmds = cmds.for_current_platform();
-    assert!(platform_cmds.is_empty());
+    assert_eq!(platform_cmds, [] as [String; 0]);
 }
 
 #[test]
@@ -480,7 +480,7 @@ fn for_current_platform_multiple_commands() {
         assert_eq!(platform_cmds.len(), 1);
         assert_eq!(platform_cmds[0], "mcmd1");
     } else if cfg!(target_os = "freebsd") {
-        assert!(platform_cmds.is_empty());
+        assert_eq!(platform_cmds, [] as [String; 0]);
     }
 }
 

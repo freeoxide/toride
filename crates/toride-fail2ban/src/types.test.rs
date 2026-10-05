@@ -305,7 +305,7 @@ fn platform_commands_for_current_platform_returns_linux_on_linux() {
 fn platform_commands_for_current_platform_is_non_empty() {
     let cmds = sample_platform_commands();
     let result = cmds.for_current_platform();
-    assert!(!result.is_empty());
+    assert_ne!(result, [] as [String; 0]);
 }
 
 #[test]
@@ -344,9 +344,9 @@ fn platform_commands_debug_format() {
 #[test]
 fn platform_commands_all_empty() {
     let cmds = PlatformCommands::new(vec![], vec![], vec![]);
-    assert!(cmds.linux.is_empty());
-    assert!(cmds.macos.is_empty());
-    assert!(cmds.freebsd.is_empty());
+    assert_eq!(cmds.linux, Vec::<String>::new());
+    assert_eq!(cmds.macos, Vec::<String>::new());
+    assert_eq!(cmds.freebsd, Vec::<String>::new());
 }
 
 #[test]
@@ -354,7 +354,7 @@ fn platform_commands_for_current_platform_returns_fallback_on_empty_linux() {
     // When all vectors are empty, for_current_platform returns &self.linux (empty)
     let cmds = PlatformCommands::new(vec![], vec![], vec![]);
     let result = cmds.for_current_platform();
-    assert!(result.is_empty());
+    assert_eq!(result, [] as [String; 0]);
 }
 
 #[test]
@@ -393,8 +393,8 @@ fn platform_commands_deserialize_from_json_string() {
     }"#;
     let cmds: PlatformCommands = serde_json::from_str(json).expect("deserialization failed");
     assert_eq!(cmds.linux.len(), 1);
-    assert!(cmds.macos.is_empty());
-    assert!(cmds.freebsd.is_empty());
+    assert_eq!(cmds.macos, Vec::<String>::new());
+    assert_eq!(cmds.freebsd, Vec::<String>::new());
 }
 
 // ===========================================================================
@@ -453,7 +453,7 @@ fn scan_result_empty_bans() {
         matches_found: 0,
         scan_duration: Duration::from_secs(1),
     };
-    assert!(result.new_bans.is_empty());
+    assert_eq!(result.new_bans, Vec::new());
 }
 
 #[test]
@@ -577,7 +577,7 @@ fn jail_status_empty_banned_ips() {
         banned_ips: vec![],
         ..sample_jail_status()
     };
-    assert!(status.banned_ips.is_empty());
+    assert_eq!(status.banned_ips, Vec::new());
 }
 
 #[test]
@@ -635,7 +635,7 @@ fn jail_status_deserialize_from_json_string() {
     let status: JailStatus = serde_json::from_str(json).expect("deserialization failed");
     assert_eq!(status.name, "nginx");
     assert!(!status.active);
-    assert!(status.banned_ips.is_empty());
+    assert_eq!(status.banned_ips, Vec::new());
     assert_eq!(status.total_bans, 0);
 }
 
@@ -686,7 +686,7 @@ fn fail2ban_status_no_jails() {
         jails: vec![],
         ..sample_fail2ban_status()
     };
-    assert!(status.jails.is_empty());
+    assert_eq!(status.jails, Vec::new());
 }
 
 #[test]
@@ -729,7 +729,7 @@ fn fail2ban_status_deserialize_from_json_string() {
     }"#;
     let status: Fail2BanStatus = serde_json::from_str(json).expect("deserialization failed");
     assert!(!status.running);
-    assert!(status.jails.is_empty());
+    assert_eq!(status.jails, Vec::new());
     assert_eq!(
         status.config_path,
         PathBuf::from("/etc/fail2ban/jail.local")

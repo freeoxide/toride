@@ -6,8 +6,8 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Errors that can occur while resolving, downloading, verifying, or
 /// extracting a release artifact.
 ///
-/// The variants mirror the stages of [`crate::Installer::install`] so callers
-/// can react to a specific failure (e.g. retry on [`Error::Download`] but
+/// The variants mirror the stages of `crate::Installer::install` so callers
+/// can react to a specific failure (e.g. retry on `Error::Download` but
 /// surface [`Error::ChecksumMismatch`] as a hard security failure).
 #[derive(Debug, thiserror::Error)]
 #[non_exhaustive]
@@ -97,8 +97,8 @@ pub enum Error {
 
     /// The downloaded artifact was smaller than the configured sane minimum.
     ///
-    /// Tools that publish no sha256 checksum are still guarded by a
-    /// non-zero size floor so that a 404 HTML body or an empty response is
+    /// Tools that publish no checksum are still guarded by a non-zero
+    /// size floor so that a 404 HTML body or an empty response is
     /// never silently written to disk as the "binary".
     #[error("artifact from {url} is only {size} bytes, below the {min} byte sanity floor")]
     TooSmall {
@@ -110,8 +110,9 @@ pub enum Error {
         min: u64,
     },
 
-    /// The sha256 checksum of the downloaded bytes did not match the
-    /// expected digest published by the tool.
+    /// The checksum of the downloaded bytes (sha256, or sha512 for
+    /// 128-hex expected digests) did not match the digest published by
+    /// the tool.
     #[error("checksum mismatch for {tool}@{version}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         /// Tool name.
@@ -138,7 +139,7 @@ pub enum Error {
 
     /// The tool publishes no checksum; verification fell back to the size
     /// floor only. Returned only when a caller explicitly requests strict
-    /// verification via [`crate::Verifier::Strict`].
+    /// verification via `crate::Verifier::Strict`.
     #[error("no checksum source available for `{tool}`; cannot verify in strict mode")]
     NoChecksum {
         /// Tool name.

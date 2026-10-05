@@ -25,6 +25,7 @@
 //! completion. On timeout, the child is killed before pipe readers are dropped,
 //! ensuring no dangling I/O.
 
+use std::ffi::OsStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -32,6 +33,8 @@ use async_trait::async_trait;
 use crate::async_runner::AsyncRunner;
 use crate::error::{Error, Result};
 use crate::output::CommandOutput;
+use crate::policy::EnvPrecedence;
+use crate::policy::{env_key_matches, platform_env_preserved_for_clean_env, prepare_program};
 use crate::spec::CommandSpec;
 
 /// Default command timeout in seconds when none is specified.
@@ -80,11 +83,6 @@ impl AsyncRunner for TokioRunner {
     }
 }
 
-/// Build and run a command via `tokio::process` with proper kill-on-timeout.
-///
-/// Takes stdout/stderr handles before waiting so we can read them regardless
-/// of whether the process times out. On timeout, kills the direct child and
-/// waits for it to terminate.
 async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<CommandOutput> {
     // OutputMode::Stream is only honored by the streaming runner
     // (`run_streaming`); the captured-output path rejects it, matching
@@ -96,18 +94,20 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
         ));
     }
 
+    let program = prepare_program(spec)?;
+
     // Output-limit enforcement only applies to captured output. Inherit mode
     // does not capture, so the limit is ignored (the real exit code is still
     // returned). This mirrors DuctRunner. Dispatch to the cap-aware path before
     // the unlimited draining runs, because that path uses bounded reads instead
     // of `read_to_end` so it can trip the cap mid-stream and kill the child.
     if spec.output_mode == crate::OutputMode::Capture
-        && let Some(cap) = spec.output_limit
+        && let Some(cap) = spec.effective_output_limit()
     {
-        return Box::pin(run_tokio_limited(spec, timeout, cap)).await;
+        return Box::pin(run_tokio_limited(spec, timeout, cap, program.as_os_str())).await;
     }
 
-    let mut cmd = build_tokio_command(spec);
+    let mut cmd = build_tokio_command(spec, program.as_os_str());
 
     // Spawn the child process.
     let mut child = cmd.spawn().map_err(|e| Error::SpawnFailed {
@@ -200,12 +200,8 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
     }
 }
 
-/// Build a `tokio::process::Command` with args, cwd, env policy, and piped
-/// stdout/stderr. Shared by the unlimited, limited, and (indirectly) streaming
-/// paths. stdin is piped when the spec carries stdin data, wired to the null
-/// device when [`CommandSpec::stdin_null`] is set, and inherited otherwise.
-fn build_tokio_command(spec: &CommandSpec) -> tokio::process::Command {
-    let mut cmd = tokio::process::Command::new(&spec.program);
+fn build_tokio_command(spec: &CommandSpec, program: &OsStr) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new(program);
     cmd.args(&spec.args)
         // Ensure the child is SIGKILLed when the `Child` handle is dropped
         // (e.g. on future cancellation), so the documented kill-on-drop
@@ -275,31 +271,18 @@ async fn write_stdin(child: &mut tokio::process::Child, spec: &CommandSpec) -> R
 /// Size of each bounded read in the cap-aware Tokio path.
 const TOKIO_CAP_READ_BUF: usize = 8 * 1024;
 
-/// Cap-aware Tokio execution.
-///
-/// Like the unlimited path this drains both pipes concurrently with `wait()`
-/// (avoiding the pipe-buffer deadlock), but it uses bounded `read(&mut [u8; N])`
-/// instead of `read_to_end` and a shared byte counter. The combined stdout+stderr
-/// cap is checked per read; the first read that would push the total past `cap`
-/// records a breach and stops draining so the child is killed immediately.
-/// Because the cap is enforced *while* capturing, memory is bounded regardless
-/// of how much the child emits.
-///
-/// The entire drain-then-wait sequence runs under a single outer
-/// `tokio::time::timeout`, so a quiet under-cap non-exiting child still times
-/// out. Breach detection is synchronous (the draining loop itself observes the
-/// breach and stops), avoiding any latch-race between the drain and the wait.
 #[allow(clippy::too_many_lines)]
 async fn run_tokio_limited(
     spec: &CommandSpec,
     timeout: Duration,
     cap: usize,
+    program: &OsStr,
 ) -> Result<CommandOutput> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tokio::io::AsyncReadExt;
 
-    let mut cmd = build_tokio_command(spec);
+    let mut cmd = build_tokio_command(spec, program);
     let mut child = cmd.spawn().map_err(|e| Error::SpawnFailed {
         program: spec.program.clone(),
         detail: e.to_string(),
@@ -515,14 +498,6 @@ enum RaceOutcome {
 #[cfg(feature = "stream")]
 use crate::streaming::{AsyncStreamingRunner, CommandEvent, CommandEventSink};
 
-/// Streaming execution via `tokio::process`.
-///
-/// Spawns the child, reads stdout/stderr via `BufReader` line-by-line,
-/// emits both chunk and line events to the sink, and collects everything
-/// into the final `CommandOutput`. The entire operation is bounded by the
-/// timeout — spawn, pipe reads, and wait are all covered.
-///
-/// On timeout, the child is explicitly killed and reaped.
 #[cfg(feature = "stream")]
 #[allow(clippy::too_many_lines)]
 async fn run_streaming_command(
@@ -535,8 +510,10 @@ async fn run_streaming_command(
         .timeout
         .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
 
+    let program = prepare_program(spec)?;
+
     // --- Phase 1: spawn the child (not timed, should be instant) ---
-    let mut cmd = tokio::process::Command::new(&spec.program);
+    let mut cmd = tokio::process::Command::new(program.as_os_str());
     cmd.args(&spec.args)
         // Ensure the child is SIGKILLed when the `Child` handle is dropped
         // (e.g. on future cancellation), so the documented kill-on-drop
@@ -620,7 +597,7 @@ async fn run_streaming_command(
     let result = tokio::time::timeout(timeout, async {
         use tokio::io::AsyncReadExt;
 
-        let cap = spec.output_limit;
+        let cap = spec.effective_output_limit();
         let mut observed: usize = 0;
         let mut stdout_bytes = Vec::new();
         let mut stderr_bytes = Vec::new();
@@ -972,7 +949,7 @@ fn apply_env_policy(cmd: &mut tokio::process::Command, spec: &CommandSpec) {
         for (key, value) in clean_env_values(spec) {
             cmd.env(key, value);
         }
-    } else {
+    } else if spec.env_precedence == EnvPrecedence::ExplicitWins {
         for key in &spec.env_remove {
             cmd.env_remove(key);
         }
@@ -980,6 +957,12 @@ fn apply_env_policy(cmd: &mut tokio::process::Command, spec: &CommandSpec) {
 
     for (key, value) in &spec.env {
         cmd.env(key, value);
+    }
+
+    if spec.env_precedence == EnvPrecedence::RemoveWins {
+        for key in &spec.env_remove {
+            cmd.env_remove(key);
+        }
     }
 }
 
@@ -993,29 +976,6 @@ fn clean_env_values(spec: &CommandSpec) -> Vec<(String, String)> {
                 .any(|removed| env_key_matches(removed, key))
         })
         .collect()
-}
-
-#[cfg(windows)]
-fn platform_env_preserved_for_clean_env() -> Vec<(String, String)> {
-    ["SystemRoot", "SystemDrive", "WINDIR"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
-        .collect()
-}
-
-#[cfg(not(windows))]
-fn platform_env_preserved_for_clean_env() -> Vec<(String, String)> {
-    Vec::new()
-}
-
-#[cfg(windows)]
-fn env_key_matches(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
-}
-
-#[cfg(not(windows))]
-fn env_key_matches(a: &str, b: &str) -> bool {
-    a == b
 }
 
 #[cfg(test)]
@@ -1267,8 +1227,8 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.exit_code, Some(17));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "");
     }
 
     /// `OutputMode::Inherit` must ignore `output_limit` and still return the real
@@ -1284,8 +1244,8 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.exit_code, Some(17));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "");
     }
 
     /// `OutputMode::Stream` is rejected by the captured-output run path (it is
@@ -1324,18 +1284,11 @@ mod tests {
         );
     }
 
-    /// Verify that stdin write errors surface as `StdinFailed`.
-    ///
-    /// We pipe stdin to a command that exits immediately — the stdin write
-    /// should succeed because the child accepted the pipe. The real test
-    /// for stdin failure is covered by the normal path. Here we verify the
-    /// error variant exists and is classified correctly.
     #[tokio::test]
     async fn stdin_to_exiting_command_succeeds() {
         let runner = TokioRunner;
-        // `true` exits immediately with 0 — stdin is written but ignored.
         let spec = CommandSpec::new("bash")
-            .args(["-c", "exit 0"])
+            .args(["-c", "cat > /dev/null"])
             .stdin("data");
         let output = runner.run(&spec).await.unwrap();
         assert!(output.success);
@@ -1509,6 +1462,128 @@ mod tests {
         assert!(output.success);
         let lines: Vec<&str> = output.stdout.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 50);
+    }
+
+    #[tokio::test]
+    async fn remove_wins_env_remove_beats_explicit_env() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${TORIDE_REMOVE_ME-unset}\""])
+            .env_remove("TORIDE_REMOVE_ME")
+            .env("TORIDE_REMOVE_ME", "present")
+            .env_precedence(crate::policy::EnvPrecedence::RemoveWins);
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout, "unset");
+    }
+
+    #[tokio::test]
+    async fn remove_wins_clear_env_still_removes() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s:%s' \"${TORIDE_BOTH-unset}\" \"$TORIDE_KEEP\"",
+            ])
+            .clear_env(true)
+            .env_remove("TORIDE_BOTH")
+            .env("TORIDE_BOTH", "x")
+            .env("TORIDE_KEEP", "kept")
+            .env_precedence(crate::policy::EnvPrecedence::RemoveWins);
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout, "unset:kept");
+    }
+
+    #[tokio::test]
+    async fn argv_policy_rejects_metachar_arg_before_spawn() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("echo")
+            .arg("hello; rm -rf /")
+            .argv_policy(crate::policy::ArgvPolicy::RejectShellMetachars);
+        match runner.run(&spec).await {
+            Err(Error::ArgvRejected { program, detail }) => {
+                assert_eq!(program, "echo");
+                assert!(detail.contains("index 0"), "detail: {detail}");
+                assert!(!detail.contains("rm -rf"));
+            }
+            other => panic!("expected ArgvRejected, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn path_resolution_refuses_cwd_relative_program() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("./definitely_not_a_real_binary_xyz_123")
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd);
+        match runner.run(&spec).await {
+            Err(Error::ProgramRejected { program, detail }) => {
+                assert_eq!(program, "./definitely_not_a_real_binary_xyz_123");
+                assert!(detail.contains("working directory"));
+            }
+            other => panic!("expected ProgramRejected, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn path_resolution_rejects_bare_name_missing_from_child_path() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("definitely_not_a_real_binary_xyz_123")
+            .env("PATH", "/nonexistent/toride-policy-probe")
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd);
+        match runner.run(&spec).await {
+            Err(Error::ProgramRejected { program, detail }) => {
+                assert_eq!(program, "definitely_not_a_real_binary_xyz_123");
+                assert!(detail.contains("not found on PATH"), "detail: {detail}");
+            }
+            other => panic!("expected ProgramRejected, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn path_resolution_runs_binary_resolved_from_child_env_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("toride_tokio_probe");
+        std::fs::write(&probe, "#!/bin/sh\necho from-probe\n").unwrap();
+        let mut perms = std::fs::metadata(&probe).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&probe, perms).unwrap();
+
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("toride_tokio_probe")
+            .env("PATH", dir.path().to_string_lossy().into_owned())
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd)
+            .timeout(Duration::from_secs(5));
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "from-probe");
+    }
+
+    #[tokio::test]
+    async fn output_cap_always_enforces_without_output_limit() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line; done"])
+            .output_cap(crate::policy::OutputCap::Always(64));
+        match runner.run(&spec).await {
+            Err(Error::OutputLimitExceeded { limit, .. }) => assert_eq!(limit, 64),
+            other => panic!("expected OutputLimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn output_cap_always_overrides_larger_output_limit() {
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line; done"])
+            .output_limit(1_000_000)
+            .output_cap(crate::policy::OutputCap::Always(64));
+        match runner.run(&spec).await {
+            Err(Error::OutputLimitExceeded { limit, .. }) => assert_eq!(limit, 64),
+            other => panic!("expected OutputLimitExceeded, got {other:?}"),
+        }
     }
 
     /// Regression: a quiet under-cap child that never exits must still time out.

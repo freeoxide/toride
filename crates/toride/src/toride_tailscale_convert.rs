@@ -531,8 +531,11 @@ mod tests {
         };
         let info = convert_dns(config);
         assert!(!info.magic_dns);
-        assert!(info.nameservers.is_empty());
-        assert!(info.search_domains.is_empty());
-        assert!(info.split_dns.is_empty());
+        assert_eq!(info.nameservers, Vec::<String>::new());
+        assert_eq!(info.search_domains, Vec::<String>::new());
+        assert_eq!(
+            info.split_dns,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 }

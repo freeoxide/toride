@@ -989,7 +989,7 @@ mod tests {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
         let (client, _) = client_with(runner);
         let groups = client.list_firewall_rules().expect("empty ok");
-        assert!(groups.is_empty());
+        assert_eq!(groups, Vec::new());
     }
 
     #[test]

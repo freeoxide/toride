@@ -202,7 +202,10 @@ mod tests {
     #[test]
     fn port_mapping_empty_when_no_portmap_key() {
         let raw = serde_json::json!({ "UDP": true });
-        assert!(NetcheckRunner::parse(&raw).port_mapping.is_empty());
+        assert_eq!(
+            NetcheckRunner::parse(&raw).port_mapping,
+            [] as [(std::string::String, bool); 0]
+        );
     }
 
     #[test]

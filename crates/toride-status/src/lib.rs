@@ -626,7 +626,7 @@ mod tests {
     fn collector_produces_status_and_delta() {
         let mut collector = Collector::default_collector();
         let (status, delta) = collector.collect();
-        assert!(!status.system.hostname.is_empty());
+        assert_ne!(status.system.hostname, "");
         assert!(delta.is_none());
         std::thread::sleep(std::time::Duration::from_millis(50));
         let (_, delta2) = collector.collect();

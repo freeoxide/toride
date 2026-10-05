@@ -24,17 +24,19 @@ env:
   # cannot be cross-verified on a Linux host; widen toward --workspace as
   # native runner evidence comes in. Space-separated; expanded to -p flags.
   PORTABLE_CRATES_MACOS: >-
-    toride-audit toride-backup toride-cloud toride-diagnostic-types
-    toride-fail2ban toride-fs toride-harden toride-mise toride-proxy
-    toride-runner toride-service toride-ssh toride-ssh-agent
+    toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
+    toride-fail2ban toride-fs toride-harden toride-installer toride-mise
+    toride-proxy toride-registry toride-runner toride-service toride-ssh
+    toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
     toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
     toride-ssh-known-hosts toride-status toride-updates toride-users
     toride-wireguard ufw-kit ufw-kit-test-support
   PORTABLE_CRATES_WINDOWS: >-
-    toride-audit toride-backup toride-cloud toride-diagnostic-types
-    toride-fail2ban toride-fs toride-harden toride-mise toride-monitor
-    toride-proxy toride-runner toride-service toride-ssh toride-ssh-agent
+    toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
+    toride-fail2ban toride-fs toride-harden toride-installer toride-mise
+    toride-monitor toride-proxy toride-registry toride-runner toride-service
+    toride-ssh toride-ssh-agent
     toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
     toride-ssh-core toride-ssh-doctor toride-ssh-forward toride-ssh-key
     toride-ssh-known-hosts toride-status toride-updates toride-users
@@ -48,13 +50,13 @@ env:
   # Every publishable workspace member (no manifest sets publish = false),
   # topologically sorted dependencies-first via cargo metadata --no-deps.
   PUBLISH_ORDER: >-
-    toride-diagnostic-types toride-fs toride-installer toride-runner
-    toride-mise toride-service toride-ssh-core toride-status toride-audit
-    toride-backup toride-cloud toride-fail2ban toride-harden toride-monitor
-    toride-proxy toride-ssh-agent toride-ssh-authorized-keys
-    toride-ssh-certificate toride-ssh-config toride-ssh-forward
-    toride-ssh-known-hosts toride-tailscale toride-updates toride-users
-    toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
+    toride-diagnostic-types toride-fs toride-runner toride-installer
+    toride-registry toride-mise toride-apps toride-service toride-ssh-core
+    toride-status toride-audit toride-backup toride-cloud toride-fail2ban
+    toride-harden toride-monitor toride-proxy toride-ssh-agent
+    toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
+    toride-ssh-forward toride-ssh-known-hosts toride-tailscale toride-updates
+    toride-users toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
     ufw-kit-test-support toride-ssh toride
 
 jobs:
@@ -137,6 +139,42 @@ jobs:
           fi
           cargo test "${packages[@]}" --all-targets
 
+  toride-apps-features:
+    name: toride-apps feature gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: toride-apps-features
+      - name: Lint and test the non-default mise feature
+        run: |
+          cargo clippy -p toride-apps --all-targets --features mise -- -D warnings
+          cargo test -p toride-apps --all-targets --features mise
+      - name: Check the tokio-free default build
+        run: cargo check -p toride-apps --no-default-features
+
+  publish-set-features:
+    name: Publish-set feature gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: publish-set-features
+      - name: Lint and test the non-default http feature
+        run: |
+          cargo clippy -p toride-registry -p toride-installer --all-targets --features http -- -D warnings
+          cargo test -p toride-registry -p toride-installer --all-targets --features http
+
   check:
     name: Check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -180,17 +218,24 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: cargo publish --dry-run (every publishable crate, dependency order)
         shell: bash
-        # Informational until the workspace first lands on crates.io: `cargo
-        # publish --dry-run` resolves intra-workspace deps against the live
-        # registry, so every crate with unpublished siblings fails with
-        # "no matching package" (order-blocked, not a manifest defect). Each
-        # such failure is downgraded to a warning annotation; tighten this to
-        # a hard gate after running scripts/publish-crates.sh once.
+        # Order-blocked dry-runs (an intra-workspace sibling absent from
+        # crates.io, or published only at older versions than the local
+        # requirement) downgrade to warnings; any other failure fails.
         run: |
+          set -euo pipefail
+          cargo metadata --format-version 1 >/dev/null
+          order_members="$(printf '%s' "$PUBLISH_ORDER" | tr ' ' '|')"
           for crate in $PUBLISH_ORDER; do
             echo "::group::cargo publish --dry-run -p $crate"
-            if ! cargo publish --dry-run -p "$crate"; then
-              echo "::warning::publish dry-run failed for $crate (expected: order-blocked until the first real publish)"
+            log="$(mktemp)"
+            if ! cargo publish --dry-run -p "$crate" 2>&1 | tee "$log"; then
+              if grep -qE "no matching package named \`(${order_members})\` found|failed to select a version for the requirement \`(${order_members}) = " "$log"; then
+                echo "::warning::publish dry-run order-blocked for $crate (sibling not on crates.io at the required version)"
+              else
+                echo "::error::publish dry-run failed for $crate"
+                exit 1
+              fi
             fi
+            rm -f "$log"
             echo "::endgroup::"
           done

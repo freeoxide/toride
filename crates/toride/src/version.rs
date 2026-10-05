@@ -38,7 +38,7 @@ mod tests {
 
     #[test]
     fn version_is_not_empty() {
-        assert!(!VERSION.is_empty());
+        assert_ne!(VERSION, "");
     }
 
     #[test]
@@ -50,6 +50,6 @@ mod tests {
 
     #[test]
     fn edition_is_set() {
-        assert!(!EDITION.is_empty());
+        assert_ne!(EDITION, "");
     }
 }

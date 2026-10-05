@@ -5,8 +5,10 @@
 //! This crate provides:
 //!
 //! - A sync [`Runner`] trait for executing commands
-//! - An async [`AsyncRunner`] trait (feature `tokio-runner`)
+//! - An async `AsyncRunner` trait (feature `tokio-runner`)
 //! - [`CommandSpec`] for describing commands to run
+//! - Spec-level policy knobs ([`EnvPrecedence`], [`PathResolution`],
+//!   [`ArgvPolicy`], [`OutputCap`]) for embedder security postures
 //! - [`CommandOutput`] for capturing results
 //! - Argument redaction for sensitive flags
 //! - Binary discovery helpers
@@ -48,6 +50,7 @@ pub mod display;
 pub mod error;
 pub mod output;
 pub mod output_mode;
+pub mod policy;
 pub mod redact;
 pub mod runner;
 pub mod spec;
@@ -83,6 +86,7 @@ pub use error::{Error, Result};
 pub use fake::FakeRunner;
 pub use output::CommandOutput;
 pub use output_mode::OutputMode;
+pub use policy::{ArgvPolicy, EnvPrecedence, OutputCap, PathResolution};
 pub use runner::Runner;
 pub use spec::CommandSpec;
 #[cfg(feature = "stream")]

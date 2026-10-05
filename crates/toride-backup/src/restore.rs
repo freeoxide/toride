@@ -1163,7 +1163,7 @@ x home/user/src/main.rs
     fn restore_options_defaults() {
         let opts = RestoreOptions::new("/tmp/restore");
         assert!(opts.snapshot_id.is_none());
-        assert!(opts.paths.is_empty());
+        assert_eq!(opts.paths, Vec::<String>::new());
         assert!(!opts.verify);
         assert!(!opts.test);
     }

@@ -119,7 +119,9 @@ impl FakeRunner {
     ///
     /// When a call matches the spec, this response takes priority over the
     /// FIFO queue. Matching compares `program`, `args`, `stdin`, `stdin_null`,
-    /// `env`, `env_remove`, `clear_env`, `cwd`, and `output_mode`.
+    /// `env`, `env_remove`, `clear_env`, `cwd`, `output_mode`, `redact`,
+    /// `env_precedence`, and `path_resolution`; `timeout`, `output_limit`,
+    /// `argv_policy`, and `output_cap` are ignored as runtime policy.
     #[must_use]
     pub fn respond(self, spec: CommandSpec, output: CommandOutput) -> Self {
         self.exact_responses
@@ -258,17 +260,6 @@ impl AsyncRunner for FakeRunner {
     }
 }
 
-/// Check if two specs match on the fields used for exact matching.
-///
-/// Compares `program`, `args`, `stdin`, `stdin_null`, `env`, `env_remove`,
-/// `clear_env`, `cwd`, `output_mode`, and `redact`. `timeout` and
-/// `output_limit` are ignored — they are runtime/safety policy, not
-/// command-construction concerns, so two specs that differ only in those
-/// fields still match. `redact` and `stdin_null` ARE compared: they are
-/// command-construction properties (whether the command carries
-/// secret-bearing args/env that must be scrubbed from errors and logs; how
-/// the child's stdin is wired), so a spec that forgot either must fail an
-/// exact match.
 fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
     a.program == b.program
         && a.args == b.args
@@ -280,6 +271,8 @@ fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
         && a.cwd == b.cwd
         && a.output_mode == b.output_mode
         && a.redact == b.redact
+        && a.env_precedence == b.env_precedence
+        && a.path_resolution == b.path_resolution
 }
 
 #[cfg(test)]
@@ -328,7 +321,7 @@ mod tests {
         let runner = FakeRunner::new();
         let output = run_sync(&runner, &CommandSpec::new("cmd")).unwrap();
         assert!(output.success);
-        assert!(output.stdout.is_empty());
+        assert_eq!(output.stdout, "");
     }
 
     #[test]
@@ -527,6 +520,58 @@ mod tests {
         );
 
         // Same command, different (or absent) output_limit should still match.
+        let output = run_sync(&runner, &CommandSpec::new("cmd")).unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    #[test]
+    fn specs_match_compares_env_precedence() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd").env_precedence(crate::policy::EnvPrecedence::RemoveWins),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        let result = run_sync(&runner, &CommandSpec::new("cmd"));
+        assert!(result.is_err(), "different env precedence should not match");
+
+        let output = run_sync(
+            &runner,
+            &CommandSpec::new("cmd").env_precedence(crate::policy::EnvPrecedence::RemoveWins),
+        )
+        .unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    #[test]
+    fn specs_match_compares_path_resolution() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd").path_resolution(crate::policy::PathResolution::ChildEnvNoCwd),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        let result = run_sync(&runner, &CommandSpec::new("cmd"));
+        assert!(
+            result.is_err(),
+            "different path resolution should not match"
+        );
+
+        let output = run_sync(
+            &runner,
+            &CommandSpec::new("cmd").path_resolution(crate::policy::PathResolution::ChildEnvNoCwd),
+        )
+        .unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    #[test]
+    fn specs_match_ignores_argv_policy_and_output_cap() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd")
+                .argv_policy(crate::policy::ArgvPolicy::RejectShellMetachars)
+                .output_cap(crate::policy::OutputCap::Always(1024)),
+            CommandOutput::from_stdout("ok"),
+        );
+
         let output = run_sync(&runner, &CommandSpec::new("cmd")).unwrap();
         assert_eq!(output.stdout_trimmed(), "ok");
     }

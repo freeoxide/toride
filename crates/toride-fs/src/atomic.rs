@@ -324,7 +324,7 @@ mod tests {
             .expect("atomic_write_bytes with empty content should succeed");
 
         let read_back = fs::read(&path).expect("file should be readable");
-        assert!(read_back.is_empty());
+        assert_eq!(read_back, [] as [u8; 0]);
     }
 
     #[test]

@@ -32,6 +32,9 @@
 //!   resolves against the **installed** refs — toride never re-derives the
 //!   ref from the planning target's arch (the manifest is the source of
 //!   truth for what was actually installed).
+//! - **Update** — `flatpak update --user --noninteractive <app-id>`: the
+//!   same bare-id resolution against installed refs, with
+//!   `--noninteractive` layered on at execution like install/uninstall.
 //! - **Listing** — `flatpak list --app
 //!   --columns=application,version,origin,installation`. With captured
 //!   (non-TTY) output, flatpak's table printer emits **tab-separated,
@@ -50,30 +53,34 @@
 //!   `toride-runner`'s discovery helpers, no command executed),
 //!   [`FlatpakBackend::version`] (`flatpak --version`),
 //!   [`FlatpakBackend::ensure_remote`] (probe + conditional add).
-//! - **Trait operations** — install/uninstall/list/status per the
+//! - **Trait operations** — install/uninstall/update/list/status per the
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
-//!   installation-scoped [`FlatpakBackend::installed_version`] probe and
-//!   the richer [`FlatpakBackend::list_entries`].
-//! - **Column parsing** — the tab-separated listing parsed into typed
-//!   [`FlatpakEntry`] rows. Per-row tolerance: a malformed row (wrong cell
+//!   installation-scoped [`FlatpakBackend::installed_version`] probe, the
+//!   richer [`FlatpakBackend::list_entries`], and the branch listing
+//!   [`FlatpakBackend::available_versions`] (flatpak's installable
+//!   "versions" are the remote's branches — the ref segment a
+//!   version-pinned install selects).
+//! - **Column parsing** — the tab-separated listings (`list`, `remote-ls`)
+//!   parsed into typed rows. Per-row tolerance: a malformed row (wrong cell
 //!   count, empty application cell) is skipped, never fatal to the whole
 //!   listing; a non-empty document where *nothing* parses is treated as
 //!   unparseable output, not as an empty host.
 //!
 //! ## Conventions honored
 //!
-//! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] are the
-//!   first statement of the trait's mutating operations (dry-run refusal
-//!   + no auto-sudo) — before even the remote-ensure probe runs.
-//! - Interactivity: flatpak's install/uninstall prompt on questions, so
-//!   unlike homebrew the executed argv layers runtime flags onto the
-//!   plan's canonical argv — `--noninteractive` ("produce minimal output
-//!   and avoid most questions", flatpak-install(1)) on both mutating
-//!   commands, plus `--or-update` on install (see above). These are
-//!   execution-time ergonomics and stay **out** of the plan's argv; every
-//!   command is unambiguous anyway (a full ref + a named remote leave
-//!   nothing to search or choose). The `-y`/`--assumeyes` flag is not
-//!   used: it answers questions with "yes" rather than avoiding them.
+//! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] /
+//!   [`ensure_update_allowed`] are the first statement of the trait's
+//!   mutating operations (dry-run refusal + no auto-sudo) — before even
+//!   the remote-ensure probe runs.
+//! - Interactivity: flatpak's install/uninstall/update prompt on
+//!   questions, so unlike homebrew the executed argv layers runtime flags
+//!   onto the plan's canonical argv — `--noninteractive` ("produce minimal
+//!   output and avoid most questions", flatpak-install(1)) on every
+//!   mutating command, plus `--or-update` on install (see above). These
+//!   are execution-time ergonomics and stay **out** of the plan's argv;
+//!   every command is unambiguous anyway (a full ref + a named remote
+//!   leave nothing to search or choose). The `-y`/`--assumeyes` flag is
+//!   not used: it answers questions with "yes" rather than avoiding them.
 //! - Error mapping: non-zero exits surface as
 //!   [`Error::Command`] carrying flatpak's stderr.
 //!   One classification: a failed uninstall whose stderr carries flatpak's
@@ -87,13 +94,16 @@
 //! [`Operation::FlatpakUninstall`]: crate::Operation::FlatpakUninstall
 //! [`ensure_install_allowed`]: crate::backend::ensure_install_allowed
 //! [`ensure_uninstall_allowed`]: crate::backend::ensure_uninstall_allowed
+//! [`ensure_update_allowed`]: crate::backend::ensure_update_allowed
 
 use async_trait::async_trait;
 use toride_registry::Os;
+use toride_runner::CommandOutput;
 
 use crate::backend::{
     Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, UninstallOutcome,
-    UninstallRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    UninstallRequest, UpdateRequest, Version, ensure_install_allowed, ensure_uninstall_allowed,
+    ensure_update_allowed,
 };
 use crate::error::{Error, Result};
 use crate::plan::{FlatpakInstallation, Operation, Target};
@@ -120,6 +130,11 @@ const LIST_COLUMNS_ARG: &str = "--columns=application,version,origin,installatio
 /// number of requested columns).
 const LIST_COLUMN_COUNT: usize = 4;
 
+/// The `flatpak remote-ls` `--columns` argument: the app id and its branch —
+/// the branch is flatpak's installable "version" (the ref segment a
+/// version-pinned install selects).
+const REMOTE_LS_COLUMNS_ARG: &str = "--columns=application,branch";
+
 /// Markers whose presence on a flatpak **`error:` line** classifies a failed
 /// uninstall as "the app is simply not installed" rather than a real error.
 /// The current wording (app/flatpak-builtins-uninstall.c) is
@@ -137,7 +152,6 @@ const NOT_INSTALLED_MARKERS: [&str; 2] = [
     // `error: <ref> is not installed` (older flatpak / other paths)
     "is not installed",
 ];
-
 // ---------------------------------------------------------------------------
 // Backend
 // ---------------------------------------------------------------------------
@@ -246,6 +260,38 @@ impl FlatpakBackend {
         Ok(true)
     }
 
+    /// The sync twin of [`FlatpakBackend::ensure_remote`] — same probe and
+    /// add, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`FlatpakBackend::ensure_remote`].
+    pub fn ensure_remote_sync(
+        &self,
+        installation: FlatpakInstallation,
+        name: &str,
+        url: &str,
+    ) -> Result<bool> {
+        let probe = command(FLATPAK, ["remotes", installation.flag(), "--columns=name"]);
+        let output = self.runner.run_checked_sync(probe)?;
+        let remotes = parse_remote_names(&output.stdout);
+        if remotes.iter().any(|remote| remote == name) {
+            return Ok(false);
+        }
+        let add = command(
+            FLATPAK,
+            [
+                "remote-add",
+                installation.flag(),
+                "--if-not-exists",
+                name,
+                url,
+            ],
+        );
+        self.runner.run_checked_sync(add)?;
+        Ok(true)
+    }
+
     /// The full typed listing for one scope: installed applications with
     /// app id, version, origin remote, and installation (`user`/`system`).
     ///
@@ -262,6 +308,18 @@ impl FlatpakBackend {
     pub async fn list_entries(&self, scope: FlatpakListScope) -> Result<Vec<FlatpakEntry>> {
         let spec = command(FLATPAK, list_args(scope));
         let output = self.runner.run_checked(spec).await?;
+        parse_list_output(&output.stdout)
+    }
+
+    /// The sync twin of [`FlatpakBackend::list_entries`] — same listing,
+    /// same parsing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`FlatpakBackend::list_entries`].
+    pub fn list_entries_sync(&self, scope: FlatpakListScope) -> Result<Vec<FlatpakEntry>> {
+        let spec = command(FLATPAK, list_args(scope));
+        let output = self.runner.run_checked_sync(spec)?;
         parse_list_output(&output.stdout)
     }
 
@@ -289,6 +347,90 @@ impl FlatpakBackend {
             .and_then(|entry| entry.version))
     }
 
+    /// The sync twin of [`FlatpakBackend::installed_version`] — same scoped
+    /// listing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`FlatpakBackend::installed_version`].
+    pub fn installed_version_sync(
+        &self,
+        app_id: &str,
+        installation: FlatpakInstallation,
+    ) -> Result<Option<String>> {
+        let entries = self.list_entries_sync(FlatpakListScope::from(installation))?;
+        Ok(entries
+            .into_iter()
+            .find(|entry| entry.application == app_id)
+            .and_then(|entry| entry.version))
+    }
+
+    /// The branches flathub offers for `app_id` — the installable
+    /// "versions" a version-pinned flatpak install selects between
+    /// (`flatpak remote-ls <installation-flag> --app --columns=… flathub`,
+    /// the same tab-separated headerless printer the installed listing
+    /// rides). Scoped to `installation` because remotes are configured per
+    /// installation; an app absent from the remote yields an empty vec.
+    ///
+    /// The remote is flathub deliberately: it is the only remote toride
+    /// knows by name (see [`FLATHUB_REMOTE_NAME`]), and
+    /// [`NativeIds::Flatpak`](crate::NativeIds::Flatpak) records no
+    /// origin, so a record-driven ask cannot name another one — an app
+    /// whose registry method names a different remote lists empty here,
+    /// not its own remote's branches. Unlike the install path this query
+    /// never configures the remote: a host without flathub in the probed
+    /// `installation` fails with flatpak's own remote-not-found error
+    /// instead of self-healing the way
+    /// [`FlatpakBackend::ensure_remote`] does — queries stay read-only.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the listing fails or its output is
+    /// non-empty yet contains no parseable row.
+    pub async fn available_versions(
+        &self,
+        app_id: &str,
+        installation: FlatpakInstallation,
+    ) -> Result<Vec<Version>> {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                installation.flag(),
+                "--app",
+                REMOTE_LS_COLUMNS_ARG,
+                FLATHUB_REMOTE_NAME,
+            ],
+        );
+        let output = self.runner.run_checked(spec).await?;
+        parse_remote_branches(&output.stdout, app_id)
+    }
+
+    /// The sync twin of [`FlatpakBackend::available_versions`] — same
+    /// remote listing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`FlatpakBackend::available_versions`].
+    pub fn available_versions_sync(
+        &self,
+        app_id: &str,
+        installation: FlatpakInstallation,
+    ) -> Result<Vec<Version>> {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                installation.flag(),
+                "--app",
+                REMOTE_LS_COLUMNS_ARG,
+                FLATHUB_REMOTE_NAME,
+            ],
+        );
+        let output = self.runner.run_checked_sync(spec)?;
+        parse_remote_branches(&output.stdout, app_id)
+    }
+
     /// Ensure the flathub remote exists in `installation` (see
     /// [`FLATHUB_REMOTE_NAME`] / [`FLATHUB_REPO_URL`]).
     ///
@@ -299,6 +441,39 @@ impl FlatpakBackend {
         self.ensure_remote(installation, FLATHUB_REMOTE_NAME, FLATHUB_REPO_URL)
             .await
             .map(|_| ())
+    }
+
+    /// Post-verify: ask the scoped listing what version landed, for the
+    /// manifest record. The install already succeeded, so a failing probe
+    /// degrades to "no version reported" instead of failing the outcome.
+    async fn post_install_version(
+        &self,
+        app_ref: &str,
+        installation: FlatpakInstallation,
+    ) -> Option<String> {
+        match app_id_from_ref(app_ref) {
+            Some(app_id) => self
+                .installed_version(app_id, installation)
+                .await
+                .ok()
+                .flatten(),
+            None => None,
+        }
+    }
+
+    /// The sync twin of [`FlatpakBackend::post_install_version`].
+    fn post_install_version_sync(
+        &self,
+        app_ref: &str,
+        installation: FlatpakInstallation,
+    ) -> Option<String> {
+        match app_id_from_ref(app_ref) {
+            Some(app_id) => self
+                .installed_version_sync(app_id, installation)
+                .ok()
+                .flatten(),
+            None => None,
+        }
     }
 }
 
@@ -332,30 +507,9 @@ impl Backend for FlatpakBackend {
         if remote == FLATHUB_REMOTE_NAME {
             self.ensure_flathub_remote(*installation).await?;
         }
-        let spec = command(
-            FLATPAK,
-            [
-                "install",
-                installation.flag(),
-                "--or-update",
-                "--noninteractive",
-                remote.as_str(),
-                app_ref.as_str(),
-            ],
-        );
+        let spec = flatpak_install_spec(remote, app_ref, *installation);
         self.runner.run_checked(spec).await?;
-        // Post-verify: ask the scoped listing what version landed, for the
-        // manifest record. The install already succeeded, so a failing
-        // probe degrades to "no version reported" instead of failing the
-        // outcome.
-        let version = match app_id_from_ref(app_ref) {
-            Some(app_id) => self
-                .installed_version(app_id, *installation)
-                .await
-                .ok()
-                .flatten(),
-            None => None,
-        };
+        let version = self.post_install_version(app_ref, *installation).await;
         Ok(InstallOutcome {
             version,
             detail: request.plan.operation.description(),
@@ -371,33 +525,25 @@ impl Backend for FlatpakBackend {
         else {
             return Err(misrouted_operation(&request.plan.operation));
         };
-        let spec = command(
-            FLATPAK,
-            [
-                "uninstall",
-                installation.flag(),
-                "--noninteractive",
-                app_id.as_str(),
-            ],
-        );
-        match self.runner.run_checked(spec).await {
-            Ok(_) => Ok(UninstallOutcome {
-                detail: request.plan.operation.description(),
-            }),
-            // "Not installed" is flatpak's own typed answer for removing an
-            // absent app (exit 1 + an `error:` line matching the markers);
-            // the desired end state already holds, so the outcome is a
-            // success noting the absence. The exit-code gate keeps signal
-            // kills and other failures as real errors.
-            Err(Error::Command(toride_runner::Error::CommandFailed {
-                stderr, exit_code, ..
-            })) if exit_code == Some(1) && stderr_says_not_installed(&stderr) => {
-                Ok(UninstallOutcome {
-                    detail: format!("{} (already absent)", request.plan.operation.description()),
-                })
-            }
-            Err(error) => Err(error),
-        }
+        let spec = flatpak_uninstall_spec(*installation, app_id);
+        classify_uninstall(
+            self.runner.run_checked(spec).await,
+            request.plan.operation.description(),
+        )
+    }
+
+    async fn update(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::FlatpakUpdate {
+            app_id,
+            installation,
+        } = &request.plan.operation
+        else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let spec = flatpak_update_spec(app_id, *installation);
+        self.runner.run_checked(spec).await?;
+        Ok(())
     }
 
     async fn list_installed(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
@@ -412,6 +558,78 @@ impl Backend for FlatpakBackend {
             .collect())
     }
 
+    async fn available_versions(&self, id: &str) -> Result<Vec<Version>> {
+        self.available_versions(id, FlatpakInstallation::User).await
+    }
+
+    fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome> {
+        ensure_install_allowed(&request)?;
+        let Operation::FlatpakInstall {
+            remote,
+            app_ref,
+            installation,
+        } = &request.plan.operation
+        else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        if remote == FLATHUB_REMOTE_NAME {
+            self.ensure_remote_sync(*installation, FLATHUB_REMOTE_NAME, FLATHUB_REPO_URL)
+                .map(|_| ())?;
+        }
+        let spec = flatpak_install_spec(remote, app_ref, *installation);
+        self.runner.run_checked_sync(spec)?;
+        let version = self.post_install_version_sync(app_ref, *installation);
+        Ok(InstallOutcome {
+            version,
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn uninstall_sync(&self, request: UninstallRequest<'_>) -> Result<UninstallOutcome> {
+        ensure_uninstall_allowed(&request)?;
+        let Operation::FlatpakUninstall {
+            app_id,
+            installation,
+        } = &request.plan.operation
+        else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let spec = flatpak_uninstall_spec(*installation, app_id);
+        classify_uninstall(
+            self.runner.run_checked_sync(spec),
+            request.plan.operation.description(),
+        )
+    }
+
+    fn update_sync(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::FlatpakUpdate {
+            app_id,
+            installation,
+        } = &request.plan.operation
+        else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let spec = flatpak_update_spec(app_id, *installation);
+        self.runner.run_checked_sync(spec)?;
+        Ok(())
+    }
+
+    fn list_installed_sync(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
+        let entries = self.list_entries_sync(FlatpakListScope::All)?;
+        Ok(entries
+            .into_iter()
+            .filter(|entry| query.ids.is_empty() || query.ids.contains(&entry.application))
+            .map(|entry| InstalledApp {
+                id: entry.application,
+                version: entry.version,
+            })
+            .collect())
+    }
+
+    fn available_versions_sync(&self, id: &str) -> Result<Vec<Version>> {
+        self.available_versions_sync(id, FlatpakInstallation::User)
+    }
     // `status` keeps the trait's default list-derived implementation: one
     // unscoped listing covers both installations (an app may live in
     // either), and a not-found id is `NotInstalled`, never an error — the
@@ -419,7 +637,6 @@ impl Backend for FlatpakBackend {
     // know the installation (plan operations, manifest records) should
     // call `installed_version(app_id, installation)` directly.
 }
-
 // ---------------------------------------------------------------------------
 // Typed query results
 // ---------------------------------------------------------------------------
@@ -478,10 +695,72 @@ pub struct FlatpakEntry {
     /// installation's name).
     pub installation: String,
 }
-
 // ---------------------------------------------------------------------------
 // Output parsing
 // ---------------------------------------------------------------------------
+
+/// The canonical `flatpak install` spec the plan's operation executes.
+fn flatpak_install_spec(
+    remote: &str,
+    app_ref: &str,
+    installation: FlatpakInstallation,
+) -> toride_runner::CommandSpec {
+    command(
+        FLATPAK,
+        [
+            "install",
+            installation.flag(),
+            "--or-update",
+            "--noninteractive",
+            remote,
+            app_ref,
+        ],
+    )
+}
+
+/// The canonical `flatpak uninstall` spec the plan's operation executes.
+fn flatpak_uninstall_spec(
+    installation: FlatpakInstallation,
+    app_id: &str,
+) -> toride_runner::CommandSpec {
+    command(
+        FLATPAK,
+        ["uninstall", installation.flag(), "--noninteractive", app_id],
+    )
+}
+
+/// The canonical `flatpak update` spec the plan's operation executes.
+fn flatpak_update_spec(
+    app_id: &str,
+    installation: FlatpakInstallation,
+) -> toride_runner::CommandSpec {
+    command(
+        FLATPAK,
+        ["update", installation.flag(), "--noninteractive", app_id],
+    )
+}
+
+/// Classify a dispatched `flatpak uninstall`: success carries the removal
+/// detail; "not installed" — flatpak's own typed answer for removing an
+/// absent app (exit 1 + an `error:` line matching the markers) — is a
+/// success noting the absence, since the desired end state already holds.
+/// The exit-code gate keeps signal kills and other failures as real errors.
+fn classify_uninstall(
+    result: Result<CommandOutput>,
+    description: String,
+) -> Result<UninstallOutcome> {
+    match result {
+        Ok(_) => Ok(UninstallOutcome {
+            detail: description,
+        }),
+        Err(Error::Command(toride_runner::Error::CommandFailed {
+            stderr, exit_code, ..
+        })) if exit_code == Some(1) && stderr_says_not_installed(&stderr) => Ok(UninstallOutcome {
+            detail: format!("{description} (already absent)"),
+        }),
+        Err(error) => Err(error),
+    }
+}
 
 /// Build the `flatpak list` argv for a scope: verb, installation flag,
 /// `--app`, columns — options before the (empty) operand list.
@@ -573,6 +852,48 @@ fn parse_list_output(stdout: &str) -> Result<Vec<FlatpakEntry>> {
     Ok(entries)
 }
 
+/// Parse the tab-separated `flatpak remote-ls --app --columns=…` listing
+/// into the branches offered for `app_id`, skipping malformed rows and
+/// rows naming other apps, deduplicated in first-seen order (the listing
+/// emits one row per ref, so a multi-arch app repeats each branch). Same
+/// tolerance shape as [`parse_list_output`]: a non-empty document where no
+/// row parses is an error, not an empty offering.
+///
+/// # Errors
+///
+/// [`Error::Command`] wrapping `OutputParse` for the no-parseable-rows
+/// case above.
+fn parse_remote_branches(stdout: &str, app_id: &str) -> Result<Vec<Version>> {
+    let mut branches = Vec::new();
+    let mut well_formed = 0;
+    for line in stdout.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Some((application, branch)) = line.split_once('\t') else {
+            continue;
+        };
+        if application.trim().is_empty() {
+            continue;
+        }
+        well_formed += 1;
+        let branch = branch.trim();
+        if application.trim() == app_id && !branch.is_empty() {
+            let version = Version::new(branch);
+            if !branches.contains(&version) {
+                branches.push(version);
+            }
+        }
+    }
+    if !stdout.trim().is_empty() && well_formed == 0 {
+        return Err(output_parse_error(
+            "flatpak remote-ls --columns=application,branch",
+            format!("no parseable tab-separated rows in {stdout:?}"),
+        ));
+    }
+    Ok(branches)
+}
+
 /// The app id segment of an install ref (`app/<id>/<arch>/<branch>` → the
 /// id). `None` for refs without the `app/` prefix (runtime refs, bare ids,
 /// garbage) — callers degrade rather than mis-verify.
@@ -623,7 +944,6 @@ fn output_parse_error(flatpak_command: &str, cause: impl std::fmt::Display) -> E
         "{flatpak_command}: {cause}"
     )))
 }
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -632,7 +952,9 @@ fn output_parse_error(flatpak_command: &str, cause: impl std::fmt::Display) -> E
 mod tests {
     use super::*;
     use crate::backend::{BackendStatus, StatusQuery};
-    use crate::plan::{InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall};
+    use crate::plan::{
+        InstallOptions, InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall,
+    };
     use std::path::Path;
     use std::sync::Arc;
     use toride_registry::{App, Arch, Availability, DistroFamily, InstallMethod, TorideId};
@@ -691,7 +1013,12 @@ mod tests {
     }
 
     fn install_plan_for() -> InstallPlan {
-        plan_install(&app_with(flatpak_method()), &linux_target()).unwrap()
+        plan_install(
+            &app_with(flatpak_method()),
+            &linux_target(),
+            &InstallOptions::default(),
+        )
+        .unwrap()
     }
 
     fn uninstall_plan_for() -> UninstallPlan {
@@ -719,6 +1046,16 @@ mod tests {
     /// A flatpak-backend uninstall plan carrying a hand-picked operation.
     fn manual_uninstall_plan(operation: Operation) -> UninstallPlan {
         UninstallPlan {
+            app: TorideId::slugify("brave-browser"),
+            backend: BackendId::Flatpak,
+            operation,
+            dry_run: false,
+            requires_elevation: false,
+        }
+    }
+
+    fn manual_update_plan(operation: Operation) -> crate::plan::UpdatePlan {
+        crate::plan::UpdatePlan {
             app: TorideId::slugify("brave-browser"),
             backend: BackendId::Flatpak,
             operation,
@@ -831,8 +1168,8 @@ mod tests {
 
     #[test]
     fn parse_list_output_returns_an_empty_listing_for_empty_output() {
-        assert!(parse_list_output("").unwrap().is_empty());
-        assert!(parse_list_output("  \n\n").unwrap().is_empty());
+        assert_eq!(parse_list_output("").unwrap(), Vec::new());
+        assert_eq!(parse_list_output("  \n\n").unwrap(), Vec::new());
     }
 
     #[test]
@@ -1614,6 +1951,142 @@ mod tests {
         fake.assert_called_with(&spec);
     }
 
+    fn update_spec(flag: &str, app_id: &str) -> toride_runner::CommandSpec {
+        command(FLATPAK, ["update", flag, "--noninteractive", app_id])
+    }
+
+    #[tokio::test]
+    async fn update_refuses_dry_run_plans_without_touching_the_runner() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::User,
+        })
+        .dry_run(true);
+        let target = linux_target();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        assert!(fake.calls().is_empty(), "no flatpak command may run");
+    }
+
+    #[tokio::test]
+    async fn update_refuses_elevation_requiring_plans_without_a_grant() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let mut plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        plan.requires_elevation = true;
+        let target = linux_target();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty(), "no flatpak command may run");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_non_flatpak_operations() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::BrewUpgrade {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        });
+        let target = linux_target();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::Other(_))),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_executes_the_user_installation_with_noninteractive() {
+        let spec = update_spec("--user", "com.brave.Browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        let target = linux_target();
+        backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_honors_the_system_installation_flag() {
+        let spec = update_spec("--system", "com.brave.Browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::System,
+        });
+        let target = linux_target();
+        backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_maps_nonzero_exit_to_command_error_carrying_stderr() {
+        let spec = update_spec("--user", "com.not.Installed");
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stderr(
+                "error: No installed refs found for \u{2018}com.not.Installed\u{2019}",
+                1,
+            ),
+        );
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.not.Installed".to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        let target = linux_target();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed { .. })
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("No installed refs found"),
+            "stderr tail must travel with the error: {error}"
+        );
+    }
+
     // --- listing + status ----------------------------------------------------------
 
     #[tokio::test]
@@ -1793,6 +2266,158 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn available_versions_lists_the_remotes_branches_for_the_app() {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                "--user",
+                "--app",
+                "--columns=application,branch",
+                "flathub",
+            ],
+        );
+        let rows = "org.mozilla.firefox\tstable\n\
+                    com.brave.Browser\tstable\n\
+                    com.brave.Browser\tbeta\n";
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(rows.to_owned()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_versions("com.brave.Browser", FlatpakInstallation::User)
+                .await
+                .unwrap(),
+            vec![Version::new("stable"), Version::new("beta")],
+            "the app's rows only, remote order"
+        );
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn available_versions_scopes_the_listing_to_the_system_installation() {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                "--system",
+                "--app",
+                "--columns=application,branch",
+                "flathub",
+            ],
+        );
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("com.brave.Browser\tstable\n".to_owned()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_versions("com.brave.Browser", FlatpakInstallation::System)
+                .await
+                .unwrap(),
+            vec![Version::new("stable")]
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn available_versions_is_empty_for_an_app_absent_from_the_remote() {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                "--user",
+                "--app",
+                "--columns=application,branch",
+                "flathub",
+            ],
+        );
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout("org.mozilla.firefox\tstable\n".to_owned()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_versions("com.brave.Browser", FlatpakInstallation::User)
+                .await
+                .unwrap(),
+            Vec::<Version>::new()
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_available_versions_rides_the_user_installation() {
+        let spec = command(
+            FLATPAK,
+            [
+                "remote-ls",
+                "--user",
+                "--app",
+                "--columns=application,branch",
+                "flathub",
+            ],
+        );
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout("com.brave.Browser\tstable\n".to_owned()),
+        );
+        let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
+        assert_eq!(
+            dyn_backend
+                .available_versions("com.brave.Browser")
+                .await
+                .unwrap(),
+            vec![Version::new("stable")]
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[test]
+    fn parse_remote_branches_skips_malformed_rows_and_empty_branch_cells() {
+        let rows = "com.brave.Browser\tstable\n\
+                    no-tab-row\n\
+                    \t1.0\n\
+                    com.brave.Browser\t\n\
+                    com.brave.Browser\tbeta\n";
+        assert_eq!(
+            parse_remote_branches(rows, "com.brave.Browser").unwrap(),
+            vec![Version::new("stable"), Version::new("beta")]
+        );
+        assert_eq!(
+            parse_remote_branches("", "com.brave.Browser").unwrap(),
+            Vec::<Version>::new()
+        );
+    }
+
+    #[test]
+    fn parse_remote_branches_dedupes_the_per_arch_ref_rows() {
+        let rows = "com.brave.Browser\tstable\n\
+                    com.brave.Browser\tstable\n\
+                    com.brave.Browser\tbeta\n\
+                    com.brave.Browser\tstable\n";
+        assert_eq!(
+            parse_remote_branches(rows, "com.brave.Browser").unwrap(),
+            vec![Version::new("stable"), Version::new("beta")],
+            "first-seen order, one entry per branch"
+        );
+    }
+
+    #[test]
+    fn parse_remote_branches_rejects_a_non_empty_document_with_no_parseable_rows() {
+        let error = parse_remote_branches("garbage without tabs", "com.brave.Browser").unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "{error:?}"
+        );
+    }
+
     // --- identity ----------------------------------------------------------------
 
     #[test]
@@ -1802,5 +2427,148 @@ mod tests {
         assert!(backend.supports(&linux_target()));
         assert!(!backend.supports(&Target::macos(Arch::X86_64)));
         assert!(!backend.supports(&Target::new(Os::Windows, Arch::X86_64)));
+    }
+
+    #[test]
+    fn install_sync_refuses_dry_run_and_elevation_without_dispatching() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let target = linux_target();
+        let error = backend
+            .install_sync(InstallRequest::new(
+                &install_plan_for().dry_run(true),
+                &target,
+            ))
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        assert!(fake.calls().is_empty(), "no flatpak command may run");
+    }
+
+    #[test]
+    fn install_sync_ensures_the_remote_installs_and_reports_the_version() {
+        let install_spec = flatpak_install_spec(
+            "flathub",
+            "app/com.brave.Browser/x86_64/stable",
+            FlatpakInstallation::User,
+        );
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                remotes_spec(FlatpakInstallation::User),
+                toride_runner::CommandOutput::from_stdout("flathub\n"),
+            )
+            .respond(
+                install_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                list_spec(FlatpakListScope::User),
+                toride_runner::CommandOutput::from_stdout(listing_output()),
+            );
+        let backend = backend(&fake);
+        let plan = install_plan_for();
+        let target = linux_target();
+        let outcome = backend
+            .install_sync(InstallRequest::new(&plan, &target))
+            .unwrap();
+        assert_eq!(outcome.version.as_deref(), Some("1.96.59"));
+        fake.assert_called_with(&install_spec);
+    }
+
+    #[test]
+    fn uninstall_sync_runs_the_user_argv_and_reclassifies_already_absent() {
+        let app_id = "com.brave.Browser";
+        let spec = flatpak_uninstall_spec(FlatpakInstallation::User, app_id);
+        let absent = flatpak_uninstall_spec(FlatpakInstallation::User, "com.absent.App");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""))
+            .respond(
+                absent.clone(),
+                toride_runner::CommandOutput::from_stderr(
+                    "error: com.absent.App is not installed\n",
+                    1,
+                ),
+            );
+        let backend = backend(&fake);
+        let target = linux_target();
+        let plan = manual_uninstall_plan(Operation::FlatpakUninstall {
+            app_id: app_id.to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        backend
+            .uninstall_sync(UninstallRequest::new(&plan, &target))
+            .unwrap();
+        let absent_plan = manual_uninstall_plan(Operation::FlatpakUninstall {
+            app_id: "com.absent.App".to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        let outcome = backend
+            .uninstall_sync(UninstallRequest::new(&absent_plan, &target))
+            .unwrap();
+        assert!(
+            outcome.detail.contains("already absent"),
+            "{}",
+            outcome.detail
+        );
+        fake.assert_called_with(&spec);
+        fake.assert_called_with(&absent);
+    }
+
+    #[test]
+    fn update_sync_runs_the_user_update_argv_exactly() {
+        let spec = flatpak_update_spec("com.brave.Browser", FlatpakInstallation::User);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: FlatpakInstallation::User,
+        });
+        let target = linux_target();
+        backend
+            .update_sync(UpdateRequest::new(&plan, &target))
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn list_entries_and_installed_version_sync_read_the_scoped_listing() {
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                list_spec(FlatpakListScope::User),
+                toride_runner::CommandOutput::from_stdout(listing_output()),
+            )
+            .respond(
+                list_spec(FlatpakListScope::User),
+                toride_runner::CommandOutput::from_stdout(listing_output()),
+            )
+            .respond(
+                list_spec(FlatpakListScope::All),
+                toride_runner::CommandOutput::from_stdout(listing_output()),
+            );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .installed_version_sync("com.brave.Browser", FlatpakInstallation::User)
+                .unwrap()
+                .as_deref(),
+            Some("1.96.59")
+        );
+        assert_eq!(
+            backend
+                .installed_version_sync(
+                    "io.gitlab.adwcustomizer.AdwCustomizer",
+                    FlatpakInstallation::User
+                )
+                .unwrap(),
+            None,
+            "present without a version, still present"
+        );
+        let apps = backend.list_installed_sync(ListQuery::all()).unwrap();
+        assert!(apps.iter().any(|app| app.id == "com.brave.Browser"));
     }
 }

@@ -172,7 +172,7 @@ mod tests {
         let paths = WireguardPaths::with_root(PathBuf::from("/tmp/no-such-dir"));
         let mgr = BackupManager::new(&paths);
         let result = mgr.list_backups("wg0").unwrap();
-        assert!(result.is_empty());
+        assert_eq!(result, Vec::<PathBuf>::new());
     }
 
     #[test]

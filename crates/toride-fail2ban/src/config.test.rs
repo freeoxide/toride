@@ -117,7 +117,7 @@ fn jail_config_enabled_defaults_to_true() {
     }"#;
     let jail: JailConfig = serde_json::from_str(json).unwrap();
     assert!(jail.enabled);
-    assert!(jail.ignore_ips.is_empty());
+    assert_eq!(jail.ignore_ips, Vec::<String>::new());
 }
 
 #[test]
@@ -162,8 +162,8 @@ fn action_config_deserializes_with_empty_validate() {
         "validate": []
     }"#;
     let ac: ActionConfig = serde_json::from_str(json).unwrap();
-    assert!(ac.validation_commands.is_empty());
-    assert!(ac.commands.linux.is_empty());
+    assert_eq!(ac.validation_commands, Vec::<String>::new());
+    assert_eq!(ac.commands.linux, Vec::<String>::new());
 }
 
 #[test]
@@ -408,7 +408,7 @@ fn enabled_jails_returns_only_enabled_jails() {
 #[test]
 fn enabled_jails_returns_empty_for_no_jails() {
     let config = Fail2BanConfig::default();
-    assert!(config.enabled_jails().is_empty());
+    assert_eq!(config.enabled_jails(), [] as [&str; 0]);
 }
 
 #[test]
@@ -810,7 +810,7 @@ fn enabled_jails_returns_empty_when_all_disabled() {
         jails,
         ..Default::default()
     };
-    assert!(config.enabled_jails().is_empty());
+    assert_eq!(config.enabled_jails(), [] as [&str; 0]);
 }
 
 #[test]

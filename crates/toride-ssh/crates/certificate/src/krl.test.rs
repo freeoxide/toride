@@ -23,7 +23,7 @@ fn parse_serials_reversed_range_ignored() {
     let mut out = Vec::new();
     parse_serials("10-5", &mut out);
     // Reversed range should be ignored
-    assert!(out.is_empty());
+    assert_eq!(out, [] as [u64; 0]);
 }
 
 #[test]
@@ -59,14 +59,14 @@ fn parse_serials_just_over_cap() {
 fn parse_serials_empty_input() {
     let mut out = Vec::new();
     parse_serials("", &mut out);
-    assert!(out.is_empty());
+    assert_eq!(out, [] as [u64; 0]);
 }
 
 #[test]
 fn parse_serials_whitespace_only() {
     let mut out = Vec::new();
     parse_serials("   ", &mut out);
-    assert!(out.is_empty());
+    assert_eq!(out, [] as [u64; 0]);
 }
 
 #[test]
@@ -80,21 +80,21 @@ fn parse_serials_range_with_spaces() {
 fn parse_serials_non_numeric() {
     let mut out = Vec::new();
     parse_serials("abc", &mut out);
-    assert!(out.is_empty());
+    assert_eq!(out, [] as [u64; 0]);
 }
 
 #[test]
 fn parse_serials_range_non_numeric() {
     let mut out = Vec::new();
     parse_serials("abc-def", &mut out);
-    assert!(out.is_empty());
+    assert_eq!(out, [] as [u64; 0]);
 }
 
 #[test]
 fn parse_serials_range_mixed_numeric() {
     let mut out = Vec::new();
     parse_serials("1-abc", &mut out);
-    assert!(out.is_empty());
+    assert_eq!(out, [] as [u64; 0]);
 }
 
 #[test]

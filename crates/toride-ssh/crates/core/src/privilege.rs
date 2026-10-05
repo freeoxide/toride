@@ -263,30 +263,45 @@ fn write_sshd_config(
     //     `toride-sshd-*.tmp` from a prior failed run so leaked temps self-heal
     //     on the next write. We sweep TWO directories:
     //
-    //       1. `<targetdir>` — reclaims leaked LIFTED-area temps on the ROOT
-    //          path (the staged temp lives here) and stale lifted temps on the
-    //          NON-ROOT path (the lifted temp lives in the target dir, but it
-    //          uses the DISTINCT `toride-lifted-` prefix, so this glob does NOT
-    //          match it — see [`LIFTED_TEMP_PREFIX`]). Only genuinely stale
-    //          STAGED `toride-sshd-*.tmp` names here match.
+    //       1. `<targetdir>` — reclaims leaked STAGED temps on the ROOT path
+    //          (the staged temp lives here). The NON-ROOT path's lifted temp
+    //          lives in the target dir too, but its DISTINCT `toride-lifted-`
+    //          prefix never matches the sweep pattern (see
+    //          [`LIFTED_TEMP_PREFIX`]).
     //       2. `std::env::temp_dir()` (e.g. `/tmp`) — on the NON-ROOT path the
     //          STAGED temp lives here, so a SIGKILL/panic between `tmp.keep()`
     //          and the trailing `remove_file` orphans it forever (F18). Sweeping
-    //          here reclaims those. This must stay aligned with F3: the lifted
-    //          temp uses the distinct `toride-lifted-` prefix and lives in the
-    //          target dir, so ONLY staged temps in /tmp match this glob.
+    //          here reclaims those.
+    //
+    //     The sweep is AGE-GATED (`-mmin +59`, over an hour old): a CONCURRENT
+    //     write's live staged temp is seconds old and must never be deleted out
+    //     from under it — an ungated prefix sweep races exactly that way against
+    //     every other toride process (and test) sharing the staging dir, killing
+    //     the victim's lift with ENOENT. Age is the orphan/live discriminator:
+    //     a crash orphans the file with nobody left to clean it, so only old
+    //     files are garbage.
     //
     //     ALL errors are ignored (best-effort): the sweep must never gate a real
-    //     write. The glob is anchored on the STAGED prefix only; a concurrent
-    //     instance's just-lifted validate path (distinct prefix, different dir)
-    //     is provably immune.
-    let sweep_globs = |dir: &Path| {
+    //     write. The pattern is anchored on the STAGED prefix only.
+    let sweep_stale_staged = |dir: &Path| {
         let dir_s = dir.to_string_lossy();
-        // `"$0"` + trailing positional makes the pattern safe to pass through sh
-        // even if the dir contained shell metacharacters (it won't here, but the
-        // form is robust). The glob matches ONLY the STAGED temp prefix.
-        let pattern = format!("rm -f \"$0\"/{STAGED_TEMP_PREFIX}*{TEMP_SUFFIX}");
-        if let Err(e) = runner("sh", &["-c", &pattern, &dir_s], running_as_root) {
+        let pattern = format!("{STAGED_TEMP_PREFIX}*{TEMP_SUFFIX}");
+        if let Err(e) = runner(
+            "find",
+            &[
+                &dir_s,
+                "-maxdepth",
+                "1",
+                "-type",
+                "f",
+                "-name",
+                &pattern,
+                "-mmin",
+                "+59",
+                "-delete",
+            ],
+            running_as_root,
+        ) {
             tracing::warn!(
                 target: "toride_ssh_core::privilege",
                 sweep_dir = %dir.display(),
@@ -297,12 +312,12 @@ fn write_sshd_config(
         }
     };
     if let Some(dir) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
-        sweep_globs(dir);
+        sweep_stale_staged(dir);
     }
     // F18: ALSO sweep the system temp dir for orphaned STAGED temps (non-root
     // path stages here; a crash mid-write orphans them). On the root path this
     // is a harmless best-effort no-op (no staged temp lives in /tmp then).
-    sweep_globs(&std::env::temp_dir());
+    sweep_stale_staged(&std::env::temp_dir());
 
     // 1. Stage the new contents in an O_EXCL, unpredictable-named temp file
     //    where THIS process can write it. See [`staging_dir`]: root stages in
@@ -1680,9 +1695,9 @@ mod tests {
     }
 
     /// Shared body of the two stub runners: perform the real op for `cp`/`mv`/
-    /// `rm` against the tempdir we own, and for the install `sh -c` (distinguished
-    /// from the self-sweep by the script content) either chmod+mv for real or —
-    /// when `fail_install` is true — return the injected error.
+    /// `rm` against the tempdir we own, and for the install `sh -c` either
+    /// chmod+mv for real or — when `fail_install` is true — return the
+    /// injected error.
     fn nonroot_runner_impl(
         cmd: &str,
         args: &[&str],
@@ -1735,16 +1750,13 @@ mod tests {
                 Ok(())
             }
             "sh" => {
-                // Two `sh -c` invocations flow through here:
-                //   1. the top-of-write SELF-SWEEP:
-                //      `sh -c 'rm -f "$0"/toride-sshd-*.tmp' <dir>`
-                //      (script contains `rm -f`),
-                //   2. the single-invocation INSTALL:
-                //      `sh -c 'chmod 644 "$0" && mv "$0" "$1"' <src> <dst>`
-                //      (script contains `chmod` and `mv`).
-                // We distinguish them by the script content; only the install
-                // is recorded (via `on_install`) and can be failed. The
-                // self-sweep just runs its `rm -f` glob for real.
+                // The single `sh -c` invocation that flows through here is the
+                // INSTALL: `sh -c 'chmod 644 "$0" && mv "$0" "$1"' <src> <dst>`
+                // (script contains `chmod` and `mv`). Only the install is
+                // recorded (via `on_install`) and can be failed; the top-of-write
+                // self-sweep is a `find` call the stub leaves alone (the sweep is
+                // best-effort and age-gated, so faking it changes nothing the
+                // assertions observe).
                 let script = owned_args.get(1).map_or("", std::string::String::as_str);
                 let is_install = owned_args.first().is_some_and(|a| a == "-c")
                     && script.contains("chmod")
@@ -1771,30 +1783,6 @@ mod tests {
                             Error::ConfigWriteFailed(format!("stub mv failed: {e}"))
                         })?;
                     }
-                    return Ok(());
-                }
-                // Self-sweep `rm -f "$0"/toride-sshd-*.tmp` (now run in BOTH the
-                // target dir AND std::env::temp_dir()): best-effort, run the
-                // glob against the bound dir. SKIP when the bound dir IS the
-                // real std::env::temp_dir() — the production sweep of /tmp is
-                // best-effort, and acting on the real /tmp here would risk
-                // deleting a CONCURRENT test thread's staged temp (each
-                // non-root test stages in std::env::temp_dir()). Within-test
-                // sweep behavior (target dir) is still exercised.
-                if owned_args.len() == 3
-                    && script.contains("rm -f")
-                    && let Some(dir) = owned_args.get(2)
-                {
-                    let is_system_temp =
-                        std::path::Path::new(dir) == std::env::temp_dir().as_path();
-                    if !is_system_temp && let Ok(entries) = std::fs::read_dir(dir) {
-                        for entry in entries.flatten() {
-                            let name = entry.file_name();
-                            if name.to_string_lossy().starts_with(STAGED_TEMP_PREFIX) {
-                                let _ = std::fs::remove_file(entry.path());
-                            }
-                        }
-                    }
                 }
                 Ok(())
             }
@@ -1804,9 +1792,9 @@ mod tests {
 
     /// Happy-path stub: counts INSTALL `sh` invocations (those whose script
     /// folds chmod+mv) and records the install argv into its dedicated
-    /// thread-local cell. Never injects a failure. (The self-sweep `sh -c 'rm
-    /// -f …'` is NOT counted — only the install is, since invariant #3 is
-    /// "the install is a single sh -c".)
+    /// thread-local cell. Never injects a failure. (The top-of-write
+    /// self-sweep is a `find` call and is NOT counted — only the install is,
+    /// since invariant #3 is "the install is a single sh -c".)
     fn nonroot_runner_happy(cmd: &str, args: &[&str], _running_as_root: bool) -> Result<()> {
         let is_install_sh = cmd == "sh"
             && args
@@ -1917,9 +1905,9 @@ mod tests {
 
         // (d) Exactly ONE install sh invocation. The install must be a SINGLE
         // sh -c (invariant #3) — if a regression split chmod and mv into two
-        // separate sh invocations, this count would be 2. (The self-sweep
-        // `sh -c 'rm -f …'` at the top of write_sshd_config is deliberately
-        // NOT counted — only install-shaped sh calls are.)
+        // separate sh invocations, this count would be 2. (The self-sweep at
+        // the top of write_sshd_config is a `find` call, not sh, so it is
+        // deliberately NOT counted — only install-shaped sh calls are.)
         let sh_count = HAPPY_SH_COUNT.with(std::cell::Cell::get);
         assert_eq!(
             sh_count, 1,
@@ -2124,52 +2112,73 @@ mod tests {
     // [F18] the self-sweep reclaims stale STAGED temps but spares LIFTED temps.
     // -------------------------------------------------------------------------
     //
-    // This exercises the actual sweep glob mechanics (the production sweep uses
-    // `rm -f "$0"/toride-sshd-*.tmp`): a stale STAGED-prefix temp in the target
-    // dir must be removed, while a LIFTED-prefix temp must survive. The /tmp
-    // sweep uses the identical glob, so this also locks F18's "only staged temps
-    // match" invariant.
+    // This exercises the actual sweep mechanics (the production sweep runs
+    // `find <dir> -maxdepth 1 -type f -name 'toride-sshd-*.tmp' -mmin +59
+    // -delete`): a STAGED-prefix temp older than the age gate must be removed,
+    // while a LIFTED-prefix temp and a FRESH staged temp (a concurrent write's
+    // live staging file) must survive. The /tmp sweep uses the identical
+    // command, so this also locks F18's "only staged temps match" and the
+    // age-gate race immunity invariants.
 
     #[test]
     fn self_sweep_removes_stale_staged_temps_but_spares_lifted_temps() {
-        // Set up a target dir containing: a stale STAGED temp, a fresh LIFTED
-        // temp, and the live config. Run a root-path write (so the stub sweep
-        // actually executes against the target dir — the production sweep globs
-        // the same dir). Assert the STAGED temp is gone and the LIFTED temp
-        // survives. We use a runner stub ONLY to drive the sweep; the real
-        // install path runs in-process (root).
+        // Set up a target dir containing: an over-an-hour-old STAGED temp, a
+        // fresh LIFTED temp, a fresh STAGED temp, and the live config. Run a
+        // root-path write (so the real sweep executes against the target dir —
+        // the production sweep scans the same dir). Assert the stale STAGED
+        // temp is gone and both fresh temps survive.
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("sshd_config");
         std::fs::write(&target, "# old\nPort 2222\n").unwrap();
 
-        // Plant a stale STAGED temp and a LIFTED temp in the target dir.
         let stale_staged = dir
             .path()
             .join(format!("{STAGED_TEMP_PREFIX}stale{TEMP_SUFFIX}"));
+        let fresh_staged = dir
+            .path()
+            .join(format!("{STAGED_TEMP_PREFIX}fresh{TEMP_SUFFIX}"));
         let lifted = dir
             .path()
             .join(format!("{LIFTED_TEMP_PREFIX}live{TEMP_SUFFIX}"));
         std::fs::write(&stale_staged, "stale\n").unwrap();
+        std::fs::write(&fresh_staged, "fresh\n").unwrap();
         std::fs::write(&lifted, "lifted\n").unwrap();
+        // An orphaned staged temp is by definition old: backdate it past the
+        // sweep's age gate (an ungated sweep would also take the fresh one —
+        // exactly the cross-write race the gate exists to prevent).
+        std::fs::File::options()
+            .write(true)
+            .open(&stale_staged)
+            .unwrap()
+            .set_modified(std::time::SystemTime::now() - std::time::Duration::from_hours(2))
+            .unwrap();
 
         write_sshd_config("# new\nPort 22\n", true, &target, Some(validator_ok), None)
             .expect("happy path must succeed despite planted temps");
 
-        // The STAGED-prefix temp must have been swept by the top-of-write glob.
         assert!(
             !stale_staged.exists(),
             "stale STAGED temp must be reclaimed by the self-sweep (F18), \
              but it still exists at {}",
             stale_staged.display()
         );
-        // The LIFTED-prefix temp must SURVIVE — the glob `toride-sshd-*` does
-        // not match `toride-lifted-*`. If F3's distinct-prefix fix were
-        // reverted (lifted reused `toride-sshd-`), the sweep would delete this.
+        // The LIFTED-prefix temp must SURVIVE — the sweep pattern does not
+        // match `toride-lifted-*`. If F3's distinct-prefix fix were reverted
+        // (lifted reused `toride-sshd-`), the sweep would delete this.
         assert!(
             lifted.exists(),
-            "LIFTED temp must NOT be matched by the self-sweep glob (F3); \
+            "LIFTED temp must NOT be matched by the self-sweep pattern (F3); \
              it was deleted from {}",
             lifted.display()
+        );
+        // A FRESH staged temp must SURVIVE: it is indistinguishable from a
+        // concurrent write's live staging file, so sweeping it would race that
+        // write's lift into a spurious ENOENT failure.
+        assert!(
+            fresh_staged.exists(),
+            "fresh STAGED temp must NOT be swept — the age gate spares every \
+             concurrent write's live staging file; it was deleted from {}",
+            fresh_staged.display()
         );
         // And the install still succeeded.
         let live = std::fs::read_to_string(&target).unwrap();

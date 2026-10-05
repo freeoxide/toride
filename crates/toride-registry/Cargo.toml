@@ -5,15 +5,16 @@ edition.workspace = true
 description = "Normalizes external package registries (Homebrew, Flathub, AppStream/DEP-11, Repology) into a single `App` model behind per-source adapters."
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["homebrew", "flathub", "appstream", "repology", "package-registry"]
+categories = ["parser-implementations", "api-bindings"]
 
 [features]
-default = ["http"]
-# The fetch half: reqwest clients + gzip catalog decompression (DESIGN.md
-# §9, mirroring toride-installer's `http` gate, installer Cargo.toml:11-20).
-# The pure parse half builds fully WITHOUT it, so a consumer can take
-# `toride-registry` with `default-features = false` and inherit neither
-# reqwest (rustls -> ring) nor flate2.
-http = ["dep:reqwest", "dep:flate2"]
+default = []
+# The fetch half (reqwest + gzip + the tokio offloading they ride); the
+# pure parse half builds fully without it, so the default graph carries
+# none of the four (plan 3.1: heavy features off default feature sets).
+http = ["dep:reqwest", "dep:flate2", "dep:tokio", "dep:dirs"]
 
 [dependencies]
 serde = { workspace = true }
@@ -23,10 +24,13 @@ thiserror = { workspace = true }
 # (DESIGN.md §3, house style per toride-installer's `ReleaseResolver`), so
 # it is needed by the trait itself, not only by the fetch layer.
 async-trait = { workspace = true }
-# Async fetch clients + the `#[tokio::test]` suites (DESIGN.md §9).
-tokio = { workspace = true }
+# Async fetch clients (`http` only) + the `#[tokio::test]` suites.
+tokio = { workspace = true, optional = true }
 # Typed UTF-8 cache paths in the appstream fetch client (DESIGN.md §9).
 camino = { workspace = true }
+# Platform cache dir for the homebrew catalog-index cache (`http` only;
+# the parse half never touches the filesystem).
+dirs = { workspace = true, optional = true }
 # DEP-11 YAML catalogs (appstream.rs); upstream serde_yaml is archived,
 # swap the backend behind the `&str -> Result<Dep11Catalog>` signature if
 # that blocks (DESIGN.md §9, appstream.md §6).
@@ -40,21 +44,23 @@ flate2 = { version = "1", optional = true }
 # Snapshot tests of the normalized output per §7 fixture (DESIGN.md §9,
 # conventions.md §7); snapshots live in `tests/snapshots/`.
 insta = { workspace = true }
+# The `#[tokio::test]` suites and test runtimes, present even when the
+# `http` feature (and with it the tokio dependency) is off.
+tokio = { workspace = true }
 # Criterion bench of the DEP-11 parse half (benches/dep11_parse.rs, the
 # F14 pin). Default features off: the HTML-report stack (plotters) and
 # rayon are unneeded for stdout estimates + baseline save/load, keeping
 # the bench compile lean; `cargo_bench_support` is required to run under
 # `cargo bench` at all.
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+# Cross-crate pin only (plan §3.12): the model's digest lengths must match
+# the installer parser/verifier constants. Dev-only and featureless, so the
+# parse half's dependency graph is unchanged.
+toride-installer = { path = "../toride-installer", version = "0.1.0", default-features = false }
 
-# F14 parse-half pin + F14 round-2 fetch-side cache pin: parse_dep11_catalog /
-# AppstreamAdapter::from_text over a synthetic dep11 fixture
-# (benches/fixtures/dep11-synthetic.yml), plus (with the default `http`
-# feature) the TTL-hit cache serving path `AppstreamClient::cached_catalog`
-# over a seeded cache dir — never a live 27 MB catalog. Hermetic
-# (compile-time fixture, pure parse + seeded gz cache, no network), with a
-# deterministic count/parity oracle inlined before any timing. Run scoped:
-# `cargo bench -p toride-registry --bench dep11_parse`.
+# F14 pins: parse_dep11_catalog / AppstreamAdapter::from_text over the synthetic
+# dep11 fixture, plus (feature `http`) the seeded-cache cached_catalog path — hermetic,
+# never a live catalog. Run: cargo bench -p toride-registry --features http --bench dep11_parse.
 [[bench]]
 name = "dep11_parse"
 harness = false

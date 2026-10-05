@@ -502,8 +502,8 @@ mod tests {
     fn empty_status_is_zeroed() {
         let s = empty_status();
         assert!(!s.connected);
-        assert!(s.node_name.is_empty());
-        assert!(s.ip_addresses.is_empty());
+        assert_eq!(s.node_name, "");
+        assert_eq!(s.ip_addresses, Vec::<String>::new());
         assert!(s.exit_node.is_none());
     }
 
@@ -521,7 +521,7 @@ mod tests {
         assert!(!b.available);
         assert!(b.peers.is_empty());
         assert!(b.findings.is_empty());
-        assert!(b.status.node_name.is_empty());
+        assert_eq!(b.status.node_name, "");
         assert!(
             b.unavailable_reason.is_none(),
             "empty_bundle carries no reason; panics use empty_bundle_with_reason"

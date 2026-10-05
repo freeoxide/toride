@@ -10,8 +10,10 @@
 //! the cache and UI format) and `#[non_exhaustive]` where the set may grow
 //! (new sources, new distro families, Windows later).
 //!
-//! Deliberately NOT in the model: categories/icons/screenshots/verification/
-//! popularity, local-state echoes (`installed`, `outdated`, `pinned`), and
+//! Deliberately NOT in the model: categories/icons/screenshots/
+//! verification badges (flathub `verification_verified` — distinct from
+//! the modeled [`VerificationPolicy`])/popularity, local-state echoes
+//! (`installed`, `outdated`, `pinned`), and
 //! repology per-repo `status` (lives at parse level in the oracle). Versions
 //! stay opaque strings — repology `origversion` suffixes and flathub
 //! development releases are not semver, and cross-source comparison is the
@@ -188,6 +190,41 @@ pub enum Availability {
     Disabled,
 }
 
+impl App {
+    /// The best checksummed artifact for `os`/`arch` wrapped as an
+    /// [`InstallMethod::Direct`] — exact (os, arch) match preferred,
+    /// undeclared slots (`None`) as wildcards; `None` when no checksummed
+    /// artifact matches (DESIGN.md §3.3).
+    #[must_use]
+    pub fn direct_fallback(&self, os: Os, arch: Option<Arch>) -> Option<InstallMethod> {
+        let mut best: Option<(u8, &Artifact)> = None;
+        for artifact in &self.artifacts {
+            if artifact.checksum.is_none() {
+                continue;
+            }
+            let os_rank = match artifact.os {
+                Some(claimed) if claimed == os => 0,
+                None => 1,
+                Some(_) => continue,
+            };
+            let arch_rank = match (artifact.arch, arch) {
+                (Some(claimed), Some(wanted)) if claimed == wanted => 0,
+                (None, _) | (_, None) => 1,
+                (Some(_), Some(_)) => continue,
+            };
+            let rank = os_rank + arch_rank;
+            if best.is_none_or(|(best_rank, _)| rank < best_rank) {
+                best = Some((rank, artifact));
+            }
+        }
+        best.map(|(_, artifact)| InstallMethod::Direct {
+            url: artifact.url.clone(),
+            checksum: artifact.checksum.clone(),
+            arch: artifact.arch,
+        })
+    }
+}
+
 /// A version as an opaque string plus the extras sources publish.
 ///
 /// Deliberately no semver parsing in wave 1 (repology `origversion`
@@ -221,6 +258,47 @@ pub enum SourceKind {
     Distro,
     /// Repology project; id = canonical project name (`brave-browser`).
     Repology,
+}
+
+/// Whether a source publishes checksums for the downloads it lists
+/// (plan gap 3.12): `OutOfBand` marks an empty [`App::artifacts`] list
+/// as unverifiable — demand an out-of-band digest, never a size floor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum VerificationPolicy {
+    /// The source publishes a checksum beside its artifacts (homebrew
+    /// sha256); an artifact with `checksum: None` here is an upstream gap
+    /// for that one artifact, not a source-wide hole.
+    Inline,
+    /// The source publishes no checksums anywhere (flathub, DEP-11;
+    /// repology lists no artifacts at all): every download from it is
+    /// unverifiable against publisher material.
+    OutOfBand,
+}
+
+impl SourceKind {
+    /// The verification policy of every record this source publishes —
+    /// a fact about the source, not about any one app.
+    ///
+    /// ```
+    /// use toride_registry::{SourceKind, VerificationPolicy};
+    ///
+    /// assert_eq!(
+    ///     SourceKind::HomebrewCask.verification_policy(),
+    ///     VerificationPolicy::Inline
+    /// );
+    /// assert_eq!(
+    ///     SourceKind::Flathub.verification_policy(),
+    ///     VerificationPolicy::OutOfBand
+    /// );
+    /// ```
+    #[must_use]
+    pub const fn verification_policy(self) -> VerificationPolicy {
+        match self {
+            Self::HomebrewCask | Self::HomebrewFormula => VerificationPolicy::Inline,
+            Self::Flathub | Self::Distro | Self::Repology => VerificationPolicy::OutOfBand,
+        }
+    }
 }
 
 /// One per-source identity: the join key between the toride world and a
@@ -286,8 +364,7 @@ pub struct Platform {
     pub min_release: Option<String>,
 }
 
-/// Hash algorithm of a published checksum. Wave-1 sources publish sha256
-/// only.
+/// Hash algorithm of a published checksum.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ChecksumAlgo {
@@ -295,6 +372,29 @@ pub enum ChecksumAlgo {
     /// publishes (homebrew cask `sha256` + per-variation, formula bottle
     /// files; flathub and DEP-11 publish none at all).
     Sha256,
+    /// sha512, lowercase hex — modeled so a source that publishes one
+    /// needs no model change; no wave-1 adapter emits it yet.
+    Sha512,
+}
+
+impl ChecksumAlgo {
+    /// The exact hex length [`ChecksumAlgo::is_valid_digest`] demands:
+    /// 64 for sha256, 128 for sha512.
+    #[must_use]
+    pub const fn digest_hex_len(self) -> usize {
+        match self {
+            Self::Sha256 => 64,
+            Self::Sha512 => 128,
+        }
+    }
+
+    /// True iff `digest` is exactly [`ChecksumAlgo::digest_hex_len`] hex
+    /// digits (case-insensitive) — the same shape rule toride-installer's
+    /// checksum-file parser applies. Store normalized to lowercase.
+    #[must_use]
+    pub fn is_valid_digest(self, digest: &str) -> bool {
+        digest.len() == self.digest_hex_len() && digest.bytes().all(|b| b.is_ascii_hexdigit())
+    }
 }
 
 /// A published checksum.
@@ -336,8 +436,8 @@ pub struct Artifact {
 }
 
 /// How to install — the descriptor install planning consumes. One variant
-/// per install technology, exactly the wave-1 set: brew token / flatpak
-/// ref / distro package per family / direct URL.
+/// per install technology: brew / flatpak / distro / direct URL / the
+/// language managers (npm, cargo, pipx, uv, mise).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum InstallMethod {
@@ -381,6 +481,40 @@ pub enum InstallMethod {
         /// Arch the artifact targets, when known.
         arch: Option<Arch>,
     },
+    /// `npm install -g <package>[@<version>]` — the global CLI-tool scope.
+    Npm {
+        /// npm package name.
+        package: String,
+        /// Exact version pin; `None` takes the registry's current.
+        version: Option<String>,
+    },
+    /// `cargo install [--version <v>] <crate>`.
+    Cargo {
+        /// Crate name as published on crates.io.
+        #[serde(rename = "crate")]
+        crate_: String,
+        /// Exact version pin; `None` takes the latest release.
+        version: Option<String>,
+    },
+    /// `pipx install <package>` (pipx takes no version operand).
+    Pipx {
+        /// Python package name.
+        package: String,
+    },
+    /// `uv tool install <package>[==<version>]`.
+    Uv {
+        /// Python package name.
+        package: String,
+        /// Exact version pin; `None` takes the latest release.
+        version: Option<String>,
+    },
+    /// `mise install <tool>[@<version>]` plus `mise use --global`.
+    Mise {
+        /// mise tool name (`node`, `npm:prettier`, `cargo:ripgrep`).
+        tool: String,
+        /// Version constraint; `None` addresses `@latest`.
+        version: Option<String>,
+    },
 }
 
 /// Distro family — selects the native package manager for
@@ -402,7 +536,331 @@ pub enum DistroFamily {
 
 #[cfg(test)]
 mod tests {
-    use super::TorideId;
+    use super::{
+        App, Arch, Artifact, ArtifactKind, Checksum, ChecksumAlgo, InstallMethod, Os, SourceKind,
+        TorideId, VerificationPolicy,
+    };
+
+    fn artifact(url: &str, digest: Option<&str>, os: Option<Os>, arch: Option<Arch>) -> Artifact {
+        Artifact {
+            url: url.to_owned(),
+            checksum: digest.map(|digest| Checksum {
+                algo: ChecksumAlgo::Sha256,
+                digest: digest.to_owned(),
+            }),
+            os,
+            arch,
+            kind: ArtifactKind::Package,
+        }
+    }
+
+    fn app_with(artifacts: Vec<Artifact>) -> App {
+        App {
+            id: TorideId::slugify("fixture"),
+            name: "fixture".to_owned(),
+            aliases: Vec::new(),
+            summary: None,
+            description: None,
+            homepage: None,
+            license: None,
+            developer: None,
+            binaries: Vec::new(),
+            latest: None,
+            platforms: Vec::new(),
+            artifacts,
+            install: InstallMethod::Homebrew {
+                cask: false,
+                token: "fixture".to_owned(),
+            },
+            sources: Vec::new(),
+            availability: super::Availability::Available,
+        }
+    }
+
+    #[test]
+    fn direct_fallback_prefers_the_exact_os_and_arch_artifact() {
+        let app = app_with(vec![
+            artifact("https://example.com/any", Some("wild"), None, None),
+            artifact(
+                "https://example.com/mac-arm",
+                Some("exact"),
+                Some(Os::MacOs),
+                Some(Arch::Aarch64),
+            ),
+            artifact(
+                "https://example.com/mac",
+                Some("os-only"),
+                Some(Os::MacOs),
+                None,
+            ),
+            artifact(
+                "https://example.com/linux",
+                Some("wrong-os"),
+                Some(Os::Linux),
+                Some(Arch::Aarch64),
+            ),
+        ]);
+        assert_eq!(
+            app.direct_fallback(Os::MacOs, Some(Arch::Aarch64)),
+            Some(InstallMethod::Direct {
+                url: "https://example.com/mac-arm".to_owned(),
+                checksum: Some(Checksum {
+                    algo: ChecksumAlgo::Sha256,
+                    digest: "exact".to_owned(),
+                }),
+                arch: Some(Arch::Aarch64),
+            })
+        );
+    }
+
+    #[test]
+    fn direct_fallback_uses_wildcards_when_no_exact_artifact_exists() {
+        let app = app_with(vec![
+            artifact(
+                "https://example.com/no-sha",
+                None,
+                Some(Os::MacOs),
+                Some(Arch::Aarch64),
+            ),
+            artifact(
+                "https://example.com/os-any-arch",
+                Some("os"),
+                Some(Os::MacOs),
+                None,
+            ),
+        ]);
+        assert_eq!(
+            app.direct_fallback(Os::MacOs, Some(Arch::Aarch64))
+                .map(|method| match method {
+                    InstallMethod::Direct { url, .. } => url,
+                    other => panic!("expected Direct, got {other:?}"),
+                }),
+            Some("https://example.com/os-any-arch".to_owned())
+        );
+        assert!(
+            app.direct_fallback(Os::Linux, Some(Arch::Aarch64))
+                .is_none(),
+            "no artifact claims or wildcards Linux"
+        );
+    }
+
+    #[test]
+    fn direct_fallback_skips_checksum_less_artifacts() {
+        let app = app_with(vec![artifact(
+            "https://example.com/unsigned",
+            None,
+            Some(Os::MacOs),
+            Some(Arch::Aarch64),
+        )]);
+        assert_eq!(app.direct_fallback(Os::MacOs, Some(Arch::Aarch64)), None);
+    }
+
+    fn hex_row(ch: char, len: usize) -> String {
+        std::iter::repeat_n(ch, len).collect()
+    }
+
+    #[test]
+    fn digest_hex_len_matches_each_algo() {
+        assert_eq!(ChecksumAlgo::Sha256.digest_hex_len(), 64);
+        assert_eq!(ChecksumAlgo::Sha512.digest_hex_len(), 128);
+    }
+
+    #[test]
+    fn digest_hex_len_is_pinned_to_the_installer_contract() {
+        assert_eq!(
+            ChecksumAlgo::Sha256.digest_hex_len(),
+            toride_installer::SHA256_HEX_LEN,
+            "the model and the installer parser/verifier must agree on sha256"
+        );
+        assert_eq!(
+            ChecksumAlgo::Sha512.digest_hex_len(),
+            toride_installer::SHA512_HEX_LEN,
+            "the model and the installer parser/verifier must agree on sha512"
+        );
+    }
+
+    #[test]
+    fn is_valid_digest_accepts_exact_length_hex_either_case() {
+        let hex_64 = hex_row('1', 64);
+        let hex_128 = hex_row('2', 128);
+        assert!(ChecksumAlgo::Sha256.is_valid_digest(&hex_64));
+        assert!(ChecksumAlgo::Sha512.is_valid_digest(&hex_128));
+        assert!(ChecksumAlgo::Sha256.is_valid_digest(&hex_64.to_uppercase()));
+    }
+
+    #[test]
+    fn is_valid_digest_rejects_wrong_length_non_hex_and_empty() {
+        let hex_63 = hex_row('1', 63);
+        let hex_64 = hex_row('1', 64);
+        let hex_129 = hex_row('2', 129);
+        assert!(!ChecksumAlgo::Sha256.is_valid_digest(&hex_64.replace('1', "z")));
+        assert!(!ChecksumAlgo::Sha256.is_valid_digest(""));
+        assert!(!ChecksumAlgo::Sha256.is_valid_digest(&hex_63));
+        assert!(!ChecksumAlgo::Sha512.is_valid_digest(&hex_129));
+    }
+
+    #[test]
+    fn checksum_algo_serde_round_trips_both_variants() {
+        for (algo, spelling) in [
+            (ChecksumAlgo::Sha256, "\"Sha256\""),
+            (ChecksumAlgo::Sha512, "\"Sha512\""),
+        ] {
+            assert_eq!(serde_json::to_string(&algo).unwrap(), spelling);
+            let back: ChecksumAlgo = serde_json::from_str(spelling).unwrap();
+            assert_eq!(back, algo);
+        }
+    }
+
+    #[test]
+    fn verification_policy_marks_checksum_publishers_inline() {
+        assert_eq!(
+            SourceKind::HomebrewCask.verification_policy(),
+            VerificationPolicy::Inline
+        );
+        assert_eq!(
+            SourceKind::HomebrewFormula.verification_policy(),
+            VerificationPolicy::Inline
+        );
+    }
+
+    #[test]
+    fn verification_policy_marks_checksum_less_sources_out_of_band() {
+        for source in [
+            SourceKind::Flathub,
+            SourceKind::Distro,
+            SourceKind::Repology,
+        ] {
+            assert_eq!(
+                source.verification_policy(),
+                VerificationPolicy::OutOfBand,
+                "{source:?} publishes no checksums"
+            );
+        }
+    }
+
+    #[test]
+    fn verification_policy_serde_round_trips() {
+        assert_eq!(
+            serde_json::to_string(&VerificationPolicy::Inline).unwrap(),
+            "\"Inline\""
+        );
+        let back: VerificationPolicy = serde_json::from_str("\"OutOfBand\"").unwrap();
+        assert_eq!(back, VerificationPolicy::OutOfBand);
+    }
+
+    #[test]
+    fn install_method_serde_round_trips_every_variant() {
+        for (method, json) in [
+            (
+                InstallMethod::Homebrew {
+                    cask: false,
+                    token: "ripgrep".to_owned(),
+                },
+                r#"{"Homebrew":{"cask":false,"token":"ripgrep"}}"#,
+            ),
+            (
+                InstallMethod::Flatpak {
+                    app_id: "com.brave.Browser".to_owned(),
+                    remote: "flathub".to_owned(),
+                },
+                r#"{"Flatpak":{"app_id":"com.brave.Browser","remote":"flathub"}}"#,
+            ),
+            (
+                InstallMethod::Distro {
+                    family: super::DistroFamily::Debian,
+                    repo: None,
+                    package: "firefox".to_owned(),
+                },
+                r#"{"Distro":{"family":"Debian","repo":null,"package":"firefox"}}"#,
+            ),
+            (
+                InstallMethod::Direct {
+                    url: "https://example.com/rg".to_owned(),
+                    checksum: None,
+                    arch: None,
+                },
+                r#"{"Direct":{"url":"https://example.com/rg","checksum":null,"arch":null}}"#,
+            ),
+            (
+                InstallMethod::Npm {
+                    package: "typescript".to_owned(),
+                    version: Some("5.4.5".to_owned()),
+                },
+                r#"{"Npm":{"package":"typescript","version":"5.4.5"}}"#,
+            ),
+            (
+                InstallMethod::Cargo {
+                    crate_: "ripgrep".to_owned(),
+                    version: None,
+                },
+                r#"{"Cargo":{"crate":"ripgrep","version":null}}"#,
+            ),
+            (
+                InstallMethod::Pipx {
+                    package: "black".to_owned(),
+                },
+                r#"{"Pipx":{"package":"black"}}"#,
+            ),
+            (
+                InstallMethod::Uv {
+                    package: "ruff".to_owned(),
+                    version: Some("0.6.0".to_owned()),
+                },
+                r#"{"Uv":{"package":"ruff","version":"0.6.0"}}"#,
+            ),
+            (
+                InstallMethod::Mise {
+                    tool: "node".to_owned(),
+                    version: Some("22.1.0".to_owned()),
+                },
+                r#"{"Mise":{"tool":"node","version":"22.1.0"}}"#,
+            ),
+        ] {
+            assert_eq!(serde_json::to_string(&method).unwrap(), json);
+            let back: InstallMethod = serde_json::from_str(json).unwrap();
+            assert_eq!(back, method);
+        }
+    }
+
+    #[test]
+    fn install_method_reads_pre_language_variant_documents_identically() {
+        let legacy: [(&str, InstallMethod); 4] = [
+            (
+                r#"{"Homebrew":{"cask":true,"token":"firefox"}}"#,
+                InstallMethod::Homebrew {
+                    cask: true,
+                    token: "firefox".to_owned(),
+                },
+            ),
+            (
+                r#"{"Flatpak":{"app_id":"com.brave.Browser","remote":"flathub"}}"#,
+                InstallMethod::Flatpak {
+                    app_id: "com.brave.Browser".to_owned(),
+                    remote: "flathub".to_owned(),
+                },
+            ),
+            (
+                r#"{"Distro":{"family":"Alpine","repo":"alpine-edge-main","package":"ripgrep"}}"#,
+                InstallMethod::Distro {
+                    family: super::DistroFamily::Alpine,
+                    repo: Some("alpine-edge-main".to_owned()),
+                    package: "ripgrep".to_owned(),
+                },
+            ),
+            (
+                r#"{"Direct":{"url":"https://example.com/rg","checksum":null,"arch":null}}"#,
+                InstallMethod::Direct {
+                    url: "https://example.com/rg".to_owned(),
+                    checksum: None,
+                    arch: None,
+                },
+            ),
+        ];
+        for (json, method) in legacy {
+            let back: InstallMethod = serde_json::from_str(json).unwrap();
+            assert_eq!(back, method, "{json}");
+        }
+    }
 
     #[test]
     fn slugify_trims_leading_and_trailing_separators() {

@@ -352,7 +352,7 @@ async fn change_passphrase_omits_p_and_n_from_argv() {
         .find(|(k, _)| k == "SSH_ASKPASS")
         .map(|(_, v)| v.clone())
         .expect("SSH_ASKPASS env must be set");
-    assert!(!askpass.is_empty());
+    assert_ne!(askpass, "");
     assert!(
         env.iter()
             .any(|(k, v)| k == "SSH_ASKPASS_REQUIRE" && v == "force"),

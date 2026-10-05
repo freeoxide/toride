@@ -5,6 +5,9 @@ edition.workspace = true
 description = "Typed mise integration: query tool versions, config files, and environment state"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["mise", "asdf", "toolchain", "version-manager", "dev-tools"]
+categories = ["development-tools"]
 
 [features]
 default = ["json", "toml", "diagnostics"]
@@ -17,7 +20,7 @@ miette = ["dep:miette"]
 blocking = []
 
 [dependencies]
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner", "stream", "fake"] }
+toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["tokio-runner", "stream"] }
 # Offline detection of the mise binary ($PATH + the managed install
 # location). `default-features = false` keeps the installer's HTTP/archive
 # engine out of this crate's graph: no reqwest (rustls -> ring), no xz2

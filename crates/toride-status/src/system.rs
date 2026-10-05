@@ -6184,7 +6184,7 @@ mod tests {
         assert!(p.swap().unwrap().is_none());
 
         let disk = p.root_disk().unwrap();
-        assert!(disk.name.is_empty());
+        assert_eq!(disk.name, "");
 
         let net = p.aggregate().unwrap();
         assert_eq!(net.bytes_received, 0);
@@ -6192,7 +6192,7 @@ mod tests {
         let os = p.os_info().unwrap();
         assert!(os.name.is_none());
 
-        assert!(p.hostname().unwrap().is_empty());
+        assert_eq!(p.hostname().unwrap(), "");
         assert!(p.uptime().unwrap().is_none());
         assert!(p.boot_time().unwrap().is_none());
         assert!(p.load_average().unwrap().is_none());

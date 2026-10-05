@@ -59,8 +59,8 @@ fn action_vars_new_with_zero_values() {
     assert_eq!(vars.prefix, 0);
     assert_eq!(vars.ban_time, 0);
     assert_eq!(vars.fail_count, 0);
-    assert!(vars.jail_name.is_empty());
-    assert!(vars.log_path.is_empty());
+    assert_eq!(vars.jail_name, "");
+    assert_eq!(vars.log_path, "");
 }
 
 #[test]
@@ -97,7 +97,7 @@ fn action_exec_new_initializes_empty_validate_and_env() {
     let cmds = make_platform_commands(&["echo hi"], &[], &[]);
     let exec = make_exec("action", cmds);
 
-    assert!(exec.validation_commands.is_empty());
+    assert_eq!(exec.validation_commands, Vec::<String>::new());
     assert!(exec.env.is_empty());
 }
 
@@ -106,7 +106,7 @@ fn action_exec_new_with_empty_name() {
     let cmds = make_platform_commands(&["true"], &[], &[]);
     let exec = ActionExec::new(String::new(), cmds);
 
-    assert!(exec.name.is_empty());
+    assert_eq!(exec.name, "");
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +187,7 @@ fn expand_command_no_vars_returns_same_string() {
 fn expand_command_empty_template_returns_empty() {
     let vars = default_vars();
     let result = ActionExec::expand_command("", &vars).unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result, "");
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn dry_run_empty_commands_returns_empty_vec() {
     let vars = default_vars();
 
     let result = exec.dry_run(&vars).unwrap();
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<String>::new());
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn platform_commands_empty_for_current_platform() {
     let cmds = make_platform_commands(&[], &[], &[]);
     let exec = make_exec("empty-platforms", cmds);
 
-    assert!(exec.platform_commands().is_empty());
+    assert_eq!(exec.platform_commands(), [] as [String; 0]);
 }
 
 // ---------------------------------------------------------------------------

@@ -197,7 +197,7 @@ mod tests {
         assert!(bundle.is_some(), "poll should return Some after completion");
         let b = bundle.unwrap();
         assert!(b.available, "bundle should be available after collection");
-        assert!(!b.app.name.is_empty());
+        assert_ne!(b.app.name, "");
     }
 
     #[tokio::test]
@@ -228,9 +228,9 @@ mod tests {
     fn empty_bundle_is_unavailable() {
         let b = empty_bundle();
         assert!(!b.available);
-        assert!(b.system.hostname.is_empty());
-        assert!(b.app.name.is_empty());
-        assert!(b.runtime.shell.is_empty());
+        assert_eq!(b.system.hostname, "");
+        assert_eq!(b.app.name, "");
+        assert_eq!(b.runtime.shell, "");
         assert!(
             b.unavailable_reason.is_none(),
             "empty_bundle carries no reason; panics use empty_bundle_with_reason"

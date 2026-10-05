@@ -648,8 +648,8 @@ mod tests {
         assert!(b.server_blocks.is_empty());
         assert!(b.certificates.is_empty());
         assert!(b.findings.is_empty());
-        assert!(b.backend.is_empty());
-        assert!(b.status.is_empty());
+        assert_eq!(b.backend, "");
+        assert_eq!(b.status, "");
         assert!(!b.has_expired_certs);
         assert!(b.waf_available.is_none());
         assert!(

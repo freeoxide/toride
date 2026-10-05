@@ -589,8 +589,8 @@ mod tests {
     fn parse_empty_output() {
         let report = parse_doctor_output(String::new());
         assert!(report.ok);
-        assert!(report.warnings.is_empty());
-        assert!(report.errors.is_empty());
+        assert_eq!(report.warnings, Vec::new());
+        assert_eq!(report.errors, Vec::new());
         assert!(report.is_clean());
     }
 
@@ -601,7 +601,7 @@ mod tests {
                 .to_owned();
         let report = parse_doctor_output(raw);
         assert!(!report.ok);
-        assert!(report.warnings.is_empty());
+        assert_eq!(report.warnings, Vec::new());
         assert_eq!(report.errors.len(), 2);
         assert_eq!(report.errors[0].kind, DiagnosticKind::BinaryMissing);
         assert_eq!(report.errors[1].kind, DiagnosticKind::ConfigNotFound);

@@ -280,7 +280,7 @@ mod tests {
         assert_eq!(config.max_size.as_deref(), Some("100M"));
         assert!(config.compress);
         assert_eq!(config.frequency, LogrotateFrequency::Daily);
-        assert!(!config.extra_options.is_empty());
+        assert_ne!(config.extra_options, Vec::<String>::new());
         // Verify the rendered output is valid.
         let rendered = render_logrotate_config(&config);
         assert!(rendered.contains("daily"));

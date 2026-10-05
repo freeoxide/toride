@@ -426,7 +426,7 @@ mod tests {
     fn empty_bundle_is_unavailable() {
         let b = empty_bundle();
         assert!(!b.available);
-        assert!(b.auditd_status.is_empty());
+        assert_eq!(b.auditd_status, "");
         assert!(!b.auditd_running);
         assert!(!b.integrity.database_initialized);
         assert!(b.rules.is_empty());

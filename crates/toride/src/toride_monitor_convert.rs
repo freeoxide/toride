@@ -396,7 +396,7 @@ mod tests {
 
         let f = AnomalyFinding::new("id", AnomalySeverity::Info, "title", "", "");
         let entries = convert_findings(vec![f]);
-        assert!(entries[0].detail.is_empty());
+        assert_eq!(entries[0].detail, "");
     }
 
     #[test]

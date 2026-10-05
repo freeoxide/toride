@@ -1,35 +1,62 @@
-//! # Distro backend (`apt-get` / `dnf`)
+//! # Distro backend (`apt-get` / `dnf` / `pacman` / `apk`)
 //!
 //! [`DistroBackend`] is the [`Backend`] implementation for a Linux distro's
 //! native package manager: it executes the planner's
 //! [`Operation::DistroInstall`] / [`Operation::DistroUninstall`] operations
 //! through the shared [`CommandRunner`] seam and answers list/status queries
 //! from the distro's package database. One backend instance serves one
-//! [`DistroFamily`]; wave 1 executes the two managers with a stable,
-//! scriptable CLI — `apt-get` (Debian/Ubuntu) and `dnf` (Fedora).
+//! [`DistroFamily`]; every family the registry names executes its manager's
+//! stable, scriptable CLI — `apt-get` (Debian/Ubuntu), `dnf` (Fedora),
+//! `pacman` (Arch), `apk` (Alpine).
 //!
 //! ## Real-CLI semantics (verified against the shipped man pages and source)
 //!
-//! - **Install** — `apt-get install -y <pkg>` / `dnf install -y <pkg>`.
-//!   `-y` is apt-get's `--yes, --assume-yes` ("Automatic yes to prompts;
-//!   assume \"yes\" as answer to all prompts and run non-interactively",
-//!   apt-get(8)) and dnf's `-y, --assumeyes` ("Automatically answer yes for
-//!   all questions", dnf(8)). The apt arm additionally carries
+//! - **Install** — `apt-get install -y <pkg>` / `dnf install -y <pkg>` /
+//!   `pacman --sync --noconfirm <pkg>` / `apk add <pkg>`. Interactivity
+//!   suppression is per manager, never a shared `-y`: `-y` is apt-get's
+//!   `--yes, --assume-yes` ("Automatic yes to prompts; assume \"yes\" as
+//!   answer to all prompts and run non-interactively", apt-get(8)) and dnf's
+//!   `-y, --assumeyes` ("Automatically answer yes for all questions",
+//!   dnf(8)); pacman's assume-yes spelling is `--noconfirm` ("Bypass any and
+//!   all 'Are you sure?' messages", pacman(8)) because pacman's `-y` is
+//!   `--refresh`, the download-a-fresh-copy-of-the-package-databases flag,
+//!   which belongs to a future update verb and never to install; apk takes
+//!   no flag at all ("By default apk is non-interactive", apk(8) — asking is
+//!   opt-in via `--interactive`, and apk has no `-y`, so `apk add -y` is an
+//!   unrecognized-option error). The apt arm additionally carries
 //!   `DEBIAN_FRONTEND=noninteractive` (the debconf frontend selector,
 //!   debconf(7)) so configure scripts never try to prompt. Why `apt-get` and
 //!   not the `apt` the plan's canonical argv names: apt(8) itself warns that
 //!   the `apt` CLI "is designed for end users" and may change between
 //!   versions — scripts are told to use `apt-get`. The plan carries the
-//!   family's manager name (A1's canonical `apt install <pkg>`); execution
-//!   uses the scriptable spelling, exactly like the runtime `-y` flag this
-//!   backend layers on (both stay out of the plan's argv by contract).
-//! - **Uninstall** — `apt-get remove -y <pkg>` / `dnf remove -y <pkg>`.
+//!   family's manager name and verb (A1's canonical `apt install <pkg>`,
+//!   `pacman --sync <pkg>`, `apk add <pkg>`); execution uses the scriptable
+//!   program and the per-manager suppression flags, both runtime ergonomics
+//!   that stay out of the plan's argv by contract.
+//! - **Uninstall** — `apt-get remove -y <pkg>` / `dnf remove -y <pkg>` /
+//!   `pacman --remove --noconfirm <pkg>` / `apk del <pkg>`.
 //!   Purging config files (`apt-get remove --purge`, apt-get(8)) is a
 //!   deliberate non-goal: the plan's [`UninstallOptions`] carries no purge
 //!   slot, and inventing an execution-time knob the planner never planned
 //!   would break the plan-is-the-record invariant. `dnf remove` removes
 //!   dependent packages along with the named one (dnf(8)) — that is dnf's
 //!   own dependency semantics, not something toride opts into.
+//! - **Update** — `apt-get install --only-upgrade -y <pkg>` / `dnf
+//!   upgrade -y <pkg>` / `pacman --sync --refresh --noconfirm <pkg>` /
+//!   `apk upgrade <pkg>`. Per-package only: `apt-get upgrade` upgrades the
+//!   world, so apt's verb is `install --only-upgrade` (apt-get(8)
+//!   `--only-upgrade`: "Do not install new packages; when used with
+//!   install, only-upgrade will install upgrades for already-installed
+//!   packages only"), and pacman's carries the database sync because a
+//!   stale sync db cannot know about upgrades at all (`--refresh`,
+//!   pacman(8) — which is why it belongs here and never to install).
+//!   Embedded-use hazard: the pacman shape is the partial upgrade Arch
+//!   documents as unsupported (`wiki.archlinux.org/title/
+//!   System_maintenance#Partial_upgrades_are_unsupported`) — a refreshed
+//!   database plus one package can move a shared library past binaries
+//!   Arch expects built against the older one; embedders needing Arch's
+//!   supported-state currency should run the manager's own full
+//!   `pacman -Syu` outside this per-app verb.
 //! - **Queries** — Debian-like state comes from `dpkg-query --show
 //!   --showformat=${db:Status-Abbrev}${Package}\t${Version}\n <pkg...>`
 //!   (dpkg-query(1); the `\t`/`\n` escapes are dpkg's own format escapes,
@@ -42,7 +69,25 @@
 //!   (rpm(8) `--queryformat QUERYFMT`, tags per rpm-queryformat(7), which
 //!   supports the C `\t`/`\n` escapes); the all-listing adds `--all`
 //!   ("Query all installed packages", rpm(8)) because a bare `rpm --query`
-//!   with no operand reads package names from stdin.
+//!   with no operand reads package names from stdin. Arch state comes from
+//!   `pacman --query <pkg...>` ("If no package names are provided in the
+//!   command line, all installed packages will be queried", pacman(8)), one
+//!   `name version` row per package — the space-separated `printf` shape of
+//!   pacman's own query loop (`src/pacman/query.c`; pacman disables its
+//!   color escapes when stdout is not a tty — `src/pacman/conf.c` — so the
+//!   captured rows toride reads are plain text, `--color always` aside).
+//!   Alpine state comes from
+//!   `apk list --installed --quiet <pkg...>` (apk-list(8): patterns are
+//!   fnmatch(3), no pattern matches everything, and `--installed` restricts
+//!   the query to the local database). `--quiet` is load-bearing: apk's
+//!   verbosity defaults to 1 (`int apk_verbosity = 1;`, src/database.c:49;
+//!   `out.verbosity = 1`, src/context.c:29 on master), where `list` prints
+//!   `name-version arch {origin} (license) [installed]`; verbosity 0 is the
+//!   only level that prints one bare package name per line (`src/app_list.c`,
+//!   `print_package`). Every apk spelling that carries a version glues it
+//!   to the name (`name-version`) or needs apk-tools 3.x (`--manifest`), so
+//!   Alpine rows report `version: None` rather than splitting a glued token
+//!   by guesswork.
 //! - **Not installed is an answer, not an error** — `dpkg-query` exits 1
 //!   with `dpkg-query: no packages found matching <pkg>` on stderr
 //!   (dpkg-query(1): exit 1 = "the requested query failed either fully or
@@ -50,9 +95,18 @@
 //!   `rpm --query` prints `package <pkg> is not installed` (rpm source,
 //!   lib/query.cc, `RPMLOG_NOTICE`) and exits with the **count** of failed
 //!   lookups (lib/query.cc sums per-operand failures), so two missing
-//!   packages exit 2, not 1. Both signals map to `Ok(None)` /
+//!   packages exit 2, not 1. `pacman --query` exits 1 with `error: package
+//!   '<pkg>' was not found` (`src/pacman/query.c`) while still printing the
+//!   found operands' rows. All three signals map to `Ok(None)` /
 //!   [`BackendStatus::NotInstalled`](crate::BackendStatus::NotInstalled) —
-//!   never an error. Partial results
+//!   never an error. `apk list` cannot fail on a no-match (its `list_main`
+//!   returns unconditionally, `src/app_list.c`): an empty answer with exit 0
+//!   is apk's not-found signal, so a nonzero apk exit is always a real
+//!   error. Those markers are the programs' C-locale wording — dpkg-query,
+//!   rpm, and pacman all translate their stderr (pacman's German po renders
+//!   the not-found line as `Paket »…« wurde nicht gefunden`), so every
+//!   query spec pins `LC_ALL=C`; without the pin, a localized host would
+//!   turn a simply-absent package into [`Error::Command`]. Partial results
 //!   survive: dpkg-query prints found packages on stdout while reporting the
 //!   missing ones on stderr, and the classification keeps the stdout rows.
 //! - **Failures surface with their stderr tail** — apt-get fails at exit
@@ -84,15 +138,16 @@
 //! Every distro plan carries `requires_elevation: true` (A1 planner), and
 //! this backend never acquires root itself: without an explicit
 //! `elevated(true)` grant on the request, [`ensure_install_allowed`] /
-//! [`ensure_uninstall_allowed`] refuse with [`Error::ElevationRequired`]
-//! before any command is built — the caller arranges privileges (toride
-//! never constructs `sudo`).
+//! [`ensure_uninstall_allowed`] / [`ensure_update_allowed`] refuse with
+//! [`Error::ElevationRequired`] before any command is built — the caller
+//! arranges privileges (toride never constructs `sudo`).
 //!
 //! [`Operation::DistroInstall`]: crate::Operation::DistroInstall
 //! [`Operation::DistroUninstall`]: crate::Operation::DistroUninstall
 //! [`UninstallOptions`]: crate::UninstallOptions
 //! [`ensure_install_allowed`]: crate::backend::ensure_install_allowed
 //! [`ensure_uninstall_allowed`]: crate::backend::ensure_uninstall_allowed
+//! [`ensure_update_allowed`]: crate::backend::ensure_update_allowed
 
 use async_trait::async_trait;
 use toride_registry::{DistroFamily, Os};
@@ -100,7 +155,8 @@ use toride_runner::CommandOutput;
 
 use crate::backend::{
     Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, UninstallOutcome,
-    UninstallRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    UninstallRequest, UpdateRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    ensure_update_allowed,
 };
 use crate::error::{Error, Result};
 use crate::plan::{Operation, PackageManager, Target};
@@ -124,6 +180,8 @@ pub const OS_RELEASE_FALLBACK_PATH: &str = "/usr/lib/os-release";
 /// alone covers apt's own prompts, not debconf's).
 const DEBIAN_FRONTEND_ENV: (&str, &str) = ("DEBIAN_FRONTEND", "noninteractive");
 
+const QUERY_LOCALE_ENV: (&str, &str) = ("LC_ALL", "C");
+
 /// The dpkg-query showformat: a three-character status abbrev
 /// (`ii ` = installed) glued in front of `<package>\t<version>`, one row per
 /// line. The literal `\t`/`\n` are dpkg's own format escapes — the argv
@@ -143,35 +201,52 @@ const RPM_QUERY_FORMAT: &str = "%{NAME}\\t%{VERSION}\\n";
 /// config-files left), `un ` (not installed) or the mid-install states
 /// (`iU` unpacked, `iH` half-installed, …).
 const DPKG_INSTALLED_STATUS_CHAR: u8 = b'i';
-
 // ---------------------------------------------------------------------------
 // Executors
 // ---------------------------------------------------------------------------
 
 /// The concrete command family one [`DistroFamily`] executes: the mutating
-/// program plus the package-database query program for that family. Wave 1
-/// routes two; pacman/apk operations plan (A1) but do not execute.
+/// program plus the package-database query program for that family. Every
+/// family the registry names routes to one of four executors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum DistroExecutor {
     /// Debian-like — `apt-get` mutates, `dpkg-query` reads.
     Apt,
     /// Fedora-like — `dnf` mutates, `rpm` reads.
     Dnf,
+    /// Arch — `pacman` mutates and reads.
+    Pacman,
+    /// Alpine — `apk` mutates and reads.
+    Apk,
 }
 
 impl DistroExecutor {
-    /// The executor a distro family routes to. `None` for families whose
-    /// manager is planned but not executed in wave 1 (Arch → pacman, Alpine
-    /// → apk): the backend answers those with an honest error instead of
-    /// guessing at CLIs it does not implement.
+    /// The executor a distro family routes to. `None` only for a family a
+    /// future registry release adds (`DistroFamily` is `non_exhaustive`
+    /// upstream): the backend answers those with an honest error instead of
+    /// guessing at a CLI it does not implement.
     #[must_use]
     pub const fn for_family(family: DistroFamily) -> Option<Self> {
         match family {
             DistroFamily::Debian | DistroFamily::Ubuntu => Some(Self::Apt),
             DistroFamily::Fedora => Some(Self::Dnf),
-            // `DistroFamily` is non_exhaustive upstream; pacman/apk and any
-            // future family have no wave-1 executor.
+            DistroFamily::Arch => Some(Self::Pacman),
+            DistroFamily::Alpine => Some(Self::Apk),
             _ => None,
+        }
+    }
+
+    /// The executor a planned [`PackageManager`] routes to — the inverse of
+    /// [`DistroExecutor::manager`]. Every manager this crate plans routes to
+    /// one: the match is exhaustive, so a future [`PackageManager`] variant
+    /// fails compilation here instead of executing wrongly.
+    #[must_use]
+    pub const fn for_manager(manager: PackageManager) -> Self {
+        match manager {
+            PackageManager::Apt => Self::Apt,
+            PackageManager::Dnf => Self::Dnf,
+            PackageManager::Pacman => Self::Pacman,
+            PackageManager::Apk => Self::Apk,
         }
     }
 
@@ -183,6 +258,8 @@ impl DistroExecutor {
         match self {
             Self::Apt => PackageManager::Apt,
             Self::Dnf => PackageManager::Dnf,
+            Self::Pacman => PackageManager::Pacman,
+            Self::Apk => PackageManager::Apk,
         }
     }
 
@@ -193,42 +270,46 @@ impl DistroExecutor {
         match self {
             Self::Apt => "apt-get",
             Self::Dnf => "dnf",
+            Self::Pacman => "pacman",
+            Self::Apk => "apk",
         }
     }
 
-    /// The package-database query program for the same family.
+    /// The package-database query program for the same family (`pacman` and
+    /// `apk` read through the same program they mutate with).
     #[must_use]
     pub const fn query_program(self) -> &'static str {
         match self {
             Self::Apt => "dpkg-query",
             Self::Dnf => "rpm",
+            Self::Pacman | Self::Apk => self.program(),
         }
     }
 
-    /// stderr line markers that mean "queried package not found" for this
-    /// family's query program (see the module docs for the exit-code rules
-    /// they pair with).
     const fn not_found_markers(self) -> &'static [&'static str] {
         match self {
-            // `dpkg-query: no packages found matching <pkg>` (one per
-            // missing operand).
             Self::Apt => &["no packages found matching"],
-            // `package <pkg> is not installed` (rpm lib/query.cc).
             Self::Dnf => &["is not installed"],
+            Self::Pacman => &["was not found"],
+            Self::Apk => &[],
         }
     }
 
-    /// The interactivity-suppressing environment for this executor's
-    /// mutating program, when it has one (`-y` covers apt's own prompts;
-    /// debconf needs the env).
+    const fn assume_yes_flag(self) -> Option<&'static str> {
+        match self {
+            Self::Apt | Self::Dnf => Some("-y"),
+            Self::Pacman => Some("--noconfirm"),
+            Self::Apk => None,
+        }
+    }
+
     const fn noninteractive_env(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::Apt => Some(DEBIAN_FRONTEND_ENV),
-            Self::Dnf => None,
+            Self::Dnf | Self::Pacman | Self::Apk => None,
         }
     }
 }
-
 // ---------------------------------------------------------------------------
 // Family detection
 // ---------------------------------------------------------------------------
@@ -321,7 +402,6 @@ fn unquote(value: &str) -> String {
         value.to_owned()
     }
 }
-
 // ---------------------------------------------------------------------------
 // Backend
 // ---------------------------------------------------------------------------
@@ -355,10 +435,10 @@ pub struct DistroBackend {
 impl DistroBackend {
     /// Create the backend for `family` over an explicit seam, with no host
     /// assumptions. This is the test-friendly constructor: the family is
-    /// injectable and the seam's runner is fake-able. Families without a
-    /// wave-1 executor (Arch, Alpine) are constructible — their id is a
-    /// real routing target — but every operation answers with the honest
-    /// `Self::executor` error.
+    /// injectable and the seam's runner is fake-able. A family a future
+    /// registry release adds (one with no [`DistroExecutor`]) is
+    /// constructible — its id is a real routing target — but every operation
+    /// answers with the honest `Self::executor` error.
     #[must_use]
     pub const fn new(family: DistroFamily, runner: CommandRunner) -> Self {
         Self { family, runner }
@@ -366,9 +446,9 @@ impl DistroBackend {
 
     /// Create the backend for this host: read the os-release(5) locations
     /// ([`OS_RELEASE_PATH`], then [`OS_RELEASE_FALLBACK_PATH`] when it is
-    /// absent), refuse unknown families and families without a wave-1
-    /// executor, and PATH-check both the manager and its query program
-    /// (via toride-runner's discovery helpers — no command is executed).
+    /// absent), refuse unknown families, and PATH-check both the manager and
+    /// its query program (via toride-runner's discovery helpers — no command
+    /// is executed).
     ///
     /// # Errors
     ///
@@ -395,37 +475,13 @@ impl DistroBackend {
         self.family
     }
 
-    /// The executor for this backend's family, or the honest error for
-    /// planned-but-unexecuted managers.
     fn executor(&self) -> Result<DistroExecutor> {
-        DistroExecutor::for_family(self.family).ok_or_else(|| {
-            Error::Command(toride_runner::Error::Other(format!(
-                "distro backend executes apt and dnf only (wave 1); family {:?} routes {} and has no executor yet",
-                self.family,
-                PackageManager::for_family(self.family).map_or(
-                    "an unrouted manager".to_owned(),
-                    |manager| format!("`{}`", manager.program())
-                ),
-            )))
-        })
+        DistroExecutor::for_family(self.family)
+            .ok_or_else(|| executor_missing_for_family(self.family))
     }
 
-    /// Resolve the executor for a plan operation's manager on this backend,
-    /// refusing everything that cannot run here — managers without a wave-1
-    /// executor (pacman, apk) and managers foreign to this backend's family
-    /// — before any command is built.
     fn executor_for(&self, manager: PackageManager) -> Result<DistroExecutor> {
-        let executor = match manager {
-            PackageManager::Apt => DistroExecutor::Apt,
-            PackageManager::Dnf => DistroExecutor::Dnf,
-            // pacman/apk plan (A1) but wave 1 executes apt and dnf only.
-            unexecuted => {
-                return Err(Error::Command(toride_runner::Error::Other(format!(
-                    "distro backend executes apt and dnf only (wave 1); `{}` operations are planned but not executed",
-                    unexecuted.program()
-                ))));
-            }
-        };
+        let executor = DistroExecutor::for_manager(manager);
         let family_executor = self.executor()?;
         if executor != family_executor {
             return Err(Error::Command(toride_runner::Error::Other(format!(
@@ -457,6 +513,22 @@ impl DistroBackend {
             .and_then(|app| app.version))
     }
 
+    /// The sync twin of [`DistroBackend::installed_version`] — same query
+    /// and classification, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`DistroBackend::installed_version`].
+    pub fn installed_version_sync(&self, package: &str) -> Result<Option<String>> {
+        let executor = self.executor()?;
+        let packages = [package.to_owned()];
+        let apps = self.query_packages_sync(executor, &packages)?;
+        Ok(apps
+            .into_iter()
+            .find(|app| app.id == package)
+            .and_then(|app| app.version))
+    }
+
     /// Query the family's package database for `packages` (all packages
     /// when empty) and parse the rows. A not-found exit (see the module
     /// docs) is an empty or partial answer, never an error; rows are
@@ -468,6 +540,21 @@ impl DistroBackend {
     ) -> Result<Vec<InstalledApp>> {
         let spec = query_spec(executor, packages);
         let output = self.runner.run(spec.clone()).await?;
+        if output.success || query_reports_not_found(executor, &output) {
+            return parse_query_output(executor, &output.stdout);
+        }
+        Err(command_failed_error(&spec, &output))
+    }
+
+    /// The sync twin of [`DistroBackend::query_packages`] — same spec,
+    /// classification, and parsing, executed on the calling thread.
+    fn query_packages_sync(
+        &self,
+        executor: DistroExecutor,
+        packages: &[String],
+    ) -> Result<Vec<InstalledApp>> {
+        let spec = query_spec(executor, packages);
+        let output = self.runner.run_sync(spec.clone())?;
         if output.success || query_reports_not_found(executor, &output) {
             return parse_query_output(executor, &output.stdout);
         }
@@ -496,7 +583,7 @@ impl Backend for DistroBackend {
         };
         let executor = self.executor_for(*manager)?;
         self.runner
-            .run_checked(mutating_spec(executor, "install", package))
+            .run_checked(mutating_spec(executor, manager.install_verb(), package))
             .await?;
         // Post-verify: ask the package database what version landed, for
         // the manifest record. The install already succeeded, so a failing
@@ -516,11 +603,23 @@ impl Backend for DistroBackend {
         };
         let executor = self.executor_for(*manager)?;
         self.runner
-            .run_checked(mutating_spec(executor, "remove", package))
+            .run_checked(mutating_spec(executor, manager.uninstall_verb(), package))
             .await?;
         Ok(UninstallOutcome {
             detail: request.plan.operation.description(),
         })
+    }
+
+    async fn update(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::DistroUpdate { manager, package } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let executor = self.executor_for(*manager)?;
+        self.runner
+            .run_checked(update_spec(executor, *manager, package))
+            .await?;
+        Ok(())
     }
 
     async fn list_installed(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
@@ -535,39 +634,97 @@ impl Backend for DistroBackend {
         })
     }
 
+    fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome> {
+        ensure_install_allowed(&request)?;
+        let Operation::DistroInstall { manager, package } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let executor = self.executor_for(*manager)?;
+        self.runner
+            .run_checked_sync(mutating_spec(executor, manager.install_verb(), package))?;
+        let version = self.installed_version_sync(package).ok().flatten();
+        Ok(InstallOutcome {
+            version,
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn uninstall_sync(&self, request: UninstallRequest<'_>) -> Result<UninstallOutcome> {
+        ensure_uninstall_allowed(&request)?;
+        let Operation::DistroUninstall { manager, package } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let executor = self.executor_for(*manager)?;
+        self.runner
+            .run_checked_sync(mutating_spec(executor, manager.uninstall_verb(), package))?;
+        Ok(UninstallOutcome {
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn update_sync(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::DistroUpdate { manager, package } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        let executor = self.executor_for(*manager)?;
+        self.runner
+            .run_checked_sync(update_spec(executor, *manager, package))?;
+        Ok(())
+    }
+
+    fn list_installed_sync(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
+        let executor = self.executor()?;
+        self.query_packages_sync(executor, &query.ids).map(|apps| {
+            apps.into_iter()
+                .filter(|app| query.ids.is_empty() || query.ids.contains(&app.id))
+                .collect()
+        })
+    }
+
     // `status` keeps the trait's default list-derived implementation: one
     // single-package query answers it, and not-found is NotInstalled, never
     // an error — the classification lives in `query_packages`. Callers that
     // want the raw probe call `installed_version(package)` directly.
 }
-
 // ---------------------------------------------------------------------------
 // Command construction
 // ---------------------------------------------------------------------------
 
-/// Build the mutating spec (`<program> <verb> -y <package>`) with the
-/// executor's interactivity env, when it has one. Runtime ergonomics only —
-/// the plan's canonical argv stays verb + package (A1 contract).
 fn mutating_spec(
     executor: DistroExecutor,
     verb: &str,
     package: &str,
 ) -> toride_runner::CommandSpec {
-    let spec = command(executor.program(), [verb, "-y", package]);
+    let spec = match executor.assume_yes_flag() {
+        Some(flag) => command(executor.program(), [verb, flag, package]),
+        None => command(executor.program(), [verb, package]),
+    };
     match executor.noninteractive_env() {
         Some((key, value)) => spec.env(key, value),
         None => spec,
     }
 }
 
-/// Build the query spec for `packages` (the whole database when empty):
-///
-/// - Apt — `dpkg-query --show --showformat=<fmt> <pkgs...>`; with no
-///   operand dpkg-query lists every package in the database.
-/// - Dnf — `rpm --query --queryformat <fmt> <pkgs...>`, with `--all` added
-///   when there is no operand (a bare query would read names from stdin).
+fn update_spec(
+    executor: DistroExecutor,
+    manager: PackageManager,
+    package: &str,
+) -> toride_runner::CommandSpec {
+    let mut args = manager.update_verb().to_vec();
+    if let Some(flag) = executor.assume_yes_flag() {
+        args.push(flag);
+    }
+    args.push(package);
+    let spec = command(executor.program(), args);
+    match executor.noninteractive_env() {
+        Some((key, value)) => spec.env(key, value),
+        None => spec,
+    }
+}
+
 fn query_spec(executor: DistroExecutor, packages: &[String]) -> toride_runner::CommandSpec {
-    match executor {
+    let spec = match executor {
         DistroExecutor::Apt => {
             let showformat = format!("--showformat={DPKG_QUERY_FORMAT}");
             let mut args = vec!["--show", showformat.as_str()];
@@ -584,9 +741,19 @@ fn query_spec(executor: DistroExecutor, packages: &[String]) -> toride_runner::C
             args.extend(packages.iter().map(String::as_str));
             command(executor.query_program(), args)
         }
-    }
+        DistroExecutor::Pacman => {
+            let mut args = vec!["--query"];
+            args.extend(packages.iter().map(String::as_str));
+            command(executor.query_program(), args)
+        }
+        DistroExecutor::Apk => {
+            let mut args = vec!["list", "--installed", "--quiet"];
+            args.extend(packages.iter().map(String::as_str));
+            command(executor.query_program(), args)
+        }
+    };
+    spec.env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
 }
-
 // ---------------------------------------------------------------------------
 // Output parsing and failure classification
 // ---------------------------------------------------------------------------
@@ -639,8 +806,6 @@ fn parse_query_output(executor: DistroExecutor, stdout: &str) -> Result<Vec<Inst
     Ok(apps)
 }
 
-/// Parse one query row per the executor's shape (dpkg rows carry the status
-/// abbrev prefix; rpm rows are bare `name\tversion`).
 fn parse_query_row(executor: DistroExecutor, line: &str) -> QueryRow {
     match executor {
         DistroExecutor::Apt => {
@@ -677,19 +842,35 @@ fn parse_query_row(executor: DistroExecutor, line: &str) -> QueryRow {
                 version: non_empty(version),
             })
         }
+        DistroExecutor::Pacman => {
+            let Some((name, version)) = line.split_once(' ') else {
+                return QueryRow::Malformed;
+            };
+            if name.is_empty() {
+                return QueryRow::Malformed;
+            }
+            QueryRow::Installed(InstalledApp {
+                id: name.to_owned(),
+                version: non_empty(version),
+            })
+        }
+        DistroExecutor::Apk => {
+            if line.is_empty() || line.chars().any(char::is_whitespace) {
+                return QueryRow::Malformed;
+            }
+            QueryRow::Installed(InstalledApp {
+                id: line.to_owned(),
+                version: None,
+            })
+        }
     }
 }
 
-/// Whether a failed query is the programs' own "not found" answer rather
-/// than a real error: the exit code must be the not-found class for the
-/// family (dpkg-query: exactly 1, its exit 2 is fatal; rpm: any nonzero,
-/// since its exit code counts failed lookups) **and** every non-empty
-/// stderr line must carry a not-found marker. Anything unrecognized stays
-/// a real error.
 fn query_reports_not_found(executor: DistroExecutor, output: &CommandOutput) -> bool {
     let exit_is_not_found_class = match executor {
-        DistroExecutor::Apt => output.exit_code == Some(1),
+        DistroExecutor::Apt | DistroExecutor::Pacman => output.exit_code == Some(1),
         DistroExecutor::Dnf => output.exit_code.is_some(),
+        DistroExecutor::Apk => false,
     };
     exit_is_not_found_class && stderr_all_not_found(executor, &output.stderr)
 }
@@ -747,11 +928,20 @@ fn misrouted_operation(operation: &Operation) -> Error {
     )))
 }
 
+fn executor_missing_for_family(family: DistroFamily) -> Error {
+    Error::Command(toride_runner::Error::Other(format!(
+        "no distro executor for family {family:?}; this crate executes apt-get, dnf, \
+         pacman, and apk"
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::backend::{BackendStatus, StatusQuery};
-    use crate::plan::{InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall};
+    use crate::plan::{
+        InstallOptions, InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall,
+    };
     use std::path::Path;
     use std::sync::Arc;
     use toride_registry::{App, Arch, Availability, InstallMethod, TorideId};
@@ -816,7 +1006,12 @@ mod tests {
     }
 
     fn install_plan_for(family: DistroFamily) -> InstallPlan {
-        plan_install(&app_with(distro_method(family)), &target(family)).unwrap()
+        plan_install(
+            &app_with(distro_method(family)),
+            &target(family),
+            &InstallOptions::default(),
+        )
+        .unwrap()
     }
 
     fn uninstall_plan_for(family: DistroFamily) -> UninstallPlan {
@@ -840,6 +1035,20 @@ mod tests {
         }
     }
 
+    fn update_plan_for(family: DistroFamily) -> crate::plan::UpdatePlan {
+        let manager = PackageManager::for_family(family).expect("family routes to a manager");
+        crate::plan::UpdatePlan {
+            app: TorideId::slugify("brave-browser"),
+            backend: BackendId::Distro(family),
+            operation: Operation::DistroUpdate {
+                manager,
+                package: "brave-browser".to_owned(),
+            },
+            dry_run: false,
+            requires_elevation: true,
+        }
+    }
+
     /// The exact spec a mutating apt command runs.
     fn apt_get_spec(verb: &str, package: &str) -> toride_runner::CommandSpec {
         command("apt-get", [verb, "-y", package]).env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1)
@@ -855,7 +1064,7 @@ mod tests {
         let showformat = format!("--showformat={DPKG_QUERY_FORMAT}");
         let mut args = vec!["--show", showformat.as_str()];
         args.extend(packages.iter().copied());
-        command("dpkg-query", args)
+        command("dpkg-query", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
 
     /// The exact spec an rpm query run uses for `packages` (all when empty).
@@ -867,7 +1076,27 @@ mod tests {
         args.push("--queryformat");
         args.push(RPM_QUERY_FORMAT);
         args.extend(packages.iter().copied());
-        command("rpm", args)
+        command("rpm", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
+    }
+
+    fn pacman_spec(verb: &str, package: &str) -> toride_runner::CommandSpec {
+        command("pacman", [verb, "--noconfirm", package])
+    }
+
+    fn apk_spec(verb: &str, package: &str) -> toride_runner::CommandSpec {
+        command("apk", [verb, package])
+    }
+
+    fn pacman_query_spec(packages: &[&str]) -> toride_runner::CommandSpec {
+        let mut args = vec!["--query"];
+        args.extend(packages.iter().copied());
+        command("pacman", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
+    }
+
+    fn apk_query_spec(packages: &[&str]) -> toride_runner::CommandSpec {
+        let mut args = vec!["list", "--installed", "--quiet"];
+        args.extend(packages.iter().copied());
+        command("apk", args).env(QUERY_LOCALE_ENV.0, QUERY_LOCALE_ENV.1)
     }
 
     /// The fixture dpkg-query document's contents, ready to serve as
@@ -879,6 +1108,14 @@ mod tests {
     /// The fixture rpm document's contents, ready to serve as stdout.
     fn rpm_fixture_output() -> String {
         read_fixture("distro/rpm-query.txt")
+    }
+
+    fn pacman_fixture_output() -> String {
+        read_fixture("distro/pacman-query.txt")
+    }
+
+    fn apk_fixture_output() -> String {
+        read_fixture("distro/apk-list.txt")
     }
 
     /// The manager's dpkg lock error, as real apt-get reports it (exit 100,
@@ -1070,26 +1307,22 @@ mod tests {
     // --- executor mapping ----------------------------------------------------------
 
     #[test]
-    fn executor_maps_debian_and_ubuntu_to_apt_and_fedora_to_dnf() {
-        assert_eq!(
-            DistroExecutor::for_family(DistroFamily::Debian),
-            Some(DistroExecutor::Apt)
-        );
-        assert_eq!(
-            DistroExecutor::for_family(DistroFamily::Ubuntu),
-            Some(DistroExecutor::Apt)
-        );
-        assert_eq!(
-            DistroExecutor::for_family(DistroFamily::Fedora),
-            Some(DistroExecutor::Dnf)
-        );
-    }
-
-    #[test]
-    fn executor_has_no_wave_one_route_for_arch_or_alpine() {
-        // pacman/apk plan (A1) but do not execute (task scope: apt + dnf).
-        assert_eq!(DistroExecutor::for_family(DistroFamily::Arch), None);
-        assert_eq!(DistroExecutor::for_family(DistroFamily::Alpine), None);
+    fn executor_routes_every_family_and_manager_round_trips() {
+        let cases = [
+            (DistroFamily::Debian, DistroExecutor::Apt),
+            (DistroFamily::Ubuntu, DistroExecutor::Apt),
+            (DistroFamily::Fedora, DistroExecutor::Dnf),
+            (DistroFamily::Arch, DistroExecutor::Pacman),
+            (DistroFamily::Alpine, DistroExecutor::Apk),
+        ];
+        for (family, executor) in cases {
+            assert_eq!(
+                DistroExecutor::for_family(family),
+                Some(executor),
+                "{family:?} must route, not plan-then-refuse"
+            );
+            assert_eq!(DistroExecutor::for_manager(executor.manager()), executor);
+        }
     }
 
     #[test]
@@ -1098,6 +1331,26 @@ mod tests {
         assert_eq!(DistroExecutor::Apt.query_program(), "dpkg-query");
         assert_eq!(DistroExecutor::Dnf.program(), "dnf");
         assert_eq!(DistroExecutor::Dnf.query_program(), "rpm");
+        assert_eq!(DistroExecutor::Pacman.program(), "pacman");
+        assert_eq!(DistroExecutor::Pacman.query_program(), "pacman");
+        assert_eq!(DistroExecutor::Apk.program(), "apk");
+        assert_eq!(DistroExecutor::Apk.query_program(), "apk");
+    }
+
+    #[test]
+    fn executor_suppression_is_per_manager_and_apk_carries_no_flag() {
+        assert_eq!(DistroExecutor::Apt.assume_yes_flag(), Some("-y"));
+        assert_eq!(DistroExecutor::Dnf.assume_yes_flag(), Some("-y"));
+        assert_eq!(
+            DistroExecutor::Pacman.assume_yes_flag(),
+            Some("--noconfirm"),
+            "pacman's -y is --refresh, a database-sync flag, never suppression"
+        );
+        assert_eq!(
+            DistroExecutor::Apk.assume_yes_flag(),
+            None,
+            "apk is noninteractive by default and has no -y at all"
+        );
     }
 
     #[test]
@@ -1107,6 +1360,8 @@ mod tests {
             Some(DEBIAN_FRONTEND_ENV)
         );
         assert_eq!(DistroExecutor::Dnf.noninteractive_env(), None);
+        assert_eq!(DistroExecutor::Pacman.noninteractive_env(), None);
+        assert_eq!(DistroExecutor::Apk.noninteractive_env(), None);
     }
 
     // --- install ----------------------------------------------------------------
@@ -1185,6 +1440,53 @@ mod tests {
         fake.assert_called_with(&spec);
     }
 
+    #[tokio::test]
+    async fn install_executes_pacman_sync_noconfirm_and_reports_the_version() {
+        let spec = pacman_spec("--sync", "brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""))
+            .respond(
+                pacman_query_spec(&["brave-browser"]),
+                CommandOutput::from_stdout("brave-browser 1:1.4.2-1\n"),
+            );
+        let backend = backend_for(DistroFamily::Arch, &fake);
+        let plan = install_plan_for(DistroFamily::Arch);
+        let target = target(DistroFamily::Arch);
+        let outcome = backend
+            .install(InstallRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        assert_eq!(outcome.version.as_deref(), Some("1:1.4.2-1"));
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn install_executes_apk_add_with_no_suppression_and_reports_no_version() {
+        let spec = apk_spec("add", "brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""))
+            .respond(
+                apk_query_spec(&["brave-browser"]),
+                CommandOutput::from_stdout("brave-browser\n"),
+            );
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        let plan = install_plan_for(DistroFamily::Alpine);
+        let target = target(DistroFamily::Alpine);
+        let outcome = backend
+            .install(InstallRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        assert_eq!(
+            outcome.version, None,
+            "apk's listing reports no version (see module docs)"
+        );
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
     #[test]
     fn install_apt_spec_carries_the_noninteractive_debian_frontend() {
         let spec = mutating_spec(DistroExecutor::Apt, "install", "bash");
@@ -1206,6 +1508,52 @@ mod tests {
     }
 
     #[test]
+    fn install_pacman_spec_takes_noconfirm_and_no_environment() {
+        let spec = mutating_spec(DistroExecutor::Pacman, "--sync", "bash");
+        assert_eq!(spec.program, "pacman");
+        assert_eq!(spec.args, ["--sync", "--noconfirm", "bash"]);
+        assert!(
+            spec.env.is_empty(),
+            "pacman needs no env; --noconfirm is its whole suppression: {spec:?}"
+        );
+    }
+
+    #[test]
+    fn install_apk_spec_adds_no_flag_and_no_environment() {
+        let spec = mutating_spec(DistroExecutor::Apk, "add", "bash");
+        assert_eq!(spec.program, "apk");
+        assert_eq!(spec.args, ["add", "bash"]);
+        assert!(
+            spec.env.is_empty(),
+            "apk is noninteractive by default; any flag here would error: {spec:?}"
+        );
+    }
+
+    #[test]
+    fn pacman_and_apk_specs_never_carry_the_wrong_suppression_flags() {
+        let specs = [
+            mutating_spec(DistroExecutor::Pacman, "--sync", "bash"),
+            mutating_spec(DistroExecutor::Pacman, "--remove", "bash"),
+            mutating_spec(DistroExecutor::Apk, "add", "bash"),
+            mutating_spec(DistroExecutor::Apk, "del", "bash"),
+        ];
+        for spec in specs {
+            assert!(
+                !spec.args.iter().any(|arg| arg == "-y"),
+                "pacman's -y is --refresh and apk has no -y at all: {spec:?}"
+            );
+            assert!(
+                !spec.args.iter().any(|arg| arg == "--refresh"),
+                "the database sync belongs to the update verb, never install: {spec:?}"
+            );
+            assert!(
+                !spec.args.iter().any(|arg| arg == "--noconfirm") || spec.program == "pacman",
+                "--noconfirm is pacman's flag alone: {spec:?}"
+            );
+        }
+    }
+
+    #[test]
     fn plan_argv_stays_canonical_while_execution_layers_the_runtime_flags() {
         // The plan's argv is A1's canonical family spelling (apt, verb,
         // package) — the scriptable program and -y/env are execution-time
@@ -1215,6 +1563,32 @@ mod tests {
         let executed = mutating_spec(DistroExecutor::Apt, "install", "brave-browser");
         assert_eq!(executed.program, "apt-get");
         assert_eq!(executed.args, ["install", "-y", "brave-browser"]);
+    }
+
+    #[test]
+    fn pacman_and_apk_plan_argv_stay_canonical_while_execution_layers_suppression() {
+        let pacman = install_plan_for(DistroFamily::Arch);
+        assert_eq!(
+            pacman.operation.argv(),
+            ["pacman", "--sync", "brave-browser"]
+        );
+        let executed = mutating_spec(
+            DistroExecutor::Pacman,
+            PackageManager::Pacman.install_verb(),
+            "brave-browser",
+        );
+        assert_eq!(executed.program, "pacman");
+        assert_eq!(executed.args, ["--sync", "--noconfirm", "brave-browser"]);
+
+        let apk = install_plan_for(DistroFamily::Alpine);
+        assert_eq!(apk.operation.argv(), ["apk", "add", "brave-browser"]);
+        let executed = mutating_spec(
+            DistroExecutor::Apk,
+            PackageManager::Apk.install_verb(),
+            "brave-browser",
+        );
+        assert_eq!(executed.program, "apk");
+        assert_eq!(executed.args, ["add", "brave-browser"]);
     }
 
     #[tokio::test]
@@ -1315,26 +1689,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn install_rejects_pacman_and_apk_operations_with_the_scope_error() {
-        // pacman/apk ops reaching the backend are honest wave-1 refusals,
-        // both on a routed-family backend and on their own family's — fired
-        // before any command is dispatched.
-        for (family, manager) in [
-            (DistroFamily::Debian, PackageManager::Pacman),
-            (DistroFamily::Debian, PackageManager::Apk),
-            (DistroFamily::Arch, PackageManager::Pacman),
-            (DistroFamily::Alpine, PackageManager::Apk),
+    async fn install_rejects_a_manager_foreign_to_the_backends_family() {
+        for manager in [
+            PackageManager::Dnf,
+            PackageManager::Pacman,
+            PackageManager::Apk,
         ] {
             let fake = FakeRunner::new().strict();
-            let backend = backend_for(family, &fake);
+            let backend = backend_for(DistroFamily::Debian, &fake);
             let plan = manual_install_plan(
-                family,
+                DistroFamily::Debian,
                 Operation::DistroInstall {
                     manager,
                     package: "brave-browser".to_owned(),
                 },
             );
-            let target = target(family);
+            let target = target(DistroFamily::Debian);
             let error = backend
                 .install(InstallRequest::new(&plan, &target))
                 .await
@@ -1344,38 +1714,17 @@ mod tests {
                 "{error:?}"
             );
             assert!(
-                error.to_string().contains("apt and dnf only"),
-                "the refusal must name the wave-1 scope: {error}"
+                error
+                    .to_string()
+                    .contains("does not match this backend's family"),
+                "the refusal must name the misroute: {error}"
             );
             assert!(fake.calls().is_empty(), "no manager command may run");
         }
     }
 
-    #[tokio::test]
-    async fn install_rejects_a_manager_foreign_to_the_backends_family() {
-        // A dnf operation routed to the Debian backend is a misroute, not
-        // something to execute against the wrong distro.
-        let backend = backend_for(DistroFamily::Debian, &FakeRunner::new().strict());
-        let plan = manual_install_plan(
-            DistroFamily::Debian,
-            Operation::DistroInstall {
-                manager: PackageManager::Dnf,
-                package: "brave-browser".to_owned(),
-            },
-        );
-        let target = target(DistroFamily::Debian);
-        let error = backend
-            .install(InstallRequest::new(&plan, &target))
-            .await
-            .unwrap_err();
-        assert!(
-            matches!(error, Error::Command(toride_runner::Error::Other(_))),
-            "{error:?}"
-        );
-    }
-
     #[test]
-    fn install_spec_pins_the_apt_get_and_dnf_argv_exactly() {
+    fn install_spec_pins_the_mutating_argv_exactly() {
         let apt = mutating_spec(DistroExecutor::Apt, "install", "bash");
         assert_eq!(apt.program, "apt-get");
         assert_eq!(apt.args, ["install", "-y", "bash"]);
@@ -1383,6 +1732,14 @@ mod tests {
         let dnf = mutating_spec(DistroExecutor::Dnf, "install", "bash");
         assert_eq!(dnf.program, "dnf");
         assert_eq!(dnf.args, ["install", "-y", "bash"]);
+        let pacman = mutating_spec(DistroExecutor::Pacman, "--sync", "bash");
+        assert_eq!(pacman.program, "pacman");
+        assert_eq!(pacman.args, ["--sync", "--noconfirm", "bash"]);
+        assert!(pacman.stdin_null);
+        let apk = mutating_spec(DistroExecutor::Apk, "add", "bash");
+        assert_eq!(apk.program, "apk");
+        assert_eq!(apk.args, ["add", "bash"]);
+        assert!(apk.stdin_null);
     }
 
     // --- uninstall ----------------------------------------------------------------
@@ -1478,30 +1835,296 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uninstall_rejects_pacman_operations_with_the_scope_error() {
-        let fake = FakeRunner::new().strict();
+    async fn uninstall_executes_pacman_remove_noconfirm() {
+        let spec = pacman_spec("--remove", "brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
         let backend = backend_for(DistroFamily::Arch, &fake);
-        let plan = UninstallPlan {
+        let plan = uninstall_plan_for(DistroFamily::Arch);
+        let target = target(DistroFamily::Arch);
+        backend
+            .uninstall(UninstallRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn uninstall_executes_apk_del() {
+        let spec = apk_spec("del", "brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        let plan = uninstall_plan_for(DistroFamily::Alpine);
+        let target = target(DistroFamily::Alpine);
+        backend
+            .uninstall(UninstallRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    fn apt_get_update_spec(package: &str) -> toride_runner::CommandSpec {
+        command("apt-get", ["install", "--only-upgrade", "-y", package])
+            .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1)
+    }
+
+    fn dnf_update_spec(package: &str) -> toride_runner::CommandSpec {
+        command("dnf", ["upgrade", "-y", package])
+    }
+
+    fn pacman_update_spec(package: &str) -> toride_runner::CommandSpec {
+        command("pacman", ["--sync", "--refresh", "--noconfirm", package])
+    }
+
+    fn apk_update_spec(package: &str) -> toride_runner::CommandSpec {
+        command("apk", ["upgrade", package])
+    }
+
+    #[tokio::test]
+    async fn update_refuses_dry_run_plans_without_touching_the_runner() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = update_plan_for(DistroFamily::Debian).dry_run(true);
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        assert!(fake.calls().is_empty(), "no manager command may run");
+    }
+
+    #[tokio::test]
+    async fn update_refuses_elevation_requiring_plans_without_a_grant() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = update_plan_for(DistroFamily::Debian);
+        assert!(plan.requires_elevation);
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty(), "no manager command may run");
+    }
+
+    #[tokio::test]
+    async fn update_executes_apt_get_install_only_upgrade_y() {
+        let spec = apt_get_update_spec("brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = update_plan_for(DistroFamily::Debian);
+        let target = target(DistroFamily::Debian);
+        backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_executes_dnf_upgrade_y() {
+        let spec = dnf_update_spec("brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Fedora, &fake);
+        let plan = update_plan_for(DistroFamily::Fedora);
+        let target = target(DistroFamily::Fedora);
+        backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_executes_pacman_sync_refresh_noconfirm() {
+        let spec = pacman_update_spec("brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Arch, &fake);
+        let plan = update_plan_for(DistroFamily::Arch);
+        let target = target(DistroFamily::Arch);
+        backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_executes_apk_upgrade_with_no_suppression() {
+        let spec = apk_update_spec("brave-browser");
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        let plan = update_plan_for(DistroFamily::Alpine);
+        let target = target(DistroFamily::Alpine);
+        backend
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_rejects_a_manager_foreign_to_the_backends_family() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = crate::plan::UpdatePlan {
             app: TorideId::slugify("brave-browser"),
-            backend: BackendId::Distro(DistroFamily::Arch),
-            operation: Operation::DistroUninstall {
-                manager: PackageManager::Pacman,
+            backend: BackendId::Distro(DistroFamily::Debian),
+            operation: Operation::DistroUpdate {
+                manager: PackageManager::Dnf,
                 package: "brave-browser".to_owned(),
             },
             dry_run: false,
-            requires_elevation: false,
+            requires_elevation: true,
         };
-        let target = target(DistroFamily::Arch);
+        let target = target(DistroFamily::Debian);
         let error = backend
-            .uninstall(UninstallRequest::new(&plan, &target))
+            .update(UpdateRequest::new(&plan, &target).elevated(true))
             .await
             .unwrap_err();
         assert!(
             matches!(error, Error::Command(toride_runner::Error::Other(_))),
             "{error:?}"
         );
-        assert!(error.to_string().contains("apt and dnf only"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("does not match this backend's family"),
+            "the refusal must name the misroute: {error}"
+        );
         assert!(fake.calls().is_empty(), "no manager command may run");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_non_distro_operations() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = crate::plan::UpdatePlan {
+            app: TorideId::slugify("brave-browser"),
+            backend: BackendId::Distro(DistroFamily::Debian),
+            operation: Operation::BrewUpgrade {
+                cask: true,
+                token: "brave-browser".to_owned(),
+            },
+            dry_run: false,
+            requires_elevation: false,
+        };
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::Other(_))),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn update_specs_pin_the_per_manager_upgrade_argv_exactly() {
+        let apt = update_spec(DistroExecutor::Apt, PackageManager::Apt, "brave-browser");
+        assert_eq!(apt.program, "apt-get");
+        assert_eq!(
+            apt.args,
+            ["install", "--only-upgrade", "-y", "brave-browser"]
+        );
+        assert!(
+            apt.env
+                .contains(&("DEBIAN_FRONTEND".to_owned(), "noninteractive".to_owned())),
+            "apt keeps the debconf frontend silenced: {apt:?}"
+        );
+        assert!(apt.stdin_null);
+
+        let dnf = update_spec(DistroExecutor::Dnf, PackageManager::Dnf, "bash");
+        assert_eq!(dnf.program, "dnf");
+        assert_eq!(dnf.args, ["upgrade", "-y", "bash"]);
+        assert!(dnf.env.is_empty(), "{dnf:?}");
+
+        let pacman = update_spec(DistroExecutor::Pacman, PackageManager::Pacman, "bash");
+        assert_eq!(pacman.program, "pacman");
+        assert_eq!(pacman.args, ["--sync", "--refresh", "--noconfirm", "bash"]);
+        assert!(
+            pacman.args.iter().any(|arg| arg == "--noconfirm"),
+            "--noconfirm is pacman's assume-yes: {pacman:?}"
+        );
+        assert!(pacman.env.is_empty(), "{pacman:?}");
+
+        let apk = update_spec(DistroExecutor::Apk, PackageManager::Apk, "bash");
+        assert_eq!(apk.program, "apk");
+        assert_eq!(apk.args, ["upgrade", "bash"]);
+        assert!(apk.env.is_empty(), "apk has no suppression at all: {apk:?}");
+    }
+
+    #[test]
+    fn update_plan_argv_stays_canonical_while_execution_layers_the_runtime_flags() {
+        let plan = update_plan_for(DistroFamily::Debian);
+        assert_eq!(
+            plan.operation.argv(),
+            ["apt", "install", "--only-upgrade", "brave-browser"]
+        );
+        let executed = update_spec(DistroExecutor::Apt, PackageManager::Apt, "brave-browser");
+        assert_eq!(executed.program, "apt-get");
+        assert_eq!(
+            executed.args,
+            ["install", "--only-upgrade", "-y", "brave-browser"]
+        );
+
+        let pacman = update_plan_for(DistroFamily::Arch);
+        assert_eq!(
+            pacman.operation.argv(),
+            ["pacman", "--sync", "--refresh", "brave-browser"]
+        );
+        let executed = update_spec(
+            DistroExecutor::Pacman,
+            PackageManager::Pacman,
+            "brave-browser",
+        );
+        assert_eq!(
+            executed.args,
+            ["--sync", "--refresh", "--noconfirm", "brave-browser"]
+        );
+    }
+
+    #[test]
+    fn update_specs_never_carry_the_wrong_suppression_flags() {
+        for spec in [
+            update_spec(DistroExecutor::Apt, PackageManager::Apt, "bash"),
+            update_spec(DistroExecutor::Dnf, PackageManager::Dnf, "bash"),
+            update_spec(DistroExecutor::Pacman, PackageManager::Pacman, "bash"),
+            update_spec(DistroExecutor::Apk, PackageManager::Apk, "bash"),
+        ] {
+            assert!(
+                !spec.args.iter().any(|arg| arg == "-y") || spec.program != "pacman",
+                "pacman has no -y: {spec:?}"
+            );
+            assert!(
+                !spec.args.iter().any(|arg| arg == "--noconfirm") || spec.program == "pacman",
+                "--noconfirm is pacman's flag alone: {spec:?}"
+            );
+        }
     }
 
     // --- query argv -----------------------------------------------------------------
@@ -1563,6 +2186,63 @@ mod tests {
                 "%{NAME}\\t%{VERSION}\\n"
             ]
         );
+        let pacman = pacman_query_spec(&[]);
+        assert_eq!(pacman.args, ["--query"]);
+        let apk = apk_query_spec(&[]);
+        assert_eq!(apk.args, ["list", "--installed", "--quiet"]);
+    }
+
+    #[test]
+    fn pacman_query_spec_pins_the_query_argv_and_operands() {
+        let spec = pacman_query_spec(&["bash", "pacman"]);
+        assert_eq!(spec.program, "pacman");
+        assert_eq!(spec.args, ["--query", "bash", "pacman"]);
+        assert!(spec.stdin_null);
+    }
+
+    #[test]
+    fn apk_query_spec_pins_the_list_installed_quiet_argv_and_patterns() {
+        let spec = apk_query_spec(&["bash", "musl"]);
+        assert_eq!(spec.program, "apk");
+        assert_eq!(
+            spec.args,
+            ["list", "--installed", "--quiet", "bash", "musl"],
+            "apk defaults to verbosity 1, whose rows carry no bare name to parse"
+        );
+        assert!(spec.stdin_null);
+    }
+
+    #[test]
+    fn every_query_spec_pins_the_c_locale() {
+        let specs = [
+            dpkg_query_spec(&["bash"]),
+            dpkg_query_spec(&[]),
+            rpm_query_spec(&["bash"]),
+            rpm_query_spec(&[]),
+            pacman_query_spec(&["bash"]),
+            pacman_query_spec(&[]),
+            apk_query_spec(&["bash"]),
+            apk_query_spec(&[]),
+        ];
+        for spec in specs {
+            assert!(
+                spec.env.contains(&("LC_ALL".to_owned(), "C".to_owned())),
+                "an inherited host locale would translate the markers away: {spec:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn mutating_specs_leave_the_host_locale_alone() {
+        for executor in [
+            DistroExecutor::Apt,
+            DistroExecutor::Dnf,
+            DistroExecutor::Pacman,
+            DistroExecutor::Apk,
+        ] {
+            let spec = mutating_spec(executor, "install", "bash");
+            assert!(!spec.env.iter().any(|(key, _)| key == "LC_ALL"), "{spec:?}");
+        }
     }
 
     // --- query output parsing ---------------------------------------------------------
@@ -1580,6 +2260,62 @@ mod tests {
             }
         );
         assert_eq!(apps[1].id, "bash");
+    }
+
+    #[test]
+    fn parse_query_output_reads_rows_from_the_pacman_fixture() {
+        let apps = parse_query_output(DistroExecutor::Pacman, &pacman_fixture_output()).unwrap();
+        assert_eq!(apps.len(), 4, "{apps:?}");
+        assert_eq!(
+            apps[0],
+            InstalledApp {
+                id: "bash".to_owned(),
+                version: Some("5.2.037-1".to_owned()),
+            }
+        );
+        assert_eq!(apps[1].id, "brave-browser");
+    }
+
+    #[test]
+    fn parse_query_output_keeps_epoch_pacman_versions_verbatim() {
+        let apps = parse_query_output(DistroExecutor::Pacman, &pacman_fixture_output()).unwrap();
+        let brave = apps.iter().find(|app| app.id == "brave-browser").unwrap();
+        assert_eq!(brave.version.as_deref(), Some("1:1.4.2-1"));
+    }
+
+    #[test]
+    fn parse_query_output_reads_bare_names_from_the_apk_quiet_fixture() {
+        let apps = parse_query_output(DistroExecutor::Apk, &apk_fixture_output()).unwrap();
+        assert_eq!(apps.len(), 4, "{apps:?}");
+        assert_eq!(
+            apps[0],
+            InstalledApp {
+                id: "alpine-baselayout".to_owned(),
+                version: None,
+            }
+        );
+        assert!(apps.iter().all(|app| app.version.is_none()), "{apps:?}");
+    }
+
+    #[test]
+    fn parse_query_output_errors_loudly_on_apk_default_verbosity_rows() {
+        let document = "bash-5.2.26-r0 x86_64 {bash} (GPL-3.0-or-later) [installed]\n";
+        let error = parse_query_output(DistroExecutor::Apk, document).unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "a dropped --quiet must surface, never read as nothing installed: {error:?}"
+        );
+    }
+
+    #[test]
+    fn parse_query_output_skips_malformed_pacman_and_apk_rows() {
+        let pacman =
+            parse_query_output(DistroExecutor::Pacman, "bash 5.2\nnot-a-query-row\n").unwrap();
+        assert_eq!(pacman.len(), 1, "{pacman:?}");
+        assert_eq!(pacman[0].id, "bash");
+        let apk = parse_query_output(DistroExecutor::Apk, "bash\nbash 5.2\nmusl\n").unwrap();
+        assert_eq!(apk.len(), 2, "{apk:?}");
+        assert!(apk.iter().all(|app| app.version.is_none()), "{apk:?}");
     }
 
     #[test]
@@ -1634,8 +2370,8 @@ mod tests {
     #[test]
     fn parse_query_output_returns_an_empty_listing_for_empty_output() {
         for executor in [DistroExecutor::Apt, DistroExecutor::Dnf] {
-            assert!(parse_query_output(executor, "").unwrap().is_empty());
-            assert!(parse_query_output(executor, "  \n\n").unwrap().is_empty());
+            assert_eq!(parse_query_output(executor, "").unwrap(), Vec::new());
+            assert_eq!(parse_query_output(executor, "  \n\n").unwrap(), Vec::new());
         }
     }
 
@@ -1656,7 +2392,7 @@ mod tests {
     fn parse_query_output_accepts_a_document_of_only_non_installed_states() {
         // Well-formed but all filtered: legitimately empty, not an error.
         let apps = parse_query_output(DistroExecutor::Apt, "rc one\t1.0\nrc two\t2.0\n").unwrap();
-        assert!(apps.is_empty());
+        assert_eq!(apps, Vec::new());
     }
 
     // --- not-found classification -------------------------------------------------------
@@ -1671,6 +2407,14 @@ mod tests {
             DistroExecutor::Dnf,
             "package ghost is not installed"
         ));
+        assert!(stderr_all_not_found(
+            DistroExecutor::Pacman,
+            "error: package 'ghost' was not found"
+        ));
+        assert!(
+            !stderr_all_not_found(DistroExecutor::Apk, "anything at all"),
+            "apk has no not-found stderr marker: its signal is an empty exit-0 answer"
+        );
     }
 
     #[test]
@@ -1698,6 +2442,23 @@ mod tests {
         let fatal =
             CommandOutput::from_stderr("dpkg-query: error: parsing file '/var/lib/dpkg/status'", 2);
         assert!(!query_reports_not_found(DistroExecutor::Apt, &fatal));
+    }
+
+    #[test]
+    fn query_reports_not_found_gates_pacman_on_exit_one_and_the_marker() {
+        let marker = CommandOutput::from_stderr("error: package 'ghost' was not found", 1);
+        assert!(query_reports_not_found(DistroExecutor::Pacman, &marker));
+        let fatal = CommandOutput::from_stderr(
+            "error: package 'ghost' was not found\nerror: failed to initialize alpm library",
+            1,
+        );
+        assert!(!query_reports_not_found(DistroExecutor::Pacman, &fatal));
+    }
+
+    #[test]
+    fn query_reports_not_found_never_classifies_an_apk_failure() {
+        let failed = CommandOutput::from_stderr("ERROR: unable to open database", 1);
+        assert!(!query_reports_not_found(DistroExecutor::Apk, &failed));
     }
 
     #[test]
@@ -1776,6 +2537,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn installed_version_queries_pacman_with_the_exact_argv() {
+        let spec = pacman_query_spec(&["bash"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            CommandOutput::from_stdout(pacman_fixture_output()),
+        );
+        let backend = backend_for(DistroFamily::Arch, &fake);
+        assert_eq!(
+            backend.installed_version("bash").await.unwrap().as_deref(),
+            Some("5.2.037-1")
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn installed_version_maps_pacman_not_found_to_none() {
+        let fake = FakeRunner::new().strict().respond(
+            pacman_query_spec(&["ghost"]),
+            CommandOutput::from_stderr("error: package 'ghost' was not found", 1),
+        );
+        let backend = backend_for(DistroFamily::Arch, &fake);
+        assert_eq!(backend.installed_version("ghost").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn installed_version_queries_apk_with_the_exact_argv_and_reports_no_version() {
+        let spec = apk_query_spec(&["bash"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            CommandOutput::from_stdout(apk_fixture_output()),
+        );
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        assert_eq!(
+            backend.installed_version("bash").await.unwrap(),
+            None,
+            "present without a version, not absent"
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn installed_version_maps_an_empty_apk_answer_to_none() {
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(apk_query_spec(&["ghost"]), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        assert_eq!(backend.installed_version("ghost").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn installed_version_maps_an_apk_failure_to_command_error() {
+        let fake = FakeRunner::new().strict().respond(
+            apk_query_spec(&["bash"]),
+            CommandOutput::from_stderr("ERROR: unable to open database", 1),
+        );
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        let error = backend.installed_version("bash").await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed { .. })
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn installed_version_returns_none_for_a_removed_but_configured_package() {
         // The `rc ` row parses but is not installed state — no version.
         let fake = FakeRunner::new().strict().respond(
@@ -1851,17 +2679,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn installed_version_refuses_unexecutable_families() {
-        let backend = backend_for(DistroFamily::Arch, &FakeRunner::new().strict());
-        let error = backend.installed_version("firefox").await.unwrap_err();
-        assert!(
-            matches!(error, Error::Command(toride_runner::Error::Other(_))),
-            "{error:?}"
-        );
-        assert!(error.to_string().contains("apt and dnf only"), "{error}");
-    }
-
     // --- list_installed + status -------------------------------------------------------
 
     #[tokio::test]
@@ -1887,6 +2704,32 @@ mod tests {
         let backend = backend_for(DistroFamily::Fedora, &fake);
         let apps = backend.list_installed(ListQuery::all()).await.unwrap();
         assert_eq!(apps.len(), 3, "{apps:?}");
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn list_installed_runs_the_operand_free_pacman_query_for_all() {
+        let spec = pacman_query_spec(&[]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            CommandOutput::from_stdout(pacman_fixture_output()),
+        );
+        let backend = backend_for(DistroFamily::Arch, &fake);
+        let apps = backend.list_installed(ListQuery::all()).await.unwrap();
+        assert_eq!(apps.len(), 4, "{apps:?}");
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn list_installed_runs_the_apk_listing_for_all() {
+        let spec = apk_query_spec(&[]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            CommandOutput::from_stdout(apk_fixture_output()),
+        );
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        let apps = backend.list_installed(ListQuery::all()).await.unwrap();
+        assert_eq!(apps.len(), 4, "{apps:?}");
         fake.assert_called_with(&spec);
     }
 
@@ -2009,6 +2852,44 @@ mod tests {
         assert_eq!(status, BackendStatus::NotInstalled);
     }
 
+    #[tokio::test]
+    async fn status_reports_pacman_installed_with_the_queried_version() {
+        let spec = pacman_query_spec(&["firefox"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            CommandOutput::from_stdout("firefox 141.0.2-1\n"),
+        );
+        let backend = backend_for(DistroFamily::Arch, &fake);
+        let status = backend.status(StatusQuery::new("firefox")).await.unwrap();
+        assert_eq!(
+            status,
+            BackendStatus::Installed {
+                version: Some("141.0.2-1".to_owned())
+            }
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn status_reports_apk_installed_without_a_version_and_absent_for_no_match() {
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                apk_query_spec(&["bash"]),
+                CommandOutput::from_stdout("bash\n"),
+            )
+            .respond(apk_query_spec(&["ghost"]), CommandOutput::from_stdout(""));
+        let backend = backend_for(DistroFamily::Alpine, &fake);
+        assert_eq!(
+            backend.status(StatusQuery::new("bash")).await.unwrap(),
+            BackendStatus::Installed { version: None }
+        );
+        assert_eq!(
+            backend.status(StatusQuery::new("ghost")).await.unwrap(),
+            BackendStatus::NotInstalled
+        );
+    }
+
     // --- identity, supports, detection ----------------------------------------------
 
     #[test]
@@ -2017,6 +2898,35 @@ mod tests {
         assert_eq!(backend.id(), BackendId::Distro(DistroFamily::Debian));
         assert_eq!(backend.id().to_string(), "distro-debian");
         assert!(backend.supports(&target(DistroFamily::Debian)));
+    }
+
+    #[test]
+    fn supports_matching_linux_targets_for_every_executable_family() {
+        for family in [
+            DistroFamily::Debian,
+            DistroFamily::Ubuntu,
+            DistroFamily::Fedora,
+            DistroFamily::Arch,
+            DistroFamily::Alpine,
+        ] {
+            let backend = backend_for(family, &FakeRunner::new().strict());
+            assert!(
+                backend.supports(&target(family)),
+                "{family:?} executes and must vouch for its own targets"
+            );
+        }
+        assert_eq!(
+            backend_for(DistroFamily::Arch, &FakeRunner::new().strict())
+                .id()
+                .to_string(),
+            "distro-arch"
+        );
+        assert_eq!(
+            backend_for(DistroFamily::Alpine, &FakeRunner::new().strict())
+                .id()
+                .to_string(),
+            "distro-alpine"
+        );
     }
 
     #[test]
@@ -2030,12 +2940,8 @@ mod tests {
         let ubuntu = backend_for(DistroFamily::Ubuntu, &FakeRunner::new().strict());
         assert!(ubuntu.supports(&target(DistroFamily::Ubuntu)));
         assert!(!ubuntu.supports(&target(DistroFamily::Debian)));
-    }
-
-    #[test]
-    fn supports_is_false_for_families_without_an_executor() {
-        let backend = backend_for(DistroFamily::Arch, &FakeRunner::new().strict());
-        assert!(!backend.supports(&target(DistroFamily::Arch)));
+        let arch = backend_for(DistroFamily::Arch, &FakeRunner::new().strict());
+        assert!(!arch.supports(&target(DistroFamily::Alpine)));
     }
 
     // --- no-sudo invariant -------------------------------------------------------------
@@ -2050,10 +2956,22 @@ mod tests {
             mutating_spec(DistroExecutor::Apt, "remove", "bash"),
             mutating_spec(DistroExecutor::Dnf, "install", "bash"),
             mutating_spec(DistroExecutor::Dnf, "remove", "bash"),
+            mutating_spec(DistroExecutor::Pacman, "--sync", "bash"),
+            mutating_spec(DistroExecutor::Pacman, "--remove", "bash"),
+            mutating_spec(DistroExecutor::Apk, "add", "bash"),
+            mutating_spec(DistroExecutor::Apk, "del", "bash"),
+            update_spec(DistroExecutor::Apt, PackageManager::Apt, "bash"),
+            update_spec(DistroExecutor::Dnf, PackageManager::Dnf, "bash"),
+            update_spec(DistroExecutor::Pacman, PackageManager::Pacman, "bash"),
+            update_spec(DistroExecutor::Apk, PackageManager::Apk, "bash"),
             dpkg_query_spec(&["bash"]),
             dpkg_query_spec(&[]),
             rpm_query_spec(&["bash"]),
             rpm_query_spec(&[]),
+            pacman_query_spec(&["bash"]),
+            pacman_query_spec(&[]),
+            apk_query_spec(&["bash"]),
+            apk_query_spec(&[]),
         ];
         for spec in specs {
             assert_ne!(spec.program, "sudo", "{spec:?}");
@@ -2115,5 +3033,126 @@ mod tests {
                 "{call:?}"
             );
         }
+    }
+
+    #[test]
+    fn install_sync_refuses_dry_run_and_elevation_without_dispatching() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let target = target(DistroFamily::Debian);
+        let error = backend
+            .install_sync(InstallRequest::new(
+                &install_plan_for(DistroFamily::Debian).dry_run(true),
+                &target,
+            ))
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        let error = backend
+            .install_sync(InstallRequest::new(
+                &install_plan_for(DistroFamily::Debian),
+                &target,
+            ))
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty(), "no manager command may run");
+    }
+
+    #[test]
+    fn install_sync_runs_the_apt_argv_with_suppression_and_reports_the_version() {
+        let install_spec = command("apt-get", ["install", "-y", "brave-browser"])
+            .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                install_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                dpkg_query_spec(&["brave-browser"]),
+                toride_runner::CommandOutput::from_stdout("ii brave-browser\t1.96.59\n"),
+            );
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let plan = install_plan_for(DistroFamily::Debian);
+        let target = target(DistroFamily::Debian);
+        let outcome = backend
+            .install_sync(InstallRequest::new(&plan, &target).elevated(true))
+            .unwrap();
+        assert_eq!(outcome.version.as_deref(), Some("1.96.59"));
+        fake.assert_called_with(&install_spec);
+    }
+
+    #[test]
+    fn uninstall_sync_and_update_sync_run_their_canonical_argv() {
+        let remove_spec = command("apt-get", ["remove", "-y", "brave-browser"])
+            .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1);
+        let upgrade_spec = command(
+            "apt-get",
+            ["install", "--only-upgrade", "-y", "brave-browser"],
+        )
+        .env(DEBIAN_FRONTEND_ENV.0, DEBIAN_FRONTEND_ENV.1);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                remove_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                upgrade_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            );
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        let target = target(DistroFamily::Debian);
+        backend
+            .uninstall_sync(
+                UninstallRequest::new(&uninstall_plan_for(DistroFamily::Debian), &target)
+                    .elevated(true),
+            )
+            .unwrap();
+        backend
+            .update_sync(
+                UpdateRequest::new(&update_plan_for(DistroFamily::Debian), &target).elevated(true),
+            )
+            .unwrap();
+        fake.assert_called_with(&remove_spec);
+        fake.assert_called_with(&upgrade_spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn list_installed_and_installed_version_sync_classify_the_query_output() {
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                dpkg_query_spec(&["brave-browser"]),
+                toride_runner::CommandOutput::from_stdout("ii brave-browser\t1.96.59\n"),
+            )
+            .respond(
+                dpkg_query_spec(&["brave-browser"]),
+                toride_runner::CommandOutput::from_stdout("ii brave-browser\t1.96.59\n"),
+            )
+            .respond(
+                dpkg_query_spec(&["ghost"]),
+                toride_runner::CommandOutput::from_stderr(
+                    "dpkg-query: no packages found matching ghost\n",
+                    1,
+                ),
+            );
+        let backend = backend_for(DistroFamily::Debian, &fake);
+        assert_eq!(
+            backend
+                .installed_version_sync("brave-browser")
+                .unwrap()
+                .as_deref(),
+            Some("1.96.59")
+        );
+        assert_eq!(backend.installed_version_sync("ghost").unwrap(), None);
+        let listed = backend
+            .list_installed_sync(ListQuery::id("brave-browser"))
+            .unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "brave-browser");
     }
 }

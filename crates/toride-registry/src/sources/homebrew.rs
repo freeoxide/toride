@@ -16,12 +16,12 @@
 //!   missing or `null` upstream must degrade to `None`, never error.
 //! - **Fetch half (thin client, gated behind the crate's `http` feature so
 //!   the parsers build fully offline, DESIGN.md §9):**
-//!   [`HomebrewClient`] GETs the two per-item endpoints and returns raw
-//!   body text, and [`HomebrewAdapter`] implements
-//!   [`Adapter`](crate::adapter::Adapter) over them. Wave 1 is per-item
-//!   only: the full cask/formula catalogs are tens of MB (homebrew.md
-//!   §1–§2), so `HomebrewAdapter::search` always returns an empty hit
-//!   list rather than downloading a catalog.
+//!   `HomebrewClient` GETs the two per-item endpoints and returns raw
+//!   body text; `HomebrewAdapter` implements
+//!   [`Adapter`](crate::adapter::Adapter) over them — `lookup` per-item,
+//!   search over the two full catalog indexes cached for one
+//!   `INDEX_CACHE_TTL` window and parsed through the same
+//!   normalization ([`search_index`]).
 //!
 //! ## Cask `variations` contract (DESIGN.md §4.1)
 //!
@@ -79,6 +79,10 @@ use crate::model::{
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use std::collections::BTreeMap;
+#[cfg(feature = "http")]
+use std::sync::Arc;
+#[cfg(feature = "http")]
+use std::time::{Duration, SystemTime};
 
 // ---------------------------------------------------------------------------
 // Wire structs — cask (parse half)
@@ -137,10 +141,10 @@ struct CaskPayload {
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
 struct CaskArtifactEntry {
-    /// Payload paths of a `binary` stanza (linked into
-    /// `$HOMEBREW_PREFIX/bin`); may contain `$APPDIR`/`$HOMEBREW_PREFIX`
-    /// placeholders.
-    binary: Vec<String>,
+    /// Payload items of a `binary` stanza, kept raw: the live catalog
+    /// ships plain path strings (`$APPDIR/…`, `$HOMEBREW_PREFIX/…`) and
+    /// `{"target": …}` link maps in one array.
+    binary: Vec<Value>,
 }
 
 /// The cask `depends_on` object. Only the `macos` comparison map is read;
@@ -419,13 +423,20 @@ fn path_basename(path: &str) -> &str {
 }
 
 /// The `binaries` extraction pinned by DESIGN.md §4.1: for every `binary`
-/// artifact stanza, the basename of each payload string, deduplicated, in
-/// payload order (vscode → `["code", "code-tunnel"]`, brave → `[]`).
+/// stanza, the basename of each payload string — or of a `{"target": …}`
+/// payload's target, same rule — deduplicated, in payload order.
 fn binaries_from_cask_artifacts(entries: &[CaskArtifactEntry]) -> Vec<String> {
     let mut binaries: Vec<String> = Vec::new();
     for entry in entries {
         for payload in &entry.binary {
-            let name = path_basename(payload);
+            let name = match payload {
+                Value::String(path) => path_basename(path),
+                Value::Object(map) => match map.get("target") {
+                    Some(Value::String(target)) => path_basename(target),
+                    _ => continue,
+                },
+                _ => continue,
+            };
             if !binaries.iter().any(|known| known == name) {
                 binaries.push(name.to_owned());
             }
@@ -479,10 +490,11 @@ fn parse_wire<T: serde::de::DeserializeOwned>(payload: &str, id_keys: &[&str]) -
 /// id field carries the cask `token` when one is readable).
 pub fn parse_cask_json(payload: &str) -> Result<App> {
     let cask: CaskPayload = parse_wire(payload, &["token"])?;
+    Ok(app_from_cask(cask))
+}
+
+fn app_from_cask(cask: CaskPayload) -> App {
     let token = cask.token;
-    // `name` is an array (homebrew.md §3); `[0]` is the display name. Fall
-    // back to the token when the array is empty rather than emitting an
-    // unnamed App.
     let name = cask.name.first().cloned().unwrap_or_else(|| token.clone());
     let aliases: Vec<String> = cask
         .name
@@ -498,10 +510,6 @@ pub fn parse_cask_json(payload: &str) -> Result<App> {
     });
     let min_release = macos_min_release(cask.depends_on.as_ref());
 
-    // Artifacts: the top-level (default-platform) pair first, then every
-    // available variation, deduped on the (os, arch, url, sha256) tuple
-    // (keep-first). Iteration over `variations` is BTreeMap-ordered, so the
-    // emitted order is deterministic.
     let mut artifacts: Vec<Artifact> = Vec::new();
     let mut seen: Vec<ArtifactKey> = Vec::new();
     let mut push = |os: Option<Os>, arch: Option<Arch>, url: String, sha: Option<String>| {
@@ -532,13 +540,11 @@ pub fn parse_cask_json(payload: &str) -> Result<App> {
         let Some((url, sha)) =
             effective_url_sha(cask.url.as_deref(), cask.sha256.as_deref(), variation)
         else {
-            continue; // explicit null override → unavailable: no artifact, no claim
+            continue;
         };
         push(Some(os), Some(arch), url, sha);
         claims.push((os, arch));
     }
-    // Platform claims: supported_platforms tags ∪ the variation keys that
-    // resolved to an available artifact, deduped to distinct (os, arch).
     claims.extend(
         cask.supported_platforms
             .iter()
@@ -553,12 +559,11 @@ pub fn parse_cask_json(payload: &str) -> Result<App> {
         Availability::Available
     };
 
-    Ok(App {
+    App {
         id: TorideId::slugify(&token),
         name,
         aliases,
         summary: cask.desc,
-        // Casks publish no long-form description and no license/developer.
         description: None,
         homepage: cask.homepage,
         license: None,
@@ -579,7 +584,20 @@ pub fn parse_cask_json(payload: &str) -> Result<App> {
             provisional: false,
         }],
         availability,
-    })
+    }
+}
+
+/// Normalizes a full cask catalog (`/api/cask.json`) — one [`App`] per
+/// cask in payload order, entries with no readable token skipped.
+/// Errors: [`Error::Parse`] on a non-array or non-cask payload.
+pub fn parse_cask_index(payload: &str) -> Result<Vec<App>> {
+    let casks: Vec<CaskPayload> =
+        serde_json::from_str(payload).map_err(|error| index_parse_error("cask-index", &error))?;
+    Ok(casks
+        .into_iter()
+        .filter(|cask| !cask.token.is_empty())
+        .map(app_from_cask)
+        .collect())
 }
 
 // ---------------------------------------------------------------------------
@@ -603,12 +621,16 @@ pub fn parse_cask_json(payload: &str) -> Result<App> {
 ///
 /// [`Error::Parse`] when the payload is not a formula JSON object (the
 /// id field carries the formula `name` when one is readable).
+pub fn parse_formula_json(payload: &str) -> Result<App> {
+    let formula: FormulaPayload = parse_wire(payload, &["name", "full_name"])?;
+    Ok(app_from_formula(formula))
+}
+
 #[allow(
     clippy::too_many_lines,
     reason = "one linear parse->normalize pipeline; a split at the 100-line threshold is artificial"
 )]
-pub fn parse_formula_json(payload: &str) -> Result<App> {
-    let formula: FormulaPayload = parse_wire(payload, &["name", "full_name"])?;
+fn app_from_formula(formula: FormulaPayload) -> App {
     let name = if formula.name.is_empty() {
         formula.full_name.clone()
     } else {
@@ -629,7 +651,6 @@ pub fn parse_formula_json(payload: &str) -> Result<App> {
             published_unix: None,
         });
 
-    // Bottles: one artifact per file, platforms from the decoded tags.
     let mut artifacts: Vec<Artifact> = Vec::new();
     let mut claims: Vec<(Os, Arch)> = Vec::new();
     let files = formula.bottle.as_ref().and_then(|bottle| match bottle {
@@ -657,7 +678,6 @@ pub fn parse_formula_json(payload: &str) -> Result<App> {
             claims.push((os, arch));
         }
     }
-    // Stable source archive (ripgrep: the GitHub tarball + its sha256).
     if let Some(url) = formula
         .urls
         .as_ref()
@@ -690,7 +710,7 @@ pub fn parse_formula_json(payload: &str) -> Result<App> {
         Availability::Available
     };
 
-    Ok(App {
+    App {
         id: TorideId::slugify(&name),
         name: name.clone(),
         aliases,
@@ -701,8 +721,6 @@ pub fn parse_formula_json(payload: &str) -> Result<App> {
         developer: None,
         binaries: formula.executables,
         latest: latest.clone(),
-        // Bottles declare no minimum macOS release → `min_release: None`.
-        // No bottles at all → `platforms: []` (unknown).
         platforms: dedupe_platforms(&mut claims, None),
         artifacts,
         install: InstallMethod::Homebrew {
@@ -711,17 +729,91 @@ pub fn parse_formula_json(payload: &str) -> Result<App> {
         },
         sources: vec![SourceRef {
             source: SourceKind::HomebrewFormula,
-            // DESIGN.md §4.2 pins the row id to `name` (the
-            // `brew install <name>` token) — NOT the tap-qualified
-            // `full_name`, which `lookup`'s `/api/formula/{id}.json`
-            // fetch would 404 on.
             id: name,
             repo: None,
             version: latest,
             provisional: false,
         }],
         availability,
-    })
+    }
+}
+
+/// Normalizes a full formula catalog (`/api/formula.json`) — one [`App`]
+/// per formula in payload order, nameless entries skipped. Errors:
+/// [`Error::Parse`] on a non-array or non-formula payload.
+pub fn parse_formula_index(payload: &str) -> Result<Vec<App>> {
+    let formulae: Vec<FormulaPayload> = serde_json::from_str(payload)
+        .map_err(|error| index_parse_error("formula-index", &error))?;
+    Ok(formulae
+        .into_iter()
+        .filter(|formula| !formula.name.is_empty() || !formula.full_name.is_empty())
+        .map(app_from_formula)
+        .collect())
+}
+
+fn index_parse_error(id: &str, error: &serde_json::Error) -> Error {
+    Error::Parse {
+        kind: "json",
+        id: id.to_owned(),
+        message: error.to_string(),
+    }
+}
+
+/// The hit cap [`search_index`] serves one query with.
+pub const MAX_SEARCH_HITS: usize = 50;
+
+/// Case-insensitive free-text search by token, name, aliases, and
+/// summary — every whitespace-separated word must match, a hit ranks by
+/// its worst word (exact < prefix < substring), capped, empty → none.
+#[must_use]
+pub fn search_index(apps: &[App], query: &str) -> Vec<App> {
+    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+    if words.is_empty() {
+        return Vec::new();
+    }
+    let mut hits: Vec<(u8, &App)> = apps
+        .iter()
+        .filter_map(|app| {
+            let rank = words.iter().try_fold(0u8, |worst, word| {
+                match_tier(app, word).map(|tier| worst.max(tier))
+            })?;
+            Some((rank, app))
+        })
+        .collect();
+    hits.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.id.as_str().cmp(right.1.id.as_str()))
+    });
+    hits.into_iter()
+        .take(MAX_SEARCH_HITS)
+        .map(|(_, app)| app.clone())
+        .collect()
+}
+
+fn match_tier(app: &App, needle: &str) -> Option<u8> {
+    let token = match &app.install {
+        InstallMethod::Homebrew { token, .. } => token.to_lowercase(),
+        _ => app.id.as_str().to_lowercase(),
+    };
+    let name = app.name.to_lowercase();
+    if token == needle || name == needle {
+        return Some(0);
+    }
+    if token.starts_with(needle) || name.starts_with(needle) {
+        return Some(1);
+    }
+    let matched = token.contains(needle)
+        || name.contains(needle)
+        || app
+            .aliases
+            .iter()
+            .any(|alias| alias.to_lowercase().contains(needle))
+        || app
+            .summary
+            .as_deref()
+            .is_some_and(|summary| summary.to_lowercase().contains(needle));
+    matched.then_some(2)
 }
 
 // ---------------------------------------------------------------------------
@@ -737,25 +829,164 @@ const USER_AGENT: &str = concat!("toride-registry/homebrew/", env!("CARGO_PKG_VE
 #[cfg(feature = "http")]
 const API_BASE: &str = "https://formulae.brew.sh";
 
-/// Thin fetch client for formulae.brew.sh (DESIGN.md §3.1).
-///
-/// Returns **raw body text**, never deserialized values, so live payloads
-/// and the frozen fixtures flow through the exact same parse signatures
-/// ([`parse_cask_json`] / [`parse_formula_json`]).
+/// Thin fetch client for formulae.brew.sh (DESIGN.md §3.1): raw body
+/// text only, so live and fixture payloads flow through the same parse
+/// signatures. The catalog-index fetches cache under
+/// `{cache_dir}/homebrew/` for [`INDEX_CACHE_TTL`].
 #[cfg(feature = "http")]
 pub struct HomebrewClient {
     http: reqwest::Client,
+    cache_dir: Option<camino::Utf8PathBuf>,
+    api_base: String,
 }
+
+/// How long a cached catalog index is served with no network round-trip;
+/// the catalogs republish continuously, so the window trades freshness
+/// for the tens-of-MB re-download.
+#[cfg(feature = "http")]
+pub const INDEX_CACHE_TTL: Duration = Duration::from_hours(1);
+
+/// Per-request timeout for the catalog-index downloads (tens of MB);
+/// the shared client default budgets per-item payloads of a few KB.
+#[cfg(feature = "http")]
+pub const INDEX_FETCH_TIMEOUT: Duration = Duration::from_secs(600);
 
 #[cfg(feature = "http")]
 impl HomebrewClient {
-    /// Builds a client with the shared timeout/UA/redirect policy.
+    /// Builds a client caching under the platform cache dir when one
+    /// resolves (no caching otherwise).
     #[must_use]
     pub fn new() -> Self {
         Self {
             http: crate::http::build_http_client(USER_AGENT),
+            cache_dir: default_cache_dir(),
+            api_base: API_BASE.to_owned(),
         }
     }
+
+    /// Builds a client caching index payloads under
+    /// `cache_dir/homebrew/`.
+    #[must_use]
+    pub fn with_cache_dir(cache_dir: impl Into<camino::Utf8PathBuf>) -> Self {
+        Self {
+            http: crate::http::build_http_client(USER_AGENT),
+            cache_dir: Some(cache_dir.into()),
+            api_base: API_BASE.to_owned(),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_api_base(api_base: impl Into<String>) -> Self {
+        Self {
+            http: crate::http::build_http_client(USER_AGENT),
+            cache_dir: None,
+            api_base: api_base.into(),
+        }
+    }
+
+    /// `GET /api/cask.json` — the full cask catalog, served from a fresh
+    /// cache entry when one exists. Errors: [`Error::Http`].
+    pub async fn fetch_cask_index(&self) -> Result<String> {
+        self.fetch_index_cached(&format!("{}/api/cask.json", self.api_base), "cask.json")
+            .await
+    }
+
+    /// `GET /api/formula.json` — the full formula catalog, served from a
+    /// fresh cache entry when one exists. Errors: [`Error::Http`].
+    pub async fn fetch_formula_index(&self) -> Result<String> {
+        self.fetch_index_cached(
+            &format!("{}/api/formula.json", self.api_base),
+            "formula.json",
+        )
+        .await
+    }
+
+    async fn fetch_index_cached(&self, url: &str, cache_file: &str) -> Result<String> {
+        let cache_path = self
+            .cache_dir
+            .as_ref()
+            .map(|dir| dir.join(format!("homebrew/{cache_file}")));
+        if let Some(path) = &cache_path {
+            let probe_path = path.clone();
+            let probed = tokio::task::spawn_blocking(move || {
+                probe_index_cache(&probe_path, INDEX_CACHE_TTL, SystemTime::now())
+            })
+            .await
+            .map_err(|error| Error::Http {
+                url: url.to_owned(),
+                message: format!("cache probe join: {error}"),
+            })?;
+            if let Some(text) = probed {
+                return Ok(text);
+            }
+        }
+        let body = self
+            .fetch_body_with_timeout(url, INDEX_FETCH_TIMEOUT)
+            .await?
+            .ok_or_else(|| Error::Http {
+                url: url.to_owned(),
+                message: "HTTP 404: catalog index missing".to_owned(),
+            })?;
+        let Some(path) = cache_path else {
+            return Ok(body);
+        };
+        tokio::task::spawn_blocking(move || {
+            let _ = write_index_cache(&path, &body);
+            body
+        })
+        .await
+        .map_err(|error| Error::Http {
+            url: url.to_owned(),
+            message: format!("cache write join: {error}"),
+        })
+    }
+}
+
+#[cfg(feature = "http")]
+fn probe_index_cache(path: &camino::Utf8Path, ttl: Duration, now: SystemTime) -> Option<String> {
+    let fresh = std::fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|mtime| now.duration_since(mtime).ok())
+        .is_some_and(|age| age < ttl);
+    if fresh {
+        std::fs::read_to_string(path).ok()
+    } else {
+        None
+    }
+}
+
+#[cfg(feature = "http")]
+fn part_path(path: &camino::Utf8Path) -> camino::Utf8PathBuf {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let unique = SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    camino::Utf8PathBuf::from(format!("{path}.{}.{}.part", std::process::id(), unique))
+}
+
+#[cfg(feature = "http")]
+fn write_index_cache(path: &camino::Utf8Path, body: &str) -> std::io::Result<()> {
+    let part = part_path(path);
+    let outcome = write_body_via_part(&part, path, body);
+    if outcome.is_err() {
+        let _ = std::fs::remove_file(&part);
+    }
+    outcome
+}
+
+#[cfg(feature = "http")]
+fn write_body_via_part(
+    part: &camino::Utf8Path,
+    path: &camino::Utf8Path,
+    body: &str,
+) -> std::io::Result<()> {
+    std::fs::create_dir_all(part.parent().unwrap_or(part))?;
+    std::fs::write(part, body)?;
+    std::fs::rename(part, path)
+}
+
+#[cfg(feature = "http")]
+fn default_cache_dir() -> Option<camino::Utf8PathBuf> {
+    dirs::cache_dir().and_then(|dir| camino::Utf8PathBuf::from_path_buf(dir).ok())
 }
 
 #[cfg(feature = "http")]
@@ -775,7 +1006,7 @@ impl HomebrewClient {
     /// [`Error::Http`] on transport failures and non-success statuses —
     /// including 404, which means "no such cask".
     pub async fn fetch_cask(&self, token: &str) -> Result<String> {
-        let url = format!("{API_BASE}/api/cask/{token}.json");
+        let url = format!("{}/api/cask/{token}.json", self.api_base);
         self.fetch_body(&url).await?.ok_or_else(|| Error::Http {
             url: url.clone(),
             message: format!("HTTP 404: no cask named `{token}`"),
@@ -790,7 +1021,7 @@ impl HomebrewClient {
     /// [`Error::Http`] on transport failures and non-success statuses —
     /// including 404, which means "no such formula".
     pub async fn fetch_formula(&self, name: &str) -> Result<String> {
-        let url = format!("{API_BASE}/api/formula/{name}.json");
+        let url = format!("{}/api/formula/{name}.json", self.api_base);
         self.fetch_body(&url).await?.ok_or_else(|| Error::Http {
             url: url.clone(),
             message: format!("HTTP 404: no formula named `{name}`"),
@@ -802,14 +1033,14 @@ impl HomebrewClient {
     /// outcome, not a failure). Private because the pinned public surface
     /// of the client is the `Result<String>` pair above (DESIGN.md §3.1).
     async fn fetch_cask_optional(&self, token: &str) -> Result<Option<String>> {
-        self.fetch_body(&format!("{API_BASE}/api/cask/{token}.json"))
+        self.fetch_body(&format!("{}/api/cask/{token}.json", self.api_base))
             .await
     }
 
     /// 404-aware variant of [`Self::fetch_formula`] — see
     /// [`Self::fetch_cask_optional`].
     async fn fetch_formula_optional(&self, name: &str) -> Result<Option<String>> {
-        self.fetch_body(&format!("{API_BASE}/api/formula/{name}.json"))
+        self.fetch_body(&format!("{}/api/formula/{name}.json", self.api_base))
             .await
     }
 
@@ -818,6 +1049,15 @@ impl HomebrewClient {
     /// current [`Error::Http`] carries the cause as text in `message`
     /// (error.rs documents the future typed `#[source]` upgrade).
     async fn fetch_body(&self, url: &str) -> Result<Option<String>> {
+        self.fetch_body_with_timeout(url, crate::http::HTTP_TIMEOUT)
+            .await
+    }
+
+    async fn fetch_body_with_timeout(
+        &self,
+        url: &str,
+        timeout: Duration,
+    ) -> Result<Option<String>> {
         let http_err = |message: String| Error::Http {
             url: url.to_owned(),
             message,
@@ -825,6 +1065,7 @@ impl HomebrewClient {
         let response = self
             .http
             .get(url)
+            .timeout(timeout)
             .send()
             .await
             .map_err(|err| http_err(err.to_string()))?;
@@ -846,11 +1087,15 @@ impl HomebrewClient {
 /// implementation over the two per-item endpoints, serving both
 /// [`SourceKind::HomebrewCask`] and [`SourceKind::HomebrewFormula`] rows —
 /// [`Adapter::lookup`](crate::adapter::Adapter::lookup) dispatches on the
-/// row's kind. Gated behind the crate's `http` feature together with
+/// row's kind; a cask-kind row (the adapter's primary, unqualified kind)
+/// resolves the unified token namespace formula first with cask fallback —
+/// `brew install`'s own order.
+/// Gated behind the crate's `http` feature together with
 /// [`HomebrewClient`] (DESIGN.md §9: the parsers build fully offline).
 #[cfg(feature = "http")]
 pub struct HomebrewAdapter {
     client: HomebrewClient,
+    index: tokio::sync::Mutex<Option<Arc<Vec<App>>>>,
 }
 
 #[cfg(feature = "http")]
@@ -860,7 +1105,38 @@ impl HomebrewAdapter {
     pub fn new() -> Self {
         Self {
             client: HomebrewClient::new(),
+            index: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Builds an adapter caching its catalog indexes under
+    /// `cache_dir/homebrew/` (see [`HomebrewClient::with_cache_dir`]).
+    #[must_use]
+    pub fn with_cache_dir(cache_dir: impl Into<camino::Utf8PathBuf>) -> Self {
+        Self {
+            client: HomebrewClient::with_cache_dir(cache_dir),
+            index: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    #[cfg(test)]
+    fn with_api_base(api_base: impl Into<String>) -> Self {
+        Self {
+            client: HomebrewClient::with_api_base(api_base),
+            index: tokio::sync::Mutex::new(None),
+        }
+    }
+
+    async fn index_apps(&self) -> Result<Arc<Vec<App>>> {
+        let mut guard = self.index.lock().await;
+        if let Some(apps) = guard.as_ref() {
+            return Ok(Arc::clone(apps));
+        }
+        let casks = parse_cask_index(&self.client.fetch_cask_index().await?)?;
+        let formulae = parse_formula_index(&self.client.fetch_formula_index().await?)?;
+        let apps = Arc::new(formulae.into_iter().chain(casks).collect::<Vec<App>>());
+        *guard = Some(Arc::clone(&apps));
+        Ok(apps)
     }
 }
 
@@ -882,10 +1158,12 @@ impl crate::adapter::Adapter for HomebrewAdapter {
 
     async fn lookup(&self, id: &SourceRef) -> Result<Option<App>> {
         match id.source {
-            SourceKind::HomebrewCask => match self.client.fetch_cask_optional(&id.id).await? {
-                // HTTP 404: the source has no such cask.
-                None => Ok(None),
-                Some(body) => parse_cask_json(&body).map(Some),
+            SourceKind::HomebrewCask => match self.client.fetch_formula_optional(&id.id).await? {
+                Some(body) => parse_formula_json(&body).map(Some),
+                None => match self.client.fetch_cask_optional(&id.id).await? {
+                    Some(body) => parse_cask_json(&body).map(Some),
+                    None => Ok(None),
+                },
             },
             SourceKind::HomebrewFormula => {
                 match self.client.fetch_formula_optional(&id.id).await? {
@@ -900,13 +1178,12 @@ impl crate::adapter::Adapter for HomebrewAdapter {
         }
     }
 
-    /// Always returns an empty hit list: formulae.brew.sh publishes no
-    /// free-text search endpoint, and the full catalogs that could be
-    /// scanned client-side are tens of MB — out of wave-1 scope
-    /// (homebrew.md §1–§2). "No hits" is not a failure, so this is
-    /// `Ok(vec![])` rather than an error.
-    async fn search(&self, _query: &str) -> Result<Vec<App>> {
-        Ok(Vec::new())
+    /// Searches the cached cask+formula index through [`search_index`] —
+    /// the first search pays the catalog download, later ones are
+    /// in-memory. Errors: [`Error::Http`] / [`Error::Parse`].
+    async fn search(&self, query: &str) -> Result<Vec<App>> {
+        let index = self.index_apps().await?;
+        Ok(search_index(&index, query))
     }
 }
 
@@ -917,6 +1194,7 @@ impl crate::adapter::Adapter for HomebrewAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::VerificationPolicy;
 
     /// Manifest-dir-anchored fixture loading (conventions.md §7 — runtime
     /// read via `env!("CARGO_MANIFEST_DIR")`, deliberately not
@@ -963,6 +1241,29 @@ mod tests {
     }
 
     #[test]
+    fn cask_and_formula_apps_carry_the_inline_marker() {
+        let cask = parse_cask_json(&read_fixture("cask-brave-browser.json"))
+            .expect("brave fixture must parse");
+        assert!(
+            cask.artifacts
+                .iter()
+                .all(|artifact| artifact.checksum.is_some()),
+            "homebrew publishes a sha256 beside every cask artifact"
+        );
+        assert_eq!(
+            cask.sources[0].source.verification_policy(),
+            VerificationPolicy::Inline
+        );
+
+        let formula = parse_formula_json(&read_fixture("formula-ripgrep.json"))
+            .expect("ripgrep fixture must parse");
+        assert_eq!(
+            formula.sources[0].source.verification_policy(),
+            VerificationPolicy::Inline
+        );
+    }
+
+    #[test]
     fn brave_cask_yields_two_platforms_and_two_artifacts() {
         let app = parse_cask_json(&read_fixture("cask-brave-browser.json"))
             .expect("brave fixture must parse");
@@ -970,7 +1271,7 @@ mod tests {
         // Identity + install descriptor.
         assert_eq!(app.id.as_str(), "brave-browser");
         assert_eq!(app.name, "Brave");
-        assert!(app.aliases.is_empty());
+        assert_eq!(app.aliases, Vec::<String>::new());
         assert_eq!(
             app.summary.as_deref(),
             Some("Web browser focusing on privacy")
@@ -1033,7 +1334,7 @@ mod tests {
         );
 
         // brave has no `binary` artifact stanza → no PATH binaries.
-        assert!(app.binaries.is_empty());
+        assert_eq!(app.binaries, Vec::<String>::new());
     }
 
     #[test]
@@ -1292,6 +1593,33 @@ mod tests {
     }
 
     #[test]
+    fn cask_binary_stanzas_parse_the_live_string_and_target_map_shapes() {
+        let payload = r#"{
+            "token": "alacritty", "name": ["Alacritty"], "version": "1",
+            "url": "https://example.com/a", "sha256": "x",
+            "artifacts": [
+                {"app": ["Alacritty.app"]},
+                {"binary": ["$APPDIR/Alacritty.app/Contents/MacOS/alacritty",
+                            {"target": "~/.terminfo/61/alacritty"}]},
+                {"binary": [{"target": "/opt/homebrew/bin/extra"}, 42,
+                            {"target": 7}, {"unrelated": "map"}]}
+            ]
+        }"#;
+        let app = parse_cask_json(payload).expect("the live mixed shapes must parse");
+        assert_eq!(
+            app.binaries,
+            vec!["alacritty".to_owned(), "extra".to_owned(),],
+            "string payloads and target-map payloads yield basenames; \
+             non-string targets and other values are skipped"
+        );
+
+        let index = format!("[{payload}]");
+        let apps = parse_cask_index(&index).expect("the live shapes parse in the index too");
+        assert_eq!(apps.len(), 1);
+        assert_eq!(apps[0].binaries, app.binaries);
+    }
+
+    #[test]
     fn formula_without_bottle_has_unknown_platforms_and_only_a_source_artifact() {
         let payload = r#"{
             "name": "tiny", "versions": {"stable": "0.1.0"},
@@ -1404,6 +1732,554 @@ mod tests {
         assert_eq!(decode("x86_linux"), Some((Os::Linux, Arch::X86)));
         assert_eq!(decode("mips_linux"), None, "undecodable arch → skipped");
     }
+
+    fn index_app(token: &str, name: &str, aliases: &[&str], summary: Option<&str>) -> App {
+        App {
+            id: TorideId::slugify(token),
+            name: name.to_owned(),
+            aliases: aliases.iter().map(|alias| (*alias).to_owned()).collect(),
+            summary: summary.map(str::to_owned),
+            description: None,
+            homepage: None,
+            license: None,
+            developer: None,
+            binaries: Vec::new(),
+            latest: None,
+            platforms: Vec::new(),
+            artifacts: Vec::new(),
+            install: InstallMethod::Homebrew {
+                cask: false,
+                token: token.to_owned(),
+            },
+            sources: Vec::new(),
+            availability: Availability::Available,
+        }
+    }
+
+    fn install_tokens(apps: &[App]) -> Vec<String> {
+        apps.iter()
+            .map(|app| match &app.install {
+                InstallMethod::Homebrew { token, .. } => token.clone(),
+                other => panic!("expected a homebrew install method, got {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn cask_index_parse_matches_the_per_item_parser() {
+        let brave = read_fixture("cask-brave-browser.json");
+        let vscode = read_fixture("cask-visual-studio-code.json");
+        let index = format!("[{},{}]", brave.trim(), vscode.trim());
+        let apps = parse_cask_index(&index).expect("index of fixtures parses");
+        assert_eq!(
+            apps,
+            vec![
+                parse_cask_json(&brave).expect("brave parses"),
+                parse_cask_json(&vscode).expect("vscode parses"),
+            ]
+        );
+    }
+
+    #[test]
+    fn formula_index_parse_matches_the_per_item_parser() {
+        let ripgrep = read_fixture("formula-ripgrep.json");
+        let index = format!("[{}]", ripgrep.trim());
+        let apps = parse_formula_index(&index).expect("index of fixtures parses");
+        assert_eq!(
+            apps,
+            vec![parse_formula_json(&ripgrep).expect("ripgrep parses")]
+        );
+    }
+
+    #[test]
+    fn index_parse_skips_entries_without_a_readable_id() {
+        let casks = parse_cask_index(r#"[{"token":"real","name":["Real"]},{"name":["Ghost"]}]"#)
+            .expect("synthetic cask index parses");
+        assert_eq!(install_tokens(&casks), ["real".to_owned()]);
+
+        let formulae = parse_formula_index(
+            r#"[{"name":"real"},{"full_name":""},{"versions":{"stable":"1"}}]"#,
+        )
+        .expect("synthetic formula index parses");
+        assert_eq!(install_tokens(&formulae), ["real".to_owned()]);
+    }
+
+    #[test]
+    fn index_parse_errors_name_the_index() {
+        let error = parse_cask_index("{ definitely not json").expect_err("must fail");
+        match error {
+            Error::Parse { kind, id, .. } => {
+                assert_eq!(kind, "json");
+                assert_eq!(id, "cask-index");
+            }
+            other => panic!("expected Error::Parse, got {other:?}"),
+        }
+        let error = parse_formula_index("42").expect_err("must fail");
+        match error {
+            Error::Parse { id, .. } => assert_eq!(id, "formula-index"),
+            other => panic!("expected Error::Parse, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn search_ranks_exact_prefix_then_substring_with_id_ties() {
+        let apps = vec![
+            index_app("ripgrep", "ripgrep", &["rg"], Some("Search tool like grep")),
+            index_app(
+                "visual-studio-code",
+                "Microsoft Visual Studio Code",
+                &[],
+                None,
+            ),
+            index_app("grep", "grep", &[], None),
+            index_app("code", "Code", &[], None),
+        ];
+        assert_eq!(
+            install_tokens(&search_index(&apps, "code")),
+            ["code".to_owned(), "visual-studio-code".to_owned()],
+            "exact token first, then the substring hit"
+        );
+        assert_eq!(
+            install_tokens(&search_index(&apps, "RIP")),
+            ["ripgrep".to_owned()],
+            "prefix matches are case-insensitive"
+        );
+        assert_eq!(
+            install_tokens(&search_index(&apps, "rg")),
+            ["ripgrep".to_owned()],
+            "aliases match at the substring tier"
+        );
+        assert_eq!(
+            install_tokens(&search_index(&apps, "search tool like grep")),
+            ["ripgrep".to_owned()],
+            "summaries match at the substring tier"
+        );
+        assert_eq!(search_index(&apps, "nothing-matches"), Vec::new());
+        assert_eq!(search_index(&apps, ""), Vec::new());
+        assert_eq!(search_index(&apps, "   "), Vec::new());
+    }
+
+    #[test]
+    fn search_matches_free_text_queries_word_by_word() {
+        let apps = vec![
+            index_app(
+                "firefox",
+                "Mozilla Firefox",
+                &[],
+                Some("The fast, private web browser"),
+            ),
+            index_app("code", "Code", &[], None),
+            index_app(
+                "visual-studio-code",
+                "Microsoft Visual Studio Code",
+                &[],
+                None,
+            ),
+        ];
+        assert_eq!(
+            install_tokens(&search_index(&apps, "firefox browser")),
+            ["firefox".to_owned()],
+            "each word matches a different field of the same app"
+        );
+        assert_eq!(
+            install_tokens(&search_index(&apps, "VISUAL   studio\tcode")),
+            ["visual-studio-code".to_owned()],
+            "whitespace-separated words, any casing"
+        );
+        assert!(
+            search_index(&apps, "firefox spreadsheet").is_empty(),
+            "every word must match — one unmatched word excludes the app"
+        );
+        assert_eq!(
+            install_tokens(&search_index(&apps, "studio code")),
+            ["visual-studio-code".to_owned()],
+            "'code' alone matches the bare code app, but 'studio' excludes it"
+        );
+    }
+
+    #[test]
+    fn search_caps_at_max_hits() {
+        let apps: Vec<App> = (0..60)
+            .map(|number| index_app(&format!("tool-{number:02}"), "Synthetic Tool", &[], None))
+            .collect();
+        let hits = search_index(&apps, "tool");
+        assert_eq!(hits.len(), MAX_SEARCH_HITS);
+        assert_eq!(install_tokens(&hits)[0], "tool-00".to_owned());
+    }
+}
+
+#[cfg(all(test, feature = "http"))]
+mod index_cache_tests {
+    use super::{
+        HomebrewAdapter, INDEX_CACHE_TTL, part_path, probe_index_cache, write_index_cache,
+    };
+    use crate::adapter::Adapter as _;
+
+    const SYNTHETIC_CASK_INDEX: &str = r#"[{"token":"toride-probe-cask","name":["Toride Probe Cask"],"version":"1.0","desc":"Synthetic cask for offline cache tests","artifacts":[{"binary":["$APPDIR/Probe.app/Contents/MacOS/toride-probe-bin",{"target":"/opt/homebrew/bin/toride-probe-target"}]}]}]"#;
+    const SYNTHETIC_FORMULA_INDEX: &str = r#"[{"name":"toride-probe-formula","versions":{"stable":"0.1.0"},"desc":"Synthetic formula for offline cache tests"}]"#;
+
+    fn scratch(label: &str) -> camino::Utf8PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "toride-registry-homebrew-{}-{label}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("scratch dir creatable");
+        camino::Utf8PathBuf::from_path_buf(dir).expect("temp path is UTF-8")
+    }
+
+    fn seed(dir: &camino::Utf8PathBuf) {
+        std::fs::create_dir_all(dir.join("homebrew")).expect("cache dir creatable");
+        std::fs::write(dir.join("homebrew/cask.json"), SYNTHETIC_CASK_INDEX)
+            .expect("cask index seedable");
+        std::fs::write(dir.join("homebrew/formula.json"), SYNTHETIC_FORMULA_INDEX)
+            .expect("formula index seedable");
+    }
+
+    #[tokio::test]
+    async fn search_serves_a_fresh_seeded_cache_with_no_network() {
+        let dir = scratch("serve");
+        seed(&dir);
+        let adapter = HomebrewAdapter::with_cache_dir(&dir);
+        let hits = adapter
+            .search("probe")
+            .await
+            .expect("cache serves the query");
+        let ids: Vec<&str> = hits.iter().map(|app| app.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["toride-probe-cask", "toride-probe-formula"],
+            "only the seeded synthetic index can answer with these tokens"
+        );
+        assert_eq!(
+            hits[0].binaries,
+            [
+                "toride-probe-bin".to_owned(),
+                "toride-probe-target".to_owned()
+            ],
+            "the seeded mixed string/target-map binary stanza parses through the cache path"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_keeps_answering_from_memory_after_the_cache_dir_is_deleted() {
+        let dir = scratch("memo");
+        seed(&dir);
+        let adapter = HomebrewAdapter::with_cache_dir(&dir);
+        let first: Vec<String> = adapter
+            .search("probe")
+            .await
+            .expect("first search loads the index")
+            .iter()
+            .map(|app| app.id.as_str().to_owned())
+            .collect();
+        std::fs::remove_dir_all(&dir).expect("scratch dir removable");
+        let second: Vec<String> = adapter
+            .search("probe")
+            .await
+            .expect("second search serves memory")
+            .iter()
+            .map(|app| app.id.as_str().to_owned())
+            .collect();
+        assert_eq!(first, second, "the in-memory index outlives the disk cache");
+    }
+
+    #[test]
+    fn probe_is_mtime_keyed() {
+        let dir = scratch("probe");
+        let path = dir.join("cask.json");
+        assert_eq!(
+            probe_index_cache(&path, INDEX_CACHE_TTL, std::time::SystemTime::now()),
+            None,
+            "nothing cached yet"
+        );
+        std::fs::write(&path, "body").expect("probe file writable");
+        let mtime = std::fs::metadata(&path)
+            .and_then(|metadata| metadata.modified())
+            .expect("mtime readable");
+        assert_eq!(
+            probe_index_cache(&path, INDEX_CACHE_TTL, mtime),
+            Some("body".to_owned()),
+            "a zero-age entry is fresh"
+        );
+        assert_eq!(
+            probe_index_cache(&path, INDEX_CACHE_TTL, mtime + INDEX_CACHE_TTL),
+            None,
+            "an entry as old as the TTL is stale"
+        );
+    }
+
+    #[test]
+    fn write_creates_parents_and_leaves_no_part_file() {
+        let dir = scratch("write");
+        let path = dir.join("nested/homebrew/cask.json");
+        write_index_cache(&path, "[]").expect("cache write succeeds");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("written payload readable"),
+            "[]"
+        );
+        let leftovers: Vec<String> = std::fs::read_dir(path.parent().expect("parent exists"))
+            .expect("cache dir listable")
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".part"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "the atomic rename consumed the part file: {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn part_paths_differ_per_call_so_processes_never_share_one() {
+        let dir = scratch("parts");
+        let path = dir.join("homebrew/cask.json");
+        let first = part_path(&path);
+        let second = part_path(&path);
+        assert_ne!(first, second, "each write gets its own part file");
+        assert!(first.file_name().unwrap().contains(".part"));
+    }
+
+    #[test]
+    fn concurrent_writers_each_publish_a_whole_body() {
+        let dir = scratch("writers");
+        std::fs::create_dir_all(&dir).expect("scratch dir creatable");
+        let path = dir.join("homebrew/cask.json");
+        let body = "[".to_owned() + &"x".repeat(100_000) + "]";
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let path = path.clone();
+                let body = body.clone();
+                std::thread::spawn(move || {
+                    for _ in 0..8 {
+                        write_index_cache(&path, &body).expect("each write publishes");
+                    }
+                })
+            })
+            .collect();
+        for writer in writers {
+            writer.join().expect("writer finishes");
+        }
+        let published = std::fs::read_to_string(&path).expect("a whole body is published");
+        assert_eq!(
+            published.len(),
+            body.len(),
+            "interleaved writers must never publish a mixed body"
+        );
+        let leftovers: Vec<String> = std::fs::read_dir(dir.join("homebrew"))
+            .expect("cache dir listable")
+            .filter_map(std::result::Result::ok)
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains(".part"))
+            .collect();
+        assert!(leftovers.is_empty(), "failed writes clean their parts");
+    }
+}
+
+#[cfg(all(test, feature = "http"))]
+mod lookup_dispatch_tests {
+    use super::HomebrewAdapter;
+    use crate::adapter::Adapter as _;
+    use crate::error::Error;
+    use crate::model::{InstallMethod, SourceKind, SourceRef};
+    use std::collections::HashMap;
+    use std::io::{Read as _, Write as _};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::Arc;
+
+    fn spawn_stub_api(routes: &[(&str, u16, String)]) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback listener binds");
+        let addr = listener
+            .local_addr()
+            .expect("the bound address is readable");
+        let routes: HashMap<String, (u16, String)> = routes
+            .iter()
+            .cloned()
+            .map(|(path, status, body)| (path.to_owned(), (status, body)))
+            .collect();
+        let routes = Arc::new(routes);
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let routes = Arc::clone(&routes);
+                std::thread::spawn(move || serve_request(&mut stream, &routes));
+            }
+        });
+        format!("http://{addr}")
+    }
+
+    fn serve_request(stream: &mut TcpStream, routes: &HashMap<String, (u16, String)>) {
+        let mut request = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let read = stream.read(&mut buffer).unwrap_or(0);
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&buffer[..read]);
+            if request.windows(4).any(|end| end == b"\r\n\r\n") {
+                break;
+            }
+        }
+        let head = String::from_utf8_lossy(&request);
+        let path = head
+            .split_whitespace()
+            .nth(1)
+            .unwrap_or_default()
+            .to_owned();
+        match routes.get(&path) {
+            Some((status, body)) => respond(stream, *status, body),
+            None => respond(stream, 404, "{}"),
+        }
+    }
+
+    fn respond(stream: &mut TcpStream, status: u16, body: &str) {
+        let reason = if status == 404 { "Not Found" } else { "OK" };
+        let response = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+            body.len()
+        );
+        let _ = stream.write_all(response.as_bytes());
+        let _ = stream.flush();
+    }
+
+    fn formula_body(name: &str) -> String {
+        format!(
+            r#"{{"name":"{name}","full_name":"{name}","versions":{{"stable":"1.0"}},"executables":["{name}-bin"]}}"#
+        )
+    }
+
+    fn cask_body(token: &str) -> String {
+        format!(
+            r#"{{"token":"{token}","name":["Stub {token}"],"version":"1.0","url":"https://example.com/{token}.dmg","sha256":"x"}}"#
+        )
+    }
+
+    fn row(source: SourceKind, id: &str) -> SourceRef {
+        SourceRef {
+            source,
+            id: id.to_owned(),
+            repo: None,
+            version: None,
+            provisional: false,
+        }
+    }
+
+    fn stubbed_adapter(routes: &[(&str, u16, String)]) -> HomebrewAdapter {
+        HomebrewAdapter::with_api_base(spawn_stub_api(routes))
+    }
+
+    #[tokio::test]
+    async fn lookup_prefers_the_formula_when_both_kinds_answer_the_same_slug() {
+        let adapter = stubbed_adapter(&[
+            (
+                "/api/formula/toride-both.json",
+                200,
+                formula_body("toride-both"),
+            ),
+            ("/api/cask/toride-both.json", 200, cask_body("toride-both")),
+        ]);
+        let app = adapter
+            .lookup(&row(SourceKind::HomebrewCask, "toride-both"))
+            .await
+            .expect("the stub answers both endpoints")
+            .expect("both kinds answer the slug");
+        assert!(
+            matches!(
+                app.install,
+                InstallMethod::Homebrew { cask: false, token } if token == "toride-both"
+            ),
+            "the primary-kind row must resolve the shared slug the way \
+             `brew install <token>` would: the formula wins"
+        );
+        assert_eq!(app.sources[0].source, SourceKind::HomebrewFormula);
+    }
+
+    #[tokio::test]
+    async fn lookup_answers_a_formula_only_slug_under_the_primary_kind() {
+        let adapter = stubbed_adapter(&[
+            (
+                "/api/formula/toride-only-formula.json",
+                200,
+                formula_body("toride-only-formula"),
+            ),
+            ("/api/cask/toride-only-formula.json", 404, String::new()),
+        ]);
+        let app = adapter
+            .lookup(&row(SourceKind::HomebrewCask, "toride-only-formula"))
+            .await
+            .expect("the stub answers")
+            .expect("the formula alone answers the slug");
+        assert!(
+            matches!(app.install, InstallMethod::Homebrew { cask: false, .. }),
+            "a formula-only slug resolves through the primary kind"
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_falls_back_to_the_cask_after_the_formula_misses() {
+        let adapter = stubbed_adapter(&[
+            ("/api/formula/toride-only-cask.json", 404, String::new()),
+            (
+                "/api/cask/toride-only-cask.json",
+                200,
+                cask_body("toride-only-cask"),
+            ),
+        ]);
+        let app = adapter
+            .lookup(&row(SourceKind::HomebrewCask, "toride-only-cask"))
+            .await
+            .expect("the stub answers")
+            .expect("the cask alone answers the slug");
+        assert!(matches!(
+            app.install,
+            InstallMethod::Homebrew { cask: true, token } if token == "toride-only-cask"
+        ));
+        assert_eq!(app.sources[0].source, SourceKind::HomebrewCask);
+    }
+
+    #[tokio::test]
+    async fn lookup_returns_none_when_neither_kind_answers() {
+        let adapter = stubbed_adapter(&[
+            ("/api/formula/toride-absent.json", 404, String::new()),
+            ("/api/cask/toride-absent.json", 404, String::new()),
+        ]);
+        let missing = adapter
+            .lookup(&row(SourceKind::HomebrewCask, "toride-absent"))
+            .await
+            .expect("404s must not error");
+        assert!(missing.is_none());
+    }
+
+    #[tokio::test]
+    async fn lookup_keeps_a_formula_kind_row_scoped_to_the_formula_endpoint() {
+        let adapter = stubbed_adapter(&[
+            ("/api/formula/toride-only-cask.json", 404, String::new()),
+            (
+                "/api/cask/toride-only-cask.json",
+                200,
+                cask_body("toride-only-cask"),
+            ),
+        ]);
+        let none = adapter
+            .lookup(&row(SourceKind::HomebrewFormula, "toride-only-cask"))
+            .await
+            .expect("the formula endpoint answers 404");
+        assert!(
+            none.is_none(),
+            "the exact-kind formula row never falls through to the cask endpoint"
+        );
+    }
+
+    #[tokio::test]
+    async fn lookup_refuses_a_row_from_a_foreign_source_kind() {
+        let adapter = stubbed_adapter(&[]);
+        let error = adapter
+            .lookup(&row(SourceKind::Flathub, "com.example.App"))
+            .await
+            .expect_err("a foreign kind must be refused before any endpoint is built");
+        assert!(matches!(error, Error::UnsupportedSource { .. }));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1501,5 +2377,72 @@ mod integration_tests {
             .await
             .expect("404 must not error");
         assert!(missing.is_none());
+
+        let formula = adapter
+            .lookup(&SourceRef {
+                source: SourceKind::HomebrewCask,
+                id: "ripgrep".to_owned(),
+                repo: None,
+                version: None,
+                provisional: false,
+            })
+            .await
+            .expect("fetch must succeed")
+            .expect("the ripgrep formula answers the cask-kind ref");
+        assert!(matches!(
+            formula.install,
+            crate::model::InstallMethod::Homebrew { cask: false, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn live_search_finds_the_ripgrep_formula_through_the_cached_index() {
+        if !should_run() {
+            eprintln!(
+                "skipping live formulae.brew.sh test (set TORIDE_REGISTRY_INTEGRATION=1 to run)"
+            );
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!(
+            "toride-registry-homebrew-live-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        let cache_dir =
+            camino::Utf8PathBuf::from_path_buf(dir.clone()).expect("temp path is UTF-8");
+        let adapter = HomebrewAdapter::with_cache_dir(cache_dir);
+        let hits = adapter
+            .search("ripgrep")
+            .await
+            .expect("catalog indexes fetch");
+        let ripgrep = hits
+            .iter()
+            .find(|app| app.id.as_str() == "ripgrep")
+            .expect("the ripgrep formula is in the catalog");
+        assert_eq!(
+            ripgrep.install,
+            crate::model::InstallMethod::Homebrew {
+                cask: false,
+                token: "ripgrep".to_owned()
+            }
+        );
+        assert!(
+            ripgrep.latest.is_some(),
+            "the index carries the formula's version"
+        );
+        assert!(
+            dir.join("homebrew/cask.json").exists() && dir.join("homebrew/formula.json").exists(),
+            "both catalog payloads landed in the cache dir"
+        );
+
+        let browser_hits = adapter
+            .search("firefox browser")
+            .await
+            .expect("the in-memory index serves follow-up searches");
+        assert!(
+            browser_hits.iter().any(|app| app.id.as_str() == "firefox"),
+            "a free-text query matches per word across the cask's fields"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

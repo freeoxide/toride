@@ -5,6 +5,9 @@ edition.workspace = true
 description = "Shared filesystem utilities: atomic writes, locking, path expansion"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["atomic-write", "file-lock", "filesystem", "permissions", "tilde"]
+categories = ["filesystem"]
 
 [dependencies]
 thiserror = { workspace = true }

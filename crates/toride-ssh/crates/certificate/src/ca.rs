@@ -360,7 +360,7 @@ mod tests {
         assert_eq!(info.valid_principals, vec!["example.com", "192.168.1.1"]);
         assert_eq!(info.critical_options.len(), 1);
         assert_eq!(info.critical_options[0].0, "force-command");
-        assert!(info.extensions.is_empty());
+        assert_eq!(info.extensions, Vec::<String>::new());
     }
 
     #[test]
@@ -388,7 +388,7 @@ mod tests {
         Extensions: (none)
 "#;
         let info = parse_keygen_output(output, std::path::Path::new("/path/to/cert.pub")).unwrap();
-        assert!(info.valid_principals.is_empty());
+        assert_eq!(info.valid_principals, Vec::<String>::new());
     }
 
     #[test]
@@ -416,7 +416,7 @@ mod tests {
         let mut state = KeygenParserState::new();
         state.process_line("        Extensions: (none)").unwrap();
         assert!(!state.in_extensions);
-        assert!(state.info.extensions.is_empty());
+        assert_eq!(state.info.extensions, Vec::<String>::new());
     }
 
     #[test]
@@ -426,7 +426,10 @@ mod tests {
             .process_line("        Critical Options: (none)")
             .unwrap();
         assert!(!state.in_critical);
-        assert!(state.info.critical_options.is_empty());
+        assert_eq!(
+            state.info.critical_options,
+            [] as [(std::string::String, std::string::String); 0]
+        );
     }
 
     // -----------------------------------------------------------------------

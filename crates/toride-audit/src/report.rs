@@ -261,7 +261,7 @@ mod tests {
     #[test]
     fn audit_finding_detail_and_fix_are_optional() {
         let finding = AuditFinding::new("test", AuditSeverity::Info, "Title");
-        assert!(finding.detail.is_empty());
+        assert_eq!(finding.detail, "");
         assert!(finding.fix.is_none());
     }
 

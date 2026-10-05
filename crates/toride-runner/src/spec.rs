@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::OutputMode;
+use crate::policy::{ArgvPolicy, EnvPrecedence, OutputCap, PathResolution};
 
 /// A declarative specification of a command to execute.
 ///
@@ -22,7 +23,8 @@ use crate::OutputMode;
 /// ```
 #[derive(Debug, Clone)]
 pub struct CommandSpec {
-    /// The program to execute (looked up via `$PATH` unless absolute).
+    /// The program to execute; bare names follow [`PathResolution`] (the
+    /// default searches the parent's `$PATH`).
     pub program: String,
     /// Positional arguments to pass to the program.
     pub args: Vec<String>,
@@ -45,9 +47,8 @@ pub struct CommandSpec {
     /// Extra environment variables (`(key, value)` pairs).
     pub env: Vec<(String, String)>,
     /// Environment variables to remove from the child process environment.
-    ///
-    /// Explicit values in [`CommandSpec::env`] are applied after removals, so
-    /// an explicitly-added variable wins if the same key appears in both lists.
+    /// An explicitly-added variable with the same key survives removal only
+    /// under the default [`EnvPrecedence::ExplicitWins`].
     pub env_remove: Vec<String>,
     /// Whether the child should start from a clean environment.
     ///
@@ -66,13 +67,25 @@ pub struct CommandSpec {
     /// When set, runners enforce the cap *while* capturing (not after) by
     /// killing and reaping the child as soon as the limit is breached, and
     /// return [`Error::OutputLimitExceeded`](crate::error::Error::OutputLimitExceeded).
-    /// `None` preserves the default unlimited capture behavior. Accounted in
-    /// bytes — UTF-8 decoding happens after the byte-limit decision.
+    /// `None` leaves capture unlimited unless [`CommandSpec::output_cap`]
+    /// enforces one. Accounted in bytes — UTF-8 decoding happens after the
+    /// byte-limit decision.
     ///
     /// This is a runtime safety policy, not command construction: it is
-    /// excluded from [`FakeRunner`](crate::fake::FakeRunner) exact matching,
+    /// excluded from `FakeRunner` (feature `fake`) exact matching,
     /// the same way [`CommandSpec::timeout`] is.
     pub output_limit: Option<usize>,
+    /// Which side wins when `env` and `env_remove` name the same key.
+    /// Defaults to [`EnvPrecedence::ExplicitWins`] (toride's historical behavior).
+    pub env_precedence: EnvPrecedence,
+    /// How the program is located before spawn; defaults to
+    /// [`PathResolution::OsSearch`], which passes the program to the runner verbatim.
+    pub path_resolution: PathResolution,
+    /// Whether argv is validated before spawn; defaults to [`ArgvPolicy::Allow`].
+    pub argv_policy: ArgvPolicy,
+    /// Output-cap policy; defaults to [`OutputCap::OptIn`], which honors
+    /// [`CommandSpec::output_limit`] only when set.
+    pub output_cap: OutputCap,
 }
 
 impl CommandSpec {
@@ -92,6 +105,10 @@ impl CommandSpec {
             output_mode: OutputMode::Capture,
             redact: false,
             output_limit: None,
+            env_precedence: EnvPrecedence::ExplicitWins,
+            path_resolution: PathResolution::OsSearch,
+            argv_policy: ArgvPolicy::Allow,
+            output_cap: OutputCap::OptIn,
         }
     }
 
@@ -216,6 +233,44 @@ impl CommandSpec {
         self.output_limit = Some(limit);
         self
     }
+
+    /// Set which side wins when `env` and `env_remove` name the same key.
+    #[must_use]
+    pub fn env_precedence(mut self, precedence: EnvPrecedence) -> Self {
+        self.env_precedence = precedence;
+        self
+    }
+
+    /// Set how the program is located before spawn.
+    #[must_use]
+    pub fn path_resolution(mut self, resolution: PathResolution) -> Self {
+        self.path_resolution = resolution;
+        self
+    }
+
+    /// Set whether argv is validated against [`SHELL_METACHARS`](crate::policy::SHELL_METACHARS) before spawn.
+    #[must_use]
+    pub fn argv_policy(mut self, policy: ArgvPolicy) -> Self {
+        self.argv_policy = policy;
+        self
+    }
+
+    /// Set the output-cap policy; [`OutputCap::Always`] overrides [`CommandSpec::output_limit`].
+    #[must_use]
+    pub fn output_cap(mut self, cap: OutputCap) -> Self {
+        self.output_cap = cap;
+        self
+    }
+
+    /// The byte cap runners enforce on captured stdout plus stderr:
+    /// [`OutputCap::Always`] wins over the opt-in [`CommandSpec::output_limit`].
+    #[must_use]
+    pub fn effective_output_limit(&self) -> Option<usize> {
+        match self.output_cap {
+            OutputCap::Always(limit) => Some(limit),
+            OutputCap::OptIn => self.output_limit,
+        }
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -225,7 +280,7 @@ impl serde::Serialize for CommandSpec {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CommandSpec", 12)?;
+        let mut s = serializer.serialize_struct("CommandSpec", 16)?;
         s.serialize_field("program", &self.program)?;
         s.serialize_field("args", &self.args)?;
         s.serialize_field("stdin", &self.stdin)?;
@@ -246,6 +301,10 @@ impl serde::Serialize for CommandSpec {
         s.serialize_field("output_mode", &self.output_mode)?;
         s.serialize_field("redact", &self.redact)?;
         s.serialize_field("output_limit", &self.output_limit)?;
+        s.serialize_field("env_precedence", &self.env_precedence)?;
+        s.serialize_field("path_resolution", &self.path_resolution)?;
+        s.serialize_field("argv_policy", &self.argv_policy)?;
+        s.serialize_field("output_cap", &self.output_cap)?;
         s.end()
     }
 }
@@ -281,6 +340,14 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             redact: bool,
             #[serde(default)]
             output_limit: Option<usize>,
+            #[serde(default)]
+            env_precedence: EnvPrecedence,
+            #[serde(default)]
+            path_resolution: PathResolution,
+            #[serde(default)]
+            argv_policy: ArgvPolicy,
+            #[serde(default)]
+            output_cap: OutputCap,
         }
 
         let h = CommandSpecHelper::deserialize(deserializer)?;
@@ -305,7 +372,48 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             output_mode: h.output_mode,
             redact: h.redact,
             output_limit: h.output_limit,
+            env_precedence: h.env_precedence,
+            path_resolution: h.path_resolution,
+            argv_policy: h.argv_policy,
+            output_cap: h.output_cap,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_output_limit_follows_opt_in_field() {
+        let uncapped = CommandSpec::new("cmd");
+        assert_eq!(uncapped.effective_output_limit(), None);
+
+        let capped = CommandSpec::new("cmd").output_limit(4096);
+        assert_eq!(capped.effective_output_limit(), Some(4096));
+    }
+
+    #[test]
+    fn effective_output_limit_always_overrides_opt_in() {
+        let spec = CommandSpec::new("cmd")
+            .output_limit(1_000_000)
+            .output_cap(OutputCap::Always(64));
+        assert_eq!(spec.effective_output_limit(), Some(64));
+    }
+
+    #[test]
+    fn effective_output_limit_always_works_without_opt_in() {
+        let spec = CommandSpec::new("cmd").output_cap(OutputCap::Always(1_048_576));
+        assert_eq!(spec.effective_output_limit(), Some(1_048_576));
+    }
+
+    #[test]
+    fn policy_knobs_default_to_toride_semantics() {
+        let spec = CommandSpec::new("cmd");
+        assert_eq!(spec.env_precedence, EnvPrecedence::ExplicitWins);
+        assert_eq!(spec.path_resolution, PathResolution::OsSearch);
+        assert_eq!(spec.argv_policy, ArgvPolicy::Allow);
+        assert_eq!(spec.output_cap, OutputCap::OptIn);
     }
 }
 
@@ -438,5 +546,33 @@ mod serde_tests {
         let spec: CommandSpec = serde_json::from_str(json).unwrap();
 
         assert!(spec.output_limit.is_none());
+    }
+
+    #[test]
+    fn policy_knobs_round_trip() {
+        let spec = CommandSpec::new("cmd")
+            .env_precedence(EnvPrecedence::RemoveWins)
+            .path_resolution(PathResolution::ChildEnvNoCwd)
+            .argv_policy(ArgvPolicy::RejectShellMetachars)
+            .output_cap(OutputCap::Always(1_048_576));
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtripped.env_precedence, EnvPrecedence::RemoveWins);
+        assert_eq!(roundtripped.path_resolution, PathResolution::ChildEnvNoCwd);
+        assert_eq!(roundtripped.argv_policy, ArgvPolicy::RejectShellMetachars);
+        assert_eq!(roundtripped.output_cap, OutputCap::Always(1_048_576));
+    }
+
+    #[test]
+    fn policy_knobs_default_for_old_payloads() {
+        let json = r#"{"program":"cmd","args":[],"stdin":null,"timeout_nanos":null,"env":[]}"#;
+        let spec: CommandSpec = serde_json::from_str(json).unwrap();
+
+        assert_eq!(spec.env_precedence, EnvPrecedence::ExplicitWins);
+        assert_eq!(spec.path_resolution, PathResolution::OsSearch);
+        assert_eq!(spec.argv_policy, ArgvPolicy::Allow);
+        assert_eq!(spec.output_cap, OutputCap::OptIn);
     }
 }

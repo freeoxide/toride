@@ -108,6 +108,6 @@ mod tests {
         let desired = vec![SysctlParam::new("kernel.kptr_restrict", "1", "same")];
 
         let changed = changed_params(&current, &desired);
-        assert!(changed.is_empty());
+        assert_eq!(changed, Vec::<&SysctlParam>::new());
     }
 }

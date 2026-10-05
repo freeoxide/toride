@@ -396,7 +396,7 @@ mod tests {
         assert!(!b.available);
         assert!(b.tools.is_empty());
         assert!(b.outdated.is_empty());
-        assert!(b.config_files.is_empty());
+        assert_eq!(b.config_files, Vec::<String>::new());
         assert!(b.findings.is_empty());
         assert!(b.version.is_none());
         assert!(

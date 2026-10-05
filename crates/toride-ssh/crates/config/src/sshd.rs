@@ -654,7 +654,7 @@ mod tests {
     #[test]
     fn get_deny_users_is_empty_when_absent() {
         let a = ast("Port 22\n");
-        assert!(get_deny_users(&a).is_empty());
+        assert_eq!(get_deny_users(&a), Vec::<String>::new());
     }
 
     #[test]
@@ -683,7 +683,7 @@ mod tests {
         let mut a = ast("AllowUsers alice\n");
         remove_user_from_allow(&mut a, "alice").unwrap();
         // Directive should be gone entirely.
-        assert!(get_allow_users(&a).is_empty());
+        assert_eq!(get_allow_users(&a), Vec::<String>::new());
         assert!(!a.to_string_lossless().contains("AllowUsers"));
     }
 
@@ -708,8 +708,8 @@ mod tests {
         // alice is now in both lists; reset = remove from allow and deny.
         remove_user_from_allow(&mut a, "alice").unwrap();
         remove_user_from_deny(&mut a, "alice").unwrap();
-        assert!(get_allow_users(&a).is_empty());
-        assert!(get_deny_users(&a).is_empty());
+        assert_eq!(get_allow_users(&a), Vec::<String>::new());
+        assert_eq!(get_deny_users(&a), Vec::<String>::new());
     }
 
     #[test]
@@ -831,7 +831,7 @@ mod tests {
         // alice spread across two lines; removing her empties the union.
         let mut a = ast("AllowUsers alice\nAllowUsers alice\n");
         remove_user_from_allow(&mut a, "alice").unwrap();
-        assert!(get_allow_users(&a).is_empty());
+        assert_eq!(get_allow_users(&a), Vec::<String>::new());
         assert!(
             !a.to_string_lossless().contains("AllowUsers"),
             "directive deleted entirely when union is empty"
@@ -915,8 +915,8 @@ mod tests {
     #[test]
     fn get_groups_empty_when_absent() {
         let a = ast("Port 22\n");
-        assert!(get_allow_groups(&a).is_empty());
-        assert!(get_deny_groups(&a).is_empty());
+        assert_eq!(get_allow_groups(&a), Vec::<String>::new());
+        assert_eq!(get_deny_groups(&a), Vec::<String>::new());
     }
 
     // --- F1: Match/Host-leak scope-ambiguity fail-closed -----------------

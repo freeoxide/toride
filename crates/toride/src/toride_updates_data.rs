@@ -323,7 +323,7 @@ mod tests {
     fn empty_bundle_is_unavailable() {
         let b = empty_bundle();
         assert!(!b.available);
-        assert!(b.package_manager.is_empty());
+        assert_eq!(b.package_manager, "");
         assert_eq!(b.pending_security, 0);
         assert_eq!(b.pending_total, 0);
         assert!(b.findings.is_empty());

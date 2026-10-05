@@ -85,7 +85,7 @@ fn finding_new_sets_mandatory_fields() {
 #[test]
 fn finding_new_defaults_detail_empty() {
     let f = Finding::new("id", Severity::Ok, "t");
-    assert!(f.detail.is_empty());
+    assert_eq!(f.detail, "");
 }
 
 #[test]
@@ -141,9 +141,9 @@ fn finding_fix_replaces_previous() {
 #[test]
 fn apply_report_empty_constructor() {
     let r = ApplyReport::empty();
-    assert!(r.files_written.is_empty());
-    assert!(r.files_removed.is_empty());
-    assert!(r.backup_paths.is_empty());
+    assert_eq!(r.files_written, Vec::<String>::new());
+    assert_eq!(r.files_removed, Vec::<String>::new());
+    assert_eq!(r.backup_paths, Vec::<String>::new());
     assert!(r.test_passed);
     assert!(r.reload_result.is_none());
     assert!(r.findings.is_empty());
@@ -211,7 +211,7 @@ fn rollback_report_success() {
 #[test]
 fn rollback_report_success_empty() {
     let r = RollbackReport::success(vec![]);
-    assert!(r.restored_files.is_empty());
+    assert_eq!(r.restored_files, Vec::<String>::new());
     assert!(r.test_passed);
 }
 
@@ -391,7 +391,7 @@ fn status_report_stopped() {
     let r = StatusReport::stopped("sshd");
     assert_eq!(r.jail_name, "sshd");
     assert!(!r.is_running);
-    assert!(r.banned_ips.is_empty());
+    assert_eq!(r.banned_ips, Vec::<String>::new());
     assert_eq!(r.file_count, 0);
     assert_eq!(r.ban_count, 0);
 }
@@ -489,7 +489,7 @@ fn finding_serde_roundtrip_no_optional_fields() {
     let f = Finding::new("id", Severity::Ok, "t");
     let json = serde_json::to_string(&f).unwrap();
     let back: Finding = serde_json::from_str(&json).unwrap();
-    assert!(back.detail.is_empty());
+    assert_eq!(back.detail, "");
     assert!(back.fix.is_none());
 }
 

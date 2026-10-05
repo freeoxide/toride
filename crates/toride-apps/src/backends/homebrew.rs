@@ -14,10 +14,13 @@
 //!   cached after the first call). Offline tests exercise the seam probes
 //!   via `FakeRunner` (toride-runner's `fake` feature); the PATH check in
 //!   `detect` reads the real host PATH and is only covered by live tests.
-//! - **Trait operations** — install/uninstall/list/status per the
+//! - **Trait operations** — install/uninstall/update/list/status per the
 //!   [`Backend`] contract (guard-first, seam-only execution), plus the
-//!   homebrew-specific [`HomebrewBackend::outdated`] and
-//!   [`HomebrewBackend::installed_version`] probes.
+//!   homebrew-specific [`HomebrewBackend::outdated`],
+//!   [`HomebrewBackend::installed_version`],
+//!   [`HomebrewBackend::available_version`] /
+//!   [`HomebrewBackend::available_versions`] probes, and the kind-scoped
+//!   [`HomebrewBackend::pin`] / [`HomebrewBackend::unpin`] pair.
 //! - **JSON parsing** — `brew info --json=v2 --installed` and
 //!   `brew outdated --json=v2` documents parsed into typed entries.
 //!   Per-item tolerance: a malformed item (missing its identifying field,
@@ -33,13 +36,13 @@
 //!
 //! ## Conventions honored
 //!
-//! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] are the
-//!   first statement of the trait's mutating operations (dry-run refusal
-//!   + no auto-sudo).
-//! - Interactivity: brew's install/uninstall do not prompt y/n, so unlike
-//!   apt/flatpak there are **no** runtime flags layered onto the plan's
-//!   canonical argv — the executed spec is exactly the planned argv.
-//!   `--zap` is not an execution-time option: it is baked into the
+//! - [`ensure_install_allowed`] / [`ensure_uninstall_allowed`] /
+//!   [`ensure_update_allowed`] are the first statement of the trait's
+//!   mutating operations (dry-run refusal + no auto-sudo).
+//! - Interactivity: brew's install/uninstall/upgrade do not prompt y/n, so
+//!   unlike apt/flatpak there are **no** runtime flags layered onto the
+//!   plan's canonical argv — the executed spec is exactly the planned
+//!   argv. `--zap` is not an execution-time option: it is baked into the
 //!   [`Operation::BrewUninstall`] argv at plan time via
 //!   [`UninstallOptions`](crate::UninstallOptions) `{ zap: true }`.
 //! - Error mapping: non-zero exits surface as
@@ -57,6 +60,7 @@
 //! [`Operation::BrewUninstall`]: crate::Operation::BrewUninstall
 //! [`ensure_install_allowed`]: crate::backend::ensure_install_allowed
 //! [`ensure_uninstall_allowed`]: crate::backend::ensure_uninstall_allowed
+//! [`ensure_update_allowed`]: crate::backend::ensure_update_allowed
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -65,10 +69,12 @@ use async_trait::async_trait;
 use camino::Utf8PathBuf;
 use serde::Deserialize;
 use toride_registry::Os;
+use toride_runner::CommandOutput;
 
 use crate::backend::{
-    Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, UninstallOutcome,
-    UninstallRequest, ensure_install_allowed, ensure_uninstall_allowed,
+    Backend, BackendId, InstallOutcome, InstallRequest, InstalledApp, ListQuery, OutdatedEntry,
+    UninstallOutcome, UninstallRequest, UpdateRequest, Version, ensure_install_allowed,
+    ensure_uninstall_allowed, ensure_update_allowed,
 };
 use crate::error::{Error, Result};
 use crate::plan::{Operation, Target};
@@ -96,7 +102,6 @@ const NOT_INSTALLED_MARKERS: [&str; 3] = [
     // `Error: No installed keg or formula with the name "x".`
     "no installed keg",
 ];
-
 // ---------------------------------------------------------------------------
 // Backend
 // ---------------------------------------------------------------------------
@@ -215,6 +220,18 @@ impl HomebrewBackend {
         parse_installed_info_output(&output.stdout)
     }
 
+    /// The sync twin of [`HomebrewBackend::list_entries`] — same listing,
+    /// same parsing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::list_entries`].
+    pub fn list_entries_sync(&self) -> Result<Vec<BrewEntry>> {
+        let spec = command(BREW, ["info", "--json=v2", "--installed"]);
+        let output = self.runner.run_checked_sync(spec)?;
+        parse_installed_info_output(&output.stdout)
+    }
+
     /// The installed version of one item, from the kind-scoped probe
     /// `brew list --cask|--formula --versions <token>`.
     ///
@@ -238,30 +255,33 @@ impl HomebrewBackend {
     /// neither a not-installed `Error:` line nor, at exit code 1, empty.
     pub async fn installed_version(&self, kind: BrewKind, token: &str) -> Result<Option<String>> {
         let spec = command(BREW, ["list", kind.flag(), "--versions", token]);
-        match self.runner.run_checked(spec).await {
-            Ok(output) => Ok(parse_versions_output(&output.stdout)),
-            // "Not installed" is an answer, not a failure: a marker-
-            // matching Error: line, or a silent exit 1 (empty stderr —
-            // the exit-code gate keeps signal kills as errors). Anything
-            // else escapes.
-            Err(Error::Command(toride_runner::Error::CommandFailed {
-                stderr, exit_code, ..
-            })) if stderr_says_not_installed(&stderr)
-                || (stderr.trim().is_empty() && exit_code == Some(1)) =>
-            {
-                Ok(None)
-            }
-            Err(error) => Err(error),
-        }
+        classify_version_probe(self.runner.run_checked(spec).await)
     }
 
-    /// Outdated packages (`brew outdated --json=v2`), optionally scoped to
-    /// casks or formulae.
+    /// The sync twin of [`HomebrewBackend::installed_version`] — same probe,
+    /// same classification, executed on the calling thread.
     ///
     /// # Errors
     ///
-    /// [`Error::Command`] when the command fails or its JSON document
-    /// cannot be parsed at all (malformed *entries* are skipped).
+    /// Same contract as [`HomebrewBackend::installed_version`].
+    pub fn installed_version_sync(&self, kind: BrewKind, token: &str) -> Result<Option<String>> {
+        let spec = command(BREW, ["list", kind.flag(), "--versions", token]);
+        classify_version_probe(self.runner.run_checked_sync(spec))
+    }
+
+    /// Outdated packages (`brew outdated --json=v2`), optionally scoped to
+    /// casks or formulae. Pinned items are listed with `pinned: true` —
+    /// brew reports them stale but skips upgrading them itself.
+    ///
+    /// `brew outdated` sets exit 1 only when the invocation names
+    /// operands and any named one is outdated — the operand-less
+    /// probes here exit 0, and exit 1 still parses like success.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the command fails (any exit other than the
+    /// answered 0-and-1 pair) or its JSON document cannot be parsed at
+    /// all; malformed entries are skipped.
     pub async fn outdated(&self, scope: OutdatedScope) -> Result<Vec<OutdatedEntry>> {
         let mut args = vec!["outdated"];
         if let Some(flag) = scope.flag() {
@@ -269,8 +289,125 @@ impl HomebrewBackend {
         }
         args.push("--json=v2");
         let spec = command(BREW, args);
+        let output = self.runner.run(spec.clone()).await?;
+        classify_outdated_probe(&spec, output)
+    }
+
+    /// The sync twin of [`HomebrewBackend::outdated`] — same probe, same
+    /// parsing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::outdated`].
+    pub fn outdated_sync(&self, scope: OutdatedScope) -> Result<Vec<OutdatedEntry>> {
+        let mut args = vec!["outdated"];
+        if let Some(flag) = scope.flag() {
+            args.push(flag);
+        }
+        args.push("--json=v2");
+        let spec = command(BREW, args);
+        let output = self.runner.run_sync(spec.clone())?;
+        classify_outdated_probe(&spec, output)
+    }
+
+    /// The version brew currently offers for the `kind`-scoped `token`
+    /// (`brew info --json=v2 <token>`): the tap's `versions.stable`
+    /// (formulae) / cask `version`, never the `installed` fields the same
+    /// document also carries for a token brew has on disk — those report
+    /// what is installed, not what is offered.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when the probe fails (an unknown token exits 1
+    /// with brew's no-formula error) or the document is unparseable.
+    pub async fn available_version(&self, kind: BrewKind, token: &str) -> Result<Option<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", token]);
         let output = self.runner.run_checked(spec).await?;
-        parse_outdated_output(&output.stdout)
+        parse_offered_version(&output.stdout, kind, token).map(|version| version.map(Version::new))
+    }
+
+    /// The sync twin of [`HomebrewBackend::available_version`] — same probe,
+    /// same parsing, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::available_version`].
+    pub fn available_version_sync(&self, kind: BrewKind, token: &str) -> Result<Option<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", token]);
+        let output = self.runner.run_checked_sync(spec)?;
+        parse_offered_version(&output.stdout, kind, token).map(|version| version.map(Version::new))
+    }
+
+    /// The versions brew can install for the `kind`-scoped `token` today:
+    /// the same `brew info --json=v2 <token>` document the singular probe
+    /// reads, as a listing. One element at most — brew offers exactly one
+    /// installable version per kind (older ones live under separate
+    /// versioned tokens, which are their own identities).
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::available_version`].
+    pub async fn available_versions(&self, kind: BrewKind, token: &str) -> Result<Vec<Version>> {
+        let offered = self.available_version(kind, token).await?;
+        Ok(offered.into_iter().collect())
+    }
+
+    /// The sync twin of [`HomebrewBackend::available_versions`] — same
+    /// document, executed on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::available_version`].
+    pub fn available_versions_sync(&self, kind: BrewKind, token: &str) -> Result<Vec<Version>> {
+        let offered = self.available_version_sync(kind, token)?;
+        Ok(offered.into_iter().collect())
+    }
+
+    /// Hold the `kind`-scoped `token` back from `brew upgrade`
+    /// (`brew pin [--cask|--formula] <token>`). Cask pinning is native
+    /// from Homebrew 6.0; an older brew refuses the cask-scoped ask with
+    /// its own error, which surfaces verbatim.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Command`] when brew fails (absent tokens, or older brews
+    /// without cask pinning).
+    pub async fn pin(&self, kind: BrewKind, token: &str) -> Result<()> {
+        let spec = command(BREW, ["pin", kind.flag(), token]);
+        self.runner.run_checked(spec).await.map(|_| ())
+    }
+
+    /// Release a pin — the mirror of [`HomebrewBackend::pin`]
+    /// (`brew unpin [--cask|--formula] <token>`).
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::pin`].
+    pub async fn unpin(&self, kind: BrewKind, token: &str) -> Result<()> {
+        let spec = command(BREW, ["unpin", kind.flag(), token]);
+        self.runner.run_checked(spec).await.map(|_| ())
+    }
+
+    /// The sync twin of [`HomebrewBackend::pin`] — same command, executed
+    /// on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::pin`].
+    pub fn pin_sync(&self, kind: BrewKind, token: &str) -> Result<()> {
+        let spec = command(BREW, ["pin", kind.flag(), token]);
+        self.runner.run_checked_sync(spec).map(|_| ())
+    }
+
+    /// The sync twin of [`HomebrewBackend::unpin`] — same command, executed
+    /// on the calling thread.
+    ///
+    /// # Errors
+    ///
+    /// Same contract as [`HomebrewBackend::pin`].
+    pub fn unpin_sync(&self, kind: BrewKind, token: &str) -> Result<()> {
+        let spec = command(BREW, ["unpin", kind.flag(), token]);
+        self.runner.run_checked_sync(spec).map(|_| ())
     }
 
     /// Read the memoized prefix without running brew (`None` until the
@@ -337,6 +474,52 @@ impl Backend for HomebrewBackend {
         })
     }
 
+    async fn update(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::BrewUpgrade { .. } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        self.runner
+            .run_checked(request.plan.operation.command_spec())
+            .await?;
+        Ok(())
+    }
+
+    async fn outdated(&self) -> Result<Vec<OutdatedEntry>> {
+        self.outdated(OutdatedScope::All).await
+    }
+
+    async fn available_version(&self, id: &str) -> Result<Option<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", id]);
+        let output = self.runner.run_checked(spec).await?;
+        let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
+        let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
+        Ok(formula.or(cask).map(Version::new))
+    }
+
+    async fn available_versions(&self, id: &str) -> Result<Vec<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", id]);
+        let output = self.runner.run_checked(spec).await?;
+        let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
+        let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
+        let mut versions = Vec::new();
+        for offered in [formula, cask].into_iter().flatten() {
+            let version = Version::new(offered);
+            if !versions.contains(&version) {
+                versions.push(version);
+            }
+        }
+        Ok(versions)
+    }
+
+    async fn pin(&self, id: &str) -> Result<()> {
+        self.pin(BrewKind::Formula, id).await
+    }
+
+    async fn unpin(&self, id: &str) -> Result<()> {
+        self.unpin(BrewKind::Formula, id).await
+    }
+
     async fn list_installed(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
         let entries = self.list_entries().await?;
         Ok(entries
@@ -355,8 +538,95 @@ impl Backend for HomebrewBackend {
     // the `brew info --json=v2 --installed` listing. Callers that know
     // the kind (plan operations, manifest records) should call
     // `installed_version(kind, token)` directly.
-}
 
+    fn install_sync(&self, request: InstallRequest<'_>) -> Result<InstallOutcome> {
+        ensure_install_allowed(&request)?;
+        let Operation::BrewInstall { cask, token } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        self.runner
+            .run_checked_sync(request.plan.operation.command_spec())?;
+        let kind = if *cask {
+            BrewKind::Cask
+        } else {
+            BrewKind::Formula
+        };
+        let version = self.installed_version_sync(kind, token).ok().flatten();
+        Ok(InstallOutcome {
+            version,
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn uninstall_sync(&self, request: UninstallRequest<'_>) -> Result<UninstallOutcome> {
+        ensure_uninstall_allowed(&request)?;
+        let Operation::BrewUninstall { .. } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        self.runner
+            .run_checked_sync(request.plan.operation.command_spec())?;
+        Ok(UninstallOutcome {
+            detail: request.plan.operation.description(),
+        })
+    }
+
+    fn update_sync(&self, request: UpdateRequest<'_>) -> Result<()> {
+        ensure_update_allowed(&request)?;
+        let Operation::BrewUpgrade { .. } = &request.plan.operation else {
+            return Err(misrouted_operation(&request.plan.operation));
+        };
+        self.runner
+            .run_checked_sync(request.plan.operation.command_spec())?;
+        Ok(())
+    }
+
+    fn list_installed_sync(&self, query: ListQuery) -> Result<Vec<InstalledApp>> {
+        let entries = self.list_entries_sync()?;
+        Ok(entries
+            .into_iter()
+            .filter(|entry| query.ids.is_empty() || query.ids.contains(&entry.token))
+            .map(|entry| InstalledApp {
+                id: entry.token,
+                version: entry.version,
+            })
+            .collect())
+    }
+
+    fn outdated_sync(&self) -> Result<Vec<OutdatedEntry>> {
+        self.outdated_sync(OutdatedScope::All)
+    }
+
+    fn available_version_sync(&self, id: &str) -> Result<Option<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", id]);
+        let output = self.runner.run_checked_sync(spec)?;
+        let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
+        let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
+        Ok(formula.or(cask).map(Version::new))
+    }
+
+    fn available_versions_sync(&self, id: &str) -> Result<Vec<Version>> {
+        let spec = command(BREW, ["info", "--json=v2", id]);
+        let output = self.runner.run_checked_sync(spec)?;
+        let formula = parse_offered_version(&output.stdout, BrewKind::Formula, id)?;
+        let cask = parse_offered_version(&output.stdout, BrewKind::Cask, id)?;
+        let mut versions = Vec::new();
+        for offered in [formula, cask].into_iter().flatten() {
+            let version = Version::new(offered);
+            if !versions.contains(&version) {
+                versions.push(version);
+            }
+        }
+        Ok(versions)
+    }
+
+    fn pin_sync(&self, id: &str) -> Result<()> {
+        self.pin_sync(BrewKind::Formula, id)
+    }
+
+    fn unpin_sync(&self, id: &str) -> Result<()> {
+        self.unpin_sync(BrewKind::Formula, id)
+    }
+}
 // ---------------------------------------------------------------------------
 // Typed query results
 // ---------------------------------------------------------------------------
@@ -410,21 +680,6 @@ pub struct BrewEntry {
     pub version: Option<String>,
 }
 
-/// One item from `brew outdated --json=v2`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OutdatedEntry {
-    /// Cask token or formula name.
-    pub name: String,
-    /// Cask or formula.
-    pub kind: BrewKind,
-    /// All installed (stale) versions.
-    pub installed_versions: Vec<String>,
-    /// The version brew would upgrade to, when reported.
-    pub current_version: Option<String>,
-    /// Whether the item is pinned (brew will not upgrade it).
-    pub pinned: bool,
-}
-
 /// Scope for [`HomebrewBackend::outdated`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum OutdatedScope {
@@ -448,7 +703,6 @@ impl OutdatedScope {
         }
     }
 }
-
 // ---------------------------------------------------------------------------
 // Raw JSON shapes (brew --json=v2 items)
 // ---------------------------------------------------------------------------
@@ -538,7 +792,6 @@ struct RawOutdatedItem {
     #[serde(default)]
     pinned: bool,
 }
-
 // ---------------------------------------------------------------------------
 // Output parsing
 // ---------------------------------------------------------------------------
@@ -568,8 +821,51 @@ fn parse_installed_info_output(stdout: &str) -> Result<Vec<BrewEntry>> {
     Ok(entries)
 }
 
+/// Parse the version brew OFFERS for the `kind`-scoped `token` out of a
+/// `brew info --json=v2 <token>` document: the formula's `versions.stable`
+/// / the cask's `version`. The `installed` fields the document carries for
+/// a token brew has on disk are deliberately ignored — they report what is
+/// installed, not what is offered (unlike [`parse_installed_info_output`],
+/// which prefers them for exactly that reason).
+///
+/// # Errors
+///
+/// [`Error::Command`] wrapping `OutputParse` when the payload is not a
+/// JSON object with the expected envelope shape.
+fn parse_offered_version(stdout: &str, kind: BrewKind, token: &str) -> Result<Option<String>> {
+    let document: RawInstalledInfoDocument = serde_json::from_str(stdout)
+        .map_err(|error| output_parse_error("brew info --json=v2", &error))?;
+    match kind {
+        BrewKind::Formula => {
+            for value in document.formulae {
+                if let Ok(item) = serde_json::from_value::<RawFormulaItem>(value)
+                    && item.name == token
+                    && let Some(offered) = item
+                        .versions
+                        .and_then(|versions| versions.stable)
+                        .filter(|version| !version.is_empty())
+                {
+                    return Ok(Some(offered));
+                }
+            }
+            Ok(None)
+        }
+        BrewKind::Cask => {
+            for value in document.casks {
+                if let Ok(item) = serde_json::from_value::<RawCaskItem>(value)
+                    && item.token == token
+                    && let Some(offered) = item.version.filter(|version| !version.is_empty())
+                {
+                    return Ok(Some(offered));
+                }
+            }
+            Ok(None)
+        }
+    }
+}
+
 /// Parse a `brew outdated --json=v2` document into typed entries, skipping
-/// malformed items.
+/// malformed entries.
 ///
 /// # Errors
 ///
@@ -579,21 +875,47 @@ fn parse_outdated_output(stdout: &str) -> Result<Vec<OutdatedEntry>> {
     let document: RawOutdatedDocument = serde_json::from_str(stdout)
         .map_err(|error| output_parse_error("brew outdated --json=v2", &error))?;
     let mut entries = Vec::new();
-    for value in document.formulae {
+    for value in document.formulae.into_iter().chain(document.casks) {
         if let Ok(item) = serde_json::from_value::<RawOutdatedItem>(value)
-            && let Some(entry) = OutdatedEntry::from_raw(item, BrewKind::Formula)
-        {
-            entries.push(entry);
-        }
-    }
-    for value in document.casks {
-        if let Ok(item) = serde_json::from_value::<RawOutdatedItem>(value)
-            && let Some(entry) = OutdatedEntry::from_raw(item, BrewKind::Cask)
+            && let Some(entry) = OutdatedEntry::from_raw(item)
         {
             entries.push(entry);
         }
     }
     Ok(entries)
+}
+
+/// Classify a dispatched `brew list --versions` probe: parse its stdout on
+/// success, and treat "not installed" — a marker-matching `Error:` line, or
+/// a silent exit 1 (empty stderr; the exit-code gate keeps signal kills as
+/// errors) — as `Ok(None)` instead of a failure. Anything else escapes.
+fn classify_version_probe(result: Result<CommandOutput>) -> Result<Option<String>> {
+    match result {
+        Ok(output) => Ok(parse_versions_output(&output.stdout)),
+        Err(Error::Command(toride_runner::Error::CommandFailed {
+            stderr, exit_code, ..
+        })) if stderr_says_not_installed(&stderr)
+            || (stderr.trim().is_empty() && exit_code == Some(1)) =>
+        {
+            Ok(None)
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn classify_outdated_probe(
+    spec: &toride_runner::CommandSpec,
+    output: toride_runner::CommandOutput,
+) -> Result<Vec<OutdatedEntry>> {
+    if output.success || output.exit_code == Some(1) {
+        return parse_outdated_output(&output.stdout);
+    }
+    Err(Error::Command(toride_runner::Error::CommandFailed {
+        program: spec.program.clone(),
+        args: spec.args.join(" "),
+        exit_code: output.exit_code,
+        stderr: output.stderr,
+    }))
 }
 
 impl BrewEntry {
@@ -642,10 +964,9 @@ impl BrewEntry {
 impl OutdatedEntry {
     /// Type a parsed outdated item; `None` marks a malformed one (neither
     /// `name` nor `token` present).
-    fn from_raw(item: RawOutdatedItem, kind: BrewKind) -> Option<Self> {
+    fn from_raw(item: RawOutdatedItem) -> Option<Self> {
         Some(Self {
-            name: item.name.or(item.token)?,
-            kind,
+            id: item.name.or(item.token)?,
             installed_versions: item.installed_versions,
             current_version: item.current_version,
             pinned: item.pinned,
@@ -744,7 +1065,6 @@ fn cache_poisoned() -> Error {
         "homebrew prefix cache mutex poisoned".to_owned(),
     ))
 }
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -753,7 +1073,9 @@ fn cache_poisoned() -> Error {
 mod tests {
     use super::*;
     use crate::backend::{BackendStatus, StatusQuery};
-    use crate::plan::{InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall};
+    use crate::plan::{
+        InstallOptions, InstallPlan, UninstallOptions, UninstallPlan, plan_install, plan_uninstall,
+    };
     use std::path::Path;
     use std::sync::Arc;
     use toride_registry::{App, Arch, Availability, InstallMethod, TorideId};
@@ -833,7 +1155,12 @@ mod tests {
     }
 
     fn install_plan_for(cask: bool) -> InstallPlan {
-        plan_install(&app_with(brew_method(cask)), &macos()).unwrap()
+        plan_install(
+            &app_with(brew_method(cask)),
+            &macos(),
+            &InstallOptions::default(),
+        )
+        .unwrap()
     }
 
     fn uninstall_plan_for(cask: bool, zap: bool) -> UninstallPlan {
@@ -850,6 +1177,16 @@ mod tests {
     /// operations for misrouting tests).
     fn manual_install_plan(operation: Operation) -> InstallPlan {
         InstallPlan {
+            app: TorideId::slugify("brave-browser"),
+            backend: BackendId::Homebrew,
+            operation,
+            dry_run: false,
+            requires_elevation: false,
+        }
+    }
+
+    fn manual_update_plan(operation: Operation) -> crate::plan::UpdatePlan {
+        crate::plan::UpdatePlan {
             app: TorideId::slugify("brave-browser"),
             backend: BackendId::Homebrew,
             operation,
@@ -1030,15 +1367,14 @@ mod tests {
         assert_eq!(
             entries[0],
             OutdatedEntry {
-                name: "ripgrep".to_owned(),
-                kind: BrewKind::Formula,
+                id: "ripgrep".to_owned(),
                 installed_versions: vec!["15.1.0".to_owned()],
                 current_version: Some("15.2.0".to_owned()),
                 pinned: false,
             }
         );
         assert!(entries[1].pinned, "wget entry: {entries:?}");
-        assert_eq!(entries[2].kind, BrewKind::Cask);
+        assert_eq!(entries[2].id, "brave-browser");
     }
 
     #[test]
@@ -1052,13 +1388,12 @@ mod tests {
         });
         let entries = parse_outdated_output(&document.to_string()).unwrap();
         assert_eq!(entries.len(), 2, "{entries:?}");
-        assert_eq!(entries[0].name, "wget");
+        assert_eq!(entries[0].id, "wget");
         assert_eq!(entries[0].installed_versions, Vec::<String>::new());
         assert_eq!(entries[0].current_version, None);
         assert!(!entries[0].pinned);
         // Casks accept `token` as the identifying field when `name` is absent.
-        assert_eq!(entries[1].name, "brave-browser");
-        assert_eq!(entries[1].kind, BrewKind::Cask);
+        assert_eq!(entries[1].id, "brave-browser");
     }
 
     #[test]
@@ -1416,6 +1751,480 @@ mod tests {
         );
     }
 
+    fn update_plan_for(cask: bool) -> crate::plan::UpdatePlan {
+        manual_update_plan(Operation::BrewUpgrade {
+            cask,
+            token: "brave-browser".to_owned(),
+        })
+    }
+
+    #[tokio::test]
+    async fn update_refuses_dry_run_plans_without_touching_the_runner() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let plan = update_plan_for(true).dry_run(true);
+        let target = macos();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        assert!(fake.calls().is_empty(), "no brew command may run");
+    }
+
+    #[tokio::test]
+    async fn update_refuses_elevation_requiring_plans_without_a_grant() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let mut plan = update_plan_for(true);
+        plan.requires_elevation = true;
+        let target = macos();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty(), "no brew command may run");
+    }
+
+    #[tokio::test]
+    async fn update_rejects_non_brew_operations() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let plan = manual_update_plan(Operation::FlatpakUpdate {
+            app_id: "com.brave.Browser".to_owned(),
+            installation: crate::plan::FlatpakInstallation::User,
+        });
+        let target = macos();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::Other(_))),
+            "{error:?}"
+        );
+        assert!(fake.calls().is_empty());
+    }
+
+    #[tokio::test]
+    async fn update_runs_the_cask_upgrade_argv_exactly() {
+        let spec = command(BREW, ["upgrade", "--cask", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = update_plan_for(true);
+        let target = macos();
+        backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_runs_the_formula_upgrade_argv_without_type_flags() {
+        let spec = command(BREW, ["upgrade", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = update_plan_for(false);
+        let target = macos();
+        backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn update_maps_nonzero_exit_to_command_error_carrying_stderr() {
+        let spec = command(BREW, ["upgrade", "--cask", "brave-browser"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stderr(
+                "Error: Cask 'brave-browser' is not installed.",
+                1,
+            ),
+        );
+        let backend = backend(&fake);
+        let plan = update_plan_for(true);
+        let target = macos();
+        let error = backend
+            .update(UpdateRequest::new(&plan, &target))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed { .. })
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("not installed"),
+            "stderr tail must travel with the error: {error}"
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_outdated_delegates_to_the_unscoped_concrete_probe() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let raw = read_fixture("homebrew/outdated.json");
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(raw.trim().to_owned()),
+        );
+        let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
+        let entries = dyn_backend.outdated().await.unwrap();
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn available_version_probes_the_token_info_envelope() {
+        let spec = command(BREW, ["info", "--json=v2", "brave-browser"]);
+        let cask = fixture_value("homebrew/cask-brave-browser.json");
+        let document = serde_json::json!({ "formulae": [], "casks": [cask] });
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Cask, "brave-browser")
+                .await
+                .unwrap(),
+            Some(Version::new("1.96.59.0"))
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn available_version_reports_the_offered_stable_over_an_installed_formula_keg() {
+        let spec = command(BREW, ["info", "--json=v2", "ripgrep"]);
+        let document = serde_json::json!({
+            "formulae": [{
+                "name": "ripgrep",
+                "versions": { "stable": "15.2.0" },
+                "installed": [{ "version": "15.1.0" }]
+            }],
+            "casks": []
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Formula, "ripgrep")
+                .await
+                .unwrap(),
+            Some(Version::new("15.2.0")),
+            "the offered stable, never the installed keg's version"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_version_reports_the_offered_cask_version_over_the_installed_one() {
+        let spec = command(BREW, ["info", "--json=v2", "brave-browser"]);
+        let document = serde_json::json!({
+            "formulae": [],
+            "casks": [{
+                "token": "brave-browser",
+                "version": "139.0",
+                "installed": "138.0.1"
+            }]
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Cask, "brave-browser")
+                .await
+                .unwrap(),
+            Some(Version::new("139.0")),
+            "the offered cask version, never the installed one"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_version_discriminates_dual_kind_tokens_by_the_requested_kind() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let document = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": "1.0" } }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let output = toride_runner::CommandOutput::from_stdout(document.to_string());
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), output.clone())
+            .respond(spec, output);
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Formula, "widget")
+                .await
+                .unwrap(),
+            Some(Version::new("1.0")),
+            "the formula arm answers a formula-scoped ask"
+        );
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Cask, "widget")
+                .await
+                .unwrap(),
+            Some(Version::new("2.0")),
+            "the cask arm answers a cask-scoped ask"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_version_skips_a_matching_formula_without_a_stable_version() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let document = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": null }, "installed": [] }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let output = toride_runner::CommandOutput::from_stdout(document.to_string());
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), output.clone())
+            .respond(spec, output);
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Formula, "widget")
+                .await
+                .unwrap(),
+            None,
+            "a HEAD-only formula offers no stable version"
+        );
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Cask, "widget")
+                .await
+                .unwrap(),
+            Some(Version::new("2.0"))
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_available_version_resolves_kind_less_formulae_first() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let document = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": "1.0" } }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
+        assert_eq!(
+            dyn_backend.available_version("widget").await.unwrap(),
+            Some(Version::new("1.0")),
+            "the kind-less trait ask resolves formulae before casks, the listing's document order"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_version_returns_none_for_a_token_absent_from_the_envelope() {
+        let spec = command(BREW, ["info", "--json=v2", "ghost"]);
+        let document = serde_json::json!({ "formulae": [], "casks": [] });
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version(BrewKind::Cask, "ghost")
+                .await
+                .unwrap(),
+            None
+        );
+    }
+
+    #[tokio::test]
+    async fn available_version_maps_an_unknown_token_failure_to_command_error() {
+        let spec = command(BREW, ["info", "--json=v2", "ghost"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stderr(
+                "Error: No available formula with the name \"ghost\".",
+                1,
+            ),
+        );
+        let backend = backend(&fake);
+        let error = backend
+            .available_version(BrewKind::Cask, "ghost")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed { .. })
+            ),
+            "{error:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn available_versions_lists_the_offered_version_for_the_kind() {
+        let spec = command(BREW, ["info", "--json=v2", "ripgrep"]);
+        let document = serde_json::json!({
+            "formulae": [{
+                "name": "ripgrep",
+                "versions": { "stable": "15.2.0" },
+                "installed": [{ "version": "15.1.0" }]
+            }],
+            "casks": []
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_versions(BrewKind::Formula, "ripgrep")
+                .await
+                .unwrap(),
+            vec![Version::new("15.2.0")],
+            "the offered stable — one element at most, never the installed keg"
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn available_versions_is_empty_when_the_kind_offers_nothing() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let document = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": null } }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stdout(document.to_string()),
+        );
+        let backend = backend(&fake);
+        assert!(
+            backend
+                .available_versions(BrewKind::Formula, "widget")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a HEAD-only formula offers no installable version"
+        );
+    }
+
+    #[tokio::test]
+    async fn trait_available_versions_collects_both_kinds_deduped() {
+        let spec = command(BREW, ["info", "--json=v2", "widget"]);
+        let dual = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": "1.0" } }],
+            "casks": [{ "token": "widget", "version": "2.0" }]
+        });
+        let same = serde_json::json!({
+            "formulae": [{ "name": "widget", "versions": { "stable": "1.0" } }],
+            "casks": [{ "token": "widget", "version": "1.0" }]
+        });
+        let output = toride_runner::CommandOutput::from_stdout(dual.to_string());
+        let deduped = toride_runner::CommandOutput::from_stdout(same.to_string());
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), output)
+            .respond(spec, deduped);
+        let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
+        assert_eq!(
+            dyn_backend.available_versions("widget").await.unwrap(),
+            vec![Version::new("1.0"), Version::new("2.0")],
+            "both kinds, document order"
+        );
+        assert_eq!(
+            dyn_backend.available_versions("widget").await.unwrap(),
+            vec![Version::new("1.0")],
+            "a dual-kind token offering the same version lists it once"
+        );
+    }
+
+    #[tokio::test]
+    async fn pin_runs_the_kind_scoped_argv_exactly() {
+        let spec = command(BREW, ["pin", "--formula", "ripgrep"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        backend.pin(BrewKind::Formula, "ripgrep").await.unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn unpin_scopes_the_cask_kind() {
+        let spec = command(BREW, ["unpin", "--cask", "firefox"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        backend.unpin(BrewKind::Cask, "firefox").await.unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn trait_pin_resolves_the_formula_scope() {
+        let spec = command(BREW, ["pin", "--formula", "ripgrep"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let dyn_backend: &dyn Backend = &backend;
+        dyn_backend.pin("ripgrep").await.unwrap();
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn pin_maps_failures_to_command_error_carrying_stderr() {
+        let spec = command(BREW, ["pin", "--formula", "ghost"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec,
+            toride_runner::CommandOutput::from_stderr(
+                "Error: No installed keg or formula with the name \"ghost\".",
+                1,
+            ),
+        );
+        let backend = backend(&fake);
+        let error = backend.pin(BrewKind::Formula, "ghost").await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed { .. })
+            ),
+            "{error:?}"
+        );
+        assert!(
+            error.to_string().contains("No installed keg"),
+            "stderr tail must travel with the error: {error}"
+        );
+    }
+
     // --- listing + status ----------------------------------------------------------
 
     /// The exact spec the installed listing runs, shared by the listing
@@ -1675,10 +2484,8 @@ mod tests {
         let backend = backend(&fake);
         let entries = backend.outdated(OutdatedScope::All).await.unwrap();
         assert_eq!(entries.len(), 3, "{entries:?}");
-        assert_eq!(
-            entries.iter().filter(|e| e.kind == BrewKind::Cask).count(),
-            1
-        );
+        let ids: Vec<&str> = entries.iter().map(|entry| entry.id.as_str()).collect();
+        assert_eq!(ids, ["ripgrep", "wget", "brave-browser"], "{entries:?}");
         fake.assert_called_with(&spec);
     }
 
@@ -1691,7 +2498,7 @@ mod tests {
         );
         let backend = backend(&fake);
         let entries = backend.outdated(OutdatedScope::Casks).await.unwrap();
-        assert!(entries.is_empty());
+        assert_eq!(entries, Vec::new());
         fake.assert_called_with(&spec);
     }
 
@@ -1704,6 +2511,76 @@ mod tests {
         );
         let backend = backend(&fake);
         backend.outdated(OutdatedScope::Formulae).await.unwrap();
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn outdated_treats_exit_one_with_entries_as_the_answer() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let raw = read_fixture("homebrew/outdated.json");
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::new(raw.trim().to_owned(), String::new(), Some(1)),
+        );
+        let backend = backend(&fake);
+        let entries = backend.outdated(OutdatedScope::All).await.unwrap();
+        assert_eq!(entries.len(), 3, "{entries:?}");
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn outdated_treats_exit_one_with_unparseable_stdout_as_failure() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::new(String::new(), String::new(), Some(1)),
+        );
+        let backend = backend(&fake);
+        let error = backend.outdated(OutdatedScope::All).await.unwrap_err();
+        assert!(
+            matches!(error, Error::Command(toride_runner::Error::OutputParse(_))),
+            "{error:?}"
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[tokio::test]
+    async fn outdated_treats_other_exit_codes_as_failure() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::new(
+                String::new(),
+                "Error: unknown flag".to_owned(),
+                Some(64),
+            ),
+        );
+        let backend = backend(&fake);
+        let error = backend.outdated(OutdatedScope::All).await.unwrap_err();
+        assert!(
+            matches!(
+                error,
+                Error::Command(toride_runner::Error::CommandFailed {
+                    exit_code: Some(64),
+                    ..
+                })
+            ),
+            "{error:?}"
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[test]
+    fn outdated_sync_treats_exit_one_with_entries_as_the_answer() {
+        let spec = command(BREW, ["outdated", "--json=v2"]);
+        let raw = read_fixture("homebrew/outdated.json");
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::new(raw.trim().to_owned(), String::new(), Some(1)),
+        );
+        let backend = backend(&fake);
+        let entries = backend.outdated_sync(OutdatedScope::All).unwrap();
+        assert_eq!(entries.len(), 3, "{entries:?}");
         fake.assert_called_with(&spec);
     }
 
@@ -1731,5 +2608,196 @@ mod tests {
     fn brew_kind_flags_select_the_kind_scoped_probes() {
         assert_eq!(BrewKind::Cask.flag(), "--cask");
         assert_eq!(BrewKind::Formula.flag(), "--formula");
+    }
+
+    #[test]
+    fn install_sync_refuses_dry_run_plans_without_dispatching() {
+        let fake = FakeRunner::new().strict();
+        let backend = backend(&fake);
+        let target = macos();
+        let error = backend
+            .install_sync(InstallRequest::new(
+                &install_plan_for(true).dry_run(true),
+                &target,
+            ))
+            .unwrap_err();
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        assert!(fake.calls().is_empty(), "no brew command may run");
+    }
+
+    #[test]
+    fn install_sync_runs_the_cask_argv_and_reports_the_probed_version() {
+        let install_spec = command(BREW, ["install", "--cask", "brave-browser"]);
+        let probe_spec = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                install_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                probe_spec.clone(),
+                toride_runner::CommandOutput::from_stdout("brave-browser 1.96.59.0\n"),
+            );
+        let backend = backend(&fake);
+        let plan = install_plan_for(true);
+        let target = macos();
+        let outcome = backend
+            .install_sync(InstallRequest::new(&plan, &target))
+            .unwrap();
+        assert_eq!(outcome.version.as_deref(), Some("1.96.59.0"));
+        fake.assert_called_with(&install_spec);
+        fake.assert_called_with(&probe_spec);
+    }
+
+    #[test]
+    fn uninstall_sync_runs_the_cask_argv_exactly() {
+        let spec = command(BREW, ["uninstall", "--cask", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = uninstall_plan_for(true, false);
+        let target = macos();
+        backend
+            .uninstall_sync(UninstallRequest::new(&plan, &target))
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn update_sync_runs_the_cask_upgrade_argv_exactly() {
+        let spec = command(BREW, ["upgrade", "--cask", "brave-browser"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), toride_runner::CommandOutput::from_stdout(""));
+        let backend = backend(&fake);
+        let plan = update_plan_for(true);
+        let target = macos();
+        backend
+            .update_sync(UpdateRequest::new(&plan, &target))
+            .unwrap();
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn list_installed_sync_maps_and_filters_the_typed_listing() {
+        let document = r#"{"formulae":[{"name":"ripgrep","versions":{"stable":"14.1.0"},"installed":[{"version":"14.1.0"}]}],"casks":[{"token":"brave-browser","name":["Brave"],"version":"1.96.59","installed":"1.96.59"}]}"#;
+        let spec = command(BREW, ["info", "--json=v2", "--installed"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                spec.clone(),
+                toride_runner::CommandOutput::from_stdout(document),
+            )
+            .respond(
+                spec.clone(),
+                toride_runner::CommandOutput::from_stdout(document),
+            );
+        let backend = backend(&fake);
+        let apps = backend.list_installed_sync(ListQuery::all()).unwrap();
+        assert_eq!(
+            apps,
+            vec![
+                InstalledApp {
+                    id: "ripgrep".to_owned(),
+                    version: Some("14.1.0".to_owned()),
+                },
+                InstalledApp {
+                    id: "brave-browser".to_owned(),
+                    version: Some("1.96.59".to_owned()),
+                },
+            ]
+        );
+        let only = backend
+            .list_installed_sync(ListQuery::id("brave-browser"))
+            .unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].id, "brave-browser");
+    }
+
+    #[test]
+    fn installed_version_sync_classifies_present_and_silently_absent_tokens() {
+        let present = command(BREW, ["list", "--cask", "--versions", "brave-browser"]);
+        let absent = command(BREW, ["list", "--formula", "--versions", "ghost"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                present.clone(),
+                toride_runner::CommandOutput::from_stdout("brave-browser 1.96.59\n"),
+            )
+            .respond(
+                absent.clone(),
+                toride_runner::CommandOutput::from_stderr("", 1),
+            );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .installed_version_sync(BrewKind::Cask, "brave-browser")
+                .unwrap()
+                .as_deref(),
+            Some("1.96.59")
+        );
+        assert_eq!(
+            backend
+                .installed_version_sync(BrewKind::Formula, "ghost")
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn outdated_sync_parses_the_kind_scoped_document() {
+        let spec = command(BREW, ["outdated", "--cask", "--json=v2"]);
+        let document = r#"{"formulae":[],"casks":[{"name":"brave-browser","installed_versions":["1.90"],"current_version":"1.96","pinned":false}]}"#;
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(document),
+        );
+        let backend = backend(&fake);
+        let entries = backend.outdated_sync(OutdatedScope::Casks).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].id, "brave-browser");
+        assert_eq!(entries[0].current_version.as_deref(), Some("1.96"));
+    }
+
+    #[test]
+    fn available_version_sync_reports_the_offered_cask_version() {
+        let spec = command(BREW, ["info", "--json=v2", "brave-browser"]);
+        let document = r#"{"formulae":[],"casks":[{"token":"brave-browser","version":"1.96.59","installed":"1.90"}]}"#;
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            toride_runner::CommandOutput::from_stdout(document),
+        );
+        let backend = backend(&fake);
+        assert_eq!(
+            backend
+                .available_version_sync(BrewKind::Cask, "brave-browser")
+                .unwrap(),
+            Some(Version::new("1.96.59"))
+        );
+    }
+
+    #[test]
+    fn pin_sync_and_unpin_sync_run_the_kind_scoped_argv() {
+        let pin_spec = command(BREW, ["pin", "--formula", "ripgrep"]);
+        let unpin_spec = command(BREW, ["unpin", "--formula", "ripgrep"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                pin_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            )
+            .respond(
+                unpin_spec.clone(),
+                toride_runner::CommandOutput::from_stdout(""),
+            );
+        let backend = backend(&fake);
+        backend.pin_sync(BrewKind::Formula, "ripgrep").unwrap();
+        backend.unpin_sync(BrewKind::Formula, "ripgrep").unwrap();
+        fake.assert_called_with(&pin_spec);
+        fake.assert_called_with(&unpin_spec);
     }
 }

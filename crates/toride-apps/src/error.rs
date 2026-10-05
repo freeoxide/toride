@@ -43,9 +43,9 @@ pub enum Error {
     },
 
     /// The install method has no applicable backend on the host target —
-    /// wrong OS, wrong distro family, a `Direct` method (wave 2), or an
-    /// install technology this crate does not route yet. Raised at the
-    /// **plan** stage.
+    /// wrong OS, wrong distro family, a `Direct` method without the
+    /// `direct` feature enabled, or an install technology this crate does
+    /// not route yet. Raised at the **plan** stage.
     #[error("no backend can install `{app}` via {method} on target {target}: {reason}")]
     UnsupportedMethod {
         /// Canonical toride id of the app.
@@ -89,6 +89,74 @@ pub enum Error {
     /// which the manifest layer (A5) persists through.
     #[error("plan serialization failed: {0}")]
     PlanJson(#[from] serde_json::Error),
+
+    /// The install options requested a specific version and the routed
+    /// method cannot express one. Raised at the **plan** stage: distro
+    /// managers take no per-version install operand in this crate's argv
+    /// model, so the refusal happens before any backend is selected.
+    #[error(
+        "cannot install `{app}` at version {version} via {method}: the method takes no version operand — pass version: None"
+    )]
+    VersionNotSelectable {
+        /// Canonical toride id of the app.
+        app: String,
+        /// Debug rendering of the [`InstallMethod`] that cannot select a
+        /// version.
+        ///
+        /// [`InstallMethod`]: toride_registry::InstallMethod
+        method: String,
+        /// The requested version's native spelling.
+        version: String,
+    },
+
+    /// The requested install version cannot be spelled into the method's
+    /// native addressing (an empty version, a brew token that already
+    /// names a versioned track, a flatpak version carrying the ref
+    /// separator). Raised at the **plan** stage — the malformed address
+    /// (`token@`, `app/<id>/<arch>/`) is refused here rather than deferred
+    /// to a confusing execute-time error.
+    #[error("cannot install `{app}` at version {version}: {reason}")]
+    InvalidVersion {
+        /// Canonical toride id of the app.
+        app: String,
+        /// The requested version's spelling.
+        version: String,
+        /// Why the version cannot be addressed.
+        reason: String,
+    },
+
+    /// The backend cannot hold an item back from upgrades (or release that
+    /// hold): only homebrew has a pin concept among the wave-1 managers.
+    #[error("`{backend}` cannot {operation} `{id}`: {reason}")]
+    PinUnsupported {
+        /// Backend the pin or unpin was routed to.
+        backend: BackendId,
+        /// The refused action (`"pin"` / `"unpin"`).
+        operation: &'static str,
+        /// Backend-native id the action was requested for.
+        id: String,
+        /// Why the backend refuses (no pin concept, or the kind cannot pin).
+        reason: String,
+    },
+
+    /// The toride-installer pipeline failed for a direct download —
+    /// resolve, download, digest, verify, extract, or the atomic install
+    /// write (gated with the `direct` feature).
+    #[cfg(feature = "direct")]
+    #[error("direct install failed: {0}")]
+    Direct(#[from] toride_installer::Error),
+
+    /// A direct uninstall was refused or failed: only the canonicalized
+    /// install-dir binary is ever removed (gated with the `direct`
+    /// feature).
+    #[cfg(feature = "direct")]
+    #[error("direct uninstall of `{path}` failed: {reason}")]
+    DirectUninstallFailed {
+        /// The recorded binary path the removal was attempted on.
+        path: String,
+        /// Why the removal was refused or failed.
+        reason: String,
+    },
 }
 
 #[cfg(test)]
@@ -124,5 +192,72 @@ mod tests {
             std::error::Error::source(&error).is_some(),
             "the wrapped runner error must remain reachable via source()"
         );
+    }
+
+    #[test]
+    fn display_names_method_and_version_for_not_selectable() {
+        let error = Error::VersionNotSelectable {
+            app: "brave".to_owned(),
+            method: "Distro { family: Debian, repo: None, package: \"brave-browser\" }".to_owned(),
+            version: "1.4.2".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("`brave`"), "{text}");
+        assert!(text.contains("1.4.2"), "{text}");
+        assert!(text.contains("version: None"), "{text}");
+    }
+
+    #[test]
+    fn display_names_app_version_and_reason_for_invalid_version() {
+        let error = Error::InvalidVersion {
+            app: "brave".to_owned(),
+            version: "  ".to_owned(),
+            reason: "the version is empty".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("`brave`"), "{text}");
+        assert!(text.contains("the version is empty"), "{text}");
+    }
+
+    #[test]
+    fn display_names_backend_action_and_reason_for_pin_unsupported() {
+        let error = Error::PinUnsupported {
+            backend: BackendId::Flatpak,
+            operation: "pin",
+            id: "com.brave.Browser".to_owned(),
+            reason: "this backend has no pin concept".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("flatpak"), "{text}");
+        assert!(text.contains("pin"), "{text}");
+        assert!(text.contains("com.brave.Browser"), "{text}");
+        assert!(text.contains("no pin concept"), "{text}");
+    }
+
+    #[cfg(feature = "direct")]
+    #[test]
+    fn direct_error_wraps_the_installer_error_as_source() {
+        let inner = toride_installer::Error::NoChecksum {
+            tool: "ripgrep".to_owned(),
+        };
+        let error = Error::from(inner);
+        assert!(matches!(error, Error::Direct(_)), "{error:?}");
+        assert!(
+            std::error::Error::source(&error).is_some(),
+            "the wrapped installer error must remain reachable via source()"
+        );
+        assert!(error.to_string().contains("ripgrep"), "{error}");
+    }
+
+    #[cfg(feature = "direct")]
+    #[test]
+    fn direct_uninstall_failed_names_the_path_and_reason() {
+        let error = Error::DirectUninstallFailed {
+            path: "/usr/bin/evil".to_owned(),
+            reason: "it does not live in the install dir".to_owned(),
+        };
+        let text = error.to_string();
+        assert!(text.contains("/usr/bin/evil"), "{text}");
+        assert!(text.contains("install dir"), "{text}");
     }
 }

@@ -134,4 +134,95 @@ mod tests {
         // On macOS /tmp is a symlink — both runners should resolve the same way.
         assert_eq!(sync_output.stdout_trimmed(), async_output.stdout_trimmed());
     }
+
+    #[tokio::test]
+    async fn parity_env_precedence_remove_wins() {
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${TORIDE_PARITY_VAR-unset}\""])
+            .env_remove("TORIDE_PARITY_VAR")
+            .env("TORIDE_PARITY_VAR", "present")
+            .env_precedence(crate::policy::EnvPrecedence::RemoveWins);
+
+        let sync_output = Runner::run(&DuctRunner, &spec).unwrap();
+        let async_output = AsyncRunner::run(&TokioRunner, &spec).await.unwrap();
+
+        assert_eq!(sync_output.stdout, async_output.stdout);
+        assert_eq!(sync_output.stdout, "unset");
+    }
+
+    #[tokio::test]
+    async fn parity_argv_rejection() {
+        let spec = CommandSpec::new("echo")
+            .arg("a;b")
+            .argv_policy(crate::policy::ArgvPolicy::RejectShellMetachars);
+
+        let sync_result = Runner::run(&DuctRunner, &spec);
+        let async_result = AsyncRunner::run(&TokioRunner, &spec).await;
+
+        for result in [sync_result, async_result] {
+            assert!(
+                matches!(result, Err(crate::error::Error::ArgvRejected { .. })),
+                "expected ArgvRejected from both runners"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn parity_path_policy_refusal() {
+        let spec = CommandSpec::new("./nope")
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd);
+
+        let sync_result = Runner::run(&DuctRunner, &spec);
+        let async_result = AsyncRunner::run(&TokioRunner, &spec).await;
+
+        for result in [sync_result, async_result] {
+            assert!(
+                matches!(result, Err(crate::error::Error::ProgramRejected { .. })),
+                "expected ProgramRejected from both runners"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn parity_output_cap_always() {
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line; done"])
+            .output_cap(crate::policy::OutputCap::Always(64));
+
+        let sync_result = Runner::run(&DuctRunner, &spec);
+        let async_result = AsyncRunner::run(&TokioRunner, &spec).await;
+
+        for result in [sync_result, async_result] {
+            assert!(
+                matches!(
+                    result,
+                    Err(crate::error::Error::OutputLimitExceeded { limit: 64, .. })
+                ),
+                "expected OutputLimitExceeded(64) from both runners"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn parity_path_policy_child_env_resolution() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("toride_parity_probe");
+        std::fs::write(&probe, "#!/bin/sh\necho from-probe\n").unwrap();
+        let mut perms = std::fs::metadata(&probe).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&probe, perms).unwrap();
+
+        let spec = CommandSpec::new("toride_parity_probe")
+            .env("PATH", dir.path().to_string_lossy().into_owned())
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd)
+            .timeout(Duration::from_secs(5));
+
+        let sync_output = Runner::run(&DuctRunner, &spec).unwrap();
+        let async_output = AsyncRunner::run(&TokioRunner, &spec).await.unwrap();
+
+        assert_eq!(sync_output.stdout_trimmed(), "from-probe");
+        assert_eq!(async_output.stdout_trimmed(), "from-probe");
+    }
 }

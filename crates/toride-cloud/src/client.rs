@@ -412,7 +412,7 @@ mod tests {
         let client = CloudClient::for_provider(CloudProvider::Unknown);
         let report = client.report().unwrap();
         assert_eq!(report.provider, CloudProvider::Unknown);
-        assert!(report.security_groups.is_empty());
+        assert_eq!(report.security_groups, Vec::new());
         assert!(report.has_errors());
         assert!(
             report.findings.iter().any(|f| f.id == "client.list-failed"),

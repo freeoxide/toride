@@ -3,6 +3,7 @@
 //! [`DuctRunner`] is the production implementation of [`Runner`].
 //! It spawns subprocesses, captures stdout/stderr, and respects timeouts.
 
+use std::ffi::OsStr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
@@ -10,6 +11,8 @@ use std::time::{Duration, Instant};
 use crate::error::{Error, Result};
 use crate::output::CommandOutput;
 use crate::output_mode::OutputMode;
+use crate::policy::EnvPrecedence;
+use crate::policy::{env_key_matches, platform_env_preserved_for_clean_env, prepare_program};
 use crate::runner::Runner;
 use crate::spec::CommandSpec;
 
@@ -92,7 +95,7 @@ impl DuctRunnerBuilder {
 ///
 /// `DuctRunner` is a stateless unit struct, so it is [`Clone`]/[`Default`]
 /// (matching its configured sibling [`ConfiguredDuctRunner`] and the test
-/// [`FakeRunner`](crate::FakeRunner)). This lets a single shared runner be
+/// `FakeRunner`, feature `fake`). This lets a single shared runner be
 /// handed to several owning subsystems via `Clone`.
 #[derive(Debug, Clone, Default)]
 pub struct DuctRunner;
@@ -144,20 +147,22 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
         ));
     }
 
+    let program = prepare_program(spec)?;
+
     // Output-limit enforcement only applies to captured output. Inherit mode
     // does not capture, so the limit is ignored (the real exit code is still
     // returned). Dispatch to the cap-aware path before any duct capture is
     // wired up, because `stdout_capture()`/`stderr_capture()` allocate
     // unbounded memory before the cap can be checked.
     if spec.output_mode == OutputMode::Capture
-        && let Some(limit) = spec.output_limit
+        && let Some(limit) = spec.effective_output_limit()
     {
-        return run_duct_command_limited(spec, options, limit);
+        return run_duct_command_limited(spec, options, limit, program.as_os_str());
     }
 
     let started_at = Instant::now();
     let displayed = crate::display::display_command(spec, &[]);
-    let mut cmd = build_duct_expression(spec);
+    let mut cmd = build_duct_expression(spec, program.as_os_str());
 
     let timeout = spec.timeout.or(options.default_timeout);
 
@@ -238,11 +243,8 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     ))
 }
 
-/// Build the base `duct::Expression` with cwd, env policy, and stdin applied,
-/// but *without* any stdio capture wiring. Shared by both the unlimited and
-/// cap-aware paths.
-fn build_duct_expression(spec: &CommandSpec) -> duct::Expression {
-    let mut cmd = duct::cmd(&spec.program, &spec.args);
+fn build_duct_expression(spec: &CommandSpec, program: &OsStr) -> duct::Expression {
+    let mut cmd = duct::cmd(program, &spec.args);
 
     if let Some(ref cwd) = spec.cwd {
         cmd = cmd.dir(cwd);
@@ -262,26 +264,12 @@ fn build_duct_expression(spec: &CommandSpec) -> duct::Expression {
     cmd
 }
 
-/// Cap-aware Duct execution.
-///
-/// Instead of `stdout_capture()`/`stderr_capture()` (which buffer the entire
-/// output into memory before the cap can be checked), this creates two OS
-/// pipes in the parent, passes the write ends to the child via
-/// `stdout_file`/`stderr_file`, and spawns the child with `.unchecked().start()`.
-/// Because both streams are redirected to caller-owned files, the handle starts
-/// no internal capture threads and holds no hidden buffer. Two cap-aware reader
-/// threads then drain the read ends with bounded reads, sharing a combined byte
-/// counter (`AtomicUsize`) and a "killed" latch (`AtomicBool`).
-///
-/// On breach, the reader thread that pushes the total past `cap` wins the latch
-/// and calls `handle.kill()` directly; the main thread, blocked in
-/// `wait_timeout`, unblocks. The child is then reaped and no partial output is
-/// returned.
 #[allow(clippy::too_many_lines)]
 fn run_duct_command_limited(
     spec: &CommandSpec,
     options: &DuctRunnerOptions,
     cap: usize,
+    program: &OsStr,
 ) -> Result<CommandOutput> {
     let started_at = Instant::now();
     let displayed = crate::display::display_command(spec, &[]);
@@ -313,7 +301,7 @@ fn run_duct_command_limited(
     // it is dropped the instant `start()` returns, leaving only the child's
     // copy of the write end open.
     let handle = {
-        let cmd = build_duct_expression(spec)
+        let cmd = build_duct_expression(spec, program)
             .stdout_file(stdout_tx)
             .stderr_file(stderr_tx);
         cmd.unchecked().start().map_err(|e| Error::SpawnFailed {
@@ -606,25 +594,53 @@ fn wait_failed(spec: &CommandSpec, error: &std::io::Error) -> Error {
 fn apply_env_policy(mut cmd: duct::Expression, spec: &CommandSpec) -> duct::Expression {
     if spec.clear_env {
         let mut env = clean_env_values(spec);
-        env.extend(spec.env.iter().cloned());
+        env.extend(explicit_env_surviving_removal(spec));
         return cmd.full_env(env);
     }
 
-    for (key, value) in &spec.env {
-        cmd = cmd.env(key, value);
-    }
+    match spec.env_precedence {
+        EnvPrecedence::ExplicitWins => {
+            for (key, value) in &spec.env {
+                cmd = cmd.env(key, value);
+            }
 
-    for key in &spec.env_remove {
-        if !spec
-            .env
-            .iter()
-            .any(|(env_key, _)| env_key_matches(env_key, key))
-        {
-            cmd = cmd.env_remove(key);
+            for key in &spec.env_remove {
+                if !spec
+                    .env
+                    .iter()
+                    .any(|(env_key, _)| env_key_matches(env_key, key))
+                {
+                    cmd = cmd.env_remove(key);
+                }
+            }
+        }
+        EnvPrecedence::RemoveWins => {
+            for key in &spec.env_remove {
+                cmd = cmd.env_remove(key);
+            }
+
+            for (key, value) in &spec.env {
+                cmd = cmd.env(key, value);
+            }
         }
     }
 
     cmd
+}
+
+fn explicit_env_surviving_removal(
+    spec: &CommandSpec,
+) -> impl IntoIterator<Item = (String, String)> + '_ {
+    spec.env
+        .iter()
+        .filter(|(key, _)| {
+            spec.env_precedence == EnvPrecedence::ExplicitWins
+                || !spec
+                    .env_remove
+                    .iter()
+                    .any(|removed| env_key_matches(removed, key))
+        })
+        .cloned()
 }
 
 fn clean_env_values(spec: &CommandSpec) -> Vec<(String, String)> {
@@ -635,35 +651,13 @@ fn clean_env_values(spec: &CommandSpec) -> Vec<(String, String)> {
                 .env_remove
                 .iter()
                 .any(|removed| env_key_matches(removed, key))
-                || spec
-                    .env
-                    .iter()
-                    .any(|(env_key, _)| env_key_matches(env_key, key))
+                || (spec.env_precedence == EnvPrecedence::ExplicitWins
+                    && spec
+                        .env
+                        .iter()
+                        .any(|(env_key, _)| env_key_matches(env_key, key)))
         })
         .collect()
-}
-
-#[cfg(windows)]
-fn platform_env_preserved_for_clean_env() -> Vec<(String, String)> {
-    ["SystemRoot", "SystemDrive", "WINDIR"]
-        .into_iter()
-        .filter_map(|key| std::env::var(key).ok().map(|value| (key.to_owned(), value)))
-        .collect()
-}
-
-#[cfg(not(windows))]
-fn platform_env_preserved_for_clean_env() -> Vec<(String, String)> {
-    Vec::new()
-}
-
-#[cfg(windows)]
-fn env_key_matches(a: &str, b: &str) -> bool {
-    a.eq_ignore_ascii_case(b)
-}
-
-#[cfg(not(windows))]
-fn env_key_matches(a: &str, b: &str) -> bool {
-    a == b
 }
 
 #[cfg(test)]
@@ -1016,8 +1010,8 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.exit_code, Some(17));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "");
     }
 
     #[test]
@@ -1150,8 +1144,8 @@ mod tests {
 
         assert!(!output.success);
         assert_eq!(output.exit_code, Some(17));
-        assert!(output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
+        assert_eq!(output.stdout, "");
+        assert_eq!(output.stderr, "");
     }
 
     #[test]
@@ -1195,5 +1189,149 @@ mod tests {
         assert!(output.success);
         let lines: Vec<&str> = output.stdout.lines().filter(|l| !l.is_empty()).collect();
         assert_eq!(lines.len(), 50);
+    }
+
+    #[test]
+    fn remove_wins_env_remove_beats_explicit_env() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args(["-c", "printf '%s' \"${TORIDE_REMOVE_ME-unset}\""])
+            .env_remove("TORIDE_REMOVE_ME")
+            .env("TORIDE_REMOVE_ME", "present")
+            .env_precedence(crate::policy::EnvPrecedence::RemoveWins);
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout, "unset");
+    }
+
+    #[test]
+    fn remove_wins_clear_env_still_removes() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("/bin/sh")
+            .args([
+                "-c",
+                "printf '%s:%s' \"${TORIDE_BOTH-unset}\" \"$TORIDE_KEEP\"",
+            ])
+            .clear_env(true)
+            .env_remove("TORIDE_BOTH")
+            .env("TORIDE_BOTH", "x")
+            .env("TORIDE_KEEP", "kept")
+            .env_precedence(crate::policy::EnvPrecedence::RemoveWins);
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout, "unset:kept");
+    }
+
+    #[test]
+    fn argv_policy_rejects_metachar_arg_before_spawn() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("echo")
+            .arg("hello; rm -rf /")
+            .argv_policy(crate::policy::ArgvPolicy::RejectShellMetachars);
+        match runner.run(&spec) {
+            Err(Error::ArgvRejected { program, detail }) => {
+                assert_eq!(program, "echo");
+                assert!(detail.contains("index 0"), "detail: {detail}");
+                assert!(!detail.contains("rm -rf"));
+            }
+            other => panic!("expected ArgvRejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn argv_policy_allows_plain_argv_under_rejection() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("echo")
+            .arg("hello")
+            .argv_policy(crate::policy::ArgvPolicy::RejectShellMetachars);
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "hello");
+    }
+
+    #[test]
+    fn path_resolution_refuses_cwd_relative_program() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("./definitely_not_a_real_binary_xyz_123")
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd);
+        match runner.run(&spec) {
+            Err(Error::ProgramRejected { program, detail }) => {
+                assert_eq!(program, "./definitely_not_a_real_binary_xyz_123");
+                assert!(detail.contains("working directory"));
+            }
+            other => panic!("expected ProgramRejected, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn path_resolution_rejects_bare_name_missing_from_child_path() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("definitely_not_a_real_binary_xyz_123")
+            .env("PATH", "/nonexistent/toride-policy-probe")
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd);
+        match runner.run(&spec) {
+            Err(Error::ProgramRejected { program, detail }) => {
+                assert_eq!(program, "definitely_not_a_real_binary_xyz_123");
+                assert!(detail.contains("not found on PATH"), "detail: {detail}");
+            }
+            other => panic!("expected ProgramRejected, got {other:?}"),
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn path_resolution_runs_binary_resolved_from_child_env_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let probe = dir.path().join("toride_duct_probe");
+        std::fs::write(&probe, "#!/bin/sh\necho from-probe\n").unwrap();
+        let mut perms = std::fs::metadata(&probe).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&probe, perms).unwrap();
+
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("toride_duct_probe")
+            .env("PATH", dir.path().to_string_lossy().into_owned())
+            .path_resolution(crate::policy::PathResolution::ChildEnvNoCwd)
+            .timeout(Duration::from_secs(5));
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "from-probe");
+    }
+
+    #[test]
+    fn output_cap_always_enforces_without_output_limit() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line; done"])
+            .output_cap(crate::policy::OutputCap::Always(64));
+        match runner.run(&spec) {
+            Err(Error::OutputLimitExceeded { limit, .. }) => assert_eq!(limit, 64),
+            other => panic!("expected OutputLimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_cap_always_overrides_larger_output_limit() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "for i in $(seq 1 100); do echo line; done"])
+            .output_limit(1_000_000)
+            .output_cap(crate::policy::OutputCap::Always(64));
+        match runner.run(&spec) {
+            Err(Error::OutputLimitExceeded { limit, .. }) => assert_eq!(limit, 64),
+            other => panic!("expected OutputLimitExceeded, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn output_cap_always_preserves_under_cap_capture() {
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("echo")
+            .arg("hello")
+            .output_cap(crate::policy::OutputCap::Always(1024));
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "hello");
     }
 }

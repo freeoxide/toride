@@ -12,8 +12,8 @@ pub enum OutputMode {
     /// structured output (JSON, version strings, etc.).
     #[default]
     Capture,
-    /// Stream stdout and stderr as [`CommandEvent`](crate::streaming::CommandEvent)
-    /// events via a [`CommandEventSink`](crate::streaming::CommandEventSink).
+    /// Stream stdout and stderr as `CommandEvent`
+    /// events via a `CommandEventSink` (feature `stream`).
     ///
     /// May also return collected stdout/stderr in the final `CommandOutput`
     /// depending on the runner implementation.

@@ -141,13 +141,13 @@ mod tests {
     #[test]
     fn parse_auditctl_no_rules_returns_empty() {
         let rules = parse_auditctl_output("No rules").unwrap();
-        assert!(rules.is_empty());
+        assert_eq!(rules, Vec::new());
     }
 
     #[test]
     fn parse_auditctl_empty_returns_empty() {
         let rules = parse_auditctl_output("").unwrap();
-        assert!(rules.is_empty());
+        assert_eq!(rules, Vec::new());
     }
 
     #[test]

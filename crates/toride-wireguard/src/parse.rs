@@ -251,7 +251,7 @@ AllowedIPs = 10.0.0.3/32, fd00::3/128
     fn parse_empty_conf() {
         let spec = parse_interface_conf("wg0", "").unwrap();
         assert_eq!(spec.name, "wg0");
-        assert!(spec.address.is_empty());
+        assert_eq!(spec.address, "");
         assert!(spec.peers.is_empty());
     }
 

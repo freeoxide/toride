@@ -199,10 +199,20 @@ pub struct Platform {
     pub min_release: Option<String>,
 }
 
-/// A published download. Wave-1 sources publish sha256 only.
+/// A published download. Wave-1 sources publish sha256 only; Sha512 is
+/// modeled so a source that publishes one needs no model change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
-pub enum ChecksumAlgo { Sha256 }
+pub enum ChecksumAlgo { Sha256, Sha512 }
+
+/// Whether a source publishes checksums at all — the per-source
+/// verification policy (plan §3.12): `OutOfBand` is the explicit marker
+/// that an empty `artifacts` list means "unverifiable", telling an
+/// embedder to demand an out-of-band digest rather than trust a size
+/// floor.
+pub enum VerificationPolicy { Inline, OutOfBand }
+
+impl SourceKind { pub fn verification_policy(self) -> VerificationPolicy }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Checksum { pub algo: ChecksumAlgo, /// lowercase hex pub digest: String }
@@ -258,8 +268,11 @@ pub enum DistroFamily { Debian, Ubuntu, Fedora, Arch, Alpine }
 Design notes:
 
 - **What is deliberately NOT in the model**: categories/icons/screenshots/
-  verification/popularity (flathub `trending`, `installs_last_month`,
-  homebrew `analytics`), local-state echoes (`installed`, `outdated`,
+  verification badges (flathub `verification_verified` — the publisher
+  identity flag, distinct from the modeled `VerificationPolicy` of the
+  checksums note below)/popularity (flathub `trending`,
+  `installs_last_month`, homebrew `analytics`), local-state echoes
+  (`installed`, `outdated`,
   `pinned` — all null server-side per homebrew.md §3), repology
   `maintainers`, per-repo `status` (lives at parse level in the oracle;
   see §5). Categories may be added when a browse UI needs them; they are
@@ -272,7 +285,13 @@ Design notes:
   client's GPG-based OSTree layer. DEP-11 publishes none either. The
   `Option<Checksum>` is the honest encoding of that asymmetry, and it maps
   1:1 onto toride-installer's existing `Checksum::Digest(String)`
-  (installer `src/tool.rs:67-86`).
+  (installer `src/tool.rs:67-86`). Sha512 is modeled for sources that
+  publish it (none in wave 1); toride-installer verifies it by digest
+  hex length (128), same as its checksum-file parser. The per-source
+  `VerificationPolicy` (`SourceKind::verification_policy()`, plan §3.12)
+  marks checksum-less sources `OutOfBand` — the explicit marker that an
+  empty `artifacts` list means "unverifiable, demand an out-of-band
+  digest", not "no downloads exist".
 - **Versions stay strings**: repology `origversion` (`1.83.112-1.fc44`,
   `1.83.120-r0`) and flathub `"51.0"` development releases are not
   semver; comparison across sources is the oracle's job, not the model's.
@@ -480,10 +499,33 @@ impl App {
 **Who constructs `InstallMethod::Direct`**: no wave-1 adapter does (§4
 maps never emit it; a cask's dmg stays an `Artifact`, never a second
 install method). The variant exists in the model as the target type for
-`direct_fallback`/`Plan::DirectDownload`; persisting a Direct method on
-an `App` is a wave-2 decision. The Repology oracle is *not* an `Adapter`
+`direct_fallback`/`Plan::DirectDownload`; persisting a Direct method on an
+`App` is a wave-2 decision. The Repology oracle is *not* an `Adapter`
 impl — it has no search/browse surface worth exposing and installs
 nothing; it feeds the AliasIndex.
+
+**As built (plan 3.8, wave 4 — `src/adapter.rs`)**: the facade holds
+`Vec<Arc<dyn Adapter>>` (an `Arc` so the toride-apps facade shares its
+adapters with a `Registry`), and three of the sketch's details above
+landed differently, deliberately:
+
+- fan-out is **sequential in registration order**, not `tokio::join!` —
+  a dynamic adapter vec has no `join_all` without adding `futures-util`
+  or hand-rolling a combinator, and `tokio::spawn` would force a tokio
+  runtime onto a facade the crate compiles without tokio (the `http`
+  feature owns it). Per-source error tolerance, hit order, and the
+  per-request timeouts are unaffected; only a slow source's latency
+  serializes onto later sources.
+- `PlannedOp::Command` stays a single `program` + `args` pair, so the
+  flatpak one-time `remote-add` is **omitted** and stated as omitted in
+  the variant's contract — the executor layers it, exactly like the
+  suppression flags toride-apps adds at execution time; `plan` is an
+  associated (pure) function, not a `&self` method.
+- same-app **merging via the §5 alias rules is not implemented** — no
+  `AliasIndex` exists yet (§5 is a later wave), so `search` concatenates
+  each source's hits in registration order and one app can appear once
+  per source that carries it; `resolve` does merge every hit's
+  `sources` rows, deduplicated, which is what plan 3.8 asked of it.
 
 ## 4. Field mappings (source → normalized)
 

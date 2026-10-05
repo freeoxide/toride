@@ -4,7 +4,7 @@ use super::*;
 fn parse_line_should_return_entry_for_simple_valid_input() {
     let line = "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl";
     let entry = parse_line(line, 1).unwrap();
-    assert!(entry.markers.is_empty());
+    assert_eq!(entry.markers, Vec::<String>::new());
     assert_eq!(entry.hosts, vec!["github.com"]);
     assert_eq!(entry.key_type, "ssh-ed25519");
     assert!(entry.comment.is_none());

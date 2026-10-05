@@ -388,7 +388,7 @@ async fn test_known_hosts_parse_markers() {
 
     // Verify standard entry.
     let standard = &entries[0];
-    assert!(standard.markers.is_empty());
+    assert_eq!(standard.markers, Vec::<String>::new());
     assert_eq!(standard.hosts, vec!["github.com"]);
     assert_eq!(standard.key_type, "ssh-ed25519");
     assert!(standard.comment.is_none());

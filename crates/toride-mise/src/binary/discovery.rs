@@ -1,8 +1,8 @@
 //! Mise binary discovery: locate the `mise` executable on the host.
 //!
 //! The `$PATH` + managed-location probe is delegated to
-//! `toride_installer`'s offline [`Detector`](toride_installer::Detector)
-//! over that crate's mise descriptor, so "where we look" cannot drift from
+//! `toride_installer`'s offline [`Detector`] over that crate's mise
+//! descriptor, so "where we look" cannot drift from
 //! where the installer's install path writes. This crate deliberately keeps
 //! the env-var and app-bundled tiers the detector does not model: env
 //! overrides stay out of `Detector` itself, so they must be consulted

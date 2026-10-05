@@ -189,8 +189,8 @@ mod tests {
         let same = diff_audit_rules(identical, identical);
         assert!(!has_changes(&same));
         // All entries are Unchanged, and the added/removed helpers are empty.
-        assert!(added_lines(&same).is_empty());
-        assert!(removed_lines(&same).is_empty());
+        assert_eq!(added_lines(&same), [] as [&str; 0]);
+        assert_eq!(removed_lines(&same), [] as [&str; 0]);
         assert!(same.iter().all(|e| e.tag == DiffTag::Unchanged));
     }
 

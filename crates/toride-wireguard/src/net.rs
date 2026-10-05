@@ -313,7 +313,7 @@ mod tests {
     fn list_wireguard_interfaces_empty_when_none() {
         let runner = FakeRunner::new().push_response(toride_runner::CommandOutput::from_stdout(""));
         let ifaces = list_wireguard_interfaces_with(&runner).unwrap();
-        assert!(ifaces.is_empty());
+        assert_eq!(ifaces, Vec::<String>::new());
     }
 
     #[test]

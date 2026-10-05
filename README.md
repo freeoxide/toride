@@ -4,6 +4,28 @@
 
 It collects CPU, memory, disk, network, GPU, battery, sensor, and process metrics through a composable provider architecture. Snapshots are serializable (JSON/TOML), privacy-aware (three redaction modes), and filterable through presets that control which metrics are gathered.
 
+## Library crates on crates.io
+
+The app-management layer is released on crates.io as six versioned 0.x crates — the first 0.1.0 upload is performed by the Publish crates workflow (see [docs/publishing.md](docs/publishing.md)) — so embedders can depend on it instead of vendoring:
+
+| Crate | Role |
+|-------|------|
+| [`toride-runner`](https://crates.io/crates/toride-runner) | Command execution seam: sync `Runner`, policy knobs, `FakeRunner` |
+| [`toride-fs`](https://crates.io/crates/toride-fs) | Atomic writes, fd locking, path expansion, permission audits |
+| [`toride-registry`](https://crates.io/crates/toride-registry) | Homebrew/Flathub/AppStream/Repology normalized into one `App` model |
+| [`toride-installer`](https://crates.io/crates/toride-installer) | Verified direct-download pipeline: resolve, download, digest, extract, install |
+| [`toride-mise`](https://crates.io/crates/toride-mise) | Typed mise CLI integration |
+| [`toride-apps`](https://crates.io/crates/toride-apps) | Execution facade: plan, run, and record installs across all backends |
+
+The heavy features stay off the default sets so a minimal dependency graph is the default: `tokio-runner`, `stream`, and `serde` on toride-runner, `http` on toride-registry and toride-installer, `bootstrap` on toride-mise, and everything on toride-apps (`tokio`, `registry-http`, `direct`, `mise`).
+
+```toml
+[dependencies]
+toride-apps = "0.1"
+```
+
+The release process — ordering, version lockstep, changelog conventions — is documented in [docs/publishing.md](docs/publishing.md).
+
 ## Quick Start
 
 ```rust
@@ -541,4 +563,4 @@ println!("{power}");                // "75.5 W"
 
 ## License
 
-TBD
+MIT — every published crate ships a `LICENSE-MIT`.

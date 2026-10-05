@@ -5,6 +5,9 @@ edition.workspace = true
 description = "Shared command runner trait, implementations, and utilities"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
+keywords = ["process", "subprocess", "command", "exec", "runner"]
+categories = ["development-tools", "os"]
 
 [features]
 default = ["duct-runner"]

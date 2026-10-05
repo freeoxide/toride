@@ -2299,7 +2299,7 @@ random noise
     #[test]
     fn parse_sshfp_output_empty() {
         let records = parse_sshfp_output("host", "");
-        assert!(records.is_empty());
+        assert_eq!(records, [] as [SshfpRecord; 0]);
     }
 
     #[test]
@@ -2315,7 +2315,7 @@ random noise
     fn parse_sshfp_output_too_few_fields() {
         let output = "example.com IN SSHFP 1\n";
         let records = parse_sshfp_output("example.com", output);
-        assert!(records.is_empty());
+        assert_eq!(records, [] as [SshfpRecord; 0]);
     }
 
     // -----------------------------------------------------------------------

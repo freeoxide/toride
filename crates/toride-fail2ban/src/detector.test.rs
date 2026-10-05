@@ -148,7 +148,7 @@ fn scan_empty_file_returns_zero_counts() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 0);
     assert_eq!(result.matches_found, 0);
-    assert!(result.new_bans.is_empty());
+    assert_eq!(result.new_bans, Vec::new());
 }
 
 #[test]
@@ -180,7 +180,7 @@ connection established
 
     assert_eq!(result.lines_scanned, 2);
     assert_eq!(result.matches_found, 0);
-    assert!(result.new_bans.is_empty());
+    assert_eq!(result.new_bans, Vec::new());
 }
 
 #[test]
@@ -198,7 +198,7 @@ line three\n\
     let second = detector.scan().expect("second scan");
     assert_eq!(second.lines_scanned, 0);
     assert_eq!(second.matches_found, 0);
-    assert!(second.new_bans.is_empty());
+    assert_eq!(second.new_bans, Vec::new());
 }
 
 #[test]
@@ -407,7 +407,7 @@ fn edge_case_pattern_with_no_capture_groups() {
     let (mut detector, _tmp) = detector_with_content(content, r"error: .*");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert!(result.new_bans.is_empty());
+    assert_eq!(result.new_bans, Vec::new());
 }
 
 #[test]
@@ -437,7 +437,7 @@ fn edge_case_match_line_ip_with_invalid_octets() {
     let (mut detector, _tmp) = detector_with_content(content, r"connection from .* failed");
     let result = detector.scan().unwrap();
     assert_eq!(result.matches_found, 1);
-    assert!(result.new_bans.is_empty());
+    assert_eq!(result.new_bans, Vec::new());
 }
 
 #[test]
@@ -612,7 +612,7 @@ fn scan_file_with_only_empty_lines() {
     let result = detector.scan().expect("scan should succeed");
     assert_eq!(result.lines_scanned, 5);
     assert_eq!(result.matches_found, 0);
-    assert!(result.new_bans.is_empty());
+    assert_eq!(result.new_bans, Vec::new());
 }
 
 #[test]

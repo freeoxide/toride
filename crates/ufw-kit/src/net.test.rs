@@ -240,7 +240,7 @@ fn check_dangerous_ports_should_not_find_safe_port() {
         ..Default::default()
     };
     let dangerous = check_dangerous_ports(&spec);
-    assert!(dangerous.is_empty());
+    assert_eq!(dangerous, [] as [(u16, &str); 0]);
 }
 
 // ---------------------------------------------------------------------------

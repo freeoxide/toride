@@ -254,7 +254,7 @@ fn expand_tilde_no_tilde() {
 fn expand_tilde_just_tilde() {
     let result = expand_tilde_and_env("~");
     // Should expand to home dir
-    assert!(!result.is_empty());
+    assert_ne!(result, "");
     assert!(!result.starts_with('~'));
 }
 
@@ -1021,7 +1021,7 @@ fn expand_tokens_connection_hash() {
     };
     let hash = expand_tokens("%C", &ctx);
     // %C should produce a hex string
-    assert!(!hash.is_empty());
+    assert_ne!(hash, "");
     assert!(hash.chars().all(|c| c.is_ascii_hexdigit()));
 }
 
@@ -1047,7 +1047,7 @@ fn expand_tokens_all_new_tokens() {
     assert_eq!(parts[1], "alice"); // %i local user
     assert_eq!(parts[2], "myhost"); // %L short hostname
     assert_eq!(parts[3], "deploy"); // %T remote user
-    assert!(!parts[4].is_empty()); // %C hash
+    assert_ne!(parts[4], ""); // %C hash
 }
 
 #[test]
@@ -2031,7 +2031,7 @@ async fn resolve_host_empty_config() {
     assert!(resolved.user.is_none());
     assert!(resolved.host_name.is_none());
     assert!(resolved.port.is_none());
-    assert!(resolved.identity_files.is_empty());
+    assert_eq!(resolved.identity_files, Vec::<String>::new());
 }
 
 #[tokio::test]
@@ -2042,7 +2042,10 @@ async fn resolve_host_no_config_file() {
 
     let resolved = resolve(ssh_dir, "myhost", None).await.unwrap();
     assert!(resolved.user.is_none());
-    assert!(resolved.directives.is_empty());
+    assert_eq!(
+        resolved.directives,
+        [] as [(std::string::String, std::string::String); 0]
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -2486,7 +2489,7 @@ fn glob_paths_no_matches_found() {
 fn glob_paths_nonexistent_directory() {
     // When the parent directory does not exist, glob_paths returns an empty vec.
     let result = glob_paths("/nonexistent/path/*.conf");
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<std::path::PathBuf>::new());
 }
 
 #[test]
@@ -2596,7 +2599,7 @@ fn glob_paths_empty_directory() {
     let pattern = format!("{}/*", base.display());
     let result = glob_paths(&pattern);
 
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<std::path::PathBuf>::new());
 }
 
 #[test]
@@ -2838,7 +2841,7 @@ fn glob_paths_double_star_empty_tree() {
     let pattern = format!("{}/**/*.conf", base.display());
     let result = glob_paths(&pattern);
 
-    assert!(result.is_empty());
+    assert_eq!(result, Vec::<std::path::PathBuf>::new());
 }
 
 #[test]

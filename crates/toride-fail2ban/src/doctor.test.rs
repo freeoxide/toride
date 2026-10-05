@@ -728,7 +728,7 @@ fn finding_new_sets_mandatory_fields() {
     assert_eq!(f.id, "test.id");
     assert_eq!(f.severity, Severity::Warning);
     assert_eq!(f.title, "test title");
-    assert!(f.detail.is_empty());
+    assert_eq!(f.detail, "");
     assert!(f.fix.is_none());
 }
 
@@ -804,14 +804,14 @@ fn parse_jail_list_single_jail() {
 fn parse_jail_list_empty() {
     let status = "Status\n|- Number of jail:      0\n`- Jail list:\n";
     let jails = parse_jail_list(status);
-    assert!(jails.is_empty());
+    assert_eq!(jails, Vec::<String>::new());
 }
 
 #[test]
 fn parse_jail_list_no_jail_line() {
     let status = "Status\n|- Something else\n";
     let jails = parse_jail_list(status);
-    assert!(jails.is_empty());
+    assert_eq!(jails, Vec::<String>::new());
 }
 
 #[test]
@@ -2017,7 +2017,7 @@ fn extract_ips_from_line_finds_valid_ipv4() {
 #[test]
 fn extract_ips_from_line_ignores_invalid() {
     let ips = extract_ips_from_line("Failed from 999.999.999.999 port");
-    assert!(ips.is_empty());
+    assert_eq!(ips, Vec::<String>::new());
 }
 
 #[test]
@@ -2045,7 +2045,7 @@ fn extract_systemd_units_parses_multiple() {
 #[test]
 fn extract_systemd_units_empty_when_no_match() {
     let units = extract_systemd_units("_COMM=sshd");
-    assert!(units.is_empty());
+    assert_eq!(units, Vec::<String>::new());
 }
 
 #[test]

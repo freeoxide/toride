@@ -246,7 +246,7 @@ mod tests {
         let entries = convert_rule_files(files);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].rule_count, 0);
-        assert!(entries[0].rules.is_empty());
+        assert_eq!(entries[0].rules, Vec::<String>::new());
     }
 
     #[test]
@@ -260,7 +260,7 @@ mod tests {
         let entries = convert_rule_files(files);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].rule_count, 0);
-        assert!(entries[0].rules.is_empty());
+        assert_eq!(entries[0].rules, Vec::<String>::new());
     }
 
     #[test]
@@ -273,7 +273,7 @@ mod tests {
         let entries = convert_rule_files(files);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].rule_count, 0);
-        assert!(entries[0].rules.is_empty());
+        assert_eq!(entries[0].rules, Vec::<String>::new());
     }
 
     // ── convert_log_files ─────────────────────────────────────────────────────

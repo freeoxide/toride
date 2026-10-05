@@ -5,8 +5,12 @@
 //! carrying the backend that installed it, the backend-native identifiers
 //! **as actually installed** (never re-planned — see [`NativeIds`]), the
 //! version the backend reported after the install, a wall-clock epoch
-//! stamp, and the plan that was executed (the source note the record is
-//! answerable to).
+//! stamp, and — for installs toride executed — the plan that ran (the
+//! source note the record is answerable to; adopted records carry none).
+//! The whole ledger exchanges as a portable [`RecordSnapshot`], the
+//! import/export unit of the [`RecordStore`] seam.
+//!
+//! [`RecordStore`]: crate::store::RecordStore
 //!
 //! The manifest is the source of truth the status layer
 //! ([`crate::status`]) and the facade (A6) consult to tell
@@ -84,6 +88,11 @@ pub const MANIFEST_FILE: &str = "apps-manifest.json";
 /// tolerated — additive same-version changes remain readable. When the
 /// schema grows, this constant, the reader, and an explicit migrate step
 /// move together.
+///
+/// The loosening of [`InstallRecord::plan`] to `Option` (adopted records
+/// serialize `"plan": null`) deliberately stayed within version 1: no
+/// published reader exists to be version-skewed, and bumping without a
+/// migration would quarantine every existing v1 document.
 const SCHEMA_VERSION: u32 = 1;
 
 /// Convenience alias for results of manifest persistence operations.
@@ -168,6 +177,48 @@ pub enum NativeIds {
         /// gates probing to a matching backend.
         family: DistroFamily,
     },
+    /// A direct-download install's provenance: the URL it came from, the
+    /// sha256 it verified against, and the path the binary landed at —
+    /// the last one is both the presence probe and the uninstall target
+    /// (gated with the `direct` feature).
+    #[cfg(feature = "direct")]
+    Direct {
+        /// The artifact URL the install downloaded.
+        url: String,
+        /// The sha256 hex digest the install verified against; `None` when
+        /// the source published none and the verifier ran lenient.
+        checksum: Option<String>,
+        /// The absolute install-dir path of the installed binary.
+        bin_path: String,
+    },
+    /// A globally-installed npm package, by package name.
+    Npm {
+        /// npm package name as installed (never the `@`-joined spec — the
+        /// version lives in the record's own version slot).
+        package: String,
+    },
+    /// A cargo-installed crate, by crate name.
+    Cargo {
+        /// Crate name as installed.
+        #[serde(rename = "crate")]
+        crate_: String,
+    },
+    /// A pipx-installed Python app, by package name.
+    Pipx {
+        /// Package name pipx installed.
+        package: String,
+    },
+    /// A uv-managed Python tool, by package name.
+    Uv {
+        /// Package name uv installed.
+        package: String,
+    },
+    /// A mise-managed tool, by tool name (gated with the `mise` feature).
+    #[cfg(feature = "mise")]
+    Mise {
+        /// mise tool name (`node`, `npm:prettier`, `cargo:ripgrep`).
+        tool: String,
+    },
 }
 
 impl NativeIds {
@@ -179,6 +230,14 @@ impl NativeIds {
             Self::Homebrew { .. } => BackendId::Homebrew,
             Self::Flatpak { .. } => BackendId::Flatpak,
             Self::Distro { family, .. } => BackendId::Distro(*family),
+            #[cfg(feature = "direct")]
+            Self::Direct { .. } => BackendId::Direct,
+            Self::Npm { .. } => BackendId::Npm,
+            Self::Cargo { .. } => BackendId::Cargo,
+            Self::Pipx { .. } => BackendId::Pipx,
+            Self::Uv { .. } => BackendId::Uv,
+            #[cfg(feature = "mise")]
+            Self::Mise { .. } => BackendId::Mise,
         }
     }
 }
@@ -191,7 +250,9 @@ impl NativeIds {
 /// version is what the backend's post-install probe reported (`None` when
 /// the backend could not report one), the timestamp is a Unix-epoch
 /// seconds stamp (chrono is not a workspace dep; epoch seconds are
-/// serde-trivial and human-readable on demand).
+/// serde-trivial and human-readable on demand). Adopted records
+/// ([`InstallRecord::adopted`]) claim a detected install toride never
+/// executed, so they carry no plan.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InstallRecord {
     /// Backend that performed the install. Always equal to
@@ -206,10 +267,11 @@ pub struct InstallRecord {
     /// Install time as Unix epoch seconds (`SystemTime::now` since
     /// `UNIX_EPOCH`; a clock before 1970 records `0`).
     pub installed_at: u64,
-    /// The executed plan, verbatim — the record's source note. Persists
+    /// The executed plan, verbatim — the record's source note; `None` on
+    /// adopted records (a claimed detection executed nothing). Persists
     /// through the plan's serde round-trip the A1 interface notes
     /// sanctioned for the manifest layer.
-    pub plan: InstallPlan,
+    pub plan: Option<InstallPlan>,
 }
 
 impl InstallRecord {
@@ -223,7 +285,22 @@ impl InstallRecord {
             ids,
             version,
             installed_at: epoch_now(),
-            plan,
+            plan: Some(plan),
+        }
+    }
+
+    /// Record a claimed-not-executed install (the adopt path): the
+    /// identifiers the caller asserts present, the version the confirming
+    /// probe reported, no source plan. Derives `backend` from the ids so
+    /// the two can never disagree.
+    #[must_use]
+    pub fn adopted(ids: NativeIds, version: Option<String>) -> Self {
+        Self {
+            backend: ids.backend(),
+            ids,
+            version,
+            installed_at: epoch_now(),
+            plan: None,
         }
     }
 
@@ -232,6 +309,14 @@ impl InstallRecord {
     #[must_use]
     pub const fn with_installed_at(mut self, installed_at: u64) -> Self {
         self.installed_at = installed_at;
+        self
+    }
+
+    /// Replace the recorded version — consume-and-return; the update path
+    /// rewrites what the backend reports after an upgrade.
+    #[must_use]
+    pub fn with_version(mut self, version: Option<String>) -> Self {
+        self.version = version;
         self
     }
 }
@@ -261,7 +346,8 @@ fn epoch_now() -> u64 {
 ///
 /// # fn demo(plan: toride_apps::InstallPlan) -> toride_apps::manifest::ManifestResult<()> {
 /// let mut manifest = InstallManifest::load("…/apps-manifest.json")?; // missing file = empty
-/// manifest.record(InstallRecord::new(plan, NativeIds::Homebrew {
+/// # let id = plan.app.clone();
+/// manifest.record(&id, InstallRecord::new(plan, NativeIds::Homebrew {
 ///     token: "firefox".to_owned(),
 ///     cask: true,
 /// }, Some("138.0".to_owned())));
@@ -368,11 +454,12 @@ impl InstallManifest {
         &self.path
     }
 
-    /// Record (insert or replace) `record`, keyed by its app id.
-    /// Returns the displaced record when one existed for the same app —
-    /// a re-install replaces its own earlier record.
-    pub fn record(&mut self, record: InstallRecord) -> Option<InstallRecord> {
-        self.entries.insert(record.plan.app.clone(), record)
+    /// Record (insert or replace) `record` under `id` — the explicit key,
+    /// not `record.plan.app`, is the identity (adopted records carry no
+    /// plan). Returns the displaced record when one existed for the same
+    /// app: a re-install replaces its own earlier record.
+    pub fn record(&mut self, id: &TorideId, record: InstallRecord) -> Option<InstallRecord> {
+        self.entries.insert(id.clone(), record)
     }
 
     /// Remove and return the record for `id` (post-uninstall bookkeeping).
@@ -457,6 +544,59 @@ impl InstallManifest {
         let temp_name = format!(".{name}.tmp-{}-{unique}", std::process::id());
         Ok(self.path.with_file_name(temp_name))
     }
+
+    /// The manifest's whole ledger as one portable [`RecordSnapshot`] —
+    /// the export direction of the store seam.
+    #[must_use]
+    pub fn snapshot(&self) -> RecordSnapshot {
+        RecordSnapshot {
+            records: self.entries.clone(),
+        }
+    }
+
+    /// Rebuild a manifest bound to `path` holding exactly `snapshot`'s
+    /// records — the import direction of the store seam (no I/O;
+    /// [`InstallManifest::save`] persists it).
+    #[must_use]
+    pub fn from_snapshot(path: impl Into<Utf8PathBuf>, snapshot: RecordSnapshot) -> Self {
+        Self {
+            path: path.into(),
+            entries: snapshot.records,
+        }
+    }
+}
+
+/// The whole ledger as one portable, serde document — the import/export
+/// unit exchanged through the [`RecordStore`] seam between toride
+/// instances and embedders that mirror their own receipts.
+///
+/// [`RecordStore`]: crate::store::RecordStore
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecordSnapshot {
+    /// The records, keyed by app id — id-ordered in the serialized form.
+    pub records: BTreeMap<TorideId, InstallRecord>,
+}
+
+impl RecordSnapshot {
+    /// The empty snapshot — no records.
+    #[must_use]
+    pub fn empty() -> Self {
+        Self {
+            records: BTreeMap::new(),
+        }
+    }
+
+    /// Consume into the raw id-keyed map.
+    #[must_use]
+    pub fn into_records(self) -> BTreeMap<TorideId, InstallRecord> {
+        self.records
+    }
+}
+
+impl From<BTreeMap<TorideId, InstallRecord>> for RecordSnapshot {
+    fn from(records: BTreeMap<TorideId, InstallRecord>) -> Self {
+        Self { records }
+    }
 }
 
 /// The on-disk document: schema version plus the id-keyed records. A raw
@@ -487,7 +627,7 @@ struct ManifestVersion {
 /// Build a [`ManifestError::Corrupt`] from a free-form message — for the
 /// schema-gate rejections no serde parse failure would phrase (version
 /// found vs supported).
-fn corrupt(message: impl std::fmt::Display) -> ManifestError {
+pub(crate) fn corrupt(message: impl std::fmt::Display) -> ManifestError {
     use serde::de::Error as _;
     ManifestError::Corrupt(serde_json::Error::custom(message))
 }
@@ -698,26 +838,36 @@ mod tests {
     fn record_then_get_round_trips_the_entry_under_its_app_id() {
         let mut manifest = InstallManifest::at(temp_manifest_path("record-get"));
         let record = cask_record("brave-browser", "brave-browser", Some("1.96.59"));
-        manifest.record(record.clone());
+        manifest.record(&app_id("brave-browser"), record.clone());
         assert_eq!(manifest.get(&app_id("brave-browser")), Some(&record));
     }
 
     #[test]
-    fn record_keys_the_entry_by_the_plan_app_not_the_token() {
-        // The join key against the outside world is the TorideId; a token
-        // differing from the slug must not create a second identity.
+    fn record_keys_the_entry_by_the_explicit_id_not_the_token() {
         let mut manifest = InstallManifest::at(temp_manifest_path("keying"));
-        manifest.record(cask_record("brave-browser", "different-token", None));
+        manifest.record(
+            &app_id("brave-browser"),
+            cask_record("brave-browser", "different-token", None),
+        );
         assert!(manifest.get(&app_id("different-token")).is_none());
         assert!(manifest.get(&app_id("brave-browser")).is_some());
+        manifest.record(
+            &app_id("adopted"),
+            cask_record("elsewhere", "elsewhere", None).with_installed_at(1),
+        );
+        assert!(manifest.get(&app_id("elsewhere")).is_none());
+        assert!(manifest.get(&app_id("adopted")).is_some());
     }
 
     #[test]
     fn record_replaces_an_existing_entry_and_returns_the_displaced_one() {
         let mut manifest = InstallManifest::at(temp_manifest_path("replace"));
-        manifest.record(cask_record("brave", "brave-browser", Some("1.0")));
+        manifest.record(
+            &app_id("brave"),
+            cask_record("brave", "brave-browser", Some("1.0")),
+        );
         let second = cask_record("brave", "brave-browser", Some("2.0"));
-        let displaced = manifest.record(second.clone());
+        let displaced = manifest.record(&app_id("brave"), second.clone());
         assert_eq!(
             displaced.as_ref().map(|r| r.version.as_deref()),
             Some(Some("1.0"))
@@ -729,7 +879,10 @@ mod tests {
     #[test]
     fn remove_returns_the_record_and_clears_the_slot() {
         let mut manifest = InstallManifest::at(temp_manifest_path("remove"));
-        manifest.record(cask_record("brave", "brave-browser", None));
+        manifest.record(
+            &app_id("brave"),
+            cask_record("brave", "brave-browser", None),
+        );
         let removed = manifest.remove(&app_id("brave"));
         assert!(removed.is_some());
         assert!(manifest.get(&app_id("brave")).is_none());
@@ -746,13 +899,14 @@ mod tests {
     fn list_returns_all_records_ordered_by_app_id() {
         let mut manifest = InstallManifest::at(temp_manifest_path("list"));
         // Inserted out of id order on purpose.
-        manifest.record(cask_record("zed", "zed", None));
-        manifest.record(cask_record("alpha", "alpha", None));
-        manifest.record(cask_record("mid", "mid", None));
+        manifest.record(&app_id("zed"), cask_record("zed", "zed", None));
+        manifest.record(&app_id("alpha"), cask_record("alpha", "alpha", None));
+        manifest.record(&app_id("mid"), cask_record("mid", "mid", None));
         let ids: Vec<String> = manifest
-            .list()
-            .into_iter()
-            .map(|record| record.plan.app.as_str().to_owned())
+            .snapshot()
+            .records
+            .keys()
+            .map(|id| id.as_str().to_owned())
             .collect();
         assert_eq!(ids, ["alpha", "mid", "zed"]);
     }
@@ -784,12 +938,12 @@ mod tests {
             dry_run: false,
             requires_elevation: true,
         };
-        manifest.record(cask_record(
-            "brave-browser",
-            "brave-browser",
-            Some("1.96.59"),
-        ));
         manifest.record(
+            &app_id("brave-browser"),
+            cask_record("brave-browser", "brave-browser", Some("1.96.59")),
+        );
+        manifest.record(
+            &app_id("brave-flatpak"),
             InstallRecord::new(
                 flatpak_plan,
                 NativeIds::Flatpak {
@@ -802,6 +956,7 @@ mod tests {
             .with_installed_at(1_700_000_001),
         );
         manifest.record(
+            &app_id("brave-distro"),
             InstallRecord::new(
                 distro_plan,
                 NativeIds::Distro {
@@ -834,7 +989,10 @@ mod tests {
     fn the_written_document_carries_the_schema_version_and_an_apps_wrapper() {
         let path = temp_manifest_path("document-shape");
         let mut manifest = InstallManifest::at(&path);
-        manifest.record(cask_record("brave-browser", "brave-browser", None));
+        manifest.record(
+            &app_id("brave-browser"),
+            cask_record("brave-browser", "brave-browser", None),
+        );
         manifest.save().unwrap();
 
         let document: serde_json::Value =
@@ -851,10 +1009,13 @@ mod tests {
     fn save_overwrites_the_previous_document_state() {
         let path = temp_manifest_path("overwrite");
         let mut manifest = InstallManifest::at(&path);
-        manifest.record(cask_record("brave-browser", "brave-browser", None));
+        manifest.record(
+            &app_id("brave-browser"),
+            cask_record("brave-browser", "brave-browser", None),
+        );
         manifest.save().unwrap();
         manifest.remove(&app_id("brave-browser"));
-        manifest.record(cask_record("firefox", "firefox", None));
+        manifest.record(&app_id("firefox"), cask_record("firefox", "firefox", None));
         manifest.save().unwrap();
 
         let reloaded = InstallManifest::load(&path).unwrap();
@@ -869,7 +1030,10 @@ mod tests {
         let path = temp_manifest_path("no-litter");
         let parent = path.parent().unwrap().to_owned();
         let mut manifest = InstallManifest::at(&path);
-        manifest.record(cask_record("brave-browser", "brave-browser", None));
+        manifest.record(
+            &app_id("brave-browser"),
+            cask_record("brave-browser", "brave-browser", None),
+        );
         manifest.save().unwrap();
 
         let mut entries: Vec<String> = std::fs::read_dir(parent.as_std_path())
@@ -939,7 +1103,10 @@ mod tests {
     fn save_creates_missing_parent_directories() {
         let path = temp_manifest_path("parents").join("deep").join("nested");
         let mut manifest = InstallManifest::at(&path);
-        manifest.record(cask_record("brave-browser", "brave-browser", None));
+        manifest.record(
+            &app_id("brave-browser"),
+            cask_record("brave-browser", "brave-browser", None),
+        );
         manifest.save().unwrap();
         assert!(
             path.as_std_path().is_file(),
@@ -994,12 +1161,108 @@ mod tests {
         let record = cask_record("brave", "brave", None);
         // `with_installed_at` in the fixture pins 1_700_000_000; assert
         // the raw constructor stamps something sane instead.
-        let fresh = InstallRecord::new(record.plan.clone(), record.ids.clone(), None);
+        let plan = record
+            .plan
+            .clone()
+            .expect("executed fixture carries a plan");
+        let fresh = InstallRecord::new(plan, record.ids.clone(), None);
         assert!(
             fresh.installed_at >= 1_700_000_000,
             "a sane current epoch, got {}",
             fresh.installed_at
         );
+    }
+
+    #[test]
+    fn install_record_adopted_carries_no_plan_and_derives_the_backend() {
+        let record = InstallRecord::adopted(
+            NativeIds::Homebrew {
+                token: "firefox".to_owned(),
+                cask: true,
+            },
+            Some("138.0.1".to_owned()),
+        )
+        .with_installed_at(1_700_000_000);
+        assert_eq!(record.plan, None);
+        assert_eq!(record.backend, BackendId::Homebrew);
+        assert_eq!(record.version.as_deref(), Some("138.0.1"));
+        let fresh = InstallRecord::adopted(record.ids.clone(), None);
+        assert!(
+            fresh.installed_at >= 1_700_000_000,
+            "a sane current epoch, got {}",
+            fresh.installed_at
+        );
+    }
+
+    #[test]
+    fn adopted_records_round_trip_through_save_and_load_with_a_null_plan() {
+        let path = temp_manifest_path("adopted-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        let adopted = InstallRecord::adopted(
+            NativeIds::Distro {
+                package: "brave-browser".to_owned(),
+                family: DistroFamily::Debian,
+            },
+            Some("1.4.2".to_owned()),
+        )
+        .with_installed_at(1_700_000_000);
+        manifest.record(&app_id("brave"), adopted.clone());
+        manifest.save().unwrap();
+
+        let reloaded = InstallManifest::load(&path).unwrap();
+        assert_eq!(reloaded.get(&app_id("brave")), Some(&adopted));
+        assert_eq!(
+            reloaded.get(&app_id("brave")).and_then(|r| r.plan.as_ref()),
+            None
+        );
+        let document: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+        assert_eq!(document["apps"]["brave"]["plan"], serde_json::json!(null));
+    }
+
+    #[test]
+    fn snapshot_and_from_snapshot_round_trip_the_whole_ledger() {
+        let path = temp_manifest_path("snapshot-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        manifest.record(
+            &app_id("brave-browser"),
+            cask_record("brave-browser", "brave-browser", Some("1.96.59")),
+        );
+        manifest.record(
+            &app_id("adopted"),
+            InstallRecord::adopted(
+                NativeIds::Flatpak {
+                    app_id: "com.brave.Browser".to_owned(),
+                    app_ref: None,
+                    installation: FlatpakInstallation::User,
+                },
+                None,
+            )
+            .with_installed_at(1_700_000_002),
+        );
+        let snapshot = manifest.snapshot();
+        let rebuilt =
+            InstallManifest::from_snapshot(temp_manifest_path("elsewhere"), snapshot.clone());
+        assert_eq!(rebuilt.snapshot(), snapshot);
+        assert_eq!(snapshot.records.len(), 2);
+        assert_eq!(RecordSnapshot::empty().into_records().len(), 0);
+    }
+
+    #[test]
+    fn record_snapshot_serializes_as_an_id_keyed_records_map() {
+        let mut records = BTreeMap::new();
+        records.insert(
+            app_id("brave-browser"),
+            cask_record("brave-browser", "brave-browser", Some("1.96.59")),
+        );
+        let snapshot = RecordSnapshot::from(records);
+        let json = serde_json::to_value(&snapshot).unwrap();
+        assert_eq!(
+            json["records"]["brave-browser"]["ids"]["Homebrew"]["token"],
+            serde_json::json!("brave-browser")
+        );
+        let back: RecordSnapshot = serde_json::from_value(json).unwrap();
+        assert_eq!(back, snapshot);
     }
 
     // --- native id mapping --------------------------------------------------------
@@ -1031,6 +1294,248 @@ mod tests {
             .backend(),
             BackendId::Distro(DistroFamily::Fedora)
         );
+    }
+
+    #[test]
+    fn language_native_ids_map_to_their_backend_ids() {
+        assert_eq!(
+            NativeIds::Npm {
+                package: "typescript".to_owned()
+            }
+            .backend(),
+            BackendId::Npm
+        );
+        assert_eq!(
+            NativeIds::Cargo {
+                crate_: "ripgrep".to_owned()
+            }
+            .backend(),
+            BackendId::Cargo
+        );
+        assert_eq!(
+            NativeIds::Pipx {
+                package: "black".to_owned()
+            }
+            .backend(),
+            BackendId::Pipx
+        );
+        assert_eq!(
+            NativeIds::Uv {
+                package: "ruff".to_owned()
+            }
+            .backend(),
+            BackendId::Uv
+        );
+    }
+
+    #[test]
+    fn language_records_round_trip_through_save_and_load() {
+        let path = temp_manifest_path("language-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        let language_records = [
+            (
+                app_id("typescript"),
+                InstallRecord::new(
+                    plan_for(
+                        "typescript",
+                        Operation::NpmInstall {
+                            package: "typescript".to_owned(),
+                            version: Some(crate::backend::Version::new("5.4.5")),
+                            global: true,
+                        },
+                    ),
+                    NativeIds::Npm {
+                        package: "typescript".to_owned(),
+                    },
+                    Some("5.4.5".to_owned()),
+                ),
+            ),
+            (
+                app_id("ripgrep"),
+                InstallRecord::new(
+                    plan_for(
+                        "ripgrep",
+                        Operation::CargoInstall {
+                            crate_: "ripgrep".to_owned(),
+                            version: None,
+                        },
+                    ),
+                    NativeIds::Cargo {
+                        crate_: "ripgrep".to_owned(),
+                    },
+                    None,
+                ),
+            ),
+            (
+                app_id("black"),
+                InstallRecord::adopted(
+                    NativeIds::Pipx {
+                        package: "black".to_owned(),
+                    },
+                    Some("24.0.0".to_owned()),
+                ),
+            ),
+            (
+                app_id("ruff"),
+                InstallRecord::new(
+                    plan_for(
+                        "ruff",
+                        Operation::UvInstall {
+                            package: "ruff".to_owned(),
+                            version: None,
+                        },
+                    ),
+                    NativeIds::Uv {
+                        package: "ruff".to_owned(),
+                    },
+                    None,
+                ),
+            ),
+        ];
+        for (id, record) in language_records.clone() {
+            manifest.record(&id, record);
+        }
+        manifest.save().unwrap();
+
+        let reloaded = InstallManifest::load(&path).unwrap();
+        assert_eq!(reloaded.len(), 4);
+        for (id, record) in &language_records {
+            assert_eq!(reloaded.get(id), Some(record));
+        }
+    }
+
+    #[test]
+    fn language_native_ids_serialize_as_the_tagged_enum_shape() {
+        let json = serde_json::to_value(&NativeIds::Npm {
+            package: "typescript".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(json["Npm"]["package"], serde_json::json!("typescript"));
+        let back: NativeIds = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            back,
+            NativeIds::Npm {
+                package: "typescript".to_owned()
+            }
+        );
+        let json = serde_json::to_value(&NativeIds::Cargo {
+            crate_: "ripgrep".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(
+            json["Cargo"]["crate"],
+            serde_json::json!("ripgrep"),
+            "the wire key is `crate`, never the Rust keyword escape"
+        );
+        let back: NativeIds = serde_json::from_value(json).unwrap();
+        assert_eq!(
+            back,
+            NativeIds::Cargo {
+                crate_: "ripgrep".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn native_ids_read_pre_language_variant_documents_identically() {
+        let legacy: [(&str, NativeIds); 4] = [
+            (
+                r#"{"Homebrew":{"token":"firefox","cask":true}}"#,
+                NativeIds::Homebrew {
+                    token: "firefox".to_owned(),
+                    cask: true,
+                },
+            ),
+            (
+                r#"{"Flatpak":{"app_id":"com.brave.Browser","app_ref":null,"installation":"User"}}"#,
+                NativeIds::Flatpak {
+                    app_id: "com.brave.Browser".to_owned(),
+                    app_ref: None,
+                    installation: FlatpakInstallation::User,
+                },
+            ),
+            (
+                r#"{"Distro":{"package":"firefox","family":"Debian"}}"#,
+                NativeIds::Distro {
+                    package: "firefox".to_owned(),
+                    family: DistroFamily::Debian,
+                },
+            ),
+            (
+                r#"{"Homebrew":{"token":"ripgrep","cask":false}}"#,
+                NativeIds::Homebrew {
+                    token: "ripgrep".to_owned(),
+                    cask: false,
+                },
+            ),
+        ];
+        for (json, ids) in legacy {
+            let back: NativeIds = serde_json::from_str(json).unwrap();
+            assert_eq!(back, ids, "{json}");
+        }
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn mise_records_round_trip_and_map_to_the_mise_backend() {
+        let path = temp_manifest_path("mise-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        let record = InstallRecord::new(
+            plan_for(
+                "node",
+                Operation::MiseInstall {
+                    tool: "node".to_owned(),
+                    version: Some(crate::backend::Version::new("22.1.0")),
+                },
+            ),
+            NativeIds::Mise {
+                tool: "node".to_owned(),
+            },
+            Some("22.1.0".to_owned()),
+        )
+        .with_installed_at(1_700_000_000);
+        manifest.record(&app_id("node"), record.clone());
+        manifest.save().unwrap();
+        let reloaded = InstallManifest::load(&path).unwrap();
+        assert_eq!(reloaded.get(&app_id("node")), Some(&record));
+        assert_eq!(record.backend, BackendId::Mise);
+        assert_eq!(record.ids.backend(), BackendId::Mise);
+    }
+
+    #[cfg(feature = "direct")]
+    #[test]
+    fn direct_records_round_trip_their_provenance_through_save_and_load() {
+        let path = temp_manifest_path("direct-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        let plan = plan_for(
+            "ripgrep",
+            Operation::DirectInstall {
+                url: "https://example.com/rg-14.1.0".to_owned(),
+                checksum: Some(
+                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_owned(),
+                ),
+                bin_name: "rg".to_owned(),
+            },
+        );
+        let record = InstallRecord::new(
+            plan,
+            NativeIds::Direct {
+                url: "https://example.com/rg-14.1.0".to_owned(),
+                checksum: Some(
+                    "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".to_owned(),
+                ),
+                bin_path: "/home/u/.local/bin/rg".to_owned(),
+            },
+            None,
+        )
+        .with_installed_at(1_700_000_000);
+        manifest.record(&app_id("ripgrep"), record.clone());
+        manifest.save().unwrap();
+
+        let reloaded = InstallManifest::load(&path).unwrap();
+        assert_eq!(reloaded.get(&app_id("ripgrep")), Some(&record));
+        assert_eq!(record.backend, BackendId::Direct);
+        assert_eq!(record.ids.backend(), BackendId::Direct);
     }
 
     // --- default location ----------------------------------------------------------

@@ -15,8 +15,8 @@
 //!   insertion applies, and [`status_is_ignored`] names the statuses the
 //!   index drops at build time.
 //! - **Fetch half** (thin client, `http`-feature-gated):
-//!   [`RepologyClient::fetch_project`] and
-//!   [`RepologyClient::resolve_by_name`] (the `/tools/project-by` reverse
+//!   `RepologyClient::fetch_project` and
+//!   `RepologyClient::resolve_by_name` (the `/tools/project-by` reverse
 //!   oracle, 302/300/404), serialized to ≥1 request/second with a
 //!   descriptive User-Agent and an aggressive cache per the upstream
 //!   fair-use policy (repology.md §4).
@@ -1042,8 +1042,8 @@ mod integration_tests {
         assert!(!candidates.is_empty(), "live project has entries");
         for candidate in &candidates {
             // (1) the mandatory fields are populated;
-            assert!(!candidate.repo.is_empty());
-            assert!(!candidate.version.value.is_empty());
+            assert_ne!(candidate.repo, "");
+            assert_ne!(candidate.version.value, "");
             // (2) the index can insert — an id is selectable per entry;
             assert!(
                 select_source_id(candidate).is_some(),
@@ -1085,7 +1085,7 @@ mod integration_tests {
             super::ProjectResolution::Resolved { project } => project,
             other => panic!("expected Resolved, got {other:?}"),
         };
-        assert!(!project.is_empty());
+        assert_ne!(project, "");
         // An unknown name 404s into the documented Unknown fallback.
         let unknown = client
             .resolve_by_name("homebrew", NameType::Srcname, "no-such-toride-package-xyz")

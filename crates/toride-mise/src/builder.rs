@@ -34,7 +34,8 @@ use crate::error::MiseResult;
 /// calling [`MiseBuilder::build`] to produce a [`Mise`].
 #[allow(clippy::struct_excessive_bools)]
 pub struct MiseBuilder {
-    /// The async command runner. Defaults to [`TokioRunner`] if not set.
+    /// The async command runner. Defaults to
+    /// [`TokioRunner`](toride_runner::tokio_runner::TokioRunner) if not set.
     runner: Option<Arc<dyn toride_runner::AsyncRunner>>,
     /// Optional streaming runner for real-time output events.
     streaming_runner: Option<Arc<dyn toride_runner::AsyncStreamingRunner>>,

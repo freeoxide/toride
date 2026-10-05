@@ -4,7 +4,7 @@ use super::*;
 fn parse_options_should_return_defaults_when_input_is_empty() {
     let opts = parse_options("").unwrap();
     assert!(opts.command.is_none());
-    assert!(opts.from.is_empty());
+    assert_eq!(opts.from, Vec::<String>::new());
     assert!(!opts.no_pty);
 }
 
@@ -161,7 +161,7 @@ fn parse_options_from_single_value() {
 #[test]
 fn parse_options_from_empty_string() {
     let opts = parse_options("from=\"\"").unwrap();
-    assert!(opts.from.is_empty());
+    assert_eq!(opts.from, Vec::<String>::new());
 }
 
 #[test]
@@ -179,7 +179,7 @@ fn parse_options_permit_open_comma_separated_with_spaces() {
 #[test]
 fn parse_options_permit_open_empty_string() {
     let opts = parse_options("permit-open=\"\"").unwrap();
-    assert!(opts.permit_open.is_empty());
+    assert_eq!(opts.permit_open, Vec::<String>::new());
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn parse_options_environment_without_equals() {
 fn parse_options_whitespace_only() {
     let opts = parse_options("   ").unwrap();
     assert!(opts.command.is_none());
-    assert!(opts.from.is_empty());
+    assert_eq!(opts.from, Vec::<String>::new());
     assert!(!opts.no_pty);
 }
 
@@ -224,20 +224,20 @@ fn parse_options_leading_comma() {
 fn parse_options_from_only_commas() {
     let opts = parse_options("from=\",,,\"").unwrap();
     // All empty segments should be filtered out
-    assert!(opts.from.is_empty());
+    assert_eq!(opts.from, Vec::<String>::new());
 }
 
 #[test]
 fn parse_options_permit_open_only_commas() {
     let opts = parse_options("permit-open=\",,,\"").unwrap();
-    assert!(opts.permit_open.is_empty());
+    assert_eq!(opts.permit_open, Vec::<String>::new());
 }
 
 #[test]
 fn parse_options_from_with_whitespace_segments() {
     let opts = parse_options("from=\"  ,  ,  \"").unwrap();
     // Whitespace-only segments should be filtered out
-    assert!(opts.from.is_empty());
+    assert_eq!(opts.from, Vec::<String>::new());
 }
 
 #[test]
@@ -373,7 +373,7 @@ fn parse_options_empty_option_name() {
 fn parse_options_only_commas() {
     let opts = parse_options(",,,").unwrap();
     assert!(opts.command.is_none());
-    assert!(opts.from.is_empty());
+    assert_eq!(opts.from, Vec::<String>::new());
 }
 
 #[test]

@@ -629,8 +629,8 @@ mod tests {
 
     #[test]
     fn parse_empty_returns_empty_vec() {
-        assert!(parse_firewalls("").unwrap().is_empty());
-        assert!(parse_firewalls("   \n  ").unwrap().is_empty());
+        assert_eq!(parse_firewalls("").unwrap(), Vec::new());
+        assert_eq!(parse_firewalls("   \n  ").unwrap(), Vec::new());
     }
 
     #[test]

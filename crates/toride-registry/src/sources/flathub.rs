@@ -17,7 +17,7 @@
 //!   for the per-app `.flatpakref` pointer file consumed by the one-time
 //!   `flatpak remote-add` setup flow.
 //! - **Fetch half** (thin, raw body text out — never deserialized values,
-//!   DESIGN.md §3.1): [`FlathubClient`] and the [`FlathubAdapter`] that
+//!   DESIGN.md §3.1): `FlathubClient` and the `FlathubAdapter` that
 //!   binds it to the [`Adapter`](crate::adapter::Adapter) trait. Both live
 //!   behind the crate's `http` feature so the parsers build fully offline
 //!   (DESIGN.md §9).
@@ -799,7 +799,7 @@ fn http_error(url: &str, error: &reqwest::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Availability;
+    use crate::model::{Availability, VerificationPolicy};
 
     /// Manifest-dir-anchored fixture root (conventions.md §7: fixtures are
     /// loaded at runtime, never `include_str!`).
@@ -878,6 +878,30 @@ mod tests {
     }
 
     #[test]
+    fn search_and_detail_apps_carry_the_out_of_band_marker() {
+        let apps = parse_search_envelope(&read_fixture("search-brave-browser.json"))
+            .expect("brave search envelope parses");
+        assert_eq!(
+            apps[0].artifacts,
+            Vec::new(),
+            "flathub publishes no checksums"
+        );
+        assert_eq!(
+            apps[0].sources[0].source.verification_policy(),
+            VerificationPolicy::OutOfBand,
+            "the empty artifact list means unverifiable, not no downloads"
+        );
+
+        let detail = parse_appstream_detail(&read_fixture("appstream-com.brave.Browser.json"))
+            .expect("brave detail parses");
+        assert_eq!(detail.artifacts, Vec::new());
+        assert_eq!(
+            detail.sources[0].source.verification_policy(),
+            VerificationPolicy::OutOfBand
+        );
+    }
+
+    #[test]
     fn search_envelope_parses_vscode_hits() {
         let apps = parse_search_envelope(&read_fixture("search-visual-studio-code.json"))
             .expect("vscode search envelope parses");
@@ -925,7 +949,7 @@ mod tests {
         // A clean parse proves they are tolerated and dropped.
         let apps = parse_search_envelope(&read_fixture("search-brave-browser.json"))
             .expect("facet-bearing envelope parses");
-        assert!(!apps.is_empty());
+        assert_ne!(apps, Vec::<App>::new());
     }
 
     #[test]
@@ -1139,7 +1163,7 @@ mod tests {
         let payload = r#"{"id":"org.example.App","name":"Example","summary":"s",
             "description":"d","bundle":{"value":"app/org.example.App/riscv64/stable"}}"#;
         let app = parse_appstream_detail(payload).expect("parses");
-        assert!(app.platforms.is_empty());
+        assert_eq!(app.platforms, Vec::new());
     }
 
     #[test]

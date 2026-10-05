@@ -223,7 +223,10 @@ mod tests {
     fn split_dns_empty_when_field_absent() {
         let raw = serde_json::json!({ "MagicDNS": false });
         let config = DnsManager::parse(&raw);
-        assert!(config.split_dns.is_empty());
+        assert_eq!(
+            config.split_dns,
+            [] as [(std::string::String, std::string::String); 0]
+        );
         assert!(!config.magic_dns);
     }
 
