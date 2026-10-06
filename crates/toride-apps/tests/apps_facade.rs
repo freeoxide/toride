@@ -4393,3 +4393,376 @@ async fn a_foreign_npm_install_reports_foreign_and_never_records() {
     assert!(apps.records().is_empty(), "nothing was recorded");
     fake.assert_no_unmatched_calls();
 }
+
+// ---------------------------------------------------------------------------
+// detect_backends auto-attach — language backends
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn detect_backends_auto_attaches_a_discoverable_npm_backend() {
+    if !toride_runner::discovery::binary_exists("npm") {
+        return;
+    }
+    let path = temp_manifest_path("detect-npm");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        .respond(
+            npm_install_global_spec("typescript"),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        );
+    let adapter: Arc<dyn Adapter> =
+        FixtureAdapter::new(SourceKind::Distro, vec![typescript_npm_app()]);
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam)
+        .target(macos())
+        .manifest_path(&path)
+        .adapter(adapter)
+        .detect_backends()
+        .expect("detection skips absent binaries, never errors")
+        .build()
+        .expect("facade builds from the detected backends");
+
+    let outcome = apps
+        .ensure_installed(&id("typescript"), AppInstallOptions::new())
+        .await
+        .expect("the auto-attached npm backend executes the plan");
+    match outcome {
+        EnsureAppOutcome::Installed {
+            backend,
+            version,
+            verified,
+            ..
+        } => {
+            assert_eq!(backend, BackendId::Npm);
+            assert_eq!(version.as_deref(), Some("5.4.5"));
+            assert!(verified);
+        }
+        other @ EnsureAppOutcome::AlreadyPresent(_) => panic!("expected Installed, got {other:?}"),
+    }
+    fake.assert_called_with(&npm_install_global_spec("typescript"));
+    fake.assert_no_unmatched_calls();
+}
+
+// ---------------------------------------------------------------------------
+// Batch verbs
+// ---------------------------------------------------------------------------
+
+fn prettier_npm_app() -> App {
+    app(
+        "prettier",
+        "Prettier",
+        InstallMethod::Npm {
+            package: "prettier".to_owned(),
+            version: None,
+        },
+    )
+}
+
+fn seed_npm_records(path: &Utf8PathBuf, apps: &[(&str, &str, &str)]) {
+    let mut manifest = InstallManifest::at(path);
+    for &(slug, package, version) in apps {
+        manifest.record(
+            &id(slug),
+            InstallRecord::new(
+                toride_apps::InstallPlan {
+                    app: id(slug),
+                    backend: BackendId::Npm,
+                    operation: toride_apps::Operation::NpmInstall {
+                        package: package.to_owned(),
+                        version: None,
+                        global: true,
+                    },
+                    dry_run: false,
+                    requires_elevation: false,
+                },
+                NativeIds::Npm {
+                    package: package.to_owned(),
+                },
+                Some(version.to_owned()),
+            )
+            .with_installed_at(1_700_000_000),
+        );
+    }
+    manifest.save().expect("seed manifest saves");
+}
+
+#[tokio::test]
+async fn ensure_installed_many_attempts_every_item_and_reports_per_item_outcomes() {
+    let path = temp_manifest_path("batch-install");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        .respond(
+            npm_install_global_spec("typescript"),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        )
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        .respond(
+            npm_install_global_spec("prettier"),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("prettier", "3.2.5")),
+        );
+    let adapter = FixtureAdapter::new(
+        SourceKind::Distro,
+        vec![typescript_npm_app(), prettier_npm_app()],
+    );
+    let mut apps = npm_facade(&fake, &path, vec![adapter.clone()]);
+
+    let outcomes = apps
+        .ensure_installed_many(
+            [id("typescript"), id("ghost-app"), id("prettier")],
+            &AppInstallOptions::new(),
+        )
+        .await;
+
+    assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+    assert_eq!(outcomes[0].id, id("typescript"));
+    match outcomes[0].result.as_ref().expect("first item installs") {
+        EnsureAppOutcome::Installed {
+            backend,
+            version,
+            verified,
+            warning,
+            ..
+        } => {
+            assert_eq!(*backend, BackendId::Npm);
+            assert_eq!(version.as_deref(), Some("5.4.5"));
+            assert!(*verified);
+            assert_eq!(warning, &None);
+        }
+        other @ EnsureAppOutcome::AlreadyPresent(_) => panic!("expected Installed, got {other:?}"),
+    }
+    assert_eq!(outcomes[1].id, id("ghost-app"));
+    assert!(
+        matches!(outcomes[1].result, Err(AppsError::Unresolved { .. })),
+        "{:?}",
+        outcomes[1].result
+    );
+    assert_eq!(outcomes[2].id, id("prettier"));
+    assert!(
+        matches!(
+            outcomes[2]
+                .result
+                .as_ref()
+                .expect("third item installs after the failure"),
+            EnsureAppOutcome::Installed {
+                backend: BackendId::Npm,
+                ..
+            }
+        ),
+        "{:?}",
+        outcomes[2].result
+    );
+    assert_eq!(
+        adapter.lookups().len(),
+        3,
+        "the failing item resolved too, and never stopped the rest"
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn uninstall_many_attempts_every_item_and_reports_per_item_outcomes() {
+    let path = temp_manifest_path("batch-uninstall");
+    seed_npm_records(
+        &path,
+        &[
+            ("typescript", "typescript", "5.4.5"),
+            ("prettier", "prettier", "3.2.5"),
+        ],
+    );
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            npm_uninstall_global_spec("typescript"),
+            CommandOutput::from_stdout("removed 1 package"),
+        )
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        .respond(
+            npm_uninstall_global_spec("prettier"),
+            CommandOutput::from_stdout("removed 1 package"),
+        )
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"));
+    let adapter = FixtureAdapter::new(
+        SourceKind::Distro,
+        vec![typescript_npm_app(), prettier_npm_app()],
+    );
+    let mut apps = npm_facade(&fake, &path, vec![adapter]);
+
+    let outcomes = apps
+        .uninstall_many(
+            [id("typescript"), id("ghost-app"), id("prettier")],
+            AppUninstallOptions::new(),
+        )
+        .await;
+
+    assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+    assert_eq!(outcomes[0].id, id("typescript"));
+    assert!(
+        matches!(
+            outcomes[0].result.as_ref().expect("first item removes"),
+            UninstallAppOutcome::Removed {
+                backend: BackendId::Npm,
+                ..
+            }
+        ),
+        "{:?}",
+        outcomes[0].result
+    );
+    assert_eq!(outcomes[1].id, id("ghost-app"));
+    assert!(
+        matches!(outcomes[1].result, Err(AppsError::Unresolved { .. })),
+        "{:?}",
+        outcomes[1].result
+    );
+    assert_eq!(outcomes[2].id, id("prettier"));
+    assert!(
+        matches!(
+            outcomes[2]
+                .result
+                .as_ref()
+                .expect("third item removes after the failure"),
+            UninstallAppOutcome::Removed {
+                backend: BackendId::Npm,
+                ..
+            }
+        ),
+        "{:?}",
+        outcomes[2].result
+    );
+    assert!(apps.records().is_empty(), "both records were removed");
+    let reloaded = InstallManifest::load(&path).expect("manifest reloads");
+    assert!(reloaded.get(&id("typescript")).is_none());
+    assert!(reloaded.get(&id("prettier")).is_none());
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn batch_verbs_on_an_empty_input_dispatch_nothing() {
+    let path = temp_manifest_path("batch-empty");
+    let fake = FakeRunner::new().strict();
+    let adapter = FixtureAdapter::new(SourceKind::Distro, Vec::new());
+    let mut apps = npm_facade(&fake, &path, vec![adapter]);
+
+    assert!(
+        apps.ensure_installed_many(std::iter::empty::<TorideId>(), &AppInstallOptions::new())
+            .await
+            .is_empty()
+    );
+    assert!(
+        apps.uninstall_many(std::iter::empty::<TorideId>(), AppUninstallOptions::new())
+            .await
+            .is_empty()
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn ensure_installed_many_duplicates_observe_the_earlier_item() {
+    let path = temp_manifest_path("batch-install-duplicate");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        .respond(
+            npm_install_global_spec("typescript"),
+            CommandOutput::from_stdout("added 1 package"),
+        )
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        )
+        .respond(
+            npm_list_spec(),
+            CommandOutput::from_stdout(npm_global_listing("typescript", "5.4.5")),
+        );
+    let adapter = FixtureAdapter::new(SourceKind::Distro, vec![typescript_npm_app()]);
+    let mut apps = npm_facade(&fake, &path, vec![adapter]);
+
+    let outcomes = apps
+        .ensure_installed_many(
+            [id("typescript"), id("typescript")],
+            &AppInstallOptions::new(),
+        )
+        .await;
+
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    assert!(
+        matches!(
+            outcomes[0]
+                .result
+                .as_ref()
+                .expect("first occurrence installs"),
+            EnsureAppOutcome::Installed { .. }
+        ),
+        "{:?}",
+        outcomes[0].result
+    );
+    assert_eq!(
+        outcomes[1]
+            .result
+            .as_ref()
+            .expect("second occurrence answers"),
+        &EnsureAppOutcome::AlreadyPresent(AppStatus::Installed {
+            backend: BackendId::Npm,
+            version: Some("5.4.5".to_owned()),
+        })
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn uninstall_many_duplicates_observe_the_earlier_removal() {
+    let path = temp_manifest_path("batch-uninstall-duplicate");
+    seed_npm_records(&path, &[("typescript", "typescript", "5.4.5")]);
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            npm_uninstall_global_spec("typescript"),
+            CommandOutput::from_stdout("removed 1 package"),
+        )
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"))
+        .respond(npm_list_spec(), CommandOutput::from_stdout("{}"));
+    let adapter = FixtureAdapter::new(SourceKind::Distro, vec![typescript_npm_app()]);
+    let mut apps = npm_facade(&fake, &path, vec![adapter]);
+
+    let outcomes = apps
+        .uninstall_many(
+            [id("typescript"), id("typescript")],
+            AppUninstallOptions::new(),
+        )
+        .await;
+
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    assert!(
+        matches!(
+            outcomes[0]
+                .result
+                .as_ref()
+                .expect("first occurrence removes"),
+            UninstallAppOutcome::Removed { .. }
+        ),
+        "{:?}",
+        outcomes[0].result
+    );
+    assert_eq!(
+        outcomes[1]
+            .result
+            .as_ref()
+            .expect("second occurrence answers"),
+        &UninstallAppOutcome::AlreadyAbsent
+    );
+    fake.assert_no_unmatched_calls();
+}

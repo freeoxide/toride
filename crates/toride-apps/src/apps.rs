@@ -560,6 +560,23 @@ pub enum UninstallAppOutcome {
     },
 }
 
+/// One item's outcome from a batch verb
+/// ([`Apps::ensure_installed_many`] / [`Apps::uninstall_many`] and their
+/// blocking twins): the id, paired with exactly what running the
+/// single-item verb on it produced. Batch verbs attempt **every** item —
+/// one item's failure lives in its own `result` and never stops the rest —
+/// so a batch's full effect is always this list, never a truncated
+/// prefix plus an outer error.
+#[derive(Debug)]
+pub struct BatchOutcome<T> {
+    /// The item's id, echoed in input order.
+    pub id: TorideId,
+    /// What the single-item verb returned for this id
+    /// ([`AppsResult<EnsureAppOutcome>`] for installs,
+    /// [`AppsResult<UninstallAppOutcome>`] for removals).
+    pub result: AppsResult<T>,
+}
+
 // ---------------------------------------------------------------------------
 // The facade
 // ---------------------------------------------------------------------------
@@ -795,6 +812,37 @@ impl Apps {
         })
     }
 
+    /// Ensure every id in `ids` is installed — the batch spelling of
+    /// [`Apps::ensure_installed`]: one shared options set, one
+    /// [`BatchOutcome`] per item in input order.
+    ///
+    /// Partial-failure contract: **every item is attempted**. One item's
+    /// failure is reported inside its own `BatchOutcome::result` and never
+    /// stops the items after it, so the returned list always has one entry
+    /// per input item and is the batch's complete effect — never a
+    /// truncated prefix plus an outer error. Items run sequentially in
+    /// input order, so a duplicated id observes the earlier occurrence's
+    /// effect (the second answers
+    /// [`EnsureAppOutcome::AlreadyPresent`]). An empty input dispatches
+    /// nothing and returns an empty list.
+    pub async fn ensure_installed_many<I>(
+        &mut self,
+        ids: I,
+        options: &AppInstallOptions,
+    ) -> Vec<BatchOutcome<EnsureAppOutcome>>
+    where
+        I: IntoIterator,
+        I::Item: Into<TorideId>,
+    {
+        let mut outcomes = Vec::new();
+        for item in ids {
+            let id = item.into();
+            let result = self.ensure_installed(&id, options.clone()).await;
+            outcomes.push(BatchOutcome { id, result });
+        }
+        outcomes
+    }
+
     /// Uninstall `id`: read the manifest record back, plan the removal
     /// from the **record's own identifiers** (the source of truth — never
     /// re-planned), execute it (zap plumbed for casks), post-verify the
@@ -897,6 +945,32 @@ impl Apps {
             ids: native,
             warning,
         })
+    }
+
+    /// Uninstall every id in `ids` — the batch spelling of
+    /// [`Apps::uninstall`] with [`Apps::ensure_installed_many`]'s
+    /// partial-failure contract: every item is attempted, one entry per
+    /// input item in input order, a failing item's error lives in its own
+    /// [`BatchOutcome::result`] and never stops the rest, duplicates
+    /// observe the earlier removal (the second answers
+    /// [`UninstallAppOutcome::AlreadyAbsent`]), and an empty input
+    /// dispatches nothing.
+    pub async fn uninstall_many<I>(
+        &mut self,
+        ids: I,
+        options: AppUninstallOptions,
+    ) -> Vec<BatchOutcome<UninstallAppOutcome>>
+    where
+        I: IntoIterator,
+        I::Item: Into<TorideId>,
+    {
+        let mut outcomes = Vec::new();
+        for item in ids {
+            let id = item.into();
+            let result = self.uninstall(&id, options).await;
+            outcomes.push(BatchOutcome { id, result });
+        }
+        outcomes
     }
 
     /// Update `id` to its manager's current version: read the manifest
@@ -2001,9 +2075,12 @@ impl AppsBuilder {
 
     /// Attach every backend this host supports: homebrew and flatpak via
     /// their PATH checks, distro via os-release(5) detection plus its PATH
-    /// checks. A backend whose binary is simply absent is skipped (no
-    /// brew on a Linux box is normal, not an error); a distro host with
-    /// no known family is skipped the same way. No command executes.
+    /// checks, and the language backends — npm, cargo, pipx, uv (and mise
+    /// under the `mise` feature) — via each manager's own PATH check, the
+    /// same auto-attach Direct gets under the `direct` feature. A backend
+    /// whose binary is simply absent is skipped (no brew on a Linux box is
+    /// normal, not an error); a distro host with no known family is
+    /// skipped the same way. No command executes.
     ///
     /// The seam the detection shares is kept as the builder's runner, so
     /// the built facade and its backends ride one seam.
@@ -2048,6 +2125,12 @@ impl AppsBuilder {
             Err(BackendError::Command(toride_runner::Error::Other(_))) => {}
             Err(error) => return Err(error.into()),
         }
+        attach_language_backend(&mut builder.npm, NpmBackend::detect(runner.clone()))?;
+        attach_language_backend(&mut builder.cargo, CargoBackend::detect(runner.clone()))?;
+        attach_language_backend(&mut builder.pipx, PipxBackend::detect(runner.clone()))?;
+        attach_language_backend(&mut builder.uv, UvBackend::detect(runner.clone()))?;
+        #[cfg(feature = "mise")]
+        attach_language_backend(&mut builder.mise, MiseBackend::detect(runner.clone()))?;
         builder.runner = Some(runner);
         Ok(builder)
     }
@@ -2103,6 +2186,20 @@ impl AppsBuilder {
             quarantined,
             registry: Registry::new(self.adapters),
         })
+    }
+}
+
+fn attach_language_backend<B>(
+    slot: &mut Option<B>,
+    detected: std::result::Result<B, BackendError>,
+) -> AppsResult<()> {
+    match detected {
+        Ok(backend) => {
+            *slot = Some(backend);
+            Ok(())
+        }
+        Err(BackendError::Command(toride_runner::Error::BinaryNotFound(_))) => Ok(()),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -2258,6 +2355,29 @@ impl AppsBlocking {
         })
     }
 
+    /// Ensure every app in `apps` is installed, on the calling thread —
+    /// the sync twin of [`Apps::ensure_installed_many`] with the same
+    /// partial-failure contract (every item attempted, one
+    /// [`BatchOutcome`] per item in input order, per-item errors never
+    /// stop the rest), taking the resolved registry apps this surface
+    /// requires instead of ids.
+    pub fn ensure_installed_many<'a, I>(
+        &mut self,
+        apps: I,
+        options: &AppInstallOptions,
+    ) -> Vec<BatchOutcome<EnsureAppOutcome>>
+    where
+        I: IntoIterator<Item = &'a App>,
+    {
+        apps.into_iter()
+            .map(|app| {
+                let id = app.id.clone();
+                let result = self.ensure_installed(app, options.clone());
+                BatchOutcome { id, result }
+            })
+            .collect()
+    }
+
     /// Uninstall `id`, on the calling thread: the record-replay arm of
     /// [`Apps::uninstall`] verbatim (plan from the record's own
     /// identifiers, execute, post-verify, remove the record, save
@@ -2355,6 +2475,30 @@ impl AppsBlocking {
             ids: native,
             warning,
         })
+    }
+
+    /// Uninstall every id in `ids`, on the calling thread — the sync twin
+    /// of [`Apps::uninstall_many`] with the same partial-failure contract
+    /// (every item attempted, one [`BatchOutcome`] per item in input
+    /// order, per-item errors never stop the rest). An id with no record
+    /// answers [`AppsError::BlockingResolveRequired`] inside its own
+    /// entry, exactly like [`AppsBlocking::uninstall`].
+    pub fn uninstall_many<I>(
+        &mut self,
+        ids: I,
+        options: AppUninstallOptions,
+    ) -> Vec<BatchOutcome<UninstallAppOutcome>>
+    where
+        I: IntoIterator,
+        I::Item: Into<TorideId>,
+    {
+        ids.into_iter()
+            .map(|item| {
+                let id = item.into();
+                let result = self.uninstall(&id, options);
+                BatchOutcome { id, result }
+            })
+            .collect()
     }
 
     /// Update `id` to its manager's current version, on the calling
@@ -4202,6 +4346,17 @@ mod tests {
                 "direct binary `/home/u/.local/bin/rg`"
             );
             assert_eq!(native_id(&ids), "/home/u/.local/bin/rg");
+        }
+
+        #[test]
+        fn detect_backends_skips_absent_binaries_and_never_errors() {
+            let path = temp_manifest_path("detect-backends");
+            Apps::builder()
+                .manifest_path(&path)
+                .detect_backends()
+                .expect("an absent binary or unknown family is a skip, never an error")
+                .build()
+                .expect("facade builds from the detected builder");
         }
     }
 }

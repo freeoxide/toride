@@ -2,6 +2,7 @@
 name = "toride-mise"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.91"
 description = "Typed mise integration: query tool versions, config files, and environment state"
 license.workspace = true
 repository.workspace = true

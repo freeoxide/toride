@@ -12,10 +12,12 @@ manifest.
   Flatpak, distro managers (apt, dnf, pacman, apk), npm, cargo, pipx,
   uv, mise-delegated tools, and direct downloads — install, uninstall,
   update, status, version queries, and pinning.
-- The `Apps` facade: ensure-installed (optionally at a version),
-  uninstall, update with dry-run, status, search, adopt, and
-  available-version listing — all manifest-recorded, with a typed
-  `Version` newtype for the manager's native version spelling.
+- The `Apps` facade: ensure-installed (optionally at a version) and
+  uninstall, each with a per-item batch verb
+  (`ensure_installed_many` / `uninstall_many`), update with dry-run,
+  status, search, adopt, and available-version listing — all
+  manifest-recorded, with a typed `Version` newtype for the manager's
+  native version spelling.
 - Multi-source detection across `$PATH`, mise shims, and backend
   listing probes, merged by canonical path.
 - A sync execution path: `AppsBlocking` (via `Apps::blocking`) drives
