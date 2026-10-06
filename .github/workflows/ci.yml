@@ -274,3 +274,34 @@ jobs:
             rm -f "$log"
             echo "::endgroup::"
           done
+
+  toride-apps-live-apt-flatpak:
+    name: toride-apps live smoke (ubuntu apt+flatpak)
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: toride-apps-live-apt-flatpak
+      - name: Provision flatpak and the flathub user remote
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y flatpak jq
+          flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+      - name: Dpkg probe arm and flatpak lifecycle leg
+        env:
+          TORIDE_APPS_INTEGRATION: "1"
+        run: |
+          cargo test -p toride-apps --all-features --test live distro_detect -- --nocapture
+          cargo test -p toride-apps --all-features --test live_smoke flatpak_facade -- --nocapture
+      - name: Build the gated smoke binary as the runner user
+        run: cargo test -p toride-apps --all-features --test live_smoke --no-run
+      - name: Apt lifecycle leg as root
+        run: |
+          bin="$(cargo test -p toride-apps --all-features --test live_smoke --no-run --message-format=json 2>/dev/null \
+            | jq -r 'select(.executable != null) | .executable' | head -1)"
+          test -n "$bin"
+          sudo env TORIDE_APPS_INTEGRATION=1 TORIDE_APPS_DISTRO_SMOKE=1 "$bin" apt_facade --nocapture
