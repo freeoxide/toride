@@ -18,9 +18,17 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - The alias index (DESIGN.md §5, offline subset): `AliasIndex` maps the
   canonical id to per-source `SourceRef` rows (JSON-serializable,
   preloadable via `RegistryBuilder::with_alias_index`); `search` merges
-  same-app hits across adapters into one row carrying every source's
-  refs and records it, and `resolve` consults the index when every
-  primary lookup misses.
+  same-app hits across adapters — never within one adapter's own hits —
+  into one row carrying every source's refs and records it, and
+  `resolve` consults the index when every primary lookup misses.
+
+### Changed
+
+- `Registry::plan` (and the new lifecycle renders) refuse Homebrew
+  casks on non-macOS hosts — casks are macOS-only, matching
+  toride-apps' planner — routing the install to the checksummed
+  direct-download fallback (or `Unsupported`) instead of rendering a
+  `brew --cask` argv Linuxbrew would reject.
 
 ## [0.1.0] - 2026-10-02
 

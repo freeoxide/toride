@@ -10,7 +10,10 @@
 //! `#[async_trait::async_trait]` + `Send + Sync` supertraits, matching
 //! toride-installer's `ReleaseResolver`. [`Registry`] (DESIGN.md §3.3) is
 //! the facade over `Vec<Arc<dyn Adapter>>`: error-tolerant search
-//! fan-out, resolve merging sources, and [`Registry::plan`].
+//! fan-out with same-app merging, resolve merging sources (the alias
+//! index answers total primary misses), and the lifecycle renders
+//! [`Registry::plan`], [`Registry::plan_update`],
+//! [`Registry::plan_uninstall`].
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -146,16 +149,15 @@ impl Registry {
 
     /// Fan `query` out to every adapter; a failing source is recorded in
     /// [`SearchOutcome::failures`] without discarding the other sources'
-    /// hits, and same-app hits merge into one row under the alias rules
-    /// (DESIGN.md §5) — the registration-first row survives, carrying
-    /// every source's [`SourceRef`]s. Errors:
-    /// [`Error::AllSourcesFailed`] when every registered source failed.
+    /// hits, and same-app hits from different adapters merge into one
+    /// row (DESIGN.md §5). Errors: [`Error::AllSourcesFailed`] when
+    /// every registered source failed.
     pub async fn search(&self, query: &str) -> Result<SearchOutcome> {
-        let mut apps = Vec::new();
+        let mut buckets: Vec<Vec<App>> = Vec::new();
         let mut failures = Vec::new();
         for adapter in &self.adapters {
             match adapter.search(query).await {
-                Ok(hits) => apps.extend(hits),
+                Ok(hits) => buckets.push(hits),
                 Err(error) => failures.push(SourceFailure {
                     source: adapter.source(),
                     error,
@@ -163,16 +165,15 @@ impl Registry {
             }
         }
         let failures = all_failed(self.adapters.len(), query.to_owned(), failures)?;
-        let apps = alias::merge_hits(apps);
+        let apps = alias::merge_hits(buckets);
         self.record_aliases(&apps);
         Ok(SearchOutcome { apps, failures })
     }
 
-    /// Resolve `id` per adapter under its own source kind, keyed on the slug
-    /// (dotted ids resolve only on slug coincidence), merging hits' `sources`
-    /// rows deduped; a primary miss on every adapter consults the alias
-    /// index's recorded rows (DESIGN.md §5) before answering unknown; all
-    /// failed → [`Error::AllSourcesFailed`].
+    /// Resolve `id` per adapter keyed on the slug, merging hits'
+    /// `sources` rows deduped; a total primary miss consults the alias
+    /// index (DESIGN.md §5). Errors: [`Error::AllSourcesFailed`] when
+    /// every registered source fails.
     pub async fn resolve(&self, id: &crate::model::TorideId) -> Result<Vec<SourceRef>> {
         let mut rows: Vec<SourceRef> = Vec::new();
         let mut failures = Vec::new();
@@ -234,10 +235,9 @@ impl Registry {
         }
     }
 
-    /// Render `app`'s update argv for `host`: the same claim and manager
-    /// gates as [`Registry::plan`] minus the direct-download fallback; a
-    /// method with no upgrade spelling (Direct) is
-    /// [`PlannedOp::Unsupported`].
+    /// Render `app`'s update argv for `host`: [`Registry::plan`]'s gates
+    /// minus the direct-download fallback; methods with no upgrade
+    /// spelling (Direct) are [`PlannedOp::Unsupported`].
     #[must_use]
     pub fn plan_update(app: &App, host: &Platform) -> PlannedOp {
         gates_pass(app, host)
@@ -247,9 +247,8 @@ impl Registry {
     }
 
     /// Render `app`'s uninstall argv for `host`: only the manager's OS
-    /// coverage gates — claims are an install-only gate, so removal from
-    /// a host the claims exclude still plans. Direct methods uninstall by
-    /// replaying a manifest record, never registry data.
+    /// coverage gates — claims are install-only. Direct methods
+    /// uninstall by replaying a manifest record, never registry data.
     #[must_use]
     pub fn plan_uninstall(app: &App, host: &Platform) -> PlannedOp {
         method_covers_os(&app.install, host.os)
@@ -259,16 +258,19 @@ impl Registry {
     }
 }
 
-/// What [`Registry::plan`] says to do for one app on one host platform.
+/// What [`Registry::plan`], [`Registry::plan_update`], and
+/// [`Registry::plan_uninstall`] say to do for one app on one host
+/// platform.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlannedOp {
     /// argv for the native manager (`brew`, `flatpak`, `apt`, …) —
-    /// program first, the install argv only: no suppression flags and no
-    /// one-time setup (flatpak's `remote-add`); the executor layers those.
+    /// program first, the lifecycle argv only: no suppression flags and
+    /// no one-time setup (flatpak's `remote-add`); the executor layers
+    /// those.
     Command {
         /// The manager binary to run.
         program: String,
-        /// Its install arguments.
+        /// Its arguments for the rendered lifecycle verb.
         args: Vec<String>,
     },
     /// The native method cannot serve the host, but a checksummed
@@ -489,7 +491,8 @@ fn claim_matches(claim: &Platform, host: &Platform) -> bool {
 
 fn method_covers_os(method: &InstallMethod, os: Os) -> bool {
     match method {
-        InstallMethod::Homebrew { .. } => matches!(os, Os::MacOs | Os::Linux),
+        InstallMethod::Homebrew { cask: true, .. } => os == Os::MacOs,
+        InstallMethod::Homebrew { cask: false, .. } => matches!(os, Os::MacOs | Os::Linux),
         InstallMethod::Flatpak { .. } | InstallMethod::Distro { .. } => os == Os::Linux,
         InstallMethod::Direct { .. }
         | InstallMethod::Npm { .. }
@@ -926,6 +929,31 @@ mod tests {
             outcome.apps.len(),
             2,
             "a homepage conflict keeps rows apart"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_keeps_same_named_hits_from_one_adapter_apart() {
+        let mut left = stub_app("notes-a", SourceKind::HomebrewCask);
+        left.name = "Notes".to_owned();
+        let mut right = stub_app("notes-b", SourceKind::HomebrewCask);
+        right.name = "Notes".to_owned();
+        let registry = Registry::new(vec![NativeStubAdapter::up(
+            SourceKind::HomebrewCask,
+            vec![left, right],
+        )]);
+        let outcome = registry
+            .search("notes")
+            .await
+            .expect("one adapter answering");
+        assert_eq!(
+            outcome
+                .apps
+                .iter()
+                .map(|app| app.id.as_str())
+                .collect::<Vec<_>>(),
+            ["notes-a", "notes-b"],
+            "the merge joins hits across adapters, never one adapter's own hits"
         );
     }
 
@@ -1761,13 +1789,13 @@ mod tests {
 
     #[test]
     fn plan_uninstall_skips_the_install_only_claim_gate() {
-        let mut cask = stub_app("brave-browser", SourceKind::HomebrewCask);
-        cask.install = InstallMethod::Homebrew {
-            cask: true,
-            token: "brave-browser".to_owned(),
+        let mut formula = stub_app("ripgrep", SourceKind::HomebrewFormula);
+        formula.install = InstallMethod::Homebrew {
+            cask: false,
+            token: "ripgrep".to_owned(),
         };
         let macos_only = plannable(
-            cask,
+            formula,
             vec![Platform {
                 os: Os::MacOs,
                 arch: None,
@@ -1779,13 +1807,9 @@ mod tests {
             Registry::plan_uninstall(&macos_only, &host(Os::Linux, Some(Arch::X86_64))),
             PlannedOp::Command {
                 program: "brew".to_owned(),
-                args: vec![
-                    "uninstall".to_owned(),
-                    "--cask".to_owned(),
-                    "brave-browser".to_owned(),
-                ],
+                args: vec!["uninstall".to_owned(), "ripgrep".to_owned()],
             },
-            "claims gate installs, not removals — brew itself serves Linux"
+            "claims gate installs, not removals — Linuxbrew serves formulae"
         );
         assert_eq!(
             Registry::plan(&macos_only, &host(Os::Linux, Some(Arch::X86_64))),
@@ -1803,6 +1827,61 @@ mod tests {
             PlannedOp::Unsupported,
             "only the manager's OS coverage gates — flatpak has none on macOS"
         );
+    }
+
+    #[test]
+    fn cask_methods_are_macos_only_across_the_lifecycle() {
+        let mut cask = stub_app("brave-browser", SourceKind::HomebrewCask);
+        cask.install = InstallMethod::Homebrew {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        };
+        let linux_host = host(Os::Linux, Some(Arch::X86_64));
+        assert_eq!(
+            Registry::plan_update(&cask, &linux_host),
+            PlannedOp::Unsupported,
+            "casks are macOS-only — Linuxbrew serves formulae only"
+        );
+        assert_eq!(
+            Registry::plan_uninstall(&cask, &linux_host),
+            PlannedOp::Unsupported
+        );
+        let with_linux_artifact = plannable(
+            cask.clone(),
+            Vec::new(),
+            vec![checksummed(
+                "https://example.com/brave-linux.tar.gz",
+                Some(Os::Linux),
+                Some(Arch::X86_64),
+            )],
+        );
+        assert_eq!(
+            Registry::plan(&with_linux_artifact, &linux_host),
+            PlannedOp::DirectDownload {
+                url: "https://example.com/brave-linux.tar.gz".to_owned(),
+                checksum: with_linux_artifact.artifacts[0].checksum.clone(),
+            },
+            "the install routes to the checksummed artifact instead of a cask argv Linuxbrew rejects"
+        );
+        assert_eq!(
+            Registry::plan_update(&with_linux_artifact, &linux_host),
+            PlannedOp::Unsupported,
+            "unlike install, an update never falls back to a direct download"
+        );
+        let macos_host = host(Os::MacOs, Some(Arch::Aarch64));
+        for op in [
+            Registry::plan(&cask, &macos_host),
+            Registry::plan_update(&cask, &macos_host),
+            Registry::plan_uninstall(&cask, &macos_host),
+        ] {
+            assert!(
+                matches!(&op, PlannedOp::Command { program, args }
+                    if program == "brew"
+                        && args.last().map(String::as_str) == Some("brave-browser")
+                        && args.contains(&"--cask".to_owned())),
+                "every lifecycle renders the cask argv on macOS: {op:?}"
+            );
+        }
     }
 
     #[test]

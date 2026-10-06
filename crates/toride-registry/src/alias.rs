@@ -52,15 +52,20 @@ impl AliasIndex {
     }
 }
 
-pub(crate) fn merge_hits(hits: Vec<App>) -> Vec<App> {
-    let mut merged: Vec<App> = Vec::new();
-    for hit in hits {
-        match merged.iter_mut().find(|row| same_app(row, &hit)) {
-            Some(row) => absorb(row, hit),
-            None => merged.push(hit),
+pub(crate) fn merge_hits(buckets: impl IntoIterator<Item = Vec<App>>) -> Vec<App> {
+    let mut merged: Vec<(usize, App)> = Vec::new();
+    for (origin, bucket) in buckets.into_iter().enumerate() {
+        for hit in bucket {
+            let joinable = merged
+                .iter_mut()
+                .find(|(row_origin, row)| *row_origin != origin && same_app(row, &hit));
+            match joinable {
+                Some((_, row)) => absorb(row, hit),
+                None => merged.push((origin, hit)),
+            }
         }
     }
-    merged
+    merged.into_iter().map(|(_, app)| app).collect()
 }
 
 pub(crate) fn same_app(left: &App, right: &App) -> bool {
@@ -218,7 +223,7 @@ mod tests {
         flathub.sources = vec![row(SourceKind::Flathub, "com.brave.Browser")];
         flathub.summary = Some("Privacy browser".to_owned());
 
-        let merged = merge_hits(vec![cask, flathub]);
+        let merged = merge_hits([vec![cask], vec![flathub]]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].id.as_str(), "brave-browser");
         assert_eq!(
@@ -252,7 +257,19 @@ mod tests {
         left.homepage = Some("https://notes.a/".to_owned());
         let mut right = app("notes-app", "Notes", SourceKind::Flathub);
         right.homepage = Some("https://notes.b/".to_owned());
-        assert_eq!(merge_hits(vec![left, right]).len(), 2);
+        assert_eq!(merge_hits([vec![left], vec![right]]).len(), 2);
+    }
+
+    #[test]
+    fn merge_hits_keeps_same_named_apps_from_one_adapter_apart() {
+        let left = app("notes-a", "Notes", SourceKind::HomebrewCask);
+        let right = app("notes-b", "Notes", SourceKind::HomebrewCask);
+        let merged = merge_hits([vec![left, right]]);
+        assert_eq!(
+            merged.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["notes-a", "notes-b"],
+            "the merge joins hits across adapters, never within one source's own hits"
+        );
     }
 
     #[test]
@@ -267,7 +284,7 @@ mod tests {
             row(SourceKind::HomebrewCask, "brave-browser"),
             row(SourceKind::Flathub, "com.brave.Browser"),
         ];
-        let merged = merge_hits(vec![left, right]);
+        let merged = merge_hits([vec![left], vec![right]]);
         assert_eq!(merged.len(), 1);
         assert_eq!(merged[0].sources.len(), 3);
     }
@@ -278,7 +295,7 @@ mod tests {
         left.aliases = vec!["Brave Browser".to_owned()];
         let mut right = app("brave-browser", "Brave", SourceKind::Flathub);
         right.aliases = vec!["Brave Browser".to_owned(), "Brave Web Browser".to_owned()];
-        let merged = merge_hits(vec![left, right]);
+        let merged = merge_hits([vec![left], vec![right]]);
         assert_eq!(
             merged[0].aliases,
             ["Brave Browser".to_owned(), "Brave Web Browser".to_owned()]

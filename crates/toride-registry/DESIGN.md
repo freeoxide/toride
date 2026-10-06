@@ -540,7 +540,10 @@ landed differently, deliberately:
   skip the claim gate (claims are an install-only gate); `Direct`
   methods render `Unsupported` for both — a direct uninstall replays the
   manifest record's path, and a direct update is a fresh install
-  decision, not a manager verb.
+  decision, not a manager verb. The manager OS gate is cask-aware:
+  Homebrew casks are macOS-only (toride-apps' `resolve_homebrew`
+  refuses them elsewhere for every action) while formulae also plan
+  under Linuxbrew.
 
 ## 4. Field mappings (source → normalized)
 
@@ -722,7 +725,10 @@ The registration-first row is the survivor — its id, name, install
 method, and availability govern; a merged hit only unions its
 `SourceRef`s and `aliases` in and backfills the survivor's unset
 descriptive fields (`summary`, `description`, `homepage`, `license`,
-`developer`, `latest`).
+`developer`, `latest`). Merging is **across adapters only**:
+`merge_hits` buckets hits per adapter and never joins two rows from
+the same bucket, so two distinct same-named apps one source returns
+stay separate result rows.
 
 ## 6. Coverage matrix
 
