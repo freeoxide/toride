@@ -122,6 +122,79 @@ impl MiseBinary {
             .map_err(std::io::Error::from)?
     }
 
+    /// Discover the `mise` binary offline: the same cascade and precedence
+    /// as [`MiseBinary::discover`] — `MISE_BIN` override, `$PATH`, the
+    /// managed install location, the system-wide fallback, the app-bundled
+    /// path — resolved by file checks alone. No subprocess ever runs (no
+    /// `--version` probe), so `version` is always `None` and the call is
+    /// safe from detection seams that must not execute commands.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`MiseError::BinaryNotFound`] if none of the strategies succeed.
+    pub fn discover_offline() -> MiseResult<Self> {
+        let bundled_dir = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.parent().map(std::path::Path::to_path_buf));
+        Self::discover_offline_with(
+            std::env::var("MISE_BIN").ok().as_deref(),
+            None,
+            bundled_dir.as_deref(),
+        )
+    }
+
+    fn discover_offline_with(
+        env_bin: Option<&str>,
+        install_dir: Option<&Utf8PathBuf>,
+        bundled_dir: Option<&std::path::Path>,
+    ) -> MiseResult<Self> {
+        if let Some(val) = env_bin {
+            let path = Utf8PathBuf::from(val);
+            if path.is_file() {
+                return Ok(Self {
+                    path,
+                    version: None,
+                });
+            }
+        }
+        if let Some(path) = toride_runner::discovery::find_binary(&mise_tool().bin_name)
+            .ok()
+            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok())
+        {
+            return Ok(Self {
+                path,
+                version: None,
+            });
+        }
+        if let Ok(managed) = Detector::managed_path(&mise_tool(), install_dir)
+            && managed.is_file()
+        {
+            return Ok(Self {
+                path: managed,
+                version: None,
+            });
+        }
+        let system_wide = Utf8PathBuf::from("/usr/local/bin/mise");
+        if system_wide.is_file() {
+            return Ok(Self {
+                path: system_wide,
+                version: None,
+            });
+        }
+        if let Some(dir) = bundled_dir {
+            let bundled = dir.join("mise");
+            if bundled.is_file()
+                && let Ok(utf8) = Utf8PathBuf::from_path_buf(bundled)
+            {
+                return Ok(Self {
+                    path: utf8,
+                    version: None,
+                });
+            }
+        }
+        Err(MiseError::BinaryNotFound)
+    }
+
     /// Create a [`MiseBinary`] from a known path without performing discovery.
     ///
     /// The caller is responsible for ensuring the path points to a valid
@@ -252,5 +325,76 @@ mod tests {
         if let (Ok(expected), Ok(found)) = (&sync, &discovered) {
             assert_eq!(found, expected);
         }
+    }
+
+    #[test]
+    fn offline_env_override_wins_when_the_file_exists() {
+        let tmp = TempDir::new().unwrap();
+        let bin = utf8_dir(&tmp).join("mise-elsewhere");
+        std::fs::write(&bin, b"anything").unwrap();
+
+        let found = MiseBinary::discover_offline_with(Some(bin.as_str()), None, None)
+            .expect("the env override is the first tier");
+        assert_eq!(found.path, bin);
+        assert!(found.version.is_none());
+    }
+
+    #[test]
+    fn offline_managed_tier_finds_mise_off_the_path() {
+        if toride_runner::discovery::find_binary(mise_tool().bin_name.as_str()).is_ok() {
+            eprintln!("mise found on $PATH; skipping managed-tier test");
+            return;
+        }
+        let tmp = TempDir::new().unwrap();
+        let dir = utf8_dir(&tmp);
+        let bin = dir.join(mise_tool().bin_name.as_str());
+        std::fs::write(&bin, b"#!/bin/sh\nexit 0\n").unwrap();
+
+        let found = MiseBinary::discover_offline_with(None, Some(&dir), None)
+            .expect("the managed file is found without any probe");
+        assert_eq!(found.path, bin);
+        assert!(found.version.is_none());
+    }
+
+    #[test]
+    fn offline_bundled_tier_and_absent_verdict() {
+        let tool = mise_tool();
+        if toride_runner::discovery::find_binary(tool.bin_name.as_str()).is_ok()
+            || Detector::managed_path(&tool, None).is_ok_and(|path| path.is_file())
+            || Utf8PathBuf::from("/usr/local/bin/mise").is_file()
+        {
+            eprintln!("an earlier mise tier exists on this host; skipping absent-verdict test");
+            return;
+        }
+        let empty = TempDir::new().unwrap();
+        let empty_dir = std::path::PathBuf::from(empty.path());
+        std::fs::write(empty_dir.join("mise"), b"bundled binary").unwrap();
+
+        let found = MiseBinary::discover_offline_with(None, None, Some(&empty_dir))
+            .expect("the bundled tier is the last file check");
+        assert_eq!(
+            found.path,
+            Utf8PathBuf::from_path_buf(empty_dir.join("mise")).expect("tempdir path is utf-8")
+        );
+        std::fs::remove_file(empty_dir.join("mise")).unwrap();
+
+        let absent = MiseBinary::discover_offline_with(None, None, Some(&empty_dir))
+            .expect_err("no tier hit");
+        assert!(matches!(absent, MiseError::BinaryNotFound), "{absent:?}");
+    }
+
+    #[test]
+    fn offline_public_cascade_matches_the_path_hit_without_probing() {
+        let path_hit = toride_runner::discovery::find_binary(mise_tool().bin_name.as_str())
+            .ok()
+            .and_then(|path| Utf8PathBuf::from_path_buf(path).ok());
+        let Some(expected) = path_hit else {
+            eprintln!("no mise on $PATH; skipping parity test");
+            return;
+        };
+
+        let found = MiseBinary::discover_offline().expect("the $PATH hit wins tier 2");
+        assert_eq!(found.path, expected);
+        assert!(found.version.is_none());
     }
 }

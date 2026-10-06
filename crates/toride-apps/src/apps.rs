@@ -2075,12 +2075,14 @@ impl AppsBuilder {
 
     /// Attach every backend this host supports: homebrew and flatpak via
     /// their PATH checks, distro via os-release(5) detection plus its PATH
-    /// checks, and the language backends — npm, cargo, pipx, uv (and mise
-    /// under the `mise` feature) — via each manager's own PATH check, the
-    /// same auto-attach Direct gets under the `direct` feature. A backend
-    /// whose binary is simply absent is skipped (no brew on a Linux box is
-    /// normal, not an error); a distro host with no known family is
-    /// skipped the same way. No command executes.
+    /// checks, and the language backends — npm, cargo, pipx, uv via each
+    /// manager's own PATH check, mise (under the `mise` feature) via its
+    /// offline discovery cascade (`$PATH` plus the managed, system-wide,
+    /// and app-bundled fallbacks, file checks only) — the same auto-attach
+    /// Direct gets under the `direct` feature. A backend whose binary is
+    /// simply absent is skipped (no brew on a Linux box is normal, not an
+    /// error); a distro host with no known family is skipped the same
+    /// way. No command executes.
     ///
     /// The seam the detection shares is kept as the builder's runner, so
     /// the built facade and its backends ride one seam.

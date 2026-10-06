@@ -1124,10 +1124,6 @@ fn blocking_wraps_and_unwraps_sharing_one_state() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// detect_backends auto-attach — mise (the sync listing rides the seam)
-// ---------------------------------------------------------------------------
-
 #[cfg(feature = "mise")]
 #[test]
 fn detect_backends_auto_attaches_a_discoverable_mise_backend() {
@@ -1182,10 +1178,6 @@ fn detect_backends_auto_attaches_a_discoverable_mise_backend() {
     );
     fake.assert_no_unmatched_calls();
 }
-
-// ---------------------------------------------------------------------------
-// Batch verbs — the sync twins
-// ---------------------------------------------------------------------------
 
 fn brew_install_cask_for(token: &str) -> CommandSpec {
     command("brew", ["install", "--cask", token])

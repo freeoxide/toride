@@ -677,9 +677,11 @@ impl MultiSourceDetectorBuilder {
         self
     }
 
-    /// Attach every backend whose binary resolves on this host `$PATH`
-    /// (distro via os-release(5) family detection). No command executes;
-    /// an absent binary or unknown family is a skip, never an error.
+    /// Attach every backend whose binary resolves on this host (the
+    /// manager binaries via `$PATH`, distro via os-release(5) family
+    /// detection, mise via its offline discovery cascade — file checks
+    /// only). No command executes; an absent binary or unknown family is
+    /// a skip, never an error.
     ///
     /// # Errors
     ///

@@ -4394,10 +4394,6 @@ async fn a_foreign_npm_install_reports_foreign_and_never_records() {
     fake.assert_no_unmatched_calls();
 }
 
-// ---------------------------------------------------------------------------
-// detect_backends auto-attach — language backends
-// ---------------------------------------------------------------------------
-
 #[tokio::test]
 async fn detect_backends_auto_attaches_a_discoverable_npm_backend() {
     if !toride_runner::discovery::binary_exists("npm") {
@@ -4448,10 +4444,6 @@ async fn detect_backends_auto_attaches_a_discoverable_npm_backend() {
     fake.assert_called_with(&npm_install_global_spec("typescript"));
     fake.assert_no_unmatched_calls();
 }
-
-// ---------------------------------------------------------------------------
-// Batch verbs
-// ---------------------------------------------------------------------------
 
 fn prettier_npm_app() -> App {
     app(

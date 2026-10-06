@@ -844,7 +844,7 @@ pub struct HomebrewClient {
 /// the catalogs republish continuously, so the window trades freshness
 /// for the tens-of-MB re-download.
 #[cfg(feature = "http")]
-pub const INDEX_CACHE_TTL: Duration = Duration::from_hours(1);
+pub const INDEX_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 
 /// Per-request timeout for the catalog-index downloads (tens of MB);
 /// the shared client default budgets per-item payloads of a few KB.
