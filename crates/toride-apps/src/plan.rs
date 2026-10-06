@@ -601,8 +601,8 @@ impl Operation {
     }
 
     /// Every command execution unconditionally runs for this operation,
-    /// in order — the value plan summaries render. Defaults to
-    /// [`Operation::argv`]; multi-command operations append steps.
+    /// in order — the value the plan `summary()` methods render;
+    /// [`crate::apps::UpdatePreview`] renders [`Operation::argv`] instead.
     #[must_use]
     pub fn execution_steps(&self) -> Vec<Vec<String>> {
         #[cfg(feature = "mise")]
