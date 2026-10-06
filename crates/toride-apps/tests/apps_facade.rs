@@ -4758,3 +4758,126 @@ async fn uninstall_many_duplicates_observe_the_earlier_removal() {
     );
     fake.assert_no_unmatched_calls();
 }
+
+async fn assert_detect_backends_attaches(
+    fixture: App,
+    listing_spec: CommandSpec,
+    absent_listing: CommandOutput,
+    present_listing: CommandOutput,
+    install_spec: CommandSpec,
+    backend: BackendId,
+    version: &str,
+) {
+    let binary = install_spec.program.clone();
+    if !toride_runner::discovery::binary_exists(&binary) {
+        eprintln!("no {binary} on this host; skipping auto-attach test");
+        return;
+    }
+    let path = temp_manifest_path(&format!("detect-{backend}"));
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(listing_spec.clone(), absent_listing)
+        .respond(install_spec.clone(), CommandOutput::from_stdout(""))
+        .respond(listing_spec, present_listing);
+    let slug = fixture.id.clone();
+    let adapter: Arc<dyn Adapter> = FixtureAdapter::new(SourceKind::Distro, vec![fixture]);
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let mut apps = Apps::builder()
+        .runner(seam)
+        .target(macos())
+        .manifest_path(&path)
+        .adapter(adapter)
+        .detect_backends()
+        .expect("detection skips absent binaries, never errors")
+        .build()
+        .expect("facade builds from the detected backends");
+
+    let outcome = apps
+        .ensure_installed(&slug, AppInstallOptions::new())
+        .await
+        .unwrap_or_else(|error| panic!("the auto-attached {backend} backend executes: {error}"));
+    match outcome {
+        EnsureAppOutcome::Installed {
+            backend: hit,
+            version: reported,
+            verified,
+            ..
+        } => {
+            assert_eq!(
+                hit, backend,
+                "a mis-wired slot would dispatch another backend"
+            );
+            assert_eq!(reported.as_deref(), Some(version));
+            assert!(verified);
+        }
+        other @ EnsureAppOutcome::AlreadyPresent(_) => {
+            panic!("expected Installed, got {other:?}")
+        }
+    }
+    fake.assert_called_with(&install_spec);
+    fake.assert_no_unmatched_calls();
+}
+
+#[tokio::test]
+async fn detect_backends_auto_attaches_a_discoverable_cargo_backend() {
+    assert_detect_backends_attaches(
+        app(
+            "ripgrep",
+            "ripgrep",
+            InstallMethod::Cargo {
+                crate_: "ripgrep".to_owned(),
+                version: None,
+            },
+        ),
+        command("cargo", ["install", "--list"]),
+        CommandOutput::from_stdout(""),
+        CommandOutput::from_stdout("ripgrep v14.1.0:\n"),
+        command("cargo", ["install", "ripgrep"]),
+        BackendId::Cargo,
+        "14.1.0",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn detect_backends_auto_attaches_a_discoverable_pipx_backend() {
+    assert_detect_backends_attaches(
+        app(
+            "black",
+            "Black",
+            InstallMethod::Pipx {
+                package: "black".to_owned(),
+            },
+        ),
+        command("pipx", ["list", "--json"]),
+        CommandOutput::from_stdout("{}"),
+        CommandOutput::from_stdout(
+            r#"{"venvs": {"black": {"metadata": {"main_package": {"package_version": "24.3.0"}}}}}"#,
+        ),
+        command("pipx", ["install", "black"]),
+        BackendId::Pipx,
+        "24.3.0",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn detect_backends_auto_attaches_a_discoverable_uv_backend() {
+    assert_detect_backends_attaches(
+        app(
+            "ruff",
+            "Ruff",
+            InstallMethod::Uv {
+                package: "ruff".to_owned(),
+                version: None,
+            },
+        ),
+        command("uv", ["tool", "list"]),
+        CommandOutput::from_stdout(""),
+        CommandOutput::from_stdout("ruff v0.4.4\n"),
+        command("uv", ["tool", "install", "ruff"]),
+        BackendId::Uv,
+        "0.4.4",
+    )
+    .await;
+}

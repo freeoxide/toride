@@ -30,8 +30,8 @@ manifest.
 |----------------|:-------:|-----------------------------------------|--------------------------------------------------|
 | `tokio`        | No      | tokio                                   | `spawn_blocking` offload for the async facade    |
 | `registry-http`| No      | `toride-registry/http`                  | Registering the concrete fetch adapters          |
-| `direct`       | No      | `toride-installer` (with `http`), tokio | Direct-download installs (verified pipeline)     |
-| `mise`         | No      | `toride-mise`, `toride-runner/tokio-runner` (both carry tokio) | The mise-delegated language backend  |
+| `direct`       | No      | `toride-installer` (with `http`), tokio | Direct-download installs (verified pipeline; raises the toolchain floor to rustc 1.91 — the deps' own `rust-version`) |
+| `mise`         | No      | `toride-mise`, `toride-runner/tokio-runner` (both carry tokio) | The mise-delegated language backend (rustc 1.91+ — the deps' own `rust-version`) |
 
 ```toml
 [dependencies]
