@@ -12,8 +12,9 @@
 //! the facade over `Vec<Arc<dyn Adapter>>`: error-tolerant search
 //! fan-out, resolve merging sources, and [`Registry::plan`].
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
+use crate::alias::{self, AliasIndex};
 use crate::error::{Error, Result, SourceFailure};
 use crate::model::{
     App, Checksum, DistroFamily, InstallMethod, Os, Platform, SourceKind, SourceRef,
@@ -59,6 +60,7 @@ pub trait Adapter: Send + Sync {
 /// [`Registry::builder`] or [`Registry::new`].
 pub struct Registry {
     adapters: Vec<Arc<dyn Adapter>>,
+    aliases: Mutex<AliasIndex>,
 }
 
 /// The result of a [`Registry::search`] fan-out: every surviving source's
@@ -75,6 +77,7 @@ pub struct SearchOutcome {
 #[derive(Default)]
 pub struct RegistryBuilder {
     adapters: Vec<Arc<dyn Adapter>>,
+    aliases: AliasIndex,
 }
 
 impl RegistryBuilder {
@@ -92,21 +95,32 @@ impl RegistryBuilder {
         self
     }
 
+    /// Preload a persisted [`AliasIndex`] (DESIGN.md §5's JSON cache) so
+    /// resolve can answer ids no primary lookup knows.
+    #[must_use]
+    pub fn with_alias_index(mut self, index: AliasIndex) -> Self {
+        self.aliases = index;
+        self
+    }
+
     /// Consume the builder and produce the facade.
     #[must_use]
     pub fn build(self) -> Registry {
         Registry {
             adapters: self.adapters,
+            aliases: Mutex::new(self.aliases),
         }
     }
 }
 
 impl Registry {
-    /// A facade over `adapters` (each an owned `Arc` or `Box`).
+    /// A facade over `adapters` (each an owned `Arc` or `Box`), starting
+    /// from an empty [`AliasIndex`].
     #[must_use]
     pub fn new(adapters: impl IntoIterator<Item = impl Into<Arc<dyn Adapter>>>) -> Self {
         Self {
             adapters: adapters.into_iter().map(Into::into).collect(),
+            aliases: Mutex::new(AliasIndex::new()),
         }
     }
 
@@ -122,10 +136,20 @@ impl Registry {
         &self.adapters
     }
 
+    /// A snapshot of the alias index as it stands — every search-merged
+    /// row and resolve hit recorded so far, plus anything preloaded
+    /// through [`RegistryBuilder::with_alias_index`].
+    #[must_use]
+    pub fn alias_index(&self) -> AliasIndex {
+        self.locked_aliases().clone()
+    }
+
     /// Fan `query` out to every adapter; a failing source is recorded in
     /// [`SearchOutcome::failures`] without discarding the other sources'
-    /// hits. Errors: [`Error::AllSourcesFailed`] when every registered
-    /// source failed.
+    /// hits, and same-app hits merge into one row under the alias rules
+    /// (DESIGN.md §5) — the registration-first row survives, carrying
+    /// every source's [`SourceRef`]s. Errors:
+    /// [`Error::AllSourcesFailed`] when every registered source failed.
     pub async fn search(&self, query: &str) -> Result<SearchOutcome> {
         let mut apps = Vec::new();
         let mut failures = Vec::new();
@@ -138,13 +162,17 @@ impl Registry {
                 }),
             }
         }
-        all_failed(self.adapters.len(), query.to_owned(), failures)
-            .map(|failures| SearchOutcome { apps, failures })
+        let failures = all_failed(self.adapters.len(), query.to_owned(), failures)?;
+        let apps = alias::merge_hits(apps);
+        self.record_aliases(&apps);
+        Ok(SearchOutcome { apps, failures })
     }
 
     /// Resolve `id` per adapter under its own source kind, keyed on the slug
     /// (dotted ids resolve only on slug coincidence), merging hits' `sources`
-    /// rows deduped; empty = unknown; all failed → [`Error::AllSourcesFailed`].
+    /// rows deduped; a primary miss on every adapter consults the alias
+    /// index's recorded rows (DESIGN.md §5) before answering unknown; all
+    /// failed → [`Error::AllSourcesFailed`].
     pub async fn resolve(&self, id: &crate::model::TorideId) -> Result<Vec<SourceRef>> {
         let mut rows: Vec<SourceRef> = Vec::new();
         let mut failures = Vec::new();
@@ -157,18 +185,7 @@ impl Registry {
                 provisional: false,
             };
             match adapter.lookup(&reference).await {
-                Ok(Some(app)) => {
-                    for row in app.sources {
-                        let known = rows.iter().any(|existing| {
-                            existing.source == row.source
-                                && existing.id == row.id
-                                && existing.repo == row.repo
-                        });
-                        if !known {
-                            rows.push(row);
-                        }
-                    }
-                }
+                Ok(Some(app)) => alias::union_rows(&mut rows, app.sources),
                 Ok(None) => {}
                 Err(error) => failures.push(SourceFailure {
                     source: adapter.source(),
@@ -176,96 +193,69 @@ impl Registry {
                 }),
             }
         }
-        all_failed(self.adapters.len(), id.as_str().to_owned(), failures).map(|_| rows)
+        let _ = all_failed(self.adapters.len(), id.as_str().to_owned(), failures)?;
+        let mut index = self.locked_aliases();
+        if rows.is_empty() {
+            rows = index.get(id).to_vec();
+        } else {
+            index.insert(id, rows.iter().cloned());
+        }
+        Ok(rows)
     }
 
-    /// Render `app`'s descriptor for `host` (DESIGN.md §3.3): native argv,
-    /// direct-download fallback, or [`PlannedOp::Unsupported`]; empty
-    /// `platforms` skip the claim check; `min_release` is not yet enforced — no caller models the host release (the toride-apps planner's documented stance).
+    fn locked_aliases(&self) -> std::sync::MutexGuard<'_, AliasIndex> {
+        self.aliases.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn record_aliases(&self, apps: &[App]) {
+        let mut index = self.locked_aliases();
+        for app in apps {
+            index.record(app);
+        }
+    }
+
+    /// Render `app`'s install descriptor for `host` (DESIGN.md §3.3):
+    /// native argv, direct-download fallback, or [`PlannedOp::Unsupported`];
+    /// empty `platforms` skip the claim check; `min_release` is not yet
+    /// enforced — no caller models the host release (the toride-apps
+    /// planner's documented stance).
     #[must_use]
     pub fn plan(app: &App, host: &Platform) -> PlannedOp {
-        let claimed = app.platforms.is_empty()
-            || app.platforms.iter().any(|claim| claim_matches(claim, host));
-        if claimed && method_covers_os(&app.install, host.os) {
-            match &app.install {
-                InstallMethod::Homebrew { cask, token } => {
-                    let mut args = vec!["install".to_owned()];
-                    if *cask {
-                        args.push("--cask".to_owned());
-                    }
-                    args.push(token.clone());
-                    PlannedOp::Command {
-                        program: "brew".to_owned(),
-                        args,
-                    }
-                }
-                InstallMethod::Flatpak { app_id, remote } => PlannedOp::Command {
-                    program: "flatpak".to_owned(),
-                    args: vec![
-                        "install".to_owned(),
-                        "--user".to_owned(),
-                        remote.clone(),
-                        app_id.clone(),
-                    ],
-                },
-                InstallMethod::Distro {
-                    family, package, ..
-                } => {
-                    let (program, verb) = distro_install(*family);
-                    PlannedOp::Command {
-                        program,
-                        args: vec![verb.to_owned(), package.to_owned()],
-                    }
-                }
-                InstallMethod::Direct { url, checksum, .. } => PlannedOp::DirectDownload {
-                    url: url.clone(),
-                    checksum: checksum.clone(),
-                },
-                InstallMethod::Npm { package, version } => PlannedOp::Command {
-                    program: "npm".to_owned(),
-                    args: vec![
-                        "install".to_owned(),
-                        "-g".to_owned(),
-                        joined_spec(package, version.as_deref(), "@"),
-                    ],
-                },
-                InstallMethod::Cargo { crate_, version } => {
-                    let mut args = vec!["install".to_owned()];
-                    if let Some(version) = version {
-                        args.push("--version".to_owned());
-                        args.push(version.clone());
-                    }
-                    args.push(crate_.clone());
-                    PlannedOp::Command {
-                        program: "cargo".to_owned(),
-                        args,
-                    }
-                }
-                InstallMethod::Pipx { package } => PlannedOp::Command {
-                    program: "pipx".to_owned(),
-                    args: vec!["install".to_owned(), package.clone()],
-                },
-                InstallMethod::Uv { package, version } => PlannedOp::Command {
-                    program: "uv".to_owned(),
-                    args: vec![
-                        "tool".to_owned(),
-                        "install".to_owned(),
-                        joined_spec(package, version.as_deref(), "=="),
-                    ],
-                },
-                InstallMethod::Mise { tool, version } => PlannedOp::Command {
-                    program: "mise".to_owned(),
-                    args: vec!["install".to_owned(), mise_spec(tool, version.as_deref())],
-                },
-            }
-        } else {
-            match app.direct_fallback(host.os, host.arch) {
-                Some(InstallMethod::Direct { url, checksum, .. }) => {
-                    PlannedOp::DirectDownload { url, checksum }
-                }
-                _ => PlannedOp::Unsupported,
-            }
+        if gates_pass(app, host)
+            && let Some(op) = manager_op(&app.install, Lifecycle::Install)
+        {
+            return op;
         }
+        match app.direct_fallback(host.os, host.arch) {
+            Some(InstallMethod::Direct { url, checksum, .. }) => {
+                PlannedOp::DirectDownload { url, checksum }
+            }
+            _ => PlannedOp::Unsupported,
+        }
+    }
+
+    /// Render `app`'s update argv for `host`: the same claim and manager
+    /// gates as [`Registry::plan`] minus the direct-download fallback; a
+    /// method with no upgrade spelling (Direct) is
+    /// [`PlannedOp::Unsupported`].
+    #[must_use]
+    pub fn plan_update(app: &App, host: &Platform) -> PlannedOp {
+        gates_pass(app, host)
+            .then(|| manager_op(&app.install, Lifecycle::Update))
+            .flatten()
+            .unwrap_or(PlannedOp::Unsupported)
+    }
+
+    /// Render `app`'s uninstall argv for `host`: only the manager's OS
+    /// coverage gates — claims are an install-only gate, so removal from
+    /// a host the claims exclude still plans. Direct methods uninstall by
+    /// replaying a manifest record, never registry data.
+    #[must_use]
+    pub fn plan_uninstall(app: &App, host: &Platform) -> PlannedOp {
+        method_covers_os(&app.install, host.os)
+            .then(|| manager_op(&app.install, Lifecycle::Uninstall))
+            .flatten()
+            .unwrap_or(PlannedOp::Unsupported)
     }
 }
 
@@ -293,6 +283,192 @@ pub enum PlannedOp {
     /// Nothing installable for this host: the claims exclude it (or the
     /// method's platform set does) and no checksummed artifact matches.
     Unsupported,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Lifecycle {
+    Install,
+    Update,
+    Uninstall,
+}
+
+fn gates_pass(app: &App, host: &Platform) -> bool {
+    (app.platforms.is_empty() || app.platforms.iter().any(|claim| claim_matches(claim, host)))
+        && method_covers_os(&app.install, host.os)
+}
+
+fn manager_op(method: &InstallMethod, lifecycle: Lifecycle) -> Option<PlannedOp> {
+    match method {
+        InstallMethod::Homebrew { cask, token } => Some(brew_op(*cask, token, lifecycle)),
+        InstallMethod::Flatpak { app_id, remote } => Some(flatpak_op(app_id, remote, lifecycle)),
+        InstallMethod::Distro {
+            family, package, ..
+        } => Some(distro_op(*family, package, lifecycle)),
+        InstallMethod::Direct { url, checksum, .. } => match lifecycle {
+            Lifecycle::Install => Some(PlannedOp::DirectDownload {
+                url: url.clone(),
+                checksum: checksum.clone(),
+            }),
+            Lifecycle::Update | Lifecycle::Uninstall => None,
+        },
+        InstallMethod::Npm { package, version } => {
+            Some(npm_op(package, version.as_deref(), lifecycle))
+        }
+        InstallMethod::Cargo { crate_, version } => {
+            Some(cargo_op(crate_, version.as_deref(), lifecycle))
+        }
+        InstallMethod::Pipx { package } => Some(simple_op("pipx", package, lifecycle)),
+        InstallMethod::Uv { package, version } => {
+            Some(uv_op(package, version.as_deref(), lifecycle))
+        }
+        InstallMethod::Mise { tool, version } => Some(mise_op(tool, version.as_deref(), lifecycle)),
+    }
+}
+
+fn lifecycle_verb(lifecycle: Lifecycle) -> &'static str {
+    match lifecycle {
+        Lifecycle::Install => "install",
+        Lifecycle::Update => "upgrade",
+        Lifecycle::Uninstall => "uninstall",
+    }
+}
+
+fn brew_op(cask: bool, token: &str, lifecycle: Lifecycle) -> PlannedOp {
+    let mut args = vec![lifecycle_verb(lifecycle).to_owned()];
+    if cask {
+        args.push("--cask".to_owned());
+    }
+    args.push(token.to_owned());
+    PlannedOp::Command {
+        program: "brew".to_owned(),
+        args,
+    }
+}
+
+fn flatpak_op(app_id: &str, remote: &str, lifecycle: Lifecycle) -> PlannedOp {
+    let args = match lifecycle {
+        Lifecycle::Install => {
+            vec![
+                "install".to_owned(),
+                "--user".to_owned(),
+                remote.to_owned(),
+                app_id.to_owned(),
+            ]
+        }
+        Lifecycle::Update => vec!["update".to_owned(), "--user".to_owned(), app_id.to_owned()],
+        Lifecycle::Uninstall => vec![
+            "uninstall".to_owned(),
+            "--user".to_owned(),
+            app_id.to_owned(),
+        ],
+    };
+    PlannedOp::Command {
+        program: "flatpak".to_owned(),
+        args,
+    }
+}
+
+fn distro_op(family: DistroFamily, package: &str, lifecycle: Lifecycle) -> PlannedOp {
+    let (program, verbs) = distro_verbs(family, lifecycle);
+    let mut args: Vec<String> = verbs.iter().map(|verb| (*verb).to_owned()).collect();
+    args.push(package.to_owned());
+    PlannedOp::Command { program, args }
+}
+
+fn npm_op(package: &str, version: Option<&str>, lifecycle: Lifecycle) -> PlannedOp {
+    let args = match lifecycle {
+        Lifecycle::Install => vec![
+            "install".to_owned(),
+            "-g".to_owned(),
+            joined_spec(package, version, "@"),
+        ],
+        Lifecycle::Update => npm_scoped("update", package),
+        Lifecycle::Uninstall => npm_scoped("uninstall", package),
+    };
+    PlannedOp::Command {
+        program: "npm".to_owned(),
+        args,
+    }
+}
+
+fn npm_scoped(verb: &str, package: &str) -> Vec<String> {
+    vec![verb.to_owned(), "-g".to_owned(), package.to_owned()]
+}
+
+fn cargo_op(crate_: &str, version: Option<&str>, lifecycle: Lifecycle) -> PlannedOp {
+    let args = match lifecycle {
+        Lifecycle::Install => {
+            let mut args = vec!["install".to_owned()];
+            if let Some(version) = version {
+                args.push("--version".to_owned());
+                args.push(version.to_owned());
+            }
+            args.push(crate_.to_owned());
+            args
+        }
+        Lifecycle::Update => vec![
+            "install".to_owned(),
+            "--force".to_owned(),
+            crate_.to_owned(),
+        ],
+        Lifecycle::Uninstall => vec!["uninstall".to_owned(), crate_.to_owned()],
+    };
+    PlannedOp::Command {
+        program: "cargo".to_owned(),
+        args,
+    }
+}
+
+fn simple_op(program: &str, package: &str, lifecycle: Lifecycle) -> PlannedOp {
+    PlannedOp::Command {
+        program: program.to_owned(),
+        args: vec![lifecycle_verb(lifecycle).to_owned(), package.to_owned()],
+    }
+}
+
+fn uv_op(package: &str, version: Option<&str>, lifecycle: Lifecycle) -> PlannedOp {
+    let mut args = vec!["tool".to_owned(), lifecycle_verb(lifecycle).to_owned()];
+    if lifecycle == Lifecycle::Install {
+        args.push(joined_spec(package, version, "=="));
+    } else {
+        args.push(package.to_owned());
+    }
+    PlannedOp::Command {
+        program: "uv".to_owned(),
+        args,
+    }
+}
+
+fn mise_op(tool: &str, version: Option<&str>, lifecycle: Lifecycle) -> PlannedOp {
+    let operand = if lifecycle == Lifecycle::Install {
+        mise_spec(tool, version)
+    } else {
+        tool.to_owned()
+    };
+    PlannedOp::Command {
+        program: "mise".to_owned(),
+        args: vec![lifecycle_verb(lifecycle).to_owned(), operand],
+    }
+}
+
+fn distro_verbs(family: DistroFamily, lifecycle: Lifecycle) -> (String, &'static [&'static str]) {
+    let (program, verbs): (&str, &'static [&'static str]) = match (family, lifecycle) {
+        (DistroFamily::Debian | DistroFamily::Ubuntu, Lifecycle::Install) => ("apt", &["install"]),
+        (DistroFamily::Debian | DistroFamily::Ubuntu, Lifecycle::Update) => {
+            ("apt", &["install", "--only-upgrade"])
+        }
+        (DistroFamily::Debian | DistroFamily::Ubuntu, Lifecycle::Uninstall) => ("apt", &["remove"]),
+        (DistroFamily::Fedora, Lifecycle::Install) => ("dnf", &["install"]),
+        (DistroFamily::Fedora, Lifecycle::Update) => ("dnf", &["upgrade"]),
+        (DistroFamily::Fedora, Lifecycle::Uninstall) => ("dnf", &["remove"]),
+        (DistroFamily::Arch, Lifecycle::Install) => ("pacman", &["--sync"]),
+        (DistroFamily::Arch, Lifecycle::Update) => ("pacman", &["--sync", "--refresh"]),
+        (DistroFamily::Arch, Lifecycle::Uninstall) => ("pacman", &["--remove"]),
+        (DistroFamily::Alpine, Lifecycle::Install) => ("apk", &["add"]),
+        (DistroFamily::Alpine, Lifecycle::Update) => ("apk", &["upgrade"]),
+        (DistroFamily::Alpine, Lifecycle::Uninstall) => ("apk", &["del"]),
+    };
+    (program.to_owned(), verbs)
 }
 
 fn all_failed(
@@ -339,16 +515,6 @@ fn mise_spec(tool: &str, version: Option<&str>) -> String {
         || format!("{tool}@latest"),
         |version| joined_spec(tool, Some(version), "@"),
     )
-}
-
-fn distro_install(family: DistroFamily) -> (String, &'static str) {
-    let (program, verb) = match family {
-        DistroFamily::Debian | DistroFamily::Ubuntu => ("apt", "install"),
-        DistroFamily::Fedora => ("dnf", "install"),
-        DistroFamily::Arch => ("pacman", "--sync"),
-        DistroFamily::Alpine => ("apk", "add"),
-    };
-    (program.to_owned(), verb)
 }
 
 #[cfg(test)]
@@ -619,6 +785,235 @@ mod tests {
             error,
             Error::AllSourcesFailed { context, .. } if context == "brave"
         ));
+    }
+
+    struct NativeStubAdapter {
+        source: SourceKind,
+        apps: Vec<App>,
+    }
+
+    impl NativeStubAdapter {
+        fn up(source: SourceKind, apps: Vec<App>) -> Arc<dyn Adapter> {
+            Arc::new(Self { source, apps })
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Adapter for NativeStubAdapter {
+        fn source(&self) -> SourceKind {
+            self.source
+        }
+
+        async fn lookup(&self, id: &SourceRef) -> Result<Option<App>> {
+            Ok(self
+                .apps
+                .iter()
+                .find(|app| app.sources.iter().any(|row| row.id == id.id))
+                .cloned())
+        }
+
+        async fn search(&self, _query: &str) -> Result<Vec<App>> {
+            Ok(self.apps.clone())
+        }
+    }
+
+    fn brave_cask_row() -> App {
+        let mut app = stub_app("brave-browser", SourceKind::HomebrewCask);
+        app.name = "Brave Browser".to_owned();
+        app.homepage = Some("https://brave.com/".to_owned());
+        app.install = InstallMethod::Homebrew {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        };
+        app
+    }
+
+    fn brave_flathub_row() -> App {
+        let mut app = stub_app("com-brave-browser", SourceKind::Flathub);
+        app.name = "Brave Browser".to_owned();
+        app.install = InstallMethod::Flatpak {
+            app_id: "com.brave.Browser".to_owned(),
+            remote: "flathub".to_owned(),
+        };
+        app.sources = vec![SourceRef {
+            source: SourceKind::Flathub,
+            id: "com.brave.Browser".to_owned(),
+            repo: None,
+            version: None,
+            provisional: false,
+        }];
+        app
+    }
+
+    #[tokio::test]
+    async fn search_merges_same_app_hits_across_adapters_into_one_row() {
+        let registry = Registry::new(vec![
+            NativeStubAdapter::up(SourceKind::Flathub, vec![brave_flathub_row()]),
+            NativeStubAdapter::up(SourceKind::HomebrewCask, vec![brave_cask_row()]),
+        ]);
+        let outcome = registry
+            .search("brave browser")
+            .await
+            .expect("fan-out merges same-app hits");
+        assert_eq!(outcome.apps.len(), 1);
+        let merged = &outcome.apps[0];
+        assert_eq!(
+            merged.id.as_str(),
+            "com-brave-browser",
+            "the registration-first row's id is the canonical one"
+        );
+        assert_eq!(merged.name, "Brave Browser");
+        assert_eq!(
+            merged
+                .sources
+                .iter()
+                .map(|row| (row.source, row.id.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (SourceKind::Flathub, "com.brave.Browser"),
+                (SourceKind::HomebrewCask, "brave-browser"),
+            ],
+            "one row carries both sources' refs"
+        );
+        assert_eq!(
+            merged.homepage.as_deref(),
+            Some("https://brave.com/"),
+            "the cask hit's homepage backfills the hit that carried none"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_records_merged_rows_into_the_alias_index() {
+        let registry = Registry::new(vec![
+            NativeStubAdapter::up(SourceKind::Flathub, vec![brave_flathub_row()]),
+            NativeStubAdapter::up(SourceKind::HomebrewCask, vec![brave_cask_row()]),
+        ]);
+        assert!(registry.alias_index().is_empty());
+        registry
+            .search("brave browser")
+            .await
+            .expect("search populates the index");
+        let index = registry.alias_index();
+        assert_eq!(index.len(), 1);
+        assert_eq!(
+            index
+                .get(&TorideId::slugify("com-brave-browser"))
+                .iter()
+                .map(|row| (row.source, row.id.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (SourceKind::Flathub, "com.brave.Browser"),
+                (SourceKind::HomebrewCask, "brave-browser"),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn search_keeps_rows_apart_when_identities_conflict() {
+        let mut flathub = brave_flathub_row();
+        flathub.homepage = Some("https://flathub.example".to_owned());
+        let mut cask = brave_cask_row();
+        cask.homepage = Some("https://brave.com/".to_owned());
+        let registry = Registry::new(vec![
+            NativeStubAdapter::up(SourceKind::Flathub, vec![flathub]),
+            NativeStubAdapter::up(SourceKind::HomebrewCask, vec![cask]),
+        ]);
+        let outcome = registry
+            .search("brave browser")
+            .await
+            .expect("conflicting identities still answer");
+        assert_eq!(
+            outcome.apps.len(),
+            2,
+            "a homepage conflict keeps rows apart"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_answers_from_the_alias_index_when_primary_lookups_miss() {
+        let registry = Registry::new(vec![
+            NativeStubAdapter::up(SourceKind::Flathub, vec![brave_flathub_row()]),
+            NativeStubAdapter::up(SourceKind::HomebrewCask, vec![brave_cask_row()]),
+        ]);
+        registry
+            .search("brave browser")
+            .await
+            .expect("search seeds the index");
+        let rows = registry
+            .resolve(&TorideId::slugify("com-brave-browser"))
+            .await
+            .expect("the index answers what the primary fan-out cannot");
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.source, row.id.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (SourceKind::Flathub, "com.brave.Browser"),
+                (SourceKind::HomebrewCask, "brave-browser"),
+            ],
+            "the slug names no source-native id, so only the index knows it"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolve_prefers_primary_hits_over_the_alias_index() {
+        let mut index = AliasIndex::new();
+        index.insert(
+            &TorideId::slugify("brave"),
+            vec![SourceRef {
+                source: SourceKind::Flathub,
+                id: "com.brave.Browser".to_owned(),
+                repo: None,
+                version: None,
+                provisional: false,
+            }],
+        );
+        let registry = Registry::builder()
+            .with_adapter(StubAdapter::up(
+                SourceKind::HomebrewCask,
+                vec![stub_app("brave", SourceKind::HomebrewCask)],
+            ))
+            .with_alias_index(index)
+            .build();
+        let rows = registry
+            .resolve(&TorideId::slugify("brave"))
+            .await
+            .expect("the primary lookup wins");
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.source, row.id.as_str()))
+                .collect::<Vec<_>>(),
+            [(SourceKind::HomebrewCask, "brave")]
+        );
+    }
+
+    #[tokio::test]
+    async fn builder_preloads_the_alias_index_for_resolve() {
+        let mut index = AliasIndex::new();
+        index.insert(
+            &TorideId::slugify("brave-browser"),
+            vec![SourceRef {
+                source: SourceKind::HomebrewCask,
+                id: "brave-browser".to_owned(),
+                repo: None,
+                version: None,
+                provisional: false,
+            }],
+        );
+        let registry = Registry::builder()
+            .with_adapter(StubAdapter::up(SourceKind::Flathub, Vec::new()))
+            .with_alias_index(index)
+            .build();
+        let rows = registry
+            .resolve(&TorideId::slugify("brave-browser"))
+            .await
+            .expect("the preloaded index answers the miss");
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.source, row.id.as_str()))
+                .collect::<Vec<_>>(),
+            [(SourceKind::HomebrewCask, "brave-browser")]
+        );
     }
 
     fn plannable(mut app: App, platforms: Vec<Platform>, artifacts: Vec<Artifact>) -> App {
@@ -1001,6 +1396,441 @@ mod tests {
             Registry::plan(&app, &host(Os::MacOs, Some(Arch::Aarch64))),
             native,
             "a host that declares no release at all — today's every caller — plans the native method"
+        );
+    }
+
+    #[test]
+    fn plan_update_renders_the_native_manager_upgrade_argv_per_method() {
+        let mut cask = stub_app("brave-browser", SourceKind::HomebrewCask);
+        cask.install = InstallMethod::Homebrew {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_update(&cask, &host(Os::MacOs, Some(Arch::Aarch64))),
+            PlannedOp::Command {
+                program: "brew".to_owned(),
+                args: vec![
+                    "upgrade".to_owned(),
+                    "--cask".to_owned(),
+                    "brave-browser".to_owned()
+                ],
+            }
+        );
+
+        let mut formula = stub_app("ripgrep", SourceKind::HomebrewFormula);
+        formula.install = InstallMethod::Homebrew {
+            cask: false,
+            token: "ripgrep".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_update(&formula, &host(Os::Linux, Some(Arch::X86_64))),
+            PlannedOp::Command {
+                program: "brew".to_owned(),
+                args: vec!["upgrade".to_owned(), "ripgrep".to_owned()],
+            }
+        );
+
+        let mut flatpak = stub_app("brave", SourceKind::Flathub);
+        flatpak.install = InstallMethod::Flatpak {
+            app_id: "com.brave.Browser".to_owned(),
+            remote: "flathub".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_update(&flatpak, &host(Os::Linux, Some(Arch::X86_64))),
+            PlannedOp::Command {
+                program: "flatpak".to_owned(),
+                args: vec![
+                    "update".to_owned(),
+                    "--user".to_owned(),
+                    "com.brave.Browser".to_owned(),
+                ],
+            }
+        );
+
+        for (family, program, verbs) in [
+            (
+                DistroFamily::Debian,
+                "apt",
+                vec!["install", "--only-upgrade"],
+            ),
+            (
+                DistroFamily::Ubuntu,
+                "apt",
+                vec!["install", "--only-upgrade"],
+            ),
+            (DistroFamily::Fedora, "dnf", vec!["upgrade"]),
+            (DistroFamily::Arch, "pacman", vec!["--sync", "--refresh"]),
+            (DistroFamily::Alpine, "apk", vec!["upgrade"]),
+        ] {
+            let mut distro = stub_app("gitg", SourceKind::Distro);
+            distro.install = InstallMethod::Distro {
+                family,
+                repo: Some("suite-main".to_owned()),
+                package: "gitg".to_owned(),
+            };
+            assert_eq!(
+                Registry::plan_update(&distro, &host(Os::Linux, Some(Arch::X86_64))),
+                PlannedOp::Command {
+                    program: program.to_owned(),
+                    args: verbs
+                        .into_iter()
+                        .map(str::to_owned)
+                        .chain(["gitg".to_owned()])
+                        .collect(),
+                },
+                "family {family:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_update_renders_the_language_manager_upgrade_argv_per_method() {
+        let mut npm = stub_app("typescript", SourceKind::Distro);
+        npm.install = InstallMethod::Npm {
+            package: "typescript".to_owned(),
+            version: Some("5.4.5".to_owned()),
+        };
+        assert_eq!(
+            Registry::plan_update(&npm, &host(Os::MacOs, None)),
+            PlannedOp::Command {
+                program: "npm".to_owned(),
+                args: vec![
+                    "update".to_owned(),
+                    "-g".to_owned(),
+                    "typescript".to_owned()
+                ],
+            },
+            "the update verb takes the bare package — the pin is an install-only spelling"
+        );
+
+        let mut cargo = stub_app("ripgrep", SourceKind::Distro);
+        cargo.install = InstallMethod::Cargo {
+            crate_: "ripgrep".to_owned(),
+            version: Some("14.1.0".to_owned()),
+        };
+        assert_eq!(
+            Registry::plan_update(&cargo, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "cargo".to_owned(),
+                args: vec![
+                    "install".to_owned(),
+                    "--force".to_owned(),
+                    "ripgrep".to_owned(),
+                ],
+            },
+            "cargo has no upgrade verb — re-install at latest under --force"
+        );
+
+        let mut pipx = stub_app("black", SourceKind::Distro);
+        pipx.install = InstallMethod::Pipx {
+            package: "black".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_update(&pipx, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "pipx".to_owned(),
+                args: vec!["upgrade".to_owned(), "black".to_owned()],
+            }
+        );
+
+        let mut uv = stub_app("ruff", SourceKind::Distro);
+        uv.install = InstallMethod::Uv {
+            package: "ruff".to_owned(),
+            version: None,
+        };
+        assert_eq!(
+            Registry::plan_update(&uv, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "uv".to_owned(),
+                args: vec!["tool".to_owned(), "upgrade".to_owned(), "ruff".to_owned()],
+            }
+        );
+
+        let mut mise = stub_app("node", SourceKind::Distro);
+        mise.install = InstallMethod::Mise {
+            tool: "node".to_owned(),
+            version: None,
+        };
+        assert_eq!(
+            Registry::plan_update(&mise, &host(Os::MacOs, None)),
+            PlannedOp::Command {
+                program: "mise".to_owned(),
+                args: vec!["upgrade".to_owned(), "node".to_owned()],
+            },
+            "mise's own upgrade verb — not the install-time @latest spec"
+        );
+    }
+
+    #[test]
+    fn plan_uninstall_renders_the_native_manager_removal_argv_per_method() {
+        let mut cask = stub_app("brave-browser", SourceKind::HomebrewCask);
+        cask.install = InstallMethod::Homebrew {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&cask, &host(Os::MacOs, Some(Arch::Aarch64))),
+            PlannedOp::Command {
+                program: "brew".to_owned(),
+                args: vec![
+                    "uninstall".to_owned(),
+                    "--cask".to_owned(),
+                    "brave-browser".to_owned()
+                ],
+            }
+        );
+
+        let mut formula = stub_app("ripgrep", SourceKind::HomebrewFormula);
+        formula.install = InstallMethod::Homebrew {
+            cask: false,
+            token: "ripgrep".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&formula, &host(Os::MacOs, Some(Arch::Aarch64))),
+            PlannedOp::Command {
+                program: "brew".to_owned(),
+                args: vec!["uninstall".to_owned(), "ripgrep".to_owned()],
+            }
+        );
+
+        let mut flatpak = stub_app("brave", SourceKind::Flathub);
+        flatpak.install = InstallMethod::Flatpak {
+            app_id: "com.brave.Browser".to_owned(),
+            remote: "flathub".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&flatpak, &host(Os::Linux, Some(Arch::X86_64))),
+            PlannedOp::Command {
+                program: "flatpak".to_owned(),
+                args: vec![
+                    "uninstall".to_owned(),
+                    "--user".to_owned(),
+                    "com.brave.Browser".to_owned(),
+                ],
+            }
+        );
+
+        for (family, program, verb) in [
+            (DistroFamily::Debian, "apt", "remove"),
+            (DistroFamily::Ubuntu, "apt", "remove"),
+            (DistroFamily::Fedora, "dnf", "remove"),
+            (DistroFamily::Arch, "pacman", "--remove"),
+            (DistroFamily::Alpine, "apk", "del"),
+        ] {
+            let mut distro = stub_app("gitg", SourceKind::Distro);
+            distro.install = InstallMethod::Distro {
+                family,
+                repo: Some("suite-main".to_owned()),
+                package: "gitg".to_owned(),
+            };
+            assert_eq!(
+                Registry::plan_uninstall(&distro, &host(Os::Linux, Some(Arch::X86_64))),
+                PlannedOp::Command {
+                    program: program.to_owned(),
+                    args: vec![verb.to_owned(), "gitg".to_owned()],
+                },
+                "family {family:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn plan_uninstall_renders_the_language_manager_removal_argv_per_method() {
+        let mut npm = stub_app("typescript", SourceKind::Distro);
+        npm.install = InstallMethod::Npm {
+            package: "typescript".to_owned(),
+            version: Some("5.4.5".to_owned()),
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&npm, &host(Os::MacOs, None)),
+            PlannedOp::Command {
+                program: "npm".to_owned(),
+                args: vec![
+                    "uninstall".to_owned(),
+                    "-g".to_owned(),
+                    "typescript".to_owned()
+                ],
+            }
+        );
+
+        let mut cargo = stub_app("ripgrep", SourceKind::Distro);
+        cargo.install = InstallMethod::Cargo {
+            crate_: "ripgrep".to_owned(),
+            version: None,
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&cargo, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "cargo".to_owned(),
+                args: vec!["uninstall".to_owned(), "ripgrep".to_owned()],
+            }
+        );
+
+        let mut pipx = stub_app("black", SourceKind::Distro);
+        pipx.install = InstallMethod::Pipx {
+            package: "black".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&pipx, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "pipx".to_owned(),
+                args: vec!["uninstall".to_owned(), "black".to_owned()],
+            }
+        );
+
+        let mut uv = stub_app("ruff", SourceKind::Distro);
+        uv.install = InstallMethod::Uv {
+            package: "ruff".to_owned(),
+            version: None,
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&uv, &host(Os::Linux, None)),
+            PlannedOp::Command {
+                program: "uv".to_owned(),
+                args: vec!["tool".to_owned(), "uninstall".to_owned(), "ruff".to_owned()],
+            }
+        );
+
+        let mut mise = stub_app("node", SourceKind::Distro);
+        mise.install = InstallMethod::Mise {
+            tool: "node".to_owned(),
+            version: None,
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&mise, &host(Os::MacOs, None)),
+            PlannedOp::Command {
+                program: "mise".to_owned(),
+                args: vec!["uninstall".to_owned(), "node".to_owned()],
+            }
+        );
+    }
+
+    #[test]
+    fn plan_update_refuses_hosts_the_manager_cannot_serve() {
+        let mut flatpak = stub_app("brave", SourceKind::Flathub);
+        flatpak.install = InstallMethod::Flatpak {
+            app_id: "com.brave.Browser".to_owned(),
+            remote: "flathub".to_owned(),
+        };
+        let claimed_linux_only = plannable(
+            flatpak.clone(),
+            vec![Platform {
+                os: Os::Linux,
+                arch: None,
+                min_release: None,
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            Registry::plan_update(&claimed_linux_only, &host(Os::Linux, Some(Arch::X86_64))),
+            PlannedOp::Command {
+                program: "flatpak".to_owned(),
+                args: vec![
+                    "update".to_owned(),
+                    "--user".to_owned(),
+                    "com.brave.Browser".to_owned(),
+                ],
+            },
+            "empty-claims skip aside, a claimed host updates"
+        );
+        assert_eq!(
+            Registry::plan_update(&claimed_linux_only, &host(Os::MacOs, Some(Arch::Aarch64))),
+            PlannedOp::Unsupported,
+            "the claims exclude macOS and no download fallback exists for an update"
+        );
+        let macos_host_claimed = plannable(
+            flatpak,
+            vec![Platform {
+                os: Os::MacOs,
+                arch: None,
+                min_release: None,
+            }],
+            vec![checksummed(
+                "https://example.com/brave.pkg",
+                Some(Os::MacOs),
+                None,
+            )],
+        );
+        assert_eq!(
+            Registry::plan_update(&macos_host_claimed, &host(Os::MacOs, Some(Arch::Aarch64))),
+            PlannedOp::Unsupported,
+            "unlike install, an update never falls back to a direct download"
+        );
+    }
+
+    #[test]
+    fn plan_uninstall_skips_the_install_only_claim_gate() {
+        let mut cask = stub_app("brave-browser", SourceKind::HomebrewCask);
+        cask.install = InstallMethod::Homebrew {
+            cask: true,
+            token: "brave-browser".to_owned(),
+        };
+        let macos_only = plannable(
+            cask,
+            vec![Platform {
+                os: Os::MacOs,
+                arch: None,
+                min_release: None,
+            }],
+            Vec::new(),
+        );
+        assert_eq!(
+            Registry::plan_uninstall(&macos_only, &host(Os::Linux, Some(Arch::X86_64))),
+            PlannedOp::Command {
+                program: "brew".to_owned(),
+                args: vec![
+                    "uninstall".to_owned(),
+                    "--cask".to_owned(),
+                    "brave-browser".to_owned(),
+                ],
+            },
+            "claims gate installs, not removals — brew itself serves Linux"
+        );
+        assert_eq!(
+            Registry::plan(&macos_only, &host(Os::Linux, Some(Arch::X86_64))),
+            PlannedOp::Unsupported,
+            "the install on the same unclaimed host stays refused"
+        );
+
+        let mut flatpak = stub_app("brave", SourceKind::Flathub);
+        flatpak.install = InstallMethod::Flatpak {
+            app_id: "com.brave.Browser".to_owned(),
+            remote: "flathub".to_owned(),
+        };
+        assert_eq!(
+            Registry::plan_uninstall(&flatpak, &host(Os::MacOs, Some(Arch::Aarch64))),
+            PlannedOp::Unsupported,
+            "only the manager's OS coverage gates — flatpak has none on macOS"
+        );
+    }
+
+    #[test]
+    fn direct_methods_have_no_update_or_uninstall_spelling() {
+        let mut direct = stub_app("tool", SourceKind::Flathub);
+        direct.install = InstallMethod::Direct {
+            url: "https://example.com/tool".to_owned(),
+            checksum: None,
+            arch: Some(Arch::X86_64),
+        };
+        let host = host(Os::Linux, Some(Arch::X86_64));
+        assert_eq!(
+            Registry::plan_update(&direct, &host),
+            PlannedOp::Unsupported,
+            "a direct update is a fresh install decision, not a manager verb"
+        );
+        assert_eq!(
+            Registry::plan_uninstall(&direct, &host),
+            PlannedOp::Unsupported,
+            "a direct uninstall replays the manifest record's installed path"
+        );
+        assert_eq!(
+            Registry::plan(&direct, &host),
+            PlannedOp::DirectDownload {
+                url: "https://example.com/tool".to_owned(),
+                checksum: None,
+            },
+            "the install render is unchanged"
         );
     }
 }

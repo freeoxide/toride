@@ -521,11 +521,26 @@ landed differently, deliberately:
   the variant's contract — the executor layers it, exactly like the
   suppression flags toride-apps adds at execution time; `plan` is an
   associated (pure) function, not a `&self` method.
-- same-app **merging via the §5 alias rules is not implemented** — no
-  `AliasIndex` exists yet (§5 is a later wave), so `search` concatenates
-  each source's hits in registration order and one app can appear once
-  per source that carries it; `resolve` does merge every hit's
-  `sources` rows, deduplicated, which is what plan 3.8 asked of it.
+- same-app **merging via the §5 alias rules landed in wave 5** (see the
+  as-built note at the end of §5): `search` merges hits through the
+  alias rules and records every merged row into the `AliasIndex` the
+  facade owns; `resolve` keeps merging every hit's
+  `sources` rows, deduplicated, and additionally consults that index
+  when every primary lookup misses.
+- `plan` gained lifecycle siblings in wave 5 — `plan_update` and
+  `plan_uninstall`, still associated pure functions, mirroring
+  toride-apps' `Operation::argv` spellings exactly: `brew
+  upgrade/uninstall [--cask] <token>`, `flatpak update/uninstall --user
+  <app_id>`, the per-family distro verbs (incl. apt's `install
+  --only-upgrade` and pacman's `--sync --refresh`), and the language
+  managers' own verbs (`npm update/uninstall -g`, `cargo install
+  --force` / `cargo uninstall`, `pipx upgrade/uninstall`, `uv tool
+  upgrade/uninstall`, `mise upgrade/uninstall`). Updates keep install's
+  claim+manager gates minus the direct-download fallback; uninstalls
+  skip the claim gate (claims are an install-only gate); `Direct`
+  methods render `Unsupported` for both — a direct uninstall replays the
+  manifest record's path, and a direct update is a fresh install
+  decision, not a manager verb.
 
 ## 4. Field mappings (source → normalized)
 
@@ -688,6 +703,26 @@ Provisional is REPRESENTED, not prose: the minted `SourceRef` carries
 `provisional: true` (`#[serde(default)]`, §2) — it survives the index's
 JSON persistence and any real adapter that later parses the family's own
 catalog replaces the row with `provisional: false`.
+
+**As built (wave 5 — `src/alias.rs`)**: the index is a `BTreeMap`
+(the JSON serialization is deterministic), owned by the `Registry`
+facade behind a `Mutex` and preloadable through
+`RegistryBuilder::with_alias_index`; `search` records every merged row
+into it and `resolve` consults it when every primary lookup misses. The
+merge implements the **offline subset** of the rules above only — the
+Repology forward/reverse oracle fill (inputs 1–2) is still future work,
+so `same_app` joins on: no homepage/developer conflict (the collision
+policy's guard), then a shared canonical slug, an explicitly equal
+homepage, or any shared alias-name slug (`slugify` of `name` or an
+`aliases` entry, the degenerate `unnamed` slug excluded). The
+normalized-name **platform-overlap** conjunction is deliberately not
+required: a cask claims macOS and its flatpak twin claims Linux, so
+per-source platform carving is exactly the case the merge exists for.
+The registration-first row is the survivor — its id, name, install
+method, and availability govern; a merged hit only unions its
+`SourceRef`s and `aliases` in and backfills the survivor's unset
+descriptive fields (`summary`, `description`, `homepage`, `license`,
+`developer`, `latest`).
 
 ## 6. Coverage matrix
 
