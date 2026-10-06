@@ -2359,6 +2359,49 @@ mod tests {
         assert_eq!(plan.operation.execution_steps(), [plan.operation.argv()]);
     }
 
+    #[test]
+    fn update_path_operations_stay_single_step() {
+        let operations = [
+            Operation::BrewUpgrade {
+                cask: false,
+                token: "ripgrep".to_owned(),
+            },
+            Operation::FlatpakUpdate {
+                app_id: "com.brave.Browser".to_owned(),
+                installation: FlatpakInstallation::User,
+            },
+            Operation::DistroUpdate {
+                manager: PackageManager::Apt,
+                package: "sl".to_owned(),
+            },
+            Operation::NpmUpdate {
+                package: "typescript".to_owned(),
+                global: true,
+            },
+            Operation::CargoUpdate {
+                crate_: "ripgrep".to_owned(),
+            },
+            Operation::PipxUpdate {
+                package: "poetry".to_owned(),
+            },
+            Operation::UvUpdate {
+                package: "poetry".to_owned(),
+            },
+        ];
+        for operation in &operations {
+            assert_eq!(operation.execution_steps(), [operation.argv()]);
+        }
+    }
+
+    #[cfg(feature = "mise")]
+    #[test]
+    fn mise_update_stays_single_step() {
+        let mise = Operation::MiseUpdate {
+            tool: "node".to_owned(),
+        };
+        assert_eq!(mise.execution_steps(), [mise.argv()]);
+    }
+
     #[cfg(not(feature = "mise"))]
     #[test]
     fn a_mise_method_without_the_feature_is_refused_at_plan_time() {
