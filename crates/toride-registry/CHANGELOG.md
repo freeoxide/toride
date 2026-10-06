@@ -19,8 +19,10 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   canonical id to per-source `SourceRef` rows (JSON-serializable,
   preloadable via `RegistryBuilder::with_alias_index`); `search` merges
   same-app hits across adapters — never within one adapter's own hits —
-  into one row carrying every source's refs and records it, and
-  `resolve` consults the index when every primary lookup misses.
+  into one row carrying every source's refs and records it, suffixed
+  per DESIGN.md §5 when a same-slug row conflicts (`notes` →
+  `notes-flathub`) so no two rows share one id, and `resolve` consults
+  the index when every primary lookup misses.
 
 ### Changed
 

@@ -728,7 +728,15 @@ descriptive fields (`summary`, `description`, `homepage`, `license`,
 `developer`, `latest`). Merging is **across adapters only**:
 `merge_hits` buckets hits per adapter and never joins two rows from
 the same bucket, so two distinct same-named apps one source returns
-stay separate result rows.
+stay separate result rows. The collision policy's suffix branch is
+implemented there too: a hit whose canonical slug is already taken by
+a non-joinable row (conflicting homepage/developer, or the same
+adapter's second row) gets its source key appended — `notes` from
+flathub vs a conflicting cask `notes` → `notes-flathub` — repeated
+while the suffixed id is also taken, so no two result rows share one
+`TorideId` and the index's per-id rows stay unambiguous; a row
+carrying no `SourceRef` cannot be suffixed and keeps the colliding
+id.
 
 ## 6. Coverage matrix
 

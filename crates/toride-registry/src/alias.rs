@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::model::{App, SourceRef, TorideId};
+use crate::model::{App, SourceKind, SourceRef, TorideId};
 
 /// The alias table (DESIGN.md §5): one row set per canonical [`TorideId`],
 /// persisted as JSON (a `BTreeMap`, so the serialization is deterministic).
@@ -55,17 +55,43 @@ impl AliasIndex {
 pub(crate) fn merge_hits(buckets: impl IntoIterator<Item = Vec<App>>) -> Vec<App> {
     let mut merged: Vec<(usize, App)> = Vec::new();
     for (origin, bucket) in buckets.into_iter().enumerate() {
-        for hit in bucket {
+        for mut hit in bucket {
             let joinable = merged
                 .iter_mut()
                 .find(|(row_origin, row)| *row_origin != origin && same_app(row, &hit));
-            match joinable {
-                Some((_, row)) => absorb(row, hit),
-                None => merged.push((origin, hit)),
+            if let Some((_, row)) = joinable {
+                absorb(row, hit);
+            } else {
+                disambiguate(&mut hit, &merged);
+                merged.push((origin, hit));
             }
         }
     }
     merged.into_iter().map(|(_, app)| app).collect()
+}
+
+fn disambiguate(hit: &mut App, merged: &[(usize, App)]) {
+    let Some(key) = source_key(hit) else {
+        return;
+    };
+    while merged.iter().any(|(_, row)| row.id == hit.id) {
+        let suffixed = format!("{}-{key}", hit.id.as_str());
+        hit.id = TorideId::slugify(&suffixed);
+    }
+}
+
+fn source_key(app: &App) -> Option<&'static str> {
+    app.sources.first().map(|row| source_kind_key(row.source))
+}
+
+fn source_kind_key(source: SourceKind) -> &'static str {
+    match source {
+        SourceKind::HomebrewCask => "cask",
+        SourceKind::HomebrewFormula => "formula",
+        SourceKind::Flathub => "flathub",
+        SourceKind::Distro => "distro",
+        SourceKind::Repology => "repology",
+    }
 }
 
 pub(crate) fn same_app(left: &App, right: &App) -> bool {
@@ -269,6 +295,41 @@ mod tests {
             merged.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
             ["notes-a", "notes-b"],
             "the merge joins hits across adapters, never within one source's own hits"
+        );
+    }
+
+    #[test]
+    fn merge_hits_suffixes_the_source_key_on_a_same_slug_identity_conflict() {
+        let mut cask = app("notes", "Notes", SourceKind::HomebrewCask);
+        cask.homepage = Some("https://notes.a/".to_owned());
+        let mut flathub = app("notes", "Notes", SourceKind::Flathub);
+        flathub.homepage = Some("https://notes.b/".to_owned());
+        flathub.sources = vec![row(SourceKind::Flathub, "com.example.Notes")];
+        let merged = merge_hits([vec![cask], vec![flathub]]);
+        assert_eq!(
+            merged.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["notes", "notes-flathub"],
+            "DESIGN.md §5's collision policy: same slug + conflicting identity → suffix the source key"
+        );
+        assert_eq!(
+            merged[1].sources,
+            vec![row(SourceKind::Flathub, "com.example.Notes")],
+            "the row's per-source identity is untouched — only the canonical id diverges"
+        );
+    }
+
+    #[test]
+    fn merge_hits_suffixes_again_when_the_suffixed_id_is_also_taken() {
+        let mut cask = app("notes", "Notes", SourceKind::HomebrewCask);
+        cask.homepage = Some("https://notes.a/".to_owned());
+        let mut native = app("notes-flathub", "Notes Flathub", SourceKind::Distro);
+        native.homepage = Some("https://notes.c/".to_owned());
+        let mut flathub = app("notes", "Notes", SourceKind::Flathub);
+        flathub.homepage = Some("https://notes.b/".to_owned());
+        let merged = merge_hits([vec![cask, native], vec![flathub]]);
+        assert_eq!(
+            merged.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(),
+            ["notes", "notes-flathub", "notes-flathub-flathub"]
         );
     }
 

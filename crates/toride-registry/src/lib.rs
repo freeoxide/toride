@@ -22,11 +22,9 @@
 //!   [`homebrew`][sources::homebrew], [`flathub`][sources::flathub],
 //!   [`appstream`][sources::appstream], and the parse-only Repology oracle
 //!   [`repology`][sources::repology];
-//! - the [`Registry`] facade (DESIGN.md §3.3) — search fan-out with
-//!   per-source error tolerance and same-app hits merged by alias,
-//!   resolve merging `sources` rows (the [`AliasIndex`] answers ids no
-//!   primary lookup knows), and `plan`/`plan_update`/`plan_uninstall`
-//!   rendering lifecycle argv per host platform;
+//! - the [`Registry`] facade (DESIGN.md §3.3) — error-tolerant search
+//!   with same-app merging, resolve backed by [`AliasIndex`], and
+//!   `plan`/`plan_update`/`plan_uninstall` lifecycle argv renders;
 //! - the alias layer — [`TorideId`] derivation plus the alias index
 //!   mapping the canonical toride id to per-source ids (DESIGN.md §5).
 //!

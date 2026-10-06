@@ -6,14 +6,9 @@
 //! the per-source modules under [`sources`](crate::sources). Callers see
 //! only [`App`] and [`SourceRef`].
 //!
-//! The trait follows the house async style:
-//! `#[async_trait::async_trait]` + `Send + Sync` supertraits, matching
-//! toride-installer's `ReleaseResolver`. [`Registry`] (DESIGN.md §3.3) is
-//! the facade over `Vec<Arc<dyn Adapter>>`: error-tolerant search
-//! fan-out with same-app merging, resolve merging sources (the alias
-//! index answers total primary misses), and the lifecycle renders
-//! [`Registry::plan`], [`Registry::plan_update`],
-//! [`Registry::plan_uninstall`].
+//! House async style (`#[async_trait::async_trait]` + `Send + Sync`,
+//! like toride-installer's `ReleaseResolver`); [`Registry`] (DESIGN.md
+//! §3.3) is the search/resolve/lifecycle-plan facade over the adapters.
 
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -148,9 +143,8 @@ impl Registry {
     }
 
     /// Fan `query` out to every adapter; failures land in
-    /// [`SearchOutcome::failures`] and same-app hits from different
-    /// adapters merge into one row (DESIGN.md §5). Errors:
-    /// [`Error::AllSourcesFailed`] when every source failed.
+    /// [`SearchOutcome::failures`], same-app hits across adapters merge
+    /// into one row. Errors: [`Error::AllSourcesFailed`] on total failure.
     pub async fn search(&self, query: &str) -> Result<SearchOutcome> {
         let mut buckets: Vec<Vec<App>> = Vec::new();
         let mut failures = Vec::new();
@@ -924,6 +918,67 @@ mod tests {
             outcome.apps.len(),
             2,
             "a homepage conflict keeps rows apart"
+        );
+    }
+
+    #[tokio::test]
+    async fn search_suffixes_same_slug_conflicts_and_resolve_stays_unambiguous() {
+        let mut cask = stub_app("notes", SourceKind::HomebrewCask);
+        cask.name = "Notes".to_owned();
+        cask.homepage = Some("https://notes.a/".to_owned());
+        let mut flathub = stub_app("notes", SourceKind::Flathub);
+        flathub.name = "Notes".to_owned();
+        flathub.homepage = Some("https://notes.b/".to_owned());
+        flathub.install = InstallMethod::Flatpak {
+            app_id: "com.example.Notes".to_owned(),
+            remote: "flathub".to_owned(),
+        };
+        flathub.sources = vec![SourceRef {
+            source: SourceKind::Flathub,
+            id: "com.example.Notes".to_owned(),
+            repo: None,
+            version: None,
+            provisional: false,
+        }];
+        let registry = Registry::new(vec![
+            NativeStubAdapter::up(SourceKind::HomebrewCask, vec![cask]),
+            NativeStubAdapter::up(SourceKind::Flathub, vec![flathub]),
+        ]);
+        let outcome = registry
+            .search("notes")
+            .await
+            .expect("conflicting same-slug hits still answer");
+        assert_eq!(
+            outcome
+                .apps
+                .iter()
+                .map(|app| app.id.as_str())
+                .collect::<Vec<_>>(),
+            ["notes", "notes-flathub"],
+            "no two result rows share one TorideId (DESIGN.md §5's suffix branch)"
+        );
+        let flathub_rows = registry
+            .resolve(&TorideId::slugify("notes-flathub"))
+            .await
+            .expect("the index answers the suffixed id");
+        assert_eq!(
+            flathub_rows
+                .iter()
+                .map(|row| (row.source, row.id.as_str()))
+                .collect::<Vec<_>>(),
+            [(SourceKind::Flathub, "com.example.Notes")],
+            "the index fallback names one app's refs, never both conflicting apps' merged"
+        );
+        let cask_rows = registry
+            .resolve(&TorideId::slugify("notes"))
+            .await
+            .expect("the canonical id stays the cask row's");
+        assert_eq!(
+            cask_rows
+                .iter()
+                .map(|row| (row.source, row.id.as_str()))
+                .collect::<Vec<_>>(),
+            [(SourceKind::HomebrewCask, "notes")]
         );
     }
 
