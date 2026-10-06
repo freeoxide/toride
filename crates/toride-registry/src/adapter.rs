@@ -147,11 +147,10 @@ impl Registry {
         self.locked_aliases().clone()
     }
 
-    /// Fan `query` out to every adapter; a failing source is recorded in
-    /// [`SearchOutcome::failures`] without discarding the other sources'
-    /// hits, and same-app hits from different adapters merge into one
-    /// row (DESIGN.md §5). Errors: [`Error::AllSourcesFailed`] when
-    /// every registered source failed.
+    /// Fan `query` out to every adapter; failures land in
+    /// [`SearchOutcome::failures`] and same-app hits from different
+    /// adapters merge into one row (DESIGN.md §5). Errors:
+    /// [`Error::AllSourcesFailed`] when every source failed.
     pub async fn search(&self, query: &str) -> Result<SearchOutcome> {
         let mut buckets: Vec<Vec<App>> = Vec::new();
         let mut failures = Vec::new();
@@ -170,10 +169,9 @@ impl Registry {
         Ok(SearchOutcome { apps, failures })
     }
 
-    /// Resolve `id` per adapter keyed on the slug, merging hits'
-    /// `sources` rows deduped; a total primary miss consults the alias
-    /// index (DESIGN.md §5). Errors: [`Error::AllSourcesFailed`] when
-    /// every registered source fails.
+    /// Resolve `id` per adapter keyed on the slug, merging `sources` rows
+    /// deduped; a total miss consults the alias index (DESIGN.md §5).
+    /// Errors: [`Error::AllSourcesFailed`] when every source fails.
     pub async fn resolve(&self, id: &crate::model::TorideId) -> Result<Vec<SourceRef>> {
         let mut rows: Vec<SourceRef> = Vec::new();
         let mut failures = Vec::new();
@@ -217,9 +215,7 @@ impl Registry {
 
     /// Render `app`'s install descriptor for `host` (DESIGN.md §3.3):
     /// native argv, direct-download fallback, or [`PlannedOp::Unsupported`];
-    /// empty `platforms` skip the claim check; `min_release` is not yet
-    /// enforced — no caller models the host release (the toride-apps
-    /// planner's documented stance).
+    /// empty `platforms` skip claims; `min_release` stays unenforced.
     #[must_use]
     pub fn plan(app: &App, host: &Platform) -> PlannedOp {
         if gates_pass(app, host)
@@ -264,9 +260,8 @@ impl Registry {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlannedOp {
     /// argv for the native manager (`brew`, `flatpak`, `apt`, …) —
-    /// program first, the lifecycle argv only: no suppression flags and
-    /// no one-time setup (flatpak's `remote-add`); the executor layers
-    /// those.
+    /// program first, the lifecycle argv only: no suppression flags or
+    /// one-time setup; the executor layers those.
     Command {
         /// The manager binary to run.
         program: String,
