@@ -23,6 +23,9 @@ env:
   # crates whose dependency graphs pull C build scripts (ring, lzma-sys) that
   # cannot be cross-verified on a Linux host; widen toward --workspace as
   # native runner evidence comes in. Space-separated; expanded to -p flags.
+  # toride-registry's bench dev-graph (criterion -> alloca, a C build
+  # script) also cannot cross-compile from Linux; its --all-targets legs
+  # over these lists rest on native macOS/Windows runner green instead.
   PORTABLE_CRATES_MACOS: >-
     toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
     toride-fail2ban toride-fs toride-harden toride-installer toride-mise
