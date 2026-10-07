@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 description = "Safely manage, inspect, validate, and diagnose UFW firewall installations"
 
 [features]

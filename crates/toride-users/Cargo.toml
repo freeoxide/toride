@@ -5,6 +5,7 @@ edition.workspace = true
 description = "OS-level user, sudo, PAM, and 2FA management"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "toride-users"

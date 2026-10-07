@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Port forwarding management via SSH ControlMaster sessions"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [dependencies]
 toride-ssh-core = { path = "../core", version = "0.1.0" }

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Shared types, errors, path resolution, CLI runner abstraction, and undo mechanism for the toride-ssh sub-crates"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [dependencies]
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }

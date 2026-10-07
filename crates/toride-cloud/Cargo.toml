@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Cloud provider security group and firewall management"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "toride-cloud"

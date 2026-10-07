@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Tailscale mesh VPN management via HTTP API"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 # A library crate can also ship a binary target. `cargo run -p toride-tailscale
 # --features cli` builds this entry point, which parses the CLI and dispatches

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Reverse proxy, TLS certificate, and WAF management"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "toride-proxy"

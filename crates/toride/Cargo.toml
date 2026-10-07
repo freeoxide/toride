@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Terminal user interface (TUI) for hardened Linux host management"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [lib]
 name = "toride"

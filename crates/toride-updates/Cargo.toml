@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Automatic security update management for Linux VPS hosts"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [lib]
 name = "toride_updates"

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Backup scheduling and management via restic or borg"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [lib]
 name = "toride_backup"

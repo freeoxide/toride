@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Fail2Ban-style intrusion prevention library"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [features]
 # `config` is on by default so the `detector_scan` criterion bench (which needs
