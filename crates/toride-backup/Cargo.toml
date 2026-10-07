@@ -1,4 +1,5 @@
 [package]
+exclude = ["benches/fixtures/**"]
 name = "toride-backup"
 version.workspace = true
 edition.workspace = true

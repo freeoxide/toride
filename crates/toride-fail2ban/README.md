@@ -2,7 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/toride-fail2ban.svg)](https://crates.io/crates/toride-fail2ban)
 [![docs.rs](https://docs.rs/toride-fail2ban/badge.svg)](https://docs.rs/toride-fail2ban)
-[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE-MIT)
 
 A Rust library for programmatically managing an existing Fail2Ban installation.
 
