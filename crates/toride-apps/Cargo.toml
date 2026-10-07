@@ -2,6 +2,7 @@
 name = "toride-apps"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.88"
 description = "App install/uninstall execution layer: plans registry `App`s into concrete backend operations (homebrew, flatpak, distro) and runs them through the shared runner seam."
 license.workspace = true
 repository.workspace = true

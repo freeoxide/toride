@@ -4,6 +4,34 @@ All notable changes to this crate are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Lifecycle argv renders beside `Registry::plan`: `plan_update` and
+  `plan_uninstall` mirror toride-apps' `Operation::argv` spellings
+  (`brew upgrade/uninstall [--cask]`, `flatpak update/uninstall --user`,
+  the per-family distro update/uninstall verbs, and the language
+  managers' own verbs); updates keep install's gates minus the
+  direct-download fallback, uninstalls skip the install-only claim gate,
+  and `Direct` methods render `Unsupported` for both.
+- The alias index (DESIGN.md §5, offline subset): `AliasIndex` maps the
+  canonical id to per-source `SourceRef` rows (JSON-serializable,
+  preloadable via `RegistryBuilder::with_alias_index`); `search` merges
+  same-app hits across adapters — never within one adapter's own hits —
+  into one row carrying every source's refs and records it, suffixed
+  per DESIGN.md §5 when a same-slug row conflicts (`notes` →
+  `notes-flathub`) so no two rows share one id, and `resolve` consults
+  the index when every primary lookup misses.
+
+### Changed
+
+- `Registry::plan` (and the new lifecycle renders) refuse Homebrew
+  casks on non-macOS hosts — casks are macOS-only, matching
+  toride-apps' planner — routing the install to the checksummed
+  direct-download fallback (or `Unsupported`) instead of rendering a
+  `brew --cask` argv Linuxbrew would reject.
+
 ## [0.1.0] - 2026-10-02
 
 Initial crates.io release.

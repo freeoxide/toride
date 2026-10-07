@@ -12,6 +12,7 @@
 
 use async_trait::async_trait;
 use toride_mise::Mise;
+use toride_mise::binary::MiseBinary;
 use toride_mise::serde_utils::json_outputs::{LsOutput, OutdatedOutput};
 
 use crate::backend::{
@@ -42,16 +43,20 @@ impl MiseBackend {
         Self { mise, runner }
     }
 
-    /// Create the backend after discovering a mise binary on the host
-    /// `$PATH`. The toride-mise client defaults to a tokio-backed async
-    /// runner; no command executes here.
+    /// Create the backend after discovering a mise binary offline
+    /// ([`MiseBinary::discover_offline`]: `MISE_BIN` override, `$PATH`,
+    /// the managed install location, the system-wide fallback, the
+    /// app-bundled path — file checks only). No command executes here;
+    /// the toride-mise client defaults to a tokio-backed async runner and
+    /// carries no version until a verb asks mise for one.
     ///
     /// # Errors
     ///
-    /// [`Error::Command`] wrapping `BinaryNotFound` when mise is not on the
-    /// PATH.
+    /// [`Error::Command`] wrapping `BinaryNotFound` when no mise binary is
+    /// discoverable.
     pub fn detect(runner: CommandRunner) -> Result<Self> {
-        let mise = Mise::builder().build().map_err(mise_error)?;
+        let binary = MiseBinary::discover_offline().map_err(mise_error)?;
+        let mise = Mise::builder().binary(binary).build().map_err(mise_error)?;
         Ok(Self::new(mise, runner))
     }
 }
@@ -291,6 +296,23 @@ mod tests {
             .build()
             .unwrap();
         MiseBackend::new(mise, CommandRunner::new(Arc::new(fake.clone())))
+    }
+
+    #[test]
+    fn detect_attaches_offline_without_dispatching_through_the_seam() {
+        if toride_runner::discovery::find_binary("mise").is_err() {
+            eprintln!("no mise on this host; skipping detect test");
+            return;
+        }
+        let fake = FakeRunner::new().strict();
+        let detected = MiseBackend::detect(CommandRunner::new(Arc::new(fake.clone())))
+            .expect("offline discovery attaches without any subprocess probe");
+        assert_eq!(detected.id(), BackendId::Mise);
+        assert!(
+            fake.calls().is_empty(),
+            "a version probe would have run through some runner: {:?}",
+            fake.calls()
+        );
     }
 
     fn mise_async_spec(args: &[&str]) -> toride_runner::CommandSpec {

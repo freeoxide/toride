@@ -1123,3 +1123,199 @@ fn blocking_wraps_and_unwraps_sharing_one_state() {
         "the From wrap shares the same state"
     );
 }
+
+#[cfg(feature = "mise")]
+#[test]
+fn detect_backends_auto_attaches_a_discoverable_mise_backend() {
+    if !toride_runner::discovery::binary_exists("mise") {
+        return;
+    }
+    let path = temp_manifest_path("detect-mise");
+    let mut manifest = InstallManifest::at(&path);
+    manifest.record(
+        &id("node"),
+        InstallRecord::new(
+            toride_apps::InstallPlan {
+                app: id("node"),
+                backend: BackendId::Mise,
+                operation: toride_apps::Operation::MiseInstall {
+                    tool: "node".to_owned(),
+                    version: None,
+                },
+                dry_run: false,
+                requires_elevation: false,
+            },
+            NativeIds::Mise {
+                tool: "node".to_owned(),
+            },
+            Some("22.1.0".to_owned()),
+        )
+        .with_installed_at(1_700_000_000),
+    );
+    manifest.save().expect("seed manifest saves");
+    let fake = FakeRunner::new().strict().respond(
+        command("mise", ["ls", "--installed", "--json"]),
+        CommandOutput::from_stdout(r#"{"node": [{"version": "22.1.0", "active": true}]}"#),
+    );
+    let seam = CommandRunner::new(Arc::new(fake.clone()));
+    let blocking = Apps::builder()
+        .runner(seam)
+        .manifest_path(&path)
+        .detect_backends()
+        .expect("detection skips absent binaries, never errors")
+        .build()
+        .expect("facade builds from the detected backends")
+        .blocking();
+
+    assert_eq!(
+        blocking
+            .status(&id("node"))
+            .expect("the recorded status probes the backend"),
+        AppStatus::Installed {
+            backend: BackendId::Mise,
+            version: Some("22.1.0".to_owned()),
+        }
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+fn brew_install_cask_for(token: &str) -> CommandSpec {
+    command("brew", ["install", "--cask", token])
+}
+
+fn brew_versions_cask_for(token: &str) -> CommandSpec {
+    command("brew", ["list", "--cask", "--versions", token])
+}
+
+fn cask_app_with(slug: &str, token: &str) -> App {
+    app(
+        slug,
+        InstallMethod::Homebrew {
+            cask: true,
+            token: token.to_owned(),
+        },
+    )
+}
+
+#[test]
+fn ensure_installed_many_attempts_every_app_and_reports_per_item_outcomes() {
+    let path = temp_manifest_path("batch-install");
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(empty_brew_document()),
+        )
+        .respond(brew_install_cask_spec(), CommandOutput::from_stdout(""))
+        .respond(
+            brew_versions_cask_spec(),
+            CommandOutput::from_stdout("brave-browser 1.96.59\n"),
+        )
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(empty_brew_document()),
+        )
+        .respond(
+            brew_install_cask_for("ghost-cask"),
+            CommandOutput::from_stderr("Error: cask not found", 1),
+        )
+        .respond(
+            brew_info_installed_spec(),
+            CommandOutput::from_stdout(empty_brew_document()),
+        )
+        .respond(
+            brew_install_cask_for("firefox"),
+            CommandOutput::from_stdout(""),
+        )
+        .respond(
+            brew_versions_cask_for("firefox"),
+            CommandOutput::from_stdout("firefox 138.0\n"),
+        );
+    let mut blocking = blocking(&fake, &path);
+    let brave = cask_app_with("brave-browser", "brave-browser");
+    let ghost = cask_app_with("ghost-app", "ghost-cask");
+    let firefox = cask_app_with("firefox", "firefox");
+
+    let outcomes =
+        blocking.ensure_installed_many([&brave, &ghost, &firefox], &AppInstallOptions::new());
+
+    assert_eq!(outcomes.len(), 3, "{outcomes:?}");
+    assert_eq!(outcomes[0].id, id("brave-browser"));
+    assert!(
+        matches!(
+            outcomes[0].result.as_ref().expect("first app installs"),
+            EnsureAppOutcome::Installed {
+                backend: BackendId::Homebrew,
+                ..
+            }
+        ),
+        "{:?}",
+        outcomes[0].result
+    );
+    assert_eq!(outcomes[1].id, id("ghost-app"));
+    assert!(
+        matches!(&outcomes[1].result, Err(AppsError::Backend(_))),
+        "{:?}",
+        outcomes[1].result
+    );
+    assert_eq!(outcomes[2].id, id("firefox"));
+    assert!(
+        matches!(
+            outcomes[2]
+                .result
+                .as_ref()
+                .expect("third app installs after the failure"),
+            EnsureAppOutcome::Installed {
+                backend: BackendId::Homebrew,
+                ..
+            }
+        ),
+        "{:?}",
+        outcomes[2].result
+    );
+    fake.assert_no_unmatched_calls();
+}
+
+#[test]
+fn uninstall_many_attempts_every_id_and_reports_per_item_outcomes() {
+    let path = temp_manifest_path("batch-uninstall");
+    seed_manifest(&path, cask_record(Some("1.96.59")));
+    let fake = FakeRunner::new()
+        .strict()
+        .respond(brew_uninstall_cask_spec(), CommandOutput::from_stdout(""))
+        .respond(brew_versions_cask_spec(), CommandOutput::from_stderr("", 1));
+    let mut blocking = blocking(&fake, &path);
+
+    let outcomes = blocking.uninstall_many(
+        [id("brave-browser"), id("ghost-app")],
+        AppUninstallOptions::new(),
+    );
+
+    assert_eq!(outcomes.len(), 2, "{outcomes:?}");
+    assert_eq!(outcomes[0].id, id("brave-browser"));
+    assert!(
+        matches!(
+            outcomes[0]
+                .result
+                .as_ref()
+                .expect("the recorded app removes"),
+            UninstallAppOutcome::Removed {
+                backend: BackendId::Homebrew,
+                ..
+            }
+        ),
+        "{:?}",
+        outcomes[0].result
+    );
+    assert_eq!(outcomes[1].id, id("ghost-app"));
+    assert!(
+        matches!(
+            &outcomes[1].result,
+            Err(AppsError::BlockingResolveRequired { .. })
+        ),
+        "{:?}",
+        outcomes[1].result
+    );
+    assert!(blocking.records().is_empty(), "the record was removed");
+    fake.assert_no_unmatched_calls();
+}

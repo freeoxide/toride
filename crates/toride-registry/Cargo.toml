@@ -2,6 +2,7 @@
 name = "toride-registry"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.88"
 description = "Normalizes external package registries (Homebrew, Flathub, AppStream/DEP-11, Repology) into a single `App` model behind per-source adapters."
 license.workspace = true
 repository.workspace = true

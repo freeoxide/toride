@@ -658,7 +658,7 @@ pub struct AppstreamClient {
 /// How long a cached catalog is served with no network round-trip at all;
 /// the freshness key is the cache file's mtime.
 #[cfg(feature = "http")]
-pub const CATALOG_CACHE_TTL: Duration = Duration::from_hours(6);
+pub const CATALOG_CACHE_TTL: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[cfg(feature = "http")]
 impl AppstreamClient {

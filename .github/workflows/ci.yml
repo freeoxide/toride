@@ -23,6 +23,9 @@ env:
   # crates whose dependency graphs pull C build scripts (ring, lzma-sys) that
   # cannot be cross-verified on a Linux host; widen toward --workspace as
   # native runner evidence comes in. Space-separated; expanded to -p flags.
+  # toride-registry's bench dev-graph (criterion -> alloca, a C build
+  # script) also cannot cross-compile from Linux; its --all-targets legs
+  # over these lists rest on native macOS/Windows runner green instead.
   PORTABLE_CRATES_MACOS: >-
     toride-apps toride-audit toride-backup toride-cloud toride-diagnostic-types
     toride-fail2ban toride-fs toride-harden toride-installer toride-mise
@@ -216,6 +219,38 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Check intra-workspace version requirements match local versions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo metadata --no-deps --format-version 1 > metadata.json
+          python3 - <<'PY'
+          import json, os, pathlib, sys
+          meta = json.loads(pathlib.Path("metadata.json").read_text())
+          order = os.environ["PUBLISH_ORDER"].split()
+          by_name = {p["name"]: p for p in meta["packages"]}
+          members = set(by_name)
+          failed = False
+          if set(order) != members:
+              print("PUBLISH_ORDER membership mismatch:", sorted(set(order) ^ members))
+              failed = True
+          versions = {p["version"] for p in meta["packages"]}
+          if len(versions) != 1:
+              print("workspace versions disagree:", {p["name"]: p["version"] for p in meta["packages"]})
+              failed = True
+          pos = {c: i for i, c in enumerate(order)}
+          for name in sorted(members):
+              for dep in by_name[name]["dependencies"]:
+                  if dep["name"] in members and dep.get("path"):
+                      want = f"^{by_name[dep['name']]['version']}"
+                      if dep["req"] != want:
+                          print(f"{name} requires {dep['name']} {dep['req']!r}, expected {want!r}")
+                          failed = True
+                      if pos.get(dep["name"], len(order)) > pos.get(name, len(order)):
+                          print(f"PUBLISH_ORDER order: {name} precedes its dependency {dep['name']}")
+                          failed = True
+          sys.exit(1 if failed else 0)
+          PY
       - name: cargo publish --dry-run (every publishable crate, dependency order)
         shell: bash
         # Order-blocked dry-runs (an intra-workspace sibling absent from
@@ -230,7 +265,7 @@ jobs:
             log="$(mktemp)"
             if ! cargo publish --dry-run -p "$crate" 2>&1 | tee "$log"; then
               if grep -qE "no matching package named \`(${order_members})\` found|failed to select a version for the requirement \`(${order_members}) = " "$log"; then
-                echo "::warning::publish dry-run order-blocked for $crate (sibling not on crates.io at the required version)"
+                echo "::warning::publish dry-run order-blocked for $crate (intra-workspace dep absent from crates.io or published only at older versions than required)"
               else
                 echo "::error::publish dry-run failed for $crate"
                 exit 1

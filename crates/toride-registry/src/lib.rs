@@ -22,12 +22,11 @@
 //!   [`homebrew`][sources::homebrew], [`flathub`][sources::flathub],
 //!   [`appstream`][sources::appstream], and the parse-only Repology oracle
 //!   [`repology`][sources::repology];
-//! - the [`Registry`] facade (DESIGN.md §3.3) — search fan-out with
-//!   per-source error tolerance, resolve merging `sources` rows, and
-//!   `plan` rendering install descriptors per host platform;
-//! - the alias layer — [`TorideId`] derivation plus the Repology-filled
-//!   alias index mapping the canonical toride id to per-source ids
-//!   (DESIGN.md §5).
+//! - the [`Registry`] facade (DESIGN.md §3.3) — error-tolerant search
+//!   with same-app merging, resolve backed by [`AliasIndex`], and
+//!   `plan`/`plan_update`/`plan_uninstall` lifecycle argv renders;
+//! - the alias layer — [`TorideId`] derivation plus the alias index
+//!   mapping the canonical toride id to per-source ids (DESIGN.md §5).
 //!
 //! Installation itself is out of scope here: [`InstallMethod`] describes
 //! *what* to run/fetch; execution stays with toride-installer / the host.
@@ -103,6 +102,7 @@
 #![allow(clippy::module_name_repetitions)]
 
 pub mod adapter;
+pub mod alias;
 pub mod error;
 #[cfg(feature = "http")]
 pub(crate) mod http;
@@ -111,6 +111,7 @@ pub mod sources;
 
 // Re-exports — the public API surface.
 pub use adapter::{Adapter, PlannedOp, Registry, RegistryBuilder, SearchOutcome};
+pub use alias::AliasIndex;
 pub use error::{Error, Result, SourceFailure};
 pub use model::{
     App, Arch, Artifact, ArtifactKind, Availability, Checksum, ChecksumAlgo, DistroFamily,

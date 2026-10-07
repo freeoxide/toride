@@ -135,13 +135,15 @@
 //!   [`Operation::PipxInstall`] / [`Operation::UvInstall`] with their
 //!   uninstall and update verbs, executed by [`NpmBackend`],
 //!   [`CargoBackend`], [`PipxBackend`], [`UvBackend`], and `MiseBackend`.
-//!   Their backends attach per-instance through the builder's
-//!   `npm`/`cargo`/`pipx`/`uv`/`mise` slots (not `detect_backends`), and
-//!   records carry their package/crate/tool names, so uninstall and
-//!   update replay the recorded identity exactly like brew and flatpak
-//!   records. npm, cargo, pipx, and uv stay default-feature and
-//!   tokio-free; mise rides the `mise` feature because its client needs
-//!   an async runtime.
+//!   Their backends auto-attach through
+//!   [`detect_backends`](AppsBuilder::detect_backends) when the manager
+//!   binary is discoverable (mise only under the `mise` feature), or
+//!   per-instance through the builder's `npm`/`cargo`/`pipx`/`uv`/`mise`
+//!   slots, and records carry their package/crate/tool names, so
+//!   uninstall and update replay the recorded identity exactly like brew
+//!   and flatpak records. npm, cargo, pipx, and uv stay default-feature
+//!   and tokio-free; mise rides the `mise` feature because its client
+//!   needs an async runtime.
 //! - [`InstallMethod::Direct`] → `DirectInstall` / `DirectUninstall`
 //!   operations under the non-default `direct`
 //!   feature: toride-installer's sha256-enforcing pipeline (`Strict` by
@@ -172,8 +174,8 @@ pub mod store;
 // Re-exports — the public API surface.
 pub use apps::{
     AdoptProvenance, AppInstallOptions, AppUninstallOptions, AppUpdateOptions, Apps, AppsBlocking,
-    AppsBuilder, AppsError, AppsResult, EnsureAppOutcome, UninstallAppOutcome, UpdateOutcome,
-    UpdatePreview,
+    AppsBuilder, AppsError, AppsResult, BatchOutcome, EnsureAppOutcome, UninstallAppOutcome,
+    UpdateOutcome, UpdatePreview,
 };
 pub use backend::{
     Backend, BackendId, BackendStatus, InstallOutcome, InstallRequest, InstalledApp, ListQuery,

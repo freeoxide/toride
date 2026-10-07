@@ -2,6 +2,7 @@
 name = "toride-fs"
 version.workspace = true
 edition.workspace = true
+rust-version = "1.88"
 description = "Shared filesystem utilities: atomic writes, locking, path expansion"
 license.workspace = true
 repository.workspace = true

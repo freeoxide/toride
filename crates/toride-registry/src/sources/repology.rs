@@ -395,7 +395,7 @@ const MIN_REQUEST_INTERVAL: Duration = Duration::from_secs(1);
 /// slow-moving, and single-project lookups are the cheap path (bulk sweeps
 /// belong on the dump service, not the API).
 #[cfg(feature = "http")]
-const CACHE_TTL: Duration = Duration::from_hours(24);
+const CACHE_TTL: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Which name slot of a repology entry a reverse lookup addresses — the
 /// exact `name_type` options of `/tools/project-by`
