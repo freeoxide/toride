@@ -20,6 +20,7 @@ expect_eq() {
 
 expect_failure() {
   local description="$1"
+  shift
   if "$@" 2>/dev/null; then
     fail_count=$((fail_count + 1))
     printf 'not ok %s: expected nonzero exit\n' "$description" >&2
