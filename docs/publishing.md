@@ -48,60 +48,152 @@ predates the registry and apps crates (neither is in its list); the
 `.github/workflows/publish.yml` workflow is the authoritative path for
 this set.
 
-## Feature policy
+## The per-crate state machine
 
-Heavy features stay off the default sets, so depending on any of the
-library-layer crates with bare `version = "0.x"` pulls the minimal graph
-(plan 3.1):
+Before touching any crate, the workflow classifies it against the live
+registry (sparse index first, crates.io API as a cross-check against
+index lag) and writes a plan. `scripts/publish-state.sh` holds the
+classification logic and `scripts/test-publish-state.sh` exercises it
+against fixture index states (new / update / skip / regress / error
+kinds); the workflow runs those tests before gating anything.
 
-| Crate | Off default | Opt-in pulls |
-|-------|-------------|--------------|
-| toride-runner | `tokio-runner`, `stream`, `serde`, `fake` | tokio, async-trait |
-| toride-registry | `http` | reqwest, flate2, tokio, dirs |
-| toride-installer | `http` | reqwest, sha2, tar, flate2, xz2 |
-| toride-mise | `bootstrap`, `tracing`, `miette`, `blocking` | reqwest, tar |
-| toride-apps | `tokio`, `registry-http`, `direct`, `mise` | tokio, reqwest, xz2 |
+- registry has the crate at the target version → **skip** (already
+  indexed; never re-published, never an error)
+- registry has the crate at an *older* version only → **update**:
+  publish the new version normally
+- registry lacks the crate → **new**: first publish
+- registry has a *newer* version than this run targets → the run
+  aborts before the first upload (a lockstep regression, not something
+  to publish under)
 
-Changing a default feature set after a release is breaking: flip
-defaults only in a release that bumps the minor (0.x) or major version,
-and record the flip in the crate's CHANGELOG.
+Crates are processed strictly in `PUBLISH_SET` order. A failed crate
+stops the run: no later crate is attempted. A successful upload is held
+until the sparse index resolves the new version before the next crate
+starts.
 
-## Releasing
+## Preparing a release
+
+Applies to the first publish and every update alike:
 
 1. Bump `version` in the root `Cargo.toml` `[workspace.package]`.
 2. Update every intra-set dependency requirement in the crate
    manifests to match (`toride-xyz = { path = "...", version = "<new>" }`).
-   The publish workflow fails the run if any requirement drifts from the
-   released version.
-3. Add a CHANGELOG.md entry to each crate that changed.
-4. Run the **Publish crates** workflow (Actions → Publish crates → Run
-   workflow) with `dry_run` enabled. The gate step re-runs fmt, clippy
-   (`-D warnings`), tests, and the non-default feature configurations,
-   and fails the run if the `PUBLISH_SET` order, the version lockstep,
-   or the single-version rule regresses. Only the order-blocked dry-run
-   failure — an intra-set dependency absent from crates.io ("no matching
-   package") or not yet published at the required version ("failed to
-   select a version") — is downgraded to a warning; any other dry-run
-   failure fails the run.
-5. Re-run with `dry_run` disabled. Each crate is verified with
-   `cargo publish --dry-run`, uploaded, and held until crates.io
-   resolves it before the next crate starts. Afterwards the workflow
-   tags each crate as `<crate>-v<version>` and pushes the tags — the
-   references the CHANGELOG `[Unreleased]` and `[0.1.0]` links point
-   at.
+   The workflow's lockstep gate fails the run before any upload if a
+   requirement is not exactly `^<new>` — that is the "satisfiable by
+   the versions published in this same run" rule; a crate needing a
+   newer in-set dep than this run publishes aborts the run up front
+   instead of failing halfway.
+3. For each crate that has a `CHANGELOG.md`, move its changes from
+   `[Unreleased]` into a new `## [<version>] - <date>` section. This
+   move is a deliberate manual step. If a crate that is about to be
+   published still shows the version under `[Unreleased]` (no
+   `## [<version>]` heading), the workflow fails before uploading
+   anything, naming the crate.
 
-Partial failures are safe to re-run: versions already on crates.io are
-detected and skipped.
+## Dispatching
+
+Run the **Publish crates** workflow (Actions → Publish crates → Run
+workflow):
+
+- With `dry_run` enabled, every crate is verified with
+  `cargo publish --dry-run` and nothing is uploaded. The only
+  downgraded failure is the order-blocked one — an intra-set dependency
+  absent from crates.io ("no matching package") or not yet published at
+  the required version ("failed to select a version"); that becomes a
+  warning because it is the expected state before a first publish.
+  Anything else fails the run.
+- With `dry_run` disabled, each publishable crate is packaged
+  (`cargo publish --dry-run`), uploaded, and held until the sparse
+  index resolves it.
+
+Both modes re-run fmt, clippy (`-D warnings`), tests, and the
+non-default feature configurations first, plus the state-machine tests
+and the lockstep/satisfiability gate.
 
 `CARGO_REGISTRY_TOKEN` must be configured as a repository secret.
 
+## Rate limits (HTTP 429)
+
+crates.io throttles how many *new* crates an account may publish in a
+short window — the October 8, 2026 run hit it after five crates with
+`429 Too Many Requests … Please try again after <timestamp>`.
+
+The workflow parses that RFC 1123 timestamp, sleeps past it (plus a
+small margin), and retries the **same** crate, up to five attempts per
+crate. Multiple windows in one run are survived the same way, which is
+why the job timeout is six hours. If a crate is still rate-limited
+after five attempts, that crate is marked `failed:rate-limit`, the run
+stops in order, and the fix is simply: re-dispatch later. Everything
+already published is detected and skipped; the run resumes exactly
+where it died.
+
+Transient errors (5xx, network, timeouts) get a separate short retry:
+three attempts with growing backoff. Auth failures (401/403/credential
+problems) abort the whole run immediately with a pointer at
+`CARGO_REGISTRY_TOKEN` — retrying those is pointless.
+
+## Crash-safe resume
+
+The plan is rebuilt from the live registry on every dispatch, so a
+re-dispatch after any failure — rate limit, crash, cancelled run —
+continues where the previous run stopped:
+
+- crates already at the target version are skipped,
+- crates at an older version publish the update,
+- crates never published publish for the first time.
+
+There is no separate resume switch; run the same workflow again. The
+concurrency group (`publish-crates`) serializes runs so two dispatches
+never race the same set.
+
+## Tags and the end-of-run summary
+
+After a real (non-dry) run, every crate that reached the registry in
+this run — whether published now or skipped because an earlier run
+already uploaded it — gets a `<crate>-v<version>` tag created and
+pushed if it does not exist. Those tags are exactly what the CHANGELOG
+`[Unreleased]: …/compare/<crate>-v<version>...HEAD` and
+`[<version>]: …/releases/tag/<crate>-v<version>` links point at.
+Tagging skipped crates too is what heals links after a failed run
+published some crates but died before the tagging step.
+
+The final **Publish summary** step lists every crate's disposition
+(`published-new` / `published-update` / `skipped-already-indexed` /
+`failed:<reason>`, plus `would-publish-*` in dry runs), any crate the
+run never reached, and the counts. The job exits nonzero if anything
+failed or was left unattempted.
+
+## Rolling back a bad version: yank
+
+There is no unpublish on crates.io; the rollback is a yank, and it is
+manual on purpose — automating it risks yanking good versions on a
+flaky signal. To pull a bad version:
+
+```console
+$ cargo yank toride-xyz@0.2.0
+```
+
+(run with `CARGO_REGISTRY_TOKEN` set, or from a machine with
+`cargo login`). A yanked version:
+
+- cannot be newly resolved — new `cargo add` / builds picking the
+  version fail,
+- keeps working for every existing `Cargo.lock` that already pins it,
+- leaves the version listed on crates.io, marked "yanked".
+
+Undo with `cargo yank --undo toride-xyz@0.2.0` if the version turns
+out fine. A yanked version number can never be re-uploaded, so the
+fix itself is always a new version: bump, changelog entry, dispatch.
+
 ## Verifying locally
 
-- `cargo package -p <crate> --list` — what will ship in the tarball (pass
-  `--allow-dirty` when the working tree has uncommitted changes).
+- `cargo package -p <crate> --list` — what will ship in the tarball
+  (pass `--allow-dirty` when the working tree has uncommitted changes).
 - `cargo publish --dry-run -p toride-diagnostic-types` (any crate
   without intra-set deps) — full packaging verification including the
   tarball build.
+- `bash scripts/test-publish-state.sh` — the classification unit
+  tests, no network needed.
 - Name availability: `curl -s -o /dev/null -w '%{http_code}' -A
   "toride-publish-check" https://crates.io/api/v1/crates/<name>` — 404
   means the name is free. A User-Agent is required; bare curl gets 403.

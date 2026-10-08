@@ -32,7 +32,7 @@ jobs:
   publish:
     name: Publish to crates.io
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 360
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -41,6 +41,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: publish
+      - name: Test the publish state machine
+        run: bash scripts/test-publish-state.sh
       - name: Gate the release set
         run: |
           set -euo pipefail
@@ -56,7 +58,7 @@ jobs:
           cargo check -p toride-apps --no-default-features
           cargo check -p toride-registry -p toride-installer --features http
           cargo check -p toride-apps --features direct,registry-http,tokio
-      - name: Check intra-set version requirements match the released version
+      - name: Verify version lockstep and dependency satisfiability
         run: |
           set -euo pipefail
           cargo metadata --no-deps --format-version 1 > metadata.json
@@ -84,10 +86,10 @@ jobs:
           for name in set_names:
               version = by_name[name]["version"]
               for dep in by_name[name]["dependencies"]:
-                  if dep["name"] in set_names and dep.get("path"):
+                  if dep["name"] in set_names:
                       want = f"^{version}"
                       if dep["req"] != want:
-                          print(f"{name} requires {dep['name']} {dep['req']!r}, expected {want!r}")
+                          print(f"{name} requires {dep['name']} {dep['req']!r}; this run publishes {version}, which does not satisfy it (expected {want!r})")
                           failed = True
           sys.exit(1 if failed else 0)
           PY
@@ -97,85 +99,277 @@ jobs:
         run: |
           set -euo pipefail
           dry_run="${{ inputs.dry_run }}"
-          user_agent="toride-publish-workflow/0.1 (https://github.com/freeoxide/toride)"
+          user_agent="toride-publish-workflow/0.2 (https://github.com/freeoxide/toride)"
+          plan="publish-plan.txt"
+          dispositions="publish-dispositions.txt"
+          rate_limit_max_attempts="${RATE_LIMIT_MAX_ATTEMPTS:-5}"
+          transient_max_attempts="${TRANSIENT_MAX_ATTEMPTS:-3}"
+          index_wait_secs="${INDEX_WAIT_SECS:-120}"
+          : > "$dispositions"
+          source scripts/publish-state.sh
 
           version_for() {
             python3 -c 'import json,sys; ps=json.load(open("metadata.json"))["packages"]; print(next(p["version"] for p in ps if p["name"]==sys.argv[1]))' "$1"
           }
 
-          # The sparse index — what the next crate's cargo publish resolves
-          # against — gates both the skip check and the post-upload wait.
+          manifest_dir_for() {
+            python3 -c 'import json,os,sys; ps=json.load(open("metadata.json"))["packages"]; print(os.path.dirname(next(p["manifest_path"] for p in ps if p["name"]==sys.argv[1])))' "$1"
+          }
+
+          record() {
+            printf '%s\t%s\t%s\n' "$1" "$2" "$3" >> "$dispositions"
+          }
+
+          http_get() {
+            local url="$1" body_file="$2" attempt status
+            for attempt in 1 2 3; do
+              if status="$(curl -sS --max-time 30 -A "$user_agent" -o "$body_file" -w '%{http_code}' "$url")"; then
+                printf '%s' "$status"
+                return 0
+              fi
+              sleep "$((attempt * 10))"
+            done
+            printf 'unreachable'
+          }
+
+          classify_crate() {
+            local crate="$1" version="$2" body_file class status api_class
+            body_file="$(mktemp)"
+            status="$(http_get "https://index.crates.io/$(publish_state::index_prefix "$crate")" "$body_file")"
+            class="$(publish_state::classify "$status" "$version" "$(cat "$body_file" 2>/dev/null || true)")"
+            if [[ "$class" == "new" || "$class" == "update" ]]; then
+              status="$(http_get "https://crates.io/api/v1/crates/${crate}" "$body_file")"
+              api_class="$(publish_state::classify_api "$status" "$version" "$(cat "$body_file" 2>/dev/null || true)")"
+              case "$api_class" in
+                skip) class="skip" ;;
+                regress:*) class="$api_class" ;;
+                update) if [[ "$class" == "new" ]]; then class="update"; fi ;;
+              esac
+            fi
+            rm -f "$body_file"
+            printf '%s' "$class"
+          }
+
+          changelog_heading_present() {
+            local crate="$1" version="$2" changelog
+            changelog="$(manifest_dir_for "$crate")/CHANGELOG.md"
+            if [[ ! -f "$changelog" ]]; then
+              return 0
+            fi
+            grep -qF "## [${version}]" "$changelog"
+          }
+
           index_has_version() {
-            local crate="$1" version="$2" prefix body
-            case ${#crate} in
-              1) prefix="1/${crate}" ;;
-              2) prefix="2/${crate}" ;;
-              3) prefix="3/${crate:0:1}/${crate}" ;;
-              *) prefix="${crate:0:2}/${crate:2:2}/${crate}" ;;
-            esac
-            body=$(curl -sS --max-time 30 -A "$user_agent" \
-              "https://index.crates.io/${prefix}") || return 1
-            [[ "$body" == *"\"vers\":\"${version}\""* ]]
+            local crate="$1" version="$2" body_file status
+            body_file="$(mktemp)"
+            status="$(http_get "https://index.crates.io/$(publish_state::index_prefix "$crate")" "$body_file")"
+            if [[ "$status" == 200 ]] && grep -qF "\"vers\":\"${version}\"" "$body_file"; then
+              rm -f "$body_file"
+              return 0
+            fi
+            rm -f "$body_file"
+            return 1
           }
 
           wait_until_indexed() {
-            local crate="$1" version deadline
-            version="$(version_for "$crate")"
-            deadline=$((SECONDS + 60))
+            local crate="$1" version="$2" deadline
+            deadline=$(( SECONDS + index_wait_secs ))
             until index_has_version "$crate" "$version"; do
               if (( SECONDS >= deadline )); then
-                echo "error: ${crate} ${version} absent from the sparse index after 60s" >&2
+                echo "error: ${crate} ${version} absent from the sparse index after ${index_wait_secs}s" >&2
                 return 1
               fi
               sleep 5
             done
           }
 
-          intra_set="$(printf '%s' "$PUBLISH_SET" | tr ' ' '|')"
+          : > "$plan"
+          preflight_failed=0
           for crate in $PUBLISH_SET; do
             version="$(version_for "$crate")"
-            if index_has_version "$crate" "$version"; then
-              echo "==> ${crate} ${version} already indexed, skipping"
-              continue
-            fi
-            echo "==> publishing ${crate} ${version}"
+            class="$(classify_crate "$crate" "$version")"
+            printf '%s\t%s\t%s\n' "$crate" "$version" "$class" >> "$plan"
+            case "$class" in
+              skip) ;;
+              new|update)
+                if ! changelog_heading_present "$crate" "$version"; then
+                  echo "error: ${crate} ${version} has no '## [${version}]' heading in its CHANGELOG.md; move the entry out of [Unreleased] before publishing (see docs/publishing.md)" >&2
+                  preflight_failed=1
+                fi
+                ;;
+              regress*)
+                echo "error: the registry already has ${class#regress:} of ${crate}, newer than this run's ${version}; refusing to publish an older version" >&2
+                preflight_failed=1
+                ;;
+              *)
+                echo "error: could not classify ${crate} ${version} against the registry (${class})" >&2
+                preflight_failed=1
+                ;;
+            esac
+          done
+          if (( preflight_failed )); then
+            echo "preflight failed; nothing was uploaded" >&2
+            exit 1
+          fi
+
+          intra_set="$(printf '%s' "$PUBLISH_SET" | tr ' ' '|')"
+
+          publish_one() {
+            local crate="$1" version="$2" class="$3"
+            local log body kind rate_attempts transient_attempts wait_secs
+            rate_attempts=0
+            transient_attempts=0
             if [[ "$dry_run" == "true" ]]; then
               log="$(mktemp)"
               if ! cargo publish --dry-run -p "$crate" 2>&1 | tee "$log"; then
                 if grep -qE "no matching package named \`(${intra_set})\` found|failed to select a version for the requirement \`(${intra_set}) = " "$log"; then
                   echo "::warning::publish dry-run order-blocked for ${crate} (intra-set dep not on crates.io at the required version)"
+                  record "$crate" "$version" "dry-run-order-blocked"
                 else
                   echo "error: publish dry-run failed for ${crate} for a reason other than order-blocking" >&2
-                  exit 1
+                  record "$crate" "$version" "failed:dry-run"
+                  rm -f "$log"
+                  return 1
                 fi
+              else
+                record "$crate" "$version" "would-publish-${class}"
               fi
               rm -f "$log"
-              echo "dry run: ${crate} not uploaded"
-              continue
+              return 0
             fi
-            cargo publish --dry-run -p "$crate"
-            cargo publish -p "$crate"
-            wait_until_indexed "$crate"
-          done
+            echo "==> publishing ${crate} ${version} (${class})"
+            if ! cargo publish --dry-run -p "$crate"; then
+              record "$crate" "$version" "failed:dry-run"
+              return 1
+            fi
+            while :; do
+              log="$(mktemp)"
+              if cargo publish -p "$crate" 2>&1 | tee "$log"; then
+                rm -f "$log"
+                if wait_until_indexed "$crate" "$version"; then
+                  record "$crate" "$version" "published-${class}"
+                  return 0
+                fi
+                record "$crate" "$version" "failed:index-wait"
+                return 1
+              fi
+              body="$(cat "$log")"
+              rm -f "$log"
+              kind="$(publish_state::error_kind "$body")"
+              case "$kind" in
+                auth)
+                  echo "error: crates.io rejected the ${crate} upload as an auth failure (401/403/credential); CARGO_REGISTRY_TOKEN is missing, expired, or lacks scope — aborting the whole run" >&2
+                  printf '%s\n' "$body" >&2
+                  exit 1
+                  ;;
+                rate-limit)
+                  rate_attempts=$((rate_attempts + 1))
+                  if (( rate_attempts >= rate_limit_max_attempts )); then
+                    echo "error: ${crate} still rate-limited after ${rate_attempts} attempts; re-dispatch this workflow after the window closes to resume where this run stopped" >&2
+                    record "$crate" "$version" "failed:rate-limit"
+                    return 1
+                  fi
+                  wait_secs="$(publish_state::retry_after_seconds "$body")" || wait_secs=60
+                  echo "${crate}: crates.io rate window open (429, attempt ${rate_attempts}/${rate_limit_max_attempts}); sleeping ${wait_secs}s past it"
+                  sleep "$wait_secs"
+                  ;;
+                transient)
+                  transient_attempts=$((transient_attempts + 1))
+                  if (( transient_attempts >= transient_max_attempts )); then
+                    echo "error: ${crate} hit a transient error ${transient_attempts} times; re-dispatch this workflow to resume" >&2
+                    record "$crate" "$version" "failed:transient"
+                    return 1
+                  fi
+                  echo "${crate}: transient error, retrying in $((transient_attempts * 10))s (attempt ${transient_attempts}/${transient_max_attempts})"
+                  sleep "$((transient_attempts * 10))"
+                  ;;
+                *)
+                  if wait_until_indexed "$crate" "$version"; then
+                    record "$crate" "$version" "published-${class}"
+                    return 0
+                  fi
+                  echo "error: cargo publish failed for ${crate} ${version}" >&2
+                  printf '%s\n' "$body" >&2
+                  record "$crate" "$version" "failed:cargo"
+                  return 1
+                  ;;
+              esac
+            done
+          }
 
-          if [[ "$dry_run" == "true" ]]; then
-            echo "dry run complete; re-run with dry_run=false to upload"
-          else
-            echo "published the workspace release set"
+          publish_failed=0
+          while IFS=$'\t' read -r crate version class; do
+            case "$class" in
+              skip)
+                echo "==> ${crate} ${version} already indexed, skipping"
+                record "$crate" "$version" "skipped-already-indexed"
+                ;;
+              *)
+                if ! publish_one "$crate" "$version" "$class"; then
+                  publish_failed=1
+                  break
+                fi
+                ;;
+            esac
+          done < "$plan"
+          if (( publish_failed )); then
+            echo "publish stopped at the first failed crate; later crates were not attempted" >&2
           fi
+          exit "$publish_failed"
       - name: Tag the release
-        if: ${{ inputs.dry_run == false }}
+        if: ${{ !cancelled() && inputs.dry_run == false }}
         run: |
           set -euo pipefail
+          if [[ ! -f publish-dispositions.txt ]]; then
+            echo "no publish dispositions recorded; nothing to tag"
+            exit 0
+          fi
           git config user.name "toride-publish-bot"
           git config user.email "actions@users.noreply.github.com"
-          for crate in $PUBLISH_SET; do
-            version="$(python3 -c 'import json,sys; ps=json.load(open("metadata.json"))["packages"]; print(next(p["version"] for p in ps if p["name"]==sys.argv[1]))' "$crate")"
+          while IFS=$'\t' read -r crate version disposition; do
+            case "$disposition" in
+              published-new|published-update|skipped-already-indexed) ;;
+              *) continue ;;
+            esac
             tag="${crate}-v${version}"
-            if git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
-              echo "tag ${tag} exists, skipping"
+            if git ls-remote --tags origin "refs/tags/${tag}" | awk -v t="refs/tags/${tag}" '$2 == t { found = 1 } END { exit !found }'; then
+              echo "tag ${tag} exists on the remote, skipping"
               continue
             fi
-            git tag "${tag}"
+            if ! git rev-parse -q --verify "refs/tags/${tag}" >/dev/null; then
+              git tag "${tag}"
+            fi
             git push origin "refs/tags/${tag}"
+          done < publish-dispositions.txt
+      - name: Publish summary
+        if: ${{ !cancelled() }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f publish-dispositions.txt ]]; then
+            echo "error: no publish dispositions recorded; the run did not reach the publish loop" >&2
+            exit 1
+          fi
+          echo "== Per-crate disposition"
+          awk -F'\t' '{ printf "%-30s %-10s %s\n", $1, $2, $3 }' publish-dispositions.txt
+          echo "== Not attempted"
+          not_attempted=0
+          for crate in $PUBLISH_SET; do
+            if ! cut -f1 publish-dispositions.txt | grep -qx "$crate"; then
+              echo "${crate}"
+              not_attempted=1
+            fi
           done
+          if (( not_attempted == 0 )); then
+            echo "(none)"
+          fi
+          echo "== Counts"
+          awk -F'\t' '{ counts[$3]++ } END { for (kind in counts) printf "%s=%d\n", kind, counts[kind] }' publish-dispositions.txt | sort
+          failed=0
+          if awk -F'\t' '$3 ~ /^failed/ { found = 1 } END { exit found ? 0 : 1 }' publish-dispositions.txt; then
+            failed=1
+          fi
+          if (( failed )) || (( not_attempted )); then
+            echo "run result: FAILED (failed:* dispositions above, or crates never attempted)" >&2
+            exit 1
+          fi
+          echo "run result: OK"
