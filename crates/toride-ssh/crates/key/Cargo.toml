@@ -5,6 +5,7 @@ edition.workspace = true
 description = "SSH key lifecycle management: generation, inventory, installation, and repair"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [features]
 default = []

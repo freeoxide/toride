@@ -19,8 +19,14 @@ env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
   PUBLISH_SET: >-
-    toride-fs toride-runner toride-installer toride-registry toride-mise
-    toride-apps
+    toride-diagnostic-types toride-fs toride-runner toride-installer
+    toride-registry toride-mise toride-apps toride-service toride-ssh-core
+    toride-status toride-audit toride-backup toride-cloud toride-fail2ban
+    toride-harden toride-monitor toride-proxy toride-ssh-agent
+    toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
+    toride-ssh-forward toride-ssh-known-hosts toride-tailscale toride-updates
+    toride-users toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
+    ufw-kit-test-support toride-ssh toride
 
 jobs:
   publish:
@@ -57,13 +63,14 @@ jobs:
           python3 - <<'PY'
           import json, os, pathlib, sys
           meta = json.loads(pathlib.Path("metadata.json").read_text())
-          set_names = "toride-fs toride-runner toride-installer toride-registry toride-mise toride-apps".split()
-          by_name = {p["name"]: p for p in meta["packages"] if p["name"] in set_names}
+          members = {p["name"] for p in meta["packages"]}
+          set_names = os.environ["PUBLISH_SET"].split()
+          by_name = {p["name"]: p for p in meta["packages"]}
           failed = False
-          order = os.environ["PUBLISH_SET"].split()
+          order = set_names
           pos = {c: i for i, c in enumerate(order)}
-          if set(order) != set(set_names):
-              print("PUBLISH_SET membership mismatch:", sorted(set(order) ^ set(set_names)))
+          if set(order) != members:
+              print("PUBLISH_SET membership mismatch:", sorted(set(order) ^ members))
               failed = True
           for name in order:
               for dep in by_name[name]["dependencies"]:
@@ -154,7 +161,7 @@ jobs:
           if [[ "$dry_run" == "true" ]]; then
             echo "dry run complete; re-run with dry_run=false to upload"
           else
-            echo "published the plan 3.1 release set"
+            echo "published the workspace release set"
           fi
       - name: Tag the release
         if: ${{ inputs.dry_run == false }}

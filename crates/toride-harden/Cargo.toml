@@ -5,6 +5,7 @@ edition.workspace = true
 description = "System hardening via sysctl kernel parameters and security profiles"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [features]
 default = ["client", "doctor"]

@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Linux audit daemon, file integrity monitoring, and log management"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [[bin]]
 name = "toride-audit"

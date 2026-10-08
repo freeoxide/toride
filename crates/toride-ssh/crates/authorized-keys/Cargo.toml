@@ -5,6 +5,7 @@ edition.workspace = true
 description = "authorized_keys file management: listing, adding, removing, and querying entries"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [dependencies]
 toride-ssh-core = { path = "../core", version = "0.1.0" }

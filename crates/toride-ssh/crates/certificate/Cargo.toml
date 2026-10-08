@@ -5,6 +5,7 @@ edition.workspace = true
 description = "SSH certificate authority and key revocation list (KRL) inspection"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [dependencies]
 toride-ssh-core = { path = "../core", version = "0.1.0" }

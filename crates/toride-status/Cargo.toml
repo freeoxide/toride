@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Point-in-time host status snapshots: OS metrics, daemon liveness, and SSH health"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [lib]
 name = "toride_status"

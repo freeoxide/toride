@@ -1,10 +1,12 @@
 [package]
+exclude = ["benches/fixtures/**"]
 name = "toride-monitor"
 version.workspace = true
 edition.workspace = true
 description = "Outbound traffic monitoring and anomaly detection"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [lib]
 name = "toride_monitor"

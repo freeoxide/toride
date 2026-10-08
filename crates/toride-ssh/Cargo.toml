@@ -5,6 +5,7 @@ edition.workspace = true
 description = "Async SSH manager library: a unified facade over the toride-ssh key, config, agent, known-hosts, authorized-keys, doctor, forward, and certificate sub-crates"
 license.workspace = true
 repository.workspace = true
+readme = "README.md"
 
 [features]
 default = [
