@@ -3,8 +3,8 @@
 Single source of truth for unimplemented work on `crates/toride-runner`.
 Extracted 2026-10-09 from the duct-runner full-fledged plan after its
 implemented phases landed (Phases 1–5 implemented, Phase 7 closed by
-decision, Phase 8 substantially done). The old plan is archived at
-`docs/completed/duct-runner-full-fledged-plan.md`; git history carries the
+decision, Phase 8 substantially done). The old plan and the finished-plan
+archive were removed from the tree; git history carries them and the full
 audit trail.
 
 Baseline at extraction (2026-10-09):
