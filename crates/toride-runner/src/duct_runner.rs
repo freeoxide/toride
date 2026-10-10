@@ -185,7 +185,7 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
             Ok(None) => {
                 // Timeout expired. Duct kills all processes it started for an
                 // expression; process-tree guarantees beyond that are tracked
-                // in docs/duct-runner-full-fledged-plan.md.
+                // in docs/runner-remaining-work.md.
                 if let Err(err) = handle.kill() {
                     tracing::warn!(
                         command = %displayed,
