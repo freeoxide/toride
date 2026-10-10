@@ -404,8 +404,8 @@ fn build_tokio_command(spec: &CommandSpec, program: &OsStr) -> tokio::process::C
 
 /// Write the spec's stdin data to the child, mapping write failures to
 /// `Error::StdinFailed`. On a write failure the child is killed and reaped so
-/// no orphaned process is left behind. Shared by the unlimited and limited
-/// paths.
+/// no orphaned process is left behind. Shared by the unlimited, limited, and
+/// streaming paths.
 async fn write_stdin(child: &mut tokio::process::Child, spec: &CommandSpec) -> Result<()> {
     if let Some(payload) = spec.effective_stdin_bytes() {
         use tokio::io::AsyncWriteExt;
@@ -685,8 +685,6 @@ async fn run_streaming_command(
     sink: &mut dyn CommandEventSink,
     default_timeout: Option<Duration>,
 ) -> Result<CommandOutput> {
-    use tokio::io::AsyncWriteExt;
-
     let timeout = spec.effective_timeout(default_timeout);
 
     let program = prepare_program(spec)?;
@@ -724,19 +722,10 @@ async fn run_streaming_command(
     })
     .await?;
 
-    // Write stdin.
-    if let Some(payload) = spec.effective_stdin_bytes()
-        && let Some(mut stdin_handle) = child.stdin.take()
-    {
-        stdin_handle
-            .write_all(payload)
-            .await
-            .map_err(|e| Error::StdinFailed {
-                program: spec.program.clone(),
-                detail: e.to_string(),
-            })?;
-        drop(stdin_handle);
-    }
+    // Write stdin through the shared helper so a write failure kill-and-reaps
+    // the child before StdinFailed is returned, exactly like the captured
+    // paths (the documented contract of Error::StdinFailed).
+    write_stdin(&mut child, spec).await?;
 
     // Take pipes. We use bounded `read(&mut [u8; N])` (not `read_line`) so a
     // single newline-free stream cannot buffer unbounded memory before the cap
@@ -2045,6 +2034,25 @@ mod tests {
 
         assert!(output.success);
         assert_eq!(output.stdout, "\u{FFFD}\u{FFFD}");
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_stdin_write_failure_maps_to_stdin_failed() {
+        // Parity with the captured paths (and DuctRunner): a payload far
+        // larger than the OS pipe buffer with a child that exits without
+        // reading stdin must classify as StdinFailed, with the child killed
+        // and reaped first via the shared write_stdin helper.
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .stdin_bytes(vec![b'x'; 512 * 1024]);
+        let mut sink = NullSink;
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(
+            matches!(result, Err(Error::StdinFailed { .. })),
+            "expected StdinFailed, got {result:?}"
+        );
     }
 
     #[cfg(feature = "stream")]
