@@ -7,10 +7,11 @@
 //! # Covered parity rows
 //!
 //! - Unit `DuctRunner` vs unit `TokioRunner`: success, failure with an exact
-//!   exit code, stderr separation, stdin, null-stdin, env add/remove/clear,
-//!   cwd, env precedence, argv rejection, path-policy refusal and
-//!   child-env resolution, output caps, and `OutputMode::Stream` rejection
-//!   in the captured paths.
+//!   exit code, stderr separation, stdin, null-stdin, stdin write-failure
+//!   classification (`StdinFailed` when the child exits before reading a
+//!   large payload), env add/remove/clear, cwd, env precedence, argv
+//!   rejection, path-policy refusal and child-env resolution, output caps,
+//!   and `OutputMode::Stream` rejection in the captured paths.
 //! - Configured runners (`ConfiguredDuctRunner`, `ConfiguredTokioRunner`)
 //!   vs the unit runners: identical outputs under default options, shared
 //!   default-timeout application, shared no-default-timeout completion, and
@@ -125,6 +126,27 @@ mod tests {
         assert!(async_output.success);
         assert_eq!(sync_output.stdout, async_output.stdout);
         assert_eq!(sync_output.stdout, "");
+    }
+
+    #[tokio::test]
+    async fn parity_stdin_write_failure_classification() {
+        // A payload far larger than the OS pipe buffer (~64 KiB) with a child
+        // that exits without reading stdin forces a broken-pipe write in both
+        // runners; both must classify it as StdinFailed (kill-and-reaping the
+        // child before returning) — the parity row tracker item 4 asks for.
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .stdin_bytes(vec![b'x'; 512 * 1024]);
+
+        let sync_result = Runner::run(&DuctRunner, &spec);
+        let async_result = AsyncRunner::run(&TokioRunner, &spec).await;
+
+        for (name, result) in [("duct", sync_result), ("tokio", async_result)] {
+            assert!(
+                matches!(result, Err(crate::error::Error::StdinFailed { .. })),
+                "expected StdinFailed from the {name} runner"
+            );
+        }
     }
 
     #[tokio::test]

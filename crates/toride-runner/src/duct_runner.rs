@@ -2,6 +2,11 @@
 //!
 //! [`DuctRunner`] is the production implementation of [`Runner`].
 //! It spawns subprocesses, captures stdout/stderr, and respects timeouts.
+//!
+//! Piped stdin payloads are written over an owned pipe the parent controls,
+//! so a stdin write failure — for example when the child exits before
+//! reading a large payload — surfaces as [`Error::StdinFailed`] after the
+//! child is killed and reaped, matching `TokioRunner`.
 
 use std::ffi::OsStr;
 use std::sync::Arc;
@@ -162,22 +167,39 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
 
     let started_at = Instant::now();
     let displayed = crate::display::display_command(spec, &[]);
-    let mut cmd = build_duct_expression(spec, program.as_os_str());
+
+    // Owned stdin pipe for piped payloads (see `spawn_stdin_writer`): the
+    // child reads the pipe's read end and the parent writes the payload
+    // explicitly, so a stdin write failure maps to StdinFailed instead of
+    // being silently swallowed by duct's internal stdin_bytes writer.
+    let (child_stdin, stdin_writer) = split_stdin_pipe(open_stdin_pipe(spec)?);
 
     let timeout = spec.effective_timeout(options.default_timeout);
 
     // Spawn with stdout/stderr capture by default. Inherit mode deliberately
     // connects child output to the parent and returns empty captured strings.
-    if spec.output_mode == OutputMode::Capture {
-        cmd = cmd.stdout_capture().stderr_capture();
-    }
+    // The expression is scoped so the parent's copy of the stdin read end
+    // (kept alive by the duct expression) drops the instant start() returns;
+    // only the write end the parent writes to below remains.
+    let handle = {
+        let mut cmd = build_duct_expression(spec, program.as_os_str(), child_stdin);
+        if spec.output_mode == OutputMode::Capture {
+            cmd = cmd.stdout_capture().stderr_capture();
+        }
+        // Use unchecked so non-zero exit
+        // does not immediately error — we capture it in CommandOutput.
+        cmd.unchecked().start().map_err(|e| Error::SpawnFailed {
+            program: spec.program.clone(),
+            detail: e.to_string(),
+        })?
+    };
 
-    // Use unchecked so non-zero exit
-    // does not immediately error — we capture it in CommandOutput.
-    let handle = cmd.unchecked().start().map_err(|e| Error::SpawnFailed {
-        program: spec.program.clone(),
-        detail: e.to_string(),
-    })?;
+    // Write the piped payload now that duct's capture threads are draining
+    // output, so a child that emits while reading stdin cannot deadlock the
+    // write against an undrained pipe. The writer's outcome is consulted
+    // only after a natural exit below; every cleanup path that kills the
+    // child itself detaches the writer instead.
+    let stdin_rx = spawn_stdin_writer_if_piped(stdin_writer, spec);
 
     let output = if let Some(timeout) = timeout {
         match handle.wait_timeout(timeout) {
@@ -212,6 +234,15 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
         handle.wait().map_err(|e| wait_failed(spec, &e))?.clone()
     };
 
+    // The child exited on its own. A failed stdin write now means the child
+    // exited before reading the piped payload: kill-and-reap (the wait has
+    // already returned, so the kill is the expected "no such process" case)
+    // and surface StdinFailed, matching TokioRunner. On the timeout arm above
+    // the returned error is CommandTimeout while `stdin_rx` drops and the
+    // writer detaches — that broken pipe is a consequence of this runner's
+    // own kill, never a StdinFailed.
+    check_stdin_writer(&handle, stdin_rx.as_ref(), spec, &displayed)?;
+
     let stdout = if spec.output_mode == OutputMode::Capture {
         String::from_utf8_lossy(&output.stdout).into_owned()
     } else {
@@ -243,7 +274,11 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     ))
 }
 
-fn build_duct_expression(spec: &CommandSpec, program: &OsStr) -> duct::Expression {
+fn build_duct_expression(
+    spec: &CommandSpec,
+    program: &OsStr,
+    child_stdin: Option<os_pipe::PipeReader>,
+) -> duct::Expression {
     let mut cmd = duct::cmd(program, &spec.args);
 
     if let Some(ref cwd) = spec.cwd {
@@ -252,16 +287,129 @@ fn build_duct_expression(spec: &CommandSpec, program: &OsStr) -> duct::Expressio
 
     cmd = apply_env_policy(cmd, spec);
 
-    if let Some(stdin_payload) = spec.effective_stdin_bytes() {
-        cmd = cmd.stdin_bytes(stdin_payload);
+    // A piped payload arrives over the caller-owned pipe wired as the
+    // child's stdin; only the no-payload case falls through to the null
+    // wiring. Without that, duct leaves `IoValue::ParentStdin` and the child
+    // inherits the parent's stdin — a stdin-reading child would block on (or
+    // consume) the parent's terminal instead of seeing EOF.
+    if let Some(reader) = child_stdin {
+        cmd = cmd.stdin_file(reader);
     } else if spec.stdin_null {
-        // Without this, duct leaves `IoValue::ParentStdin` and the child
-        // inherits the parent's stdin — a stdin-reading child would block on
-        // (or consume) the parent's terminal instead of seeing EOF.
         cmd = cmd.stdin_null();
     }
 
     cmd
+}
+
+/// Open the owned stdin pipe when the spec pipes a payload.
+///
+/// Returns the child's end (to wire as the child's stdin) plus the parent's
+/// write end, or `None` when nothing is piped. Created under the Apple lock
+/// like the capture pipes in the cap-aware path: caller-opened pipes cannot
+/// set CLOEXEC atomically on macOS (`pipe2()` is unavailable), so pipe
+/// creation must not race unrelated spawns.
+fn open_stdin_pipe(
+    spec: &CommandSpec,
+) -> Result<Option<(os_pipe::PipeReader, os_pipe::PipeWriter)>> {
+    if spec.effective_stdin_bytes().is_some() {
+        spawn_under_apple_lock(|| {
+            os_pipe::pipe().map_err(|e| Error::SpawnFailed {
+                program: spec.program.clone(),
+                detail: format!("stdin pipe: {e}"),
+            })
+        })
+        .map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Split an opened stdin pipe into the child's end and the parent's end,
+/// keeping the two `Option`s in lockstep (`None` when nothing is piped).
+fn split_stdin_pipe(
+    pipe: Option<(os_pipe::PipeReader, os_pipe::PipeWriter)>,
+) -> (Option<os_pipe::PipeReader>, Option<os_pipe::PipeWriter>) {
+    match pipe {
+        Some((child_end, parent_end)) => (Some(child_end), Some(parent_end)),
+        None => (None, None),
+    }
+}
+
+/// Start the dedicated stdin writer for a piped payload.
+///
+/// The writer owns the pipe's write end and performs one `write_all` of the
+/// payload (the payload is copied once because the thread requires
+/// `'static`); dropping the writer on completion closes the pipe so the
+/// child sees EOF. Running on a dedicated thread preserves the historical
+/// timeout behavior — the main thread stays free in `wait_timeout`, so a
+/// child that never drains its stdin is still killed at the configured
+/// timeout rather than blocking the runner.
+///
+/// The writer reports its outcome over the returned channel, which the
+/// caller consults only after the child exits naturally. Every cleanup path
+/// that kills or loses the child itself simply drops the receiver: the
+/// writer's broken pipe there is a consequence of this runner's own kill and
+/// must not be misreported as [`Error::StdinFailed`].
+fn spawn_stdin_writer_if_piped(
+    writer: Option<os_pipe::PipeWriter>,
+    spec: &CommandSpec,
+) -> Option<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+    let payload = spec.effective_stdin_bytes();
+    writer
+        .zip(payload)
+        .map(|(writer, payload)| spawn_stdin_writer(writer, payload))
+}
+
+fn spawn_stdin_writer(
+    writer: os_pipe::PipeWriter,
+    payload: &[u8],
+) -> std::sync::mpsc::Receiver<std::io::Result<()>> {
+    use std::io::Write as _;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let payload = payload.to_vec();
+    std::thread::spawn(move || {
+        let mut writer = writer;
+        // The writer (and with it the pipe's write end) drops when this
+        // closure returns, signaling EOF after a complete write. A failed
+        // write drops it too, closing the pipe for the child.
+        let result = writer.write_all(&payload);
+        let _ = tx.send(result);
+    });
+    rx
+}
+
+/// Consult the stdin writer's outcome after the child has exited on its own.
+///
+/// A failed write means the child exited before reading the piped payload
+/// (a broken pipe), so the child is killed and reaped first — the wait has
+/// already returned, making the kill the expected "no such process" case —
+/// and the failure surfaces as [`Error::StdinFailed`], matching
+/// `TokioRunner`'s `write_stdin`. A writer that has not finished within
+/// [`READER_CLEAN_WAIT`] is detached: a grandchild holding the stdin read
+/// end can keep it blocked forever, and grandchild survival is out of scope
+/// for the direct-child cleanup policy. `None` (no piped payload) is `Ok`.
+fn check_stdin_writer(
+    handle: &duct::Handle,
+    stdin_rx: Option<&std::sync::mpsc::Receiver<std::io::Result<()>>>,
+    spec: &CommandSpec,
+    displayed: &str,
+) -> Result<()> {
+    let Some(stdin_rx) = stdin_rx else {
+        return Ok(());
+    };
+    match stdin_rx.recv_timeout(READER_CLEAN_WAIT) {
+        // Either the write completed, or the writer is still stuck (detached:
+        // a grandchild holding the stdin read end is out of scope) — either
+        // way the run proceeds.
+        Ok(Ok(())) | Err(_) => Ok(()),
+        Ok(Err(e)) => {
+            kill_and_reap(handle, displayed);
+            Err(Error::StdinFailed {
+                program: spec.program.clone(),
+                detail: e.to_string(),
+            })
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -292,6 +440,10 @@ fn run_duct_command_limited(
         })
     })?;
 
+    // Owned stdin pipe for piped payloads (see `spawn_stdin_writer`), created
+    // under the same Apple lock as the capture pipes above.
+    let (child_stdin, stdin_writer) = split_stdin_pipe(open_stdin_pipe(spec)?);
+
     // Redirect both child streams to the write ends. No internal duct capture
     // threads are started.
     //
@@ -299,9 +451,10 @@ fn run_duct_command_limited(
     // alive until it is dropped. If it stays alive, the read ends never reach
     // EOF (the parent holds an open write end). So we scope the expression so
     // it is dropped the instant `start()` returns, leaving only the child's
-    // copy of the write end open.
+    // copy of the write end open. (The parent's copy of the stdin read end is
+    // held by the same mechanism and released by the same scoping.)
     let handle = {
-        let cmd = build_duct_expression(spec, program)
+        let cmd = build_duct_expression(spec, program, child_stdin)
             .stdout_file(stdout_tx)
             .stderr_file(stderr_tx);
         cmd.unchecked().start().map_err(|e| Error::SpawnFailed {
@@ -348,6 +501,14 @@ fn run_duct_command_limited(
     );
     let _ = stdout_thread;
     let _ = stderr_thread;
+
+    // Write the piped payload now that the cap readers are live, so a child
+    // that floods output before reading stdin cannot deadlock the write
+    // against an undrained capture pipe. As in the unlimited path, the
+    // writer's outcome is consulted only after a natural exit below; every
+    // cleanup arm that kills the child itself (breach, timeout, wait
+    // failure) drops the receiver and detaches the writer instead.
+    let stdin_rx = spawn_stdin_writer_if_piped(stdin_writer, spec);
 
     let timeout = spec.effective_timeout(options.default_timeout);
 
@@ -436,6 +597,12 @@ fn run_duct_command_limited(
                     observed,
                 });
             }
+
+            // The child exited on its own and no breach fired. A failed
+            // stdin write now means the child exited before reading the
+            // piped payload: kill-and-reap and surface StdinFailed, matching
+            // TokioRunner (see check_stdin_writer).
+            check_stdin_writer(&shared_handle, stdin_rx.as_ref(), spec, &displayed)?;
 
             let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
             let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
@@ -752,6 +919,57 @@ mod tests {
             .stdin_bytes(&b"bytes payload"[..]);
         let output = runner.run(&spec).unwrap();
         assert_eq!(output.stdout_trimmed(), "bytes payload");
+    }
+
+    #[test]
+    fn stdin_write_failure_maps_to_stdin_failed() {
+        // A payload far larger than the OS pipe buffer (~64 KiB) cannot
+        // finish writing before the child exits, and the child never reads
+        // stdin, so the parent's write must fail with a broken pipe and
+        // classify as StdinFailed — duct's internal stdin_bytes writer would
+        // silently swallow that failure and report success.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .stdin_bytes(vec![b'x'; 512 * 1024]);
+        match runner.run(&spec) {
+            Err(Error::StdinFailed { program, .. }) => assert_eq!(program, "bash"),
+            other => panic!("expected StdinFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stdin_write_failure_maps_to_stdin_failed_under_output_limit() {
+        // Same classification through the cap-aware path: the output limit
+        // routes the run through run_duct_command_limited.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .stdin_bytes(vec![b'x'; 512 * 1024])
+            .output_limit(1024);
+        let result = runner.run(&spec);
+        assert!(
+            matches!(result, Err(Error::StdinFailed { .. })),
+            "expected StdinFailed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn timeout_fires_while_child_never_reads_large_stdin() {
+        // The owned-stdin-pipe switch must not regress the timeout: a child
+        // that neither reads its 512 KiB stdin nor exits must still be killed
+        // at the configured timeout. The stdin writer is detached on this
+        // path; its expected broken pipe must not surface as StdinFailed.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("sleep")
+            .arg("10")
+            .stdin_bytes(vec![b'x'; 512 * 1024])
+            .timeout(Duration::from_millis(50));
+        let result = runner.run(&spec);
+        assert!(
+            matches!(result, Err(Error::CommandTimeout { .. })),
+            "expected CommandTimeout, got {result:?}"
+        );
     }
 
     #[test]

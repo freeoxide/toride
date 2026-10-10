@@ -102,6 +102,9 @@ pub enum Error {
     },
 
     /// Failed to write to the child's stdin.
+    ///
+    /// Both real runners kill and reap the child before returning this
+    /// error, so no orphaned process is left behind.
     #[error("failed to write stdin for '{program}': {detail}")]
     StdinFailed {
         /// Program name.
