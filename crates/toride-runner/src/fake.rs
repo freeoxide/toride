@@ -118,10 +118,11 @@ impl FakeRunner {
     /// Register an exact-match response for a specific [`CommandSpec`].
     ///
     /// When a call matches the spec, this response takes priority over the
-    /// FIFO queue. Matching compares `program`, `args`, `stdin`, `stdin_null`,
-    /// `env`, `env_remove`, `clear_env`, `cwd`, `output_mode`, `redact`,
-    /// `env_precedence`, and `path_resolution`; `timeout`, `output_limit`,
-    /// `argv_policy`, and `output_cap` are ignored as runtime policy.
+    /// FIFO queue. Matching compares `program`, `args`, `stdin`, `stdin_bytes`,
+    /// `stdin_null`, `env`, `env_remove`, `clear_env`, `cwd`, `output_mode`,
+    /// `redact`, `env_precedence`, and `path_resolution`; `timeout`,
+    /// `timeout_policy`, `output_limit`, `argv_policy`, and `output_cap` are
+    /// ignored as runtime policy.
     #[must_use]
     pub fn respond(self, spec: CommandSpec, output: CommandOutput) -> Self {
         self.exact_responses
@@ -264,6 +265,7 @@ fn specs_match(a: &CommandSpec, b: &CommandSpec) -> bool {
     a.program == b.program
         && a.args == b.args
         && a.stdin == b.stdin
+        && a.stdin_bytes == b.stdin_bytes
         && a.stdin_null == b.stdin_null
         && a.env == b.env
         && a.env_remove == b.env_remove
@@ -520,6 +522,39 @@ mod tests {
         );
 
         // Same command, different (or absent) output_limit should still match.
+        let output = run_sync(&runner, &CommandSpec::new("cmd")).unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    /// `stdin_bytes` changes what the child reads, so a spec that forgot it
+    /// must fail an exact match — same ruling as `stdin` and `stdin_null`.
+    #[test]
+    fn specs_match_compares_stdin_bytes() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd").stdin_bytes([0xff, 0x00]),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        // A spec piping different (or textual) stdin must not match.
+        let result = run_sync(&runner, &CommandSpec::new("cmd").stdin("text"));
+        assert!(result.is_err(), "different stdin payload should not match");
+
+        let output = run_sync(&runner, &CommandSpec::new("cmd").stdin_bytes([0xff, 0x00])).unwrap();
+        assert_eq!(output.stdout_trimmed(), "ok");
+    }
+
+    /// `timeout_policy` is a runtime policy, so two specs that differ only in
+    /// `timeout_policy` must still match (same ruling as `timeout`).
+    #[test]
+    fn specs_match_ignores_timeout_policy() {
+        let runner = FakeRunner::new().strict().respond(
+            CommandSpec::new("cmd").timeout_policy(crate::policy::TimeoutPolicy::Explicit(
+                std::time::Duration::from_secs(30),
+            )),
+            CommandOutput::from_stdout("ok"),
+        );
+
+        // Same command, no (or a different) timeout_policy should still match.
         let output = run_sync(&runner, &CommandSpec::new("cmd")).unwrap();
         assert_eq!(output.stdout_trimmed(), "ok");
     }

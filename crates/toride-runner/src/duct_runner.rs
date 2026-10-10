@@ -164,7 +164,7 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     let displayed = crate::display::display_command(spec, &[]);
     let mut cmd = build_duct_expression(spec, program.as_os_str());
 
-    let timeout = spec.timeout.or(options.default_timeout);
+    let timeout = spec.effective_timeout(options.default_timeout);
 
     // Spawn with stdout/stderr capture by default. Inherit mode deliberately
     // connects child output to the parent and returns empty captured strings.
@@ -252,8 +252,8 @@ fn build_duct_expression(spec: &CommandSpec, program: &OsStr) -> duct::Expressio
 
     cmd = apply_env_policy(cmd, spec);
 
-    if let Some(ref stdin_data) = spec.stdin {
-        cmd = cmd.stdin_bytes(stdin_data.as_bytes());
+    if let Some(stdin_payload) = spec.effective_stdin_bytes() {
+        cmd = cmd.stdin_bytes(stdin_payload);
     } else if spec.stdin_null {
         // Without this, duct leaves `IoValue::ParentStdin` and the child
         // inherits the parent's stdin — a stdin-reading child would block on
@@ -349,7 +349,7 @@ fn run_duct_command_limited(
     let _ = stdout_thread;
     let _ = stderr_thread;
 
-    let timeout = spec.timeout.or(options.default_timeout);
+    let timeout = spec.effective_timeout(options.default_timeout);
 
     // Wait for the child, bounded by the timeout. There are three ways this
     // unblocks: (1) the process exits normally, (2) the timeout fires, or
@@ -731,6 +731,30 @@ mod tests {
     }
 
     #[test]
+    fn stdin_bytes_piped_non_utf8() {
+        // Bytes that cannot be expressed through `stdin: Option<String>`.
+        // `cat` echoes them back; the lossy capture shows two replacement
+        // chars, proving the raw bytes flowed through unmodified.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("cat").stdin_bytes([0xff, 0xfe]);
+        let output = runner.run(&spec).unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "\u{FFFD}\u{FFFD}");
+    }
+
+    #[test]
+    fn stdin_bytes_wins_over_stdin() {
+        // Documented precedence: the raw-byte field is the more explicit,
+        // lower-level request, so it wins when both are set.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("cat")
+            .stdin("text payload")
+            .stdin_bytes(&b"bytes payload"[..]);
+        let output = runner.run(&spec).unwrap();
+        assert_eq!(output.stdout_trimmed(), "bytes payload");
+    }
+
+    #[test]
     fn env_passed() {
         let runner = DuctRunner;
         let spec = CommandSpec::new("env").env("TORIDE_TEST_VAR", "42");
@@ -975,6 +999,43 @@ mod tests {
         let output = runner.run(&spec).unwrap();
 
         assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[test]
+    fn timeout_policy_never_ignores_spec_timeout_and_runner_default() {
+        // Both the spec timeout and the 50ms runner default would kill this
+        // command; `Never` must suppress both and let it run to completion.
+        let runner = DuctRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 0.1; echo done"])
+            .timeout(Duration::from_millis(50))
+            .timeout_policy(crate::policy::TimeoutPolicy::Never);
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[test]
+    fn timeout_policy_explicit_overrides_spec_timeout_and_runner_default() {
+        // The 50ms explicit policy must win over both the 10s spec timeout
+        // and the 10s runner default, and be reported as the timeout that fired.
+        let runner = DuctRunner::builder()
+            .default_timeout(Duration::from_secs(10))
+            .build();
+        let spec = CommandSpec::new("sleep")
+            .arg("10")
+            .timeout(Duration::from_secs(10))
+            .timeout_policy(crate::policy::TimeoutPolicy::Explicit(
+                Duration::from_millis(50),
+            ));
+        match runner.run(&spec) {
+            Err(Error::CommandTimeout { timeout, .. }) => {
+                assert_eq!(timeout, Duration::from_millis(50));
+            }
+            other => panic!("expected CommandTimeout, got {other:?}"),
+        }
     }
 
     #[test]

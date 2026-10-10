@@ -7,7 +7,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use crate::OutputMode;
-use crate::policy::{ArgvPolicy, EnvPrecedence, OutputCap, PathResolution};
+use crate::policy::{ArgvPolicy, EnvPrecedence, OutputCap, PathResolution, TimeoutPolicy};
 
 /// A declarative specification of a command to execute.
 ///
@@ -30,6 +30,15 @@ pub struct CommandSpec {
     pub args: Vec<String>,
     /// Optional data to pipe to the process's stdin.
     pub stdin: Option<String>,
+    /// Optional raw bytes to pipe to the process's stdin.
+    ///
+    /// Use this when the payload is not valid UTF-8 (binary or compressed
+    /// data); use [`CommandSpec::stdin`] for textual data. When both are
+    /// set, `stdin_bytes` wins — it is the more explicit, lower-level
+    /// request. This is command construction (it changes what the child
+    /// reads), so it is included in `FakeRunner` (feature `fake`) exact
+    /// matching, the same way `stdin` and [`CommandSpec::stdin_null`] are.
+    pub stdin_bytes: Option<Vec<u8>>,
     /// Whether the child's stdin should be wired to the platform null device.
     ///
     /// `false` (the default) leaves stdin inherited from the parent when
@@ -44,6 +53,16 @@ pub struct CommandSpec {
     pub stdin_null: bool,
     /// Optional wall-clock timeout for the command.
     pub timeout: Option<Duration>,
+    /// How this command's timeout is resolved against the runner's default.
+    ///
+    /// Takes precedence over [`CommandSpec::timeout`]: the default
+    /// [`TimeoutPolicy::SpecOrRunnerDefault`] preserves the historical
+    /// resolution (`timeout` if set, else the runner default), while
+    /// [`TimeoutPolicy::Never`] and [`TimeoutPolicy::Explicit`] override it.
+    /// This is a runtime safety policy, not command construction: it is
+    /// excluded from `FakeRunner` (feature `fake`) exact matching,
+    /// the same way [`CommandSpec::timeout`] is.
+    pub timeout_policy: TimeoutPolicy,
     /// Extra environment variables (`(key, value)` pairs).
     pub env: Vec<(String, String)>,
     /// Environment variables to remove from the child process environment.
@@ -96,8 +115,10 @@ impl CommandSpec {
             program: program.into(),
             args: Vec::new(),
             stdin: None,
+            stdin_bytes: None,
             stdin_null: false,
             timeout: None,
+            timeout_policy: TimeoutPolicy::SpecOrRunnerDefault,
             env: Vec::new(),
             env_remove: Vec::new(),
             clear_env: false,
@@ -139,10 +160,21 @@ impl CommandSpec {
 
     /// Wire the child's stdin to the platform null device (reads return EOF)
     /// instead of leaving it inherited from the parent. No-op when
-    /// [`CommandSpec::stdin`] carries data — the piped data wins.
+    /// [`CommandSpec::stdin`] or [`CommandSpec::stdin_bytes`] carries data —
+    /// the piped data wins.
     #[must_use]
     pub fn stdin_null(mut self, null: bool) -> Self {
         self.stdin_null = null;
+        self
+    }
+
+    /// Set raw stdin bytes for the process.
+    ///
+    /// For payloads that are not valid UTF-8. Wins over [`CommandSpec::stdin`]
+    /// when both are set; see [`CommandSpec::stdin_bytes`].
+    #[must_use]
+    pub fn stdin_bytes(mut self, data: impl Into<Vec<u8>>) -> Self {
+        self.stdin_bytes = Some(data.into());
         self
     }
 
@@ -150,6 +182,14 @@ impl CommandSpec {
     #[must_use]
     pub fn timeout(mut self, duration: Duration) -> Self {
         self.timeout = Some(duration);
+        self
+    }
+
+    /// Set how this command's timeout is resolved against the runner's
+    /// default; see [`CommandSpec::timeout_policy`].
+    #[must_use]
+    pub fn timeout_policy(mut self, policy: TimeoutPolicy) -> Self {
+        self.timeout_policy = policy;
         self
     }
 
@@ -271,6 +311,32 @@ impl CommandSpec {
             OutputCap::OptIn => self.output_limit,
         }
     }
+
+    /// The bytes runners pipe to the child's stdin: `stdin_bytes` wins over
+    /// the textual [`CommandSpec::stdin`] when both are set, and `None` means
+    /// no data is piped (falling back to the [`CommandSpec::stdin_null`]
+    /// wiring).
+    #[must_use]
+    pub fn effective_stdin_bytes(&self) -> Option<&[u8]> {
+        self.stdin_bytes
+            .as_deref()
+            .or_else(|| self.stdin.as_ref().map(String::as_bytes))
+    }
+
+    /// The wall-clock timeout runners enforce on this command, given the
+    /// runner's `default_timeout`. [`TimeoutPolicy`] resolves first;
+    /// [`TimeoutPolicy::SpecOrRunnerDefault`] falls back to
+    /// [`CommandSpec::timeout`] and then the runner default — the historical
+    /// order — so default-configured specs behave exactly as before this
+    /// field existed.
+    #[must_use]
+    pub fn effective_timeout(&self, runner_default: Option<Duration>) -> Option<Duration> {
+        match self.timeout_policy {
+            TimeoutPolicy::SpecOrRunnerDefault => self.timeout.or(runner_default),
+            TimeoutPolicy::Never => None,
+            TimeoutPolicy::Explicit(duration) => Some(duration),
+        }
+    }
 }
 
 #[cfg(feature = "serde")]
@@ -280,10 +346,11 @@ impl serde::Serialize for CommandSpec {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CommandSpec", 16)?;
+        let mut s = serializer.serialize_struct("CommandSpec", 18)?;
         s.serialize_field("program", &self.program)?;
         s.serialize_field("args", &self.args)?;
         s.serialize_field("stdin", &self.stdin)?;
+        s.serialize_field("stdin_bytes", &self.stdin_bytes)?;
         s.serialize_field("stdin_null", &self.stdin_null)?;
         #[expect(
             clippy::cast_possible_truncation,
@@ -291,6 +358,7 @@ impl serde::Serialize for CommandSpec {
         )]
         let timeout_nanos = self.timeout.map(|d| d.as_nanos() as u64);
         s.serialize_field("timeout_nanos", &timeout_nanos)?;
+        s.serialize_field("timeout_policy", &self.timeout_policy)?;
         s.serialize_field("env", &self.env)?;
         s.serialize_field("env_remove", &self.env_remove)?;
         s.serialize_field("clear_env", &self.clear_env)?;
@@ -321,11 +389,15 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             args: Vec<String>,
             stdin: Option<String>,
             #[serde(default)]
+            stdin_bytes: Option<Vec<u8>>,
+            #[serde(default)]
             stdin_null: bool,
             #[serde(default)]
             timeout_nanos: Option<u64>,
             #[serde(default)]
             timeout: Option<u64>,
+            #[serde(default)]
+            timeout_policy: TimeoutPolicy,
             #[serde(default)]
             env: Vec<(String, String)>,
             #[serde(default)]
@@ -363,8 +435,10 @@ impl<'de> serde::Deserialize<'de> for CommandSpec {
             program: h.program,
             args: h.args,
             stdin: h.stdin,
+            stdin_bytes: h.stdin_bytes,
             stdin_null: h.stdin_null,
             timeout,
+            timeout_policy: h.timeout_policy,
             env: h.env,
             env_remove: h.env_remove,
             clear_env: h.clear_env,
@@ -414,6 +488,66 @@ mod tests {
         assert_eq!(spec.path_resolution, PathResolution::OsSearch);
         assert_eq!(spec.argv_policy, ArgvPolicy::Allow);
         assert_eq!(spec.output_cap, OutputCap::OptIn);
+    }
+
+    #[test]
+    fn stdin_bytes_and_timeout_policy_default_to_legacy() {
+        let spec = CommandSpec::new("cmd");
+        assert!(spec.stdin_bytes.is_none());
+        assert_eq!(spec.timeout_policy, TimeoutPolicy::SpecOrRunnerDefault);
+    }
+
+    #[test]
+    fn effective_stdin_bytes_prefers_bytes_over_text() {
+        let spec = CommandSpec::new("cat")
+            .stdin("text")
+            .stdin_bytes([0xff, 0x00]);
+        assert_eq!(spec.effective_stdin_bytes(), Some(&[0xff, 0x00][..]));
+    }
+
+    #[test]
+    fn effective_stdin_bytes_falls_back_to_stdin() {
+        let spec = CommandSpec::new("cat").stdin("text");
+        assert_eq!(spec.effective_stdin_bytes(), Some(&b"text"[..]));
+
+        assert_eq!(CommandSpec::new("cat").effective_stdin_bytes(), None);
+    }
+
+    #[test]
+    fn effective_timeout_default_resolves_spec_then_runner() {
+        let runner_default = Duration::from_secs(60);
+
+        let with_spec = CommandSpec::new("cmd").timeout(Duration::from_secs(5));
+        assert_eq!(
+            with_spec.effective_timeout(Some(runner_default)),
+            Some(Duration::from_secs(5))
+        );
+
+        let without_spec = CommandSpec::new("cmd");
+        assert_eq!(
+            without_spec.effective_timeout(Some(runner_default)),
+            Some(runner_default)
+        );
+        assert_eq!(without_spec.effective_timeout(None), None);
+    }
+
+    #[test]
+    fn effective_timeout_never_ignores_spec_and_runner_default() {
+        let spec = CommandSpec::new("cmd")
+            .timeout(Duration::from_secs(5))
+            .timeout_policy(TimeoutPolicy::Never);
+        assert_eq!(spec.effective_timeout(Some(Duration::from_secs(60))), None);
+    }
+
+    #[test]
+    fn effective_timeout_explicit_overrides_spec_and_runner_default() {
+        let spec = CommandSpec::new("cmd")
+            .timeout(Duration::from_secs(5))
+            .timeout_policy(TimeoutPolicy::Explicit(Duration::from_millis(50)));
+        assert_eq!(
+            spec.effective_timeout(Some(Duration::from_secs(60))),
+            Some(Duration::from_millis(50))
+        );
     }
 }
 
@@ -574,5 +708,63 @@ mod serde_tests {
         assert_eq!(spec.path_resolution, PathResolution::OsSearch);
         assert_eq!(spec.argv_policy, ArgvPolicy::Allow);
         assert_eq!(spec.output_cap, OutputCap::OptIn);
+    }
+
+    #[test]
+    fn stdin_bytes_round_trip() {
+        // Bytes that are not valid UTF-8 — the payload `stdin: Option<String>`
+        // cannot express.
+        let spec = CommandSpec::new("cat").stdin_bytes([0xff, 0x00, 0xfe]);
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(roundtripped.stdin_bytes, Some(vec![0xff, 0x00, 0xfe]));
+        assert_eq!(roundtripped.stdin, None);
+    }
+
+    #[test]
+    fn stdin_bytes_defaults_to_none_for_old_payloads() {
+        // A payload serialized before stdin_bytes existed must default to None.
+        let json = r#"{"program":"cmd","args":[],"stdin":"text","stdin_null":false,"timeout_nanos":null,"env":[]}"#;
+        let spec: CommandSpec = serde_json::from_str(json).unwrap();
+
+        assert!(spec.stdin_bytes.is_none());
+        assert_eq!(spec.effective_stdin_bytes(), Some(&b"text"[..]));
+    }
+
+    #[test]
+    fn timeout_policy_round_trip() {
+        let spec = CommandSpec::new("cmd")
+            .timeout_policy(TimeoutPolicy::Explicit(Duration::from_millis(150)));
+
+        let json = serde_json::to_string(&spec).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(
+            roundtripped.timeout_policy,
+            TimeoutPolicy::Explicit(Duration::from_millis(150))
+        );
+
+        let never = CommandSpec::new("cmd").timeout_policy(TimeoutPolicy::Never);
+        let json = serde_json::to_string(&never).unwrap();
+        let roundtripped: CommandSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(roundtripped.timeout_policy, TimeoutPolicy::Never);
+    }
+
+    #[test]
+    fn timeout_policy_defaults_for_old_payloads() {
+        // Old payloads default to the legacy resolution, and an old `timeout`
+        // value keeps deciding the effective timeout exactly as before — the
+        // new field must not silently change defaults.
+        let json =
+            r#"{"program":"cmd","args":[],"stdin":null,"timeout_nanos":5000000000,"env":[]}"#;
+        let spec: CommandSpec = serde_json::from_str(json).unwrap();
+
+        assert_eq!(spec.timeout_policy, TimeoutPolicy::SpecOrRunnerDefault);
+        assert_eq!(
+            spec.effective_timeout(Some(Duration::from_secs(60))),
+            Some(Duration::from_secs(5))
+        );
     }
 }

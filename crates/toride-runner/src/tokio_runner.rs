@@ -205,7 +205,7 @@ async fn run_tokio_with_options(
     spec: &CommandSpec,
     options: &TokioRunnerOptions,
 ) -> Result<CommandOutput> {
-    let timeout = spec.timeout.or(options.default_timeout);
+    let timeout = spec.effective_timeout(options.default_timeout);
 
     // Box::pin keeps the future off the caller's stack (these async fns are
     // large state machines); see clippy::large_futures.
@@ -390,7 +390,7 @@ fn build_tokio_command(spec: &CommandSpec, program: &OsStr) -> tokio::process::C
 
     apply_env_policy(&mut cmd, spec);
 
-    if spec.stdin.is_some() {
+    if spec.effective_stdin_bytes().is_some() {
         cmd.stdin(std::process::Stdio::piped());
     } else if spec.stdin_null {
         // Same wiring as DuctRunner: a null-stdin spec must not inherit the
@@ -407,10 +407,10 @@ fn build_tokio_command(spec: &CommandSpec, program: &OsStr) -> tokio::process::C
 /// no orphaned process is left behind. Shared by the unlimited and limited
 /// paths.
 async fn write_stdin(child: &mut tokio::process::Child, spec: &CommandSpec) -> Result<()> {
-    if let Some(ref stdin_data) = spec.stdin {
+    if let Some(payload) = spec.effective_stdin_bytes() {
         use tokio::io::AsyncWriteExt;
         if let Some(mut stdin_handle) = child.stdin.take() {
-            if let Err(e) = stdin_handle.write_all(stdin_data.as_bytes()).await {
+            if let Err(e) = stdin_handle.write_all(payload).await {
                 // A failed write can leave the child still running. Kill and
                 // reap it so we never leak an orphan, then surface StdinFailed.
                 let _ = child.kill().await;
@@ -687,7 +687,7 @@ async fn run_streaming_command(
 ) -> Result<CommandOutput> {
     use tokio::io::AsyncWriteExt;
 
-    let timeout = spec.timeout.or(default_timeout);
+    let timeout = spec.effective_timeout(default_timeout);
 
     let program = prepare_program(spec)?;
 
@@ -705,7 +705,7 @@ async fn run_streaming_command(
         cmd.current_dir(cwd);
     }
     apply_env_policy(&mut cmd, spec);
-    if spec.stdin.is_some() {
+    if spec.effective_stdin_bytes().is_some() {
         cmd.stdin(std::process::Stdio::piped());
     } else if spec.stdin_null {
         cmd.stdin(std::process::Stdio::null());
@@ -725,11 +725,11 @@ async fn run_streaming_command(
     .await?;
 
     // Write stdin.
-    if let Some(ref stdin_data) = spec.stdin
+    if let Some(payload) = spec.effective_stdin_bytes()
         && let Some(mut stdin_handle) = child.stdin.take()
     {
         stdin_handle
-            .write_all(stdin_data.as_bytes())
+            .write_all(payload)
             .await
             .map_err(|e| Error::StdinFailed {
                 program: spec.program.clone(),
@@ -1242,6 +1242,30 @@ mod tests {
         let output = runner.run(&spec).await.unwrap();
         assert!(output.success);
         assert_eq!(output.stdout, "");
+    }
+
+    #[tokio::test]
+    async fn stdin_bytes_piped_non_utf8() {
+        // Mirrors the DuctRunner test: bytes that cannot be expressed through
+        // `stdin: Option<String>` must arrive unmodified (lossy capture shows
+        // two replacement chars).
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("cat").stdin_bytes([0xff, 0xfe]);
+        let output = runner.run(&spec).await.unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "\u{FFFD}\u{FFFD}");
+    }
+
+    #[tokio::test]
+    async fn stdin_bytes_wins_over_stdin() {
+        // Mirrors the DuctRunner precedence ruling: the raw-byte field wins
+        // when both stdin fields are set.
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("cat")
+            .stdin("text payload")
+            .stdin_bytes(&b"bytes payload"[..]);
+        let output = runner.run(&spec).await.unwrap();
+        assert_eq!(output.stdout_trimmed(), "bytes payload");
     }
 
     #[tokio::test]
@@ -1922,6 +1946,44 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn timeout_policy_never_ignores_spec_timeout_and_runner_default() {
+        // Mirrors the DuctRunner ruling: both the spec timeout and the 50ms
+        // runner default would kill this command; `Never` suppresses both.
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 0.1; echo done"])
+            .timeout(Duration::from_millis(50))
+            .timeout_policy(crate::policy::TimeoutPolicy::Never);
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[tokio::test]
+    async fn timeout_policy_explicit_overrides_spec_timeout_and_runner_default() {
+        // Mirrors the DuctRunner ruling: the 50ms explicit policy wins over
+        // both the 10s spec timeout and the 10s runner default, and is the
+        // timeout reported in the error.
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_secs(10))
+            .build();
+        let spec = CommandSpec::new("sleep")
+            .arg("10")
+            .timeout(Duration::from_secs(10))
+            .timeout_policy(crate::policy::TimeoutPolicy::Explicit(
+                Duration::from_millis(50),
+            ));
+        match runner.run(&spec).await {
+            Err(Error::CommandTimeout { timeout, .. }) => {
+                assert_eq!(timeout, Duration::from_millis(50));
+            }
+            other => panic!("expected CommandTimeout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
     async fn with_options_builds_configured_runner() {
         let runner = TokioRunner::with_options(TokioRunnerOptions {
             default_timeout: None,
@@ -1965,6 +2027,37 @@ mod tests {
     async fn streaming_no_default_timeout_runs_to_completion() {
         let runner = TokioRunner::builder().no_default_timeout().build();
         let spec = CommandSpec::new("bash").args(["-c", "sleep 0.05; echo done"]);
+        let mut sink = NullSink;
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_stdin_bytes_piped_non_utf8() {
+        // The streaming path wires stdin from the same payload resolution:
+        // raw bytes `stdin: Option<String>` cannot express must arrive intact.
+        let runner = TokioRunner::builder().no_default_timeout().build();
+        let spec = CommandSpec::new("cat").stdin_bytes([0xff, 0xfe]);
+        let mut sink = NullSink;
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.stdout, "\u{FFFD}\u{FFFD}");
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_timeout_policy_never_ignores_default_timeout() {
+        // The streaming path resolves timeouts through the same policy: the
+        // 50ms runner default would kill this command, `Never` must not.
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 0.1; echo done"])
+            .timeout_policy(crate::policy::TimeoutPolicy::Never);
         let mut sink = NullSink;
         let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
 
