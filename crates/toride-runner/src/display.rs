@@ -55,11 +55,19 @@ pub const REDACT_ENV_KEYS: &[&str] = &[
 /// assert!(!displayed.contains("secret123"));
 /// ```
 pub fn display_command(spec: &CommandSpec, extra_flags: &[&str]) -> String {
+    display_command_with(spec, extra_flags, false)
+}
+
+/// Render `spec`'s invocation, optionally forcing redaction on.
+///
+/// `force_redact` redacts sensitive flag values even when `spec.redact` is
+/// `false`; it never *disables* redaction for a spec that asked for it.
+fn display_command_with(spec: &CommandSpec, extra_flags: &[&str], force_redact: bool) -> String {
     let mut parts = Vec::with_capacity(1 + spec.args.len());
 
     parts.push(spec.program.clone());
 
-    let args = if spec.redact {
+    let args = if spec.redact || force_redact {
         let mut flags: Vec<&str> = crate::redact::REDACT_FLAGS.to_vec();
         flags.extend_from_slice(extra_flags);
         redact_args(&spec.args, &flags)
@@ -76,6 +84,40 @@ pub fn display_command(spec: &CommandSpec, extra_flags: &[&str]) -> String {
     }
 
     out
+}
+
+/// Produce the command display used by runner log lines.
+///
+/// Runner logs are redacted by default: when `redact_logs` is on (the
+/// default for both real runners), sensitive flag values are replaced with
+/// `"***"` even for specs that did not opt into [`CommandSpec::redact`] —
+/// logs are human diagnostics, and over-redaction there is the safe failure
+/// direction. With `redact_logs` off, the display honors `spec.redact`,
+/// preserving the historical behavior for operators debugging trusted
+/// commands.
+///
+/// Error variants are NOT affected by `redact_logs`: they keep honoring
+/// `spec.redact` alone (see [`redacted_args_display`]).
+///
+/// # Examples
+///
+/// ```rust
+/// use toride_runner::CommandSpec;
+/// use toride_runner::display::display_command_for_log;
+///
+/// // redact defaults to false on the spec, but the log toggle forces it:
+/// let spec = CommandSpec::new("curl")
+///     .args(["--token", "secret123", "https://example.com"]);
+///
+/// let displayed = display_command_for_log(&spec, true);
+/// assert!(displayed.contains("***"));
+/// assert!(!displayed.contains("secret123"));
+///
+/// // With the toggle off, the historical behavior (honor spec.redact):
+/// assert!(display_command_for_log(&spec, false).contains("secret123"));
+/// ```
+pub fn display_command_for_log(spec: &CommandSpec, redact_logs: bool) -> String {
+    display_command_with(spec, &[], redact_logs)
 }
 
 /// Produce a redacted display string for a spec's arguments, suitable for
@@ -166,6 +208,63 @@ pub fn display_env(spec: &CommandSpec, keys: &[&str]) -> Vec<(String, String)> {
             }
         })
         .collect()
+}
+
+/// Render the sanitized environment summary for a runner log line.
+///
+/// Joins [`display_env`] output as comma-separated `KEY=value` pairs.
+/// Sensitive values (per [`REDACT_ENV_KEYS`]) are already `"***"`, so the
+/// summary is safe to print at runtime regardless of `spec.redact`. Returns
+/// an empty string when the spec sets no explicit environment — runner log
+/// events then omit the `env` field entirely.
+///
+/// # Examples
+///
+/// ```rust
+/// use toride_runner::CommandSpec;
+/// use toride_runner::display::display_env_summary;
+///
+/// let spec = CommandSpec::new("cmd")
+///     .env("API_TOKEN", "secret")
+///     .env("PATH", "/usr/bin");
+///
+/// assert_eq!(display_env_summary(&spec), "API_TOKEN=***, PATH=/usr/bin");
+/// ```
+pub fn display_env_summary(spec: &CommandSpec) -> String {
+    if spec.env.is_empty() {
+        return String::new();
+    }
+    display_env(spec, &[])
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// Build the execution span shared by both real runners.
+///
+/// The span carries the program name and the log-redacted display (see
+/// [`display_command_for_log`]), so every diagnostic emitted while the
+/// command runs — the completion event, kill/reap warnings, failure returns
+/// — correlates with the invocation. Both runners enter it around the
+/// *entire* execution, wrapping success and failure paths alike.
+///
+/// Returns a disabled span ([`tracing::Span::none`]) when `log_commands` is
+/// off: that toggle is the runners' single diagnostics switch, so a silent
+/// runner records neither events nor spans.
+pub(crate) fn command_execution_span(
+    spec: &CommandSpec,
+    log_commands: bool,
+    redact_logs: bool,
+) -> tracing::Span {
+    if !log_commands {
+        return tracing::Span::none();
+    }
+    tracing::info_span!(
+        "command",
+        program = %spec.program,
+        command = %display_command_for_log(spec, redact_logs),
+    )
 }
 
 /// Maximum number of stderr bytes retained in error variants.
@@ -420,6 +519,227 @@ fn cap_stderr(stderr: &str) -> String {
     truncated
 }
 
+/// Test-only tracing capture: records every span and event the runners emit
+/// (field names and values) into process-global buffers, so tests can assert
+/// on actual log content without a `tracing-subscriber` dependency.
+///
+/// [`install`] serializes capture tests process-wide (they share the buffers)
+/// and installs a thread-local subscriber; hold the returned guard across the
+/// whole runner call, then read it back with [`spans`]/[`events`]. This works
+/// under `#[tokio::test]` because its default current-thread runtime polls
+/// the test's futures on the installing thread.
+#[cfg(test)]
+pub(crate) mod diag_capture {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+    use tracing::field::{Field, Visit};
+    use tracing::span::{Attributes, Id};
+    use tracing::{Event, Subscriber};
+
+    #[derive(Default)]
+    struct CapturedDiags {
+        spans: Vec<String>,
+        events: Vec<String>,
+    }
+
+    fn captured() -> &'static Mutex<CapturedDiags> {
+        static CAPTURED: OnceLock<Mutex<CapturedDiags>> = OnceLock::new();
+        CAPTURED.get_or_init(Mutex::default)
+    }
+
+    fn capture_lock() -> &'static Mutex<()> {
+        static LOCK: Mutex<()> = Mutex::new(());
+        &LOCK
+    }
+
+    /// Serialize capture tests and install the capture subscriber on the
+    /// current thread, clearing previous captures. Read through the guard's
+    /// [`CaptureGuard::spans`]/[`CaptureGuard::events`] methods so the
+    /// snapshot is taken while the serialization lock is still held; drop
+    /// to release.
+    pub(crate) struct CaptureGuard {
+        _dispatch: tracing::subscriber::DefaultGuard,
+        _lock: MutexGuard<'static, ()>,
+    }
+
+    impl CaptureGuard {
+        /// Snapshot every captured span as `name field=value ...` strings.
+        // `self` is intentionally unused: the receiver exists to require a
+        // live guard (and with it the held capture lock) at the call site.
+        #[expect(clippy::unused_self)]
+        pub(crate) fn spans(&self) -> Vec<String> {
+            captured()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .spans
+                .clone()
+        }
+
+        /// Snapshot every captured event as `name field=value ...` strings.
+        #[expect(clippy::unused_self)]
+        pub(crate) fn events(&self) -> Vec<String> {
+            captured()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .events
+                .clone()
+        }
+    }
+
+    /// Install the capture subscriber on this thread (see [`install`]).
+    pub(crate) fn install() -> CaptureGuard {
+        let lock = capture_lock()
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        ensure_permissive_global();
+        {
+            let mut diags = captured().lock().unwrap_or_else(PoisonError::into_inner);
+            diags.spans.clear();
+            diags.events.clear();
+        }
+        let dispatch = tracing::subscriber::set_default(CaptureSubscriber {
+            next_id: AtomicU64::new(0),
+        });
+        // `set_default` alone does not refresh every callsite: rebuild the
+        // interest cache with this subscriber registered so callsites that
+        // were hit earlier in the process are re-enabled.
+        tracing::callsite::rebuild_interest_cache();
+        CaptureGuard {
+            _dispatch: dispatch,
+            _lock: lock,
+        }
+    }
+
+    /// Process-wide fallback subscriber: registers every callsite as
+    /// `Interest::sometimes`, enables everything, and drops all spans and
+    /// events.
+    ///
+    /// Without a global default, a macro callsite first executed on a
+    /// thread with no thread-local subscriber registers against the
+    /// implicit `NoSubscriber` and caches `Interest::never` — permanently
+    /// disabling that callsite for the rest of the process, including for
+    /// capture subscribers installed later on other threads. This fallback
+    /// keeps every callsite consultative (`sometimes`), so the capture
+    /// subscriber's `enabled` is always asked.
+    struct PermissiveGlobal;
+
+    impl Subscriber for PermissiveGlobal {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn register_callsite(
+            &self,
+            _metadata: &'static tracing::Metadata<'static>,
+        ) -> tracing::subscriber::Interest {
+            tracing::subscriber::Interest::sometimes()
+        }
+
+        fn max_level_hint(&self) -> Option<tracing::metadata::LevelFilter> {
+            Some(tracing::metadata::LevelFilter::TRACE)
+        }
+
+        fn new_span(&self, _span: &Attributes<'_>) -> Id {
+            Id::from_u64(0x1)
+        }
+
+        fn record(&self, _span: &Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+        fn event(&self, _event: &Event<'_>) {}
+
+        fn enter(&self, _span: &Id) {}
+
+        fn exit(&self, _span: &Id) {}
+    }
+
+    /// Install [`PermissiveGlobal`] once per process. A global default can
+    /// only be set once; a later (or concurrent) `Err` simply means some
+    /// permissive default is already in place.
+    fn ensure_permissive_global() {
+        static INSTALLED: OnceLock<()> = OnceLock::new();
+        INSTALLED.get_or_init(|| {
+            let _ = tracing::subscriber::set_global_default(PermissiveGlobal);
+        });
+    }
+
+    struct CaptureSubscriber {
+        next_id: AtomicU64,
+    }
+
+    #[derive(Default)]
+    struct FieldVisitor(Vec<(String, String)>);
+
+    impl Visit for FieldVisitor {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0.push((field.name().to_owned(), format!("{value:?}")));
+        }
+    }
+
+    fn format_diag(name: &str, fields: &[(String, String)]) -> String {
+        let mut out = String::from(name);
+        for (key, value) in fields {
+            out.push(' ');
+            out.push_str(key);
+            out.push('=');
+            out.push_str(value);
+        }
+        out
+    }
+
+    impl Subscriber for CaptureSubscriber {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+
+        // Declare unconditional interest so cache rebuilds compute
+        // `Interest::always` while this subscriber is registered (see the
+        // comment in `install`).
+        fn register_callsite(
+            &self,
+            _metadata: &'static tracing::Metadata<'static>,
+        ) -> tracing::subscriber::Interest {
+            tracing::subscriber::Interest::always()
+        }
+
+        fn max_level_hint(&self) -> Option<tracing::metadata::LevelFilter> {
+            Some(tracing::metadata::LevelFilter::TRACE)
+        }
+
+        fn new_span(&self, span: &Attributes<'_>) -> Id {
+            let mut visitor = FieldVisitor::default();
+            span.record(&mut visitor);
+            let text = format_diag(span.metadata().name(), &visitor.0);
+            captured()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .spans
+                .push(text);
+            Id::from_u64(self.next_id.fetch_add(1, Ordering::Relaxed) + 1)
+        }
+
+        fn record(&self, _span: &Id, _values: &tracing::span::Record<'_>) {}
+
+        fn record_follows_from(&self, _span: &Id, _follows: &Id) {}
+
+        fn event(&self, event: &Event<'_>) {
+            let mut visitor = FieldVisitor::default();
+            event.record(&mut visitor);
+            let text = format_diag(event.metadata().name(), &visitor.0);
+            captured()
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .events
+                .push(text);
+        }
+
+        fn enter(&self, _span: &Id) {}
+
+        fn exit(&self, _span: &Id) {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -468,6 +788,90 @@ mod tests {
         let spec = CommandSpec::new("cmd").env("X_SPECIAL", "hidden");
         let env = display_env(&spec, &["SPECIAL"]);
         assert_eq!(env[0].1, "***");
+    }
+
+    /// 5.1: the log display redacts when the runner toggle forces it, even
+    /// though `spec.redact` is false (its default).
+    #[test]
+    fn display_command_for_log_redacts_when_toggle_on() {
+        let spec = CommandSpec::new("curl")
+            .args(["--token", "secret123", "https://example.com"])
+            .cwd("/srv");
+
+        let displayed = display_command_for_log(&spec, true);
+        assert!(displayed.contains("curl --token ***"), "{displayed}");
+        assert!(!displayed.contains("secret123"), "{displayed}");
+        assert!(displayed.contains("https://example.com"));
+        assert!(displayed.contains("(cwd: /srv)"), "{displayed}");
+    }
+
+    /// 5.1: with the toggle off, the log display honors `spec.redact` — the
+    /// historical behavior is preserved for the opt-out direction.
+    #[test]
+    fn display_command_for_log_honors_spec_when_toggle_off() {
+        let raw = CommandSpec::new("curl").args(["--token", "secret123"]);
+        assert!(
+            display_command_for_log(&raw, false).contains("secret123"),
+            "opt-out must restore the raw display"
+        );
+
+        let opted_in = CommandSpec::new("curl")
+            .args(["--token", "secret123"])
+            .redact(true);
+        assert!(
+            display_command_for_log(&opted_in, false).contains("***"),
+            "spec.redact=true must still redact with the toggle off"
+        );
+    }
+
+    /// 5.3: the env summary is sanitized (sensitive values `"***"`) and
+    /// empty when the spec sets no explicit environment.
+    #[test]
+    fn display_env_summary_sanitizes_sensitive_values() {
+        let spec = CommandSpec::new("cmd")
+            .env("API_TOKEN", "env-secret")
+            .env("PATH", "/usr/bin");
+
+        assert_eq!(display_env_summary(&spec), "API_TOKEN=***, PATH=/usr/bin");
+    }
+
+    #[test]
+    fn display_env_summary_empty_when_no_explicit_env() {
+        assert_eq!(display_env_summary(&CommandSpec::new("cmd")), "");
+    }
+
+    /// 5.2: the shared span builder emits a `command` span carrying the
+    /// program and the log-redacted display; the off switch produces a
+    /// span with no metadata (a `Span::none`).
+    #[test]
+    fn command_execution_span_carries_program_and_redacted_display() {
+        // A subscriber must be installed: without one the `info_span!`
+        // callsite is disabled and the macro yields a `Span::none`.
+        let cap = diag_capture::install();
+        let spec = CommandSpec::new("curl").args(["--token", "secret123"]);
+
+        let span = command_execution_span(&spec, true, true);
+        assert!(span.metadata().is_some(), "span must exist when enabled");
+
+        let spans = cap.spans();
+        assert_eq!(spans.len(), 1, "spans: {spans:?}");
+        assert!(
+            spans[0].starts_with("command program=curl command=curl --token ***"),
+            "span: {}",
+            spans[0]
+        );
+        assert!(
+            !spans[0].contains("secret123"),
+            "span display must be redacted: {}",
+            spans[0]
+        );
+
+        assert!(
+            command_execution_span(&spec, false, true)
+                .metadata()
+                .is_none(),
+            "log_commands=false must produce a disabled span"
+        );
     }
 
     #[test]

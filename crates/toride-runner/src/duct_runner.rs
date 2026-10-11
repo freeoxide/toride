@@ -38,8 +38,19 @@ pub struct DuctRunnerOptions {
     /// `None` means commands without an explicit timeout can run until they
     /// exit naturally.
     pub default_timeout: Option<Duration>,
-    /// Whether completed commands emit debug tracing logs.
+    /// Whether command diagnostics are emitted: the completion debug event
+    /// and the execution span. `false` makes the runner silent.
     pub log_commands: bool,
+    /// Whether runner log lines redact sensitive flag values (default
+    /// `true`).
+    ///
+    /// With this on, every log display of the command is redacted even for
+    /// specs that did not set [`CommandSpec::redact`] — logs are human
+    /// diagnostics, and over-redaction there is the safe failure direction.
+    /// Error variants are not affected: they keep honoring `spec.redact`
+    /// alone. Set `false` to restore the raw log display for debugging
+    /// trusted commands.
+    pub redact_logs: bool,
 }
 
 impl Default for DuctRunnerOptions {
@@ -47,6 +58,7 @@ impl Default for DuctRunnerOptions {
         Self {
             default_timeout: Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS)),
             log_commands: true,
+            redact_logs: true,
         }
     }
 }
@@ -73,6 +85,12 @@ impl DuctRunnerBuilder {
     /// Enable or disable completion debug logs.
     pub fn log_commands(mut self, enabled: bool) -> Self {
         self.options.log_commands = enabled;
+        self
+    }
+
+    /// Enable or disable redaction of runner log lines.
+    pub fn redact_logs(mut self, enabled: bool) -> Self {
+        self.options.redact_logs = enabled;
         self
     }
 
@@ -146,6 +164,15 @@ impl Runner for ConfiguredDuctRunner {
 }
 
 fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<CommandOutput> {
+    // Execution span: entered at the single entry point both `DuctRunner` and
+    // `ConfiguredDuctRunner` route through, so it wraps the entire run —
+    // success and every failure path (rejections, spawn failure, timeout,
+    // cap breach, stdin failure) — and the cap-aware dispatch below runs
+    // inside it too.
+    let _span =
+        crate::display::command_execution_span(spec, options.log_commands, options.redact_logs)
+            .entered();
+
     if spec.output_mode == OutputMode::Stream {
         return Err(Error::Other(
             "OutputMode::Stream is not supported by the synchronous DuctRunner; use TokioRunner with the stream feature".to_owned(),
@@ -166,7 +193,10 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     }
 
     let started_at = Instant::now();
-    let displayed = crate::display::display_command(spec, &[]);
+    // Log display honors the runner's log-redaction toggle: with it on (the
+    // default), log lines never print unredacted args even for specs that
+    // did not opt into `spec.redact`.
+    let displayed = crate::display::display_command_for_log(spec, options.redact_logs);
 
     // Owned stdin pipe for piped payloads (see `spawn_stdin_writer`): the
     // child reads the pipe's read end and the parent writes the payload
@@ -256,12 +286,11 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     let exit_code = output.status.code();
 
     if options.log_commands {
-        tracing::debug!(
-            command = %displayed,
-            program = %spec.program,
-            exit_code = ?exit_code,
-            elapsed_ms = started_at.elapsed().as_millis(),
-            "command completed"
+        log_command_completion(
+            spec,
+            &displayed,
+            exit_code,
+            started_at.elapsed().as_millis(),
         );
     }
 
@@ -272,6 +301,39 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
         spec,
         &CommandOutput::new(stdout, stderr, exit_code),
     ))
+}
+
+/// Emit the completion debug event for a finished command.
+///
+/// The event carries the log-redacted display plus, when the spec sets
+/// explicit environment variables, the sanitized env summary — sensitive
+/// values are `"***"` there regardless of `spec.redact`, so a runtime env
+/// summary never leaks a secret.
+fn log_command_completion(
+    spec: &CommandSpec,
+    displayed: &str,
+    exit_code: Option<i32>,
+    elapsed_ms: u128,
+) {
+    let env = crate::display::display_env_summary(spec);
+    if env.is_empty() {
+        tracing::debug!(
+            command = %displayed,
+            program = %spec.program,
+            exit_code = ?exit_code,
+            elapsed_ms,
+            "command completed"
+        );
+    } else {
+        tracing::debug!(
+            command = %displayed,
+            program = %spec.program,
+            exit_code = ?exit_code,
+            elapsed_ms,
+            env = %env,
+            "command completed"
+        );
+    }
 }
 
 fn build_duct_expression(
@@ -420,7 +482,9 @@ fn run_duct_command_limited(
     program: &OsStr,
 ) -> Result<CommandOutput> {
     let started_at = Instant::now();
-    let displayed = crate::display::display_command(spec, &[]);
+    // Log display honors the runner's log-redaction toggle, as in the
+    // unlimited path above.
+    let displayed = crate::display::display_command_for_log(spec, options.redact_logs);
 
     // Create two OS pipes in the parent. On Apple targets `pipe2()` is
     // unavailable so caller-opened pipes cannot set CLOEXEC atomically; guard
@@ -608,12 +672,11 @@ fn run_duct_command_limited(
             let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
 
             if options.log_commands {
-                tracing::debug!(
-                    command = %displayed,
-                    program = %spec.program,
-                    exit_code = ?exit_code,
-                    elapsed_ms = started_at.elapsed().as_millis(),
-                    "command completed"
+                log_command_completion(
+                    spec,
+                    &displayed,
+                    exit_code,
+                    started_at.elapsed().as_millis(),
                 );
             }
             Ok(crate::display::scrub_output(
@@ -1179,6 +1242,9 @@ mod tests {
             Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         );
         assert!(options.log_commands);
+        // Log redaction is on by default: runner logs never print
+        // unredacted args unless the operator opts out.
+        assert!(options.redact_logs);
     }
 
     #[test]
@@ -1261,10 +1327,146 @@ mod tests {
         let runner = DuctRunner::with_options(DuctRunnerOptions {
             default_timeout: None,
             log_commands: false,
+            redact_logs: false,
         });
 
         assert_eq!(runner.options().default_timeout, None);
         assert!(!runner.options().log_commands);
+        assert!(!runner.options().redact_logs);
+    }
+
+    #[test]
+    fn builder_can_toggle_log_redaction() {
+        let runner = DuctRunner::builder().redact_logs(false).build();
+        assert!(!runner.options().redact_logs);
+    }
+
+    /// 5.1: with the default options, the actual log output never contains
+    /// the unredacted secret even though `spec.redact` is false.
+    #[test]
+    fn captured_logs_redact_args_by_default() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash").args(["-c", "exit 0", "--token", "secret-value"]);
+        runner.run(&spec).unwrap();
+        let events = cap.events();
+        drop(cap);
+        let text = events.join("\n");
+        assert!(!events.is_empty(), "completion event must be emitted");
+        assert!(
+            text.contains("***"),
+            "log must redact secret flag values: {text}"
+        );
+        assert!(
+            !text.contains("secret-value"),
+            "secret leaked into logs: {text}"
+        );
+    }
+
+    /// 5.1 opt-out direction: `redact_logs(false)` restores the raw log
+    /// display (the historical behavior).
+    #[test]
+    fn captured_logs_show_raw_args_when_redaction_disabled() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner::builder().redact_logs(false).build();
+        let spec = CommandSpec::new("bash").args(["-c", "exit 0", "--token", "secret-value"]);
+        runner.run(&spec).unwrap();
+        let events = cap.events();
+        drop(cap);
+
+        let text = events.join("\n");
+        assert!(
+            text.contains("secret-value"),
+            "opt-out must restore raw args in logs: {text}"
+        );
+    }
+
+    /// 5.3: the completion event carries a sanitized env summary when the
+    /// spec sets explicit environment variables.
+    #[test]
+    fn captured_logs_include_sanitized_env_summary() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .env("TORIDE_API_TOKEN", "env-secret-value")
+            .env("TORIDE_PLAIN", "visible");
+        runner.run(&spec).unwrap();
+        let events = cap.events();
+        drop(cap);
+
+        let text = events.join("\n");
+        assert!(
+            text.contains("env=TORIDE_API_TOKEN=***, TORIDE_PLAIN=visible"),
+            "sanitized env summary missing: {text}"
+        );
+        assert!(
+            !text.contains("env-secret-value"),
+            "env secret leaked into logs: {text}"
+        );
+    }
+
+    /// 5.2: one `command` span per invocation, wrapping both success and
+    /// failure paths, carrying the program and the redacted display.
+    #[test]
+    fn execution_span_wraps_success_and_failure_paths() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner;
+
+        runner.run(&CommandSpec::new("true")).unwrap();
+
+        let failing = CommandSpec::new("bash")
+            .args(["-c", "exit 0", "--token", "secret-value"])
+            .stdin_bytes(vec![b'x'; 512 * 1024]);
+        let _ = runner.run(&failing); // StdinFailed failure path
+        let spans = cap.spans();
+        drop(cap);
+        assert_eq!(spans.len(), 2, "one span per invocation: {spans:?}");
+        assert!(
+            spans[0].starts_with("command program=true command=true"),
+            "success span: {}",
+            spans[0]
+        );
+        assert!(
+            spans[1].contains("program=bash"),
+            "failure span: {}",
+            spans[1]
+        );
+        assert!(
+            spans[1].contains("***") && !spans[1].contains("secret-value"),
+            "span display must be redacted: {}",
+            spans[1]
+        );
+    }
+
+    /// `log_commands(false)` is the single diagnostics switch for command
+    /// logging: a silent runner emits neither completion events nor
+    /// execution spans. (Pre-existing failure `warn!`s are always-on safety
+    /// diagnostics and remain.)
+    #[test]
+    fn log_commands_off_emits_no_diagnostics() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner::builder().log_commands(false).build();
+
+        runner.run(&CommandSpec::new("true")).unwrap();
+        let _ = runner.run(
+            &CommandSpec::new("sleep")
+                .arg("10")
+                .timeout(Duration::from_millis(50)),
+        );
+        let spans = cap.spans();
+        let events = cap.events();
+        drop(cap);
+
+        assert!(spans.is_empty(), "silent runner must not emit spans");
+        let completions: Vec<&String> = events
+            .iter()
+            .filter(|event| event.contains("command completed"))
+            .collect();
+        assert!(
+            completions.is_empty(),
+            "silent runner must not emit completion events: {completions:?}"
+        );
     }
 
     #[test]
