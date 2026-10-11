@@ -1,167 +1,170 @@
-# Toride Runner — Remaining Work
+# Toride Runner — Remaining Work (closed out)
 
-Single source of truth for unimplemented work on `crates/toride-runner`.
-Extracted 2026-10-09 from the duct-runner full-fledged plan after its
-implemented phases landed (Phases 1–5 implemented, Phase 7 closed by
-decision, Phase 8 substantially done). The old plan and the finished-plan
-archive were removed from the tree; git history carries them and the full
-audit trail.
+Single source of truth for the formerly-unimplemented work on
+`crates/toride-runner`. Extracted 2026-10-09 from the duct-runner
+full-fledged plan; **closed out 2026-10-11** — every item in areas 1–5 is
+implemented or explicitly rejected with its ruling recorded below, and area
+6 remains deferred by decision. This file is now a status record, not a
+worklist. The full audit trail (round-by-round implementation notes, judge
+verdicts, mutation-testing evidence) lives in the orchestration state file
+and the linked commits; each entry below names where its ruling is recorded.
 
-Baseline at extraction (2026-10-09):
+Verification for every implemented item: `cargo test -p toride-runner
+--features 'duct-runner tokio-runner serde stream fake'` plus fmt, clippy
+(no new warning lines over the 2 pre-existing pedantic ones), and
+`cargo doc` with compiling rustdoc examples.
 
-- `cargo test -p toride-runner --features 'duct-runner tokio-runner serde
-  stream fake'` → 227 unit tests + 9 doctests pass.
-- `cargo fmt` clean; clippy shows only 2 pre-existing pedantic test-style
-  warnings.
-- Both runners share redaction at error construction (checked failures,
-  timeout args, scrubbed stderr), honor `Capture`/`Inherit`, reject
-  `Stream` outside the streaming API, and enforce output caps while
-  capturing.
+## 1. Parity closeout — IMPLEMENTED (area A1)
 
-Work areas are listed in recommended order. "Ruling needed" marks a
-decision that must be recorded before implementation, per the standing
-rule from the old plan: add a field only when a real Toride caller needs
-it or its absence forces unsafe ad hoc behavior.
+Commit `52ffcc4` "feat(runner): mirror DuctRunner options on TokioRunner
+and close parity test gaps"; ruling recorded in
+`crates/toride-runner/src/parity_tests.rs` module docs (covered rows +
+intentional exclusions).
 
-## 1. Parity closeout (small, high value)
+- 1.1 `parity_failure` asserts the exact non-zero exit code (`bash -c
+  "exit 42"` → `Some(42)`) per runner, not just mutual equality —
+  IMPLEMENTED.
+- 1.2 `TokioRunnerOptions`/`TokioRunnerBuilder`/`ConfiguredTokioRunner`
+  mirror the Duct trio (default 60 s timeout, `log_commands`, later
+  `redact_logs`); unit `TokioRunner` runs with default options —
+  IMPLEMENTED (the mirror, not a documented asymmetry).
+- 1.3 Parity rows for the configured runners, the streaming path
+  (Tokio-vs-Tokio aggregate), and `FakeRunner` (replay-only) are in
+  `parity_tests.rs`; the four intentional exclusions (duct streaming,
+  FakeRunner process behavior, command-log emission, kill-and-reap tree
+  effects) are enumerated in that module's docs, not claimed by omission —
+  IMPLEMENTED.
 
-1.1 `parity_failure` must assert an exact non-zero exit code (e.g. 42),
-    not just equality between runners.
+## 2. Crate documentation — IMPLEMENTED (area A5, this change)
 
-1.2 `TokioRunnerOptions`: TokioRunner hardcodes `DEFAULT_TIMEOUT_SECS = 60`
-    and its command logging is not toggleable, while `ConfiguredDuctRunner`
-    can do both. Either add a `TokioRunnerOptions`/builder mirroring the
-    Duct one, or document the asymmetry as intentional and test the
-    documented behavior.
+All in `crates/toride-runner/src/lib.rs`; every rustdoc example compiles
+and runs as a doctest (feature-gated so reduced feature sets still build).
 
-1.3 Parity rows or documented exclusions for `ConfiguredDuctRunner`, the
-    streaming path, and `FakeRunner` — the suite currently compares only
-    unit `DuctRunner` vs unit `TokioRunner`.
+- 2.1 Capability matrix distinguishing supported / unsupported /
+  intentionally-different behavior across `DuctRunner`, `TokioRunner`,
+  streaming Tokio, and `FakeRunner` — every row names its runner(s) and
+  the intentional differences are called out beneath the table.
+- 2.2 Examples covering captured output, inherited stdio, checked
+  execution, custom timeout (+ `TimeoutPolicy`), no-default timeout via a
+  configured runner, additive env, env removal, clean env — including the
+  Unix footgun that `clear_env` under default `OsSearch` leaves the child
+  with no `PATH` (mitigations: absolute program path, explicit `PATH`
+  entry, or `PathResolution::ChildEnvNoCwd`) — redaction (error variants,
+  captured output, and the default-on `redact_logs` log display), and
+  output limits.
+- 2.3 Lossy-UTF-8 output behavior stated explicitly: `from_utf8_lossy` on
+  every capture path, byte-accounted caps decided before decoding,
+  `stdin_bytes` in / lossy out, streaming chunks raw vs lines/aggregate
+  lossy; raw-byte output stays deferred (6.2).
+- 2.4 Cleanup policy restated in crate docs: direct-child-only
+  kill-and-reap on timeout, output-limit breach, and stdin-write failure;
+  grandchild survival out of scope; bounded detach for grandchildren
+  holding pipe ends; `kill_on_drop` on Tokio paths.
 
-Acceptance: all three land with tests; any intentionally excluded parity
-rows are enumerated in `parity_tests.rs` rather than claimed by omission.
+## 3. Command-intent extensions — all four candidates resolved (area A2)
 
-## 2. Crate documentation
+Commit `2367b2d` "feat(runner): add stdin_bytes and timeout_policy intent
+fields with recorded rulings"; rulings recorded in the field/policy docs in
+`crates/toride-runner/src/spec.rs` and `crates/toride-runner/src/policy.rs`
+and mirrored here.
 
-`lib.rs` currently has two basic examples and no capability guidance.
+- 3.1 Byte stdin — IMPLEMENTED: additive `stdin_bytes: Option<Vec<u8>>`
+  (raw bytes that `stdin: Option<String>` cannot express; `stdin_bytes`
+  wins over `stdin`), `#[serde(default)]` in both hand-written serde
+  halves + old-payload tests, consumed by both runners and streaming via
+  `spec.effective_stdin_bytes()`, and INCLUDED in `FakeRunner` matching
+  (command construction, like `stdin`).
+- 3.2 Per-command timeout policy — IMPLEMENTED: `TimeoutPolicy`
+  (`SpecOrRunnerDefault` | `Never` | `Explicit`) in `policy.rs` takes
+  precedence over `CommandSpec::timeout`; old payloads serde-default to
+  `SpecOrRunnerDefault`, preserving the legacy resolution exactly; resolved
+  via `spec.effective_timeout(runner_default)` at all four execution sites;
+  EXCLUDED from `FakeRunner` matching (runtime policy, like `timeout`).
+- 3.3 Shell opt-in — REJECTED, permanently: direct argv only, no
+  `ShellSpec` ever. Ruling recorded in `policy.rs` module docs ("Shell
+  execution: rejected, permanently"): a shell command string re-introduces
+  the injection risk the argv model exists to prevent and cannot be
+  token-redacted; `ArgvPolicy::RejectShellMetachars` plus the
+  review-visible `CommandSpec::new("bash").args(["-c", script])` escape
+  hatch cover genuine shell needs.
+- 3.4 Output disposition — REJECTED, no real caller: a workspace search
+  found zero consumers of merged/suppressed/redirected output; the only
+  merged-output desires live inside shell script text already served by
+  the `bash -c` escape hatch. Merge/suppress/redirect stay unimplemented
+  per the standing rule (add a field only when a real caller needs it);
+  revisit only on demonstrated call-site need.
 
-2.1 Capability table distinguishing supported / unsupported /
-    intentionally-different behavior across DuctRunner, TokioRunner,
-    streaming Tokio, and FakeRunner.
+## 4. Duct stdin error mapping — IMPLEMENTED (area A3)
 
-2.2 Examples covering: captured output, inherited stdio, checked
-    execution, custom timeout, no-default timeout via a configured runner,
-    additive env, env removal, clean env — including the Unix footgun that
-    `clear_env` under default `OsSearch` leaves `PATH` empty (use an
-    absolute program path, an explicit `PATH` entry, or
-    `PathResolution::ChildEnvNoCwd`) — redaction, and output limits.
+Commits `3e1dd3c` "fix(runner): map duct stdin write failures to
+StdinFailed with kill-and-reap parity" and `cb39a42` "fix(runner): kill
+and reap before StdinFailed on the tokio streaming path" (fix round
+committed separately); design rulings recorded in
+`crates/toride-runner/src/duct_runner.rs` docs/comments and
+`crates/toride-runner/src/error.rs` (`StdinFailed` documents the
+kill-and-reap contract for both real runners).
 
-2.3 State lossy-UTF-8 output behavior explicitly.
+`DuctRunner` writes piped payloads over an owned stdin pipe from a
+dedicated writer thread, so a write failure (child exits before reading a
+large payload) classifies as `Error::StdinFailed` after kill-and-reap —
+parity with `TokioRunner` on every path including streaming (both route
+stdin writes through the shared `write_stdin` helper / equivalent duct
+plumbing sourcing `spec.effective_stdin_bytes()`). Tests were written
+RED-first and their non-vacuity proven by mutation testing.
 
-2.4 Restate the cleanup policy in crate docs: direct-child-only
-    kill-and-reap on timeout and output-limit breach; grandchild survival
-    out of scope. Today this lives only in `duct_runner.rs` comments.
+## 5. Diagnostics hardening — IMPLEMENTED (area A4)
 
-Acceptance: rustdoc examples compile; every capability row names its
-runner support; docs carry no stale claims after areas 3–5 are decided.
+Commit `a6e3cfd` "feat(runner): redact runner logs by default and add
+command spans plus sanitized env summaries"; rulings recorded in
+`DuctRunnerOptions`/`TokioRunnerOptions` docs, `display.rs`
+(`display_command_for_log`, `display_env_summary`), and the crate docs in
+`lib.rs` (Diagnostics section).
 
-## 3. Command-intent extensions (ruling needed per item)
-
-Decision rules: keep `CommandSpec` focused on command intent; keep runner
-defaults and safety policy in runner options; prefer additive fields over
-retyping existing public fields.
-
-Candidates, none ruled on yet:
-
-3.1 Byte stdin — `stdin_bytes: Option<Vec<u8>>` as a new additive field.
-    Do NOT retype `stdin: Option<String>` into an enum; that is a double
-    break (public field type + serde wire shape). Include in FakeRunner
-    matching (it changes process input, like `stdin` already is).
-
-3.2 Per-command timeout policy — new `timeout_policy` field
-    distinguishing use-runner-default / no-timeout / explicit, taking
-    precedence over the existing `timeout` field; serde defaults old
-    payloads to "runner default". Exclude from FakeRunner matching
-    (runtime policy, like `timeout`).
-
-3.3 Shell opt-in — undecided. The code went the inverse direction from
-    the original plan: `ArgvPolicy::RejectShellMetachars` refuses shell
-    syntax, and no `ShellSpec` exists. If opt-in is ever wanted it must be
-    visible in review, integrate with redaction (`display_command` must
-    not leak secrets from shell command strings), and document injection
-    risk. A rejection — "direct argv only, permanently" — is a valid
-    ruling and needs only a doc paragraph.
-
-3.4 Output disposition — merge stderr into stdout, suppress stdout/stderr,
-    redirect to files; only if `OutputMode` proves insufficient for a real
-    caller. Merging must preserve exit-code and success semantics;
-    suppression must avoid capture work; redirection returns empty
-    captured strings for redirected streams and must document whether
-    output caps apply to file bytes.
-
-Field-addition pattern (applies to every candidate): additive field +
-`#[serde(default)]` in both hand-written serde halves (bump the
-`serialize_struct` count literal, add the `serialize_field`, extend the
-`Deserialize` helper) + an old-payload JSON test + an explicit FakeRunner
-included/excluded ruling. If raw bytes ever land on `CommandOutput`: its
-hand-written serde persists `success` independently of `exit_code`, so any
-new constructor must keep them consistent.
-
-Acceptance: each candidate is implemented, explicitly rejected, or
-deferred with a recorded reason; no new field silently changes defaults.
-
-## 4. Duct stdin error mapping
-
-DuctRunner pipes stdin via `cmd.stdin_bytes(...)`, so a stdin write
-failure surfaces as a wait error, never `Error::StdinFailed`.
-TokioRunner already maps `StdinFailed` and kills-and-reaps the child on
-write failure. To reach parity, DuctRunner must switch to an owned stdin
-pipe it writes explicitly, so write failures map to `StdinFailed`
-(kill-and-reap before returning, matching Tokio).
-
-Acceptance: a test forcing a stdin write failure (child exits before
-reading a large stdin) classifies as `StdinFailed` under DuctRunner, and a
-parity test asserts the same classification across both runners.
-
-## 5. Diagnostics hardening (optional)
-
-5.1 Redaction is opt-in per spec (`redact = false` by default), so
-    completion `debug!` logs print raw args by default. Add a runner-level
-    redaction toggle or a redact-by-default mode for logs.
-
-5.2 No tracing span around command execution — only discrete events. Add
-    a span (program + redacted display) if callers need correlated failure
-    diagnostics.
-
-5.3 `display_env` is used by `toride-cloud` but wired into no runner log
-    or error path; a sanitized env summary at runtime is still absent.
-
-Acceptance: with the toggle on (or by default, whichever is ruled), logs
-never print unredacted args; the span, if added, wraps both success and
-failure paths.
+- 5.1 Redact-by-default logs — IMPLEMENTED as the runner-level toggle
+  `redact_logs: bool` on BOTH options structs, DEFAULT `true`: every runner
+  log display renders redacted even for specs without `spec.redact`.
+  Error variants unchanged — they honor `spec.redact` alone (pinned by
+  tests). `redact_logs(false)` restores the raw log display.
+- 5.2 Execution span — IMPLEMENTED: a shared INFO `command` span
+  (program + log-redacted display) wraps the ENTIRE execution — success
+  and every failure path — on all three real-runner paths (duct captured,
+  tokio captured, tokio streaming). Suppressed by `log_commands(false)`,
+  the single diagnostics switch.
+- 5.3 Sanitized env summary — IMPLEMENTED: completion debug events of both
+  runners carry `display_env_summary(spec)` whenever the spec sets explicit
+  env vars; sensitive values are `***` regardless of `spec.redact`. The
+  streaming path has no completion event (pre-existing); its span wraps
+  the session — recorded in the capability matrix.
+- Sub-ruling: tokio completion events also gained the `command` field
+  (log-redacted display) for diagnostic parity with duct.
 
 ## 6. Deferred by decision — do not implement without new evidence
 
-6.1 Process-tree cleanup: direct-child-only cleanup is the supported
-    policy. Revive only if a real Toride call site demonstrates grandchild
-    survival. The archived plan carries the platform design (Unix process
-    groups + `killpg`; Windows job objects) and the testing pitfalls:
-    a `sleep 10 && echo MARKER` child does NOT prove grandchild kill
-    (killing the parent prevents the marker regardless); use a
-    grandchild that writes the marker independently, scope temp paths per
-    test, and assert reaping via `kill(pid, 0)` → `ESRCH` rather than
-    fixed sleeps.
+Deferred at tracker extraction and re-affirmed at closeout; no new
+evidence has appeared.
 
-6.2 Raw-byte output: `CommandOutput` is string-only (lossy UTF-8). Only
-    with a real caller need, via a deliberate type rather than retyping
-    existing fields.
-
-6.3 Sync streaming / line callbacks: sync callers get `Stream` rejected
-    with a clear error; a blocking event sink remains possible future
-    work.
+- 6.1 Process-tree cleanup: direct-child-only cleanup is the supported
+  policy (restated in the crate docs, area 2.4). Revive only if a real
+  Toride call site demonstrates grandchild survival. The archived plan
+  carries the platform design (Unix process groups + `killpg`; Windows
+  job objects) and the testing pitfalls: a `sleep 10 && echo MARKER`
+  child does NOT prove grandchild kill (killing the parent prevents the
+  marker regardless); use a grandchild that writes the marker
+  independently, scope temp paths per test, and assert reaping via
+  `kill(pid, 0)` → `ESRCH` rather than fixed sleeps.
+- 6.2 Raw-byte output: `CommandOutput` is string-only (lossy UTF-8, now
+  documented in the crate docs). Only with a real caller need, via a
+  deliberate type rather than retyping existing fields.
+- 6.3 Sync streaming / line callbacks: sync callers get `Stream` rejected
+  with a clear error; a blocking event sink remains possible future work.
 
 ## Verification
 
 `cargo test -p toride-runner --features 'duct-runner tokio-runner serde
 stream fake'` with fmt and clippy clean is the gate for every change
 above; doc changes must additionally keep rustdoc examples compiling.
+All gates green at closeout: 286 unit tests + 23 running doctests (2
+pre-existing `rust,ignore` examples in the runner modules), fmt clean,
+clippy at the 2-line pre-existing baseline, `cargo doc` clean, and
+`cargo check --workspace --all-targets` green (no consumer breakage from
+the new root re-exports).
