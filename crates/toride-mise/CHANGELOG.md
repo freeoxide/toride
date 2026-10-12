@@ -4,6 +4,13 @@ All notable changes to this crate are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-12
+
+### Changed
+
+- Test-only: command-spec snapshots regenerated for toride-runner's new
+  `stdin_bytes`/`timeout_policy` spec fields; no public API changes.
+
 ## [0.1.0] - 2026-10-02
 
 Initial crates.io release.
@@ -25,5 +32,6 @@ Initial crates.io release.
 - Feature set: `json`, `toml`, `diagnostics` by default; `tracing`,
   `bootstrap`, `miette`, and `blocking` off the default set.
 
-[Unreleased]: https://github.com/freeoxide/toride/compare/toride-mise-v0.1.0...HEAD
+[Unreleased]: https://github.com/freeoxide/toride/compare/toride-mise-v0.2.0...HEAD
+[0.2.0]: https://github.com/freeoxide/toride/releases/tag/toride-mise-v0.2.0
 [0.1.0]: https://github.com/freeoxide/toride/releases/tag/toride-mise-v0.1.0

@@ -57,7 +57,7 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 # Cross-crate pin only (plan §3.12): the model's digest lengths must match
 # the installer parser/verifier constants. Dev-only and featureless, so the
 # parse half's dependency graph is unchanged.
-toride-installer = { path = "../toride-installer", version = "0.1.0", default-features = false }
+toride-installer = { path = "../toride-installer", version = "0.2.0", default-features = false }
 
 # F14 pins: parse_dep11_catalog / AppstreamAdapter::from_text over the synthetic
 # dep11 fixture, plus (feature `http`) the seeded-cache cached_catalog path — hermetic,

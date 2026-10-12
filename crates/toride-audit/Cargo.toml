@@ -54,10 +54,10 @@ serde = ["dep:serde", "dep:serde_json"]
 cli = ["dep:clap", "client", "doctor", "auditd", "service", "integrity", "logs"]
 
 [dependencies]
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
-toride-fs = { path = "../toride-fs", version = "0.1.0" }
-toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.1.0" }
-toride-service = { path = "../toride-service", version = "0.1.0", optional = true }
+toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["duct-runner", "fake"] }
+toride-fs = { path = "../toride-fs", version = "0.2.0" }
+toride-diagnostic-types = { path = "../toride-diagnostic-types", version = "0.2.0" }
+toride-service = { path = "../toride-service", version = "0.2.0", optional = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 which = { workspace = true }
