@@ -1441,6 +1441,9 @@ impl Apps {
             BackendId::Cargo => self.backends.cargo.as_ref().map(|b| b as &dyn Backend),
             BackendId::Pipx => self.backends.pipx.as_ref().map(|b| b as &dyn Backend),
             BackendId::Uv => self.backends.uv.as_ref().map(|b| b as &dyn Backend),
+            // No facade slot exists yet: snap routes surface BackendUnavailable
+            // until the facade wiring round attaches a SnapBackend.
+            BackendId::Snap => None,
             #[cfg(feature = "mise")]
             BackendId::Mise => self.backends.mise.as_ref().map(|b| b as &dyn Backend),
         };
