@@ -295,10 +295,9 @@ impl ServiceManager {
         self.with_units_lock(|| self.prepare_unit(name, contents).map(|_| ()))
     }
 
-    /// Install `name`, then daemon-reload, enable, and start it in order; on
-    /// post-write failure the previous file and enablement state is restored
-    /// and a rollback error returned: [`Error::DeployRolledBack`] or
-    /// [`Error::DeployRollbackFailed`].
+    /// Install `name`, then daemon-reload, enable, start, and confirm the unit
+    /// went active; on post-write failure the previous file and enablement
+    /// state is restored and a rollback error returned ([`Error::DeployRolledBack`]).
     pub fn deploy_unit(&self, name: &str, contents: &str) -> Result<()> {
         Self::validate_unit_name(name)?;
         self.with_units_lock(|| self.deploy_unit_locked(name, contents))
@@ -447,7 +446,14 @@ impl ServiceManager {
         self.daemon_reload()?;
         prior_enablement.replace(self.is_enabled(name)?);
         self.enable(name)?;
-        self.start(name)
+        self.start(name)?;
+        if self.is_active(name)? {
+            Ok(())
+        } else {
+            Err(Error::ServiceFailed(format!(
+                "unit {name} did not become active after start"
+            )))
+        }
     }
 
     fn rollback_deployment(
@@ -857,11 +863,19 @@ mod tests {
         specs: Arc<Mutex<Vec<CommandSpec>>>,
         failing_verb: Option<String>,
         enabled: bool,
+        active: bool,
     }
 
     impl VerbsRunner {
         fn succeeding() -> Self {
-            Self::default()
+            Self::post_start_activity(true)
+        }
+
+        fn post_start_activity(active: bool) -> Self {
+            Self {
+                active,
+                ..Self::default()
+            }
         }
 
         fn failing_verb(verb: &str) -> Self {
@@ -904,8 +918,12 @@ mod tests {
                     Some(1),
                 ));
             }
-            if verb == Some("is-enabled") {
-                let code = i32::from(!self.enabled);
+            let query_exit = match verb {
+                Some("is-enabled") => Some(i32::from(!self.enabled)),
+                Some("is-active") => Some(i32::from(!self.active)),
+                _ => None,
+            };
+            if let Some(code) = query_exit {
                 return Ok(CommandOutput::new(String::new(), String::new(), Some(code)));
             }
             Ok(CommandOutput::from_stdout(String::new()))
@@ -1078,7 +1096,7 @@ mod tests {
         mgr.deploy_unit("app.service", "[Unit]\n")
             .expect("deploy should succeed");
 
-        assert_eq!(runner.invocation_count(), 4);
+        assert_eq!(runner.invocation_count(), 5);
         assert_eq!(
             runner.argv_at(0),
             ("systemctl".to_owned(), vec!["daemon-reload".to_owned()])
@@ -1117,8 +1135,60 @@ mod tests {
             )
         );
         assert_eq!(
+            runner.argv_at(4),
+            (
+                "systemctl".to_owned(),
+                vec![
+                    "is-active".to_owned(),
+                    "--".to_owned(),
+                    "app.service".to_owned()
+                ]
+            )
+        );
+        assert_eq!(
             fs::read_to_string(dir.path().join("app.service")).expect("unit file readable"),
             "[Unit]\n"
+        );
+    }
+
+    #[test]
+    fn deploy_unit_rolls_back_when_unit_never_becomes_active() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::post_start_activity(false);
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "dies immediately")
+            .expect_err("a unit that never becomes active must fail the deploy");
+
+        match &err {
+            Error::DeployRolledBack { unit, cause } => {
+                assert_eq!(unit, "app.service");
+                assert!(
+                    matches!(**cause, Error::ServiceFailed(_)),
+                    "cause must be the post-start inactivity check: {cause}"
+                );
+            }
+            other => panic!("expected DeployRolledBack, got {other:?}"),
+        }
+        assert!(
+            !dir.path().join("app.service").exists(),
+            "the rolled-back deploy must not leave the unit file behind"
+        );
+        assert_eq!(
+            runner.verb_at(4),
+            Some("is-active".to_owned()),
+            "the deploy must verify activity after start"
+        );
+        assert_eq!(
+            runner.verb_at(5),
+            Some("disable".to_owned()),
+            "rollback must undo the enablement after the failed activity check"
+        );
+        assert_eq!(
+            runner.invocation_count(),
+            7,
+            "reload, is-enabled, enable, start, is-active, rollback disable, best-effort reload"
         );
     }
 
