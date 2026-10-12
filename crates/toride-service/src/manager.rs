@@ -19,6 +19,10 @@
 //! }
 //! ```
 
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use crate::{Error, Result};
 
 // ---------------------------------------------------------------------------
@@ -79,6 +83,8 @@ impl std::str::FromStr for ServiceStatus {
 /// # Construction
 ///
 /// - [`ServiceManager::new`] -- inject any `Runner` implementation.
+/// - [`ServiceManager::with_units_root`] -- same, with a custom unit file
+///   install root (the default is `/etc/systemd/system`).
 ///
 /// # Example
 ///
@@ -95,7 +101,12 @@ impl std::str::FromStr for ServiceStatus {
 pub struct ServiceManager {
     /// The command runner used to execute `systemctl`.
     runner: Box<dyn toride_runner::Runner>,
+    units_root: PathBuf,
 }
+
+const DEFAULT_UNITS_ROOT: &str = "/etc/systemd/system";
+
+const UNIT_FILE_MODE: u32 = 0o644;
 
 impl ServiceManager {
     // -----------------------------------------------------------------------
@@ -104,10 +115,28 @@ impl ServiceManager {
 
     /// Create a new `ServiceManager` with the given command runner.
     ///
+    /// Unit files are installed under `/etc/systemd/system`. Use
+    /// [`ServiceManager::with_units_root`] to override that location.
+    ///
     /// The runner is used for all `systemctl` invocations, making the manager
     /// fully testable via a fake or mock runner.
     pub fn new(runner: Box<dyn toride_runner::Runner>) -> Self {
-        Self { runner }
+        Self {
+            runner,
+            units_root: PathBuf::from(DEFAULT_UNITS_ROOT),
+        }
+    }
+
+    /// Create a new `ServiceManager` that installs unit files under
+    /// `units_root` instead of `/etc/systemd/system`.
+    pub fn with_units_root(
+        runner: Box<dyn toride_runner::Runner>,
+        units_root: impl Into<PathBuf>,
+    ) -> Self {
+        Self {
+            runner,
+            units_root: units_root.into(),
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -243,6 +272,55 @@ impl ServiceManager {
         }
     }
 
+    /// Reload the systemd manager configuration (`systemctl daemon-reload`),
+    /// returning [`Error::CommandFailed`] when the verb exits non-zero.
+    pub fn daemon_reload(&self) -> Result<()> {
+        tracing::debug!("invoking systemctl daemon-reload");
+        let spec = toride_runner::CommandSpec::new("systemctl").arg("daemon-reload");
+        let output = self.runner.run(&spec)?;
+        if output.success {
+            Ok(())
+        } else {
+            Err(command_failed("daemon-reload", "", &output))
+        }
+    }
+
+    /// Install `contents` as unit `name` under the units root, backing up any
+    /// existing file to a timestamped sibling first, then writing atomically
+    /// at mode 0644; name, backup, and write failures are typed.
+    pub fn install_unit(&self, name: &str, contents: &str) -> Result<()> {
+        self.prepare_unit(name, contents).map(|_| ())
+    }
+
+    /// Install `name`, then daemon-reload, enable, and start it in order; on
+    /// post-write failure the previous file state is restored and a rollback
+    /// error returned: [`Error::DeployRolledBack`] or [`Error::DeployRollbackFailed`].
+    pub fn deploy_unit(&self, name: &str, contents: &str) -> Result<()> {
+        let backup = self.prepare_unit(name, contents)?;
+        if let Err(cause) = self.activate_unit(name) {
+            let rollback = rollback_unit(&self.unit_path(name), backup.as_deref());
+            let _ = self.daemon_reload();
+            return Err(match rollback {
+                Ok(()) => {
+                    tracing::error!(unit = name, "deployment failed; unit file rolled back");
+                    Error::DeployRolledBack {
+                        unit: name.to_owned(),
+                        cause: Box::new(cause),
+                    }
+                }
+                Err(rollback_error) => {
+                    tracing::error!(unit = name, "deployment failed and rollback failed too");
+                    Error::DeployRollbackFailed {
+                        unit: name.to_owned(),
+                        cause: Box::new(cause),
+                        rollback_error: Box::new(rollback_error),
+                    }
+                }
+            });
+        }
+        Ok(())
+    }
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
@@ -293,6 +371,85 @@ impl ServiceManager {
         let spec = toride_runner::CommandSpec::new("systemctl").args([verb, "--", service]);
         Ok(self.runner.run(&spec)?)
     }
+
+    fn prepare_unit(&self, name: &str, contents: &str) -> Result<Option<PathBuf>> {
+        Self::validate_unit_name(name)?;
+        fs::create_dir_all(&self.units_root)?;
+        let unit_path = self.unit_path(name);
+        let backup = if unit_path.is_file() {
+            Some(self.backup_unit(name)?)
+        } else {
+            None
+        };
+        toride_fs::atomic_write_with_perms(&unit_path, contents, UNIT_FILE_MODE)?;
+        tracing::info!(unit = name, path = %unit_path.display(), "installed unit file");
+        Ok(backup)
+    }
+
+    fn backup_unit(&self, name: &str) -> Result<PathBuf> {
+        let source = self.unit_path(name);
+        let dest = self
+            .units_root
+            .join(format!("{name}.bak.{}", unix_timestamp_nanos()));
+        fs::copy(&source, &dest).map_err(|e| {
+            Error::BackupFailed(format!(
+                "failed to copy {} to {}: {e}",
+                source.display(),
+                dest.display()
+            ))
+        })?;
+        tracing::info!(
+            from = %source.display(),
+            to = %dest.display(),
+            "backed up unit file"
+        );
+        Ok(dest)
+    }
+
+    fn activate_unit(&self, name: &str) -> Result<()> {
+        self.daemon_reload()?;
+        self.enable(name)?;
+        self.start(name)
+    }
+
+    fn unit_path(&self, name: &str) -> PathBuf {
+        self.units_root.join(name)
+    }
+
+    fn validate_unit_name(name: &str) -> Result<()> {
+        if name.is_empty() {
+            return Err(Error::InvalidUnitName("must not be empty".to_owned()));
+        }
+        if !name.ends_with(".service") {
+            return Err(Error::InvalidUnitName(format!(
+                "must end in .service: {name:?}"
+            )));
+        }
+        if name.len() == ".service".len() {
+            return Err(Error::InvalidUnitName(
+                "must have a name before the .service suffix".to_owned(),
+            ));
+        }
+        if name.starts_with('-') {
+            return Err(Error::InvalidUnitName(format!(
+                "must not start with '-': {name:?}"
+            )));
+        }
+        if name.contains("..") {
+            return Err(Error::InvalidUnitName(format!(
+                "must not contain dotdot: {name:?}"
+            )));
+        }
+        if let Some(bad) = name
+            .chars()
+            .find(|c| !(c.is_ascii_alphanumeric() || matches!(c, '@' | '.' | '_' | '+' | '-')))
+        {
+            return Err(Error::InvalidUnitName(format!(
+                "disallowed character {bad:?} in {name:?}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -305,12 +462,33 @@ fn command_failed(subcommand: &str, service: &str, output: &toride_runner::Comma
         .exit_code
         .map_or("signal".to_owned(), |c| c.to_string());
     let stderr = output.stderr.trim();
-    let detail = if stderr.is_empty() {
-        format!("systemctl {subcommand} {service} failed (exit {code})")
+    let target = if service.is_empty() {
+        String::new()
     } else {
-        format!("systemctl {subcommand} {service} failed (exit {code}): {stderr}")
+        format!(" {service}")
+    };
+    let detail = if stderr.is_empty() {
+        format!("systemctl {subcommand}{target} failed (exit {code})")
+    } else {
+        format!("systemctl {subcommand}{target} failed (exit {code}): {stderr}")
     };
     Error::CommandFailed(detail)
+}
+
+fn rollback_unit(unit_path: &Path, backup: Option<&Path>) -> Result<()> {
+    match backup {
+        Some(backup_path) => fs::copy(backup_path, unit_path)
+            .map(|_| ())
+            .map_err(Error::Io),
+        None => fs::remove_file(unit_path).map_err(Error::Io),
+    }
+}
+
+fn unix_timestamp_nanos() -> u128 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos()
 }
 
 #[cfg(test)]
@@ -318,6 +496,7 @@ mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
 
+    use tempfile::TempDir;
     use toride_runner::{CommandOutput, CommandSpec, Runner};
 
     /// Minimal in-module [`Runner`] fake: returns a single canned output and
@@ -573,5 +752,376 @@ mod tests {
         mgr.restart("nginx").unwrap();
 
         assert_invocation(&runner, "systemctl", &["restart", "--", "nginx"]);
+    }
+
+    #[derive(Clone, Default)]
+    struct VerbsRunner {
+        specs: Arc<Mutex<Vec<CommandSpec>>>,
+        failing_verb: Option<String>,
+    }
+
+    impl VerbsRunner {
+        fn succeeding() -> Self {
+            Self::default()
+        }
+
+        fn failing_verb(verb: &str) -> Self {
+            Self {
+                failing_verb: Some(verb.to_owned()),
+                ..Self::default()
+            }
+        }
+
+        fn invocation_count(&self) -> usize {
+            self.specs.lock().expect("specs lock").len()
+        }
+
+        fn argv_at(&self, index: usize) -> (String, Vec<String>) {
+            let specs = self.specs.lock().expect("specs lock");
+            let spec = specs
+                .get(index)
+                .unwrap_or_else(|| panic!("no runner invocation at index {index}"));
+            (spec.program.clone(), spec.args.clone())
+        }
+    }
+
+    impl Runner for VerbsRunner {
+        fn run(&self, spec: &CommandSpec) -> toride_runner::Result<CommandOutput> {
+            self.specs.lock().expect("specs lock").push(spec.clone());
+            let verb = spec.args.first().map(String::as_str);
+            if self.failing_verb.as_deref() == verb {
+                Ok(CommandOutput::new(
+                    String::new(),
+                    "simulated systemctl failure\n".to_owned(),
+                    Some(1),
+                ))
+            } else {
+                Ok(CommandOutput::from_stdout(String::new()))
+            }
+        }
+    }
+
+    fn units_root_entries(dir: &TempDir) -> Vec<String> {
+        let mut names: Vec<_> = fs::read_dir(dir.path())
+            .expect("units root should be readable")
+            .filter_map(std::result::Result::ok)
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        names.sort();
+        names
+    }
+
+    #[test]
+    fn new_defaults_to_the_system_units_root() {
+        let (mgr, _runner) = manager_with_fake();
+        assert_eq!(mgr.units_root, PathBuf::from(DEFAULT_UNITS_ROOT));
+    }
+
+    #[test]
+    fn install_unit_writes_contents_at_mode_0644() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = CannedRunner::empty();
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        mgr.install_unit("app.service", "[Unit]\nDescription=app\n")
+            .expect("install should succeed");
+
+        let installed =
+            fs::read_to_string(dir.path().join("app.service")).expect("unit file readable");
+        assert_eq!(installed, "[Unit]\nDescription=app\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(dir.path().join("app.service"))
+                .expect("metadata should be available")
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o644);
+        }
+        assert_eq!(
+            runner.call_count(),
+            0,
+            "install_unit must not invoke systemctl"
+        );
+    }
+
+    #[test]
+    fn install_unit_backs_up_previous_contents_in_a_timestamped_sibling() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        fs::write(dir.path().join("app.service"), "old contents")
+            .expect("seed unit write should succeed");
+        let mgr = ServiceManager::with_units_root(Box::new(CannedRunner::empty()), dir.path());
+
+        mgr.install_unit("app.service", "new contents")
+            .expect("install should succeed");
+
+        assert_eq!(
+            fs::read_to_string(dir.path().join("app.service")).expect("unit file readable"),
+            "new contents"
+        );
+        let backups: Vec<_> = units_root_entries(&dir)
+            .into_iter()
+            .filter(|n| n != "app.service")
+            .collect();
+        assert_eq!(backups.len(), 1, "exactly one backup sibling: {backups:?}");
+        let backup_name = &backups[0];
+        let prefix = "app.service.bak.";
+        assert!(
+            backup_name.starts_with(prefix),
+            "backup must follow <unit>.bak.<timestamp>: {backup_name}"
+        );
+        let timestamp = &backup_name[prefix.len()..];
+        assert!(
+            !timestamp.is_empty() && timestamp.chars().all(|c| c.is_ascii_digit()),
+            "timestamp must be numeric: {timestamp}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join(backup_name)).expect("backup readable"),
+            "old contents"
+        );
+    }
+
+    #[test]
+    fn install_unit_rejects_abusive_names() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = CannedRunner::empty();
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        for name in [
+            "",
+            "..",
+            "nginx",
+            "nginx.timer",
+            ".service",
+            "../evil.service",
+            "/etc/systemd/system/evil.service",
+            "sub/dir.service",
+            "a..b.service",
+            "-flag.service",
+            "with space.service",
+            "nginx\0.service",
+            "café.service",
+        ] {
+            let err = mgr.install_unit(name, "[Unit]\n").unwrap_err();
+            assert!(
+                matches!(err, Error::InvalidUnitName(_)),
+                "name {name:?} must be rejected with InvalidUnitName, got {err:?}"
+            );
+        }
+
+        assert_eq!(runner.call_count(), 0, "validation must short-circuit");
+        assert!(
+            units_root_entries(&dir).is_empty(),
+            "no file may be created for a rejected name"
+        );
+    }
+
+    #[test]
+    fn install_unit_accepts_strictly_valid_names() {
+        for name in ["nginx.service", "user@1000.service", "my-app_2+x.service"] {
+            let dir = TempDir::new().expect("temp dir creation should succeed");
+            let mgr = ServiceManager::with_units_root(Box::new(CannedRunner::empty()), dir.path());
+            mgr.install_unit(name, "[Unit]\n")
+                .unwrap_or_else(|e| panic!("name {name:?} should be accepted: {e}"));
+            assert!(
+                dir.path().join(name).is_file(),
+                "unit file for {name:?} must exist"
+            );
+        }
+    }
+
+    #[test]
+    fn daemon_reload_uses_exact_argv() {
+        let runner = VerbsRunner::succeeding();
+        let mgr = ServiceManager::new(Box::new(runner.clone()));
+
+        mgr.daemon_reload().expect("daemon-reload should succeed");
+
+        assert_eq!(runner.invocation_count(), 1);
+        assert_eq!(
+            runner.argv_at(0),
+            ("systemctl".to_owned(), vec!["daemon-reload".to_owned()])
+        );
+    }
+
+    #[test]
+    fn daemon_reload_surfaces_nonzero_exit() {
+        let runner = VerbsRunner::failing_verb("daemon-reload");
+        let mgr = ServiceManager::new(Box::new(runner.clone()));
+
+        let err = mgr.daemon_reload().unwrap_err();
+
+        assert!(
+            matches!(err, Error::CommandFailed(ref m) if m.contains("daemon-reload failed")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn deploy_unit_sequences_reload_enable_start() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::succeeding();
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        mgr.deploy_unit("app.service", "[Unit]\n")
+            .expect("deploy should succeed");
+
+        assert_eq!(runner.invocation_count(), 3);
+        assert_eq!(
+            runner.argv_at(0),
+            ("systemctl".to_owned(), vec!["daemon-reload".to_owned()])
+        );
+        assert_eq!(
+            runner.argv_at(1),
+            (
+                "systemctl".to_owned(),
+                vec![
+                    "enable".to_owned(),
+                    "--".to_owned(),
+                    "app.service".to_owned()
+                ]
+            )
+        );
+        assert_eq!(
+            runner.argv_at(2),
+            (
+                "systemctl".to_owned(),
+                vec![
+                    "start".to_owned(),
+                    "--".to_owned(),
+                    "app.service".to_owned()
+                ]
+            )
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("app.service")).expect("unit file readable"),
+            "[Unit]\n"
+        );
+    }
+
+    #[test]
+    fn deploy_unit_restores_original_file_when_start_fails() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        fs::write(dir.path().join("app.service"), "original")
+            .expect("seed unit write should succeed");
+        let runner = VerbsRunner::failing_verb("start");
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "replacement")
+            .expect_err("deploy must fail when start fails");
+
+        match &err {
+            Error::DeployRolledBack { unit, cause } => {
+                assert_eq!(unit, "app.service");
+                assert!(
+                    matches!(**cause, Error::CommandFailed(_)),
+                    "cause must be the start failure: {cause}"
+                );
+            }
+            other => panic!("expected DeployRolledBack, got {other:?}"),
+        }
+        assert!(
+            err.to_string().contains("rolled back"),
+            "error must say the rollback happened: {err}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("app.service")).expect("unit file readable"),
+            "original"
+        );
+        assert_eq!(
+            runner.invocation_count(),
+            4,
+            "reload, enable, start, then best-effort reload after rollback"
+        );
+        assert_eq!(
+            runner.argv_at(3),
+            ("systemctl".to_owned(), vec!["daemon-reload".to_owned()])
+        );
+    }
+
+    #[test]
+    fn deploy_unit_removes_fresh_file_when_daemon_reload_fails() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::failing_verb("daemon-reload");
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "fresh")
+            .expect_err("deploy must fail when daemon-reload fails");
+
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+        assert!(
+            !dir.path().join("app.service").exists(),
+            "freshly written file must be removed on rollback"
+        );
+        assert_eq!(
+            units_root_entries(&dir),
+            Vec::<String>::new(),
+            "no backup exists and no file may remain"
+        );
+        assert_eq!(
+            runner.invocation_count(),
+            2,
+            "failed reload plus the best-effort reload after rollback"
+        );
+    }
+
+    #[test]
+    fn deploy_unit_rejects_invalid_name_before_any_write() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::succeeding();
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("../evil.service", "contents")
+            .expect_err("invalid name must be rejected");
+
+        assert!(matches!(err, Error::InvalidUnitName(_)), "got {err:?}");
+        assert_eq!(
+            runner.invocation_count(),
+            0,
+            "validation must short-circuit before any systemctl call"
+        );
+        assert!(
+            units_root_entries(&dir).is_empty(),
+            "no file may be created for a rejected name"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_failure_is_typed_when_units_root_is_not_writable() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let units = dir.path().join("units");
+        fs::create_dir(&units).expect("units root creation should succeed");
+        fs::write(units.join("app.service"), "original\n").expect("seed unit write should succeed");
+
+        fs::set_permissions(&units, fs::Permissions::from_mode(0o555))
+            .expect("chmod should succeed");
+        let writable_anyway = fs::write(units.join(".probe"), b"probe").is_ok();
+        let result = if writable_anyway {
+            Ok(())
+        } else {
+            ServiceManager::with_units_root(Box::new(CannedRunner::empty()), &units)
+                .install_unit("app.service", "replacement\n")
+        };
+        fs::set_permissions(&units, fs::Permissions::from_mode(0o755))
+            .expect("chmod restore should succeed");
+        let _ = fs::remove_file(units.join(".probe"));
+
+        if writable_anyway {
+            return;
+        }
+        let err = result.expect_err("backup copy must fail in a read-only units root");
+        assert!(matches!(err, Error::BackupFailed(_)), "got {err:?}");
+        assert_eq!(
+            fs::read_to_string(units.join("app.service")).expect("original still readable"),
+            "original\n",
+            "the failed install must leave the original unit untouched"
+        );
     }
 }

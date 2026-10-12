@@ -18,6 +18,7 @@ serde = ["dep:serde", "dep:serde_json"]
 thiserror = { workspace = true }
 tracing = { workspace = true }
 toride-runner = { path = "../toride-runner", version = "0.2.0" }
+toride-fs = { path = "../toride-fs", version = "0.2.0" }
 duct = { version = "1", features = ["timeout"], optional = true }
 serde = { workspace = true, optional = true }
 serde_json = { workspace = true, optional = true }
