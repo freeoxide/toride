@@ -4416,7 +4416,7 @@ mod tests {
             )
             .respond(
                 list.clone(),
-                CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+                CommandOutput::from_stdout(snap_listing("firefox", "140.0-1")),
             )
             .respond(refresh.clone(), CommandOutput::from_stdout(""));
         let mut apps = snap_apps(&fake, "update");
@@ -4429,14 +4429,14 @@ mod tests {
             outcome,
             UpdateOutcome::Updated {
                 from: Some(Version::new("139.0.4-1")),
-                to: Some(Version::new("139.0.4-1")),
+                to: Some(Version::new("140.0-1")),
             }
         );
         fake.assert_called_with(&refresh);
         assert_eq!(
             apps.records()[0].1.version.as_deref(),
-            Some("139.0.4-1"),
-            "the record carries the re-probed version"
+            Some("140.0-1"),
+            "the record carries the re-probed version, never the adopted one"
         );
     }
 
