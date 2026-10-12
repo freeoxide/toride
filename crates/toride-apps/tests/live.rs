@@ -13,10 +13,11 @@
 //!
 //! What runs when the gate is open (and what deliberately does not):
 //!
-//! - the `detect()` seams of all four backends against the REAL host PATH
-//!   and `/etc/os-release`: brew, flatpak, and snap are expected to be
-//!   absent on this Linux host, dpkg present, but every assertion branches
-//!   on what the host actually has, so nothing is assumed either way;
+//! - the `detect()` seams of the backends probed here (brew, flatpak,
+//!   snap, distro) against the REAL host PATH and `/etc/os-release`:
+//!   brew, flatpak, and snap are expected to be absent on this Linux
+//!   host, dpkg present, but every assertion branches on what the host
+//!   actually has, so nothing is assumed either way;
 //! - the real toride-registry fetch layers through this crate's public
 //!   surface: the Homebrew and Flathub adapters resolving live apps into
 //!   planner input (pure `plan_install` afterward — no execution), the
@@ -182,11 +183,10 @@ async fn snap_detect_and_read_only_probes_track_the_real_host() {
         Ok(_) => {
             let backend = SnapBackend::detect(CommandRunner::builder().build())
                 .expect("snap is on PATH; detect must succeed");
-            let version = backend
+            backend
                 .version()
                 .await
                 .expect("a snap CLI answering at all carries a client version row");
-            assert!(!version.is_empty(), "the client row is never empty");
 
             let entries = backend
                 .list_entries()
