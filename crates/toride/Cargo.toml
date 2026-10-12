@@ -72,6 +72,9 @@ toride-installer = { path = "../toride-installer", version = "0.2.0" }
 # setup_bundles plans installs through toride-apps; mise+direct are the
 # BackendId surface it routes to (tokio already linked in this crate).
 toride-apps = { path = "../toride-apps", version = "0.2.0", features = ["mise", "direct"] }
+# setup_bundles' plan_row builds the planner's registry `App` inline;
+# toride-apps re-exports the leaf types but not `App`/`Availability`.
+toride-registry = { path = "../toride-registry", version = "0.2.0" }
 
 [dev-dependencies]
 insta = "1"

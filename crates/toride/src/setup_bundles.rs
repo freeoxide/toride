@@ -2,9 +2,13 @@
 //! load-bearing axis is commercial use. Data model + compiled-in registry;
 //! evaluation, planning, and hint application build on these types.
 
-use toride_apps::{DistroFamily, InstallMethod, Os};
+use toride_apps::{
+    DistroFamily, InstallMethod, InstallOptions, InstallPlan, InstallRecord, NativeIds, Os, Target,
+    TorideId, plan_install,
+};
 use toride_installer::Tool;
 use toride_installer::status::{Detector as InstallerDetector, ToolStatus as InstallerToolStatus};
+use toride_registry::{App, Availability};
 
 /// Commercial-use axis of a tool's license — the load-bearing label.
 /// Anything but [`LicenseKind::Free`] sets [`LicenseKind::requires_consent`]
@@ -68,6 +72,23 @@ pub enum Condition {
     },
     /// Every sub-condition holds; an empty `All` always holds.
     All(Vec<Condition>),
+}
+
+impl Condition {
+    /// Whether the condition holds for `target` under `presence`:
+    /// [`Condition::Os`] matches the target's OS, [`Condition::Distro`] the
+    /// target's known distro family, [`Condition::Missing`] probes the tool
+    /// through [`ToolPresence`], and [`Condition::All`] requires every
+    /// sub-condition.
+    #[must_use]
+    pub fn holds(&self, target: &Target, presence: &dyn ToolPresence) -> bool {
+        match self {
+            Self::Os(os) => *os == target.os,
+            Self::Distro(family) => target.distro == Some(*family),
+            Self::Missing { tool } => !presence.is_present(&[*tool]),
+            Self::All(conditions) => conditions.iter().all(|c| c.holds(target, presence)),
+        }
+    }
 }
 
 /// Answers whether any of a row's candidate binaries is already installed,
@@ -1507,13 +1528,242 @@ fn version_managers_bundle() -> SetupBundle {
     }
 }
 
+/// What evaluation hands the UI: only the rows whose condition holds and
+/// whose tool is not already present, grouped by bundle in registry order.
+/// Bundles left with no rows are dropped.
+#[derive(Clone, Debug)]
+pub struct SetupOffers {
+    /// Offered bundles, registry order.
+    pub bundles: Vec<SetupBundle>,
+    /// Ids of rows suppressed because their tool is already present, in
+    /// registry order (shared presence keys list every suppressed row).
+    /// Rows whose condition failed are simply absent, never listed here.
+    pub satisfied: Vec<&'static str>,
+}
+
+/// Evaluate the whole registry against `target` and `presence`. Never
+/// errors: a row whose condition fails is absent from the offers.
+#[must_use]
+pub fn evaluate(target: &Target, presence: &dyn ToolPresence) -> SetupOffers {
+    let mut satisfied = Vec::new();
+    let mut offered = Vec::new();
+    for mut bundle in bundles() {
+        bundle.recommendations.retain(|rec| {
+            if !rec.condition.holds(target, presence) {
+                return false;
+            }
+            if presence.is_present(rec.binaries) {
+                satisfied.push(rec.id);
+                return false;
+            }
+            true
+        });
+        if !bundle.recommendations.is_empty() {
+            offered.push(bundle);
+        }
+    }
+    SetupOffers {
+        bundles: offered,
+        satisfied,
+    }
+}
+
+/// The user's verdict on a row's linked terms — the only input
+/// [`require_consent`] consults beyond the row's license label.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Consent {
+    /// The dialog has not been answered.
+    Pending,
+    /// The user accepted the linked terms.
+    Accepted,
+    /// The user declined the linked terms.
+    Refused,
+}
+
+/// The refusal [`require_consent`] returns for a consent-gated row without
+/// an accepted verdict; carries everything the consent dialog renders.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ConsentRequired {
+    /// Id of the row that needs consent.
+    pub recommendation: &'static str,
+    /// The row's full license label: kind, terms URL, verified date.
+    pub license: LicenseInfo,
+    /// The verdict that failed the gate.
+    pub consent: Consent,
+}
+
+impl std::fmt::Display for ConsentRequired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Self {
+            recommendation,
+            license,
+            consent,
+        } = self;
+        write!(
+            f,
+            "`{recommendation}` requires accepting its terms before install \
+             (consent: {consent:?}); terms: {}",
+            license.terms_url
+        )
+    }
+}
+
+impl std::error::Error for ConsentRequired {}
+
+/// The gate every non-`Free` row passes only with [`Consent::Accepted`];
+/// `Free` rows pass regardless — there are no terms to accept.
+///
+/// # Errors
+///
+/// [`ConsentRequired`] when `rec.license.kind.requires_consent()` and
+/// `consent` is any verdict but [`Consent::Accepted`].
+pub fn require_consent(rec: &Recommendation, consent: Consent) -> Result<(), ConsentRequired> {
+    if rec.license.kind.requires_consent() && consent != Consent::Accepted {
+        return Err(ConsentRequired {
+            recommendation: rec.id,
+            license: rec.license.clone(),
+            consent,
+        });
+    }
+    Ok(())
+}
+
+/// Plan the row's install actions at plan time through the toride-apps
+/// planner, whose availability and platform gates apply. Each action builds
+/// its registry `App` inline: `TorideId::slugify(name)`, the declared
+/// method, no platform claims (the method's own scope governs), and
+/// [`Availability::Available`]. `Hint` and `Manual` steps have no planner
+/// shape and are absent from the result — a manual-only row plans nothing.
+#[must_use]
+pub fn plan_row(
+    rec: &Recommendation,
+    target: &Target,
+) -> Vec<Result<InstallPlan, toride_apps::Error>> {
+    rec.actions
+        .iter()
+        .filter_map(|action| match action {
+            InstallAction::Install(spec) => Some(plan_install(
+                &registry_app(spec),
+                target,
+                &InstallOptions::new(),
+            )),
+            InstallAction::Hint(_) | InstallAction::Manual { .. } => None,
+        })
+        .collect()
+}
+
+fn registry_app(spec: &InstallSpec) -> App {
+    App {
+        id: TorideId::slugify(spec.name),
+        name: spec.name.to_owned(),
+        aliases: Vec::new(),
+        summary: None,
+        description: None,
+        homepage: None,
+        license: None,
+        developer: None,
+        binaries: Vec::new(),
+        latest: None,
+        platforms: Vec::new(),
+        artifacts: Vec::new(),
+        install: spec.method.clone(),
+        sources: Vec::new(),
+        availability: Availability::Available,
+    }
+}
+
+/// The backend-native identifiers an executed install records under,
+/// derived from the row's declared method — the same values the planner
+/// rendered into the plan's operation. `None` for methods the registry
+/// never routes today (flatpak, direct) and for future `InstallMethod`
+/// variants.
+#[must_use]
+pub fn record_ids(spec: &InstallSpec) -> Option<NativeIds> {
+    match &spec.method {
+        InstallMethod::Homebrew { cask, token } => Some(NativeIds::Homebrew {
+            token: token.clone(),
+            cask: *cask,
+        }),
+        InstallMethod::Distro {
+            family, package, ..
+        } => Some(NativeIds::Distro {
+            package: package.clone(),
+            family: *family,
+        }),
+        InstallMethod::Npm { package, .. } => Some(NativeIds::Npm {
+            package: package.clone(),
+        }),
+        InstallMethod::Cargo { crate_, .. } => Some(NativeIds::Cargo {
+            crate_: crate_.clone(),
+        }),
+        InstallMethod::Pipx { package } => Some(NativeIds::Pipx {
+            package: package.clone(),
+        }),
+        InstallMethod::Uv { package, .. } => Some(NativeIds::Uv {
+            package: package.clone(),
+        }),
+        InstallMethod::Mise { tool, .. } => Some(NativeIds::Mise { tool: tool.clone() }),
+        _ => None,
+    }
+}
+
+/// The manifest record for an executed install: the executed `plan`, the
+/// ids derived from the row's [`InstallSpec`], and the backend-reported
+/// post-verify `version`. `None` when [`record_ids`] is `None` — the
+/// operation has no post-execution native identity to record.
+#[must_use]
+pub fn install_record(
+    plan: InstallPlan,
+    spec: &InstallSpec,
+    version: Option<String>,
+) -> Option<InstallRecord> {
+    let ids = record_ids(spec)?;
+    Some(InstallRecord::new(plan, ids, version))
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
     use super::*;
+    use toride_apps::InstallManifest;
+    use toride_apps::backend::ensure_install_allowed;
+    use toride_apps::{Arch, BackendId, Error, InstallRequest, Operation};
     use toride_runner::FakeRunner;
+
+    struct FixedPresence {
+        installed: &'static [&'static str],
+    }
+
+    impl ToolPresence for FixedPresence {
+        fn is_present(&self, binaries: &[&str]) -> bool {
+            binaries.iter().any(|bin| self.installed.contains(bin))
+        }
+    }
+
+    fn empty() -> FixedPresence {
+        FixedPresence { installed: &[] }
+    }
+
+    fn find_bundle<'a>(offers: &'a SetupOffers, id: &str) -> Option<&'a SetupBundle> {
+        offers.bundles.iter().find(|bundle| bundle.id == id)
+    }
+
+    fn find_rec<'a>(offers: &'a SetupOffers, id: &str) -> Option<&'a Recommendation> {
+        offers
+            .bundles
+            .iter()
+            .flat_map(|bundle| bundle.recommendations.iter())
+            .find(|rec| rec.id == id)
+    }
+
+    fn install_spec(rec: &Recommendation) -> &InstallSpec {
+        match &rec.actions[0] {
+            InstallAction::Install(spec) => spec,
+            other => panic!("{}: first action is {other:?}, not an install", rec.id),
+        }
+    }
 
     fn index(bundles: &[SetupBundle]) -> BTreeMap<&'static str, &Recommendation> {
         bundles
@@ -1745,5 +1995,388 @@ mod tests {
         let detector = InstallerDetector::with_runner(Arc::new(FakeRunner::new().strict()));
         let presence = DetectorPresence::new(detector);
         assert!(!presence.is_present(&[]));
+    }
+
+    #[test]
+    fn detector_presence_reports_absent_binaries_as_absent() {
+        let detector = InstallerDetector::with_runner(Arc::new(FakeRunner::new().strict()));
+        let presence = DetectorPresence::new(detector);
+        assert!(!presence.is_present(&["toride-setup-bundles-absence-probe"]));
+    }
+
+    #[test]
+    fn os_conditions_gate_by_target_os() {
+        let macos = Target::macos(Arch::Aarch64);
+        let linux = Target::linux(Arch::X86_64, DistroFamily::Fedora);
+        assert!(Condition::Os(Os::MacOs).holds(&macos, &empty()));
+        assert!(!Condition::Os(Os::MacOs).holds(&linux, &empty()));
+        assert!(Condition::Os(Os::Linux).holds(&linux, &empty()));
+        assert!(!Condition::Os(Os::Linux).holds(&macos, &empty()));
+    }
+
+    #[test]
+    fn distro_conditions_need_the_targets_known_family() {
+        let presence = empty();
+        let debian = Target::linux(Arch::X86_64, DistroFamily::Debian);
+        let fedora = Target::linux(Arch::X86_64, DistroFamily::Fedora);
+        let unknown = Target::new(Os::Linux, Arch::X86_64);
+        assert!(Condition::Distro(DistroFamily::Debian).holds(&debian, &presence));
+        assert!(!Condition::Distro(DistroFamily::Debian).holds(&fedora, &presence));
+        assert!(!Condition::Distro(DistroFamily::Debian).holds(&unknown, &presence));
+        assert!(
+            !Condition::Distro(DistroFamily::Debian)
+                .holds(&Target::macos(Arch::Aarch64), &presence)
+        );
+    }
+
+    #[test]
+    fn missing_conditions_probe_presence() {
+        let target = Target::macos(Arch::Aarch64);
+        let missing = Condition::Missing { tool: "mold" };
+        assert!(missing.holds(&target, &empty()));
+        assert!(!missing.holds(
+            &target,
+            &FixedPresence {
+                installed: &["mold"]
+            }
+        ));
+    }
+
+    #[test]
+    fn all_conditions_require_every_subcondition() {
+        let target = Target::macos(Arch::Aarch64);
+        let both = Condition::All(vec![
+            Condition::Os(Os::MacOs),
+            Condition::Missing { tool: "mold" },
+        ]);
+        assert!(both.holds(&target, &empty()));
+        assert!(!both.holds(&Target::linux(Arch::X86_64, DistroFamily::Debian), &empty()));
+        assert!(!both.holds(
+            &target,
+            &FixedPresence {
+                installed: &["mold"]
+            }
+        ));
+        assert!(Condition::All(Vec::new()).holds(&target, &empty()));
+    }
+
+    #[test]
+    fn macos_evaluation_offers_the_container_rows_and_hides_mold() {
+        let offers = evaluate(&Target::macos(Arch::Aarch64), &empty());
+        let containers = find_bundle(&offers, "containers").expect("containers offered on macOS");
+        let offered: Vec<_> = containers
+            .recommendations
+            .iter()
+            .map(|rec| rec.id)
+            .collect();
+        for id in [
+            "containers-colima",
+            "containers-podman",
+            "containers-orbstack",
+            "containers-docker-desktop",
+        ] {
+            assert!(offered.contains(&id), "{id} not offered on macOS");
+        }
+        assert_eq!(containers.default_pick, "containers-colima");
+        let colima = find_rec(&offers, "containers-colima").unwrap();
+        assert_eq!(colima.license.kind, LicenseKind::Free);
+        let orbstack = find_rec(&offers, "containers-orbstack").unwrap();
+        assert_eq!(orbstack.license.kind, LicenseKind::PaidForCommercial);
+        let docker = find_rec(&offers, "containers-docker-desktop").unwrap();
+        assert_eq!(docker.license.kind, LicenseKind::FreeWithTerms);
+        assert!(
+            find_rec(&offers, "rust-mold").is_none(),
+            "mold hidden on macOS"
+        );
+    }
+
+    #[test]
+    fn linux_evaluation_offers_mold_and_drops_the_macos_rows() {
+        let offers = evaluate(&Target::linux(Arch::X86_64, DistroFamily::Debian), &empty());
+        let mold = find_rec(&offers, "rust-mold").expect("mold offered on Linux");
+        assert_eq!(mold.license.kind, LicenseKind::Free);
+        assert!(
+            find_bundle(&offers, "containers").is_none(),
+            "the all-macOS containers bundle is dropped on Linux"
+        );
+        for id in ["containers-colima", "containers-orbstack", "rust-sccache"] {
+            assert!(find_rec(&offers, id).is_none(), "{id} is macOS-only");
+        }
+    }
+
+    #[test]
+    fn evaluation_suppresses_present_tools_into_satisfied() {
+        let offers = evaluate(
+            &Target::macos(Arch::Aarch64),
+            &FixedPresence {
+                installed: &["podman"],
+            },
+        );
+        let containers = find_bundle(&offers, "containers").unwrap();
+        let offered: Vec<_> = containers
+            .recommendations
+            .iter()
+            .map(|rec| rec.id)
+            .collect();
+        assert!(!offered.contains(&"containers-podman"));
+        assert!(!offered.contains(&"containers-podman-desktop"));
+        assert!(offered.contains(&"containers-colima"));
+        assert_eq!(
+            offers.satisfied,
+            vec!["containers-podman", "containers-podman-desktop"]
+        );
+    }
+
+    #[test]
+    fn orbstack_row_plans_the_brew_cask_install() -> Result<(), Error> {
+        let bundles = bundles();
+        let all = index(&bundles);
+        let macos = Target::macos(Arch::Aarch64);
+        let plans = plan_row(all["containers-orbstack"], &macos);
+        assert_eq!(plans.len(), 1);
+        let plan = plans.into_iter().next().unwrap()?;
+        assert_eq!(plan.backend, BackendId::Homebrew);
+        assert!(!plan.dry_run);
+        assert!(!plan.requires_elevation);
+        assert!(
+            plan.summary().contains("brew install --cask orbstack"),
+            "{}",
+            plan.summary()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn opentofu_rows_route_per_their_declared_methods() -> Result<(), Error> {
+        let bundles = bundles();
+        let all = index(&bundles);
+        let macos_plan = plan_row(all["iac-opentofu"], &Target::macos(Arch::Aarch64))
+            .into_iter()
+            .next()
+            .unwrap()?;
+        assert_eq!(macos_plan.backend, BackendId::Homebrew);
+        assert_eq!(
+            macos_plan.operation,
+            Operation::BrewInstall {
+                cask: false,
+                token: "opentofu".to_owned(),
+            }
+        );
+        assert_eq!(macos_plan.operation.argv(), ["brew", "install", "opentofu"]);
+        let linux_plan = plan_row(
+            all["iac-opentofu-linux"],
+            &Target::linux(Arch::X86_64, DistroFamily::Debian),
+        )
+        .into_iter()
+        .next()
+        .unwrap()?;
+        assert_eq!(linux_plan.backend, BackendId::Mise);
+        assert_eq!(
+            linux_plan.operation,
+            Operation::MiseInstall {
+                tool: "opentofu".to_owned(),
+                version: None,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn plan_row_degrades_planner_refusals_to_err_values() {
+        let bundles = bundles();
+        let all = index(&bundles);
+        let linux = Target::linux(Arch::X86_64, DistroFamily::Debian);
+        let cask_on_linux = plan_row(all["containers-orbstack"], &linux);
+        assert_eq!(cask_on_linux.len(), 1);
+        assert!(
+            matches!(
+                cask_on_linux[0],
+                Err(toride_apps::Error::UnsupportedMethod { .. })
+            ),
+            "{:?}",
+            cask_on_linux[0]
+        );
+        let wrong_family = plan_row(
+            all["ruby-php-go-composer-debian"],
+            &Target::linux(Arch::X86_64, DistroFamily::Fedora),
+        );
+        assert!(matches!(
+            wrong_family[0],
+            Err(toride_apps::Error::UnsupportedMethod { .. })
+        ));
+    }
+
+    #[test]
+    fn plan_row_plans_only_the_install_steps() {
+        let bundles = bundles();
+        let all = index(&bundles);
+        let macos = Target::macos(Arch::Aarch64);
+        assert_eq!(plan_row(all["rust-sccache"], &macos).len(), 1);
+        assert_eq!(plan_row(all["qol-direnv"], &macos).len(), 1);
+        let linux = Target::linux(Arch::X86_64, DistroFamily::Debian);
+        assert!(plan_row(all["vm-mise-linux"], &linux).is_empty());
+        assert!(plan_row(all["ruby-php-go-bundler"], &macos).is_empty());
+    }
+
+    #[test]
+    fn pending_and_refused_consent_block_the_consent_rows() {
+        let bundles = bundles();
+        let consent_rows: Vec<&Recommendation> = bundles
+            .iter()
+            .flat_map(|bundle| bundle.recommendations.iter())
+            .filter(|rec| rec.license.kind.requires_consent())
+            .collect();
+        assert_eq!(
+            consent_rows.len(),
+            4,
+            "orbstack, docker-desktop, terraform x2"
+        );
+        for rec in consent_rows {
+            for consent in [Consent::Pending, Consent::Refused] {
+                let error = require_consent(rec, consent).expect_err("gate must refuse");
+                assert_eq!(error.recommendation, rec.id);
+                assert_eq!(error.consent, consent);
+                assert_eq!(error.license, rec.license);
+                assert!(error.to_string().contains(rec.license.terms_url));
+            }
+            assert!(require_consent(rec, Consent::Accepted).is_ok());
+        }
+    }
+
+    #[test]
+    fn free_rows_pass_the_consent_gate_regardless_of_the_verdict() {
+        for rec in bundles()
+            .iter()
+            .flat_map(|bundle| bundle.recommendations.iter())
+            .filter(|rec| !rec.license.kind.requires_consent())
+        {
+            for consent in [Consent::Pending, Consent::Accepted, Consent::Refused] {
+                assert!(
+                    require_consent(rec, consent).is_ok(),
+                    "{} refused with {consent:?}",
+                    rec.id
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn dry_run_plans_are_refused_by_the_backend_execution_guard() -> Result<(), Error> {
+        let bundles = bundles();
+        let all = index(&bundles);
+        let macos = Target::macos(Arch::Aarch64);
+        let plan = plan_row(all["containers-orbstack"], &macos)
+            .into_iter()
+            .next()
+            .unwrap()?;
+        let request = InstallRequest::new(&plan, &macos);
+        ensure_install_allowed(&request)?;
+        let dry_plan = plan.clone().dry_run(true);
+        let dry = InstallRequest::new(&dry_plan, &macos);
+        let error = ensure_install_allowed(&dry).expect_err("dry-run plans must be refused");
+        assert!(matches!(error, Error::DryRun { .. }), "{error:?}");
+        Ok(())
+    }
+
+    #[test]
+    fn unelevated_distro_plans_are_refused_by_the_execution_guard() -> Result<(), Error> {
+        let bundles = bundles();
+        let all = index(&bundles);
+        let debian = Target::linux(Arch::X86_64, DistroFamily::Debian);
+        let plan = plan_row(all["ruby-php-go-composer-debian"], &debian)
+            .into_iter()
+            .next()
+            .unwrap()?;
+        assert!(plan.requires_elevation);
+        let request = InstallRequest::new(&plan, &debian);
+        let error = ensure_install_allowed(&request).expect_err("elevation must be granted");
+        assert!(
+            matches!(error, Error::ElevationRequired { .. }),
+            "{error:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn record_ids_follow_the_declared_install_methods() {
+        let bundles = bundles();
+        let all = index(&bundles);
+        assert_eq!(
+            record_ids(install_spec(all["containers-orbstack"])),
+            Some(NativeIds::Homebrew {
+                token: "orbstack".to_owned(),
+                cask: true,
+            })
+        );
+        assert_eq!(
+            record_ids(install_spec(all["iac-opentofu-linux"])),
+            Some(NativeIds::Mise {
+                tool: "opentofu".to_owned(),
+            })
+        );
+        assert_eq!(
+            record_ids(install_spec(all["rust-mold"])),
+            Some(NativeIds::Cargo {
+                crate_: "mold".to_owned(),
+            })
+        );
+        assert_eq!(
+            record_ids(install_spec(all["node-pnpm"])),
+            Some(NativeIds::Npm {
+                package: "pnpm".to_owned(),
+            })
+        );
+        assert_eq!(
+            record_ids(install_spec(all["python-pipx-linux"])),
+            Some(NativeIds::Mise {
+                tool: "pipx".to_owned(),
+            })
+        );
+        assert_eq!(
+            record_ids(install_spec(all["ruby-php-go-composer-debian"])),
+            Some(NativeIds::Distro {
+                package: "composer".to_owned(),
+                family: DistroFamily::Debian,
+            })
+        );
+    }
+
+    #[test]
+    fn executed_plans_record_into_the_manifest_and_round_trip()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let bundles = bundles();
+        let all = index(&bundles);
+        let macos = Target::macos(Arch::Aarch64);
+        let plan = plan_row(all["containers-orbstack"], &macos)
+            .into_iter()
+            .next()
+            .unwrap()?;
+        let record = install_record(
+            plan.clone(),
+            install_spec(all["containers-orbstack"]),
+            Some("4.7.1".to_owned()),
+        )
+        .expect("brew installs record ids");
+        assert_eq!(
+            record.ids,
+            NativeIds::Homebrew {
+                token: "orbstack".to_owned(),
+                cask: true,
+            }
+        );
+        assert_eq!(record.version.as_deref(), Some("4.7.1"));
+        assert_eq!(record.plan.as_ref(), Some(&plan));
+        let dir = tempfile::tempdir()?;
+        let path = dir.path().join("apps-manifest.json");
+        let path = path.to_str().expect("utf-8 temp path");
+        let mut manifest = InstallManifest::at(path);
+        let id = TorideId::slugify("orbstack");
+        manifest.record(&id, record);
+        manifest.save()?;
+        let reloaded = InstallManifest::load(path)?;
+        let saved = reloaded.get(&id).expect("record survives the round trip");
+        assert_eq!(saved.plan.as_ref(), Some(&plan));
+        assert_eq!(plan.app.as_str(), id.as_str());
+        Ok(())
     }
 }
