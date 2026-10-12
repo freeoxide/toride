@@ -8,6 +8,7 @@ pub mod logs;
 pub mod quit;
 pub mod section_overview;
 pub mod settings;
+pub mod setup;
 pub mod ssh;
 pub mod templates;
 pub mod tools;

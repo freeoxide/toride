@@ -20,6 +20,7 @@ use crate::navigation::{Navigator, Screen};
 use crate::persistence;
 use crate::persistence::AnimPref;
 use crate::settings_data::SettingsCollector;
+use crate::setup_data::SetupCollector;
 use crate::ssh_data::{SshDataCollector, SshOpError, execute_op};
 use crate::status_collector::StatusCollector;
 use crate::templates_data::TemplatesCollector;
@@ -88,6 +89,7 @@ pub struct App {
     settings_collector: SettingsCollector,
     templates_collector: TemplatesCollector,
     tools_collector: ToolsCollector,
+    setup_collector: SetupCollector,
     ssh_error_rx: mpsc::UnboundedReceiver<SshOpError>,
     ssh_error_tx: mpsc::UnboundedSender<SshOpError>,
     ssh_op_done_rx: mpsc::UnboundedReceiver<()>,
@@ -187,6 +189,7 @@ impl App {
             settings_collector: SettingsCollector::new(),
             templates_collector: TemplatesCollector::new(),
             tools_collector: ToolsCollector::new(),
+            setup_collector: SetupCollector::new(),
             ssh_write_cooldown: None,
             pending_persist: None,
         }
@@ -606,6 +609,10 @@ impl App {
                     self.dashboard.set_tools_data(b);
                     self.needs_redraw = true;
                 }
+                Some(b) = self.setup_collector.poll(), if self.setup_collector.is_pending() => {
+                    self.dashboard.set_setup_offers(b);
+                    self.needs_redraw = true;
+                }
 
                 Some(err) = self.ssh_error_rx.recv() => {
                     if matches!(self.nav.current(), Screen::Dashboard) {
@@ -676,6 +683,7 @@ impl App {
                         self.settings_collector.start();
                         self.templates_collector.start();
                         self.tools_collector.start();
+                        self.setup_collector.start();
                         self.needs_redraw = true;
                     }
                 }

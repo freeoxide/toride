@@ -30,6 +30,8 @@ pub mod persistence;
 pub mod prediction;
 pub mod settings_convert;
 pub mod settings_data;
+pub mod setup_bundles;
+pub mod setup_data;
 pub mod ssh_convert;
 pub mod ssh_data;
 pub mod status_collector;

@@ -25,6 +25,7 @@ use crate::ui::screens::fail2ban::Fail2banContent;
 use crate::ui::screens::logs::LogsContent;
 use crate::ui::screens::section_overview::{OverviewSnapshot, SectionOverview};
 use crate::ui::screens::settings::SettingsContent;
+use crate::ui::screens::setup::SetupContent;
 use crate::ui::screens::ssh::SshContent;
 use crate::ui::screens::templates::TemplatesContent;
 use crate::ui::screens::tools::ToolsContent;
@@ -198,6 +199,7 @@ impl_content_panel!(
     LogsContent,
     AboutContent,
     SettingsContent,
+    SetupContent,
 );
 
 /// The dashboard home screen: sidebar, live status panels, and the
@@ -249,6 +251,7 @@ pub struct DashboardScreen {
     settings_content: SettingsContent,
     templates_content: TemplatesContent,
     tools_content: ToolsContent,
+    setup_content: SetupContent,
 }
 
 impl Default for DashboardScreen {
@@ -327,6 +330,7 @@ impl DashboardScreen {
             settings_content: SettingsContent::new(),
             templates_content: TemplatesContent::new(),
             tools_content: ToolsContent::new(),
+            setup_content: SetupContent::new(),
             toride_tailscale_content: TailscaleContent::new(),
         }
     }
@@ -407,6 +411,10 @@ impl DashboardScreen {
             .toride_monitor_content
             .badge_count()
             .map(|n| n.to_string());
+        let setup = {
+            let n = self.setup_content.findings_count();
+            (n > 0).then(|| n.to_string())
+        };
         for item in &mut self.data.sidebar {
             let badge = match item.section {
                 Section::Tools => tools.clone(),
@@ -423,6 +431,7 @@ impl DashboardScreen {
                 Section::Harden => harden.clone(),
                 Section::Audit => audit.clone(),
                 Section::Monitor => monitor.clone(),
+                Section::Setup => setup.clone(),
                 _ => None,
             };
             item.badge = badge;
@@ -860,6 +869,16 @@ impl DashboardScreen {
         self.refresh_sidebar_badges();
     }
 
+    /// Push a collected setup bundle into the setup panel.
+    pub fn set_setup_offers(&mut self, b: crate::setup_data::SetupDataBundle) {
+        self.setup_content.set_available(b.available);
+        self.setup_content
+            .set_unavailable_reason(b.unavailable_reason);
+        self.setup_content.set_offers(b.offers);
+        self.setup_content.set_findings(b.findings);
+        self.refresh_sidebar_badges();
+    }
+
     fn active_section(&self) -> Section {
         self.data.sidebar[self.active].section
     }
@@ -882,6 +901,7 @@ impl DashboardScreen {
             Section::Tailscale => Some(&mut self.toride_tailscale_content),
             Section::Mise => Some(&mut self.toride_mise_content),
             Section::Tools => Some(&mut self.tools_content),
+            Section::Setup => Some(&mut self.setup_content),
             Section::Templates => Some(&mut self.templates_content),
             Section::Logs => Some(&mut self.logs_content),
             Section::About => Some(&mut self.about_content),
@@ -1622,6 +1642,9 @@ impl AppScreen for DashboardScreen {
             {
                 return self.ssh_content.handle_key(code);
             }
+            _ if self.active_section() == Section::Setup && self.setup_content.has_modal() => {
+                return self.setup_content.handle_key(code);
+            }
             KeyCode::Char('q') => return Some(Action::ConfirmQuit),
             KeyCode::Tab => {
                 if self.focus.is_focused(&ShellFocus::Content) {
@@ -1788,7 +1811,7 @@ impl AppScreen for DashboardScreen {
         {
             return true;
         }
-        false
+        self.active_section() == Section::Setup && self.setup_content.has_modal()
     }
 }
 
@@ -2701,5 +2724,76 @@ mod tests {
         assert_eq!(s.toride_tailscale_content.scroll(), 0);
         s.handle_key(KeyCode::PageDown);
         assert_eq!(s.toride_tailscale_content.scroll(), 8);
+    }
+
+    struct NoPresence;
+
+    impl crate::setup_bundles::ToolPresence for NoPresence {
+        fn is_present(&self, _binaries: &[&str]) -> bool {
+            false
+        }
+    }
+
+    fn mac_setup_bundle() -> crate::setup_data::SetupDataBundle {
+        let offers = crate::setup_bundles::evaluate(
+            &toride_apps::Target::new(toride_apps::Os::MacOs, toride_apps::Arch::Aarch64),
+            &NoPresence,
+        );
+        let findings = crate::setup_data::to_findings(&offers);
+        crate::setup_data::SetupDataBundle {
+            available: true,
+            offers,
+            findings,
+            unavailable_reason: None,
+        }
+    }
+
+    fn setup_sidebar_idx(s: &DashboardScreen) -> usize {
+        s.data
+            .sidebar
+            .iter()
+            .position(|i| i.section == Section::Setup)
+            .expect("Setup section is in the sidebar")
+    }
+
+    #[test]
+    fn setup_sidebar_badge_counts_undismissed_suggestions() {
+        let mut s = DashboardScreen::new();
+        let idx = setup_sidebar_idx(&s);
+        assert_eq!(
+            s.data.sidebar[idx].badge, None,
+            "no fabricated badge before the first bundle lands"
+        );
+
+        s.set_setup_offers(mac_setup_bundle());
+        let expected = s.setup_content.findings_count();
+        assert!(expected > 0, "an empty host offers every registry row");
+        assert_eq!(
+            s.data.sidebar[idx].badge,
+            Some(expected.to_string()),
+            "badge mirrors the undismissed findings_count"
+        );
+    }
+
+    #[test]
+    fn dismissed_suggestion_leaves_the_setup_badge() {
+        let mut s = DashboardScreen::new();
+        s.set_setup_offers(mac_setup_bundle());
+        let idx = setup_sidebar_idx(&s);
+        let before = s.setup_content.findings_count();
+        assert!(before > 0);
+
+        s.active = idx;
+        s.handle_key(KeyCode::Tab);
+        assert!(s.focus.is_focused(&ShellFocus::Content));
+        assert!(s.handle_key(KeyCode::Char('x')).is_none());
+        s.refresh_sidebar_badges();
+
+        assert_eq!(s.setup_content.findings_count(), before - 1);
+        assert_eq!(
+            s.data.sidebar[idx].badge,
+            Some((before - 1).to_string()),
+            "badge tracks the session dismissal"
+        );
     }
 }
