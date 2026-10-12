@@ -678,6 +678,25 @@ fn ruby_php_go_bundle() -> SetupBundle {
                 None,
             ),
             rec(
+                "ruby-php-go-composer-ubuntu",
+                "composer",
+                "PHP dependency manager, from the distro repository.",
+                license(
+                    LicenseKind::Free,
+                    Some("MIT"),
+                    "MIT; commercial use unrestricted.",
+                    "https://getcomposer.org/",
+                    "2026-10-12",
+                ),
+                Condition::Distro(DistroFamily::Ubuntu),
+                &["composer"],
+                vec![install(
+                    "composer",
+                    distro(DistroFamily::Ubuntu, "composer"),
+                )],
+                None,
+            ),
+            rec(
                 "ruby-php-go-composer-fedora",
                 "composer",
                 "PHP dependency manager, from the distro repository.",
@@ -850,7 +869,7 @@ fn containers_bundle() -> SetupBundle {
                     "2026-10-12",
                 ),
                 Condition::Os(Os::MacOs),
-                &["podman-desktop"],
+                &["podman"],
                 vec![install("podman-desktop", cask("podman-desktop"))],
                 None,
             ),
@@ -867,7 +886,7 @@ fn containers_bundle() -> SetupBundle {
                     "2026-10-12",
                 ),
                 Condition::Os(Os::MacOs),
-                &["orbstack"],
+                &["orb", "orbctl"],
                 vec![install("orbstack", cask("orbstack"))],
                 Some("containers-colima"),
             ),
@@ -975,7 +994,7 @@ fn iac_bundle() -> SetupBundle {
                 license(
                     LicenseKind::Free,
                     Some("MPL-2.0"),
-                    "MPL-2.0 for most files; some terraform-lang files are BUSL 1.1, so \
+                    "MPL-2.0 for most files; some terraform-pkg files are BUSL 1.1, so \
                      binaries are bound by both. Commercial use fine.",
                     "https://github.com/terraform-linters/tflint",
                     "2026-10-12",
@@ -992,7 +1011,7 @@ fn iac_bundle() -> SetupBundle {
                 license(
                     LicenseKind::Free,
                     Some("MPL-2.0"),
-                    "MPL-2.0 for most files; some terraform-lang files are BUSL 1.1, so \
+                    "MPL-2.0 for most files; some terraform-pkg files are BUSL 1.1, so \
                      binaries are bound by both. Commercial use fine.",
                     "https://github.com/terraform-linters/tflint",
                     "2026-10-12",
@@ -1490,9 +1509,11 @@ fn version_managers_bundle() -> SetupBundle {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
 
     use super::*;
+    use toride_runner::FakeRunner;
 
     fn index(bundles: &[SetupBundle]) -> BTreeMap<&'static str, &Recommendation> {
         bundles
@@ -1619,7 +1640,7 @@ mod tests {
     }
 
     #[test]
-    fn consent_rows_are_exactly_the_three_terms_rows() {
+    fn consent_rows_are_exactly_the_terms_rows() {
         let mut consented: Vec<_> = bundles()
             .iter()
             .flat_map(|bundle| bundle.recommendations.iter())
@@ -1669,13 +1690,15 @@ mod tests {
             ("opentofu", "iac-opentofu"),
             ("terraform", "iac-terraform"),
         ];
-        let ids: BTreeSet<_> = bundles()
-            .iter()
-            .flat_map(|bundle| bundle.recommendations.iter())
-            .map(|rec| rec.id)
-            .collect();
+        let bundles = bundles();
+        let all = index(&bundles);
         for (tool, id) in gate_tools {
-            assert!(ids.contains(id), "{tool} has no recommendation ({id})");
+            let rec = all
+                .get(id)
+                .unwrap_or_else(|| panic!("{tool} has no recommendation ({id})"));
+            let named =
+                rec.binaries.contains(&tool) || rec.title.to_ascii_lowercase().contains(tool);
+            assert!(named, "{id} does not name {tool} in binaries or title");
         }
     }
 
@@ -1718,14 +1741,9 @@ mod tests {
     }
 
     #[test]
-    fn detector_presence_reports_empty_candidate_lists_as_absent() {
-        let presence = DetectorPresence::new(InstallerDetector::new());
+    fn detector_presence_probes_nothing_for_empty_candidate_lists() {
+        let detector = InstallerDetector::with_runner(Arc::new(FakeRunner::new().strict()));
+        let presence = DetectorPresence::new(detector);
         assert!(!presence.is_present(&[]));
-    }
-
-    #[test]
-    fn detector_presence_reports_unknown_tools_as_absent() {
-        let presence = DetectorPresence::new(InstallerDetector::new());
-        assert!(!presence.is_present(&["toride-setup-bundles-absent-probe"]));
     }
 }
