@@ -52,7 +52,7 @@ section_ok 'goal'            || fail "required section missing: Goal"
 section_ok 'survey'          || fail "required section missing: Survey"
 section_ok 'decision'        || fail "required section missing: Decision"
 section_ok 'api'             || fail "required section missing: API"
-section_ok 'phase|milestone' || fail "required section missing: Phases/Milestones"
+section_ok '(phase|milestone)' || fail "required section missing: Phases/Milestones"
 section_ok 'test plan'       || fail "required section missing: Test plan"
 section_ok 'risk'            || fail "required section missing: Risks"
 

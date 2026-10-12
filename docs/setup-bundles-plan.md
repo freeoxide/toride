@@ -578,7 +578,7 @@ files), which carries the full fetch provenance.
 | Docker Desktop (docker-desktop) | proprietary, Docker Subscription Service Agreement: free only under 250 employees AND under $10M annual revenue | FreeWithTerms | YES | https://docs.docker.com/subscription/desktop-license/ | 2026-10-12 |
 | Terraform | BUSL 1.1 (1.6.0+; ≤1.5 MPL-2.0), licensor IBM: production OK, no competing hosted/embedded offering | FreeWithTerms | YES | https://raw.githubusercontent.com/hashicorp/terraform/main/LICENSE | 2026-10-12 |
 | OpenTofu | MPL-2.0 (Linux Foundation) | Free | no | https://github.com/opentofu/opentofu | 2026-10-12 |
-| tflint | MPL-2.0 mostly; some terraform-pkg files BUSL 1.1 → binaries bound by both (FFC) | FreeWithTerms | YES | https://github.com/terraform-linters/tflint | 2026-10-12 |
+| tflint | MPL-2.0 mostly; some terraform-pkg files BUSL 1.1 → binaries bound by both (FFC) | Free | no | https://github.com/terraform-linters/tflint | 2026-10-12 |
 | trivy | Apache-2.0 (successor to deprecated tfsec) | Free | no | https://api.github.com/repos/aquasecurity/trivy | 2026-10-12 |
 | terragrunt | MIT | Free | no | https://github.com/gruntwork-io/terragrunt | 2026-10-12 |
 | direnv | MIT | Free | no | https://formulae.brew.sh/api/formula/direnv.json | 2026-10-12 |
