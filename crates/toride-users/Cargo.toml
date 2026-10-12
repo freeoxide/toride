@@ -6,6 +6,8 @@ description = "OS-level user, sudo, PAM, and 2FA management"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["user-management", "sudo", "pam", "totp", "2fa"]
+categories = ["os", "authentication"]
 
 [[bin]]
 name = "toride-users"

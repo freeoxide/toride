@@ -6,6 +6,8 @@ description = "Point-in-time host status snapshots: OS metrics, daemon liveness,
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["status", "metrics", "system", "monitoring", "snapshot"]
+categories = ["os"]
 
 [lib]
 name = "toride_status"

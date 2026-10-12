@@ -7,6 +7,8 @@ description = "Outbound traffic monitoring and anomaly detection"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["monitoring", "traffic", "anomaly-detection", "network", "netstat"]
+categories = ["network-programming", "os"]
 
 [lib]
 name = "toride_monitor"

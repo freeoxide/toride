@@ -6,6 +6,8 @@ description = "WireGuard VPN tunnel management"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["wireguard", "vpn", "tunnel", "networking", "wg"]
+categories = ["network-programming", "os"]
 
 [features]
 default = ["client", "doctor"]

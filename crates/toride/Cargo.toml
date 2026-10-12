@@ -6,6 +6,8 @@ description = "Terminal user interface (TUI) for hardened Linux host management"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["sysadmin", "tui", "dashboard", "linux", "monitoring"]
+categories = ["command-line-utilities", "os"]
 
 [lib]
 name = "toride"

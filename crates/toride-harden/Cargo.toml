@@ -6,6 +6,8 @@ description = "System hardening via sysctl kernel parameters and security profil
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["hardening", "sysctl", "security", "kernel", "linux"]
+categories = ["os"]
 
 [features]
 default = ["client", "doctor"]
