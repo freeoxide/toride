@@ -21,11 +21,12 @@ env:
   PUBLISH_SET: >-
     toride-diagnostic-types toride-fs toride-runner toride-installer
     toride-registry toride-mise toride-apps toride-service toride-ssh-core
-    toride-status toride-audit toride-backup toride-cloud toride-fail2ban
-    toride-harden toride-monitor toride-proxy toride-ssh-agent
-    toride-ssh-authorized-keys toride-ssh-certificate toride-ssh-config
-    toride-ssh-forward toride-ssh-known-hosts toride-tailscale toride-updates
-    toride-users toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
+    toride-ssh-exec toride-ssh-upload toride-status toride-audit
+    toride-backup toride-cloud toride-fail2ban toride-harden toride-monitor
+    toride-proxy toride-ssh-agent toride-ssh-authorized-keys
+    toride-ssh-certificate toride-ssh-config toride-ssh-forward
+    toride-ssh-known-hosts toride-tailscale toride-updates toride-users
+    toride-wireguard ufw-kit toride-ssh-doctor toride-ssh-key
     ufw-kit-test-support toride-ssh toride
 
 jobs:

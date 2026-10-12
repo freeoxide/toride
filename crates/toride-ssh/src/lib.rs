@@ -25,6 +25,8 @@
 //! - [`SshManager::known_hosts`] — known_hosts management *(feature: `known-hosts`)*
 //! - [`SshManager::forward`] — port forwarding via ControlMaster *(feature: `forward`)*
 //! - [`SshManager::certificate`] — SSH certificate/CA operations *(feature: `certificate`)*
+//! - [`SshManager::exec`] — remote command execution *(feature: `exec`)*
+//! - [`SshManager::upload`] — file upload via sftp *(feature: `upload`)*
 //!
 //! # Testing with a custom CLI runner
 //!
@@ -49,12 +51,19 @@ pub use toride_ssh_authorized_keys as authorized_keys;
 pub use toride_ssh_certificate as certificate;
 #[cfg(feature = "doctor")]
 pub use toride_ssh_doctor as doctor;
+#[cfg(feature = "exec")]
+pub use toride_ssh_exec as exec;
 #[cfg(feature = "forward")]
 pub use toride_ssh_forward as forward;
 #[cfg(feature = "known-hosts")]
 pub use toride_ssh_known_hosts as known_hosts;
+#[cfg(feature = "upload")]
+pub use toride_ssh_upload as upload;
 
 use std::sync::Arc;
+
+#[cfg(any(feature = "exec", feature = "upload"))]
+use toride_runner::DuctRunner;
 
 /// Entry point for all SSH management operations.
 ///
@@ -183,5 +192,23 @@ impl SshManager {
     #[cfg(feature = "forward")]
     pub fn forward(&self) -> forward::ForwardService<'_> {
         forward::ForwardService::new(&self.paths)
+    }
+
+    /// Remote command execution over ssh, on the default duct runner.
+    ///
+    /// Tests and custom-runner users construct [`exec::ExecService`]
+    /// directly with their own runner (for example `FakeRunner`).
+    #[cfg(feature = "exec")]
+    pub fn exec(&self) -> exec::ExecService {
+        exec::ExecService::new(Box::new(DuctRunner))
+    }
+
+    /// One-shot file upload to a remote host via sftp, on the default duct runner.
+    ///
+    /// Tests and custom-runner users construct [`upload::UploadService`]
+    /// directly with their own runner (for example `FakeRunner`).
+    #[cfg(feature = "upload")]
+    pub fn upload(&self) -> upload::UploadService {
+        upload::UploadService::new(Box::new(DuctRunner))
     }
 }

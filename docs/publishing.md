@@ -7,7 +7,7 @@ and the TUI crate.
 
 ## The release set
 
-All 33 crates, dependency-first order (`cargo publish` resolves every
+All 35 crates, dependency-first order (`cargo publish` resolves every
 intra-set path dependency against the live registry, so a dependent
 cannot go up before its dependency):
 
@@ -22,21 +22,23 @@ cannot go up before its dependency):
 8. `toride-service` (depends on toride-runner)
 9. `toride-ssh-core` (depends on toride-diagnostic-types, toride-fs,
    toride-runner)
-10. `toride-status`, `toride-audit`, `toride-backup`, `toride-cloud`,
+10. `toride-ssh-exec`, `toride-ssh-upload` (each depends on
+    toride-ssh-core and toride-runner)
+11. `toride-status`, `toride-audit`, `toride-backup`, `toride-cloud`,
     `toride-fail2ban`, `toride-harden`, `toride-monitor`, `toride-proxy`,
     `toride-tailscale`, `toride-updates`, `toride-users`,
     `toride-wireguard`, `ufw-kit` (each depends on the shared crates
     above)
-11. `toride-ssh-agent`, `toride-ssh-authorized-keys`,
+12. `toride-ssh-agent`, `toride-ssh-authorized-keys`,
     `toride-ssh-certificate`, `toride-ssh-config`, `toride-ssh-forward`,
     `toride-ssh-known-hosts` (depend on toride-ssh-core; the config and
     authorized-keys crates also on toride-fs)
-12. `toride-ssh-doctor` (depends on toride-ssh-config, toride-ssh-core)
-13. `toride-ssh-key` (depends on toride-ssh-agent, toride-ssh-config,
+13. `toride-ssh-doctor` (depends on toride-ssh-config, toride-ssh-core)
+14. `toride-ssh-key` (depends on toride-ssh-agent, toride-ssh-config,
     toride-ssh-core)
-14. `ufw-kit-test-support` (depends on ufw-kit)
-15. `toride-ssh` (facade over the nine toride-ssh sub-crates)
-16. `toride` (the TUI; depends on the domain crates and toride-ssh)
+15. `ufw-kit-test-support` (depends on ufw-kit)
+16. `toride-ssh` (facade over the eleven toride-ssh sub-crates)
+17. `toride` (the TUI; depends on the domain crates and toride-ssh)
 
 The canonical machine-checked order is `PUBLISH_ORDER` in
 `.github/workflows/ci.yml`; `PUBLISH_SET` in
@@ -209,6 +211,8 @@ fix itself is always a new version: bump, changelog entry, dispatch.
 - https://crates.io/crates/toride-apps
 - https://crates.io/crates/toride-service
 - https://crates.io/crates/toride-ssh-core
+- https://crates.io/crates/toride-ssh-exec
+- https://crates.io/crates/toride-ssh-upload
 - https://crates.io/crates/toride-status
 - https://crates.io/crates/toride-audit
 - https://crates.io/crates/toride-backup
