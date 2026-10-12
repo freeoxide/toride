@@ -48,3 +48,6 @@ dev/sandbox/lima/images/**/*.iso
 .sandbox-artifacts/
 
 log.txt
+
+# z-flashflow orchestration state (run-local, not project source)
+.z-flashflow/
