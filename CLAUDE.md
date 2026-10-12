@@ -211,6 +211,7 @@ Each module has `#[cfg(test)] mod tests` at bottom.
 | `▣` Tools | `▦` Firewall | `!` Warning | `●` Connected |
 | `▲` Templates | `✦` Fail2ban | `↻` In progress | `·` Spinner fallback |
 | `≡` Logs | `◇` About | `⚙` Settings | `砦` App logo |
+| `⚒` Setup | | | |
 
 ---
 

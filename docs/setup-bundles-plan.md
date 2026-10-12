@@ -1,11 +1,17 @@
 # Setup Bundles — declarative, OS-conditional, license-labeled toolchain setup recommendations
 
-Status: PLAN — not yet implemented. Authored 2026-10-12 from the
-`.z-flashflow` research pass (web evidence in
-`.z-flashflow/evidence/research/*.md`, every ecosystem/license claim carries
-a source URL + verified date) and the repo-grounding pass
+Status: authored 2026-10-12 from the `.z-flashflow` research pass (web
+evidence in `.z-flashflow/evidence/research/*.md`, every ecosystem/license
+claim carries a source URL + verified date) and the repo-grounding pass
 (`.z-flashflow/evidence/repo/interface-notes.md`, 260 `path:LINE` citations,
-gate-verified 260/260 rounds r2–r3).
+gate-verified 260/260 rounds r2–r3). **IMPLEMENTED 2026-10-12** — Phases
+0–4 shipped in commits `1c7c2a2`, `c8088fe`, `97daf08`, `db895db`,
+`a7fd2d0`, `185e374`, `c30f701`, `2197551`. §1–§10 stay as written; this
+file is now a status record framing the plan, not a worklist. The full
+audit trail (round-by-round implementation notes, judge verdicts, gate
+re-runs) lives in the orchestration state file and the linked commits; the
+divergence ledger and final dispositions are recorded in "Implementation
+record" below.
 
 Machine gate for this document (run from repo root; read-only):
 `bash scripts/check_plan_citations.sh` — verifies every `crates/*.rs|toml:LINE`
@@ -21,6 +27,79 @@ explicit paid-for-commercial labeling**. Every recommendation carries a
 machine-readable license label whose load-bearing axis is commercial use;
 nothing non-free installs without consent; the FOSS alternative is the
 default pick.
+
+## Implementation record (closed out 2026-10-12)
+
+Where the code differs from the sections below, the code is authoritative.
+Every divergence was verified in the working tree on 2026-10-12 and carries
+its reason; the round-by-round record behind each row lives in the
+orchestration state file.
+
+### Divergences (D1-D13)
+
+| # | Plan said | Code does | Why |
+|---|---|---|---|
+| D1 | toride-apps supplies every type §4.6 needs | `crates/toride/Cargo.toml` also path-deps toride-registry | toride-apps re-exports only `{Arch, DistroFamily, InstallMethod, Os, TorideId}`; `plan_row`'s inline registry `App` needs `App` and `Availability` (workspace-internal dep, already in the graph) |
+| D2 | §4.5 is silent on bundles whose rows all fail | `evaluate` drops them (the containers bundle vanishes on Linux) | R7: never render empty sections |
+| D3 | Phase-1 AC says the macOS-only rows "vanish" on Linux | `satisfied` lists presence-suppressed ids only; condition-failed rows are absent | §4.5's own field doc on `SetupOffers::satisfied`; "vanish" describes the `bundles` field |
+| D4 | `plan_row` plans a row's actions | `plan_row` emits `Install` actions only; `Hint`/`Manual` render as text lines | no planner shape exists for hints or manual steps, and OQ4 keeps them outside execution |
+| D5 | manifest ids derive from the plan | ids derive from `InstallSpec::method` | `Operation::DistroInstall` carries only a `PackageManager`, which cannot recover the distro family (`Apt` spans Debian and Ubuntu); every other method agrees |
+| D6 | names `ConsentRequired` without defining it | a struct carrying the row id, the full `LicenseInfo`, and the verdict | the consent dialog renders entirely from the `Err`; `LicenseInfo` is `Clone + Eq` |
+| D7 | tests exercise `~` expansion by setting `$HOME` | `apply_hint` is a two-line adapter over generic `apply_hint_with`; functional tests drive the generic seam with temp-rooted expanders, the real expander is composition-pinned | `ConfigHint::path` is `&'static str`, so no test hint can carry a temp path, and sibling ssh tests mutate `$HOME` under a module-private lock: a cross-test race |
+| D8 | Phase-3 ACs: Setup in the sidebar AND no existing snapshot changes | Setup appended last (index 20); exactly one pre-existing snapshot changed, one cell (dashboard 90x30 collapsed-sidebar glyph) | dashboard full-screen snapshots render the sidebar, so the two ACs contradict; the last position keeps every other snapshot and the digit-key nav byte-stable |
+| D9 | §2.7: the collector starts "on section entry" | Setup mirrors the real pattern: `start()` in the 2s refresh tick arm, poll arm beside tools | the App has no section-entry hook (`Action` frozen); entry latency is at most one tick, same as every other section |
+| D10 | Phase 3 wires execution | `SetupContent` is read-only; the consent outcome is observable via `approved()`/`consent_for()`; no backend call exists | OQ4 was never decided; execution is future work, not a v1 AC |
+| D11 | module registration touches lib.rs | `ui/screens/mod.rs` also gained the one `pub mod setup;` line | mechanically required: the screens module is where content areas register |
+| D12 | dashboard.rs outside the phase-4 path list | one binding, one `Section::Setup` arm, one setter call in `refresh_sidebar_badges` | the AC "sidebar badge reflects it" is unmeetable without the badge refresh |
+| D13 | §4.8: `read_optional` is the hint-existence probe | `apply_hint_with` probes `path.try_exists()` | `read_optional` reads UTF-8 content, so a binary `~/.zshrc` errored instead of skipping; metadata probing skips any pre-existing file untouched, bytes and mode included |
+
+### Policy rulings
+
+- Public-API doc comments follow the house rustdoc style (multi-line, with
+  `# Errors` / `# Notes` sections where they earn their place); the
+  zero-noise inline-comment cap governs inline comments only. The flagged
+  over-cap docs on `Condition::holds`, `record_ids`, `SetupOffers`, and
+  `to_findings` stay as written.
+- Inline comments stay at zero unless a name, type, or test cannot carry
+  the meaning.
+
+### Deferred items, final dispositions
+
+All eight items deferred at run end are closed:
+
+1. Ubuntu composer package: verified. Binary `composer` published for
+   jammy 2.2.6, noble 2.7.1, questing 2.8.8, resolute 2.9.5, stonking
+   2.10.2 (packages.ubuntu.com, cross-checked against the Launchpad
+   archive API); the `ruby-php-go-composer-ubuntu` row is correct as
+   shipped.
+2. Public-API doc-comment length: closed by the rustdoc ruling above; no
+   code change.
+3. Write-path tripwire scope: hint application moved verbatim into
+   `crates/toride/src/setup_bundles/hints.rs`; its tripwire scans that
+   file, and a second confinement tripwire covers the rest of
+   setup_bundles.rs, failing with a message that names the fix (move the
+   code into hints.rs or widen the tripwire consciously).
+4. Non-UTF-8 hint target: the `try_exists` probe (D13) skips any
+   pre-existing file untouched, bytes and mode included.
+5. `⚒` sidebar icon: registered in CLAUDE.md's Icons table.
+6. Stale consent-modal position: `set_offers` closes an open modal and
+   clears the pending verdict before rows are replaced, so a refresh
+   forces fresh consent.
+7. Selection leaving the viewport: every selection move arms
+   `follow_pending`; the next render scrolls the minimum to keep the
+   selected row visible. Wheel scrolling never arms it.
+8. `to_findings` doc-comment length: same class as item 2; closed by the
+   ruling, no code change.
+
+### Still open (future work)
+
+- OQ1: persisted dismissal of suggestions (v1 keeps them in session
+  memory only).
+- OQ4: execution wiring: feed `approved()` rows through the `Apps` facade
+  (or direct planner and backend calls) and record installs in the
+  manifest.
+- OQ5: Windows bundles (mise wave-2 registry support, winget).
+- OQ2 and OQ3 remain as written in §10.
 
 ## 1. Goal and non-goals
 
