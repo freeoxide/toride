@@ -108,7 +108,7 @@ use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::{BrewKind, OutdatedScope};
 use crate::backends::{
     CargoBackend, DistroBackend, FlatpakBackend, HomebrewBackend, NpmBackend, PipxBackend,
-    UvBackend,
+    SnapBackend, UvBackend,
 };
 use crate::error::Error as BackendError;
 use crate::manifest::{
@@ -590,6 +590,8 @@ struct AttachedBackends {
     homebrew: Option<HomebrewBackend>,
     /// Flatpak backend, when flatpak is usable on this host.
     flatpak: Option<FlatpakBackend>,
+    /// Snap backend, when snapd's CLI is usable on this host.
+    snap: Option<SnapBackend>,
     /// Distro backend, when a family manager is usable on this host.
     distro: Option<DistroBackend>,
     /// Direct-download backend, when attached (the `direct` feature).
@@ -1198,7 +1200,8 @@ impl Apps {
             NativeIds::Npm { .. }
             | NativeIds::Cargo { .. }
             | NativeIds::Pipx { .. }
-            | NativeIds::Uv { .. } => Ok(self
+            | NativeIds::Uv { .. }
+            | NativeIds::Snap { .. } => Ok(self
                 .backend_for(ids.backend())?
                 .available_versions(native_id(ids))
                 .await?),
@@ -1400,6 +1403,9 @@ impl Apps {
         if let Some(backend) = &self.backends.flatpak {
             set = set.flatpak(backend);
         }
+        if let Some(backend) = &self.backends.snap {
+            set = set.snap(backend);
+        }
         if let Some(backend) = &self.backends.distro {
             set = set.distro(backend);
         }
@@ -1431,6 +1437,7 @@ impl Apps {
         let routed: Option<&dyn Backend> = match backend {
             BackendId::Homebrew => self.backends.homebrew.as_ref().map(|b| b as &dyn Backend),
             BackendId::Flatpak => self.backends.flatpak.as_ref().map(|b| b as &dyn Backend),
+            BackendId::Snap => self.backends.snap.as_ref().map(|b| b as &dyn Backend),
             // The family is carried by the attached backend itself; a
             // family mismatch surfaces at execution (the distro backend's
             // executor check), not here.
@@ -1441,9 +1448,6 @@ impl Apps {
             BackendId::Cargo => self.backends.cargo.as_ref().map(|b| b as &dyn Backend),
             BackendId::Pipx => self.backends.pipx.as_ref().map(|b| b as &dyn Backend),
             BackendId::Uv => self.backends.uv.as_ref().map(|b| b as &dyn Backend),
-            // No facade slot exists yet: snap routes surface BackendUnavailable
-            // until the facade wiring round attaches a SnapBackend.
-            BackendId::Snap => None,
             #[cfg(feature = "mise")]
             BackendId::Mise => self.backends.mise.as_ref().map(|b| b as &dyn Backend),
         };
@@ -1547,7 +1551,8 @@ impl Apps {
             NativeIds::Npm { .. }
             | NativeIds::Cargo { .. }
             | NativeIds::Pipx { .. }
-            | NativeIds::Uv { .. } => {
+            | NativeIds::Uv { .. }
+            | NativeIds::Snap { .. } => {
                 let backend = self.backend_for(ids.backend())?;
                 Ok(presence_from_status(
                     backend.status(StatusQuery::new(native_id(ids))).await?,
@@ -1723,7 +1728,8 @@ impl Apps {
             NativeIds::Npm { .. }
             | NativeIds::Cargo { .. }
             | NativeIds::Pipx { .. }
-            | NativeIds::Uv { .. } => Ok(self
+            | NativeIds::Uv { .. }
+            | NativeIds::Snap { .. } => Ok(self
                 .backend_for(ids.backend())?
                 .available_versions_sync(native_id(ids))?),
             #[cfg(feature = "mise")]
@@ -1836,7 +1842,8 @@ impl Apps {
             NativeIds::Npm { .. }
             | NativeIds::Cargo { .. }
             | NativeIds::Pipx { .. }
-            | NativeIds::Uv { .. } => {
+            | NativeIds::Uv { .. }
+            | NativeIds::Snap { .. } => {
                 let backend = self.backend_for(ids.backend())?;
                 Ok(presence_from_status(
                     backend.status_sync(StatusQuery::new(native_id(ids)))?,
@@ -1911,6 +1918,8 @@ pub struct AppsBuilder {
     homebrew: Option<HomebrewBackend>,
     /// The flatpak backend, when flatpak is usable on this host.
     flatpak: Option<FlatpakBackend>,
+    /// The snap backend, when snapd's CLI is usable on this host.
+    snap: Option<SnapBackend>,
     /// The distro backend, when a family manager is usable on this host.
     distro: Option<DistroBackend>,
     /// The direct-download backend, when attached (the `direct` feature).
@@ -1969,6 +1978,15 @@ impl AppsBuilder {
     #[must_use]
     pub fn flatpak(mut self, backend: FlatpakBackend) -> Self {
         self.flatpak = Some(backend);
+        self
+    }
+
+    /// Attach the snap backend — consume-and-return; unattached, snap
+    /// installs answer [`AppsError::BackendUnavailable`] and status never
+    /// probes them.
+    #[must_use]
+    pub fn snap(mut self, backend: SnapBackend) -> Self {
+        self.snap = Some(backend);
         self
     }
 
@@ -2111,6 +2129,12 @@ impl AppsBuilder {
             Err(BackendError::Command(toride_runner::Error::BinaryNotFound(_))) => {}
             Err(error) => return Err(error.into()),
         }
+        match SnapBackend::detect(runner.clone()) {
+            Ok(backend) => builder = builder.snap(backend),
+            // Absent binary: this host simply has no snapd CLI — skip.
+            Err(BackendError::Command(toride_runner::Error::BinaryNotFound(_))) => {}
+            Err(error) => return Err(error.into()),
+        }
         match DistroBackend::detect(runner.clone()) {
             Ok(backend) => builder = builder.distro(backend),
             // Absent binaries or no known family on this host — every mode
@@ -2176,6 +2200,7 @@ impl AppsBuilder {
             backends: AttachedBackends {
                 homebrew: self.homebrew,
                 flatpak: self.flatpak,
+                snap: self.snap,
                 distro: self.distro,
                 #[cfg(feature = "direct")]
                 direct: self.direct,
@@ -2759,6 +2784,7 @@ impl Apps {
                     installation: *installation,
                 })
             }
+            Operation::SnapInstall { name, .. } => Ok(NativeIds::Snap { name: name.clone() }),
             Operation::DistroInstall { package, .. } => match plan.backend {
                 BackendId::Distro(family) => Ok(NativeIds::Distro {
                     package: package.clone(),
@@ -2837,6 +2863,7 @@ fn uninstall_plan_from_record(
             app_id: app_id.clone(),
             installation: *installation,
         },
+        NativeIds::Snap { name } => Operation::SnapUninstall { name: name.clone() },
         NativeIds::Distro { package, family } => {
             let manager = PackageManager::for_family(*family).ok_or_else(|| {
                 AppsError::UnrecordableOperation {
@@ -2899,6 +2926,7 @@ fn update_plan_from_record(id: &TorideId, record: &InstallRecord) -> AppsResult<
             app_id: app_id.clone(),
             installation: *installation,
         },
+        NativeIds::Snap { name } => Operation::SnapUpdate { name: name.clone() },
         NativeIds::Distro { package, family } => {
             let manager = PackageManager::for_family(*family).ok_or_else(|| {
                 AppsError::UnrecordableOperation {
@@ -2958,6 +2986,7 @@ fn native_id(ids: &NativeIds) -> &str {
         NativeIds::Npm { package } | NativeIds::Pipx { package } | NativeIds::Uv { package } => {
             package
         }
+        NativeIds::Snap { name } => name,
         NativeIds::Cargo { crate_ } => crate_,
         #[cfg(feature = "mise")]
         NativeIds::Mise { tool } => tool,
@@ -2998,7 +3027,8 @@ fn requested_version_satisfied(
         | NativeIds::Npm { .. }
         | NativeIds::Cargo { .. }
         | NativeIds::Pipx { .. }
-        | NativeIds::Uv { .. } => match recorded {
+        | NativeIds::Uv { .. }
+        | NativeIds::Snap { .. } => match recorded {
             AppStatus::Installed { version, .. } => version.as_deref() == Some(requested.as_str()),
             AppStatus::Foreign { .. } | AppStatus::NotInstalled => false,
         },
@@ -3044,6 +3074,7 @@ fn native_subject(ids: &NativeIds) -> String {
             token, cask: false, ..
         } => format!("formula `{token}`"),
         NativeIds::Flatpak { app_id, .. } => format!("flatpak `{app_id}`"),
+        NativeIds::Snap { name } => format!("snap `{name}`"),
         NativeIds::Distro { package, .. } => format!("package `{package}`"),
         #[cfg(feature = "direct")]
         NativeIds::Direct { bin_path, .. } => format!("direct binary `{bin_path}`"),
@@ -3440,6 +3471,72 @@ mod tests {
     }
 
     #[test]
+    fn native_ids_from_executed_read_the_snap_operation() {
+        let apps = empty_apps();
+        let plan = InstallPlan {
+            app: TorideId::slugify("firefox"),
+            backend: BackendId::Snap,
+            operation: Operation::SnapInstall {
+                name: "firefox".to_owned(),
+                channel: Some("esr/stable".to_owned()),
+            },
+            dry_run: false,
+            requires_elevation: false,
+        };
+        assert_eq!(
+            apps.native_ids_from_executed(&plan).unwrap(),
+            NativeIds::Snap {
+                name: "firefox".to_owned(),
+            },
+            "the record carries the snap name, never the channel"
+        );
+    }
+
+    #[test]
+    fn record_sourced_plans_replay_snap_ids_verbatim() {
+        let record = record_for(
+            Operation::SnapInstall {
+                name: "firefox".to_owned(),
+                channel: None,
+            },
+            NativeIds::Snap {
+                name: "firefox".to_owned(),
+            },
+        );
+        assert_eq!(
+            uninstall_plan_from_record(&TorideId::slugify("firefox"), &record, false)
+                .unwrap()
+                .operation
+                .argv(),
+            ["snap", "remove", "firefox"]
+        );
+        let update = update_plan_from_record(&TorideId::slugify("firefox"), &record).unwrap();
+        assert_eq!(update.operation.argv(), ["snap", "refresh", "firefox"]);
+        assert!(!update.requires_elevation, "snap refresh never needs root");
+    }
+
+    #[test]
+    fn snap_records_satisfy_a_version_by_the_probed_one() {
+        let ids = NativeIds::Snap {
+            name: "firefox".to_owned(),
+        };
+        let probed = AppStatus::Installed {
+            backend: BackendId::Snap,
+            version: Some("139.0.4-1".to_owned()),
+        };
+        assert!(requested_version_satisfied(
+            &ids,
+            &probed,
+            Some(&Version::new("139.0.4-1"))
+        ));
+        assert!(!requested_version_satisfied(
+            &ids,
+            &probed,
+            Some(&Version::new("140.0-1"))
+        ));
+    }
+
+    #[test]
     fn language_records_satisfy_a_version_by_the_probed_one() {
         let ids = NativeIds::Npm {
             package: "typescript".to_owned(),
@@ -3496,6 +3593,12 @@ mod tests {
                 package: "ruff".to_owned()
             }),
             "uv tool `ruff`"
+        );
+        assert_eq!(
+            native_subject(&NativeIds::Snap {
+                name: "firefox".to_owned()
+            }),
+            "snap `firefox`"
         );
     }
 
@@ -3938,6 +4041,12 @@ mod tests {
             }),
             "brave-browser"
         );
+        assert_eq!(
+            native_id(&NativeIds::Snap {
+                name: "firefox".to_owned()
+            }),
+            "firefox"
+        );
     }
 
     // --- small helpers -------------------------------------------------------------
@@ -4201,6 +4310,175 @@ mod tests {
         });
         assert_eq!(provenance.installed_at, None);
         assert_eq!(provenance.ids.backend(), BackendId::Homebrew);
+    }
+
+    // --- snap facade flow -----------------------------------------------------
+
+    use std::sync::Arc;
+    use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
+
+    use crate::runner::command;
+
+    /// A representative per-snap `snap list <name>` table (the same
+    /// tabwriter shape the snap backend's fixtures carry: every column
+    /// separator two or more spaces).
+    fn snap_listing(name: &str, version: &str) -> String {
+        format!(
+            "Name  Version  Rev  Tracking  Publisher  Notes\n\
+             {name}  {version}  4842  latest/stable  Mozilla✓  -\n"
+        )
+    }
+
+    /// A facade over a snap backend riding the fake seam.
+    fn snap_apps(fake: &FakeRunner, label: &str) -> AppsBlocking {
+        let path = std::env::temp_dir().join(format!(
+            "toride-apps-unit-snap-{label}-{}.json",
+            std::process::id()
+        ));
+        let path = Utf8PathBuf::from_path_buf(path).expect("system temp dir is valid UTF-8");
+        Apps::builder()
+            .manifest_path(&path)
+            .snap(SnapBackend::new(CommandRunner::new(Arc::new(fake.clone()))))
+            .build()
+            .expect("facade builds with the snap backend attached")
+            .blocking()
+    }
+
+    fn snap_provenance() -> AdoptProvenance {
+        AdoptProvenance::new(NativeIds::Snap {
+            name: "firefox".to_owned(),
+        })
+    }
+
+    #[test]
+    fn adopt_records_a_snap_install_through_the_per_snap_listing() {
+        let spec = command("snap", ["list", "firefox"]);
+        let listing = CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1"));
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(spec.clone(), listing.clone())
+            .respond(spec.clone(), listing);
+        let mut apps = snap_apps(&fake, "adopt");
+        let record = apps
+            .adopt(&TorideId::slugify("firefox"), snap_provenance())
+            .expect("the per-snap listing confirms presence");
+        assert_eq!(record.backend, BackendId::Snap);
+        assert_eq!(record.version.as_deref(), Some("139.0.4-1"));
+        assert_eq!(
+            apps.status(&TorideId::slugify("firefox")).unwrap(),
+            AppStatus::Installed {
+                backend: BackendId::Snap,
+                version: Some("139.0.4-1".to_owned()),
+            }
+        );
+        fake.assert_called_with(&spec);
+    }
+
+    #[test]
+    fn adopt_refuses_a_snap_record_the_listing_does_not_carry() {
+        let fake = FakeRunner::new().strict().respond(
+            command("snap", ["list", "ghost"]),
+            CommandOutput::from_stderr("error: no matching snaps installed\n", 1),
+        );
+        let mut apps = snap_apps(&fake, "adopt-absent");
+        let error = apps
+            .adopt(
+                &TorideId::slugify("ghost"),
+                AdoptProvenance::new(NativeIds::Snap {
+                    name: "ghost".to_owned(),
+                }),
+            )
+            .unwrap_err();
+        assert!(
+            matches!(error, AppsError::AdoptionAbsent { .. }),
+            "{error:?}"
+        );
+        assert!(
+            apps.records().is_empty(),
+            "a refused adoption records nothing"
+        );
+    }
+
+    #[test]
+    fn update_refreshes_a_snap_record_and_rewrites_the_version() {
+        let list = command("snap", ["list", "firefox"]);
+        let refresh = command("snap", ["refresh", "firefox"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                list.clone(),
+                CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+            )
+            .respond(
+                list.clone(),
+                CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+            )
+            .respond(
+                list.clone(),
+                CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+            )
+            .respond(refresh.clone(), CommandOutput::from_stdout(""));
+        let mut apps = snap_apps(&fake, "update");
+        apps.adopt(&TorideId::slugify("firefox"), snap_provenance())
+            .unwrap();
+        let outcome = apps
+            .update(&TorideId::slugify("firefox"), &AppUpdateOptions::new())
+            .unwrap();
+        assert_eq!(
+            outcome,
+            UpdateOutcome::Updated {
+                from: Some(Version::new("139.0.4-1")),
+                to: Some(Version::new("139.0.4-1")),
+            }
+        );
+        fake.assert_called_with(&refresh);
+        assert_eq!(
+            apps.records()[0].1.version.as_deref(),
+            Some("139.0.4-1"),
+            "the record carries the re-probed version"
+        );
+    }
+
+    #[test]
+    fn uninstall_removes_a_snap_record_through_snap_remove() {
+        let list = command("snap", ["list", "firefox"]);
+        let remove = command("snap", ["remove", "firefox"]);
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                list.clone(),
+                CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+            )
+            .respond(
+                list.clone(),
+                CommandOutput::from_stderr("error: no matching snaps installed\n", 1),
+            )
+            .respond(
+                remove.clone(),
+                CommandOutput::from_stdout("firefox removed\n"),
+            );
+        let mut apps = snap_apps(&fake, "uninstall");
+        apps.adopt(&TorideId::slugify("firefox"), snap_provenance())
+            .unwrap();
+        let outcome = apps
+            .uninstall(&TorideId::slugify("firefox"), AppUninstallOptions::new())
+            .unwrap();
+        assert_eq!(
+            outcome,
+            UninstallAppOutcome::Removed {
+                backend: BackendId::Snap,
+                ids: NativeIds::Snap {
+                    name: "firefox".to_owned(),
+                },
+                warning: None,
+            }
+        );
+        fake.assert_called_with(&remove);
+        assert!(
+            apps.records().is_empty(),
+            "the record left with the removal"
+        );
     }
 
     struct MapStore {

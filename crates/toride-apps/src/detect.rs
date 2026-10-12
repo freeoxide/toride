@@ -13,7 +13,7 @@ use crate::backend::{Backend, ListQuery};
 use crate::backends::MiseBackend;
 use crate::backends::{
     CargoBackend, DistroBackend, FlatpakBackend, HomebrewBackend, NpmBackend, PipxBackend,
-    UvBackend,
+    SnapBackend, UvBackend,
 };
 use crate::error::{Error, Result};
 use crate::plan::Target;
@@ -31,6 +31,8 @@ pub enum DetectionSource {
     Homebrew,
     /// The flatpak backend's installed listing carries the app id.
     Flatpak,
+    /// The snap backend's installed listing carries the snap name.
+    Snap,
     /// The distro backend's installed listing carries the package.
     Distro(DistroFamily),
     /// The npm backend's global listing carries the package.
@@ -52,6 +54,7 @@ impl std::fmt::Display for DetectionSource {
             Self::MiseShim => f.write_str("mise_shim"),
             Self::Homebrew => f.write_str("homebrew"),
             Self::Flatpak => f.write_str("flatpak"),
+            Self::Snap => f.write_str("snap"),
             Self::Distro(family) => {
                 let slug = format!("distro-{family:?}").to_ascii_lowercase();
                 f.write_str(&slug)
@@ -233,6 +236,7 @@ pub struct MultiSourceDetector {
     mise_shim_dir: Option<Utf8PathBuf>,
     homebrew: Option<HomebrewBackend>,
     flatpak: Option<FlatpakBackend>,
+    snap: Option<SnapBackend>,
     distro: Option<DistroBackend>,
     npm: Option<NpmBackend>,
     cargo: Option<CargoBackend>,
@@ -389,6 +393,9 @@ impl Detector for MultiSourceDetector {
         }
         if let Some(backend) = &self.flatpak {
             hits.extend(backend_hits(backend, &DetectionSource::Flatpak, target));
+        }
+        if let Some(backend) = &self.snap {
+            hits.extend(backend_hits(backend, &DetectionSource::Snap, target));
         }
         if let Some(backend) = &self.distro {
             let source = DetectionSource::Distro(backend.family());
@@ -561,6 +568,7 @@ pub struct MultiSourceDetectorBuilder {
     mise_shim_dir: Option<Utf8PathBuf>,
     homebrew: Option<HomebrewBackend>,
     flatpak: Option<FlatpakBackend>,
+    snap: Option<SnapBackend>,
     distro: Option<DistroBackend>,
     npm: Option<NpmBackend>,
     cargo: Option<CargoBackend>,
@@ -634,6 +642,13 @@ impl MultiSourceDetectorBuilder {
         self
     }
 
+    /// Attach the snap backend — consume-and-return.
+    #[must_use]
+    pub fn snap(mut self, backend: SnapBackend) -> Self {
+        self.snap = Some(backend);
+        self
+    }
+
     /// Attach the distro backend — consume-and-return.
     #[must_use]
     pub fn distro(mut self, backend: DistroBackend) -> Self {
@@ -698,6 +713,7 @@ impl MultiSourceDetectorBuilder {
             HomebrewBackend::detect(runner.clone()),
         )?;
         attach(&mut builder.flatpak, FlatpakBackend::detect(runner.clone()))?;
+        attach(&mut builder.snap, SnapBackend::detect(runner.clone()))?;
         match DistroBackend::detect(runner.clone()) {
             Ok(backend) => builder.distro = Some(backend),
             Err(Error::Command(
@@ -728,6 +744,7 @@ impl MultiSourceDetectorBuilder {
             mise_shim_dir: self.mise_shim_dir,
             homebrew: self.homebrew,
             flatpak: self.flatpak,
+            snap: self.snap,
             distro: self.distro,
             npm: self.npm,
             cargo: self.cargo,
@@ -784,6 +801,7 @@ mod tests {
         assert_eq!(DetectionSource::Path.to_string(), "path");
         assert_eq!(DetectionSource::MiseShim.to_string(), "mise_shim");
         assert_eq!(DetectionSource::Npm.to_string(), "npm");
+        assert_eq!(DetectionSource::Snap.to_string(), "snap");
         assert_eq!(
             DetectionSource::Distro(DistroFamily::Debian).to_string(),
             "distro-debian"
@@ -1427,6 +1445,60 @@ mod tests {
             "a shim whose tool the listing no longer carries is broken"
         );
         assert_eq!(hits[0].confidence, DetectionConfidence::Low);
+    }
+
+    #[test]
+    fn snap_backend_probes_contribute_managed_hits_and_misses_contribute_none() {
+        let list_spec = command("snap", ["list"]);
+        let installed = "Name  Version  Rev  Tracking  Publisher  Notes\n\
+                         firefox  139.0.4-1  4842  latest/stable  Mozilla✓  -\n";
+        let without_the_row = "Name  Version  Rev  Tracking  Publisher  Notes\nbare  1.0  5  latest/stable  Canonical✓  base\n";
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(list_spec.clone(), CommandOutput::from_stdout(installed))
+            .respond(
+                list_spec.clone(),
+                CommandOutput::from_stdout(without_the_row),
+            );
+        let detector = MultiSourceDetector::builder()
+            .runner(seam(&fake))
+            .path_dirs(Vec::new())
+            .snap(crate::backends::SnapBackend::new(seam(&fake)))
+            .build();
+        let hits = detector.detect("firefox");
+        assert_eq!(hits.len(), 1, "{hits:?}");
+        assert_eq!(hits[0].source, DetectionSource::Snap);
+        assert_eq!(hits[0].version.as_deref(), Some("139.0.4-1"));
+        assert_eq!(hits[0].confidence, DetectionConfidence::High);
+        assert_eq!(hits[0].path, None);
+        assert!(
+            detector.detect("core24").is_empty(),
+            "a listing without the row answers no hits"
+        );
+        fake.assert_called_with(&list_spec);
+    }
+
+    #[test]
+    fn merge_dedups_pathless_snap_hits_by_source_and_name() {
+        let first = Detection::new(
+            "firefox",
+            DetectionSource::Snap,
+            DetectionConfidence::Medium,
+        );
+        let second = Detection::new("firefox", DetectionSource::Snap, DetectionConfidence::High)
+            .with_version("139.0.4-1");
+        let path_hit = Detection::new(
+            "firefox",
+            DetectionSource::Path,
+            DetectionConfidence::Medium,
+        )
+        .with_path("/snap/bin/firefox");
+        let merged = merge_by_canonical_path(vec![first, second, path_hit]);
+        assert_eq!(merged.len(), 2, "{merged:?}");
+        assert_eq!(merged[0].source, DetectionSource::Snap);
+        assert_eq!(merged[0].version.as_deref(), Some("139.0.4-1"));
+        assert_eq!(merged[0].confidence, DetectionConfidence::High);
+        assert_eq!(merged[1].source, DetectionSource::Path);
     }
 
     #[test]

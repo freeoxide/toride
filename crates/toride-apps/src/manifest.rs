@@ -169,6 +169,13 @@ pub enum NativeIds {
         /// Installation the app lives in — scopes every probe.
         installation: FlatpakInstallation,
     },
+    /// A snap package, by snap name.
+    Snap {
+        /// Snap name as installed (`firefox`) — the join key against plan
+        /// operations and the listing rows; the channel a plan pinned lives
+        /// in the record's own plan, like npm's version does.
+        name: String,
+    },
     /// A distro package, by package name on a manager family.
     Distro {
         /// Package name the manager knows.
@@ -229,6 +236,7 @@ impl NativeIds {
         match self {
             Self::Homebrew { .. } => BackendId::Homebrew,
             Self::Flatpak { .. } => BackendId::Flatpak,
+            Self::Snap { .. } => BackendId::Snap,
             Self::Distro { family, .. } => BackendId::Distro(*family),
             #[cfg(feature = "direct")]
             Self::Direct { .. } => BackendId::Direct,
@@ -1473,6 +1481,34 @@ mod tests {
             let back: NativeIds = serde_json::from_str(json).unwrap();
             assert_eq!(back, ids, "{json}");
         }
+    }
+
+    #[test]
+    fn snap_records_round_trip_and_map_to_the_snap_backend() {
+        let path = temp_manifest_path("snap-round-trip");
+        let mut manifest = InstallManifest::at(&path);
+        let record = InstallRecord::new(
+            plan_for(
+                "firefox",
+                Operation::SnapInstall {
+                    name: "firefox".to_owned(),
+                    channel: Some("esr/stable".to_owned()),
+                },
+            ),
+            NativeIds::Snap {
+                name: "firefox".to_owned(),
+            },
+            Some("139.0.4-1".to_owned()),
+        )
+        .with_installed_at(1_700_000_000);
+        manifest.record(&app_id("firefox"), record.clone());
+        manifest.save().unwrap();
+        let reloaded = InstallManifest::load(&path).unwrap();
+        assert_eq!(reloaded.get(&app_id("firefox")), Some(&record));
+        assert_eq!(record.backend, BackendId::Snap);
+        assert_eq!(record.ids.backend(), BackendId::Snap);
+        let json = serde_json::to_value(&record.ids).unwrap();
+        assert_eq!(json["Snap"]["name"], serde_json::json!("firefox"));
     }
 
     #[cfg(feature = "mise")]
