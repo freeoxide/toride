@@ -87,6 +87,8 @@ pub enum Section {
     Dashboard,
     /// Tools catalogue.
     Tools,
+    /// Setup suggestions: license-labeled install bundles (read-only).
+    Setup,
     /// Templates.
     Templates,
     /// SSH management.
@@ -132,6 +134,7 @@ impl Section {
         match self {
             Section::Dashboard => "Dashboard",
             Section::Tools => "Tools",
+            Section::Setup => "Setup",
             Section::Templates => "Templates",
             Section::Ssh => "SSH",
             Section::Firewall => "Firewall",
@@ -420,6 +423,11 @@ impl DashboardData {
                 section: Section::Settings,
                 badge: None,
             },
+            SidebarItem {
+                icon: "⚒",
+                section: Section::Setup,
+                badge: None,
+            },
         ];
 
         let modules = vec![Module {
@@ -464,7 +472,25 @@ mod tests {
     fn sidebar_starts_with_dashboard() {
         let d = DashboardData::empty();
         assert_eq!(d.sidebar[0].section, Section::Dashboard);
-        assert_eq!(d.sidebar.len(), 20);
+        assert_eq!(d.sidebar.len(), 21);
+    }
+
+    #[test]
+    fn setup_in_sidebar_after_settings() {
+        let d = DashboardData::empty();
+        let idx = d
+            .sidebar
+            .iter()
+            .position(|i| i.section == Section::Setup)
+            .expect("Setup sidebar item");
+        assert_eq!(d.sidebar[idx].section.label(), "Setup");
+        assert_eq!(d.sidebar[idx].icon, "⚒");
+        assert_eq!(idx, d.sidebar.len() - 1, "Setup trails the existing items");
+        assert_eq!(d.sidebar[idx - 1].section, Section::Settings);
+        assert!(
+            d.sidebar[..idx].iter().all(|i| i.section != Section::Setup),
+            "exactly one Setup item"
+        );
     }
 
     #[test]

@@ -25,6 +25,7 @@ use crate::ui::screens::fail2ban::Fail2banContent;
 use crate::ui::screens::logs::LogsContent;
 use crate::ui::screens::section_overview::{OverviewSnapshot, SectionOverview};
 use crate::ui::screens::settings::SettingsContent;
+use crate::ui::screens::setup::SetupContent;
 use crate::ui::screens::ssh::SshContent;
 use crate::ui::screens::templates::TemplatesContent;
 use crate::ui::screens::tools::ToolsContent;
@@ -198,6 +199,7 @@ impl_content_panel!(
     LogsContent,
     AboutContent,
     SettingsContent,
+    SetupContent,
 );
 
 /// The dashboard home screen: sidebar, live status panels, and the
@@ -249,6 +251,7 @@ pub struct DashboardScreen {
     settings_content: SettingsContent,
     templates_content: TemplatesContent,
     tools_content: ToolsContent,
+    setup_content: SetupContent,
 }
 
 impl Default for DashboardScreen {
@@ -327,6 +330,7 @@ impl DashboardScreen {
             settings_content: SettingsContent::new(),
             templates_content: TemplatesContent::new(),
             tools_content: ToolsContent::new(),
+            setup_content: SetupContent::new(),
             toride_tailscale_content: TailscaleContent::new(),
         }
     }
@@ -860,6 +864,15 @@ impl DashboardScreen {
         self.refresh_sidebar_badges();
     }
 
+    /// Push a collected setup bundle into the setup panel.
+    pub fn set_setup_offers(&mut self, b: crate::setup_data::SetupDataBundle) {
+        self.setup_content.set_available(b.available);
+        self.setup_content
+            .set_unavailable_reason(b.unavailable_reason);
+        self.setup_content.set_offers(b.offers);
+        self.setup_content.set_findings(b.findings);
+    }
+
     fn active_section(&self) -> Section {
         self.data.sidebar[self.active].section
     }
@@ -882,6 +895,7 @@ impl DashboardScreen {
             Section::Tailscale => Some(&mut self.toride_tailscale_content),
             Section::Mise => Some(&mut self.toride_mise_content),
             Section::Tools => Some(&mut self.tools_content),
+            Section::Setup => Some(&mut self.setup_content),
             Section::Templates => Some(&mut self.templates_content),
             Section::Logs => Some(&mut self.logs_content),
             Section::About => Some(&mut self.about_content),
@@ -1622,6 +1636,9 @@ impl AppScreen for DashboardScreen {
             {
                 return self.ssh_content.handle_key(code);
             }
+            _ if self.active_section() == Section::Setup && self.setup_content.has_modal() => {
+                return self.setup_content.handle_key(code);
+            }
             KeyCode::Char('q') => return Some(Action::ConfirmQuit),
             KeyCode::Tab => {
                 if self.focus.is_focused(&ShellFocus::Content) {
@@ -1788,7 +1805,7 @@ impl AppScreen for DashboardScreen {
         {
             return true;
         }
-        false
+        self.active_section() == Section::Setup && self.setup_content.has_modal()
     }
 }
 
