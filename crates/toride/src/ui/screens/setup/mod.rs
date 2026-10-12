@@ -88,6 +88,12 @@ fn action_text(action: &InstallAction) -> String {
     }
 }
 
+/// The canonical suggestion id (plan §9 shape) — one key space shared by
+/// `dismissed`, `findings_count`, and the phase-4 `to_findings` feed.
+fn suggest_id(bundle_id: &str, rec: &Recommendation) -> String {
+    format!("setup.suggest.{bundle_id}.{}", rec.id)
+}
+
 // ── SetupContent ────────────────────────────────────────────────────────────
 
 /// Setup suggestions content rendered inside the dashboard content area.
@@ -106,8 +112,10 @@ pub struct SetupContent {
     offers: Option<SetupOffers>,
     /// Info-level suggestion findings (`setup.suggest.*` ids).
     findings: Vec<FindingEntry>,
-    /// Suggestion ids dismissed this session; they re-enter nothing until
-    /// restart and survive offer refreshes.
+    /// Suggestion ids dismissed this session, keyed by the namespaced
+    /// [`suggest_id`] form (`setup.suggest.<bundle>.<rec>`) so the same set
+    /// filters offered rows and the findings feed; they re-enter nothing
+    /// until restart and survive offer refreshes.
     dismissed: HashSet<String>,
     /// In-session consent verdict per recommendation id.
     consent: std::collections::HashMap<&'static str, Consent>,
@@ -288,7 +296,7 @@ impl SetupContent {
         let mut rows = Vec::new();
         for (bi, bundle) in offers.bundles.iter().enumerate() {
             for (ri, rec) in bundle.recommendations.iter().enumerate() {
-                if !self.dismissed.contains(rec.id) {
+                if !self.dismissed.contains(&suggest_id(bundle.id, rec)) {
                     rows.push((bi, ri));
                 }
             }
@@ -296,10 +304,18 @@ impl SetupContent {
         rows
     }
 
-    fn row_at(&self, pos: usize) -> Option<&Recommendation> {
+    fn row_parts(
+        &self,
+        pos: usize,
+    ) -> Option<(&crate::setup_bundles::SetupBundle, &Recommendation)> {
         let &(bi, ri) = self.visible_rows().get(pos)?;
         let offers = self.offers.as_ref()?;
-        Some(&offers.bundles[bi].recommendations[ri])
+        let bundle = &offers.bundles[bi];
+        Some((bundle, &bundle.recommendations[ri]))
+    }
+
+    fn row_at(&self, pos: usize) -> Option<&Recommendation> {
+        self.row_parts(pos).map(|(_, rec)| rec)
     }
 
     /// Index of the first offered bundle's `default_pick` row; the bundle's
@@ -364,10 +380,11 @@ impl SetupContent {
     }
 
     fn dismiss_selected(&mut self) {
-        let Some(id) = self.row_at(self.sel).map(|rec| rec.id) else {
+        let Some((bundle, rec)) = self.row_parts(self.sel) else {
             return;
         };
-        self.dismissed.insert(id.to_string());
+        let key = suggest_id(bundle.id, rec);
+        self.dismissed.insert(key);
         let rows = self.visible_rows().len();
         self.sel = self.sel.min(rows.saturating_sub(1));
     }
@@ -929,6 +946,35 @@ mod tests {
         for pos in 0..c.visible_rows().len() {
             assert_ne!(c.row_at(pos).expect("row").id, "containers-orbstack");
         }
+    }
+
+    #[test]
+    fn dismiss_stores_the_namespaced_finding_id() {
+        let mut c = populated();
+        select(&mut c, "containers-orbstack");
+        assert!(c.handle_key(KeyCode::Char('x')).is_none());
+        let dismissed = &c.dismissed;
+        assert!(
+            dismissed.contains("setup.suggest.containers.containers-orbstack"),
+            "canonical key is setup.suggest.<bundle>.<rec>: {dismissed:?}"
+        );
+        assert!(
+            !dismissed.contains("containers-orbstack"),
+            "a bare rec id must never enter the dismissed set"
+        );
+    }
+
+    #[test]
+    fn dismissed_row_suppresses_its_matching_finding() {
+        let mut c = populated();
+        select(&mut c, "containers-orbstack");
+        c.handle_key(KeyCode::Char('x'));
+        c.set_findings(sample_findings());
+        assert_eq!(
+            c.findings_count(),
+            1,
+            "the dismissed row's own finding must not count"
+        );
     }
 
     #[test]
