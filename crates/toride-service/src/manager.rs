@@ -293,16 +293,18 @@ impl ServiceManager {
     }
 
     /// Install `name`, then daemon-reload, enable, and start it in order; on
-    /// post-write failure the previous file state is restored and a rollback
-    /// error returned: [`Error::DeployRolledBack`] or [`Error::DeployRollbackFailed`].
+    /// post-write failure the previous file and enablement state is restored
+    /// and a rollback error returned: [`Error::DeployRolledBack`] or
+    /// [`Error::DeployRollbackFailed`].
     pub fn deploy_unit(&self, name: &str, contents: &str) -> Result<()> {
         let backup = self.prepare_unit(name, contents)?;
-        if let Err(cause) = self.activate_unit(name) {
-            let rollback = rollback_unit(&self.unit_path(name), backup.as_deref());
+        let mut prior_enablement: Option<bool> = None;
+        if let Err(cause) = self.activate_unit(name, &mut prior_enablement) {
+            let rollback = self.rollback_deployment(name, backup.as_deref(), prior_enablement);
             let _ = self.daemon_reload();
             return Err(match rollback {
                 Ok(()) => {
-                    tracing::error!(unit = name, "deployment failed; unit file rolled back");
+                    tracing::error!(unit = name, "deployment failed; unit rolled back");
                     Error::DeployRolledBack {
                         unit: name.to_owned(),
                         cause: Box::new(cause),
@@ -406,10 +408,34 @@ impl ServiceManager {
         Ok(dest)
     }
 
-    fn activate_unit(&self, name: &str) -> Result<()> {
+    fn activate_unit(&self, name: &str, prior_enablement: &mut Option<bool>) -> Result<()> {
         self.daemon_reload()?;
+        prior_enablement.replace(self.is_enabled(name)?);
         self.enable(name)?;
         self.start(name)
+    }
+
+    fn rollback_deployment(
+        &self,
+        name: &str,
+        backup: Option<&Path>,
+        prior_enablement: Option<bool>,
+    ) -> Result<()> {
+        let mut failure: Option<Error> = None;
+        if prior_enablement == Some(false)
+            && let Err(e) = self.disable(name)
+        {
+            tracing::error!(unit = name, error = %e, "rollback could not disable the unit");
+            failure.get_or_insert(e);
+        }
+        if let Err(e) = rollback_unit(&self.unit_path(name), backup) {
+            tracing::error!(unit = name, error = %e, "rollback could not restore the unit file");
+            failure.get_or_insert(e);
+        }
+        match failure {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
     }
 
     fn unit_path(&self, name: &str) -> PathBuf {
@@ -758,6 +784,7 @@ mod tests {
     struct VerbsRunner {
         specs: Arc<Mutex<Vec<CommandSpec>>>,
         failing_verb: Option<String>,
+        enabled: bool,
     }
 
     impl VerbsRunner {
@@ -766,8 +793,13 @@ mod tests {
         }
 
         fn failing_verb(verb: &str) -> Self {
+            Self::with_failing_verb_and_enablement(verb, false)
+        }
+
+        fn with_failing_verb_and_enablement(verb: &str, enabled: bool) -> Self {
             Self {
                 failing_verb: Some(verb.to_owned()),
+                enabled,
                 ..Self::default()
             }
         }
@@ -783,6 +815,10 @@ mod tests {
                 .unwrap_or_else(|| panic!("no runner invocation at index {index}"));
             (spec.program.clone(), spec.args.clone())
         }
+
+        fn verb_at(&self, index: usize) -> Option<String> {
+            self.argv_at(index).1.into_iter().next()
+        }
     }
 
     impl Runner for VerbsRunner {
@@ -790,14 +826,17 @@ mod tests {
             self.specs.lock().expect("specs lock").push(spec.clone());
             let verb = spec.args.first().map(String::as_str);
             if self.failing_verb.as_deref() == verb {
-                Ok(CommandOutput::new(
+                return Ok(CommandOutput::new(
                     String::new(),
                     "simulated systemctl failure\n".to_owned(),
                     Some(1),
-                ))
-            } else {
-                Ok(CommandOutput::from_stdout(String::new()))
+                ));
             }
+            if verb == Some("is-enabled") {
+                let code = i32::from(!self.enabled);
+                return Ok(CommandOutput::new(String::new(), String::new(), Some(code)));
+            }
+            Ok(CommandOutput::from_stdout(String::new()))
         }
     }
 
@@ -967,13 +1006,24 @@ mod tests {
         mgr.deploy_unit("app.service", "[Unit]\n")
             .expect("deploy should succeed");
 
-        assert_eq!(runner.invocation_count(), 3);
+        assert_eq!(runner.invocation_count(), 4);
         assert_eq!(
             runner.argv_at(0),
             ("systemctl".to_owned(), vec!["daemon-reload".to_owned()])
         );
         assert_eq!(
             runner.argv_at(1),
+            (
+                "systemctl".to_owned(),
+                vec![
+                    "is-enabled".to_owned(),
+                    "--".to_owned(),
+                    "app.service".to_owned()
+                ]
+            )
+        );
+        assert_eq!(
+            runner.argv_at(2),
             (
                 "systemctl".to_owned(),
                 vec![
@@ -984,7 +1034,7 @@ mod tests {
             )
         );
         assert_eq!(
-            runner.argv_at(2),
+            runner.argv_at(3),
             (
                 "systemctl".to_owned(),
                 vec![
@@ -1031,13 +1081,72 @@ mod tests {
             "original"
         );
         assert_eq!(
-            runner.invocation_count(),
-            4,
-            "reload, enable, start, then best-effort reload after rollback"
+            runner.verb_at(4),
+            Some("disable".to_owned()),
+            "rollback must undo the enable that ran before start failed"
         );
         assert_eq!(
-            runner.argv_at(3),
+            runner.invocation_count(),
+            6,
+            "reload, is-enabled, enable, start, rollback disable, best-effort reload"
+        );
+        assert_eq!(
+            runner.argv_at(5),
             ("systemctl".to_owned(), vec!["daemon-reload".to_owned()])
+        );
+    }
+
+    #[test]
+    fn deploy_unit_disables_fresh_unit_when_start_fails() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = VerbsRunner::failing_verb("start");
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "fresh")
+            .expect_err("deploy must fail when start fails");
+
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+        assert!(
+            !dir.path().join("app.service").exists(),
+            "freshly written file must be removed on rollback"
+        );
+        assert_eq!(
+            runner.verb_at(4),
+            Some("disable".to_owned()),
+            "rollback must remove the enablement our enable created"
+        );
+        assert_eq!(runner.invocation_count(), 6);
+    }
+
+    #[test]
+    fn deploy_unit_keeps_enablement_when_unit_was_enabled_before() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        fs::write(dir.path().join("app.service"), "original")
+            .expect("seed unit write should succeed");
+        let runner = VerbsRunner::with_failing_verb_and_enablement("start", true);
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "replacement")
+            .expect_err("deploy must fail when start fails");
+
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("app.service")).expect("unit file readable"),
+            "original"
+        );
+        let verbs: Vec<Option<String>> = (0..runner.invocation_count())
+            .map(|i| runner.verb_at(i))
+            .collect();
+        assert!(
+            !verbs.contains(&Some("disable".to_owned())),
+            "a unit enabled before the deploy must stay enabled: {verbs:?}"
+        );
+        assert_eq!(
+            runner.invocation_count(),
+            5,
+            "reload, is-enabled, enable, start, best-effort reload — no disable"
         );
     }
 
