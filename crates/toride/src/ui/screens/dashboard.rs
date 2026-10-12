@@ -411,6 +411,10 @@ impl DashboardScreen {
             .toride_monitor_content
             .badge_count()
             .map(|n| n.to_string());
+        let setup = {
+            let n = self.setup_content.findings_count();
+            (n > 0).then(|| n.to_string())
+        };
         for item in &mut self.data.sidebar {
             let badge = match item.section {
                 Section::Tools => tools.clone(),
@@ -427,6 +431,7 @@ impl DashboardScreen {
                 Section::Harden => harden.clone(),
                 Section::Audit => audit.clone(),
                 Section::Monitor => monitor.clone(),
+                Section::Setup => setup.clone(),
                 _ => None,
             };
             item.badge = badge;
@@ -871,6 +876,7 @@ impl DashboardScreen {
             .set_unavailable_reason(b.unavailable_reason);
         self.setup_content.set_offers(b.offers);
         self.setup_content.set_findings(b.findings);
+        self.refresh_sidebar_badges();
     }
 
     fn active_section(&self) -> Section {
@@ -2718,5 +2724,76 @@ mod tests {
         assert_eq!(s.toride_tailscale_content.scroll(), 0);
         s.handle_key(KeyCode::PageDown);
         assert_eq!(s.toride_tailscale_content.scroll(), 8);
+    }
+
+    struct NoPresence;
+
+    impl crate::setup_bundles::ToolPresence for NoPresence {
+        fn is_present(&self, _binaries: &[&str]) -> bool {
+            false
+        }
+    }
+
+    fn mac_setup_bundle() -> crate::setup_data::SetupDataBundle {
+        let offers = crate::setup_bundles::evaluate(
+            &toride_apps::Target::new(toride_apps::Os::MacOs, toride_apps::Arch::Aarch64),
+            &NoPresence,
+        );
+        let findings = crate::setup_data::to_findings(&offers);
+        crate::setup_data::SetupDataBundle {
+            available: true,
+            offers,
+            findings,
+            unavailable_reason: None,
+        }
+    }
+
+    fn setup_sidebar_idx(s: &DashboardScreen) -> usize {
+        s.data
+            .sidebar
+            .iter()
+            .position(|i| i.section == Section::Setup)
+            .expect("Setup section is in the sidebar")
+    }
+
+    #[test]
+    fn setup_sidebar_badge_counts_undismissed_suggestions() {
+        let mut s = DashboardScreen::new();
+        let idx = setup_sidebar_idx(&s);
+        assert_eq!(
+            s.data.sidebar[idx].badge, None,
+            "no fabricated badge before the first bundle lands"
+        );
+
+        s.set_setup_offers(mac_setup_bundle());
+        let expected = s.setup_content.findings_count();
+        assert!(expected > 0, "an empty host offers every registry row");
+        assert_eq!(
+            s.data.sidebar[idx].badge,
+            Some(expected.to_string()),
+            "badge mirrors the undismissed findings_count"
+        );
+    }
+
+    #[test]
+    fn dismissed_suggestion_leaves_the_setup_badge() {
+        let mut s = DashboardScreen::new();
+        s.set_setup_offers(mac_setup_bundle());
+        let idx = setup_sidebar_idx(&s);
+        let before = s.setup_content.findings_count();
+        assert!(before > 0);
+
+        s.active = idx;
+        s.handle_key(KeyCode::Tab);
+        assert!(s.focus.is_focused(&ShellFocus::Content));
+        assert!(s.handle_key(KeyCode::Char('x')).is_none());
+        s.refresh_sidebar_badges();
+
+        assert_eq!(s.setup_content.findings_count(), before - 1);
+        assert_eq!(
+            s.data.sidebar[idx].badge,
+            Some((before - 1).to_string()),
+            "badge tracks the session dismissal"
+        );
     }
 }

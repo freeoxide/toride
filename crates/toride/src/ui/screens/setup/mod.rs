@@ -89,8 +89,8 @@ fn action_text(action: &InstallAction) -> String {
 }
 
 /// The canonical suggestion id (plan §9 shape) — one key space shared by
-/// `dismissed`, `findings_count`, and the phase-4 `to_findings` feed.
-fn suggest_id(bundle_id: &str, rec: &Recommendation) -> String {
+/// `dismissed`, `findings_count`, and the collector's `to_findings` feed.
+pub(crate) fn suggest_id(bundle_id: &str, rec: &Recommendation) -> String {
     format!("setup.suggest.{bundle_id}.{}", rec.id)
 }
 

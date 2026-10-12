@@ -11,6 +11,7 @@ use toride_apps::Target;
 use toride_installer::Detector;
 
 use crate::setup_bundles::{DetectorPresence, SetupOffers, evaluate};
+use crate::ui::screens::setup::suggest_id;
 use crate::ui::screens::tools::FindingEntry;
 
 /// Aggregated setup-bundle data for the read-only section.
@@ -22,8 +23,8 @@ pub struct SetupDataBundle {
     pub available: bool,
     /// Evaluated offers for this host, in registry order.
     pub offers: SetupOffers,
-    /// Info-level suggestion findings (`setup.suggest.<bundle>.<row>` ids).
-    /// Empty until the phase-4 doctor adoption fills it via `to_findings`.
+    /// Info-level suggestion findings (`setup.suggest.<bundle>.<row>` ids),
+    /// one per offered row; the setup screen filters its session dismissals.
     pub findings: Vec<FindingEntry>,
     /// Reason collection failed; populated only when `available == false`
     /// (collection-task panic).
@@ -136,6 +137,26 @@ impl Default for SetupCollector {
     }
 }
 
+/// Convert evaluated offers into suggestion findings, one per offered row.
+///
+/// Ids reuse [`suggest_id`] so they join the setup screen's session-dismissal
+/// set by construction; severity is always `"info"` and never the doctor's
+/// `tools.missing.*` warning space.
+#[must_use]
+pub fn to_findings(offers: &SetupOffers) -> Vec<FindingEntry> {
+    offers
+        .bundles
+        .iter()
+        .flat_map(|bundle| {
+            bundle.recommendations.iter().map(|rec| FindingEntry {
+                id: suggest_id(bundle.id, rec),
+                severity: "info".to_string(),
+                title: format!("{} — {}", rec.title, rec.rationale),
+            })
+        })
+        .collect()
+}
+
 async fn collect_real_offers(
     use_cache: bool,
     cached_bundle: Option<SetupDataBundle>,
@@ -152,15 +173,18 @@ async fn collect_real_offers(
     .await;
 
     match result {
-        Ok(offers) => (
-            SetupDataBundle {
-                available: true,
-                offers,
-                findings: Vec::new(),
-                unavailable_reason: None,
-            },
-            false,
-        ),
+        Ok(offers) => {
+            let findings = to_findings(&offers);
+            (
+                SetupDataBundle {
+                    available: true,
+                    offers,
+                    findings,
+                    unavailable_reason: None,
+                },
+                false,
+            )
+        }
         Err(e) => {
             tracing::warn!("setup collection task panicked: {e}");
             (
@@ -194,7 +218,103 @@ fn empty_bundle_with_reason(reason: String) -> SetupDataBundle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::setup_bundles::{SetupBundle, SetupOffers as Offers};
+    use crate::setup_bundles::{SetupBundle, SetupOffers as Offers, ToolPresence};
+    use crate::ui::screens::section_overview::SectionOverview;
+    use crate::ui::screens::setup::SetupContent;
+    use crossterm::event::KeyCode;
+    use toride_apps::{Arch, Os, Target};
+
+    struct NoPresence;
+
+    impl ToolPresence for NoPresence {
+        fn is_present(&self, _binaries: &[&str]) -> bool {
+            false
+        }
+    }
+
+    fn mac_offers() -> SetupOffers {
+        evaluate(&Target::new(Os::MacOs, Arch::Aarch64), &NoPresence)
+    }
+
+    #[test]
+    fn to_findings_cover_every_offered_row_with_namespaced_ids() {
+        let offers = mac_offers();
+        let findings = to_findings(&offers);
+        let rows: usize = offers
+            .bundles
+            .iter()
+            .map(|bundle| bundle.recommendations.len())
+            .sum();
+        assert!(!findings.is_empty(), "NoPresence offers every row");
+        assert_eq!(findings.len(), rows, "one finding per offered row");
+        for f in &findings {
+            assert_eq!(f.severity, "info", "suggestions are info-level: {}", f.id);
+            assert!(
+                f.id.starts_with("setup.suggest."),
+                "namespaced id: {}",
+                f.id
+            );
+        }
+    }
+
+    #[test]
+    fn to_findings_stay_out_of_the_tools_doctor_id_space() {
+        for f in to_findings(&mac_offers()) {
+            assert_ne!(
+                f.severity, "warning",
+                "a suggestion must never warn: {}",
+                f.id
+            );
+            assert!(
+                !f.id.starts_with("tools.missing."),
+                "a suggestion must never reuse doctor ids: {}",
+                f.id
+            );
+        }
+    }
+
+    #[test]
+    fn findings_join_the_setup_screen_dismissal_key_space() {
+        let offers = mac_offers();
+        let findings = to_findings(&offers);
+        let total = findings.len();
+
+        let mut c = SetupContent::new();
+        c.set_available(true);
+        c.set_offers(offers);
+        c.set_findings(findings);
+        assert_eq!(
+            c.findings_count(),
+            total,
+            "the collector feed and the screen must share one key space"
+        );
+
+        c.handle_key(KeyCode::Char('x'));
+        assert_eq!(
+            c.findings_count(),
+            total - 1,
+            "dismissing the selected row drops exactly its own finding"
+        );
+    }
+
+    #[test]
+    fn dismissed_ids_stay_out_across_a_fresh_walk() {
+        let offers = mac_offers();
+        let total = to_findings(&offers).len();
+
+        let mut c = SetupContent::new();
+        c.set_available(true);
+        c.set_offers(offers.clone());
+        c.set_findings(to_findings(&offers));
+        c.handle_key(KeyCode::Char('x'));
+
+        c.set_findings(to_findings(&offers));
+        assert_eq!(
+            c.findings_count(),
+            total - 1,
+            "a fresh walk re-emits every id, but session dismissal holds until restart"
+        );
+    }
 
     #[test]
     fn new_is_not_pending() {
@@ -250,7 +370,13 @@ mod tests {
         let bundle = collector.poll().await;
         let b = bundle.expect("poll should return Some after completion");
         assert!(b.available, "the walk always runs -> available == true");
-        assert!(b.findings.is_empty(), "findings feed lands in phase 4");
+        let offered: usize = b
+            .offers
+            .bundles
+            .iter()
+            .map(|bundle| bundle.recommendations.len())
+            .sum();
+        assert_eq!(b.findings.len(), offered, "one finding per offered row");
         assert!(b.unavailable_reason.is_none());
         for bundle in &b.offers.bundles {
             assert!(
