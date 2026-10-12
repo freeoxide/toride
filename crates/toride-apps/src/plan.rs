@@ -332,7 +332,9 @@ pub enum Operation {
         /// Snap name (`firefox`).
         name: String,
         /// Channel the install pins (`esr/stable`, `latest/beta`);
-        /// `None` rides the snap's default (`latest/stable`).
+        /// `None` rides the snap's default channel — the publisher's
+        /// default track at stable risk, `latest/stable` unless the
+        /// publisher pinned a different default track.
         channel: Option<String>,
     },
     /// `snap remove <name>` — snap's own uninstall verb.
