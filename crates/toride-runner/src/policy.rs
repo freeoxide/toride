@@ -1,6 +1,23 @@
 //! Spec-level execution policy knobs for security-sensitive embedders.
 //!
 //! Defaults preserve toride's historical semantics; embedders opt in per spec.
+//!
+//! # Shell execution: rejected, permanently
+//!
+//! [`CommandSpec`](crate::spec::CommandSpec) carries direct argv only — there
+//! is no shell opt-in and there never will be (no `ShellSpec`, no shell
+//! command-string mode). A shell command string would re-introduce, in a
+//! single field, the injection risk the argv model exists to prevent, and its
+//! free-form text cannot be redacted at the token level by
+//! [`display_command`](crate::display::display_command). The crate ships the
+//! inverse posture instead: [`ArgvPolicy::RejectShellMetachars`] refuses
+//! shell syntax in argv before spawn. A caller who genuinely needs shell
+//! features constructs the shell invocation explicitly —
+//! `CommandSpec::new("bash").args(["-c", script])` — which keeps that decision
+//! visible in code review and subject to argv rejection. This is a recorded
+//! ruling (tracker item 3.3), not an omission.
+
+use std::time::Duration;
 
 /// Shell metachars rejected from argv when [`ArgvPolicy::RejectShellMetachars`] is set.
 pub const SHELL_METACHARS: &[&str] = &[
@@ -47,6 +64,35 @@ pub enum ArgvPolicy {
     Allow,
     /// Reject the spec when the program or any arg contains a [`SHELL_METACHARS`] entry.
     RejectShellMetachars,
+}
+
+/// How a command's wall-clock timeout is resolved when both the spec and the
+/// runner carry one.
+///
+/// This policy takes precedence over
+/// [`CommandSpec::timeout`](crate::spec::CommandSpec::timeout): it
+/// distinguishes "resolve the existing fields as they always have" (the
+/// default), "never time this command out", and "use exactly this duration".
+/// It is a runtime safety policy, not command construction, so the test
+/// `FakeRunner` (feature `fake`) excludes it from exact matching the same way
+/// `CommandSpec::timeout` is excluded.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum TimeoutPolicy {
+    /// Honor [`CommandSpec::timeout`](crate::spec::CommandSpec::timeout) when
+    /// set, falling back to the runner's default timeout (toride default).
+    /// This is the pre-policy resolution, so payloads serialized before this
+    /// field existed resolve exactly as they did then.
+    #[default]
+    SpecOrRunnerDefault,
+    /// Never time out this command: both
+    /// [`CommandSpec::timeout`](crate::spec::CommandSpec::timeout) and the
+    /// runner's default timeout are ignored.
+    Never,
+    /// Time out after exactly this duration, overriding both
+    /// [`CommandSpec::timeout`](crate::spec::CommandSpec::timeout) and the
+    /// runner's default timeout.
+    Explicit(Duration),
 }
 
 /// Whether captured stdout plus stderr is capped, and at what size.

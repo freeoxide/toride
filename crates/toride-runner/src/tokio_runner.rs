@@ -29,6 +29,7 @@ use std::ffi::OsStr;
 use std::time::Duration;
 
 use async_trait::async_trait;
+use tracing::Instrument as _;
 
 use crate::async_runner::AsyncRunner;
 use crate::error::{Error, Result};
@@ -65,25 +66,195 @@ const POST_DRAIN_REAP_TIMEOUT: Duration = Duration::from_secs(30);
 ///     assert_eq!(output.stdout_trimmed(), "hello");
 /// }
 /// ```
+/// `TokioRunner` is a stateless unit struct, so it is `Clone`/`Default`
+/// (matching `DuctRunner`, the configured sibling
+/// [`ConfiguredTokioRunner`], and the test `FakeRunner`, feature `fake`).
+/// This lets a single shared runner be handed to several owning subsystems
+/// via `Clone`.
+#[derive(Debug, Clone, Default)]
 pub struct TokioRunner;
 
-#[async_trait]
-impl AsyncRunner for TokioRunner {
-    async fn run(&self, spec: &CommandSpec) -> Result<CommandOutput> {
-        let timeout = spec
-            .timeout
-            .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+/// Runtime policy for [`TokioRunner`] command execution.
+///
+/// The async sibling of `DuctRunnerOptions`: these are runner defaults, and a
+/// timeout set directly on [`CommandSpec::timeout`] still wins for that
+/// individual command. The unit [`TokioRunner`] runs with
+/// [`TokioRunnerOptions::default`]; use [`TokioRunner::builder`] or
+/// [`TokioRunner::with_options`] to change the defaults.
+#[derive(Debug, Clone)]
+pub struct TokioRunnerOptions {
+    /// Timeout applied when [`CommandSpec::timeout`] is absent.
+    ///
+    /// `None` means commands without an explicit timeout can run until they
+    /// exit naturally.
+    pub default_timeout: Option<Duration>,
+    /// Whether command diagnostics are emitted: the completion debug event
+    /// and the execution span. `false` makes the runner silent.
+    pub log_commands: bool,
+    /// Whether runner log lines redact sensitive flag values (default
+    /// `true`).
+    ///
+    /// With this on, every log display of the command is redacted even for
+    /// specs that did not set [`CommandSpec::redact`] — logs are human
+    /// diagnostics, and over-redaction there is the safe failure direction.
+    /// Error variants are not affected: they keep honoring `spec.redact`
+    /// alone. Set `false` to restore the raw log display for debugging
+    /// trusted commands.
+    pub redact_logs: bool,
+}
 
-        // Box::pin keeps the future off the caller's stack (these async fns are
-        // large state machines); see clippy::large_futures.
-        let output = Box::pin(run_tokio_command(spec, timeout)).await?;
-        // Honor the redact flag on the *returned* output too (parity with
-        // DuctRunner): scrub secret values from captured stdout/stderr.
+impl Default for TokioRunnerOptions {
+    fn default() -> Self {
+        Self {
+            default_timeout: Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS)),
+            log_commands: true,
+            redact_logs: true,
+        }
+    }
+}
+
+/// Builder for configured Tokio-backed runners.
+#[derive(Debug, Clone)]
+pub struct TokioRunnerBuilder {
+    options: TokioRunnerOptions,
+}
+
+impl TokioRunnerBuilder {
+    /// Set the fallback timeout for specs that do not define one.
+    pub fn default_timeout(mut self, timeout: Duration) -> Self {
+        self.options.default_timeout = Some(timeout);
+        self
+    }
+
+    /// Disable the fallback timeout for specs that do not define one.
+    pub fn no_default_timeout(mut self) -> Self {
+        self.options.default_timeout = None;
+        self
+    }
+
+    /// Enable or disable completion debug logs.
+    pub fn log_commands(mut self, enabled: bool) -> Self {
+        self.options.log_commands = enabled;
+        self
+    }
+
+    /// Enable or disable redaction of runner log lines.
+    pub fn redact_logs(mut self, enabled: bool) -> Self {
+        self.options.redact_logs = enabled;
+        self
+    }
+
+    /// Build a configured Tokio runner.
+    pub fn build(self) -> ConfiguredTokioRunner {
+        ConfiguredTokioRunner {
+            options: self.options,
+        }
+    }
+}
+
+/// A Tokio-backed runner with explicit execution options.
+///
+/// Produced by [`TokioRunner::builder`] or [`TokioRunner::with_options`];
+/// the async sibling of `ConfiguredDuctRunner`. The options apply to the
+/// captured-output path and, behind the `stream` feature, to the streaming
+/// path.
+#[derive(Debug, Clone)]
+pub struct ConfiguredTokioRunner {
+    options: TokioRunnerOptions,
+}
+
+impl ConfiguredTokioRunner {
+    /// Return this runner's execution options.
+    #[must_use]
+    pub fn options(&self) -> &TokioRunnerOptions {
+        &self.options
+    }
+}
+
+#[async_trait]
+impl AsyncRunner for ConfiguredTokioRunner {
+    async fn run(&self, spec: &CommandSpec) -> Result<CommandOutput> {
+        run_tokio_with_options(spec, &self.options).await
+    }
+}
+
+#[cfg(feature = "stream")]
+#[async_trait]
+impl AsyncStreamingRunner for ConfiguredTokioRunner {
+    async fn run_streaming(
+        &self,
+        spec: &CommandSpec,
+        sink: &mut dyn CommandEventSink,
+    ) -> Result<CommandOutput> {
+        // Execution span: instruments the whole streaming session — success
+        // and every failure path — like the captured paths below.
+        let span = crate::display::command_execution_span(
+            spec,
+            self.options.log_commands,
+            self.options.redact_logs,
+        );
+        let output = run_streaming_command(spec, sink, self.options.default_timeout)
+            .instrument(span)
+            .await?;
+        // Honor the redact flag on the *returned* captured output (the emitted
+        // chunks/lines are already scrubbed inline; scrub the final aggregate
+        // too for parity with the non-streaming run path).
         Ok(crate::display::scrub_output(spec, &output))
     }
 }
 
-async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<CommandOutput> {
+impl TokioRunner {
+    /// Start building a configured Tokio runner.
+    pub fn builder() -> TokioRunnerBuilder {
+        TokioRunnerBuilder {
+            options: TokioRunnerOptions::default(),
+        }
+    }
+
+    /// Create a configured Tokio runner from explicit options.
+    pub fn with_options(options: TokioRunnerOptions) -> ConfiguredTokioRunner {
+        ConfiguredTokioRunner { options }
+    }
+}
+
+#[async_trait]
+impl AsyncRunner for TokioRunner {
+    async fn run(&self, spec: &CommandSpec) -> Result<CommandOutput> {
+        run_tokio_with_options(spec, &TokioRunnerOptions::default()).await
+    }
+}
+
+/// Execute `spec` under the runner-level policy in `options`.
+///
+/// Both the unit [`TokioRunner`] (default options) and
+/// [`ConfiguredTokioRunner`] route through here, so they differ only in the
+/// options they pass.
+async fn run_tokio_with_options(
+    spec: &CommandSpec,
+    options: &TokioRunnerOptions,
+) -> Result<CommandOutput> {
+    let timeout = spec.effective_timeout(options.default_timeout);
+
+    // Execution span: instruments the entire run — success and every failure
+    // path — so runner diagnostics correlate with the invocation.
+    let span =
+        crate::display::command_execution_span(spec, options.log_commands, options.redact_logs);
+
+    // Box::pin keeps the future off the caller's stack (these async fns are
+    // large state machines); see clippy::large_futures.
+    let output = Box::pin(run_tokio_command(spec, timeout, options))
+        .instrument(span)
+        .await?;
+    // Honor the redact flag on the *returned* output too (parity with
+    // DuctRunner): scrub secret values from captured stdout/stderr.
+    Ok(crate::display::scrub_output(spec, &output))
+}
+
+async fn run_tokio_command(
+    spec: &CommandSpec,
+    timeout: Option<Duration>,
+    options: &TokioRunnerOptions,
+) -> Result<CommandOutput> {
     // OutputMode::Stream is only honored by the streaming runner
     // (`run_streaming`); the captured-output path rejects it, matching
     // DuctRunner's behavior.
@@ -104,7 +275,14 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
     if spec.output_mode == crate::OutputMode::Capture
         && let Some(cap) = spec.effective_output_limit()
     {
-        return Box::pin(run_tokio_limited(spec, timeout, cap, program.as_os_str())).await;
+        return Box::pin(run_tokio_limited(
+            spec,
+            timeout,
+            cap,
+            program.as_os_str(),
+            options,
+        ))
+        .await;
     }
 
     let mut cmd = build_tokio_command(spec, program.as_os_str());
@@ -168,35 +346,78 @@ async fn run_tokio_command(spec: &CommandSpec, timeout: Duration) -> Result<Comm
         Ok::<CommandOutput, Error>(CommandOutput::new(stdout, stderr, exit_code))
     };
 
-    match tokio::time::timeout(timeout, run).await {
-        Ok(Ok(output)) => {
-            tracing::debug!(
-                program = %spec.program,
-                exit_code = ?output.exit_code,
-                "async command completed"
-            );
+    // A `None` timeout (runner configured with `no_default_timeout` and a
+    // spec without its own) runs unbounded — no timeout wrapper at all.
+    let result = match timeout {
+        Some(timeout) => {
+            // Bound the run by the timeout. The future borrowing `child` is
+            // consumed and dropped when this `await` resolves, so the `else`
+            // branch below may kill and reap the child.
+            let timed = tokio::time::timeout(timeout, run).await;
+            let Ok(result) = timed else {
+                // Timeout expired — the inner future (and its `&mut child`
+                // borrow) has been dropped, so we can kill and reap the child
+                // here.
+                let _ = child.kill().await;
+                // Wait for the child to terminate so we don't leave zombies.
+                let _ = child.wait().await;
+
+                tracing::warn!(
+                    program = %spec.program,
+                    timeout_secs = timeout.as_secs(),
+                    "async command timed out, child killed"
+                );
+
+                return Err(Error::CommandTimeout {
+                    program: spec.program.clone(),
+                    args: crate::display::redacted_args_vec(spec),
+                    timeout,
+                });
+            };
+            result
+        }
+        None => run.await,
+    };
+
+    match result {
+        Ok(output) => {
+            if options.log_commands {
+                log_command_completion(spec, options, output.exit_code);
+            }
             Ok(output)
         }
-        Ok(Err(e)) => Err(e),
-        Err(_) => {
-            // Timeout expired — the inner future (and its `&mut child` borrow)
-            // has been dropped, so we can kill and reap the child here.
-            let _ = child.kill().await;
-            // Wait for the child to terminate so we don't leave zombies.
-            let _ = child.wait().await;
+        Err(e) => Err(e),
+    }
+}
 
-            tracing::warn!(
-                program = %spec.program,
-                timeout_secs = timeout.as_secs(),
-                "async command timed out, child killed"
-            );
-
-            Err(Error::CommandTimeout {
-                program: spec.program.clone(),
-                args: crate::display::redacted_args_vec(spec),
-                timeout,
-            })
-        }
+/// Emit the completion debug event for a finished command.
+///
+/// The event carries the log-redacted display plus, when the spec sets
+/// explicit environment variables, the sanitized env summary — sensitive
+/// values are `"***"` there regardless of `spec.redact`, so a runtime env
+/// summary never leaks a secret.
+fn log_command_completion(
+    spec: &CommandSpec,
+    options: &TokioRunnerOptions,
+    exit_code: Option<i32>,
+) {
+    let displayed = crate::display::display_command_for_log(spec, options.redact_logs);
+    let env = crate::display::display_env_summary(spec);
+    if env.is_empty() {
+        tracing::debug!(
+            command = %displayed,
+            program = %spec.program,
+            exit_code = ?exit_code,
+            "async command completed"
+        );
+    } else {
+        tracing::debug!(
+            command = %displayed,
+            program = %spec.program,
+            exit_code = ?exit_code,
+            env = %env,
+            "async command completed"
+        );
     }
 }
 
@@ -231,7 +452,7 @@ fn build_tokio_command(spec: &CommandSpec, program: &OsStr) -> tokio::process::C
 
     apply_env_policy(&mut cmd, spec);
 
-    if spec.stdin.is_some() {
+    if spec.effective_stdin_bytes().is_some() {
         cmd.stdin(std::process::Stdio::piped());
     } else if spec.stdin_null {
         // Same wiring as DuctRunner: a null-stdin spec must not inherit the
@@ -245,13 +466,13 @@ fn build_tokio_command(spec: &CommandSpec, program: &OsStr) -> tokio::process::C
 
 /// Write the spec's stdin data to the child, mapping write failures to
 /// `Error::StdinFailed`. On a write failure the child is killed and reaped so
-/// no orphaned process is left behind. Shared by the unlimited and limited
-/// paths.
+/// no orphaned process is left behind. Shared by the unlimited, limited, and
+/// streaming paths.
 async fn write_stdin(child: &mut tokio::process::Child, spec: &CommandSpec) -> Result<()> {
-    if let Some(ref stdin_data) = spec.stdin {
+    if let Some(payload) = spec.effective_stdin_bytes() {
         use tokio::io::AsyncWriteExt;
         if let Some(mut stdin_handle) = child.stdin.take() {
-            if let Err(e) = stdin_handle.write_all(stdin_data.as_bytes()).await {
+            if let Err(e) = stdin_handle.write_all(payload).await {
                 // A failed write can leave the child still running. Kill and
                 // reap it so we never leak an orphan, then surface StdinFailed.
                 let _ = child.kill().await;
@@ -274,9 +495,10 @@ const TOKIO_CAP_READ_BUF: usize = 8 * 1024;
 #[allow(clippy::too_many_lines)]
 async fn run_tokio_limited(
     spec: &CommandSpec,
-    timeout: Duration,
+    timeout: Option<Duration>,
     cap: usize,
     program: &OsStr,
+    options: &TokioRunnerOptions,
 ) -> Result<CommandOutput> {
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -389,20 +611,33 @@ async fn run_tokio_limited(
         }
     };
 
-    match Box::pin(tokio::time::timeout(timeout, race)).await {
-        // Outer timeout fired: the drain+wait did not complete in time. The
-        // inner `child` borrow was dropped when the timeout cancelled `race`,
-        // so we can kill+reap here.
-        Err(_) => {
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            Err(Error::CommandTimeout {
-                program: spec.program.clone(),
-                args: crate::display::redacted_args_vec(spec),
-                timeout,
-            })
+    // A `None` timeout (runner configured with `no_default_timeout` and a
+    // spec without its own) races the drain and wait unbounded.
+    let outcome = match timeout {
+        Some(timeout) => {
+            // Bound the race by the timeout. The future borrowing `child` is
+            // consumed and dropped when this `await` resolves, so the `else`
+            // branch below may kill and reap the child.
+            let timed = Box::pin(tokio::time::timeout(timeout, race)).await;
+            let Ok(outcome) = timed else {
+                // Outer timeout fired: the drain+wait did not complete in
+                // time. The inner `child` borrow was dropped when the timeout
+                // cancelled `race`, so we can kill+reap here.
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(Error::CommandTimeout {
+                    program: spec.program.clone(),
+                    args: crate::display::redacted_args_vec(spec),
+                    timeout,
+                });
+            };
+            outcome
         }
-        Ok(RaceOutcome::Breach) => {
+        None => Box::pin(race).await,
+    };
+
+    match outcome {
+        RaceOutcome::Breach => {
             // Cap breached. Kill+reap the child; discard partial output.
             let _ = child.kill().await;
             let _ = child.wait().await;
@@ -413,7 +648,7 @@ async fn run_tokio_limited(
                 observed: counter.load(Ordering::Acquire),
             })
         }
-        Ok(RaceOutcome::Drained(bytes)) => {
+        RaceOutcome::Drained(bytes) => {
             // Both pipes reached EOF under the cap, but the child had not yet
             // exited when the drain finished. Since `race` completed (not the
             // timeout arm), this means the drain finished inside the timeout
@@ -424,7 +659,7 @@ async fn run_tokio_limited(
             // hang the runner indefinitely. On reap-timeout, kill+reap and
             // surface a timeout error.
             match tokio::time::timeout(POST_DRAIN_REAP_TIMEOUT, child.wait()).await {
-                Ok(Ok(status)) => Ok(finish_under_cap(spec, status.code(), bytes)),
+                Ok(Ok(status)) => Ok(finish_under_cap(spec, status.code(), bytes, options)),
                 Ok(Err(e)) => Err(Error::WaitFailed {
                     program: spec.program.clone(),
                     detail: e.to_string(),
@@ -439,13 +674,17 @@ async fn run_tokio_limited(
                     Err(Error::CommandTimeout {
                         program: spec.program.clone(),
                         args: crate::display::redacted_args_vec(spec),
-                        timeout,
+                        // With no command timeout configured, the bound that
+                        // actually fired is the post-drain reap budget.
+                        timeout: timeout.unwrap_or(POST_DRAIN_REAP_TIMEOUT),
                     })
                 }
             }
         }
-        Ok(RaceOutcome::Exited(bytes, exit_code)) => Ok(finish_under_cap(spec, exit_code, bytes)),
-        Ok(RaceOutcome::WaitFailed(e)) => {
+        RaceOutcome::Exited(bytes, exit_code) => {
+            Ok(finish_under_cap(spec, exit_code, bytes, options))
+        }
+        RaceOutcome::WaitFailed(e) => {
             let _ = child.kill().await;
             Err(Error::WaitFailed {
                 program: spec.program.clone(),
@@ -460,14 +699,13 @@ fn finish_under_cap(
     spec: &CommandSpec,
     exit_code: Option<i32>,
     (stdout_bytes, stderr_bytes): (Vec<u8>, Vec<u8>),
+    options: &TokioRunnerOptions,
 ) -> CommandOutput {
     let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
     let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
-    tracing::debug!(
-        program = %spec.program,
-        exit_code = ?exit_code,
-        "async command completed"
-    );
+    if options.log_commands {
+        log_command_completion(spec, options, exit_code);
+    }
     CommandOutput::new(stdout, stderr, exit_code)
 }
 
@@ -503,12 +741,9 @@ use crate::streaming::{AsyncStreamingRunner, CommandEvent, CommandEventSink};
 async fn run_streaming_command(
     spec: &CommandSpec,
     sink: &mut dyn CommandEventSink,
+    default_timeout: Option<Duration>,
 ) -> Result<CommandOutput> {
-    use tokio::io::AsyncWriteExt;
-
-    let timeout = spec
-        .timeout
-        .unwrap_or(Duration::from_secs(DEFAULT_TIMEOUT_SECS));
+    let timeout = spec.effective_timeout(default_timeout);
 
     let program = prepare_program(spec)?;
 
@@ -526,7 +761,7 @@ async fn run_streaming_command(
         cmd.current_dir(cwd);
     }
     apply_env_policy(&mut cmd, spec);
-    if spec.stdin.is_some() {
+    if spec.effective_stdin_bytes().is_some() {
         cmd.stdin(std::process::Stdio::piped());
     } else if spec.stdin_null {
         cmd.stdin(std::process::Stdio::null());
@@ -545,19 +780,10 @@ async fn run_streaming_command(
     })
     .await?;
 
-    // Write stdin.
-    if let Some(ref stdin_data) = spec.stdin
-        && let Some(mut stdin_handle) = child.stdin.take()
-    {
-        stdin_handle
-            .write_all(stdin_data.as_bytes())
-            .await
-            .map_err(|e| Error::StdinFailed {
-                program: spec.program.clone(),
-                detail: e.to_string(),
-            })?;
-        drop(stdin_handle);
-    }
+    // Write stdin through the shared helper so a write failure kill-and-reaps
+    // the child before StdinFailed is returned, exactly like the captured
+    // paths (the documented contract of Error::StdinFailed).
+    write_stdin(&mut child, spec).await?;
 
     // Take pipes. We use bounded `read(&mut [u8; N])` (not `read_line`) so a
     // single newline-free stream cannot buffer unbounded memory before the cap
@@ -594,7 +820,7 @@ async fn run_streaming_command(
     };
 
     // --- Phase 2: read pipes + wait, all bounded by timeout ---
-    let result = tokio::time::timeout(timeout, async {
+    let exec = async {
         use tokio::io::AsyncReadExt;
 
         let cap = spec.effective_output_limit();
@@ -670,7 +896,14 @@ async fn run_streaming_command(
                             }
                         }
                         stdout_bytes.extend_from_slice(&chunk);
-                        forward_stream_chunk(StreamKind::Stdout, &chunk, &mut stdout_line_buf, spec, sink).await?;
+                        forward_stream_chunk(
+                            StreamKind::Stdout,
+                            &chunk,
+                            &mut stdout_line_buf,
+                            spec,
+                            sink,
+                        )
+                        .await?;
                     }
                 }
                 continue;
@@ -688,7 +921,14 @@ async fn run_streaming_command(
                             }
                         }
                         stderr_bytes.extend_from_slice(&chunk);
-                        forward_stream_chunk(StreamKind::Stderr, &chunk, &mut stderr_line_buf, spec, sink).await?;
+                        forward_stream_chunk(
+                            StreamKind::Stderr,
+                            &chunk,
+                            &mut stderr_line_buf,
+                            spec,
+                            sink,
+                        )
+                        .await?;
                     }
                     None => {
                         stderr_closed = true;
@@ -702,10 +942,8 @@ async fn run_streaming_command(
         // Flush any trailing partial lines (no terminating newline). When the
         // spec requests redaction, the trailing chunk/line is scrubbed too, so
         // a secret in the final partial line never reaches the sink.
-        flush_stream_line(StreamKind::Stdout, &mut stdout_line_buf, spec, sink)
-            .await?;
-        flush_stream_line(StreamKind::Stderr, &mut stderr_line_buf, spec, sink)
-            .await?;
+        flush_stream_line(StreamKind::Stdout, &mut stdout_line_buf, spec, sink).await?;
+        flush_stream_line(StreamKind::Stderr, &mut stderr_line_buf, spec, sink).await?;
 
         // Wait for the child to exit.
         let status = child.wait().await.map_err(|e| Error::WaitFailed {
@@ -721,8 +959,36 @@ async fn run_streaming_command(
         let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
 
         Ok::<CommandOutput, Error>(CommandOutput::new(stdout, stderr, exit_code))
-    })
-    .await;
+    };
+
+    // A `None` timeout (runner configured with `no_default_timeout` and a
+    // spec without its own) runs the streaming session unbounded.
+    let result = match timeout {
+        Some(timeout) => {
+            // Bound the session by the timeout. The future borrowing `child`
+            // is consumed and dropped when this `await` resolves, so the
+            // `else` branch below may kill and reap the child.
+            let timed = tokio::time::timeout(timeout, exec).await;
+            let Ok(result) = timed else {
+                // Timeout expired — explicitly kill the child. Abort the
+                // stderr task first so a lingering grandchild holding the
+                // stderr pipe can't keep the task (and its fd) alive.
+                if let Some(handle) = stderr_task {
+                    handle.abort();
+                    let _ = handle.await;
+                }
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(Error::CommandTimeout {
+                    program: spec.program.clone(),
+                    args: crate::display::redacted_args_vec(spec),
+                    timeout,
+                });
+            };
+            result
+        }
+        None => exec.await,
+    };
 
     // On any terminating path, abort the stderr task so a lingering grandchild
     // holding the stderr pipe can't keep the task (and its fd) alive.
@@ -732,22 +998,12 @@ async fn run_streaming_command(
     }
 
     match result {
-        Ok(Ok(output)) => Ok(output),
-        Ok(Err(e)) => {
+        Ok(output) => Ok(output),
+        Err(e) => {
             // Breach or sink error: kill+reap the child.
             let _ = child.kill().await;
             let _ = child.wait().await;
             Err(e)
-        }
-        Err(_) => {
-            // Timeout expired — explicitly kill the child.
-            let _ = child.kill().await;
-            let _ = child.wait().await;
-            Err(Error::CommandTimeout {
-                program: spec.program.clone(),
-                args: crate::display::redacted_args_vec(spec),
-                timeout,
-            })
         }
     }
 }
@@ -935,7 +1191,14 @@ impl AsyncStreamingRunner for TokioRunner {
         spec: &CommandSpec,
         sink: &mut dyn CommandEventSink,
     ) -> Result<CommandOutput> {
-        let output = run_streaming_command(spec, sink).await?;
+        let options = TokioRunnerOptions::default();
+        // Execution span: instruments the whole streaming session — success
+        // and every failure path — like the captured paths.
+        let span =
+            crate::display::command_execution_span(spec, options.log_commands, options.redact_logs);
+        let output = run_streaming_command(spec, sink, options.default_timeout)
+            .instrument(span)
+            .await?;
         // Honor the redact flag on the *returned* captured output (the emitted
         // chunks/lines are already scrubbed inline; scrub the final aggregate
         // too for parity with the non-streaming run path).
@@ -1031,6 +1294,30 @@ mod tests {
         let output = runner.run(&spec).await.unwrap();
         assert!(output.success);
         assert_eq!(output.stdout, "");
+    }
+
+    #[tokio::test]
+    async fn stdin_bytes_piped_non_utf8() {
+        // Mirrors the DuctRunner test: bytes that cannot be expressed through
+        // `stdin: Option<String>` must arrive unmodified (lossy capture shows
+        // two replacement chars).
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("cat").stdin_bytes([0xff, 0xfe]);
+        let output = runner.run(&spec).await.unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "\u{FFFD}\u{FFFD}");
+    }
+
+    #[tokio::test]
+    async fn stdin_bytes_wins_over_stdin() {
+        // Mirrors the DuctRunner precedence ruling: the raw-byte field wins
+        // when both stdin fields are set.
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("cat")
+            .stdin("text payload")
+            .stdin_bytes(&b"bytes payload"[..]);
+        let output = runner.run(&spec).await.unwrap();
+        assert_eq!(output.stdout_trimmed(), "bytes payload");
     }
 
     #[tokio::test]
@@ -1658,6 +1945,358 @@ mod tests {
         assert!(
             !marker.exists(),
             "output-limited child was not killed (reached SURVIVED)"
+        );
+    }
+
+    #[tokio::test]
+    async fn options_default_preserves_unit_runner_policy() {
+        let options = TokioRunnerOptions::default();
+
+        assert_eq!(
+            options.default_timeout,
+            Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
+        );
+        assert!(options.log_commands);
+        // Log redaction is on by default, mirroring DuctRunnerOptions.
+        assert!(options.redact_logs);
+    }
+
+    #[tokio::test]
+    async fn builder_configures_default_timeout() {
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("sleep").arg("10");
+        let result = runner.run(&spec).await;
+
+        assert!(matches!(result.unwrap_err(), Error::CommandTimeout { .. }));
+    }
+
+    #[tokio::test]
+    async fn builder_can_disable_default_timeout() {
+        let runner = TokioRunner::builder()
+            .no_default_timeout()
+            .log_commands(false)
+            .build();
+        let spec = CommandSpec::new("bash").args(["-c", "sleep 0.05; echo done"]);
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(runner.options().default_timeout, None);
+        assert!(!runner.options().log_commands);
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[tokio::test]
+    async fn spec_timeout_overrides_runner_default_timeout() {
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 0.1; echo done"])
+            .timeout(Duration::from_secs(1));
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[tokio::test]
+    async fn timeout_policy_never_ignores_spec_timeout_and_runner_default() {
+        // Mirrors the DuctRunner ruling: both the spec timeout and the 50ms
+        // runner default would kill this command; `Never` suppresses both.
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 0.1; echo done"])
+            .timeout(Duration::from_millis(50))
+            .timeout_policy(crate::policy::TimeoutPolicy::Never);
+        let output = runner.run(&spec).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[tokio::test]
+    async fn timeout_policy_explicit_overrides_spec_timeout_and_runner_default() {
+        // Mirrors the DuctRunner ruling: the 50ms explicit policy wins over
+        // both the 10s spec timeout and the 10s runner default, and is the
+        // timeout reported in the error.
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_secs(10))
+            .build();
+        let spec = CommandSpec::new("sleep")
+            .arg("10")
+            .timeout(Duration::from_secs(10))
+            .timeout_policy(crate::policy::TimeoutPolicy::Explicit(
+                Duration::from_millis(50),
+            ));
+        match runner.run(&spec).await {
+            Err(Error::CommandTimeout { timeout, .. }) => {
+                assert_eq!(timeout, Duration::from_millis(50));
+            }
+            other => panic!("expected CommandTimeout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn with_options_builds_configured_runner() {
+        let runner = TokioRunner::with_options(TokioRunnerOptions {
+            default_timeout: None,
+            log_commands: false,
+            redact_logs: false,
+        });
+
+        assert_eq!(runner.options().default_timeout, None);
+        assert!(!runner.options().log_commands);
+        assert!(!runner.options().redact_logs);
+    }
+
+    #[tokio::test]
+    async fn builder_can_toggle_log_redaction() {
+        let runner = TokioRunner::builder().redact_logs(false).build();
+        assert!(!runner.options().redact_logs);
+    }
+
+    /// 5.1: with the default options, the actual log output never contains
+    /// the unredacted secret even though `spec.redact` is false.
+    #[tokio::test]
+    async fn captured_logs_redact_args_by_default() {
+        let cap = crate::display::diag_capture::install();
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash").args(["-c", "exit 0", "--token", "secret-value"]);
+        runner.run(&spec).await.unwrap();
+        let events = cap.events();
+        drop(cap);
+        let text = events.join("\n");
+        assert!(!events.is_empty(), "completion event must be emitted");
+        assert!(
+            text.contains("***"),
+            "log must redact secret flag values: {text}"
+        );
+        assert!(
+            !text.contains("secret-value"),
+            "secret leaked into logs: {text}"
+        );
+    }
+
+    /// 5.1 opt-out direction: `redact_logs(false)` restores the raw log
+    /// display (the historical behavior).
+    #[tokio::test]
+    async fn captured_logs_show_raw_args_when_redaction_disabled() {
+        let cap = crate::display::diag_capture::install();
+        let runner = TokioRunner::builder().redact_logs(false).build();
+        let spec = CommandSpec::new("bash").args(["-c", "exit 0", "--token", "secret-value"]);
+        runner.run(&spec).await.unwrap();
+        let events = cap.events();
+        drop(cap);
+
+        let text = events.join("\n");
+        assert!(
+            text.contains("secret-value"),
+            "opt-out must restore raw args in logs: {text}"
+        );
+    }
+
+    /// 5.3: the completion event carries a sanitized env summary when the
+    /// spec sets explicit environment variables.
+    #[tokio::test]
+    async fn captured_logs_include_sanitized_env_summary() {
+        let cap = crate::display::diag_capture::install();
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .env("TORIDE_API_TOKEN", "env-secret-value")
+            .env("TORIDE_PLAIN", "visible");
+        runner.run(&spec).await.unwrap();
+        let events = cap.events();
+        drop(cap);
+
+        let text = events.join("\n");
+        assert!(
+            text.contains("env=TORIDE_API_TOKEN=***, TORIDE_PLAIN=visible"),
+            "sanitized env summary missing: {text}"
+        );
+        assert!(
+            !text.contains("env-secret-value"),
+            "env secret leaked into logs: {text}"
+        );
+    }
+
+    /// 5.2: one `command` span per invocation, wrapping both success and
+    /// failure paths, carrying the program and the redacted display.
+    #[tokio::test]
+    async fn execution_span_wraps_success_and_failure_paths() {
+        let cap = crate::display::diag_capture::install();
+        let runner = TokioRunner;
+
+        runner.run(&CommandSpec::new("true")).await.unwrap();
+
+        let failing = CommandSpec::new("bash")
+            .args(["-c", "exit 0", "--token", "secret-value"])
+            .stdin_bytes(vec![b'x'; 512 * 1024]);
+        let _ = runner.run(&failing).await; // StdinFailed failure path
+        let spans = cap.spans();
+        drop(cap);
+        assert_eq!(spans.len(), 2, "one span per invocation: {spans:?}");
+        assert!(
+            spans[0].starts_with("command program=true command=true"),
+            "success span: {}",
+            spans[0]
+        );
+        assert!(
+            spans[1].contains("program=bash"),
+            "failure span: {}",
+            spans[1]
+        );
+        assert!(
+            spans[1].contains("***") && !spans[1].contains("secret-value"),
+            "span display must be redacted: {}",
+            spans[1]
+        );
+    }
+
+    /// `log_commands(false)` is the single diagnostics switch for command
+    /// logging: a silent runner emits neither completion events nor
+    /// execution spans. (Pre-existing failure `warn!`s — e.g. the timeout
+    /// kill notice — are always-on safety diagnostics and remain.)
+    #[tokio::test]
+    async fn log_commands_off_emits_no_diagnostics() {
+        let cap = crate::display::diag_capture::install();
+        let runner = TokioRunner::builder().log_commands(false).build();
+
+        runner.run(&CommandSpec::new("true")).await.unwrap();
+        let _ = runner
+            .run(
+                &CommandSpec::new("sleep")
+                    .arg("10")
+                    .timeout(Duration::from_millis(50)),
+            )
+            .await;
+        let spans = cap.spans();
+        let events = cap.events();
+        drop(cap);
+
+        assert!(spans.is_empty(), "silent runner must not emit spans");
+        let completions: Vec<&String> = events
+            .iter()
+            .filter(|event| event.contains("async command completed"))
+            .collect();
+        assert!(
+            completions.is_empty(),
+            "silent runner must not emit completion events: {completions:?}"
+        );
+    }
+
+    /// A sink that discards events, to exercise the configured streaming path.
+    #[cfg(feature = "stream")]
+    struct NullSink;
+
+    #[cfg(feature = "stream")]
+    #[async_trait::async_trait]
+    impl CommandEventSink for NullSink {
+        async fn on_event(&mut self, _event: CommandEvent) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_configured_default_timeout_times_out() {
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("sleep").arg("10");
+        let mut sink = NullSink;
+        let result = runner.run_streaming(&spec, &mut sink).await;
+
+        assert!(
+            matches!(result, Err(Error::CommandTimeout { .. })),
+            "expected CommandTimeout from configured streaming default timeout"
+        );
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_no_default_timeout_runs_to_completion() {
+        let runner = TokioRunner::builder().no_default_timeout().build();
+        let spec = CommandSpec::new("bash").args(["-c", "sleep 0.05; echo done"]);
+        let mut sink = NullSink;
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_stdin_bytes_piped_non_utf8() {
+        // The streaming path wires stdin from the same payload resolution:
+        // raw bytes `stdin: Option<String>` cannot express must arrive intact.
+        let runner = TokioRunner::builder().no_default_timeout().build();
+        let spec = CommandSpec::new("cat").stdin_bytes([0xff, 0xfe]);
+        let mut sink = NullSink;
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        assert!(output.success);
+        assert_eq!(output.stdout, "\u{FFFD}\u{FFFD}");
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_stdin_write_failure_maps_to_stdin_failed() {
+        // Parity with the captured paths (and DuctRunner): a payload far
+        // larger than the OS pipe buffer with a child that exits without
+        // reading stdin must classify as StdinFailed, with the child killed
+        // and reaped first via the shared write_stdin helper.
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .stdin_bytes(vec![b'x'; 512 * 1024]);
+        let mut sink = NullSink;
+        let result = runner.run_streaming(&spec, &mut sink).await;
+        assert!(
+            matches!(result, Err(Error::StdinFailed { .. })),
+            "expected StdinFailed, got {result:?}"
+        );
+    }
+
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_timeout_policy_never_ignores_default_timeout() {
+        // The streaming path resolves timeouts through the same policy: the
+        // 50ms runner default would kill this command, `Never` must not.
+        let runner = TokioRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 0.1; echo done"])
+            .timeout_policy(crate::policy::TimeoutPolicy::Never);
+        let mut sink = NullSink;
+        let output = runner.run_streaming(&spec, &mut sink).await.unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    /// 5.2 on the streaming path: the execution span wraps streaming runs
+    /// too, carrying the program and the log-redacted display.
+    #[cfg(feature = "stream")]
+    #[tokio::test]
+    async fn streaming_execution_span_wraps_runs() {
+        let cap = crate::display::diag_capture::install();
+        let runner = TokioRunner;
+        let spec = CommandSpec::new("bash").args(["-c", "echo done", "--token", "secret-value"]);
+        let mut sink = NullSink;
+        runner.run_streaming(&spec, &mut sink).await.unwrap();
+        let spans = cap.spans();
+        drop(cap);
+        assert_eq!(spans.len(), 1, "streaming spans: {spans:?}");
+        assert!(
+            spans[0].starts_with("command program=bash command=bash -c echo done --token ***"),
+            "span: {}",
+            spans[0]
+        );
+        assert!(
+            !spans[0].contains("secret-value"),
+            "span display must be redacted: {}",
+            spans[0]
         );
     }
 }

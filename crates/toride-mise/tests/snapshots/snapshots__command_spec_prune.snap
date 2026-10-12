@@ -1,6 +1,5 @@
 ---
 source: crates/toride-mise/tests/snapshots.rs
-assertion_line: 212
 expression: spec
 ---
 CommandSpec {
@@ -10,8 +9,10 @@ CommandSpec {
         "--dry-run",
     ],
     stdin: None,
+    stdin_bytes: None,
     stdin_null: false,
     timeout: None,
+    timeout_policy: SpecOrRunnerDefault,
     env: [],
     env_remove: [],
     clear_env: false,

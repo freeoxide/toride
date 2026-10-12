@@ -1,6 +1,5 @@
 ---
 source: crates/toride-mise/tests/snapshots.rs
-assertion_line: 147
 expression: spec
 ---
 CommandSpec {
@@ -9,8 +8,10 @@ CommandSpec {
         "upgrade",
     ],
     stdin: None,
+    stdin_bytes: None,
     stdin_null: false,
     timeout: None,
+    timeout_policy: SpecOrRunnerDefault,
     env: [],
     env_remove: [],
     clear_env: false,

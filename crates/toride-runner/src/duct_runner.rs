@@ -2,6 +2,11 @@
 //!
 //! [`DuctRunner`] is the production implementation of [`Runner`].
 //! It spawns subprocesses, captures stdout/stderr, and respects timeouts.
+//!
+//! Piped stdin payloads are written over an owned pipe the parent controls,
+//! so a stdin write failure — for example when the child exits before
+//! reading a large payload — surfaces as [`Error::StdinFailed`] after the
+//! child is killed and reaped, matching `TokioRunner`.
 
 use std::ffi::OsStr;
 use std::sync::Arc;
@@ -33,8 +38,19 @@ pub struct DuctRunnerOptions {
     /// `None` means commands without an explicit timeout can run until they
     /// exit naturally.
     pub default_timeout: Option<Duration>,
-    /// Whether completed commands emit debug tracing logs.
+    /// Whether command diagnostics are emitted: the completion debug event
+    /// and the execution span. `false` makes the runner silent.
     pub log_commands: bool,
+    /// Whether runner log lines redact sensitive flag values (default
+    /// `true`).
+    ///
+    /// With this on, every log display of the command is redacted even for
+    /// specs that did not set [`CommandSpec::redact`] — logs are human
+    /// diagnostics, and over-redaction there is the safe failure direction.
+    /// Error variants are not affected: they keep honoring `spec.redact`
+    /// alone. Set `false` to restore the raw log display for debugging
+    /// trusted commands.
+    pub redact_logs: bool,
 }
 
 impl Default for DuctRunnerOptions {
@@ -42,6 +58,7 @@ impl Default for DuctRunnerOptions {
         Self {
             default_timeout: Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS)),
             log_commands: true,
+            redact_logs: true,
         }
     }
 }
@@ -68,6 +85,12 @@ impl DuctRunnerBuilder {
     /// Enable or disable completion debug logs.
     pub fn log_commands(mut self, enabled: bool) -> Self {
         self.options.log_commands = enabled;
+        self
+    }
+
+    /// Enable or disable redaction of runner log lines.
+    pub fn redact_logs(mut self, enabled: bool) -> Self {
+        self.options.redact_logs = enabled;
         self
     }
 
@@ -141,6 +164,15 @@ impl Runner for ConfiguredDuctRunner {
 }
 
 fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<CommandOutput> {
+    // Execution span: entered at the single entry point both `DuctRunner` and
+    // `ConfiguredDuctRunner` route through, so it wraps the entire run —
+    // success and every failure path (rejections, spawn failure, timeout,
+    // cap breach, stdin failure) — and the cap-aware dispatch below runs
+    // inside it too.
+    let _span =
+        crate::display::command_execution_span(spec, options.log_commands, options.redact_logs)
+            .entered();
+
     if spec.output_mode == OutputMode::Stream {
         return Err(Error::Other(
             "OutputMode::Stream is not supported by the synchronous DuctRunner; use TokioRunner with the stream feature".to_owned(),
@@ -161,23 +193,43 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     }
 
     let started_at = Instant::now();
-    let displayed = crate::display::display_command(spec, &[]);
-    let mut cmd = build_duct_expression(spec, program.as_os_str());
+    // Log display honors the runner's log-redaction toggle: with it on (the
+    // default), log lines never print unredacted args even for specs that
+    // did not opt into `spec.redact`.
+    let displayed = crate::display::display_command_for_log(spec, options.redact_logs);
 
-    let timeout = spec.timeout.or(options.default_timeout);
+    // Owned stdin pipe for piped payloads (see `spawn_stdin_writer`): the
+    // child reads the pipe's read end and the parent writes the payload
+    // explicitly, so a stdin write failure maps to StdinFailed instead of
+    // being silently swallowed by duct's internal stdin_bytes writer.
+    let (child_stdin, stdin_writer) = split_stdin_pipe(open_stdin_pipe(spec)?);
+
+    let timeout = spec.effective_timeout(options.default_timeout);
 
     // Spawn with stdout/stderr capture by default. Inherit mode deliberately
     // connects child output to the parent and returns empty captured strings.
-    if spec.output_mode == OutputMode::Capture {
-        cmd = cmd.stdout_capture().stderr_capture();
-    }
+    // The expression is scoped so the parent's copy of the stdin read end
+    // (kept alive by the duct expression) drops the instant start() returns;
+    // only the write end the parent writes to below remains.
+    let handle = {
+        let mut cmd = build_duct_expression(spec, program.as_os_str(), child_stdin);
+        if spec.output_mode == OutputMode::Capture {
+            cmd = cmd.stdout_capture().stderr_capture();
+        }
+        // Use unchecked so non-zero exit
+        // does not immediately error — we capture it in CommandOutput.
+        cmd.unchecked().start().map_err(|e| Error::SpawnFailed {
+            program: spec.program.clone(),
+            detail: e.to_string(),
+        })?
+    };
 
-    // Use unchecked so non-zero exit
-    // does not immediately error — we capture it in CommandOutput.
-    let handle = cmd.unchecked().start().map_err(|e| Error::SpawnFailed {
-        program: spec.program.clone(),
-        detail: e.to_string(),
-    })?;
+    // Write the piped payload now that duct's capture threads are draining
+    // output, so a child that emits while reading stdin cannot deadlock the
+    // write against an undrained pipe. The writer's outcome is consulted
+    // only after a natural exit below; every cleanup path that kills the
+    // child itself detaches the writer instead.
+    let stdin_rx = spawn_stdin_writer_if_piped(stdin_writer, spec);
 
     let output = if let Some(timeout) = timeout {
         match handle.wait_timeout(timeout) {
@@ -212,6 +264,15 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
         handle.wait().map_err(|e| wait_failed(spec, &e))?.clone()
     };
 
+    // The child exited on its own. A failed stdin write now means the child
+    // exited before reading the piped payload: kill-and-reap (the wait has
+    // already returned, so the kill is the expected "no such process" case)
+    // and surface StdinFailed, matching TokioRunner. On the timeout arm above
+    // the returned error is CommandTimeout while `stdin_rx` drops and the
+    // writer detaches — that broken pipe is a consequence of this runner's
+    // own kill, never a StdinFailed.
+    check_stdin_writer(&handle, stdin_rx.as_ref(), spec, &displayed)?;
+
     let stdout = if spec.output_mode == OutputMode::Capture {
         String::from_utf8_lossy(&output.stdout).into_owned()
     } else {
@@ -225,12 +286,11 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     let exit_code = output.status.code();
 
     if options.log_commands {
-        tracing::debug!(
-            command = %displayed,
-            program = %spec.program,
-            exit_code = ?exit_code,
-            elapsed_ms = started_at.elapsed().as_millis(),
-            "command completed"
+        log_command_completion(
+            spec,
+            &displayed,
+            exit_code,
+            started_at.elapsed().as_millis(),
         );
     }
 
@@ -243,7 +303,44 @@ fn run_duct_command(spec: &CommandSpec, options: &DuctRunnerOptions) -> Result<C
     ))
 }
 
-fn build_duct_expression(spec: &CommandSpec, program: &OsStr) -> duct::Expression {
+/// Emit the completion debug event for a finished command.
+///
+/// The event carries the log-redacted display plus, when the spec sets
+/// explicit environment variables, the sanitized env summary — sensitive
+/// values are `"***"` there regardless of `spec.redact`, so a runtime env
+/// summary never leaks a secret.
+fn log_command_completion(
+    spec: &CommandSpec,
+    displayed: &str,
+    exit_code: Option<i32>,
+    elapsed_ms: u128,
+) {
+    let env = crate::display::display_env_summary(spec);
+    if env.is_empty() {
+        tracing::debug!(
+            command = %displayed,
+            program = %spec.program,
+            exit_code = ?exit_code,
+            elapsed_ms,
+            "command completed"
+        );
+    } else {
+        tracing::debug!(
+            command = %displayed,
+            program = %spec.program,
+            exit_code = ?exit_code,
+            elapsed_ms,
+            env = %env,
+            "command completed"
+        );
+    }
+}
+
+fn build_duct_expression(
+    spec: &CommandSpec,
+    program: &OsStr,
+    child_stdin: Option<os_pipe::PipeReader>,
+) -> duct::Expression {
     let mut cmd = duct::cmd(program, &spec.args);
 
     if let Some(ref cwd) = spec.cwd {
@@ -252,16 +349,129 @@ fn build_duct_expression(spec: &CommandSpec, program: &OsStr) -> duct::Expressio
 
     cmd = apply_env_policy(cmd, spec);
 
-    if let Some(ref stdin_data) = spec.stdin {
-        cmd = cmd.stdin_bytes(stdin_data.as_bytes());
+    // A piped payload arrives over the caller-owned pipe wired as the
+    // child's stdin; only the no-payload case falls through to the null
+    // wiring. Without that, duct leaves `IoValue::ParentStdin` and the child
+    // inherits the parent's stdin — a stdin-reading child would block on (or
+    // consume) the parent's terminal instead of seeing EOF.
+    if let Some(reader) = child_stdin {
+        cmd = cmd.stdin_file(reader);
     } else if spec.stdin_null {
-        // Without this, duct leaves `IoValue::ParentStdin` and the child
-        // inherits the parent's stdin — a stdin-reading child would block on
-        // (or consume) the parent's terminal instead of seeing EOF.
         cmd = cmd.stdin_null();
     }
 
     cmd
+}
+
+/// Open the owned stdin pipe when the spec pipes a payload.
+///
+/// Returns the child's end (to wire as the child's stdin) plus the parent's
+/// write end, or `None` when nothing is piped. Created under the Apple lock
+/// like the capture pipes in the cap-aware path: caller-opened pipes cannot
+/// set CLOEXEC atomically on macOS (`pipe2()` is unavailable), so pipe
+/// creation must not race unrelated spawns.
+fn open_stdin_pipe(
+    spec: &CommandSpec,
+) -> Result<Option<(os_pipe::PipeReader, os_pipe::PipeWriter)>> {
+    if spec.effective_stdin_bytes().is_some() {
+        spawn_under_apple_lock(|| {
+            os_pipe::pipe().map_err(|e| Error::SpawnFailed {
+                program: spec.program.clone(),
+                detail: format!("stdin pipe: {e}"),
+            })
+        })
+        .map(Some)
+    } else {
+        Ok(None)
+    }
+}
+
+/// Split an opened stdin pipe into the child's end and the parent's end,
+/// keeping the two `Option`s in lockstep (`None` when nothing is piped).
+fn split_stdin_pipe(
+    pipe: Option<(os_pipe::PipeReader, os_pipe::PipeWriter)>,
+) -> (Option<os_pipe::PipeReader>, Option<os_pipe::PipeWriter>) {
+    match pipe {
+        Some((child_end, parent_end)) => (Some(child_end), Some(parent_end)),
+        None => (None, None),
+    }
+}
+
+/// Start the dedicated stdin writer for a piped payload.
+///
+/// The writer owns the pipe's write end and performs one `write_all` of the
+/// payload (the payload is copied once because the thread requires
+/// `'static`); dropping the writer on completion closes the pipe so the
+/// child sees EOF. Running on a dedicated thread preserves the historical
+/// timeout behavior — the main thread stays free in `wait_timeout`, so a
+/// child that never drains its stdin is still killed at the configured
+/// timeout rather than blocking the runner.
+///
+/// The writer reports its outcome over the returned channel, which the
+/// caller consults only after the child exits naturally. Every cleanup path
+/// that kills or loses the child itself simply drops the receiver: the
+/// writer's broken pipe there is a consequence of this runner's own kill and
+/// must not be misreported as [`Error::StdinFailed`].
+fn spawn_stdin_writer_if_piped(
+    writer: Option<os_pipe::PipeWriter>,
+    spec: &CommandSpec,
+) -> Option<std::sync::mpsc::Receiver<std::io::Result<()>>> {
+    let payload = spec.effective_stdin_bytes();
+    writer
+        .zip(payload)
+        .map(|(writer, payload)| spawn_stdin_writer(writer, payload))
+}
+
+fn spawn_stdin_writer(
+    writer: os_pipe::PipeWriter,
+    payload: &[u8],
+) -> std::sync::mpsc::Receiver<std::io::Result<()>> {
+    use std::io::Write as _;
+    let (tx, rx) = std::sync::mpsc::channel();
+    let payload = payload.to_vec();
+    std::thread::spawn(move || {
+        let mut writer = writer;
+        // The writer (and with it the pipe's write end) drops when this
+        // closure returns, signaling EOF after a complete write. A failed
+        // write drops it too, closing the pipe for the child.
+        let result = writer.write_all(&payload);
+        let _ = tx.send(result);
+    });
+    rx
+}
+
+/// Consult the stdin writer's outcome after the child has exited on its own.
+///
+/// A failed write means the child exited before reading the piped payload
+/// (a broken pipe), so the child is killed and reaped first — the wait has
+/// already returned, making the kill the expected "no such process" case —
+/// and the failure surfaces as [`Error::StdinFailed`], matching
+/// `TokioRunner`'s `write_stdin`. A writer that has not finished within
+/// [`READER_CLEAN_WAIT`] is detached: a grandchild holding the stdin read
+/// end can keep it blocked forever, and grandchild survival is out of scope
+/// for the direct-child cleanup policy. `None` (no piped payload) is `Ok`.
+fn check_stdin_writer(
+    handle: &duct::Handle,
+    stdin_rx: Option<&std::sync::mpsc::Receiver<std::io::Result<()>>>,
+    spec: &CommandSpec,
+    displayed: &str,
+) -> Result<()> {
+    let Some(stdin_rx) = stdin_rx else {
+        return Ok(());
+    };
+    match stdin_rx.recv_timeout(READER_CLEAN_WAIT) {
+        // Either the write completed, or the writer is still stuck (detached:
+        // a grandchild holding the stdin read end is out of scope) — either
+        // way the run proceeds.
+        Ok(Ok(())) | Err(_) => Ok(()),
+        Ok(Err(e)) => {
+            kill_and_reap(handle, displayed);
+            Err(Error::StdinFailed {
+                program: spec.program.clone(),
+                detail: e.to_string(),
+            })
+        }
+    }
 }
 
 #[allow(clippy::too_many_lines)]
@@ -272,7 +482,9 @@ fn run_duct_command_limited(
     program: &OsStr,
 ) -> Result<CommandOutput> {
     let started_at = Instant::now();
-    let displayed = crate::display::display_command(spec, &[]);
+    // Log display honors the runner's log-redaction toggle, as in the
+    // unlimited path above.
+    let displayed = crate::display::display_command_for_log(spec, options.redact_logs);
 
     // Create two OS pipes in the parent. On Apple targets `pipe2()` is
     // unavailable so caller-opened pipes cannot set CLOEXEC atomically; guard
@@ -292,6 +504,10 @@ fn run_duct_command_limited(
         })
     })?;
 
+    // Owned stdin pipe for piped payloads (see `spawn_stdin_writer`), created
+    // under the same Apple lock as the capture pipes above.
+    let (child_stdin, stdin_writer) = split_stdin_pipe(open_stdin_pipe(spec)?);
+
     // Redirect both child streams to the write ends. No internal duct capture
     // threads are started.
     //
@@ -299,9 +515,10 @@ fn run_duct_command_limited(
     // alive until it is dropped. If it stays alive, the read ends never reach
     // EOF (the parent holds an open write end). So we scope the expression so
     // it is dropped the instant `start()` returns, leaving only the child's
-    // copy of the write end open.
+    // copy of the write end open. (The parent's copy of the stdin read end is
+    // held by the same mechanism and released by the same scoping.)
     let handle = {
-        let cmd = build_duct_expression(spec, program)
+        let cmd = build_duct_expression(spec, program, child_stdin)
             .stdout_file(stdout_tx)
             .stderr_file(stderr_tx);
         cmd.unchecked().start().map_err(|e| Error::SpawnFailed {
@@ -349,7 +566,15 @@ fn run_duct_command_limited(
     let _ = stdout_thread;
     let _ = stderr_thread;
 
-    let timeout = spec.timeout.or(options.default_timeout);
+    // Write the piped payload now that the cap readers are live, so a child
+    // that floods output before reading stdin cannot deadlock the write
+    // against an undrained capture pipe. As in the unlimited path, the
+    // writer's outcome is consulted only after a natural exit below; every
+    // cleanup arm that kills the child itself (breach, timeout, wait
+    // failure) drops the receiver and detaches the writer instead.
+    let stdin_rx = spawn_stdin_writer_if_piped(stdin_writer, spec);
+
+    let timeout = spec.effective_timeout(options.default_timeout);
 
     // Wait for the child, bounded by the timeout. There are three ways this
     // unblocks: (1) the process exits normally, (2) the timeout fires, or
@@ -437,16 +662,21 @@ fn run_duct_command_limited(
                 });
             }
 
+            // The child exited on its own and no breach fired. A failed
+            // stdin write now means the child exited before reading the
+            // piped payload: kill-and-reap and surface StdinFailed, matching
+            // TokioRunner (see check_stdin_writer).
+            check_stdin_writer(&shared_handle, stdin_rx.as_ref(), spec, &displayed)?;
+
             let stdout = String::from_utf8_lossy(&stdout_bytes).into_owned();
             let stderr = String::from_utf8_lossy(&stderr_bytes).into_owned();
 
             if options.log_commands {
-                tracing::debug!(
-                    command = %displayed,
-                    program = %spec.program,
-                    exit_code = ?exit_code,
-                    elapsed_ms = started_at.elapsed().as_millis(),
-                    "command completed"
+                log_command_completion(
+                    spec,
+                    &displayed,
+                    exit_code,
+                    started_at.elapsed().as_millis(),
                 );
             }
             Ok(crate::display::scrub_output(
@@ -731,6 +961,81 @@ mod tests {
     }
 
     #[test]
+    fn stdin_bytes_piped_non_utf8() {
+        // Bytes that cannot be expressed through `stdin: Option<String>`.
+        // `cat` echoes them back; the lossy capture shows two replacement
+        // chars, proving the raw bytes flowed through unmodified.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("cat").stdin_bytes([0xff, 0xfe]);
+        let output = runner.run(&spec).unwrap();
+        assert!(output.success);
+        assert_eq!(output.stdout, "\u{FFFD}\u{FFFD}");
+    }
+
+    #[test]
+    fn stdin_bytes_wins_over_stdin() {
+        // Documented precedence: the raw-byte field is the more explicit,
+        // lower-level request, so it wins when both are set.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("cat")
+            .stdin("text payload")
+            .stdin_bytes(&b"bytes payload"[..]);
+        let output = runner.run(&spec).unwrap();
+        assert_eq!(output.stdout_trimmed(), "bytes payload");
+    }
+
+    #[test]
+    fn stdin_write_failure_maps_to_stdin_failed() {
+        // A payload far larger than the OS pipe buffer (~64 KiB) cannot
+        // finish writing before the child exits, and the child never reads
+        // stdin, so the parent's write must fail with a broken pipe and
+        // classify as StdinFailed — duct's internal stdin_bytes writer would
+        // silently swallow that failure and report success.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .stdin_bytes(vec![b'x'; 512 * 1024]);
+        match runner.run(&spec) {
+            Err(Error::StdinFailed { program, .. }) => assert_eq!(program, "bash"),
+            other => panic!("expected StdinFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stdin_write_failure_maps_to_stdin_failed_under_output_limit() {
+        // Same classification through the cap-aware path: the output limit
+        // routes the run through run_duct_command_limited.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .stdin_bytes(vec![b'x'; 512 * 1024])
+            .output_limit(1024);
+        let result = runner.run(&spec);
+        assert!(
+            matches!(result, Err(Error::StdinFailed { .. })),
+            "expected StdinFailed, got {result:?}"
+        );
+    }
+
+    #[test]
+    fn timeout_fires_while_child_never_reads_large_stdin() {
+        // The owned-stdin-pipe switch must not regress the timeout: a child
+        // that neither reads its 512 KiB stdin nor exits must still be killed
+        // at the configured timeout. The stdin writer is detached on this
+        // path; its expected broken pipe must not surface as StdinFailed.
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("sleep")
+            .arg("10")
+            .stdin_bytes(vec![b'x'; 512 * 1024])
+            .timeout(Duration::from_millis(50));
+        let result = runner.run(&spec);
+        assert!(
+            matches!(result, Err(Error::CommandTimeout { .. })),
+            "expected CommandTimeout, got {result:?}"
+        );
+    }
+
+    #[test]
     fn env_passed() {
         let runner = DuctRunner;
         let spec = CommandSpec::new("env").env("TORIDE_TEST_VAR", "42");
@@ -937,6 +1242,9 @@ mod tests {
             Some(Duration::from_secs(DEFAULT_TIMEOUT_SECS))
         );
         assert!(options.log_commands);
+        // Log redaction is on by default: runner logs never print
+        // unredacted args unless the operator opts out.
+        assert!(options.redact_logs);
     }
 
     #[test]
@@ -978,14 +1286,187 @@ mod tests {
     }
 
     #[test]
+    fn timeout_policy_never_ignores_spec_timeout_and_runner_default() {
+        // Both the spec timeout and the 50ms runner default would kill this
+        // command; `Never` must suppress both and let it run to completion.
+        let runner = DuctRunner::builder()
+            .default_timeout(Duration::from_millis(50))
+            .build();
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "sleep 0.1; echo done"])
+            .timeout(Duration::from_millis(50))
+            .timeout_policy(crate::policy::TimeoutPolicy::Never);
+        let output = runner.run(&spec).unwrap();
+
+        assert_eq!(output.stdout_trimmed(), "done");
+    }
+
+    #[test]
+    fn timeout_policy_explicit_overrides_spec_timeout_and_runner_default() {
+        // The 50ms explicit policy must win over both the 10s spec timeout
+        // and the 10s runner default, and be reported as the timeout that fired.
+        let runner = DuctRunner::builder()
+            .default_timeout(Duration::from_secs(10))
+            .build();
+        let spec = CommandSpec::new("sleep")
+            .arg("10")
+            .timeout(Duration::from_secs(10))
+            .timeout_policy(crate::policy::TimeoutPolicy::Explicit(
+                Duration::from_millis(50),
+            ));
+        match runner.run(&spec) {
+            Err(Error::CommandTimeout { timeout, .. }) => {
+                assert_eq!(timeout, Duration::from_millis(50));
+            }
+            other => panic!("expected CommandTimeout, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn with_options_builds_configured_runner() {
         let runner = DuctRunner::with_options(DuctRunnerOptions {
             default_timeout: None,
             log_commands: false,
+            redact_logs: false,
         });
 
         assert_eq!(runner.options().default_timeout, None);
         assert!(!runner.options().log_commands);
+        assert!(!runner.options().redact_logs);
+    }
+
+    #[test]
+    fn builder_can_toggle_log_redaction() {
+        let runner = DuctRunner::builder().redact_logs(false).build();
+        assert!(!runner.options().redact_logs);
+    }
+
+    /// 5.1: with the default options, the actual log output never contains
+    /// the unredacted secret even though `spec.redact` is false.
+    #[test]
+    fn captured_logs_redact_args_by_default() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash").args(["-c", "exit 0", "--token", "secret-value"]);
+        runner.run(&spec).unwrap();
+        let events = cap.events();
+        drop(cap);
+        let text = events.join("\n");
+        assert!(!events.is_empty(), "completion event must be emitted");
+        assert!(
+            text.contains("***"),
+            "log must redact secret flag values: {text}"
+        );
+        assert!(
+            !text.contains("secret-value"),
+            "secret leaked into logs: {text}"
+        );
+    }
+
+    /// 5.1 opt-out direction: `redact_logs(false)` restores the raw log
+    /// display (the historical behavior).
+    #[test]
+    fn captured_logs_show_raw_args_when_redaction_disabled() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner::builder().redact_logs(false).build();
+        let spec = CommandSpec::new("bash").args(["-c", "exit 0", "--token", "secret-value"]);
+        runner.run(&spec).unwrap();
+        let events = cap.events();
+        drop(cap);
+
+        let text = events.join("\n");
+        assert!(
+            text.contains("secret-value"),
+            "opt-out must restore raw args in logs: {text}"
+        );
+    }
+
+    /// 5.3: the completion event carries a sanitized env summary when the
+    /// spec sets explicit environment variables.
+    #[test]
+    fn captured_logs_include_sanitized_env_summary() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner;
+        let spec = CommandSpec::new("bash")
+            .args(["-c", "exit 0"])
+            .env("TORIDE_API_TOKEN", "env-secret-value")
+            .env("TORIDE_PLAIN", "visible");
+        runner.run(&spec).unwrap();
+        let events = cap.events();
+        drop(cap);
+
+        let text = events.join("\n");
+        assert!(
+            text.contains("env=TORIDE_API_TOKEN=***, TORIDE_PLAIN=visible"),
+            "sanitized env summary missing: {text}"
+        );
+        assert!(
+            !text.contains("env-secret-value"),
+            "env secret leaked into logs: {text}"
+        );
+    }
+
+    /// 5.2: one `command` span per invocation, wrapping both success and
+    /// failure paths, carrying the program and the redacted display.
+    #[test]
+    fn execution_span_wraps_success_and_failure_paths() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner;
+
+        runner.run(&CommandSpec::new("true")).unwrap();
+
+        let failing = CommandSpec::new("bash")
+            .args(["-c", "exit 0", "--token", "secret-value"])
+            .stdin_bytes(vec![b'x'; 512 * 1024]);
+        let _ = runner.run(&failing); // StdinFailed failure path
+        let spans = cap.spans();
+        drop(cap);
+        assert_eq!(spans.len(), 2, "one span per invocation: {spans:?}");
+        assert!(
+            spans[0].starts_with("command program=true command=true"),
+            "success span: {}",
+            spans[0]
+        );
+        assert!(
+            spans[1].contains("program=bash"),
+            "failure span: {}",
+            spans[1]
+        );
+        assert!(
+            spans[1].contains("***") && !spans[1].contains("secret-value"),
+            "span display must be redacted: {}",
+            spans[1]
+        );
+    }
+
+    /// `log_commands(false)` is the single diagnostics switch for command
+    /// logging: a silent runner emits neither completion events nor
+    /// execution spans. (Pre-existing failure `warn!`s are always-on safety
+    /// diagnostics and remain.)
+    #[test]
+    fn log_commands_off_emits_no_diagnostics() {
+        let cap = crate::display::diag_capture::install();
+        let runner = DuctRunner::builder().log_commands(false).build();
+
+        runner.run(&CommandSpec::new("true")).unwrap();
+        let _ = runner.run(
+            &CommandSpec::new("sleep")
+                .arg("10")
+                .timeout(Duration::from_millis(50)),
+        );
+        let spans = cap.spans();
+        let events = cap.events();
+        drop(cap);
+
+        assert!(spans.is_empty(), "silent runner must not emit spans");
+        let completions: Vec<&String> = events
+            .iter()
+            .filter(|event| event.contains("command completed"))
+            .collect();
+        assert!(
+            completions.is_empty(),
+            "silent runner must not emit completion events: {completions:?}"
+        );
     }
 
     #[test]
