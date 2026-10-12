@@ -132,6 +132,9 @@ pub struct SetupContent {
     consent_modal: InteractiveModal<Consent>,
     /// Vertical scroll offset over the whole pane.
     scroll: usize,
+    /// Armed by every selection move (and `set_offers`), consumed by the next
+    /// `view()`, which scrolls the minimum needed to keep the selected row
+    /// visible. Mouse-wheel events never arm it, so wheel and follow never fight.
     follow_pending: bool,
 }
 
