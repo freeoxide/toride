@@ -42,20 +42,20 @@ dirs = { workspace = true }
 # `duct-runner` by default, a `FakeRunner` in tests. The dep/dev-dep split
 # keeps the test-only `fake` feature out of the normal build, mirroring
 # toride-installer's split.
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner"] }
+toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["duct-runner"] }
 # Registry parse half only by default (no reqwest, no tokio); the
 # `registry-http` feature opts its fetch engine back in. Declared
 # directly: cargo allows `default-features` only on the declaring manifest.
-toride-registry = { path = "../toride-registry", version = "0.1.0", default-features = false }
+toride-registry = { path = "../toride-registry", version = "0.2.0", default-features = false }
 # Direct-download installs (the `direct` feature) execute through
 # toride-installer's verified pipeline: capped download, sha256 check,
 # tar.gz/tar.xz extraction, atomic 0o755 install write.
-toride-installer = { path = "../toride-installer", version = "0.1.0", optional = true, default-features = false, features = ["http"] }
-toride-mise = { path = "../toride-mise", version = "0.1.0", optional = true }
+toride-installer = { path = "../toride-installer", version = "0.2.0", optional = true, default-features = false, features = ["http"] }
+toride-mise = { path = "../toride-mise", version = "0.2.0", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["fake"] }
+toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
 flate2 = "1"
 tar = "0.4"
 sha2 = "0.10"

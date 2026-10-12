@@ -4,7 +4,14 @@ All notable changes to this crate are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the crate
 follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-10-12
+
+No crate changes; the version advances with the workspace's lockstep
+release cadence.
+
+## [0.1.0] - 2026-10-02
+
+Initial crates.io release.
 
 ### Added
 
@@ -23,21 +30,6 @@ follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   per DESIGN.md §5 when a same-slug row conflicts (`notes` →
   `notes-flathub`) so no two rows share one id, and `resolve` consults
   the index when every primary lookup misses.
-
-### Changed
-
-- `Registry::plan` (and the new lifecycle renders) refuse Homebrew
-  casks on non-macOS hosts — casks are macOS-only, matching
-  toride-apps' planner — routing the install to the checksummed
-  direct-download fallback (or `Unsupported`) instead of rendering a
-  `brew --cask` argv Linuxbrew would reject.
-
-## [0.1.0] - 2026-10-02
-
-Initial crates.io release.
-
-### Added
-
 - Normalized `App` model with `TorideId`, `SourceRef`, platform claims,
   checksummed `Artifact`s, and `InstallMethod` descriptors.
 - `Adapter` trait with a strict parse/fetch split: pure `&str` → `App`
@@ -55,5 +47,14 @@ Initial crates.io release.
 - The `http` feature carrying the fetch engine (reqwest, gzip, tokio) is
   off the default feature set; the default build is the pure parse half.
 
-[Unreleased]: https://github.com/freeoxide/toride/compare/toride-registry-v0.1.0...HEAD
+### Changed
+
+- `Registry::plan` (and the new lifecycle renders) refuse Homebrew
+  casks on non-macOS hosts — casks are macOS-only, matching
+  toride-apps' planner — routing the install to the checksummed
+  direct-download fallback (or `Unsupported`) instead of rendering a
+  `brew --cask` argv Linuxbrew would reject.
+
+[Unreleased]: https://github.com/freeoxide/toride/compare/toride-registry-v0.2.0...HEAD
+[0.2.0]: https://github.com/freeoxide/toride/releases/tag/toride-registry-v0.2.0
 [0.1.0]: https://github.com/freeoxide/toride/releases/tag/toride-registry-v0.1.0

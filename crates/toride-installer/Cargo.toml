@@ -29,7 +29,7 @@ tokio = { workspace = true }
 # `Runner` trait. The dep/dev-dep split keeps the test-only `fake` feature
 # out of the normal build — stricter than the single-entry shape other
 # consumers use.
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner"] }
+toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["duct-runner"] }
 sha2 = { version = "0.10", optional = true }
 tar = { version = "0.4", optional = true }
 flate2 = { version = "1", optional = true }
@@ -41,7 +41,7 @@ tempfile = { workspace = true }
 tokio = { workspace = true }
 camino = { workspace = true }
 serde_json = { workspace = true }
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["duct-runner", "fake"] }
+toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["duct-runner", "fake"] }
 criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
 
 # version_parse: the ToolVersion::parse kernel over a committed 300-row TSV

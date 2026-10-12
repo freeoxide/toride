@@ -27,14 +27,14 @@ futures = "0.3"
 color-eyre = "0.6"
 ratatui-interact = "0.5.3"
 
-toride-ssh = { path = "../toride-ssh", version = "0.1.0", features = ["full"] }
+toride-ssh = { path = "../toride-ssh", version = "0.2.0", features = ["full"] }
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 tracing-appender = "0.2"
 chrono = { workspace = true }
 serde_json = { workspace = true }
-toride-status = { path = "../toride-status", version = "0.1.0" }
+toride-status = { path = "../toride-status", version = "0.2.0" }
 rattles = "0.3.1"
 libc = "0.2"
 dirs = { workspace = true }
@@ -42,33 +42,33 @@ serde = { workspace = true }
 toml = { workspace = true }
 # Atomic, fsynced, mode-controlled config writes (0600 for the user's
 # toride config so the persisted theme/animation pref is owner-only).
-toride-fs = { path = "../toride-fs", version = "0.1.0" }
+toride-fs = { path = "../toride-fs", version = "0.2.0" }
 
 # ── Live-data backend crates (read-only Phase 1 integrations) ────────────────
 # Feature sets chosen for live read data + doctor diagnostics; write-paths land
 # in Phase 2. Most crates default to ["client","doctor"]; the three below add
 # the extra surfaces their live view needs.
-toride-fail2ban = { path = "../toride-fail2ban", version = "0.1.0" }
-toride-monitor = { path = "../toride-monitor", version = "0.1.0" }
-toride-wireguard = { path = "../toride-wireguard", version = "0.1.0" }
-toride-harden = { path = "../toride-harden", version = "0.1.0" }
-toride-updates = { path = "../toride-updates", version = "0.1.0" }
-toride-users = { path = "../toride-users", version = "0.1.0" }
-toride-proxy = { path = "../toride-proxy", version = "0.1.0" }
-toride-cloud = { path = "../toride-cloud", version = "0.1.0" }
-toride-backup = { path = "../toride-backup", version = "0.1.0" }
-toride-tailscale = { path = "../toride-tailscale", version = "0.1.0" }
-toride-audit = { path = "../toride-audit", version = "0.1.0", features = ["client", "doctor", "auditd", "integrity", "logs"] }
-toride-mise = { path = "../toride-mise", version = "0.1.0", features = ["json", "toml", "diagnostics", "tracing"] }
-ufw-kit = { path = "../ufw-kit", version = "0.1.0", features = ["client", "doctor", "tokio"] }
+toride-fail2ban = { path = "../toride-fail2ban", version = "0.2.0" }
+toride-monitor = { path = "../toride-monitor", version = "0.2.0" }
+toride-wireguard = { path = "../toride-wireguard", version = "0.2.0" }
+toride-harden = { path = "../toride-harden", version = "0.2.0" }
+toride-updates = { path = "../toride-updates", version = "0.2.0" }
+toride-users = { path = "../toride-users", version = "0.2.0" }
+toride-proxy = { path = "../toride-proxy", version = "0.2.0" }
+toride-cloud = { path = "../toride-cloud", version = "0.2.0" }
+toride-backup = { path = "../toride-backup", version = "0.2.0" }
+toride-tailscale = { path = "../toride-tailscale", version = "0.2.0" }
+toride-audit = { path = "../toride-audit", version = "0.2.0", features = ["client", "doctor", "auditd", "integrity", "logs"] }
+toride-mise = { path = "../toride-mise", version = "0.2.0", features = ["json", "toml", "diagnostics", "tracing"] }
+ufw-kit = { path = "../ufw-kit", version = "0.2.0", features = ["client", "doctor", "tokio"] }
 which = { workspace = true }
 # Direct dep so the proxy cert-expiry wiring can name the `Runner` trait and
 # `DuctRunner`/`FakeRunner` types (the proxy backend takes `&dyn Runner`).
-toride-runner = { path = "../toride-runner", version = "0.1.0" }
+toride-runner = { path = "../toride-runner", version = "0.2.0" }
 # Tool-availability detection for the installed-tools catalogue (tools_data):
 # Detector classifies every catalogue alias on $PATH or at the installer's
 # managed ~/.local/bin location and probes versions through toride-runner.
-toride-installer = { path = "../toride-installer", version = "0.1.0" }
+toride-installer = { path = "../toride-installer", version = "0.2.0" }
 
 [dev-dependencies]
 insta = "1"
@@ -76,7 +76,7 @@ serde_json = { workspace = true }
 tempfile = "3"
 testty = "0.9"
 # `fake` feature for the strict FakeRunner used in proxy cert-scan tests.
-toride-runner = { path = "../toride-runner", version = "0.1.0", features = ["fake"] }
+toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
 criterion = "0.8"
 
 # F01 kernel: full-frame Dashboard render cost via TestBackend (hermetic —
