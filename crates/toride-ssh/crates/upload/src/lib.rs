@@ -54,10 +54,10 @@ pub const MAX_REMOTE_PATH_INPUT_LEN: usize = 4096;
 ///
 /// Accepts absolute POSIX paths whose bytes cannot break the batch directive
 /// syntax: no control characters (newlines included), no whitespace, no
-/// quotes, no backslash, no shell metacharacters, no leading dash, and at
-/// most [`MAX_REMOTE_PATH_INPUT_LEN`] bytes. Everything else is a typed
-/// [`Error::InvalidRemotePath`] rejection and can never be constructed as a
-/// `RemotePath`.
+/// quotes, no backslash, no glob metacharacters, no shell metacharacters, no
+/// leading dash, and at most [`MAX_REMOTE_PATH_INPUT_LEN`] bytes. Everything
+/// else is a typed [`Error::InvalidRemotePath`] rejection and can never be
+/// constructed as a `RemotePath`.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RemotePath {
     inner: String,
@@ -71,7 +71,8 @@ impl RemotePath {
     /// Returns [`Error::InvalidRemotePath`] when the input is empty, not
     /// absolute, longer than [`MAX_REMOTE_PATH_INPUT_LEN`] bytes, or contains
     /// control characters, whitespace, a leading dash, quotes, a backslash,
-    /// or shell metacharacters. The reason never echoes the input.
+    /// glob metacharacters, or shell metacharacters. The reason never echoes
+    /// the input.
     pub fn parse(input: &str) -> Result<Self> {
         if input.is_empty() {
             return Err(Error::InvalidRemotePath {
@@ -306,6 +307,9 @@ fn validate_batch_token(token: &str) -> std::result::Result<(), String> {
     }
     if token.contains('\\') {
         return Err("must not contain a backslash".to_owned());
+    }
+    if token.contains(['*', '?', '[']) {
+        return Err("must not contain glob metacharacters".to_owned());
     }
     if contains_shell_metachars(token) {
         return Err("must not contain shell metacharacters".to_owned());
@@ -582,6 +586,9 @@ mod tests {
             "/etc/a\"b",
             "/etc/a'b",
             "/etc/a\\b",
+            "/etc/a*b",
+            "/etc/a?b",
+            "/etc/a[b",
             "/etc/a;b",
             "/etc/$(id)",
             "/etc/a`id`",
@@ -670,6 +677,9 @@ mod tests {
             "qu\"ote",
             "apo'strophe",
             "back\\slash",
+            "star*name",
+            "quest?ion",
+            "brack[et",
             "semi;colon",
         ] {
             let file_path = dir.path().join(name);
@@ -685,6 +695,55 @@ mod tests {
             assert!(rendered.starts_with("local path rejected"), "{rendered}");
         }
         assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn glob_bearing_payload_with_matching_siblings_is_rejected_before_spawn() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("payload-1.conf"), b"first").unwrap();
+        fs::write(dir.path().join("payload-2.conf"), b"second").unwrap();
+        let glob_bearing = dir.path().join("payload-*.conf");
+        fs::write(&glob_bearing, PAYLOAD_MARKER.as_bytes()).unwrap();
+        let directory_remote = RemotePath::parse("/etc/toride/").unwrap();
+        let fake = FakeRunner::new();
+        let service = UploadService::new(Box::new(fake.clone()));
+
+        match service
+            .upload(&host(), &glob_bearing, &directory_remote)
+            .unwrap_err()
+        {
+            Error::InvalidLocalPath { reason } => {
+                assert!(reason.contains("glob"), "{reason}");
+                assert!(!reason.contains("payload"), "{reason}");
+            }
+            other => panic!("expected InvalidLocalPath, got {other:?}"),
+        }
+        assert!(
+            fake.calls().is_empty(),
+            "a glob-bearing payload must never reach sftp, which would upload every sibling"
+        );
+    }
+
+    #[test]
+    fn glob_characters_are_rejected_in_remote_paths_before_spawn() {
+        let payload = payload_file();
+        let fake = FakeRunner::new();
+        let service = UploadService::new(Box::new(fake.clone()));
+        for bad in [
+            "/etc/toride/*.conf",
+            "/etc/toride/payload?.conf",
+            "/etc/toride/pa[tch",
+        ] {
+            assert!(
+                matches!(
+                    RemotePath::parse(bad),
+                    Err(Error::InvalidRemotePath { ref reason }) if reason.contains("glob")
+                ),
+                "{bad:?}: expected the glob rejection"
+            );
+        }
+        assert!(service.upload(&host(), payload.path(), &remote()).is_ok());
+        assert_eq!(fake.calls().len(), 1, "only the clean upload may spawn");
     }
 
     #[test]
