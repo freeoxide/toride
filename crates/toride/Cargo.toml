@@ -69,6 +69,9 @@ toride-runner = { path = "../toride-runner", version = "0.2.0" }
 # Detector classifies every catalogue alias on $PATH or at the installer's
 # managed ~/.local/bin location and probes versions through toride-runner.
 toride-installer = { path = "../toride-installer", version = "0.2.0" }
+# setup_bundles plans installs through toride-apps; mise+direct are the
+# BackendId surface it routes to (tokio already linked in this crate).
+toride-apps = { path = "../toride-apps", version = "0.2.0", features = ["mise", "direct"] }
 
 [dev-dependencies]
 insta = "1"
