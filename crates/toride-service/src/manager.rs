@@ -108,6 +108,8 @@ const DEFAULT_UNITS_ROOT: &str = "/etc/systemd/system";
 
 const UNIT_FILE_MODE: u32 = 0o644;
 
+const UNITS_LOCK_FILE: &str = ".toride-units.lock";
+
 impl ServiceManager {
     // -----------------------------------------------------------------------
     // Constructors
@@ -286,10 +288,11 @@ impl ServiceManager {
     }
 
     /// Install `contents` as unit `name` under the units root, backing up any
-    /// existing file to a timestamped sibling first, then writing atomically
-    /// at mode 0644; name, backup, and write failures are typed.
+    /// existing file or symlink to a timestamped sibling first, then writing
+    /// atomically at mode 0644; name, backup, and write failures are typed.
     pub fn install_unit(&self, name: &str, contents: &str) -> Result<()> {
-        self.prepare_unit(name, contents).map(|_| ())
+        Self::validate_unit_name(name)?;
+        self.with_units_lock(|| self.prepare_unit(name, contents).map(|_| ()))
     }
 
     /// Install `name`, then daemon-reload, enable, and start it in order; on
@@ -297,6 +300,11 @@ impl ServiceManager {
     /// and a rollback error returned: [`Error::DeployRolledBack`] or
     /// [`Error::DeployRollbackFailed`].
     pub fn deploy_unit(&self, name: &str, contents: &str) -> Result<()> {
+        Self::validate_unit_name(name)?;
+        self.with_units_lock(|| self.deploy_unit_locked(name, contents))
+    }
+
+    fn deploy_unit_locked(&self, name: &str, contents: &str) -> Result<()> {
         let backup = self.prepare_unit(name, contents)?;
         let mut prior_enablement: Option<bool> = None;
         if let Err(cause) = self.activate_unit(name, &mut prior_enablement) {
@@ -378,7 +386,7 @@ impl ServiceManager {
         Self::validate_unit_name(name)?;
         fs::create_dir_all(&self.units_root)?;
         let unit_path = self.unit_path(name);
-        let backup = if unit_path.is_file() {
+        let backup = if unit_path.symlink_metadata().is_ok() {
             Some(self.backup_unit(name)?)
         } else {
             None
@@ -393,9 +401,22 @@ impl ServiceManager {
         let dest = self
             .units_root
             .join(format!("{name}.bak.{}", unix_timestamp_nanos()));
-        fs::copy(&source, &dest).map_err(|e| {
+        let file_type = fs::symlink_metadata(&source)
+            .map_err(|e| Error::BackupFailed(format!("cannot stat {}: {e}", source.display())))?
+            .file_type();
+        let copied = if file_type.is_symlink() {
+            backup_symlink(&source, &dest)
+        } else if file_type.is_file() {
+            fs::copy(&source, &dest).map(|_| ())
+        } else {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "unit path is neither a regular file nor a symlink",
+            ))
+        };
+        copied.map_err(|e| {
             Error::BackupFailed(format!(
-                "failed to copy {} to {}: {e}",
+                "failed to back up {} to {}: {e}",
                 source.display(),
                 dest.display()
             ))
@@ -406,6 +427,20 @@ impl ServiceManager {
             "backed up unit file"
         );
         Ok(dest)
+    }
+
+    fn with_units_lock<F>(&self, f: F) -> Result<()>
+    where
+        F: FnOnce() -> Result<()>,
+    {
+        fs::create_dir_all(&self.units_root)?;
+        let lock_path = self.units_root.join(UNITS_LOCK_FILE);
+        let mut outcome = Ok(());
+        toride_fs::with_lock(&lock_path, || {
+            outcome = f();
+            Ok(())
+        })?;
+        outcome
     }
 
     fn activate_unit(&self, name: &str, prior_enablement: &mut Option<bool>) -> Result<()> {
@@ -503,11 +538,48 @@ fn command_failed(subcommand: &str, service: &str, output: &toride_runner::Comma
 
 fn rollback_unit(unit_path: &Path, backup: Option<&Path>) -> Result<()> {
     match backup {
-        Some(backup_path) => fs::copy(backup_path, unit_path)
-            .map(|_| ())
-            .map_err(Error::Io),
+        Some(backup_path) => restore_unit_from_backup(backup_path, unit_path),
         None => fs::remove_file(unit_path).map_err(Error::Io),
     }
+}
+
+fn restore_unit_from_backup(backup_path: &Path, unit_path: &Path) -> Result<()> {
+    let file_type = fs::symlink_metadata(backup_path)
+        .map_err(Error::Io)?
+        .file_type();
+    if file_type.is_symlink() {
+        return restore_symlink_backup(backup_path, unit_path);
+    }
+    let contents = fs::read_to_string(backup_path).map_err(Error::Io)?;
+    toride_fs::atomic_write_with_perms(unit_path, &contents, UNIT_FILE_MODE).map_err(Error::from)
+}
+
+#[cfg(unix)]
+fn restore_symlink_backup(backup_path: &Path, unit_path: &Path) -> Result<()> {
+    let target = fs::read_link(backup_path).map_err(Error::Io)?;
+    fs::remove_file(unit_path).map_err(Error::Io)?;
+    std::os::unix::fs::symlink(&target, unit_path).map_err(Error::Io)
+}
+
+#[cfg(not(unix))]
+fn restore_symlink_backup(_backup_path: &Path, _unit_path: &Path) -> Result<()> {
+    Err(Error::BackupFailed(
+        "restoring a symlinked unit file requires a unix target".to_owned(),
+    ))
+}
+
+#[cfg(unix)]
+fn backup_symlink(source: &Path, dest: &Path) -> std::io::Result<()> {
+    let target = fs::read_link(source)?;
+    std::os::unix::fs::symlink(&target, dest)
+}
+
+#[cfg(not(unix))]
+fn backup_symlink(_source: &Path, _dest: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "backing up a symlinked unit file requires a unix target",
+    ))
 }
 
 fn unix_timestamp_nanos() -> u128 {
@@ -901,7 +973,7 @@ mod tests {
         );
         let backups: Vec<_> = units_root_entries(&dir)
             .into_iter()
-            .filter(|n| n != "app.service")
+            .filter(|n| n != "app.service" && n != UNITS_LOCK_FILE)
             .collect();
         assert_eq!(backups.len(), 1, "exactly one backup sibling: {backups:?}");
         let backup_name = &backups[0];
@@ -1167,8 +1239,8 @@ mod tests {
         );
         assert_eq!(
             units_root_entries(&dir),
-            Vec::<String>::new(),
-            "no backup exists and no file may remain"
+            vec![UNITS_LOCK_FILE.to_owned()],
+            "no backup exists and no unit file may remain, only the lock file"
         );
         assert_eq!(
             runner.invocation_count(),
@@ -1201,36 +1273,193 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn backup_failure_is_typed_when_units_root_is_not_writable() {
+    fn backup_failure_is_typed_when_existing_unit_is_unreadable() {
         use std::os::unix::fs::PermissionsExt;
 
         let dir = TempDir::new().expect("temp dir creation should succeed");
         let units = dir.path().join("units");
         fs::create_dir(&units).expect("units root creation should succeed");
-        fs::write(units.join("app.service"), "original\n").expect("seed unit write should succeed");
+        let unit = units.join("app.service");
+        fs::write(&unit, "original\n").expect("seed unit write should succeed");
 
-        fs::set_permissions(&units, fs::Permissions::from_mode(0o555))
+        fs::set_permissions(&unit, fs::Permissions::from_mode(0o000))
             .expect("chmod should succeed");
-        let writable_anyway = fs::write(units.join(".probe"), b"probe").is_ok();
-        let result = if writable_anyway {
+        let readable_anyway = fs::read_to_string(&unit).is_ok();
+        let result = if readable_anyway {
             Ok(())
         } else {
             ServiceManager::with_units_root(Box::new(CannedRunner::empty()), &units)
                 .install_unit("app.service", "replacement\n")
         };
-        fs::set_permissions(&units, fs::Permissions::from_mode(0o755))
+        fs::set_permissions(&unit, fs::Permissions::from_mode(0o644))
             .expect("chmod restore should succeed");
-        let _ = fs::remove_file(units.join(".probe"));
 
-        if writable_anyway {
+        if readable_anyway {
             return;
         }
-        let err = result.expect_err("backup copy must fail in a read-only units root");
+        let err = result.expect_err("backup copy must fail for an unreadable unit file");
         assert!(matches!(err, Error::BackupFailed(_)), "got {err:?}");
         assert_eq!(
-            fs::read_to_string(units.join("app.service")).expect("original still readable"),
+            fs::read_to_string(&unit).expect("original readable again"),
             "original\n",
             "the failed install must leave the original unit untouched"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn install_unit_backs_up_symlinked_unit_as_a_symlink() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let real = dir.path().join("real.conf");
+        fs::write(&real, "old contents").expect("seed target write should succeed");
+        std::os::unix::fs::symlink(&real, dir.path().join("app.service"))
+            .expect("symlink creation should succeed");
+        let mgr = ServiceManager::with_units_root(Box::new(CannedRunner::empty()), dir.path());
+
+        mgr.install_unit("app.service", "new contents")
+            .expect("install should succeed");
+
+        let unit_path = dir.path().join("app.service");
+        assert!(
+            unit_path
+                .symlink_metadata()
+                .expect("unit metadata should be available")
+                .file_type()
+                .is_file(),
+            "the atomic rename must replace the symlink with the regular file"
+        );
+        assert_eq!(
+            fs::read_to_string(&unit_path).expect("unit file readable"),
+            "new contents"
+        );
+        let backup_name = units_root_entries(&dir)
+            .into_iter()
+            .find(|n| n != "app.service" && n != UNITS_LOCK_FILE)
+            .expect("a backup sibling must exist");
+        let backup = dir.path().join(&backup_name);
+        assert!(
+            backup
+                .symlink_metadata()
+                .expect("backup metadata should be available")
+                .file_type()
+                .is_symlink(),
+            "the backup must preserve that the unit was a symlink"
+        );
+        assert_eq!(
+            fs::read_link(&backup).expect("backup link target readable"),
+            real,
+            "the backup symlink must point at the original target"
+        );
+        assert_eq!(
+            fs::read_to_string(&backup).expect("backup contents readable through the link"),
+            "old contents"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deploy_unit_restores_masked_symlink_when_start_fails() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let unit_path = dir.path().join("app.service");
+        std::os::unix::fs::symlink("/dev/null", &unit_path)
+            .expect("mask symlink creation should succeed");
+        let runner = VerbsRunner::failing_verb("start");
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "real unit")
+            .expect_err("deploy must fail when start fails");
+
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+        let meta = unit_path
+            .symlink_metadata()
+            .expect("unit metadata should be available");
+        assert!(
+            meta.file_type().is_symlink(),
+            "the pre-deploy mask symlink must be restored, not left as a regular file or removed"
+        );
+        assert_eq!(
+            fs::read_link(&unit_path).expect("restored link target readable"),
+            Path::new("/dev/null"),
+            "the restored mask must still point at /dev/null"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn deploy_unit_restores_backup_atomically_at_unit_mode() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let unit_path = dir.path().join("app.service");
+        fs::write(&unit_path, "original").expect("seed unit write should succeed");
+        fs::set_permissions(&unit_path, fs::Permissions::from_mode(0o600))
+            .expect("chmod should succeed");
+        let runner = VerbsRunner::failing_verb("start");
+        let mgr = ServiceManager::with_units_root(Box::new(runner.clone()), dir.path());
+
+        let err = mgr
+            .deploy_unit("app.service", "replacement")
+            .expect_err("deploy must fail when start fails");
+
+        assert!(matches!(err, Error::DeployRolledBack { .. }), "got {err:?}");
+        assert_eq!(
+            fs::read_to_string(&unit_path).expect("unit file readable"),
+            "original"
+        );
+        let mode = fs::metadata(&unit_path)
+            .expect("metadata should be available")
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(
+            mode, 0o644,
+            "the restore must go through the atomic write, which normalizes to unit mode"
+        );
+    }
+
+    #[test]
+    fn install_unit_blocks_while_the_units_lock_is_held() {
+        use std::sync::mpsc;
+        use std::thread;
+        use std::time::Duration;
+
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let runner = CannedRunner::empty();
+        let units_root = dir.path().to_path_buf();
+        let lock_path = dir.path().join(UNITS_LOCK_FILE);
+        let (tx, rx) = mpsc::channel();
+        let mut spawned = None;
+        toride_fs::with_lock(&lock_path, || {
+            let units_root = units_root.clone();
+            let runner = runner.clone();
+            let tx = tx.clone();
+            spawned = Some(thread::spawn(move || {
+                let mgr = ServiceManager::with_units_root(Box::new(runner), &units_root);
+                let _ = mgr.install_unit("app.service", "written after lock release");
+                let _ = tx.send(());
+            }));
+            thread::sleep(Duration::from_millis(100));
+            assert!(
+                rx.try_recv().is_err(),
+                "install_unit must block while another holder owns the units lock"
+            );
+            Ok(())
+        })
+        .expect("holding the units lock should succeed");
+        rx.recv_timeout(Duration::from_secs(10))
+            .expect("install_unit must complete once the lock is released");
+        spawned
+            .expect("install thread must have been spawned")
+            .join()
+            .expect("install thread must not panic");
+        assert_eq!(
+            fs::read_to_string(dir.path().join("app.service")).expect("unit file readable"),
+            "written after lock release"
+        );
+        assert!(
+            lock_path.is_file(),
+            "the lock file must live in the units root"
         );
     }
 }
