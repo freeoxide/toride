@@ -9,9 +9,12 @@ manifest.
   manager argv from a registry `App` plus a host `Target` — no I/O,
   fixture-testable.
 - The `Backend` trait with executed implementations for Homebrew,
-  Flatpak, distro managers (apt, dnf, pacman, apk), npm, cargo, pipx,
-  uv, mise-delegated tools, and direct downloads — install, uninstall,
-  update, status, version queries, and pinning.
+  Flatpak, snap, distro managers (apt, dnf, pacman, apk), npm, cargo,
+  pipx, uv, mise-delegated tools, and direct downloads: install,
+  uninstall, update, status, version queries, and pinning. Snap is the
+  exception: no registry `InstallMethod` routes to it yet, so its
+  install/remove/refresh plans are built at the operation seam, and
+  records carry the snap name for uninstall and update replay.
 - The `Apps` facade: ensure-installed (optionally at a version) and
   uninstall, each with a per-item batch verb
   (`ensure_installed_many` / `uninstall_many`), update with dry-run,
