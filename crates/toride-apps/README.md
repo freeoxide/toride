@@ -11,8 +11,9 @@ manifest.
 - The `Backend` trait with executed implementations for Homebrew,
   Flatpak, snap, distro managers (apt, dnf, pacman, apk), npm, cargo,
   pipx, uv, mise-delegated tools, and direct downloads: install,
-  uninstall, update, status, version queries, and pinning. Snap is the
-  exception: no registry `InstallMethod` routes to it yet, so its
+  uninstall, update, status, and version queries. Pinning is
+  Homebrew-only; the trait default refuses it for every other backend.
+  Snap has no registry `InstallMethod` routing to it yet: its
   install/remove/refresh plans are built at the operation seam, and
   records carry the snap name for uninstall and update replay.
 - The `Apps` facade: ensure-installed (optionally at a version) and
