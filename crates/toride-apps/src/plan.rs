@@ -323,6 +323,25 @@ pub enum Operation {
         /// User vs system installation.
         installation: FlatpakInstallation,
     },
+    /// `snap install <name> [--channel=<track>/<risk>[/<branch>]]`. There is
+    /// no registry `InstallMethod::Snap` to route yet (snapcraft.io source
+    /// data is a later registry round), so snap operations are constructed
+    /// at this seam directly — the argv contract is the same as every
+    /// routed method's.
+    SnapInstall {
+        /// Snap name (`firefox`).
+        name: String,
+        /// Channel the install pins (`esr/stable`, `latest/beta`);
+        /// `None` rides the snap's default channel — the publisher's
+        /// default track at stable risk, `latest/stable` unless the
+        /// publisher pinned a different default track.
+        channel: Option<String>,
+    },
+    /// `snap remove <name>` — snap's own uninstall verb.
+    SnapUninstall {
+        /// Snap name.
+        name: String,
+    },
     /// `<manager> <install-verb> <package>` (e.g. `pacman --sync firefox`).
     /// Requires elevation — see the `requires_elevation` slot on the plan.
     DistroInstall {
@@ -353,6 +372,11 @@ pub enum Operation {
         app_id: String,
         /// User vs system installation.
         installation: FlatpakInstallation,
+    },
+    /// `snap refresh <name>` — snap's own per-snap upgrade verb.
+    SnapUpdate {
+        /// Snap name.
+        name: String,
     },
     /// `<manager> <update-verb-tokens> <package>` — apt `install
     /// --only-upgrade`, dnf `upgrade`, pacman `--sync --refresh`, apk
@@ -532,6 +556,11 @@ impl Operation {
                 app_id,
                 installation,
             } => argv(&["flatpak", "uninstall", installation.flag(), app_id]),
+            Self::SnapInstall { name, channel } => match channel.as_deref() {
+                Some(channel) => argv(&["snap", "install", &format!("--channel={channel}"), name]),
+                None => argv(&["snap", "install", name]),
+            },
+            Self::SnapUninstall { name } => argv(&["snap", "remove", name]),
             Self::DistroInstall { manager, package } => {
                 argv(&[manager.program(), manager.install_verb(), package])
             }
@@ -550,6 +579,7 @@ impl Operation {
                 app_id,
                 installation,
             } => argv(&["flatpak", "update", installation.flag(), app_id]),
+            Self::SnapUpdate { name } => argv(&["snap", "refresh", name]),
             Self::DistroUpdate { manager, package } => {
                 let mut parts = vec![manager.program()];
                 parts.extend(manager.update_verb().iter().copied());
@@ -647,6 +677,11 @@ impl Operation {
                 remote, app_ref, ..
             } => format!("install flatpak `{app_ref}` from remote `{remote}`"),
             Self::FlatpakUninstall { app_id, .. } => format!("uninstall flatpak `{app_id}`"),
+            Self::SnapInstall { name, channel } => match channel {
+                Some(channel) => format!("install snap `{name}` from channel `{channel}`"),
+                None => format!("install snap `{name}`"),
+            },
+            Self::SnapUninstall { name } => format!("remove snap `{name}`"),
             Self::DistroInstall { manager, package } => {
                 format!("install {} package `{package}`", manager.program())
             }
@@ -658,6 +693,7 @@ impl Operation {
                 if *cask { "cask" } else { "formula" }
             ),
             Self::FlatpakUpdate { app_id, .. } => format!("update flatpak `{app_id}`"),
+            Self::SnapUpdate { name } => format!("refresh snap `{name}`"),
             Self::DistroUpdate { manager, package } => {
                 format!("upgrade {} package `{package}`", manager.program())
             }
@@ -2826,6 +2862,90 @@ mod tests {
             .argv(),
             ["uv", "tool", "upgrade", "ruff"]
         );
+    }
+
+    #[test]
+    fn snap_operations_render_the_plan_argv() {
+        assert_eq!(
+            Operation::SnapInstall {
+                name: "firefox".to_owned(),
+                channel: None,
+            }
+            .argv(),
+            ["snap", "install", "firefox"],
+            "`None` rides the snap's default channel (latest/stable)"
+        );
+        assert_eq!(
+            Operation::SnapInstall {
+                name: "firefox".to_owned(),
+                channel: Some("esr/stable".to_owned()),
+            }
+            .argv(),
+            ["snap", "install", "--channel=esr/stable", "firefox"]
+        );
+        assert_eq!(
+            Operation::SnapUninstall {
+                name: "firefox".to_owned()
+            }
+            .argv(),
+            ["snap", "remove", "firefox"]
+        );
+        assert_eq!(
+            Operation::SnapUpdate {
+                name: "firefox".to_owned()
+            }
+            .argv(),
+            ["snap", "refresh", "firefox"]
+        );
+        assert_eq!(
+            Operation::SnapInstall {
+                name: "firefox".to_owned(),
+                channel: Some("latest/beta".to_owned()),
+            }
+            .description(),
+            "install snap `firefox` from channel `latest/beta`"
+        );
+        assert_eq!(
+            Operation::SnapUninstall {
+                name: "firefox".to_owned()
+            }
+            .description(),
+            "remove snap `firefox`"
+        );
+        assert_eq!(
+            Operation::SnapUpdate {
+                name: "firefox".to_owned()
+            }
+            .description(),
+            "refresh snap `firefox`"
+        );
+    }
+
+    #[test]
+    fn snap_operations_round_trip_through_json() {
+        for operation in [
+            Operation::SnapInstall {
+                name: "firefox".to_owned(),
+                channel: Some("esr/stable".to_owned()),
+            },
+            Operation::SnapInstall {
+                name: "hello-world".to_owned(),
+                channel: None,
+            },
+            Operation::SnapUninstall {
+                name: "firefox".to_owned(),
+            },
+            Operation::SnapUpdate {
+                name: "firefox".to_owned(),
+            },
+        ] {
+            let json = serde_json::to_string(&operation).unwrap();
+            assert_eq!(
+                operation,
+                serde_json::from_str::<Operation>(&json).unwrap(),
+                "round-trips: {json}"
+            );
+        }
     }
 
     #[cfg(feature = "mise")]

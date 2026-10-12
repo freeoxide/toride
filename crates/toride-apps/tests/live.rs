@@ -13,10 +13,11 @@
 //!
 //! What runs when the gate is open (and what deliberately does not):
 //!
-//! - the `detect()` seams of all three backends against the REAL host PATH
-//!   and `/etc/os-release` — brew and flatpak are expected to be absent on
-//!   this Linux host, dpkg present, but every assertion branches on what
-//!   the host actually has, so nothing is assumed either way;
+//! - the `detect()` seams of the backends probed here (brew, flatpak,
+//!   snap, distro) against the REAL host PATH and `/etc/os-release`:
+//!   brew, flatpak, and snap are expected to be absent on this Linux
+//!   host, dpkg present, but every assertion branches on what the host
+//!   actually has, so nothing is assumed either way;
 //! - the real toride-registry fetch layers through this crate's public
 //!   surface: the Homebrew and Flathub adapters resolving live apps into
 //!   planner input (pure `plan_install` afterward — no execution), the
@@ -32,7 +33,7 @@
 use std::sync::Arc;
 
 use toride_apps::backends::distro::detect_host_family;
-use toride_apps::backends::{DistroBackend, FlatpakBackend, HomebrewBackend};
+use toride_apps::backends::{DistroBackend, FlatpakBackend, HomebrewBackend, SnapBackend};
 use toride_apps::runner::CommandRunner;
 use toride_apps::{
     AppStatus, Apps, Backend, BackendId, BackendStatus, InstallOptions, StatusQuery, Target,
@@ -161,6 +162,65 @@ async fn distro_detect_probes_this_host_through_its_real_package_manager() {
                 "host is not Debian-family (os-release says {other:?}); skipping dpkg probes"
             );
         }
+    }
+}
+
+/// The snap seam: `detect()` is a real PATH check, and on a host carrying
+/// snapd's CLI the read-only probes answer live snapd (`snap version`,
+/// `snap list`, the per-snap `snap list <name>` the status override
+/// rides). The status probe asserts consistency with the listing rather
+/// than any hard-coded host state: status must confirm the `snapd` row
+/// the listing shows, with the same version, or agree that no such row
+/// exists. No mutation anywhere (install/remove/refresh are what the
+/// offline suites pin with fakes).
+#[tokio::test]
+async fn snap_detect_and_read_only_probes_track_the_real_host() {
+    if !integration_enabled() {
+        eprintln!("TORIDE_APPS_INTEGRATION not set; skipping live test");
+        return;
+    }
+    match find_binary("snap") {
+        Ok(_) => {
+            let backend = SnapBackend::detect(CommandRunner::builder().build())
+                .expect("snap is on PATH; detect must succeed");
+            backend
+                .version()
+                .await
+                .expect("a snap CLI answering at all carries a client version row");
+
+            let entries = backend
+                .list_entries()
+                .await
+                .expect("`snap list` answers on a host running snapd");
+            let listed = entries.iter().find(|entry| entry.name == "snapd");
+            let status = backend
+                .status(StatusQuery::new("snapd"))
+                .await
+                .expect("the per-snap listing is an answer, never an error");
+            match listed {
+                Some(row) => assert_eq!(
+                    status,
+                    BackendStatus::Installed {
+                        version: row.version.clone()
+                    },
+                    "status must confirm what the listing showed for the snapd snap"
+                ),
+                None => assert_eq!(
+                    status,
+                    BackendStatus::NotInstalled,
+                    "no snapd row in the listing; status must agree"
+                ),
+            }
+        }
+        Err(_) => match SnapBackend::detect(CommandRunner::builder().build()) {
+            Err(toride_apps::Error::Command(toride_runner::Error::BinaryNotFound(name))) => {
+                assert_eq!(name, "snap");
+            }
+            Ok(_) => panic!("snap absent from PATH; detect must refuse"),
+            Err(other) => panic!(
+                "snap absent from PATH; detect must refuse with BinaryNotFound, got {other:?}"
+            ),
+        },
     }
 }
 

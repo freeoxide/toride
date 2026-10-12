@@ -46,6 +46,8 @@ pub enum BackendId {
     Homebrew,
     /// Linux Flatpak — remotes and refs (`flatpak`).
     Flatpak,
+    /// Linux Snap packages, through snapd (`snap`).
+    Snap,
     /// A distro's native package manager, selected by family (`apt`, `dnf`,
     /// `pacman`, `apk`).
     Distro(DistroFamily),
@@ -72,6 +74,7 @@ impl std::fmt::Display for BackendId {
         match self {
             Self::Homebrew => f.write_str("homebrew"),
             Self::Flatpak => f.write_str("flatpak"),
+            Self::Snap => f.write_str("snap"),
             // Families render lowercase (`distro-debian`); the wildcard keeps
             // future families displayable without touching this crate.
             Self::Distro(family) => {

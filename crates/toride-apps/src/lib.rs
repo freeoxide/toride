@@ -16,7 +16,7 @@
 //!   manager argv from a registry `App` plus a host [`Target`] — no I/O, no
 //!   clock, no processes, fully fixture-testable;
 //! - the [`Backend`] trait — the contract one install technology (homebrew,
-//!   flatpak, a distro manager) implements: install, uninstall,
+//!   flatpak, snap, a distro manager) implements: install, uninstall,
 //!   `list_installed`, status, plus an applicability probe;
 //! - a thin **runner seam** ([`CommandRunner`]) over
 //!   `toride_runner::Runner` so every backend command is constructed and
@@ -127,6 +127,20 @@
 //!   [`Operation::DistroUpdate`] complete the lifecycle: update plans are
 //!   derived from the manifest record's own identifiers
 //!   ([`Apps::update`]), never re-resolved through the registry
+//! - Snap rides the same surface with no registry method of its own:
+//!   there is no `InstallMethod::Snap` to route yet (snapcraft.io
+//!   source data is a later registry round), so
+//!   [`Operation::SnapInstall`] / [`Operation::SnapUninstall`] /
+//!   [`Operation::SnapUpdate`] are constructed at the operation seam
+//!   directly. [`backends::SnapBackend`] executes them (`snap install`
+//!   with the planned `--channel`, `snap remove`, `snap refresh`),
+//!   auto-attaches through
+//!   [`detect_backends`](AppsBuilder::detect_backends) when the snap
+//!   CLI is on the PATH or through the builder's `snap` slot, and
+//!   answers list / status / outdated from snapd's tables. Records
+//!   carry the snap name ([`NativeIds::Snap`]), so uninstall and
+//!   update replay the recorded identity exactly like brew and flatpak
+//!   records.
 //! - Language ecosystems — [`InstallMethod::Npm`] / [`InstallMethod::Cargo`] /
 //!   [`InstallMethod::Pipx`] / [`InstallMethod::Uv`] (and
 //!   [`InstallMethod::Mise`] under the non-default `mise` feature) route

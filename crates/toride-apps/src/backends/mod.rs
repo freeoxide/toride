@@ -16,6 +16,7 @@ pub mod homebrew;
 pub mod mise;
 pub mod npm;
 pub mod pipx;
+pub mod snap;
 pub mod uv;
 
 pub use cargo::CargoBackend;
@@ -28,4 +29,5 @@ pub use homebrew::HomebrewBackend;
 pub use mise::MiseBackend;
 pub use npm::NpmBackend;
 pub use pipx::PipxBackend;
+pub use snap::SnapBackend;
 pub use uv::UvBackend;

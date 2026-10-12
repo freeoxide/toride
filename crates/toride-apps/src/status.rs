@@ -69,7 +69,7 @@ use crate::backends::flatpak::FlatpakListScope;
 use crate::backends::homebrew::BrewKind;
 use crate::backends::{
     CargoBackend, DistroBackend, FlatpakBackend, HomebrewBackend, NpmBackend, PipxBackend,
-    UvBackend,
+    SnapBackend, UvBackend,
 };
 use crate::error::Result;
 use crate::manifest::{InstallRecord, NativeIds};
@@ -121,6 +121,8 @@ pub struct BackendSet<'a> {
     homebrew: Option<&'a HomebrewBackend>,
     /// Flatpak backend, when flatpak is usable on this host.
     flatpak: Option<&'a FlatpakBackend>,
+    /// Snap backend, when snapd's CLI is usable on this host.
+    snap: Option<&'a SnapBackend>,
     /// Distro backend, when a family manager is usable on this host.
     distro: Option<&'a DistroBackend>,
     /// Direct-download backend, when attached (the `direct` feature).
@@ -147,6 +149,7 @@ impl std::fmt::Debug for BackendSet<'_> {
         builder
             .field("homebrew", &self.homebrew.is_some())
             .field("flatpak", &self.flatpak.is_some())
+            .field("snap", &self.snap.is_some())
             .field("distro", &self.distro.is_some())
             .field("npm", &self.npm.is_some())
             .field("cargo", &self.cargo.is_some())
@@ -178,6 +181,13 @@ impl<'a> BackendSet<'a> {
     #[must_use]
     pub const fn flatpak(mut self, backend: &'a FlatpakBackend) -> Self {
         self.flatpak = Some(backend);
+        self
+    }
+
+    /// Attach the snap backend — consume-and-return.
+    #[must_use]
+    pub const fn snap(mut self, backend: &'a SnapBackend) -> Self {
+        self.snap = Some(backend);
         self
     }
 
@@ -234,8 +244,8 @@ impl<'a> BackendSet<'a> {
     }
 }
 
-/// The language-ecosystem slot a set of ids routes to — the one seam all
-/// five share (their trait `status` presence probe over the listing);
+/// The slot a set of ids routes to — the one seam the language ecosystems
+/// and snap share (their trait `status` presence probe over a listing);
 /// `None` when that backend is not attached.
 fn language_backend<'a>(set: &BackendSet<'a>, ids: &NativeIds) -> Option<&'a dyn Backend> {
     let backend: Option<&'a dyn Backend> = match ids {
@@ -243,6 +253,7 @@ fn language_backend<'a>(set: &BackendSet<'a>, ids: &NativeIds) -> Option<&'a dyn
         NativeIds::Cargo { .. } => set.cargo.map(|backend| backend as &dyn Backend),
         NativeIds::Pipx { .. } => set.pipx.map(|backend| backend as &dyn Backend),
         NativeIds::Uv { .. } => set.uv.map(|backend| backend as &dyn Backend),
+        NativeIds::Snap { .. } => set.snap.map(|backend| backend as &dyn Backend),
         #[cfg(feature = "mise")]
         NativeIds::Mise { .. } => set.mise.map(|backend| backend as &dyn Backend),
         NativeIds::Homebrew { .. } | NativeIds::Flatpak { .. } | NativeIds::Distro { .. } => {
@@ -254,12 +265,13 @@ fn language_backend<'a>(set: &BackendSet<'a>, ids: &NativeIds) -> Option<&'a dyn
     backend
 }
 
-/// The language-ecosystem native id a presence probe keys on.
+/// The native id a presence probe keys on.
 fn language_native_id(ids: &NativeIds) -> &str {
     match ids {
         NativeIds::Npm { package } | NativeIds::Pipx { package } | NativeIds::Uv { package } => {
             package
         }
+        NativeIds::Snap { name } => name,
         NativeIds::Cargo { crate_ } => crate_,
         #[cfg(feature = "mise")]
         NativeIds::Mise { tool } => tool,
@@ -386,7 +398,8 @@ async fn toride_recorded_status(
         ids @ (NativeIds::Npm { .. }
         | NativeIds::Cargo { .. }
         | NativeIds::Pipx { .. }
-        | NativeIds::Uv { .. }) => {
+        | NativeIds::Uv { .. }
+        | NativeIds::Snap { .. }) => {
             let Some(backend) = language_backend(backends, ids) else {
                 return Ok(AppStatus::NotInstalled);
             };
@@ -484,7 +497,8 @@ async fn foreign_status(native: &NativeIds, backends: &BackendSet<'_>) -> Result
         ids @ (NativeIds::Npm { .. }
         | NativeIds::Cargo { .. }
         | NativeIds::Pipx { .. }
-        | NativeIds::Uv { .. }) => {
+        | NativeIds::Uv { .. }
+        | NativeIds::Snap { .. }) => {
             let Some(backend) = language_backend(backends, ids) else {
                 return Ok(AppStatus::NotInstalled);
             };
@@ -513,6 +527,7 @@ fn language_subject(ids: &NativeIds) -> String {
         NativeIds::Cargo { crate_ } => format!("cargo crate `{crate_}`"),
         NativeIds::Pipx { package } => format!("pipx package `{package}`"),
         NativeIds::Uv { package } => format!("uv tool `{package}`"),
+        NativeIds::Snap { name } => format!("snap `{name}`"),
         #[cfg(feature = "mise")]
         NativeIds::Mise { tool } => format!("mise tool `{tool}`"),
         NativeIds::Homebrew { .. } | NativeIds::Flatpak { .. } | NativeIds::Distro { .. } => {
@@ -635,7 +650,8 @@ fn toride_recorded_status_sync(
         ids @ (NativeIds::Npm { .. }
         | NativeIds::Cargo { .. }
         | NativeIds::Pipx { .. }
-        | NativeIds::Uv { .. }) => {
+        | NativeIds::Uv { .. }
+        | NativeIds::Snap { .. }) => {
             let Some(backend) = language_backend(backends, ids) else {
                 return Ok(AppStatus::NotInstalled);
             };
@@ -720,7 +736,8 @@ fn foreign_status_sync(native: &NativeIds, backends: &BackendSet<'_>) -> Result<
         ids @ (NativeIds::Npm { .. }
         | NativeIds::Cargo { .. }
         | NativeIds::Pipx { .. }
-        | NativeIds::Uv { .. }) => {
+        | NativeIds::Uv { .. }
+        | NativeIds::Snap { .. }) => {
             let Some(backend) = language_backend(backends, ids) else {
                 return Ok(AppStatus::NotInstalled);
             };
@@ -1616,6 +1633,191 @@ mod tests {
             }
             other => panic!("expected Foreign, got {other:?}"),
         }
+        fake.assert_no_unmatched_calls();
+    }
+
+    fn snap_backend(fake: &FakeRunner) -> SnapBackend {
+        SnapBackend::new(CommandRunner::new(Arc::new(fake.clone())))
+    }
+
+    fn snap_list_spec(name: &str) -> toride_runner::CommandSpec {
+        command("snap", ["list", name])
+    }
+
+    /// A representative per-snap `snap list <name>` table exactly as snapd's
+    /// tabwriter emits it (the same shape the snap backend's own fixtures
+    /// carry): two-or-more-space column separators, `-` for empty cells.
+    fn snap_listing(name: &str, version: &str) -> String {
+        format!(
+            "Name  Version  Rev  Tracking  Publisher  Notes\n\
+             {name}  {version}  4842  latest/stable  Mozilla✓  -\n"
+        )
+    }
+
+    fn snap_record(slug: &str, name: &str) -> InstallRecord {
+        InstallRecord::new(
+            crate::plan::InstallPlan {
+                app: app_id(slug),
+                backend: BackendId::Snap,
+                operation: Operation::SnapInstall {
+                    name: name.to_owned(),
+                    channel: None,
+                },
+                dry_run: false,
+                requires_elevation: false,
+            },
+            NativeIds::Snap {
+                name: name.to_owned(),
+            },
+            None,
+        )
+        .with_installed_at(1_700_000_000)
+    }
+
+    #[tokio::test]
+    async fn manifest_hit_snap_record_reports_installed_from_the_per_snap_listing() {
+        let spec = snap_list_spec("firefox");
+        let fake = FakeRunner::new().strict().respond(
+            spec.clone(),
+            CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+        );
+        let snap = snap_backend(&fake);
+        let backends = BackendSet::new().snap(&snap);
+        let status = app_status(Some(&snap_record("firefox", "firefox")), None, &backends)
+            .await
+            .unwrap();
+        assert_eq!(
+            status,
+            AppStatus::Installed {
+                backend: BackendId::Snap,
+                version: Some("139.0.4-1".to_owned()),
+            }
+        );
+        fake.assert_called_with(&spec);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn manifest_hit_snap_record_without_a_version_still_reports_installed() {
+        // A locally-installed snap renders `-` for its empty version cell,
+        // so presence must be read from the row, not from the version.
+        let fake = FakeRunner::new().strict().respond(
+            snap_list_spec("local-snap"),
+            CommandOutput::from_stdout(snap_listing("local-snap", "-")),
+        );
+        let snap = snap_backend(&fake);
+        let backends = BackendSet::new().snap(&snap);
+        let status = app_status(
+            Some(&snap_record("local-snap", "local-snap")),
+            None,
+            &backends,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            status,
+            AppStatus::Installed {
+                backend: BackendId::Snap,
+                version: None,
+            }
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn manifest_hit_snap_record_when_no_snaps_match_reports_not_installed() {
+        // The CLI's own ErrNoMatchingSnaps wording, exit 1.
+        let fake = FakeRunner::new().strict().respond(
+            snap_list_spec("firefox"),
+            CommandOutput::from_stderr("error: no matching snaps installed\n", 1),
+        );
+        let snap = snap_backend(&fake);
+        let backends = BackendSet::new().snap(&snap);
+        let status = app_status(Some(&snap_record("firefox", "firefox")), None, &backends)
+            .await
+            .unwrap();
+        assert_eq!(status, AppStatus::NotInstalled);
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn manifest_miss_with_snap_listing_the_name_reports_foreign() {
+        let fake = FakeRunner::new().strict().respond(
+            snap_list_spec("firefox"),
+            CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+        );
+        let snap = snap_backend(&fake);
+        let backends = BackendSet::new().snap(&snap);
+        let native = NativeIds::Snap {
+            name: "firefox".to_owned(),
+        };
+        let status = app_status(None, Some(&native), &backends).await.unwrap();
+        match status {
+            AppStatus::Foreign { backend, detail } => {
+                assert_eq!(backend, BackendId::Snap);
+                assert!(detail.contains("snap `firefox`"), "{detail}");
+                assert!(detail.contains("139.0.4-1"), "{detail}");
+                assert!(detail.contains("not by toride"), "{detail}");
+            }
+            other => panic!("expected Foreign, got {other:?}"),
+        }
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[tokio::test]
+    async fn an_absent_snap_slot_skips_the_probe_entirely() {
+        let fake = FakeRunner::new().strict();
+        let backends = BackendSet::new();
+        assert_eq!(
+            app_status(Some(&snap_record("firefox", "firefox")), None, &backends)
+                .await
+                .unwrap(),
+            AppStatus::NotInstalled
+        );
+        let native = NativeIds::Snap {
+            name: "firefox".to_owned(),
+        };
+        assert_eq!(
+            app_status(None, Some(&native), &backends).await.unwrap(),
+            AppStatus::NotInstalled
+        );
+        fake.assert_no_unmatched_calls();
+    }
+
+    #[test]
+    fn sync_snap_record_and_foreign_mirror_the_async_probes() {
+        let fake = FakeRunner::new()
+            .strict()
+            .respond(
+                snap_list_spec("firefox"),
+                CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+            )
+            .respond(
+                snap_list_spec("firefox"),
+                CommandOutput::from_stdout(snap_listing("firefox", "139.0.4-1")),
+            );
+        let snap = snap_backend(&fake);
+        let backends = BackendSet::new().snap(&snap);
+        assert_eq!(
+            app_status_sync(Some(&snap_record("firefox", "firefox")), None, &backends).unwrap(),
+            AppStatus::Installed {
+                backend: BackendId::Snap,
+                version: Some("139.0.4-1".to_owned()),
+            }
+        );
+        let native = NativeIds::Snap {
+            name: "firefox".to_owned(),
+        };
+        assert!(
+            matches!(
+                app_status_sync(None, Some(&native), &backends).unwrap(),
+                AppStatus::Foreign {
+                    backend: BackendId::Snap,
+                    ..
+                }
+            ),
+            "the sync snap probes mirror the async ones"
+        );
         fake.assert_no_unmatched_calls();
     }
 
