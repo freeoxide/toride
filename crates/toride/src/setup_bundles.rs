@@ -2,8 +2,6 @@
 //! load-bearing axis is commercial use. Data model + compiled-in registry;
 //! evaluation, planning, and hint application build on these types.
 
-use std::path::PathBuf;
-
 use toride_apps::{
     DistroFamily, InstallMethod, InstallOptions, InstallPlan, InstallRecord, NativeIds, Os, Target,
     TorideId, plan_install,
@@ -1723,53 +1721,18 @@ pub fn install_record(
     Some(InstallRecord::new(plan, ids, version))
 }
 
-/// The outcome of [`apply_hint`]: the expanded destination and whether bytes
-/// were written or an existing file was left untouched.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum HintResult {
-    /// The hint's exact bytes were written atomically to `path`.
-    Written {
-        /// The expanded destination the bytes landed on.
-        path: PathBuf,
-    },
-    /// `path` already existed; nothing was written.
-    SkippedExisting {
-        /// The expanded destination that was left untouched.
-        path: PathBuf,
-    },
-}
+mod hints;
 
-/// Apply a config hint: expand `~` via toride-fs, report
-/// [`HintResult::SkippedExisting`] without touching an existing file, and
-/// otherwise write the exact bytes through [`toride_fs::atomic_write`]. Never
-/// modifies an existing file, merges into one, or creates directories.
-///
-/// # Errors
-///
-/// [`toride_fs::Error`] when existence cannot be read or the atomic write
-/// fails — including a missing parent directory.
-pub fn apply_hint(hint: &ConfigHint) -> Result<HintResult, toride_fs::Error> {
-    apply_hint_with(hint, toride_fs::expand_tilde)
-}
-
-fn apply_hint_with(
-    hint: &ConfigHint,
-    expand: impl Fn(&str) -> PathBuf,
-) -> Result<HintResult, toride_fs::Error> {
-    let path = expand(hint.path);
-    if toride_fs::read_optional(&path)?.is_some() {
-        return Ok(HintResult::SkippedExisting { path });
-    }
-    toride_fs::atomic_write(&path, hint.content)?;
-    Ok(HintResult::Written { path })
-}
+pub use hints::{HintResult, apply_hint};
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::path::Path;
+    use std::path::PathBuf;
     use std::sync::Arc;
 
+    use super::hints::apply_hint_with;
     use super::*;
     use toride_apps::InstallManifest;
     use toride_apps::backend::ensure_install_allowed;
@@ -2499,6 +2462,32 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn apply_hint_skips_a_pre_existing_non_utf8_file_untouched()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir()?;
+        let target = home.path().join(".zshrc");
+        std::fs::write(&target, [0xFF, 0xFE])?;
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o640))?;
+
+        let outcome = apply_hint_with(&DIRENV_HOOK_ZSH, expand_under(home.path().to_path_buf()))?;
+
+        assert_eq!(
+            outcome,
+            HintResult::SkippedExisting {
+                path: target.clone()
+            }
+        );
+        assert_eq!(std::fs::read(&target)?, [0xFF, 0xFE]);
+        let mode = std::fs::metadata(&target)?.permissions().mode() & 0o777;
+        assert_eq!(mode, 0o640);
+        assert_eq!(entries(home.path()), [".zshrc"]);
+        Ok(())
+    }
+
+    #[test]
     fn apply_hint_errors_without_creating_any_directory_when_the_parent_is_missing()
     -> Result<(), Box<dyn std::error::Error>> {
         let home = tempfile::tempdir()?;
@@ -2515,17 +2504,16 @@ mod tests {
 
     #[test]
     fn hint_application_writes_only_through_toride_fs_atomic_write() {
-        let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/setup_bundles.rs"));
-        let non_test = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("split yields a head");
+        let hints = include_str!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/setup_bundles/hints.rs"
+        ));
         assert!(
-            non_test.contains("toride_fs::expand_tilde"),
+            hints.contains("toride_fs::expand_tilde"),
             "~ expansion must route through toride-fs"
         );
         assert!(
-            non_test.contains("toride_fs::atomic_write"),
+            hints.contains("toride_fs::atomic_write"),
             "hint bytes must go through toride-fs atomic write"
         );
         for banned in [
@@ -2537,8 +2525,32 @@ mod tests {
             "append",
         ] {
             assert!(
-                !non_test.contains(banned),
+                !hints.contains(banned),
                 "no overwrite/append path may exist in hint application: found {banned}"
+            );
+        }
+    }
+
+    #[test]
+    fn filesystem_use_stays_confined_to_the_hints_submodule() {
+        let source = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/setup_bundles.rs"));
+        let non_test = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split yields a head");
+        for banned in [
+            "toride_fs",
+            "with_lock",
+            "OpenOptions",
+            "fs::write",
+            "write_all",
+            "create_dir_all",
+            "append",
+        ] {
+            assert!(
+                !non_test.contains(banned),
+                "filesystem use lives in the hints submodule; move it there or widen this \
+                 tripwire consciously: found {banned}"
             );
         }
     }

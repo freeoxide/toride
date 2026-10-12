@@ -132,6 +132,7 @@ pub struct SetupContent {
     consent_modal: InteractiveModal<Consent>,
     /// Vertical scroll offset over the whole pane.
     scroll: usize,
+    follow_pending: bool,
 }
 
 impl Default for SetupContent {
@@ -167,6 +168,7 @@ impl SetupContent {
             )
             .dimensions(MODAL_WIDTH, MODAL_HEIGHT),
             scroll: 0,
+            follow_pending: false,
         }
     }
 
@@ -191,11 +193,15 @@ impl SetupContent {
 
     /// Replace the evaluated offers and reset the selection to the first
     /// bundle's `default_pick` (falling back to its first `Free` row when the
-    /// pick was suppressed). Dismissals, verdicts, and approvals survive.
+    /// pick was suppressed). Dismissals, verdicts, and approvals survive; an
+    /// open consent modal closes so a verdict can never land on a stale row
+    /// position.
     pub fn set_offers(&mut self, offers: SetupOffers) {
+        self.close_consent();
         self.offers = Some(offers);
         self.detail_open = false;
         self.sel = self.default_selection();
+        self.follow_pending = true;
     }
 
     /// Replace the suggestion findings list.
@@ -253,10 +259,20 @@ impl SetupContent {
         match code {
             KeyCode::Down | KeyCode::Char('j') => {
                 self.sel = (self.sel + 1).min(rows.saturating_sub(1));
+                self.follow_pending = true;
             }
-            KeyCode::Up | KeyCode::Char('k') => self.sel = self.sel.saturating_sub(1),
-            KeyCode::PageDown => self.sel = (self.sel + 8).min(rows.saturating_sub(1)),
-            KeyCode::PageUp => self.sel = self.sel.saturating_sub(8),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.sel = self.sel.saturating_sub(1);
+                self.follow_pending = true;
+            }
+            KeyCode::PageDown => {
+                self.sel = (self.sel + 8).min(rows.saturating_sub(1));
+                self.follow_pending = true;
+            }
+            KeyCode::PageUp => {
+                self.sel = self.sel.saturating_sub(8);
+                self.follow_pending = true;
+            }
             KeyCode::Enter => {
                 if self.row_at(self.sel).is_some() {
                     self.detail_open = true;
@@ -403,13 +419,23 @@ impl SetupContent {
             return;
         }
 
-        let lines = if self.detail_open {
-            self.detail_lines(p, inner.width)
+        let (lines, selected_line) = if self.detail_open {
+            (self.detail_lines(p, inner.width), None)
         } else {
             self.list_lines(p, inner.width)
         };
 
         let visible = inner.height as usize;
+        if self.follow_pending {
+            self.follow_pending = false;
+            if let Some(sel_line) = selected_line {
+                if sel_line < self.scroll {
+                    self.scroll = sel_line;
+                } else if sel_line >= self.scroll + visible {
+                    self.scroll = sel_line + 1 - visible;
+                }
+            }
+        }
         let max_scroll = lines.len().saturating_sub(visible);
         if self.scroll > max_scroll {
             self.scroll = max_scroll;
@@ -482,10 +508,11 @@ impl SetupContent {
         );
     }
 
-    fn list_lines(&self, p: Palette, width: u16) -> Vec<Line<'static>> {
+    fn list_lines(&self, p: Palette, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
         let mut lines: Vec<Line<'static>> = Vec::new();
+        let mut selected_line = None;
         let Some(offers) = &self.offers else {
-            return lines;
+            return (lines, selected_line);
         };
         let rows = self.visible_rows();
 
@@ -525,9 +552,12 @@ impl SetupContent {
                     Style::new().fg(p.accent).add_modifier(Modifier::BOLD),
                 )));
             }
+            if pos == self.sel {
+                selected_line = Some(lines.len());
+            }
             lines.push(self.row_line(pos, bi, ri, p, width));
         }
-        lines
+        (lines, selected_line)
     }
 
     /// Honest empty-state line: why the pane has no rows.
@@ -931,6 +961,38 @@ mod tests {
     }
 
     #[test]
+    fn offer_refresh_closes_an_open_consent_modal_and_forces_fresh_consent() {
+        let mut c = populated();
+        select(&mut c, "containers-orbstack");
+        c.detail_open = true;
+        c.handle_key(KeyCode::Enter);
+        assert!(c.has_modal());
+
+        c.set_offers(mac_offers());
+
+        assert!(
+            !c.has_modal(),
+            "a refresh must not leave a stale modal open"
+        );
+        assert!(
+            c.approved().is_empty(),
+            "no install approval may come from a mid-modal refresh"
+        );
+        select(&mut c, "containers-orbstack");
+        c.detail_open = true;
+        assert!(c.handle_key(KeyCode::Enter).is_none());
+        assert!(
+            c.has_modal(),
+            "the row must re-gate install behind fresh consent"
+        );
+        assert_eq!(c.consent_for("containers-orbstack"), Consent::Pending);
+        assert!(
+            c.approved().is_empty(),
+            "nothing approved before re-consent"
+        );
+    }
+
+    #[test]
     fn dismiss_hides_row_and_survives_offer_refresh() {
         let mut c = populated();
         let before = c.suggestion_count();
@@ -1119,6 +1181,44 @@ mod tests {
         };
         c.handle_mouse(down);
         assert_eq!(c.scroll, 1);
+    }
+
+    #[test]
+    fn selection_follows_page_and_line_moves_down() {
+        let mut c = populated();
+        let out = render_to_string(&mut c, 120, 12);
+        assert!(out.contains('▸'), "selected row visible at the top");
+        assert_eq!(c.scroll, 0, "a static default view does not scroll");
+        c.handle_key(KeyCode::PageDown);
+        c.handle_key(KeyCode::PageDown);
+        for _ in 0..20 {
+            c.handle_key(KeyCode::Char('j'));
+            let out = render_to_string(&mut c, 120, 12);
+            assert!(out.contains('▸'), "selection {} left the viewport", c.sel);
+        }
+        assert!(c.scroll > 0, "the offset must follow the selection down");
+    }
+
+    #[test]
+    fn selection_follows_page_and_line_moves_up() {
+        let mut c = populated();
+        c.handle_key(KeyCode::PageDown);
+        c.handle_key(KeyCode::PageDown);
+        let _ = render_to_string(&mut c, 120, 12);
+        let down = c.scroll;
+        assert!(down > 0, "sanity: the pane scrolled to follow");
+        for _ in 0..20 {
+            c.handle_key(KeyCode::Char('k'));
+            let out = render_to_string(&mut c, 120, 12);
+            assert!(out.contains('▸'), "selection {} left the viewport", c.sel);
+        }
+        c.handle_key(KeyCode::PageUp);
+        let out = render_to_string(&mut c, 120, 12);
+        assert!(out.contains('▸'));
+        assert!(
+            c.scroll < down,
+            "the offset must follow the selection back up"
+        );
     }
 
     // ── Full-screen insta snapshots ─────────────────────────────────────────
