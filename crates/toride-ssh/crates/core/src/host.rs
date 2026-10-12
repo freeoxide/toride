@@ -22,7 +22,7 @@ pub const MAX_HOST_INPUT_LEN: usize = 255;
 /// metacharacters, whitespace, control characters, leading dashes, empty or
 /// overlong input — is a typed [`Error::InvalidHost`] rejection and can never
 /// be constructed as a `HostSpec`.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct HostSpec {
     user: Option<String>,
     host: String,
@@ -114,6 +114,25 @@ impl FromStr for HostSpec {
 
     fn from_str(s: &str) -> Result<Self> {
         Self::parse(s)
+    }
+}
+
+impl Serialize for HostSpec {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_str(&self.destination())
+    }
+}
+
+impl<'de> Deserialize<'de> for HostSpec {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let destination = String::deserialize(deserializer)?;
+        HostSpec::parse(&destination).map_err(serde::de::Error::custom)
     }
 }
 
@@ -472,5 +491,39 @@ mod tests {
     #[test]
     fn default_policy_is_strict() {
         assert_eq!(HostKeyPolicy::default(), HostKeyPolicy::Strict);
+    }
+
+    #[test]
+    fn serde_round_trips_through_the_destination_string() {
+        let spec = HostSpec::parse("root@[2001:db8::1]").unwrap();
+        let json = serde_json::to_string(&spec).unwrap();
+        assert_eq!(json, "\"root@[2001:db8::1]\"");
+        let back: HostSpec = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, spec);
+    }
+
+    #[test]
+    fn deserialization_rejects_input_that_fails_the_grammar() {
+        for bad in [
+            r#""-oProxyCommand=evil""#,
+            r#""host;other""#,
+            r#""""#,
+            r#""   ""#,
+            r#""user@""#,
+        ] {
+            assert!(
+                serde_json::from_str::<HostSpec>(bad).is_err(),
+                "{bad} must not deserialize"
+            );
+        }
+    }
+
+    #[test]
+    fn deserialization_rejects_field_shaped_payloads() {
+        let payload = r#"{"user":null,"host":"-oProxyCommand=evil"}"#;
+        assert!(
+            serde_json::from_str::<HostSpec>(payload).is_err(),
+            "serde must deserialize the destination string, never write fields directly"
+        );
     }
 }
