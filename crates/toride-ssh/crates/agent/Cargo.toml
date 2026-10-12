@@ -6,6 +6,8 @@ description = "SSH agent management: listing, adding, and removing keys"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["ssh", "agent", "ssh-agent", "keys", "identity"]
+categories = ["authentication", "network-programming"]
 
 [features]
 default = []

@@ -7,6 +7,8 @@ description = "Automatic security update management for Linux VPS hosts"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["updates", "security-updates", "unattended", "apt", "dnf"]
+categories = ["os"]
 
 [lib]
 name = "toride_updates"

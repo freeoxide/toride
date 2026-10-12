@@ -7,6 +7,8 @@ description = "Fail2Ban-style intrusion prevention library"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["fail2ban", "intrusion-prevention", "ban", "firewall", "security"]
+categories = ["os", "network-programming"]
 
 [features]
 # `config` is on by default so the `detector_scan` criterion bench (which needs

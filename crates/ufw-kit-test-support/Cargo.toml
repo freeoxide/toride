@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 readme = "README.md"
 description = "Test utilities for ufw-kit"
+keywords = ["ufw", "firewall", "testing", "test-support", "fixtures"]
+categories = ["development-tools"]
 
 [dependencies]
 ufw-kit = { path = "../ufw-kit", version = "0.1.0", features = ["client", "doctor", "app-profile", "framework", "service", "firewall-nft", "firewall-iptables"] }

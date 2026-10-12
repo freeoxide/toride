@@ -6,6 +6,8 @@ description = "Async SSH manager library: a unified facade over the toride-ssh k
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["ssh", "openssh", "async", "keys", "remote-access"]
+categories = ["network-programming", "authentication", "asynchronous"]
 
 [features]
 default = [

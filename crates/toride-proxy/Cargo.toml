@@ -6,6 +6,8 @@ description = "Reverse proxy, TLS certificate, and WAF management"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["reverse-proxy", "nginx", "caddy", "tls", "certificate"]
+categories = ["network-programming", "os"]
 
 [[bin]]
 name = "toride-proxy"

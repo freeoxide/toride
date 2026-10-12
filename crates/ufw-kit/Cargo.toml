@@ -6,6 +6,8 @@ license.workspace = true
 repository.workspace = true
 readme = "README.md"
 description = "Safely manage, inspect, validate, and diagnose UFW firewall installations"
+keywords = ["ufw", "firewall", "iptables", "security", "linux"]
+categories = ["os", "network-programming"]
 
 [features]
 default = ["client", "doctor", "app-profile"]

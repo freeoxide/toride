@@ -6,6 +6,8 @@ description = "SSH key lifecycle management: generation, inventory, installation
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["ssh", "keys", "keygen", "ed25519", "key-management"]
+categories = ["authentication", "cryptography"]
 
 [features]
 default = []

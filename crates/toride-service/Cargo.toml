@@ -6,6 +6,8 @@ description = "Shared systemd service management utilities"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["systemd", "service", "systemctl", "daemon", "unit"]
+categories = ["os"]
 
 [features]
 default = ["client"]

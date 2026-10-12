@@ -6,6 +6,8 @@ description = "Shared types, errors, path resolution, CLI runner abstraction, an
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["ssh", "types", "errors", "paths", "shared"]
+categories = ["network-programming"]
 
 [dependencies]
 ssh-key = { version = "0.7.0-rc.10", features = ["ed25519", "rsa", "p256", "crypto", "std"] }

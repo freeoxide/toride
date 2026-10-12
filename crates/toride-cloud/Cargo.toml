@@ -6,6 +6,8 @@ description = "Cloud provider security group and firewall management"
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["cloud", "firewall", "security-group", "aws", "vps"]
+categories = ["network-programming", "os"]
 
 [[bin]]
 name = "toride-cloud"

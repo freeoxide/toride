@@ -6,6 +6,8 @@ description = "Shared diagnostic types: Severity, Finding, DoctorReport, and ren
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
+keywords = ["diagnostics", "severity", "finding", "health", "report"]
+categories = ["development-tools"]
 
 [features]
 default = []
