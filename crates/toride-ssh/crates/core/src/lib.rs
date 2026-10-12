@@ -11,6 +11,7 @@
 //! `toride-ssh-core` — shared types, error definitions, path resolution,
 //! CLI runner abstraction, and undo mechanism used by all `toride-ssh` sub-crates.
 
+pub mod host;
 pub mod paths;
 mod types;
 
@@ -18,6 +19,7 @@ pub mod privilege;
 pub mod runner;
 pub mod undo;
 
+pub use host::{HostKeyPolicy, HostSpec};
 pub use paths::SshPaths;
 pub use privilege::{PrivilegedOp, is_root, run_privileged};
 pub use runner::{CliRunner, DefaultCliRunner, MockCliRunner};
@@ -92,6 +94,16 @@ pub enum Error {
     /// Host not present in `known_hosts`.
     #[error("host not known: {0}")]
     HostNotKnown(String),
+
+    /// A `[user@]host` destination failed grammar validation (empty, shell
+    /// metacharacters, leading dash, whitespace, control characters, overlong).
+    /// Carries the reason only; the rejected input is never echoed.
+    #[error("invalid host: {0}")]
+    InvalidHost(String),
+    /// The remote host's key failed `StrictHostKeyChecking` verification.
+    /// Carries the (scrubbed) ssh diagnostic.
+    #[error("host key verification failed: {0}")]
+    HostKeyVerificationFailed(String),
 
     // Authorized keys
     /// Failed to parse `authorized_keys`.
