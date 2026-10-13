@@ -1,15 +1,22 @@
 #![warn(missing_docs)]
 
-//! `toride-ssh-upload` — one-shot file upload to remote hosts over `sftp`
+//! `toride-ssh-upload`: one-shot file upload to remote hosts over `sftp`
 //! batch mode.
 //!
 //! [`UploadService`] owns a `Box<dyn toride_runner::Runner>` the same way
 //! `toride_service::ServiceManager` owns one, and copies one existing local
 //! regular file to a validated [`RemotePath`] on a
-//! [`HostSpec`](toride_ssh_core::HostSpec) host. The transfer runs as
-//! `sftp -o BatchMode=yes -o StrictHostKeyChecking=<policy> -b <batchfile>
-//! <host>`, where the batch file holds a single `put` directive; sftp batch
-//! mode aborts on the first failing directive and never prompts.
+//! [`HostSpec`] host. The transfer runs as
+//! `sftp -o BatchMode=yes -o ConnectTimeout=<secs> -o StrictHostKeyChecking=<policy>
+//! -b <batchfile> <host>`, where the batch file holds a single `put`
+//! directive; sftp batch mode aborts on the first failing directive and never
+//! prompts. [`UploadService::upload_many`] ships several files in that one
+//! batch, paying one sftp process instead of one per file.
+//!
+//! The local side is unix-only: the canonical local path is produced by
+//! `fs::canonicalize`, and on Windows the resulting backslash-separated path
+//! fails batch-directive validation as [`Error::InvalidLocalPath`] before
+//! anything spawns.
 //!
 //! # Example
 //!
@@ -36,6 +43,7 @@ use std::fmt;
 use std::fs;
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use toride_runner::Runner;
@@ -47,6 +55,7 @@ const DEFAULT_SFTP_PROGRAM: &str = "sftp";
 const BATCH_MODE_OPTION: &str = "BatchMode=yes";
 const HOST_KEY_FAILURE_SIGNATURE: &str = "host key verification failed";
 const SFTP_FATAL_EXIT_CODE: i32 = 255;
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Maximum accepted length, in bytes, of a remote path input.
 pub const MAX_REMOTE_PATH_INPUT_LEN: usize = 4096;
@@ -150,16 +159,40 @@ pub enum Error {
     LocalFileNotRegular(String),
     /// The transfer (or its ssh connection) exited non-zero for a non-host-key
     /// reason. Carries the scrubbed stderr, never the remote path.
-    #[error("upload to {host} failed (exit {exit_code:?}): {stderr}")]
+    #[error("upload to {host} failed (exit {}): {stderr}", format_exit_code(*exit_code))]
     UploadFailed {
         /// The validated destination the transfer ran against.
         host: String,
         /// The sftp exit code, `None` when terminated by a signal.
         exit_code: Option<i32>,
         /// The runner-scrubbed sftp stderr diagnostic with both upload paths
-        /// masked out.
+        /// masked out, whatever their length.
         stderr: String,
     },
+    /// A batched transfer ([`UploadService::upload_many`]) aborted at sftp's
+    /// first failing directive or failed outright. `failed_index` names the
+    /// pair the diagnostic mentions, when it mentions one; `None` means the
+    /// aborting directive could not be identified.
+    #[error(
+        "upload batch to {host} failed{} (exit {}): {stderr}",
+        format_failed_index(*failed_index),
+        format_exit_code(*exit_code)
+    )]
+    UploadBatchFailed {
+        /// The validated destination the transfer ran against.
+        host: String,
+        /// Position of the failing pair in the submitted slice, best-effort.
+        failed_index: Option<usize>,
+        /// The sftp exit code, `None` when terminated by a signal.
+        exit_code: Option<i32>,
+        /// The runner-scrubbed sftp stderr diagnostic with every upload path
+        /// masked out, whatever its length.
+        stderr: String,
+    },
+    /// [`UploadService::upload_many`] was handed an empty pair slice; nothing
+    /// was staged and nothing spawned.
+    #[error("upload batch rejected: at least one pair is required")]
+    EmptyBatch,
     /// Shared `toride-ssh-core` vocabulary: invalid host, host-key
     /// verification failure, or a missing sftp binary.
     #[error(transparent)]
@@ -182,6 +215,8 @@ pub struct UploadService {
     host_key_policy: HostKeyPolicy,
     sftp_program: String,
     timeout: Option<Duration>,
+    connect_timeout: Duration,
+    sftp_present: OnceLock<bool>,
 }
 
 impl UploadService {
@@ -194,6 +229,8 @@ impl UploadService {
             host_key_policy: HostKeyPolicy::Strict,
             sftp_program: DEFAULT_SFTP_PROGRAM.to_owned(),
             timeout: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            sftp_present: OnceLock::new(),
         }
     }
 
@@ -205,9 +242,28 @@ impl UploadService {
     }
 
     /// Override the sftp program used in invocations and its presence check.
+    ///
+    /// The cached presence probe of the previous program is discarded, so the
+    /// new program is probed on its next run.
     #[must_use]
     pub fn with_sftp_program(mut self, program: impl Into<String>) -> Self {
         self.sftp_program = program.into();
+        self.sftp_present = OnceLock::new();
+        self
+    }
+
+    /// Override the `-o ConnectTimeout=<secs>` cap sent with every
+    /// invocation.
+    ///
+    /// Without it, a blackholed or firewalled host blocks until the runner's
+    /// wall-clock timeout (60 s through a default
+    /// [`DuctRunner`](toride_runner::DuctRunner)) and surfaces as an opaque
+    /// [`Error::Runner`] timeout instead of sftp's typed connect failure. The
+    /// default is 10 s; whole seconds are sent, so sub-second precision is
+    /// truncated.
+    #[must_use]
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
         self
     }
 
@@ -242,6 +298,12 @@ impl UploadService {
         self.timeout
     }
 
+    /// The configured `-o ConnectTimeout` cap, in whole seconds.
+    #[must_use]
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
+    }
+
     /// Copy the local regular file `local` to `remote` on `host`, returning
     /// the captured output on sftp exit 0.
     ///
@@ -268,42 +330,127 @@ impl UploadService {
         local: &Path,
         remote: &RemotePath,
     ) -> Result<CommandOutput> {
-        let local_text = canonical_local_text(local)?;
-        if !discovery::binary_exists(&self.sftp_program) {
+        let staged = [StagedPair {
+            local: canonical_local_text(local)?,
+            remote: remote.as_str().to_owned(),
+        }];
+        match self.run_batch(host, &staged)? {
+            Ok(output) => Ok(output),
+            Err(failure) => Err(failure.into_upload_error(host)),
+        }
+    }
+
+    /// Copy every `(local, remote)` pair to `host` in one sftp batch,
+    /// returning the captured output on sftp exit 0.
+    ///
+    /// All pairs are validated before the sftp binary presence is checked and
+    /// before anything spawns: one missing or non-regular local file, or one
+    /// canonical local path that cannot appear in a batch directive, rejects
+    /// the whole call. One `0o600` batch file holding one `put` directive per
+    /// pair, in order, is staged in a private temporary directory and removed
+    /// whether the transfer succeeds or fails; the whole batch costs a single
+    /// sftp process, so N files pay one SSH handshake and authentication
+    /// instead of N.
+    ///
+    /// sftp batch mode aborts at the first failing directive, so a non-zero
+    /// exit means every earlier pair transferred and the failing one and all
+    /// after it did not. Which pair failed is reported best-effort from the
+    /// diagnostic sftp prints; when the diagnostic names no path,
+    /// [`Error::UploadBatchFailed`] carries `failed_index: None`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::EmptyBatch`] for an empty slice, the per-pair
+    /// [`Error::LocalFileNotFound`], [`Error::LocalFileNotRegular`], or
+    /// [`Error::InvalidLocalPath`] for the first invalid pair,
+    /// [`Error::Core`] carrying
+    /// [`toride_ssh_core::Error::ToolNotFound`] when the sftp binary is absent
+    /// or [`toride_ssh_core::Error::HostKeyVerificationFailed`] when sftp
+    /// exits 255 with the host-key verification signature in stderr,
+    /// [`Error::UploadBatchFailed`] for any other non-zero exit, and
+    /// [`Error::Runner`] when the runner itself fails.
+    pub fn upload_many(
+        &self,
+        host: &HostSpec,
+        pairs: &[(&Path, &RemotePath)],
+    ) -> Result<CommandOutput> {
+        if pairs.is_empty() {
+            return Err(Error::EmptyBatch);
+        }
+        let mut staged = Vec::with_capacity(pairs.len());
+        for (local, remote) in pairs {
+            staged.push(StagedPair {
+                local: canonical_local_text(local)?,
+                remote: remote.as_str().to_owned(),
+            });
+        }
+        match self.run_batch(host, &staged)? {
+            Ok(output) => Ok(output),
+            Err(failure) => Err(failure.into_batch_error(host)),
+        }
+    }
+
+    fn sftp_available(&self) -> bool {
+        if let Some(present) = self.sftp_present.get() {
+            return *present;
+        }
+        let present = discovery::binary_exists(&self.sftp_program);
+        if present {
+            let _ = self.sftp_present.set(true);
+        }
+        present
+    }
+
+    fn run_batch(
+        &self,
+        host: &HostSpec,
+        staged: &[StagedPair],
+    ) -> Result<std::result::Result<CommandOutput, RunFailure>> {
+        if !self.sftp_available() {
             return Err(Error::Core(toride_ssh_core::Error::ToolNotFound(
                 self.sftp_program.clone(),
             )));
         }
-        let text = batch_text(local_text.as_str(), remote.as_str());
-        let dir = tempfile::tempdir()?;
-        let mut batch = tempfile::NamedTempFile::new_in(&dir)?;
-        batch.write_all(text.as_bytes())?;
-        batch.flush()?;
-        let batch_arg = batch.path().to_string_lossy().into_owned();
-        let spec = self.sftp_spec(host, &batch_arg);
-        let output = self.runner.run(&spec)?;
-        drop(batch);
-        drop(dir);
+        let mut text = String::new();
+        for pair in staged {
+            text.push_str(&batch_text(&pair.local, &pair.remote));
+        }
+        let (spec, output) = {
+            let dir = tempfile::tempdir()?;
+            let mut batch = tempfile::NamedTempFile::new_in(&dir)?;
+            batch.write_all(text.as_bytes())?;
+            batch.flush()?;
+            let batch_arg = batch.path().to_string_lossy().into_owned();
+            let spec = self.sftp_spec(host, &batch_arg);
+            let output = self.runner.run(&spec)?;
+            (spec, output)
+        };
         if output.success {
-            return Ok(output);
+            return Ok(Ok(output));
         }
-        let stderr = scrub_upload_stderr(&spec, &output.stderr, &local_text, remote.as_str());
+        let stderr = scrub_staged_stderr(&spec, &output.stderr, staged);
         if is_host_key_failure(&output) {
-            return Err(Error::Core(
-                toride_ssh_core::Error::HostKeyVerificationFailed(stderr),
-            ));
+            return Ok(Err(RunFailure {
+                host_key: Some(stderr),
+                failed_index: None,
+                exit_code: output.exit_code,
+                stderr: String::new(),
+            }));
         }
-        Err(Error::UploadFailed {
-            host: host.destination(),
+        Ok(Err(RunFailure {
+            host_key: None,
+            failed_index: failed_pair_index(&output.stderr, staged),
             exit_code: output.exit_code,
             stderr,
-        })
+        }))
     }
 
     fn sftp_spec(&self, host: &HostSpec, batch_arg: &str) -> CommandSpec {
         let mut spec = CommandSpec::new(self.sftp_program.clone())
             .arg("-o")
             .arg(BATCH_MODE_OPTION)
+            .arg("-o")
+            .arg(connect_timeout_option(self.connect_timeout))
             .arg("-o")
             .arg(self.host_key_policy.ssh_option())
             .arg("-b")
@@ -316,6 +463,69 @@ impl UploadService {
         }
         spec
     }
+}
+
+/// One validated `(canonical local, remote)` pair bound for the batch file.
+struct StagedPair {
+    local: String,
+    remote: String,
+}
+
+/// A non-zero sftp exit, classified, with the paths already masked out of
+/// `stderr`.
+struct RunFailure {
+    host_key: Option<String>,
+    failed_index: Option<usize>,
+    exit_code: Option<i32>,
+    stderr: String,
+}
+
+impl RunFailure {
+    fn into_upload_error(self, host: &HostSpec) -> Error {
+        if let Some(detail) = self.host_key {
+            return Error::Core(toride_ssh_core::Error::HostKeyVerificationFailed(detail));
+        }
+        Error::UploadFailed {
+            host: host.destination(),
+            exit_code: self.exit_code,
+            stderr: self.stderr,
+        }
+    }
+
+    fn into_batch_error(self, host: &HostSpec) -> Error {
+        if let Some(detail) = self.host_key {
+            return Error::Core(toride_ssh_core::Error::HostKeyVerificationFailed(detail));
+        }
+        Error::UploadBatchFailed {
+            host: host.destination(),
+            failed_index: self.failed_index,
+            exit_code: self.exit_code,
+            stderr: self.stderr,
+        }
+    }
+}
+
+fn failed_pair_index(raw_stderr: &str, staged: &[StagedPair]) -> Option<usize> {
+    staged
+        .iter()
+        .position(|pair| raw_stderr.contains(pair.remote.as_str()))
+        .or_else(|| {
+            staged
+                .iter()
+                .position(|pair| raw_stderr.contains(pair.local.as_str()))
+        })
+}
+
+fn connect_timeout_option(timeout: Duration) -> String {
+    format!("ConnectTimeout={}", timeout.as_secs())
+}
+
+fn format_exit_code(exit_code: Option<i32>) -> String {
+    exit_code.map_or("signal".to_owned(), |code| code.to_string())
+}
+
+fn format_failed_index(failed_index: Option<usize>) -> String {
+    failed_index.map_or(String::new(), |index| format!(" at pair index {index}"))
 }
 
 fn validate_batch_token(token: &str) -> std::result::Result<(), String> {
@@ -366,26 +576,73 @@ fn batch_text(local: &str, remote: &str) -> String {
     format!("put {local} {remote}\n")
 }
 
-fn scrub_upload_stderr(spec: &CommandSpec, stderr: &str, local: &str, remote: &str) -> String {
-    let masked = mask_value(stderr, remote);
-    let masked = mask_value(&masked, local);
+fn scrub_staged_stderr(spec: &CommandSpec, stderr: &str, staged: &[StagedPair]) -> String {
+    let masked = staged.iter().fold(stderr.to_owned(), |text, pair| {
+        mask_value(&text, &pair.remote)
+    });
+    let masked = staged
+        .iter()
+        .fold(masked, |text, pair| mask_value(&text, &pair.local));
     scrub_stderr(spec, &masked)
 }
 
+/// Replace every occurrence of `value` with `***`.
+///
+/// Values of [`MIN_SUBSTRING_SCRUB_LEN`] characters or more are replaced
+/// everywhere; shorter validated paths are replaced only where both sides sit
+/// on a path boundary, so a `/a` remote path is masked in `/a: denied` but
+/// left alone inside the longer, unrelated `/abc`.
 fn mask_value(text: &str, value: &str) -> String {
-    if value.chars().count() < MIN_SUBSTRING_SCRUB_LEN {
-        text.to_owned()
-    } else {
-        text.replace(value, "***")
+    if value.chars().count() >= MIN_SUBSTRING_SCRUB_LEN {
+        return text.replace(value, "***");
     }
+    let haystack = text.as_bytes();
+    let needle = value.as_bytes();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return text.to_owned();
+    }
+    let mut masked: Vec<u8> = Vec::with_capacity(haystack.len());
+    let mut cursor = 0;
+    while cursor < haystack.len() {
+        let end = cursor + needle.len();
+        if end <= haystack.len()
+            && &haystack[cursor..end] == needle
+            && is_boundary(haystack, cursor, end)
+        {
+            masked.extend_from_slice(b"***");
+            cursor = end;
+        } else {
+            masked.push(haystack[cursor]);
+            cursor += 1;
+        }
+    }
+    String::from_utf8(masked)
+        .unwrap_or_else(|err| String::from_utf8_lossy(err.as_bytes()).into_owned())
+}
+
+fn is_boundary(haystack: &[u8], start: usize, end: usize) -> bool {
+    let before_ok = start == 0 || !is_path_byte(haystack[start - 1]);
+    let after_ok = end == haystack.len() || !is_path_byte(haystack[end]);
+    before_ok && after_ok
+}
+
+fn is_path_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || matches!(byte, b'/' | b'.' | b'-' | b'_')
 }
 
 fn is_host_key_failure(output: &CommandOutput) -> bool {
     output.exit_code == Some(SFTP_FATAL_EXIT_CODE)
-        && output
-            .stderr
-            .to_ascii_lowercase()
-            .contains(HOST_KEY_FAILURE_SIGNATURE)
+        && contains_ignore_ascii_case(&output.stderr, HOST_KEY_FAILURE_SIGNATURE)
+}
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 #[cfg(test)]
@@ -501,17 +758,19 @@ mod tests {
         assert_eq!(obs.len(), 1);
         assert_eq!(obs[0].spec.program, "sftp");
         assert_eq!(
-            &obs[0].spec.args[..5],
+            &obs[0].spec.args[..7],
             [
                 "-o",
                 "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
                 "-o",
                 "StrictHostKeyChecking=yes",
                 "-b"
             ]
         );
-        assert_eq!(obs[0].spec.args[6], "root@203.0.113.10");
-        assert_eq!(obs[0].spec.args.len(), 7);
+        assert_eq!(obs[0].spec.args[8], "root@203.0.113.10");
+        assert_eq!(obs[0].spec.args.len(), 9);
         assert!(obs[0].existed, "the batch file must exist while sftp runs");
         assert!(
             !obs[0]
@@ -924,6 +1183,7 @@ mod tests {
         assert_eq!(svc.host_key_policy(), HostKeyPolicy::Strict);
         assert_eq!(svc.sftp_program(), "sftp");
         assert_eq!(svc.timeout(), None);
+        assert_eq!(svc.connect_timeout(), Duration::from_secs(10));
     }
 
     /// foundations-0: `with_timeout` must land on every invocation spec, so a
@@ -992,5 +1252,315 @@ mod tests {
             batch_text("/tmp/src", "/etc/dst"),
             "put /tmp/src /etc/dst\n"
         );
+    }
+
+    #[test]
+    fn failure_display_names_the_exit_code_without_the_option_wrapper() {
+        let payload = payload_file();
+        let (service, _observations) = spy_service(CommandOutput::from_stderr("denied\n", 3));
+        let rendered = service
+            .upload(&host(), payload.path(), &remote())
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.contains("exit 3"), "{rendered}");
+        assert!(!rendered.contains("Some(3)"), "{rendered}");
+    }
+
+    #[test]
+    fn failure_display_names_signal_termination_instead_of_exit_none() {
+        let payload = payload_file();
+        let killed = CommandOutput::new(String::new(), "killed\n".to_owned(), None);
+        let (service, _observations) = spy_service(killed);
+        let rendered = service
+            .upload(&host(), payload.path(), &remote())
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.contains("exit signal"), "{rendered}");
+        assert!(!rendered.contains("None"), "{rendered}");
+    }
+
+    /// A blackholed host must fail at sftp's `ConnectTimeout` option, not at
+    /// the runner's 60 s wall clock, so every spec carries it.
+    #[test]
+    fn every_spec_carries_the_default_connect_timeout() {
+        let payload = payload_file();
+        let (service, observations) = spy_service(CommandOutput::from_stdout(""));
+        assert_eq!(service.connect_timeout(), Duration::from_secs(10));
+        service.upload(&host(), payload.path(), &remote()).unwrap();
+
+        let obs = snapshot(&observations);
+        let position = obs[0]
+            .spec
+            .args
+            .iter()
+            .position(|arg| arg == "ConnectTimeout=10")
+            .expect("the ConnectTimeout option must be present");
+        assert_eq!(&obs[0].spec.args[position - 1], &"-o".to_owned());
+    }
+
+    #[test]
+    fn with_connect_timeout_overrides_the_option_value() {
+        let payload = payload_file();
+        let spy = BatchSpy::new(FakeRunner::new().push_response(CommandOutput::from_stdout("")));
+        let observations = Arc::clone(&spy.observations);
+        let service =
+            UploadService::new(Box::new(spy)).with_connect_timeout(Duration::from_secs(4));
+        assert_eq!(service.connect_timeout(), Duration::from_secs(4));
+        service.upload(&host(), payload.path(), &remote()).unwrap();
+
+        let obs = snapshot(&observations);
+        assert!(
+            obs[0].spec.args.contains(&"ConnectTimeout=4".to_owned()),
+            "{:?}",
+            obs[0].spec.args
+        );
+        assert!(
+            !obs[0].spec.args.contains(&"ConnectTimeout=10".to_owned()),
+            "{:?}",
+            obs[0].spec.args
+        );
+    }
+
+    /// The presence probe caches per instance; switching programs through the
+    /// consuming builder must not inherit the previous program's probe.
+    #[test]
+    fn changing_the_sftp_program_discards_the_cached_presence_probe() {
+        let payload = payload_file();
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let service = UploadService::new(Box::new(fake.clone()));
+        service.upload(&host(), payload.path(), &remote()).unwrap();
+
+        let rebuilt = service.with_sftp_program("toride-missing-sftp-probe");
+        match rebuilt
+            .upload(&host(), payload.path(), &remote())
+            .unwrap_err()
+        {
+            Error::Core(toride_ssh_core::Error::ToolNotFound(name)) => {
+                assert_eq!(name, "toride-missing-sftp-probe");
+            }
+            other => panic!("expected ToolNotFound, got {other:?}"),
+        }
+        assert_eq!(fake.calls().len(), 1, "only the first upload may spawn");
+    }
+
+    #[test]
+    fn exit_255_with_uppercase_signature_still_maps_to_the_host_key_error() {
+        let payload = payload_file();
+        let (service, _observations) = spy_service(CommandOutput::from_stderr(
+            "ROOT@HOST: HOST KEY VERIFICATION FAILED.\n",
+            255,
+        ));
+        assert!(matches!(
+            service
+                .upload(&host(), payload.path(), &remote())
+                .unwrap_err(),
+            Error::Core(toride_ssh_core::Error::HostKeyVerificationFailed(_))
+        ));
+    }
+
+    /// A validated one- or two-character remote path is masked wherever it
+    /// appears as a whole token, so no length floor leaks short paths.
+    #[test]
+    fn short_remote_paths_are_masked_on_path_boundaries() {
+        let dir = tempfile::tempdir().unwrap();
+        let local = dir.path().join("payload");
+        fs::write(&local, b"x").unwrap();
+        let short_remote = RemotePath::parse("/a").unwrap();
+
+        let (service, _observations) = spy_service(CommandOutput::from_stderr(
+            "Couldn't upload to /a: Permission denied\n",
+            1,
+        ));
+        let rendered = service
+            .upload(&host(), &local, &short_remote)
+            .unwrap_err()
+            .to_string();
+        assert!(!rendered.contains("/a:"), "{rendered}");
+        assert!(rendered.contains("***"), "{rendered}");
+
+        let unrelated = mask_value("failed for /abc and /a too", "/a");
+        assert_eq!(unrelated, "failed for /abc and *** too");
+    }
+
+    #[test]
+    fn mask_value_leaves_longer_tokens_embedding_a_short_path_alone() {
+        assert_eq!(mask_value("see /archive first", "/a"), "see /archive first");
+        assert_eq!(mask_value("path /a end", "/a"), "path *** end");
+        assert_eq!(mask_value("nothing here", "/a"), "nothing here");
+    }
+
+    #[test]
+    fn upload_many_stages_one_batch_and_spawns_one_sftp_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let unit = dir.path().join("web.service");
+        fs::write(&unit, b"[Unit]\n").unwrap();
+        let env = dir.path().join("web.env");
+        fs::write(&env, b"PORT=8080\n").unwrap();
+        let first = RemotePath::parse("/etc/systemd/system/web.service").unwrap();
+        let second = RemotePath::parse("/etc/toride/web.env").unwrap();
+
+        let (service, observations) = spy_service(CommandOutput::from_stdout(""));
+        service
+            .upload_many(
+                &host(),
+                &[(unit.as_path(), &first), (env.as_path(), &second)],
+            )
+            .unwrap();
+
+        let obs = snapshot(&observations);
+        assert_eq!(obs.len(), 1, "a batched upload is exactly one sftp process");
+        let unit_canonical = fs::canonicalize(&unit).unwrap();
+        let env_canonical = fs::canonicalize(&env).unwrap();
+        assert_eq!(
+            obs[0].content,
+            format!(
+                "put {} /etc/systemd/system/web.service\nput {} /etc/toride/web.env\n",
+                unit_canonical.display(),
+                env_canonical.display()
+            )
+        );
+        assert_eq!(obs[0].content.lines().count(), 2);
+        let batch_path = Path::new(&obs[0].batch_arg);
+        assert!(
+            !batch_path.exists(),
+            "staging must be removed after success"
+        );
+        assert!(!batch_path.parent().expect("batch has a parent").exists());
+    }
+
+    #[test]
+    fn upload_many_rejects_the_whole_batch_when_any_pair_is_invalid() {
+        let dir = tempfile::tempdir().unwrap();
+        let good = dir.path().join("good.conf");
+        fs::write(&good, b"x").unwrap();
+        let missing = dir.path().join("missing.conf");
+        let first = RemotePath::parse("/etc/toride/good.conf").unwrap();
+        let second = RemotePath::parse("/etc/toride/missing.conf").unwrap();
+
+        let fake = FakeRunner::new();
+        let service = UploadService::new(Box::new(fake.clone()));
+        match service
+            .upload_many(
+                &host(),
+                &[(good.as_path(), &first), (missing.as_path(), &second)],
+            )
+            .unwrap_err()
+        {
+            Error::LocalFileNotFound(path) => {
+                assert!(path.ends_with("missing.conf"), "{path}");
+            }
+            other => panic!("expected LocalFileNotFound, got {other:?}"),
+        }
+        assert!(
+            fake.calls().is_empty(),
+            "one invalid pair must reject the whole batch before any spawn"
+        );
+    }
+
+    #[test]
+    fn upload_many_rejects_an_empty_pair_slice() {
+        let fake = FakeRunner::new();
+        let service = UploadService::new(Box::new(fake.clone()));
+        assert!(matches!(
+            service.upload_many(&host(), &[]).unwrap_err(),
+            Error::EmptyBatch
+        ));
+        assert!(fake.calls().is_empty());
+    }
+
+    #[test]
+    fn upload_many_failure_names_the_failing_pair_best_effort() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one.conf");
+        fs::write(&one, b"1").unwrap();
+        let two = dir.path().join("two.conf");
+        fs::write(&two, b"2").unwrap();
+        let first = RemotePath::parse("/etc/toride/one.conf").unwrap();
+        let second = RemotePath::parse("/etc/toride/two.conf").unwrap();
+
+        let (service, _observations) = spy_service(CommandOutput::from_stderr(
+            "sftp> put two\nCouldn't upload to /etc/toride/two.conf: Permission denied\n",
+            1,
+        ));
+        match service
+            .upload_many(
+                &host(),
+                &[(one.as_path(), &first), (two.as_path(), &second)],
+            )
+            .unwrap_err()
+        {
+            Error::UploadBatchFailed {
+                failed_index,
+                exit_code,
+                stderr,
+                ..
+            } => {
+                assert_eq!(failed_index, Some(1), "{stderr}");
+                assert_eq!(exit_code, Some(1));
+                assert!(!stderr.contains("/etc/toride/two.conf"), "{stderr}");
+                assert!(stderr.contains("***"), "{stderr}");
+            }
+            other => panic!("expected UploadBatchFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upload_many_failure_without_a_named_path_reports_no_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one.conf");
+        fs::write(&one, b"1").unwrap();
+        let remote_one = RemotePath::parse("/etc/toride/one.conf").unwrap();
+
+        let (service, _observations) =
+            spy_service(CommandOutput::from_stderr("connection lost\n", 2));
+        match service
+            .upload_many(&host(), &[(one.as_path(), &remote_one)])
+            .unwrap_err()
+        {
+            Error::UploadBatchFailed { failed_index, .. } => {
+                assert_eq!(failed_index, None);
+            }
+            other => panic!("expected UploadBatchFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upload_many_host_key_failure_masks_the_banner_paths() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one.conf");
+        fs::write(&one, b"1").unwrap();
+        let secret_remote = RemotePath::parse("/etc/toride/sekrit.conf").unwrap();
+
+        let (service, _observations) = spy_service(CommandOutput::from_stderr(
+            "Host key verification failed for /etc/toride/sekrit.conf.\n",
+            255,
+        ));
+        match service
+            .upload_many(&host(), &[(one.as_path(), &secret_remote)])
+            .unwrap_err()
+        {
+            Error::Core(toride_ssh_core::Error::HostKeyVerificationFailed(detail)) => {
+                assert!(detail.contains("Host key verification failed"), "{detail}");
+                assert!(!detail.contains("/etc/toride/sekrit.conf"), "{detail}");
+            }
+            other => panic!("expected HostKeyVerificationFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn upload_many_failure_display_names_signal_termination() {
+        let dir = tempfile::tempdir().unwrap();
+        let one = dir.path().join("one.conf");
+        fs::write(&one, b"1").unwrap();
+        let remote_one = RemotePath::parse("/etc/toride/one.conf").unwrap();
+
+        let killed = CommandOutput::new(String::new(), "killed\n".to_owned(), None);
+        let (service, _observations) = spy_service(killed);
+        let rendered = service
+            .upload_many(&host(), &[(one.as_path(), &remote_one)])
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.contains("exit signal"), "{rendered}");
+        assert!(!rendered.contains("None"), "{rendered}");
     }
 }

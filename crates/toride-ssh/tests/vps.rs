@@ -1,8 +1,9 @@
 //! Cross-cutting abuse tests for the VPS plan surfaces: exec, upload, and
 //! the facade accessors, exercised together through the public API a
-//! downstream deploy tool would call.
+//! downstream deploy tool would call. The target is declared with
+//! `required-features = ["exec", "upload"]`, so it builds only when both
+//! subsystems are enabled and is skipped by a default `cargo test` run.
 
-#[cfg(feature = "exec")]
 mod exec_family {
     use toride_runner::fake::FakeRunner;
     use toride_ssh::exec::{CommandOutput, Error as ExecError, ExecService};
@@ -78,9 +79,14 @@ mod exec_family {
         }
     }
 
+    /// The option strings are pinned as literals here, independent of the
+    /// `ssh_option()` accessor the crates under test use to build them.
     #[test]
     fn exact_ssh_argv_carries_the_host_key_option_for_both_policies() {
-        for policy in [HostKeyPolicy::Strict, HostKeyPolicy::AcceptNew] {
+        for (policy, literal_option) in [
+            (HostKeyPolicy::Strict, "StrictHostKeyChecking=yes"),
+            (HostKeyPolicy::AcceptNew, "StrictHostKeyChecking=accept-new"),
+        ] {
             let fake = FakeRunner::new().push_response(CommandOutput::from_stdout("active"));
             let service = ExecService::new(Box::new(fake.clone())).with_host_key_policy(policy);
             service
@@ -96,7 +102,9 @@ mod exec_family {
                     "-o",
                     "BatchMode=yes",
                     "-o",
-                    policy.ssh_option(),
+                    "ConnectTimeout=10",
+                    "-o",
+                    literal_option,
                     "root@203.0.113.10",
                     "systemctl",
                     "is-active",
@@ -125,7 +133,6 @@ mod exec_family {
     }
 }
 
-#[cfg(feature = "upload")]
 mod upload_family {
     use std::fs;
 
@@ -225,9 +232,14 @@ mod upload_family {
         }
     }
 
+    /// The option strings are pinned as literals here, independent of the
+    /// `ssh_option()` accessor the crate under test uses to build them.
     #[test]
     fn batch_argv_discipline_holds_for_both_policies() {
-        for policy in [HostKeyPolicy::Strict, HostKeyPolicy::AcceptNew] {
+        for (policy, literal_option) in [
+            (HostKeyPolicy::Strict, "StrictHostKeyChecking=yes"),
+            (HostKeyPolicy::AcceptNew, "StrictHostKeyChecking=accept-new"),
+        ] {
             let file = payload();
             let fake = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
             let service = UploadService::new(Box::new(fake.clone())).with_host_key_policy(policy);
@@ -240,17 +252,25 @@ mod upload_family {
             let spec = &calls[0];
             assert_eq!(spec.program, "sftp", "{policy:?}");
             assert_eq!(
-                &spec.args[..5],
-                ["-o", "BatchMode=yes", "-o", policy.ssh_option(), "-b"],
+                &spec.args[..7],
+                [
+                    "-o",
+                    "BatchMode=yes",
+                    "-o",
+                    "ConnectTimeout=10",
+                    "-o",
+                    literal_option,
+                    "-b"
+                ],
                 "{policy:?}: batch mode and host-key options must lead the argv"
             );
-            assert_eq!(spec.args.len(), 7, "{policy:?}: {spec:?}");
+            assert_eq!(spec.args.len(), 9, "{policy:?}: {spec:?}");
             assert_eq!(
                 spec.args.last(),
                 Some(&"root@203.0.113.10".to_owned()),
                 "{policy:?}: the host destination must be the final operand"
             );
-            let batch_path = &spec.args[5];
+            let batch_path = &spec.args[7];
             assert!(
                 batch_path.starts_with('/') && !batch_path.contains(' '),
                 "{policy:?}: the batch file must be one absolute path element: {batch_path}"
@@ -263,9 +283,38 @@ mod upload_family {
             assert!(spec.redact, "{policy:?}: the spec must opt into redaction");
         }
     }
+
+    #[test]
+    fn upload_many_ships_four_files_in_one_sftp_process() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut locals = Vec::new();
+        let mut remotes = Vec::new();
+        for index in 0..4 {
+            let file = tempfile::NamedTempFile::new_in(&dir).unwrap();
+            fs::write(file.path(), format!("payload {index}")).unwrap();
+            locals.push(file);
+            remotes.push(RemotePath::parse(&format!("/etc/toride/file{index}.conf")).unwrap());
+        }
+        let pairs: Vec<_> = locals
+            .iter()
+            .zip(&remotes)
+            .map(|(file, remote)| (file.path(), remote))
+            .collect();
+
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let service = UploadService::new(Box::new(fake.clone()));
+        service.upload_many(&host(), &pairs).unwrap();
+
+        let calls = fake.calls();
+        assert_eq!(
+            calls.len(),
+            1,
+            "a four-file batch must be exactly one sftp process"
+        );
+        assert_eq!(calls[0].program, "sftp");
+    }
 }
 
-#[cfg(any(feature = "exec", feature = "upload"))]
 mod no_leak_family {
     use toride_runner::display::display_command;
     use toride_runner::fake::FakeRunner;
@@ -277,7 +326,6 @@ mod no_leak_family {
         HostSpec::parse("root@203.0.113.10").unwrap()
     }
 
-    #[cfg(feature = "exec")]
     #[test]
     fn exec_failure_diagnostics_never_carry_the_payload_marker() {
         use toride_ssh::exec::{CommandOutput, Error as ExecError, ExecService};
@@ -310,7 +358,36 @@ mod no_leak_family {
         );
     }
 
-    #[cfg(feature = "upload")]
+    /// The host-key branch scrubs stderr through the same spec, so a banner
+    /// echoing a redacted argv slot must surface masked, not verbatim.
+    #[test]
+    fn exec_host_key_failure_diagnostics_never_carry_the_payload_marker() {
+        use toride_ssh::exec::{CommandOutput, Error as ExecError, ExecService};
+
+        let banner = format!(
+            "@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@@\nHost key verification failed for deploy token {PAYLOAD_MARKER}.\n"
+        );
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stderr(banner, 255));
+        let service = ExecService::new(Box::new(fake.clone()));
+        let error = service
+            .run(&host(), &["deploy", "--token", PAYLOAD_MARKER])
+            .unwrap_err();
+        match &error {
+            ExecError::Core(toride_ssh::Error::HostKeyVerificationFailed(detail)) => {
+                assert!(
+                    !detail.contains(PAYLOAD_MARKER),
+                    "host-key detail leaked the payload marker: {detail}"
+                );
+            }
+            other => panic!("expected HostKeyVerificationFailed, got {other:?}"),
+        }
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains(PAYLOAD_MARKER),
+            "formatted error leaked the payload marker: {rendered}"
+        );
+    }
+
     #[test]
     fn upload_failure_diagnostics_never_carry_paths_nor_payload_marker() {
         use std::fs;
@@ -348,17 +425,61 @@ mod no_leak_family {
 
         let display = display_command(&fake.calls()[0], &[]);
         assert!(
+            display.contains("root@203.0.113.10") && display.contains("-b"),
+            "the recorded display must reflect the real sftp argv: {display}"
+        );
+        assert!(
             !display.contains("sekrit-vps-target") && !display.contains("/etc/toride"),
             "recorded command display leaked the remote path: {display}"
         );
         assert!(
-            !display.contains(PAYLOAD_MARKER),
-            "recorded command display leaked the payload marker: {display}"
+            !display.contains(&local_text),
+            "recorded command display leaked the local payload path: {display}"
+        );
+    }
+
+    /// The host-key branch masks both upload paths before the error is
+    /// built, so a banner naming the destination cannot leak it.
+    #[test]
+    fn upload_host_key_failure_diagnostics_never_carry_the_paths() {
+        use std::fs;
+        use toride_ssh::upload::{CommandOutput, Error as UploadError, RemotePath, UploadService};
+
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), b"payload").unwrap();
+        let local_text = fs::canonicalize(file.path())
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let remote = RemotePath::parse("/etc/toride/sekrit-vps-target.env").unwrap();
+        let banner = format!(
+            "Host key verification failed for {local_text} /etc/toride/sekrit-vps-target.env.\n"
+        );
+
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stderr(banner, 255));
+        let service = UploadService::new(Box::new(fake));
+        let error = service.upload(&host(), file.path(), &remote).unwrap_err();
+        match &error {
+            UploadError::Core(toride_ssh::Error::HostKeyVerificationFailed(detail)) => {
+                assert!(
+                    !detail.contains("sekrit-vps-target") && !detail.contains("/etc/toride"),
+                    "host-key detail leaked the remote path: {detail}"
+                );
+                assert!(
+                    !detail.contains(&local_text),
+                    "host-key detail leaked the local path: {detail}"
+                );
+            }
+            other => panic!("expected HostKeyVerificationFailed, got {other:?}"),
+        }
+        let rendered = error.to_string();
+        assert!(
+            !rendered.contains("sekrit-vps-target"),
+            "formatted error leaked the remote path: {rendered}"
         );
     }
 }
 
-#[cfg(all(feature = "exec", feature = "upload"))]
 mod facade_smoke {
     use toride_runner::CommandOutput;
     use toride_runner::fake::FakeRunner;
@@ -391,7 +512,7 @@ mod facade_smoke {
         let exec_calls = exec_fake.calls();
         assert_eq!(exec_calls.len(), 1, "the injected runner must be used");
         assert_eq!(exec_calls[0].program, "ssh");
-        assert_eq!(exec_calls[0].args[4], "root@203.0.113.10");
+        assert_eq!(exec_calls[0].args[6], "root@203.0.113.10");
 
         let upload_fake = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
         let remote = toride_ssh::upload::RemotePath::parse("/etc/toride/app.conf").unwrap();

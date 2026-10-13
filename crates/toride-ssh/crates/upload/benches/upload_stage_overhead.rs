@@ -1,14 +1,16 @@
-//! Per-call staging cost of [`UploadService::upload`] against a `FakeRunner`
-//! (vps-surfaces-13, vps-surfaces-4).
+//! Per-call staging cost of [`UploadService::upload`] and
+//! [`UploadService::upload_many`] against a `FakeRunner` (vps-surfaces-13,
+//! vps-surfaces-4).
 //!
 //! Every `upload` call canonicalizes the local path, probes the sftp binary
 //! on `PATH`, stages a private tempdir plus a `0o600` batch file, dispatches
 //! the runner, and removes the staging whether the transfer succeeds or
 //! fails. With the fake runner the subprocess cost is zero, so the measured
-//! time is exactly the staging overhead the `upload_many` batching must
-//! amortize. The shared-service and cold-service arms are equal today; once
-//! the presence probe is cached per service instance only the cold arm keeps
-//! paying a `PATH` scan.
+//! time is exactly the staging overhead the `upload_many` batching amortizes;
+//! the `upload_many` arm stages four files in one batch and its per-call cost
+//! is what a four-file deploy pays once instead of four times. The presence
+//! probe is cached per service instance once positive, so only the cold arm
+//! keeps paying a `PATH` scan.
 
 use std::hint::black_box;
 use std::time::Duration;
@@ -33,6 +35,23 @@ fn upload_stage_overhead(c: &mut Criterion) {
     let payload = tempfile::NamedTempFile::new().expect("payload temp file");
     std::fs::write(payload.path(), PAYLOAD).expect("write payload fixture");
 
+    let batch_dir = tempfile::tempdir().expect("batch payload dir");
+    let batch_files: Vec<_> = (0..4)
+        .map(|index| {
+            let file = tempfile::NamedTempFile::new_in(&batch_dir).expect("batch payload file");
+            std::fs::write(file.path(), PAYLOAD).expect("write batch payload fixture");
+            (
+                file,
+                RemotePath::parse(&format!("/etc/toride/file{index}.conf"))
+                    .expect("bench remote path parses"),
+            )
+        })
+        .collect();
+    let batch_pairs: Vec<_> = batch_files
+        .iter()
+        .map(|(file, remote)| (file.path(), remote))
+        .collect();
+
     let fake = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
     let shared = UploadService::new(Box::new(fake.clone()));
 
@@ -45,7 +64,11 @@ fn upload_stage_overhead(c: &mut Criterion) {
         b.iter(|| {
             black_box(
                 shared
-                    .upload(black_box(&host), black_box(payload.path()), black_box(&remote))
+                    .upload(
+                        black_box(&host),
+                        black_box(payload.path()),
+                        black_box(&remote),
+                    )
                     .expect("fake-backed upload succeeds"),
             )
         });
@@ -56,8 +79,22 @@ fn upload_stage_overhead(c: &mut Criterion) {
             let service = UploadService::new(Box::new(fake.clone()));
             black_box(
                 service
-                    .upload(black_box(&host), black_box(payload.path()), black_box(&remote))
+                    .upload(
+                        black_box(&host),
+                        black_box(payload.path()),
+                        black_box(&remote),
+                    )
                     .expect("fake-backed upload succeeds"),
+            )
+        });
+    });
+
+    group.bench_function("upload_many_stage_4_pairs", |b| {
+        b.iter(|| {
+            black_box(
+                shared
+                    .upload_many(black_box(&host), black_box(&batch_pairs))
+                    .expect("fake-backed batch upload succeeds"),
             )
         });
     });

@@ -1,5 +1,4 @@
 #![warn(missing_docs)]
-#![allow(dead_code, reason = "scaffolding for modules under active development")]
 #![expect(
     clippy::must_use_candidate,
     reason = "service methods are call-and-forget; callers rarely use return"
@@ -9,7 +8,7 @@
     reason = "SSH-specific terms like ed25519 trigger false positives"
 )]
 
-//! `toride-ssh` — async SSH manager library.
+//! `toride-ssh`: async SSH manager library.
 //!
 //! This is the **facade crate** that re-exports all sub-crates behind a
 //! unified API. The entry point is [`SshManager`], which resolves `~/.ssh`
@@ -17,16 +16,16 @@
 //!
 //! # Subsystem accessors
 //!
-//! - [`SshManager::keys`] — key generation, inventory, repair
-//! - [`SshManager::config`] — config parsing, editing, resolution
-//! - [`SshManager::agent`] — SSH agent interaction *(feature: `agent`)*
-//! - [`SshManager::authorized_keys`] — authorized_keys management *(feature: `authorized-keys`)*
-//! - [`SshManager::doctor`] — diagnostic checks *(feature: `doctor`)*
-//! - [`SshManager::known_hosts`] — known_hosts management *(feature: `known-hosts`)*
-//! - [`SshManager::forward`] — port forwarding via ControlMaster *(feature: `forward`)*
-//! - [`SshManager::certificate`] — SSH certificate/CA operations *(feature: `certificate`)*
-//! - [`SshManager::exec`] — remote command execution *(feature: `exec`)*
-//! - [`SshManager::upload`] — file upload via sftp *(feature: `upload`)*
+//! - [`SshManager::keys`]: key generation, inventory, repair
+//! - [`SshManager::config`]: config parsing, editing, resolution
+//! - [`SshManager::agent`]: SSH agent interaction *(feature: `agent`)*
+//! - [`SshManager::authorized_keys`]: authorized_keys management *(feature: `authorized-keys`)*
+//! - [`SshManager::doctor`]: diagnostic checks *(feature: `doctor`)*
+//! - [`SshManager::known_hosts`]: known_hosts management *(feature: `known-hosts`)*
+//! - [`SshManager::forward`]: port forwarding via ControlMaster *(feature: `forward`)*
+//! - [`SshManager::certificate`]: SSH certificate/CA operations *(feature: `certificate`)*
+//! - [`SshManager::exec`]: remote command execution *(feature: `exec`)*
+//! - [`SshManager::upload`]: file upload via sftp *(feature: `upload`)*
 //!
 //! # Testing without real SSH processes
 //!
@@ -39,16 +38,12 @@
 //! [`SshManager::upload_with`], or construct
 //! [`exec::ExecService`]/[`upload::UploadService`] directly.
 
-// Re-export core types (Error, Result, SshKey, CliRunner, etc.)
 pub use toride_ssh_core::*;
 
-// Re-export config subsystem
 pub use toride_ssh_config as config;
 
-// Re-export key subsystem
 pub use toride_ssh_key as key;
 
-// Feature-gated subsystem re-exports
 #[cfg(feature = "agent")]
 pub use toride_ssh_agent as agent;
 #[cfg(feature = "authorized-keys")]

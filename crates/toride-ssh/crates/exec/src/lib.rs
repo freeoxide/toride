@@ -1,12 +1,15 @@
 #![warn(missing_docs)]
 
-//! `toride-ssh-exec` — remote command execution over `ssh`.
+//! `toride-ssh-exec`: remote command execution over `ssh`.
 //!
 //! [`ExecService`] runs an argv command on a validated [`HostSpec`] through a
-//! [`Runner`](toride_runner::Runner), mirroring how
+//! [`Runner`], mirroring how
 //! `toride_service::ServiceManager` wraps `systemctl`. The invocation is
-//! argv-disciplined through [`CommandSpec`] — never a shell string — and every
-//! command element is validated before any process spawns.
+//! argv-disciplined through [`CommandSpec`], never a shell string, and every
+//! command element is validated before any process spawns. OpenSSH joins the
+//! argv into one string that the remote login shell re-tokenizes and may
+//! glob-expand, so element validation rejects whitespace and expansion
+//! characters as well as shell metacharacters.
 //!
 //! # Example
 //!
@@ -25,6 +28,7 @@
 pub use toride_runner::CommandOutput;
 pub use toride_ssh_core::{HostKeyPolicy, HostSpec};
 
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use toride_runner::CommandSpec;
@@ -36,6 +40,10 @@ const DEFAULT_SSH_PROGRAM: &str = "ssh";
 const BATCH_MODE_OPTION: &str = "BatchMode=yes";
 const HOST_KEY_FAILURE_SIGNATURE: &str = "host key verification failed";
 const SSH_FATAL_EXIT_CODE: i32 = 255;
+const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const GLOB_METACHARS: [char; 3] = ['*', '?', '['];
+const EXPANSION_CHARS: [char; 2] = ['$', '~'];
+const COMMENT_LEADER: char = '#';
 
 /// Errors returned by [`ExecService`].
 #[derive(Debug, thiserror::Error)]
@@ -52,7 +60,7 @@ pub enum Error {
     },
     /// The remote command (or its ssh connection) exited non-zero for a
     /// non-host-key reason. Carries the scrubbed stderr, never the argv.
-    #[error("remote command on {host} failed (exit {exit_code:?}): {stderr}")]
+    #[error("remote command on {host} failed (exit {}): {stderr}", format_exit_code(*exit_code))]
     RemoteCommandFailed {
         /// The validated destination the command ran against.
         host: String,
@@ -79,6 +87,8 @@ pub struct ExecService {
     host_key_policy: HostKeyPolicy,
     ssh_program: String,
     timeout: Option<Duration>,
+    connect_timeout: Duration,
+    ssh_present: OnceLock<bool>,
 }
 
 impl ExecService {
@@ -91,6 +101,8 @@ impl ExecService {
             host_key_policy: HostKeyPolicy::Strict,
             ssh_program: DEFAULT_SSH_PROGRAM.to_owned(),
             timeout: None,
+            connect_timeout: DEFAULT_CONNECT_TIMEOUT,
+            ssh_present: OnceLock::new(),
         }
     }
 
@@ -102,9 +114,28 @@ impl ExecService {
     }
 
     /// Override the ssh program used in invocations and its presence check.
+    ///
+    /// The cached presence probe of the previous program is discarded, so the
+    /// new program is probed on its next run.
     #[must_use]
     pub fn with_ssh_program(mut self, program: impl Into<String>) -> Self {
         self.ssh_program = program.into();
+        self.ssh_present = OnceLock::new();
+        self
+    }
+
+    /// Override the `-o ConnectTimeout=<secs>` cap sent with every
+    /// invocation.
+    ///
+    /// Without it, a blackholed or firewalled host blocks until the runner's
+    /// wall-clock timeout (60 s through a default
+    /// [`DuctRunner`](toride_runner::DuctRunner)) and surfaces as an opaque
+    /// [`Error::Runner`] timeout instead of ssh's typed connect failure. The
+    /// default is 10 s; whole seconds are sent, so sub-second precision is
+    /// truncated.
+    #[must_use]
+    pub fn with_connect_timeout(mut self, timeout: Duration) -> Self {
+        self.connect_timeout = timeout;
         self
     }
 
@@ -139,12 +170,31 @@ impl ExecService {
         self.timeout
     }
 
+    /// The configured `-o ConnectTimeout` cap, in whole seconds.
+    #[must_use]
+    pub fn connect_timeout(&self) -> Duration {
+        self.connect_timeout
+    }
+
     /// Run `command` on `host`, returning the captured output on ssh exit 0.
     ///
     /// The command is an argv slice; every element is validated (no shell
-    /// metacharacters, control characters, or empty elements) before the ssh
-    /// binary presence is checked and before any process spawns. There is no
-    /// API taking a pre-joined command string.
+    /// metacharacters, control characters, whitespace, glob or expansion
+    /// characters, or empty elements) before the ssh binary presence is
+    /// checked and before any process spawns. There is no API taking a
+    /// pre-joined command string: OpenSSH rejoins the argv into one string
+    /// that the remote login shell re-tokenizes, which is exactly why
+    /// element boundaries are not trusted and whitespace, glob characters,
+    /// `$`, `~`, and leading `#` are rejected like metacharacters.
+    ///
+    /// On a successful connection, a non-zero [`CommandOutput::exit_code`]
+    /// between 1 and 254 is the remote command's own status relayed by ssh,
+    /// while 255 is ssh's own fatal status (connect failure, authentication
+    /// failure, or the misclassified case below). The exit-255-plus-signature
+    /// classification into
+    /// [`toride_ssh_core::Error::HostKeyVerificationFailed`] is heuristic: a
+    /// nested inner ssh invoked by the remote command that prints the
+    /// signature is misattributed to this host.
     ///
     /// # Errors
     ///
@@ -155,7 +205,7 @@ impl ExecService {
     /// non-zero exit, and [`Error::Runner`] when the runner itself fails.
     pub fn run(&self, host: &HostSpec, command: &[&str]) -> Result<CommandOutput> {
         validate_command(command)?;
-        if !toride_runner::discovery::binary_exists(&self.ssh_program) {
+        if !self.ssh_available() {
             return Err(Error::Core(toride_ssh_core::Error::ToolNotFound(
                 self.ssh_program.clone(),
             )));
@@ -178,10 +228,23 @@ impl ExecService {
         })
     }
 
+    fn ssh_available(&self) -> bool {
+        if let Some(present) = self.ssh_present.get() {
+            return *present;
+        }
+        let present = toride_runner::discovery::binary_exists(&self.ssh_program);
+        if present {
+            let _ = self.ssh_present.set(true);
+        }
+        present
+    }
+
     fn ssh_spec(&self, host: &HostSpec, command: &[&str]) -> CommandSpec {
         let mut spec = CommandSpec::new(self.ssh_program.clone())
             .arg("-o")
             .arg(BATCH_MODE_OPTION)
+            .arg("-o")
+            .arg(connect_timeout_option(self.connect_timeout))
             .arg("-o")
             .arg(self.host_key_policy.ssh_option())
             .arg(host.destination())
@@ -193,6 +256,14 @@ impl ExecService {
         }
         spec
     }
+}
+
+fn connect_timeout_option(timeout: Duration) -> String {
+    format!("ConnectTimeout={}", timeout.as_secs())
+}
+
+fn format_exit_code(exit_code: Option<i32>) -> String {
+    exit_code.map_or("signal".to_owned(), |code| code.to_string())
 }
 
 fn validate_command(command: &[&str]) -> Result<()> {
@@ -215,6 +286,31 @@ fn validate_command(command: &[&str]) -> Result<()> {
                 reason: "elements must not contain control characters".to_owned(),
             });
         }
+        if element.chars().any(char::is_whitespace) {
+            return Err(Error::InvalidRemoteCommand {
+                index,
+                reason: "elements must not contain whitespace".to_owned(),
+            });
+        }
+        if element.contains(GLOB_METACHARS) {
+            return Err(Error::InvalidRemoteCommand {
+                index,
+                reason: "elements must not contain glob metacharacters".to_owned(),
+            });
+        }
+        if element.contains(EXPANSION_CHARS) {
+            return Err(Error::InvalidRemoteCommand {
+                index,
+                reason: "elements must not contain variable or home expansion characters"
+                    .to_owned(),
+            });
+        }
+        if element.starts_with(COMMENT_LEADER) {
+            return Err(Error::InvalidRemoteCommand {
+                index,
+                reason: "elements must not start with '#'".to_owned(),
+            });
+        }
         if contains_shell_metachars(element) {
             return Err(Error::InvalidRemoteCommand {
                 index,
@@ -227,10 +323,17 @@ fn validate_command(command: &[&str]) -> Result<()> {
 
 fn is_host_key_failure(output: &CommandOutput) -> bool {
     output.exit_code == Some(SSH_FATAL_EXIT_CODE)
-        && output
-            .stderr
-            .to_ascii_lowercase()
-            .contains(HOST_KEY_FAILURE_SIGNATURE)
+        && contains_ignore_ascii_case(&output.stderr, HOST_KEY_FAILURE_SIGNATURE)
+}
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    let haystack = haystack.as_bytes();
+    let needle = needle.as_bytes();
+    !needle.is_empty()
+        && haystack.len() >= needle.len()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle))
 }
 
 #[cfg(test)]
@@ -270,6 +373,8 @@ mod tests {
             vec![
                 "-o",
                 "BatchMode=yes",
+                "-o",
+                "ConnectTimeout=10",
                 "-o",
                 "StrictHostKeyChecking=yes",
                 "root@203.0.113.10",
@@ -350,6 +455,61 @@ mod tests {
         assert!(fake.calls().is_empty());
     }
 
+    /// OpenSSH rejoins the argv into one string the remote login shell
+    /// re-tokenizes and glob-expands, so element boundaries are not a safety
+    /// boundary and these classes are typed rejections like metacharacters.
+    #[test]
+    fn command_elements_that_retokenize_or_expand_remotely_are_rejected() {
+        let fake = FakeRunner::new();
+        let svc = service(&fake);
+        for bad in [
+            "a b",
+            "\u{a0}nbsp",
+            "*.conf",
+            "a?b",
+            "a[b",
+            "$HOME",
+            "$",
+            "~",
+            "~root",
+            "#comment",
+        ] {
+            match svc.run(&host(), &["echo", bad]) {
+                Err(Error::InvalidRemoteCommand { index, reason }) => {
+                    assert_eq!(index, 1, "{bad:?}: wrong position");
+                    assert!(
+                        !reason.contains(bad),
+                        "{bad:?}: rejection reason leaked the element: {reason}"
+                    );
+                }
+                other => panic!("{bad:?}: expected InvalidRemoteCommand, got {other:?}"),
+            }
+        }
+        assert!(
+            fake.calls().is_empty(),
+            "no invocation may reach the runner for a rejected element"
+        );
+    }
+
+    #[test]
+    fn benign_argv_elements_that_resemble_the_rejected_classes_pass() {
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stdout("ok"));
+        let svc = service(&fake);
+        svc.run(
+            &host(),
+            &[
+                "apt-get",
+                "install",
+                "-y",
+                "--no-install-recommends",
+                "a#b",
+                "pkg.2.tar.gz",
+            ],
+        )
+        .unwrap();
+        assert_eq!(fake.calls().len(), 1);
+    }
+
     #[test]
     fn empty_command_is_rejected_before_spawn() {
         let fake = FakeRunner::new();
@@ -420,6 +580,19 @@ mod tests {
     }
 
     #[test]
+    fn exit_255_with_uppercase_signature_still_maps_to_the_host_key_error() {
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stderr(
+            "ROOT@HOST: HOST KEY VERIFICATION FAILED.\n",
+            255,
+        ));
+        let svc = service(&fake);
+        assert!(matches!(
+            svc.run(&host(), &["uptime"]).unwrap_err(),
+            Error::Core(toride_ssh_core::Error::HostKeyVerificationFailed(_))
+        ));
+    }
+
+    #[test]
     fn exit_255_without_the_signature_is_a_plain_command_failure() {
         let fake = FakeRunner::new().push_response(CommandOutput::from_stderr(
             "ssh: connect to host 203.0.113.10 port 22: Connection refused\n",
@@ -452,6 +625,31 @@ mod tests {
             }
             other => panic!("expected RemoteCommandFailed, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn failure_display_names_the_exit_code_without_the_option_wrapper() {
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stderr("E: lock\n", 100));
+        let svc = service(&fake);
+        let rendered = svc
+            .run(&host(), &["apt-get", "update"])
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.contains("exit 100"), "{rendered}");
+        assert!(!rendered.contains("Some(100)"), "{rendered}");
+    }
+
+    #[test]
+    fn failure_display_names_signal_termination_instead_of_exit_none() {
+        let killed = CommandOutput::new(String::new(), "killed\n".to_owned(), None);
+        let fake = FakeRunner::new().push_response(killed);
+        let svc = service(&fake);
+        let rendered = svc
+            .run(&host(), &["apt-get", "update"])
+            .unwrap_err()
+            .to_string();
+        assert!(rendered.contains("exit signal"), "{rendered}");
+        assert!(!rendered.contains("None"), "{rendered}");
     }
 
     #[test]
@@ -533,6 +731,7 @@ mod tests {
         assert_eq!(svc.host_key_policy(), HostKeyPolicy::Strict);
         assert_eq!(svc.ssh_program(), "ssh");
         assert_eq!(svc.timeout(), None);
+        assert_eq!(svc.connect_timeout(), Duration::from_secs(10));
     }
 
     /// foundations-0: `with_timeout` must land on every invocation spec, so a
@@ -563,5 +762,51 @@ mod tests {
         let svc = ExecService::new(Box::new(fake.clone()));
         svc.run(&host(), &["uptime"]).unwrap();
         assert_eq!(fake.calls()[0].timeout, None);
+    }
+
+    /// A blackholed host must fail at ssh's `ConnectTimeout` option, not at
+    /// the runner's 60 s wall clock, so every spec carries it.
+    #[test]
+    fn every_spec_carries_the_default_connect_timeout() {
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stdout("ok"));
+        let svc = ExecService::new(Box::new(fake.clone()));
+        assert_eq!(svc.connect_timeout(), Duration::from_secs(10));
+        svc.run(&host(), &["uptime"]).unwrap();
+        let args = &fake.calls()[0].args;
+        let position = args
+            .iter()
+            .position(|arg| arg == "ConnectTimeout=10")
+            .expect("the ConnectTimeout option must be present");
+        assert_eq!(&args[position - 1], &"-o".to_owned());
+    }
+
+    #[test]
+    fn with_connect_timeout_overrides_the_option_value() {
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stdout("ok"));
+        let svc =
+            ExecService::new(Box::new(fake.clone())).with_connect_timeout(Duration::from_secs(3));
+        assert_eq!(svc.connect_timeout(), Duration::from_secs(3));
+        svc.run(&host(), &["uptime"]).unwrap();
+        let args = &fake.calls()[0].args;
+        assert!(args.contains(&"ConnectTimeout=3".to_owned()), "{args:?}");
+        assert!(!args.contains(&"ConnectTimeout=10".to_owned()), "{args:?}");
+    }
+
+    /// The presence probe caches per instance; switching programs through the
+    /// consuming builder must not inherit the previous program's probe.
+    #[test]
+    fn changing_the_ssh_program_discards_the_cached_presence_probe() {
+        let fake = FakeRunner::new().push_response(CommandOutput::from_stdout("ok"));
+        let svc = ExecService::new(Box::new(fake.clone()));
+        svc.run(&host(), &["uptime"]).unwrap();
+
+        let rebuilt = svc.with_ssh_program("toride-missing-ssh-probe");
+        match rebuilt.run(&host(), &["uptime"]).unwrap_err() {
+            Error::Core(toride_ssh_core::Error::ToolNotFound(name)) => {
+                assert_eq!(name, "toride-missing-ssh-probe");
+            }
+            other => panic!("expected ToolNotFound, got {other:?}"),
+        }
+        assert_eq!(fake.calls().len(), 1, "only the first run may spawn");
     }
 }

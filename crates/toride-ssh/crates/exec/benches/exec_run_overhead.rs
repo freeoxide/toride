@@ -1,13 +1,14 @@
 //! Pre-spawn cost of [`ExecService::run`] against a `FakeRunner`
 //! (vps-surfaces-4, foundations-0).
 //!
-//! `run` validates the argv, probes the ssh binary on `PATH` per call, and
-//! builds the `CommandSpec` before the runner dispatches. The shared-service
-//! and cold-service arms are equal today (the presence probe is uncached);
-//! once the probe is cached per service instance the shared arm must drop to
-//! the cold arm minus one `PATH` scan. This per-command overhead is also the
-//! cost oracle for the SSH-forwarding runner adapter (ruling 7), which pays
-//! it for every forwarded command.
+//! `run` validates the argv, probes the ssh binary on `PATH`, and builds the
+//! `CommandSpec` before the runner dispatches. The probe is cached per
+//! service instance once positive, so the shared-service arm measures
+//! validate-plus-spec-build only, while the cold-service arm constructs a
+//! fresh service per iteration and pays one `PATH` scan every time; the
+//! delta between the two arms is that scan's cost. This per-command overhead
+//! is also the cost oracle for the SSH-forwarding runner adapter (ruling 7),
+//! which pays it for every forwarded command.
 
 use std::hint::black_box;
 use std::time::Duration;

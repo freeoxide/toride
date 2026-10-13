@@ -47,7 +47,10 @@ tokio = { workspace = true, features = ["process", "fs", "rt", "sync"] }
 [dev-dependencies]
 tempfile = "3"
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
-toride-ssh = { path = ".", version = "0.2.0", features = ["exec", "upload"] }
+
+[[test]]
+name = "vps"
+required-features = ["exec", "upload"]
 
 [lints]
 workspace = true
