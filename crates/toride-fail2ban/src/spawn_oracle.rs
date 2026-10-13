@@ -17,6 +17,7 @@ pub struct CountingRunner {
     spawns: Arc<AtomicUsize>,
     dry_run: Arc<AtomicBool>,
     calls: Arc<Mutex<Vec<CallEntry>>>,
+    client_status: Arc<Option<String>>,
 }
 
 impl CountingRunner {
@@ -26,7 +27,24 @@ impl CountingRunner {
             spawns: Arc::new(AtomicUsize::new(0)),
             dry_run: Arc::new(AtomicBool::new(false)),
             calls: Arc::new(Mutex::new(Vec::new())),
+            client_status: Arc::new(None),
         }
+    }
+
+    /// Serve this canned stdout for every `fail2ban-client status` call
+    /// instead of empty output, so `Jail list:`-carrying status output
+    /// makes per-jail spawns countable. Consume-and-return.
+    #[must_use]
+    pub fn with_client_status(mut self, stdout: impl Into<String>) -> Self {
+        self.client_status = Arc::new(Some(stdout.into()));
+        self
+    }
+
+    fn canned_client_status(&self, program: &str, args: &[&str]) -> Option<String> {
+        let is_client_status = program.rsplit('/').next() == Some("fail2ban-client")
+            && args.len() == 1
+            && args[0] == "status";
+        is_client_status.then(|| self.client_status.as_ref())?.clone()
     }
 
     /// Number of commands "spawned" (i.e. `run` / `run_with_timeout` calls)
@@ -85,6 +103,9 @@ impl Runner for CountingRunner {
     fn run(&self, program: &str, args: &[&str]) -> crate::Result<CommandOutput> {
         self.record_spawn();
         self.record_call(program, args);
+        if let Some(stdout) = self.canned_client_status(program, args) {
+            return Ok(CommandOutput::new(stdout, String::new(), Some(0)));
+        }
         Ok(Self::ok_output())
     }
 
@@ -96,6 +117,9 @@ impl Runner for CountingRunner {
     ) -> crate::Result<CommandOutput> {
         self.record_spawn();
         self.record_call(program, args);
+        if let Some(stdout) = self.canned_client_status(program, args) {
+            return Ok(CommandOutput::new(stdout, String::new(), Some(0)));
+        }
         Ok(Self::ok_output())
     }
 
@@ -153,6 +177,55 @@ pub fn doctor_all_spawn_report() -> DoctorSpawnReport {
             doctor
                 .run(&scope)
                 .expect("scoped doctor completes with always-ok responses");
+            (name, runner.spawn_count())
+        })
+        .collect();
+
+    DoctorSpawnReport {
+        all_run_total,
+        per_category,
+    }
+}
+
+/// The canned `fail2ban-client status` stdout naming the two jails every
+/// per-jail spawn oracle run feeds ([`CountingRunner::with_client_status`]).
+pub const CANNED_JAIL_STATUS: &str = "Status\n|- Number of jail:      2\n`- Jail list:\tsshd, nginx\n";
+
+/// [`doctor_all_spawn_report`] over runners that answer `fail2ban-client
+/// status` with `client_status`, so per-jail spawns fire and are counted.
+///
+/// # Panics
+/// If any doctor scope fails against the always-ok runner.
+#[must_use]
+pub fn doctor_all_spawn_report_with_jails(client_status: &str) -> DoctorSpawnReport {
+    let all_runner = CountingRunner::new().with_client_status(client_status);
+    let doctor = Doctor::new(&all_runner);
+    doctor
+        .run(&DoctorScope::All)
+        .expect("doctor(All) completes with canned jails");
+    let all_run_total = all_runner.spawn_count();
+
+    let categories: Vec<(&'static str, DoctorScope)> = vec![
+        ("Binary", DoctorScope::Binary),
+        ("Service", DoctorScope::Service),
+        ("Config", DoctorScope::Config),
+        ("LogPath", DoctorScope::LogPath),
+        ("Journal", DoctorScope::Journal),
+        ("Regex", DoctorScope::Regex),
+        ("Action", DoctorScope::Action),
+        ("Permission", DoctorScope::Permission),
+        ("Safety", DoctorScope::Safety),
+        ("Proxy", DoctorScope::Proxy),
+    ];
+
+    let per_category = categories
+        .into_iter()
+        .map(|(name, scope)| {
+            let runner = CountingRunner::new().with_client_status(client_status);
+            let doctor = Doctor::new(&runner);
+            doctor
+                .run(&scope)
+                .expect("scoped doctor completes with canned jails");
             (name, runner.spawn_count())
         })
         .collect();
@@ -247,6 +320,44 @@ mod tests {
             runner.count_client_args(&["status"]),
             expected,
             "each doctor run must re-fetch the jail list exactly once"
+        );
+    }
+
+    #[test]
+    fn canned_jail_list_makes_per_jail_spawns_countable() {
+        let runner = CountingRunner::new().with_client_status(CANNED_JAIL_STATUS);
+        let doctor = Doctor::new(&runner);
+        doctor
+            .run(&DoctorScope::All)
+            .expect("doctor(All) completes with canned jails");
+
+        for jail in ["sshd", "nginx"] {
+            assert_eq!(
+                runner.count_client_args(&["get", jail, "logpath"]),
+                3,
+                "the canned jail list makes per-jail logpath spawns countable (check_proxy x2 + check_log_paths)"
+            );
+            assert_eq!(
+                runner.count_client_args(&["get", jail, "actions"]),
+                3,
+                "per-jail actions spawns are countable (validation loop + port-conflict pass)"
+            );
+            for key in ["backend", "failregex", "datepattern", "ignoreip"] {
+                assert_eq!(
+                    runner.count_client_args(&["get", jail, key]),
+                    1,
+                    "per-jail `{key}` spawns exactly once today"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn doctor_all_with_jails_stays_within_the_per_jail_budget() {
+        let report = doctor_all_spawn_report_with_jails(CANNED_JAIL_STATUS);
+        assert!(
+            report.all_run_total <= 60,
+            "doctor(All) over two jails must stay within the per-jail spawn budget, got {report:?}"
         );
     }
 }

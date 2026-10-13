@@ -80,5 +80,18 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 name = "ss_parse"
 harness = false
 
+[[bench]]
+name = "conntrack_parse"
+harness = false
+
+[[bench]]
+name = "port_query"
+harness = false
+
+[[bench]]
+name = "webhook_dispatch"
+harness = false
+required-features = ["webhook"]
+
 [lints]
 workspace = true

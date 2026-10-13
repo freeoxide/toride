@@ -87,5 +87,11 @@ harness = false
 test = false
 required-features = ["config"]
 
+[[bench]]
+name = "jail_scan_burst"
+harness = false
+test = false
+required-features = ["config"]
+
 [lints]
 workspace = true

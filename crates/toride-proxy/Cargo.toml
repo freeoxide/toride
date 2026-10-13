@@ -1,4 +1,5 @@
 [package]
+exclude = ["benches/fixtures/**"]
 name = "toride-proxy"
 version.workspace = true
 edition.workspace = true
@@ -68,11 +69,34 @@ similar = "2"
 clap = { version = "4", features = ["derive"], optional = true }
 
 [dev-dependencies]
-toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
+toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake", "duct-runner"] }
 insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "cert_scan"
+harness = false
+
+[[bench]]
+name = "site_apply"
+harness = false
+required-features = ["config"]
+
+[[bench]]
+name = "waf_evaluate"
+harness = false
+required-features = ["waf"]
+
+[[bench]]
+name = "nginx_parse"
+harness = false
+
+[[bench]]
+name = "diff_blocks"
+harness = false
 
 [lints]
 workspace = true

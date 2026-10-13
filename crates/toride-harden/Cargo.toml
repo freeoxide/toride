@@ -47,6 +47,11 @@ tempfile = "3"
 assert_fs = "1"
 proptest = "1"
 toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "status_spawn_count"
+harness = false
 
 [lints]
 workspace = true

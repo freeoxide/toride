@@ -66,5 +66,17 @@ toride-installer = { path = "../toride-installer", version = "0.2.0", default-fe
 name = "dep11_parse"
 harness = false
 
+[[bench]]
+name = "search_fanout"
+harness = false
+
+[[bench]]
+name = "alias_merge"
+harness = false
+
+[[bench]]
+name = "source_search"
+harness = false
+
 [lints]
 workspace = true

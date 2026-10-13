@@ -73,6 +73,12 @@ insta = "1"
 tempfile = "3"
 assert_fs = "1"
 proptest = "1"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "integrity_status"
+harness = false
+required-features = ["integrity"]
 
 [lints]
 workspace = true

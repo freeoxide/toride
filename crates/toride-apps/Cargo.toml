@@ -59,6 +59,24 @@ toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fak
 flate2 = "1"
 tar = "0.4"
 sha2 = "0.10"
+tempfile = "3"
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "ensure_installed"
+harness = false
+
+[[bench]]
+name = "detect"
+harness = false
+
+[[bench]]
+name = "manifest_save"
+harness = false
+
+[[bench]]
+name = "merge_detections"
+harness = false
 
 [lints]
 workspace = true

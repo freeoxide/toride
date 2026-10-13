@@ -17,6 +17,11 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 toride-runner = { path = "../../../toride-runner", version = "0.2.0", features = ["fake"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "upload_stage_overhead"
+harness = false
 
 [lints]
 workspace = true

@@ -1,0 +1,2205 @@
+%YAML 1.2
+---
+File: DEP-11
+Version: '1.0'
+Origin: toride-bench-search
+---
+Type: desktop-application
+ID: org.toride.bench.App000.desktop
+Package: bench-app-000
+Name:
+  C: Bench App 000
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-000
+---
+Type: desktop-application
+ID: org.toride.bench.App001.desktop
+Package: bench-app-001
+Name:
+  C: Bench App 001
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-001
+---
+Type: desktop-application
+ID: org.toride.bench.App002.desktop
+Package: bench-app-002
+Name:
+  C: Bench App 002
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-002
+---
+Type: desktop-application
+ID: org.toride.bench.App003.desktop
+Package: bench-app-003
+Name:
+  C: Bench App 003
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-003
+---
+Type: desktop-application
+ID: org.toride.bench.App004.desktop
+Package: bench-app-004
+Name:
+  C: Bench App 004
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-004
+---
+Type: desktop-application
+ID: org.toride.bench.App005.desktop
+Package: bench-app-005
+Name:
+  C: Bench App 005
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-005
+---
+Type: desktop-application
+ID: org.toride.bench.App006.desktop
+Package: bench-app-006
+Name:
+  C: Bench App 006
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-006
+---
+Type: desktop-application
+ID: org.toride.bench.App007.desktop
+Package: bench-app-007
+Name:
+  C: Bench App 007
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-007
+---
+Type: desktop-application
+ID: org.toride.bench.App008.desktop
+Package: bench-app-008
+Name:
+  C: Bench App 008
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-008
+---
+Type: desktop-application
+ID: org.toride.bench.App009.desktop
+Package: bench-app-009
+Name:
+  C: Bench App 009
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-009
+---
+Type: desktop-application
+ID: org.toride.bench.App010.desktop
+Package: bench-app-010
+Name:
+  C: Bench App 010
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-010
+---
+Type: desktop-application
+ID: org.toride.bench.App011.desktop
+Package: bench-app-011
+Name:
+  C: Bench App 011
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-011
+---
+Type: desktop-application
+ID: org.toride.bench.App012.desktop
+Package: bench-app-012
+Name:
+  C: Bench App 012
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-012
+---
+Type: desktop-application
+ID: org.toride.bench.App013.desktop
+Package: bench-app-013
+Name:
+  C: Bench App 013
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-013
+---
+Type: desktop-application
+ID: org.toride.bench.App014.desktop
+Package: bench-app-014
+Name:
+  C: Bench App 014
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-014
+---
+Type: desktop-application
+ID: org.toride.bench.App015.desktop
+Package: bench-app-015
+Name:
+  C: Bench App 015
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-015
+---
+Type: desktop-application
+ID: org.toride.bench.App016.desktop
+Package: bench-app-016
+Name:
+  C: Bench App 016
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-016
+---
+Type: desktop-application
+ID: org.toride.bench.App017.desktop
+Package: bench-app-017
+Name:
+  C: Bench App 017
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-017
+---
+Type: desktop-application
+ID: org.toride.bench.App018.desktop
+Package: bench-app-018
+Name:
+  C: Bench App 018
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-018
+---
+Type: desktop-application
+ID: org.toride.bench.App019.desktop
+Package: bench-app-019
+Name:
+  C: Bench App 019
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-019
+---
+Type: desktop-application
+ID: org.toride.bench.App020.desktop
+Package: bench-app-020
+Name:
+  C: Bench App 020
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-020
+---
+Type: desktop-application
+ID: org.toride.bench.App021.desktop
+Package: bench-app-021
+Name:
+  C: Bench App 021
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-021
+---
+Type: desktop-application
+ID: org.toride.bench.App022.desktop
+Package: bench-app-022
+Name:
+  C: Bench App 022
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-022
+---
+Type: desktop-application
+ID: org.toride.bench.App023.desktop
+Package: bench-app-023
+Name:
+  C: Bench App 023
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-023
+---
+Type: desktop-application
+ID: org.toride.bench.App024.desktop
+Package: bench-app-024
+Name:
+  C: Bench App 024
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-024
+---
+Type: desktop-application
+ID: org.toride.bench.App025.desktop
+Package: bench-app-025
+Name:
+  C: Bench App 025
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-025
+---
+Type: desktop-application
+ID: org.toride.bench.App026.desktop
+Package: bench-app-026
+Name:
+  C: Bench App 026
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-026
+---
+Type: desktop-application
+ID: org.toride.bench.App027.desktop
+Package: bench-app-027
+Name:
+  C: Bench App 027
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-027
+---
+Type: desktop-application
+ID: org.toride.bench.App028.desktop
+Package: bench-app-028
+Name:
+  C: Bench App 028
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-028
+---
+Type: desktop-application
+ID: org.toride.bench.App029.desktop
+Package: bench-app-029
+Name:
+  C: Bench App 029
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-029
+---
+Type: desktop-application
+ID: org.toride.bench.App030.desktop
+Package: bench-app-030
+Name:
+  C: Bench App 030
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-030
+---
+Type: desktop-application
+ID: org.toride.bench.App031.desktop
+Package: bench-app-031
+Name:
+  C: Bench App 031
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-031
+---
+Type: desktop-application
+ID: org.toride.bench.App032.desktop
+Package: bench-app-032
+Name:
+  C: Bench App 032
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-032
+---
+Type: desktop-application
+ID: org.toride.bench.App033.desktop
+Package: bench-app-033
+Name:
+  C: Bench App 033
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-033
+---
+Type: desktop-application
+ID: org.toride.bench.App034.desktop
+Package: bench-app-034
+Name:
+  C: Bench App 034
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-034
+---
+Type: desktop-application
+ID: org.toride.bench.App035.desktop
+Package: bench-app-035
+Name:
+  C: Bench App 035
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-035
+---
+Type: desktop-application
+ID: org.toride.bench.App036.desktop
+Package: bench-app-036
+Name:
+  C: Bench App 036
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-036
+---
+Type: desktop-application
+ID: org.toride.bench.App037.desktop
+Package: bench-app-037
+Name:
+  C: Bench App 037
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-037
+---
+Type: desktop-application
+ID: org.toride.bench.App038.desktop
+Package: bench-app-038
+Name:
+  C: Bench App 038
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-038
+---
+Type: desktop-application
+ID: org.toride.bench.App039.desktop
+Package: bench-app-039
+Name:
+  C: Bench App 039
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-039
+---
+Type: desktop-application
+ID: org.toride.bench.App040.desktop
+Package: bench-app-040
+Name:
+  C: Bench App 040
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-040
+---
+Type: desktop-application
+ID: org.toride.bench.App041.desktop
+Package: bench-app-041
+Name:
+  C: Bench App 041
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-041
+---
+Type: desktop-application
+ID: org.toride.bench.App042.desktop
+Package: bench-app-042
+Name:
+  C: Bench App 042
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-042
+---
+Type: desktop-application
+ID: org.toride.bench.App043.desktop
+Package: bench-app-043
+Name:
+  C: Bench App 043
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-043
+---
+Type: desktop-application
+ID: org.toride.bench.App044.desktop
+Package: bench-app-044
+Name:
+  C: Bench App 044
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-044
+---
+Type: desktop-application
+ID: org.toride.bench.App045.desktop
+Package: bench-app-045
+Name:
+  C: Bench App 045
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-045
+---
+Type: desktop-application
+ID: org.toride.bench.App046.desktop
+Package: bench-app-046
+Name:
+  C: Bench App 046
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-046
+---
+Type: desktop-application
+ID: org.toride.bench.App047.desktop
+Package: bench-app-047
+Name:
+  C: Bench App 047
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-047
+---
+Type: desktop-application
+ID: org.toride.bench.App048.desktop
+Package: bench-app-048
+Name:
+  C: Bench App 048
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-048
+---
+Type: desktop-application
+ID: org.toride.bench.App049.desktop
+Package: bench-app-049
+Name:
+  C: Bench App 049
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-049
+---
+Type: desktop-application
+ID: org.toride.bench.App050.desktop
+Package: bench-app-050
+Name:
+  C: Bench App 050
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-050
+---
+Type: desktop-application
+ID: org.toride.bench.App051.desktop
+Package: bench-app-051
+Name:
+  C: Bench App 051
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-051
+---
+Type: desktop-application
+ID: org.toride.bench.App052.desktop
+Package: bench-app-052
+Name:
+  C: Bench App 052
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-052
+---
+Type: desktop-application
+ID: org.toride.bench.App053.desktop
+Package: bench-app-053
+Name:
+  C: Bench App 053
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-053
+---
+Type: desktop-application
+ID: org.toride.bench.App054.desktop
+Package: bench-app-054
+Name:
+  C: Bench App 054
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-054
+---
+Type: desktop-application
+ID: org.toride.bench.App055.desktop
+Package: bench-app-055
+Name:
+  C: Bench App 055
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-055
+---
+Type: desktop-application
+ID: org.toride.bench.App056.desktop
+Package: bench-app-056
+Name:
+  C: Bench App 056
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-056
+---
+Type: desktop-application
+ID: org.toride.bench.App057.desktop
+Package: bench-app-057
+Name:
+  C: Bench App 057
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-057
+---
+Type: desktop-application
+ID: org.toride.bench.App058.desktop
+Package: bench-app-058
+Name:
+  C: Bench App 058
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-058
+---
+Type: desktop-application
+ID: org.toride.bench.App059.desktop
+Package: bench-app-059
+Name:
+  C: Bench App 059
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-059
+---
+Type: desktop-application
+ID: org.toride.bench.App060.desktop
+Package: bench-app-060
+Name:
+  C: Bench App 060
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-060
+---
+Type: desktop-application
+ID: org.toride.bench.App061.desktop
+Package: bench-app-061
+Name:
+  C: Bench App 061
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-061
+---
+Type: desktop-application
+ID: org.toride.bench.App062.desktop
+Package: bench-app-062
+Name:
+  C: Bench App 062
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-062
+---
+Type: desktop-application
+ID: org.toride.bench.App063.desktop
+Package: bench-app-063
+Name:
+  C: Bench App 063
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-063
+---
+Type: desktop-application
+ID: org.toride.bench.App064.desktop
+Package: bench-app-064
+Name:
+  C: Bench App 064
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-064
+---
+Type: desktop-application
+ID: org.toride.bench.App065.desktop
+Package: bench-app-065
+Name:
+  C: Bench App 065
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-065
+---
+Type: desktop-application
+ID: org.toride.bench.App066.desktop
+Package: bench-app-066
+Name:
+  C: Bench App 066
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-066
+---
+Type: desktop-application
+ID: org.toride.bench.App067.desktop
+Package: bench-app-067
+Name:
+  C: Bench App 067
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-067
+---
+Type: desktop-application
+ID: org.toride.bench.App068.desktop
+Package: bench-app-068
+Name:
+  C: Bench App 068
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-068
+---
+Type: desktop-application
+ID: org.toride.bench.App069.desktop
+Package: bench-app-069
+Name:
+  C: Bench App 069
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-069
+---
+Type: desktop-application
+ID: org.toride.bench.App070.desktop
+Package: bench-app-070
+Name:
+  C: Bench App 070
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-070
+---
+Type: desktop-application
+ID: org.toride.bench.App071.desktop
+Package: bench-app-071
+Name:
+  C: Bench App 071
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-071
+---
+Type: desktop-application
+ID: org.toride.bench.App072.desktop
+Package: bench-app-072
+Name:
+  C: Bench App 072
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-072
+---
+Type: desktop-application
+ID: org.toride.bench.App073.desktop
+Package: bench-app-073
+Name:
+  C: Bench App 073
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-073
+---
+Type: desktop-application
+ID: org.toride.bench.App074.desktop
+Package: bench-app-074
+Name:
+  C: Bench App 074
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-074
+---
+Type: desktop-application
+ID: org.toride.bench.App075.desktop
+Package: bench-app-075
+Name:
+  C: Bench App 075
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-075
+---
+Type: desktop-application
+ID: org.toride.bench.App076.desktop
+Package: bench-app-076
+Name:
+  C: Bench App 076
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-076
+---
+Type: desktop-application
+ID: org.toride.bench.App077.desktop
+Package: bench-app-077
+Name:
+  C: Bench App 077
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-077
+---
+Type: desktop-application
+ID: org.toride.bench.App078.desktop
+Package: bench-app-078
+Name:
+  C: Bench App 078
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-078
+---
+Type: desktop-application
+ID: org.toride.bench.App079.desktop
+Package: bench-app-079
+Name:
+  C: Bench App 079
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-079
+---
+Type: desktop-application
+ID: org.toride.bench.App080.desktop
+Package: bench-app-080
+Name:
+  C: Bench App 080
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-080
+---
+Type: desktop-application
+ID: org.toride.bench.App081.desktop
+Package: bench-app-081
+Name:
+  C: Bench App 081
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-081
+---
+Type: desktop-application
+ID: org.toride.bench.App082.desktop
+Package: bench-app-082
+Name:
+  C: Bench App 082
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-082
+---
+Type: desktop-application
+ID: org.toride.bench.App083.desktop
+Package: bench-app-083
+Name:
+  C: Bench App 083
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-083
+---
+Type: desktop-application
+ID: org.toride.bench.App084.desktop
+Package: bench-app-084
+Name:
+  C: Bench App 084
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-084
+---
+Type: desktop-application
+ID: org.toride.bench.App085.desktop
+Package: bench-app-085
+Name:
+  C: Bench App 085
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-085
+---
+Type: desktop-application
+ID: org.toride.bench.App086.desktop
+Package: bench-app-086
+Name:
+  C: Bench App 086
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-086
+---
+Type: desktop-application
+ID: org.toride.bench.App087.desktop
+Package: bench-app-087
+Name:
+  C: Bench App 087
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-087
+---
+Type: desktop-application
+ID: org.toride.bench.App088.desktop
+Package: bench-app-088
+Name:
+  C: Bench App 088
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-088
+---
+Type: desktop-application
+ID: org.toride.bench.App089.desktop
+Package: bench-app-089
+Name:
+  C: Bench App 089
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-089
+---
+Type: desktop-application
+ID: org.toride.bench.App090.desktop
+Package: bench-app-090
+Name:
+  C: Bench App 090
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-090
+---
+Type: desktop-application
+ID: org.toride.bench.App091.desktop
+Package: bench-app-091
+Name:
+  C: Bench App 091
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-091
+---
+Type: desktop-application
+ID: org.toride.bench.App092.desktop
+Package: bench-app-092
+Name:
+  C: Bench App 092
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-092
+---
+Type: desktop-application
+ID: org.toride.bench.App093.desktop
+Package: bench-app-093
+Name:
+  C: Bench App 093
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-093
+---
+Type: desktop-application
+ID: org.toride.bench.App094.desktop
+Package: bench-app-094
+Name:
+  C: Bench App 094
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-094
+---
+Type: desktop-application
+ID: org.toride.bench.App095.desktop
+Package: bench-app-095
+Name:
+  C: Bench App 095
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-095
+---
+Type: desktop-application
+ID: org.toride.bench.App096.desktop
+Package: bench-app-096
+Name:
+  C: Bench App 096
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-096
+---
+Type: desktop-application
+ID: org.toride.bench.App097.desktop
+Package: bench-app-097
+Name:
+  C: Bench App 097
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-097
+---
+Type: desktop-application
+ID: org.toride.bench.App098.desktop
+Package: bench-app-098
+Name:
+  C: Bench App 098
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-098
+---
+Type: desktop-application
+ID: org.toride.bench.App099.desktop
+Package: bench-app-099
+Name:
+  C: Bench App 099
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-099
+---
+Type: desktop-application
+ID: org.toride.bench.App100.desktop
+Package: bench-app-100
+Name:
+  C: Bench App 100
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-100
+---
+Type: desktop-application
+ID: org.toride.bench.App101.desktop
+Package: bench-app-101
+Name:
+  C: Bench App 101
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-101
+---
+Type: desktop-application
+ID: org.toride.bench.App102.desktop
+Package: bench-app-102
+Name:
+  C: Bench App 102
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-102
+---
+Type: desktop-application
+ID: org.toride.bench.App103.desktop
+Package: bench-app-103
+Name:
+  C: Bench App 103
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-103
+---
+Type: desktop-application
+ID: org.toride.bench.App104.desktop
+Package: bench-app-104
+Name:
+  C: Bench App 104
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-104
+---
+Type: desktop-application
+ID: org.toride.bench.App105.desktop
+Package: bench-app-105
+Name:
+  C: Bench App 105
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-105
+---
+Type: desktop-application
+ID: org.toride.bench.App106.desktop
+Package: bench-app-106
+Name:
+  C: Bench App 106
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-106
+---
+Type: desktop-application
+ID: org.toride.bench.App107.desktop
+Package: bench-app-107
+Name:
+  C: Bench App 107
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-107
+---
+Type: desktop-application
+ID: org.toride.bench.App108.desktop
+Package: bench-app-108
+Name:
+  C: Bench App 108
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-108
+---
+Type: desktop-application
+ID: org.toride.bench.App109.desktop
+Package: bench-app-109
+Name:
+  C: Bench App 109
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-109
+---
+Type: desktop-application
+ID: org.toride.bench.App110.desktop
+Package: bench-app-110
+Name:
+  C: Bench App 110
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-110
+---
+Type: desktop-application
+ID: org.toride.bench.App111.desktop
+Package: bench-app-111
+Name:
+  C: Bench App 111
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-111
+---
+Type: desktop-application
+ID: org.toride.bench.App112.desktop
+Package: bench-app-112
+Name:
+  C: Bench App 112
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-112
+---
+Type: desktop-application
+ID: org.toride.bench.App113.desktop
+Package: bench-app-113
+Name:
+  C: Bench App 113
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-113
+---
+Type: desktop-application
+ID: org.toride.bench.App114.desktop
+Package: bench-app-114
+Name:
+  C: Bench App 114
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-114
+---
+Type: desktop-application
+ID: org.toride.bench.App115.desktop
+Package: bench-app-115
+Name:
+  C: Bench App 115
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-115
+---
+Type: desktop-application
+ID: org.toride.bench.App116.desktop
+Package: bench-app-116
+Name:
+  C: Bench App 116
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-116
+---
+Type: desktop-application
+ID: org.toride.bench.App117.desktop
+Package: bench-app-117
+Name:
+  C: Bench App 117
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-117
+---
+Type: desktop-application
+ID: org.toride.bench.App118.desktop
+Package: bench-app-118
+Name:
+  C: Bench App 118
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-118
+---
+Type: desktop-application
+ID: org.toride.bench.App119.desktop
+Package: bench-app-119
+Name:
+  C: Bench App 119
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-119
+---
+Type: desktop-application
+ID: org.toride.bench.App120.desktop
+Package: bench-app-120
+Name:
+  C: Bench App 120
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-120
+---
+Type: desktop-application
+ID: org.toride.bench.App121.desktop
+Package: bench-app-121
+Name:
+  C: Bench App 121
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-121
+---
+Type: desktop-application
+ID: org.toride.bench.App122.desktop
+Package: bench-app-122
+Name:
+  C: Bench App 122
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-122
+---
+Type: desktop-application
+ID: org.toride.bench.App123.desktop
+Package: bench-app-123
+Name:
+  C: Bench App 123
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-123
+---
+Type: desktop-application
+ID: org.toride.bench.App124.desktop
+Package: bench-app-124
+Name:
+  C: Bench App 124
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-124
+---
+Type: desktop-application
+ID: org.toride.bench.App125.desktop
+Package: bench-app-125
+Name:
+  C: Bench App 125
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-125
+---
+Type: desktop-application
+ID: org.toride.bench.App126.desktop
+Package: bench-app-126
+Name:
+  C: Bench App 126
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-126
+---
+Type: desktop-application
+ID: org.toride.bench.App127.desktop
+Package: bench-app-127
+Name:
+  C: Bench App 127
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-127
+---
+Type: desktop-application
+ID: org.toride.bench.App128.desktop
+Package: bench-app-128
+Name:
+  C: Bench App 128
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-128
+---
+Type: desktop-application
+ID: org.toride.bench.App129.desktop
+Package: bench-app-129
+Name:
+  C: Bench App 129
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-129
+---
+Type: desktop-application
+ID: org.toride.bench.App130.desktop
+Package: bench-app-130
+Name:
+  C: Bench App 130
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-130
+---
+Type: desktop-application
+ID: org.toride.bench.App131.desktop
+Package: bench-app-131
+Name:
+  C: Bench App 131
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-131
+---
+Type: desktop-application
+ID: org.toride.bench.App132.desktop
+Package: bench-app-132
+Name:
+  C: Bench App 132
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-132
+---
+Type: desktop-application
+ID: org.toride.bench.App133.desktop
+Package: bench-app-133
+Name:
+  C: Bench App 133
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-133
+---
+Type: desktop-application
+ID: org.toride.bench.App134.desktop
+Package: bench-app-134
+Name:
+  C: Bench App 134
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-134
+---
+Type: desktop-application
+ID: org.toride.bench.App135.desktop
+Package: bench-app-135
+Name:
+  C: Bench App 135
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-135
+---
+Type: desktop-application
+ID: org.toride.bench.App136.desktop
+Package: bench-app-136
+Name:
+  C: Bench App 136
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-136
+---
+Type: desktop-application
+ID: org.toride.bench.App137.desktop
+Package: bench-app-137
+Name:
+  C: Bench App 137
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-137
+---
+Type: desktop-application
+ID: org.toride.bench.App138.desktop
+Package: bench-app-138
+Name:
+  C: Bench App 138
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-138
+---
+Type: desktop-application
+ID: org.toride.bench.App139.desktop
+Package: bench-app-139
+Name:
+  C: Bench App 139
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-139
+---
+Type: desktop-application
+ID: org.toride.bench.App140.desktop
+Package: bench-app-140
+Name:
+  C: Bench App 140
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-140
+---
+Type: desktop-application
+ID: org.toride.bench.App141.desktop
+Package: bench-app-141
+Name:
+  C: Bench App 141
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-141
+---
+Type: desktop-application
+ID: org.toride.bench.App142.desktop
+Package: bench-app-142
+Name:
+  C: Bench App 142
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-142
+---
+Type: desktop-application
+ID: org.toride.bench.App143.desktop
+Package: bench-app-143
+Name:
+  C: Bench App 143
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-143
+---
+Type: desktop-application
+ID: org.toride.bench.App144.desktop
+Package: bench-app-144
+Name:
+  C: Bench App 144
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-144
+---
+Type: desktop-application
+ID: org.toride.bench.App145.desktop
+Package: bench-app-145
+Name:
+  C: Bench App 145
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-145
+---
+Type: desktop-application
+ID: org.toride.bench.App146.desktop
+Package: bench-app-146
+Name:
+  C: Bench App 146
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-146
+---
+Type: desktop-application
+ID: org.toride.bench.App147.desktop
+Package: bench-app-147
+Name:
+  C: Bench App 147
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-147
+---
+Type: desktop-application
+ID: org.toride.bench.App148.desktop
+Package: bench-app-148
+Name:
+  C: Bench App 148
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-148
+---
+Type: desktop-application
+ID: org.toride.bench.App149.desktop
+Package: bench-app-149
+Name:
+  C: Bench App 149
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-149
+---
+Type: desktop-application
+ID: org.toride.bench.App150.desktop
+Package: bench-app-150
+Name:
+  C: Bench App 150
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-150
+---
+Type: desktop-application
+ID: org.toride.bench.App151.desktop
+Package: bench-app-151
+Name:
+  C: Bench App 151
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-151
+---
+Type: desktop-application
+ID: org.toride.bench.App152.desktop
+Package: bench-app-152
+Name:
+  C: Bench App 152
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-152
+---
+Type: desktop-application
+ID: org.toride.bench.App153.desktop
+Package: bench-app-153
+Name:
+  C: Bench App 153
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-153
+---
+Type: desktop-application
+ID: org.toride.bench.App154.desktop
+Package: bench-app-154
+Name:
+  C: Bench App 154
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-154
+---
+Type: desktop-application
+ID: org.toride.bench.App155.desktop
+Package: bench-app-155
+Name:
+  C: Bench App 155
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-155
+---
+Type: desktop-application
+ID: org.toride.bench.App156.desktop
+Package: bench-app-156
+Name:
+  C: Bench App 156
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-156
+---
+Type: desktop-application
+ID: org.toride.bench.App157.desktop
+Package: bench-app-157
+Name:
+  C: Bench App 157
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-157
+---
+Type: desktop-application
+ID: org.toride.bench.App158.desktop
+Package: bench-app-158
+Name:
+  C: Bench App 158
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-158
+---
+Type: desktop-application
+ID: org.toride.bench.App159.desktop
+Package: bench-app-159
+Name:
+  C: Bench App 159
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-159
+---
+Type: desktop-application
+ID: org.toride.bench.App160.desktop
+Package: bench-app-160
+Name:
+  C: Bench App 160
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-160
+---
+Type: desktop-application
+ID: org.toride.bench.App161.desktop
+Package: bench-app-161
+Name:
+  C: Bench App 161
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-161
+---
+Type: desktop-application
+ID: org.toride.bench.App162.desktop
+Package: bench-app-162
+Name:
+  C: Bench App 162
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-162
+---
+Type: desktop-application
+ID: org.toride.bench.App163.desktop
+Package: bench-app-163
+Name:
+  C: Bench App 163
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-163
+---
+Type: desktop-application
+ID: org.toride.bench.App164.desktop
+Package: bench-app-164
+Name:
+  C: Bench App 164
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-164
+---
+Type: desktop-application
+ID: org.toride.bench.App165.desktop
+Package: bench-app-165
+Name:
+  C: Bench App 165
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-165
+---
+Type: desktop-application
+ID: org.toride.bench.App166.desktop
+Package: bench-app-166
+Name:
+  C: Bench App 166
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-166
+---
+Type: desktop-application
+ID: org.toride.bench.App167.desktop
+Package: bench-app-167
+Name:
+  C: Bench App 167
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-167
+---
+Type: desktop-application
+ID: org.toride.bench.App168.desktop
+Package: bench-app-168
+Name:
+  C: Bench App 168
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-168
+---
+Type: desktop-application
+ID: org.toride.bench.App169.desktop
+Package: bench-app-169
+Name:
+  C: Bench App 169
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-169
+---
+Type: desktop-application
+ID: org.toride.bench.App170.desktop
+Package: bench-app-170
+Name:
+  C: Bench App 170
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-170
+---
+Type: desktop-application
+ID: org.toride.bench.App171.desktop
+Package: bench-app-171
+Name:
+  C: Bench App 171
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-171
+---
+Type: desktop-application
+ID: org.toride.bench.App172.desktop
+Package: bench-app-172
+Name:
+  C: Bench App 172
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-172
+---
+Type: desktop-application
+ID: org.toride.bench.App173.desktop
+Package: bench-app-173
+Name:
+  C: Bench App 173
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-173
+---
+Type: desktop-application
+ID: org.toride.bench.App174.desktop
+Package: bench-app-174
+Name:
+  C: Bench App 174
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-174
+---
+Type: desktop-application
+ID: org.toride.bench.App175.desktop
+Package: bench-app-175
+Name:
+  C: Bench App 175
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-175
+---
+Type: desktop-application
+ID: org.toride.bench.App176.desktop
+Package: bench-app-176
+Name:
+  C: Bench App 176
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-176
+---
+Type: desktop-application
+ID: org.toride.bench.App177.desktop
+Package: bench-app-177
+Name:
+  C: Bench App 177
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-177
+---
+Type: desktop-application
+ID: org.toride.bench.App178.desktop
+Package: bench-app-178
+Name:
+  C: Bench App 178
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-178
+---
+Type: desktop-application
+ID: org.toride.bench.App179.desktop
+Package: bench-app-179
+Name:
+  C: Bench App 179
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-179
+---
+Type: desktop-application
+ID: org.toride.bench.App180.desktop
+Package: bench-app-180
+Name:
+  C: Bench App 180
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-180
+---
+Type: desktop-application
+ID: org.toride.bench.App181.desktop
+Package: bench-app-181
+Name:
+  C: Bench App 181
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-181
+---
+Type: desktop-application
+ID: org.toride.bench.App182.desktop
+Package: bench-app-182
+Name:
+  C: Bench App 182
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-182
+---
+Type: desktop-application
+ID: org.toride.bench.App183.desktop
+Package: bench-app-183
+Name:
+  C: Bench App 183
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-183
+---
+Type: desktop-application
+ID: org.toride.bench.App184.desktop
+Package: bench-app-184
+Name:
+  C: Bench App 184
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-184
+---
+Type: desktop-application
+ID: org.toride.bench.App185.desktop
+Package: bench-app-185
+Name:
+  C: Bench App 185
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-185
+---
+Type: desktop-application
+ID: org.toride.bench.App186.desktop
+Package: bench-app-186
+Name:
+  C: Bench App 186
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-186
+---
+Type: desktop-application
+ID: org.toride.bench.App187.desktop
+Package: bench-app-187
+Name:
+  C: Bench App 187
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-187
+---
+Type: desktop-application
+ID: org.toride.bench.App188.desktop
+Package: bench-app-188
+Name:
+  C: Bench App 188
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-188
+---
+Type: desktop-application
+ID: org.toride.bench.App189.desktop
+Package: bench-app-189
+Name:
+  C: Bench App 189
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-189
+---
+Type: desktop-application
+ID: org.toride.bench.App190.desktop
+Package: bench-app-190
+Name:
+  C: Bench App 190
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-190
+---
+Type: desktop-application
+ID: org.toride.bench.App191.desktop
+Package: bench-app-191
+Name:
+  C: Bench App 191
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-191
+---
+Type: desktop-application
+ID: org.toride.bench.App192.desktop
+Package: bench-app-192
+Name:
+  C: Bench App 192
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-192
+---
+Type: desktop-application
+ID: org.toride.bench.App193.desktop
+Package: bench-app-193
+Name:
+  C: Bench App 193
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-193
+---
+Type: desktop-application
+ID: org.toride.bench.App194.desktop
+Package: bench-app-194
+Name:
+  C: Bench App 194
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-194
+---
+Type: desktop-application
+ID: org.toride.bench.App195.desktop
+Package: bench-app-195
+Name:
+  C: Bench App 195
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-195
+---
+Type: desktop-application
+ID: org.toride.bench.App196.desktop
+Package: bench-app-196
+Name:
+  C: Bench App 196
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-196
+---
+Type: desktop-application
+ID: org.toride.bench.App197.desktop
+Package: bench-app-197
+Name:
+  C: Bench App 197
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-197
+---
+Type: desktop-application
+ID: org.toride.bench.App198.desktop
+Package: bench-app-198
+Name:
+  C: Bench App 198
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-198
+---
+Type: desktop-application
+ID: org.toride.bench.App199.desktop
+Package: bench-app-199
+Name:
+  C: Bench App 199
+Summary:
+  C: A synthetic bench catalog entry
+Provides:
+  binaries:
+  - bench-tool-199

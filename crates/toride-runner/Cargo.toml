@@ -34,6 +34,23 @@ insta = "1"
 tempfile = "3"
 proptest = "1"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "process"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "redact"
+harness = false
+test = false
+
+[[bench]]
+name = "capture"
+harness = false
+test = false
+
+[[bench]]
+name = "streaming"
+harness = false
+test = false
+required-features = ["stream"]
 
 [lints]
 workspace = true

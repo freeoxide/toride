@@ -45,6 +45,10 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 [[bench]]
 name = "status_parse"
 harness = false
+
+[[bench]]
+name = "doctor_and_status"
+harness = false
 test = false
 
 [lints]

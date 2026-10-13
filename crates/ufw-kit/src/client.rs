@@ -64,6 +64,19 @@ impl Ufw {
         }
     }
 
+    /// Create a UFW client with a custom command runner and a status-cache
+    /// TTL override (for tests and benches that need deterministic cache
+    /// behavior without waiting out the default TTL).
+    #[must_use]
+    pub fn with_runner_and_status_ttl(runner: impl CommandRunner + 'static, ttl: Duration) -> Self {
+        let mut cache = DocCache::default();
+        cache.status_ttl_override = Some(ttl);
+        Self {
+            runner: Arc::new(runner),
+            cache: std::sync::Mutex::new(cache),
+        }
+    }
+
     fn lock_cache(&self) -> std::sync::MutexGuard<'_, DocCache> {
         self.cache
             .lock()

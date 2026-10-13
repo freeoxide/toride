@@ -703,8 +703,20 @@ impl Drop for SlowLockHeld {
 
 #[cfg(target_os = "linux")]
 fn read_hwmon_fans() -> Vec<SensorStatus> {
+    read_hwmon_fans_at(std::path::Path::new("/sys/class/hwmon"))
+}
+
+/// Enumerate hwmon fan sensors under a caller-supplied hwmon class root.
+///
+/// The production probe reads `/sys/class/hwmon`; this root-parameterized
+/// variant exists so benches and tests can point the probe at a synthetic
+/// tree. Chip names come from each `hwmon*/name` file (directory name as
+/// fallback); `fan1_input` through `fan16_input` are probed per chip.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn read_hwmon_fans_at(root: &std::path::Path) -> Vec<SensorStatus> {
     let mut sensors = Vec::new();
-    let Ok(hwmon_dir) = std::fs::read_dir("/sys/class/hwmon") else {
+    let Ok(hwmon_dir) = std::fs::read_dir(root) else {
         return sensors;
     };
     for entry in hwmon_dir.flatten() {
@@ -734,8 +746,20 @@ fn read_hwmon_fans() -> Vec<SensorStatus> {
 #[cfg(target_os = "linux")]
 #[allow(clippy::cast_precision_loss)]
 fn read_hwmon_voltages() -> Vec<SensorStatus> {
+    read_hwmon_voltages_at(std::path::Path::new("/sys/class/hwmon"))
+}
+
+/// Enumerate hwmon voltage sensors under a caller-supplied hwmon class root.
+///
+/// Root-parameterized twin of the voltage half of the production probe: it
+/// probes `in0_input` through `in16_input` per chip and reports millivolt
+/// readings converted to volts.
+#[cfg(target_os = "linux")]
+#[allow(clippy::cast_precision_loss)]
+#[must_use]
+pub fn read_hwmon_voltages_at(root: &std::path::Path) -> Vec<SensorStatus> {
     let mut sensors = Vec::new();
-    let Ok(hwmon_dir) = std::fs::read_dir("/sys/class/hwmon") else {
+    let Ok(hwmon_dir) = std::fs::read_dir(root) else {
         return sensors;
     };
     for entry in hwmon_dir.flatten() {
@@ -2101,7 +2125,14 @@ impl SystemStatus {
             .collect()
     }
 
-    fn read_sensors() -> Vec<SensorStatus> {
+    /// Enumerate temperature sensors plus, on Linux, hwmon fans and voltages.
+    ///
+    /// Walks a freshly refreshed sysinfo `Components` list once and appends
+    /// the hwmon fan and voltage probes on Linux. Each call re-enumerates;
+    /// callers needing both this list and [`Self::read_sensor_snapshot`]
+    /// pay the enumeration twice.
+    #[must_use]
+    pub fn read_sensors() -> Vec<SensorStatus> {
         let components = Components::new_with_refreshed_list();
         #[allow(unused_mut)]
         let mut sensors: Vec<SensorStatus> = components
@@ -2303,7 +2334,14 @@ impl SystemStatus {
         gpus
     }
 
-    fn read_static_info(sys: &System) -> StaticInfo {
+    /// Read the reboot-invariant host description from `sys`.
+    ///
+    /// CPU brand, vendor, and frequency come from `sys`'s CPU list; the
+    /// remaining fields re-read their sources on every call (cpuinfo
+    /// topology, DMI hardware inventory, os-release, hostname, kernel
+    /// version), so repeated calls pay the full probe cost each time.
+    #[must_use]
+    pub fn read_static_info(sys: &System) -> StaticInfo {
         let cpus = sys.cpus();
         let brand = cpus
             .first()
@@ -2337,7 +2375,16 @@ impl SystemStatus {
         }
     }
 
-    fn read_sensor_snapshot() -> SensorSnapshot {
+    /// Build the aggregated sensor snapshot with CPU and GPU temperature
+    /// highlights.
+    ///
+    /// Walks a second, independently refreshed sysinfo `Components` list;
+    /// `cpu_temperature` is the first reading whose label contains "cpu",
+    /// `gpu_temperature` the first whose label contains "gpu" (both
+    /// case-insensitive), and readings without a numeric temperature keep
+    /// `temperature: None`.
+    #[must_use]
+    pub fn read_sensor_snapshot() -> SensorSnapshot {
         let components = Components::new_with_refreshed_list();
         let readings: Vec<SensorStatus> = components
             .iter()

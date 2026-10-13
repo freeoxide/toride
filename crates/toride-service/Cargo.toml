@@ -27,6 +27,12 @@ serde_json = { workspace = true, optional = true }
 insta = "1"
 tempfile = "3"
 proptest = "1"
+toride-runner = { path = "../toride-runner", version = "0.2.0", features = ["fake"] }
+criterion = { version = "0.8", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "deploy_unit"
+harness = false
 
 [lints]
 workspace = true

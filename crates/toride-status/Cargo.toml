@@ -72,5 +72,9 @@ criterion = { version = "0.8", default-features = false, features = ["cargo_benc
 name = "prune_slow_proc_cache"
 harness = false
 
+[[bench]]
+name = "collect_cycle"
+harness = false
+
 [lints]
 workspace = true

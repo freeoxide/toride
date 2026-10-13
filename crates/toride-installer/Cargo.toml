@@ -52,5 +52,10 @@ name = "version_parse"
 harness = false
 test = false
 
+[[bench]]
+name = "detect_sweep"
+harness = false
+test = false
+
 [lints]
 workspace = true

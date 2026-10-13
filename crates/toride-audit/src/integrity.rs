@@ -100,6 +100,7 @@ impl IntegrityStatus {
 pub struct IntegrityManager<'a> {
     runner: &'a dyn toride_runner::Runner,
     paths: &'a AuditPaths,
+    binary_override: Option<PathBuf>,
 }
 
 /// Candidate AIDE config file locations, searched in order.
@@ -111,7 +112,53 @@ const AIDE_DB_CANDIDATES: &[&str] = &["/var/lib/aide/aide.db.gz", "/var/lib/aide
 impl<'a> IntegrityManager<'a> {
     /// Create a new integrity manager with the given runner and paths.
     pub fn new(runner: &'a dyn toride_runner::Runner, paths: &'a AuditPaths) -> Self {
-        Self { runner, paths }
+        Self {
+            runner,
+            paths,
+            binary_override: None,
+        }
+    }
+
+    /// Create an integrity manager pinned to an explicit `aide` binary path.
+    ///
+    /// [`IntegrityManager::new`] gates every operation on `which::which("aide")`
+    /// and invokes `aide` by name. This constructor skips the `PATH` lookup
+    /// entirely and invokes `binary` for every `aide` operation, so tests and
+    /// benches can drive the manager through a [`toride_runner::fake::FakeRunner`]
+    /// (or a fixture binary) on hosts where `aide` is not installed.
+    #[must_use]
+    pub fn with_binary(
+        runner: &'a dyn toride_runner::Runner,
+        paths: &'a AuditPaths,
+        binary: PathBuf,
+    ) -> Self {
+        Self {
+            runner,
+            paths,
+            binary_override: Some(binary),
+        }
+    }
+
+    /// Whether the `aide` binary can be invoked: caller-pinned for
+    /// [`IntegrityManager::with_binary`], `which`-resolved otherwise.
+    fn binary_present(&self) -> bool {
+        self.binary_override.is_some() || which::which("aide").is_ok()
+    }
+
+    /// Fail with [`Error::BinaryNotFound`] unless the binary gate passes.
+    fn require_binary(&self) -> Result<()> {
+        if self.binary_override.is_none() {
+            which::which("aide").map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
+        }
+        Ok(())
+    }
+
+    /// Build the `aide <arg>` spec, honoring a pinned binary override.
+    fn aide_command(&self, arg: &str) -> CommandSpec {
+        match &self.binary_override {
+            Some(binary) => CommandSpec::new(binary.to_string_lossy().into_owned()).arg(arg),
+            None => CommandSpec::new("aide").arg(arg),
+        }
     }
 
     /// Initialize a new AIDE database.
@@ -123,8 +170,8 @@ impl<'a> IntegrityManager<'a> {
     /// Returns [`Error::BinaryNotFound`] if `aide` is not available.
     /// Returns [`Error::CommandFailed`] if initialization fails.
     pub fn initialize(&self) -> Result<()> {
-        which::which("aide").map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
-        let spec = CommandSpec::new("aide").arg("--init");
+        self.require_binary()?;
+        let spec = self.aide_command("--init");
         self.runner.run_checked(&spec)?;
         Ok(())
     }
@@ -137,8 +184,8 @@ impl<'a> IntegrityManager<'a> {
     ///
     /// Returns [`Error::BinaryNotFound`] if `aide` is not available.
     pub fn check(&self) -> Result<String> {
-        which::which("aide").map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
-        let spec = CommandSpec::new("aide").arg("--check");
+        self.require_binary()?;
+        let spec = self.aide_command("--check");
         let output = self.runner.run(&spec)?;
         Ok(output.stdout)
     }
@@ -153,8 +200,8 @@ impl<'a> IntegrityManager<'a> {
     /// Returns [`Error::BinaryNotFound`] if `aide` is not available.
     /// Returns [`Error::CommandFailed`] if the update fails.
     pub fn update(&self) -> Result<()> {
-        which::which("aide").map_err(|_| Error::BinaryNotFound("aide".to_owned()))?;
-        let spec = CommandSpec::new("aide").arg("--update");
+        self.require_binary()?;
+        let spec = self.aide_command("--update");
         self.runner.run_checked(&spec)?;
         Ok(())
     }
@@ -173,7 +220,7 @@ impl<'a> IntegrityManager<'a> {
     /// cannot be stat'd (an exceptional filesystem error).
     pub fn status(&self) -> Result<IntegrityStatus> {
         // 1. Is the `aide` binary available?
-        if which::which("aide").is_err() {
+        if !self.binary_present() {
             return Ok(IntegrityStatus::not_installed());
         }
 
@@ -268,7 +315,7 @@ impl<'a> IntegrityManager<'a> {
 
     /// Run `aide --version` and extract a version string (best-effort).
     fn aide_version(&self) -> Option<String> {
-        let spec = CommandSpec::new("aide").arg("--version");
+        let spec = self.aide_command("--version");
         let output = self.runner.run(&spec).ok()?;
         extract_version(&output.combined_output())
     }
@@ -276,7 +323,7 @@ impl<'a> IntegrityManager<'a> {
     /// Run `aide --check` and return the raw output (best-effort). A missing
     /// binary is treated as a non-fatal absence of a check result.
     fn aide_check_output(&self) -> Option<toride_runner::CommandOutput> {
-        let spec = CommandSpec::new("aide").arg("--check");
+        let spec = self.aide_command("--check");
         self.runner.run(&spec).ok()
     }
 }
@@ -410,6 +457,7 @@ mod tests {
     use std::sync::{Mutex, OnceLock};
     use std::time::Duration;
     use tempfile::TempDir;
+    use toride_runner::fake::FakeRunner;
     use toride_runner::{CommandOutput, CommandSpec, Result as RunnerResult, Runner};
 
     fn paths_under(dir: &Path) -> AuditPaths {
@@ -520,6 +568,83 @@ mod tests {
         let line = s.last_check_output.expect("status line");
         assert!(line.contains("AIDE"), "line = {line}");
         assert!(line.contains("0 changes"), "line = {line}");
+    }
+
+    // -- with_binary seam: runner-call-count gates --------------------------
+
+    fn clean_check_output() -> CommandOutput {
+        CommandOutput::from_stdout(
+            "Added entries:\t\t0\nRemoved entries:\t\t0\nChanged entries:\t\t0\n",
+        )
+    }
+
+    fn override_paths_with_db(dir: &Path) -> AuditPaths {
+        let paths = paths_under(dir);
+        fs::create_dir_all(&paths.aide_db_dir).unwrap();
+        fs::write(paths.aide_db_dir.join("aide.db.gz"), b"stub").unwrap();
+        if let Some(parent) = paths.aide_conf.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&paths.aide_conf, b"@@define DBDIR /var/lib/aide\n").unwrap();
+        paths
+    }
+
+    #[test]
+    fn with_binary_live_probe_spawns_exactly_one_check() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(clean_check_output());
+        let binary = PathBuf::from("/opt/toride-fixtures/aide");
+        let mgr = IntegrityManager::with_binary(&runner, &paths, binary.clone());
+
+        let status = mgr.status().unwrap();
+        assert!(status.database_initialized);
+        assert_eq!(status.file_count, Some(0));
+        assert_eq!(status.last_check_passed, Some(true));
+
+        let calls = runner.calls();
+        assert!(
+            calls.iter().all(|c| c.program == binary),
+            "every spawn must target the pinned binary: {calls:?}"
+        );
+        let check_spawns = calls
+            .iter()
+            .filter(|c| c.args.iter().any(|a| a == "--check"))
+            .count();
+        assert_eq!(
+            check_spawns, 1,
+            "a live probe must spawn exactly one `aide --check`"
+        );
+        assert_eq!(calls.len(), 2, "one --version plus one --check");
+    }
+
+    #[test]
+    fn with_binary_bypasses_which_gate_when_aide_not_on_path() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(clean_check_output());
+        let mgr = IntegrityManager::with_binary(
+            &runner,
+            &paths,
+            PathBuf::from("/opt/toride-fixtures/aide"),
+        );
+
+        let status = mgr.status().unwrap();
+        assert!(
+            status.last_check_passed.is_some(),
+            "the pinned-binary probe must reach the runner regardless of host PATH"
+        );
+        assert_eq!(
+            runner.calls().len(),
+            2,
+            "no `which::which` short-circuit may suppress runner spawns"
+        );
     }
 
     // -- find_db picks the newest -------------------------------------------
