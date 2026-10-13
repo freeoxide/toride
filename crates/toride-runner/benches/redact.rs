@@ -163,11 +163,13 @@ fn assert_fixture_shape() {
     assert!(scrubbed.contains("context deadline exceeded"));
 
     let bytes_scrubbed = redact_output(&stdin_bytes_spec(), &text);
-    assert_eq!(
-        bytes_scrubbed, text,
-        "pre-foundations-5 baseline: the spec carries its secret only via stdin_bytes, which \
-         redact_output does not yet collect; flip this to assert the wg keys are scrubbed when \
-         foundations-5 lands"
+    assert!(
+        !bytes_scrubbed.contains("yAnz5TF+lXXJte14tji3zsMNmPaKj7jMEumQzxRjZn4="),
+        "stdin_bytes private key must be scrubbed (foundations-5): {bytes_scrubbed}"
+    );
+    assert!(
+        !bytes_scrubbed.contains("SyntaxMPHJq1+DSEyFjQEZcsTQnMkk5dMtHOdPzTQw2c="),
+        "stdin_bytes preshared key must be scrubbed (foundations-5): {bytes_scrubbed}"
     );
 }
 

@@ -9,13 +9,13 @@ const CAPTURE_1MB: usize = 1024 * 1024;
 
 const CAPTURE_16MB: usize = 16 * 1024 * 1024;
 
-const SAMPLE_SIZE: usize = 30;
+const SAMPLE_SIZE: usize = 50;
 
 const SLOW_SAMPLE_SIZE: usize = 20;
 
 const MEASUREMENT_TIME: Duration = Duration::from_secs(3);
 
-const OVERHEAD_MEASUREMENT_TIME: Duration = Duration::from_secs(4);
+const OVERHEAD_MEASUREMENT_TIME: Duration = Duration::from_secs(8);
 
 const WARM_UP_TIME: Duration = Duration::from_millis(500);
 
@@ -143,5 +143,8 @@ fn bench_per_run_overhead(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_capture, bench_per_run_overhead);
+// The overhead group runs first: measured right after the 16 MiB capture
+// benches, spawn latency inflates for pre and post builds alike and the
+// group's verdicts flip between invocations on a shared machine.
+criterion_group!(benches, bench_per_run_overhead, bench_capture);
 criterion_main!(benches);

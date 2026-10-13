@@ -21,7 +21,7 @@ for a fake in tests.
 | `tokio-runner`| No      | tokio, async-trait        | The async runner                       |
 | `stream`      | No      | `tokio-runner`            | Streaming output reads                 |
 | `serde`       | No      | serde, serde_json         | Serde on the spec/output types         |
-| `fake`        | No      | —                         | The test fake                          |
+| `fake`        | No      | none                      | The test fake                          |
 
 ```toml
 [dependencies]

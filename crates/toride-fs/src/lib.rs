@@ -24,9 +24,10 @@
 //!   [`permissions::check_not_world_writable`],
 //!   [`permissions::check_owner_is_root`]) are Unix-only: they are compiled
 //!   (and re-exported at the crate root) only on Unix targets.
-//! - File locking ([`with_lock`], [`with_lock_path`]), optional reads
-//!   ([`read_optional`], [`read_optional_bytes`]), and path expansion
-//!   ([`expand_tilde`], [`expand_path`]) are cross-platform.
+//! - File locking ([`with_lock`], [`with_lock_path`],
+//!   [`with_lock_timeout`]), optional reads ([`read_optional`],
+//!   [`read_optional_bytes`]), and path expansion ([`expand_tilde`],
+//!   [`expand_path`]) are cross-platform.
 
 #![deny(unsafe_code)]
 #![warn(missing_docs)]
@@ -43,10 +44,6 @@
     reason = "all Result fns carry # Errors docs"
 )]
 
-// ---------------------------------------------------------------------------
-// Module declarations
-// ---------------------------------------------------------------------------
-
 pub mod atomic;
 pub mod error;
 pub mod expand;
@@ -54,14 +51,10 @@ pub mod lock;
 pub mod permissions;
 pub mod read;
 
-// ---------------------------------------------------------------------------
-// Re-exports -- convenience for downstream crates
-// ---------------------------------------------------------------------------
-
 pub use atomic::{atomic_write, atomic_write_bytes, atomic_write_with_perms};
 pub use error::{Error, Result};
 pub use expand::{expand_path, expand_tilde};
-pub use lock::{with_lock, with_lock_path};
+pub use lock::{with_lock, with_lock_path, with_lock_timeout};
 #[cfg(unix)]
 pub use permissions::set_permissions;
 pub use read::{read_optional, read_optional_bytes};

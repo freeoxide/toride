@@ -45,7 +45,7 @@ pub fn check_file_permissions(path: &Path, expected_mode: u32) -> Option<Finding
                 } else {
                     Some(
                         Finding::new(
-                            format!("perms:{}`", path.display()),
+                            format!("perms:{}", path.display()),
                             Severity::Warning,
                             format!(
                                 "Expected mode {:o} but found {:o} for {}",
@@ -123,7 +123,6 @@ mod tests {
 
     #[test]
     fn check_binary_exists_ls() {
-        // `ls` should exist on any Unix system.
         assert!(check_binary_exists("ls").is_none());
     }
 
@@ -138,8 +137,6 @@ mod tests {
 
     #[test]
     fn check_file_permissions_self() {
-        // Cargo.toml should be readable -- exact mode varies, so just verify
-        // it doesn't panic and returns Option<Finding>.
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
         let _result = check_file_permissions(&manifest, 0o644);
     }
@@ -147,7 +144,37 @@ mod tests {
     #[test]
     fn check_not_world_writable_cargo_toml() {
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
-        // Cargo.toml should not be world-writable.
         assert!(check_not_world_writable(&manifest).is_none());
+    }
+
+    /// The mode-mismatch arm and the stat-error arm of the same check must
+    /// emit the same `perms:{path}` id shape; the mismatch arm previously
+    /// carried a stray trailing backtick.
+    #[test]
+    #[cfg(unix)]
+    fn check_file_permissions_finding_ids_match_across_arms() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = tempfile::tempdir().expect("temp dir creation should succeed");
+        let file = dir.path().join("mode-mismatch.txt");
+        std::fs::write(&file, "data").expect("write should succeed");
+
+        let actual = std::fs::metadata(&file)
+            .expect("metadata should be available")
+            .permissions()
+            .mode()
+            & 0o777;
+        let expected_mode = if actual == 0o600 { 0o644 } else { 0o600 };
+
+        let mismatch = check_file_permissions(&file, expected_mode)
+            .expect("a differing expected mode must find a mismatch");
+        let absent = dir.path().join("absent.txt");
+        let missing = check_file_permissions(&absent, expected_mode)
+            .expect("a stat error must produce a finding");
+
+        assert_eq!(mismatch.id, format!("perms:{}", file.display()));
+        assert_eq!(missing.id, format!("perms:{}", absent.display()));
+        assert!(!mismatch.id.contains('`'), "mismatch arm: {}", mismatch.id);
+        assert!(!missing.id.contains('`'), "stat-error arm: {}", missing.id);
     }
 }

@@ -4,7 +4,7 @@
 //!
 //! # Shell execution: rejected, permanently
 //!
-//! [`CommandSpec`](crate::spec::CommandSpec) carries direct argv only — there
+//! [`CommandSpec`](crate::spec::CommandSpec) carries direct argv only: there
 //! is no shell opt-in and there never will be (no `ShellSpec`, no shell
 //! command-string mode). A shell command string would re-introduce, in a
 //! single field, the injection risk the argv model exists to prevent, and its
@@ -12,8 +12,8 @@
 //! [`display_command`](crate::display::display_command). The crate ships the
 //! inverse posture instead: [`ArgvPolicy::RejectShellMetachars`] refuses
 //! shell syntax in argv before spawn. A caller who genuinely needs shell
-//! features constructs the shell invocation explicitly —
-//! `CommandSpec::new("bash").args(["-c", script])` — which keeps that decision
+//! features constructs the shell invocation explicitly,
+//! `CommandSpec::new("bash").args(["-c", script])`, which keeps that decision
 //! visible in code review and subject to argv rejection. This is a recorded
 //! ruling (tracker item 3.3), not an omission.
 

@@ -24,7 +24,7 @@ pub enum OutputMode {
     /// Connect child stdio directly to the parent process.
     ///
     /// Returns empty captured strings in `CommandOutput`. Use only when the
-    /// caller explicitly opts in — this is unsafe for libraries because it can
+    /// caller explicitly opts in; this is unsafe for libraries because it can
     /// leak output and interfere with app UI.
     Inherit,
 }

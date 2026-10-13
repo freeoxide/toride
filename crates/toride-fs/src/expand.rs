@@ -1,8 +1,7 @@
 //! Path expansion utilities.
 //!
-//! Handles tilde (`~`) and environment variable expansion for file paths.
-//! Used when resolving user-provided path strings like `~/config` or
-//! `~root/.ssh`.
+//! Handles tilde (`~`) and literal `$HOME` expansion for file paths.
+//! Used when resolving user-provided path strings like `~/config`.
 
 use std::path::PathBuf;
 
@@ -10,13 +9,11 @@ use dirs;
 
 /// Expand a leading `~` in a path string to the current user's home directory.
 ///
-/// Handles:
-/// - `~` or `~/...` -- expands to the current user's home directory.
-/// - `~user` -- on most Unix systems, this resolves via the `dirs` crate or
-///   falls back to `/home/user`. Note: full `~user` resolution requires
-///   reading `/etc/passwd` which is not implemented here; only `~` (current
-///   user) is fully supported.
-/// - No tilde -- returns the path unchanged.
+/// Only two forms expand: a bare `~` and a `~/` prefix, both to the current
+/// user's home directory. Every other tilde-prefixed string (`~user`,
+/// `~user/dir`) is returned unchanged: resolving another user's home would
+/// require reading `/etc/passwd`, which this function does not do. Paths
+/// without a leading `~` are returned unchanged.
 ///
 /// # Examples
 ///
@@ -25,6 +22,7 @@ use dirs;
 ///
 /// assert!(expand_tilde("~").starts_with("/home/"));
 /// assert_eq!(expand_tilde("/etc/config"), std::path::PathBuf::from("/etc/config"));
+/// assert_eq!(expand_tilde("~root"), std::path::PathBuf::from("~root"));
 /// ```
 pub fn expand_tilde(path: &str) -> PathBuf {
     if path == "~" {
@@ -35,22 +33,16 @@ pub fn expand_tilde(path: &str) -> PathBuf {
         return home_dir().join(rest);
     }
 
-    // Handle ~user (basic support -- just use home_dir for current user).
-    // Full ~user expansion would require reading /etc/passwd.
-    if path.starts_with('~') {
-        // Return as-is for ~user patterns we cannot resolve.
-        return PathBuf::from(path);
-    }
-
     PathBuf::from(path)
 }
 
-/// Expand a path string with tilde and `$HOME` variable support.
+/// Expand a path string with tilde and literal `$HOME` support.
 ///
-/// First performs tilde expansion via [`expand_tilde`], then replaces any
-/// `$HOME` occurrences with the actual home directory. Expansion relies on
-/// the `HOME` environment variable; where it is unset (some non-Unix
-/// environments), `$HOME` occurrences are left literal.
+/// First performs tilde expansion via [`expand_tilde`], then replaces the
+/// literal substring `$HOME` with the value of the `HOME` environment
+/// variable. `$HOME` is the only variable recognized: `$VAR` and `${VAR}`
+/// forms for any other name pass through untouched, as does `$HOME` when the
+/// variable is unset.
 ///
 /// # Examples
 ///
@@ -63,7 +55,6 @@ pub fn expand_tilde(path: &str) -> PathBuf {
 pub fn expand_path(path: &str) -> PathBuf {
     let expanded = expand_tilde(path);
 
-    // Handle $HOME environment variable.
     let expanded_str = expanded.to_string_lossy();
     if expanded_str.contains("$HOME")
         && let Some(home) = std::env::var_os("HOME")

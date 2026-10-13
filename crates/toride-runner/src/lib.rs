@@ -65,30 +65,30 @@
 //!
 //! Four execution backends share one spec type. Every row below names the
 //! runner it describes; "✓" means supported, "✗" means rejected with an
-//! error, "—" means not applicable to that backend.
+//! error, "n/a" means not applicable to that backend.
 //!
 //! | Capability | `DuctRunner` (feature `duct-runner`) | `TokioRunner` (feature `tokio-runner`) | Streaming Tokio (feature `stream`) | `FakeRunner` (feature `fake`) |
 //! |---|---|---|---|---|
 //! | Traits implemented | sync `Runner` (unit struct + configured) | async `AsyncRunner` (unit struct + configured) | `AsyncStreamingRunner` on both the unit and configured Tokio runners | sync `Runner` + async `AsyncRunner` (feature `tokio-runner`) |
 //! | Captured output (`OutputMode::Capture`) | ✓ default; separate stdout/stderr, exit code, `success` | ✓ identical semantics | ✓ live events plus a final aggregated `CommandOutput` | ✓ canned responses returned as-is |
-//! | Inherited stdio (`OutputMode::Inherit`) | ✓ child writes to the parent's stdio; captured strings come back empty, exit code is real | ✓ identical semantics | — `run_streaming` always pipes both streams so events can flow | recorded in exact matching; nothing is spawned, so the mode is matched, not acted on |
-//! | `OutputMode::Stream` passed to `run` | ✗ rejected with `Error::Other`; use the streaming runner | ✗ rejected identically | streaming is selected by calling `run_streaming`, not by the mode; every mode streams | never rejected — no spawn happens |
-//! | Checked execution (`run_checked`) | ✓ default trait method; failure yields `Error::CommandFailed` with redacted args and scrubbed stderr | ✓ identical | ✓ via the inherited default, which resolves through the captured `run` path — streaming callers check `output.success` on the aggregate | ✓ on both implemented traits |
+//! | Inherited stdio (`OutputMode::Inherit`) | ✓ child writes to the parent's stdio; captured strings come back empty, exit code is real | ✓ identical semantics | n/a: `run_streaming` always pipes both streams so events can flow | recorded in exact matching; nothing is spawned, so the mode is matched, not acted on |
+//! | `OutputMode::Stream` passed to `run` | ✗ rejected with `Error::Other`; use the streaming runner | ✗ rejected identically | streaming is selected by calling `run_streaming`, not by the mode; every mode streams | never rejected: no spawn happens |
+//! | Checked execution (`run_checked`) | ✓ default trait method; failure yields `Error::CommandFailed` with redacted args and scrubbed stderr | ✓ identical | ✓ via the inherited default, which resolves through the captured `run` path; streaming callers check `output.success` on the aggregate | ✓ on both implemented traits |
 //! | Timeouts | ✓ `CommandSpec::timeout` under `TimeoutPolicy` control; runner default 60 s, removable per runner (`no_default_timeout`); on expiry the child is killed and reaped | ✓ identical (async mirror of the same options) | ✓ same resolution; the unit runner uses the 60 s default, the configured runner uses its `default_timeout` | not enforced; `timeout` and `timeout_policy` are excluded from exact matching (runtime policy) |
 //! | Env manipulation | ✓ `env` add, `env_remove`, `clear_env`, `env_precedence`, `cwd` | ✓ identical | ✓ identical (shared env policy) | matched exactly in `respond`; never applied to any process |
 //! | stdin | ✓ `stdin` (UTF-8), `stdin_bytes` (raw, wins over `stdin`), `stdin_null`; a write failure (child exits before reading) yields `Error::StdinFailed` after kill-and-reap | ✓ identical via the shared write helper | ✓ identical via the same helper | `stdin`/`stdin_bytes`/`stdin_null` matched; nothing is written |
 //! | Output limits | ✓ enforced *while* capturing on combined stdout+stderr bytes; child killed and reaped on breach; ignored under `Inherit` | ✓ identical | ✓ the cap counts both streams' bytes mid-stream | not enforced; `output_limit` and `output_cap` excluded from matching |
 //! | Lossy UTF-8 output | ✓ captured bytes decoded with `from_utf8_lossy` | ✓ identical | ✓ chunks carry raw bytes; lines and the final aggregate are lossy-decoded | canned strings returned verbatim |
 //! | Redaction | ✓ errors and captured output honor `spec.redact`; runner log lines redact by default (`redact_logs`, default `true`) | ✓ identical | ✓ chunks, lines, and the aggregate scrubbed under `spec.redact`; the span display is log-redacted | `redact` flag matched; nothing to scrub |
-//! | Diagnostics | ✓ INFO `command` span wraps success and failure; DEBUG completion event with a sanitized env summary; both off with `log_commands(false)` | ✓ identical (plus a log-redacted `command` field on the completion event) | ✓ span only — the streaming path has no completion event | silent by construction |
-//! | Cleanup on timeout / cap breach / stdin failure | ✓ kill and reap the direct child | ✓ identical, plus `kill_on_drop` guards future cancellation | ✓ identical | — no process exists |
+//! | Diagnostics | ✓ INFO `command` span wraps success and failure; DEBUG completion event with a sanitized env summary; both off with `log_commands(false)` | ✓ identical (plus a log-redacted `command` field on the completion event) | ✓ span only: the streaming path has no completion event | silent by construction |
+//! | Cleanup on timeout / cap breach / stdin failure | ✓ kill and reap the direct child | ✓ identical, plus `kill_on_drop` guards future cancellation | ✓ identical | n/a: no process exists |
 //! | Pre-spawn gates | ✓ `ArgvPolicy` argv validation, `PathResolution` program resolution | ✓ identical | ✓ identical | not applied; `argv_policy`/`output_cap` are not even matched |
 //!
 //! Intentional differences, so nobody hunts them as bugs:
 //!
 //! - The two real runners are option-mirrored (`DuctRunnerOptions` /
 //!   `TokioRunnerOptions` carry the same three fields with the same
-//!   defaults); the unit structs simply run with the default options.
+//!   defaults); the unit structs run with the default options.
 //! - `FakeRunner` is a replay device, not an executor: it never spawns, so
 //!   process behavior (env wiring, stdio, kill-and-reap, caps, log emission)
 //!   is out of its scope by design.
@@ -198,7 +198,7 @@
 //! let runner = DuctRunner::builder().no_default_timeout().build();
 //! assert!(runner.options().default_timeout.is_none());
 //!
-//! // No spec timeout either — this command finishes on its own:
+//! // No spec timeout either, so this command finishes on its own:
 //! let output = runner.run(&CommandSpec::new("echo").arg("done")).unwrap();
 //! assert!(output.success);
 //! # }
@@ -235,13 +235,13 @@
 //! Which side wins when `env` and `env_remove` name the same key is decided
 //! by [`EnvPrecedence`] (`ExplicitWins` by default, `RemoveWins` to flip).
 //!
-//! ## Clean environment — and the Unix `PATH` footgun
+//! ## Clean environment and the Unix `PATH` footgun
 //!
 //! `clear_env(true)` starts the child from an empty environment (plus a
 //! minimal platform set on Windows) before applying `spec.env`. On Unix the
 //! preserved set is empty, so **the child ends up with no `PATH`** while the
 //! default [`PathResolution::OsSearch`] passes the program string through
-//! verbatim — a bare program name then depends on the parent-side OS
+//! verbatim, so a bare program name then depends on the parent-side OS
 //! search, and anything the child looks up on `PATH` itself fails. Use one
 //! of the three mitigations: an **absolute program path** (as below), an
 //! **explicit `PATH` entry** via `.env("PATH", ...)`, or
@@ -267,7 +267,7 @@
 //! ## Redaction
 //!
 //! With `spec.redact(true)`, sensitive flag values are replaced with `***`
-//! in error variants, captured output, and displays — never in the argv the
+//! in error variants, captured output, and displays, never in the argv the
 //! child actually receives. Runner **log lines** redact by default
 //! (`redact_logs`, default `true` on both real runners) even for specs that
 //! did not opt in; error variants always honor `spec.redact` alone.
@@ -305,7 +305,7 @@
 //!
 //! [`CommandSpec::output_limit`] caps combined captured stdout+stderr
 //! *while* capturing: the child is killed and reaped the moment the byte
-//! cap is breached and [`Error::OutputLimitExceeded`] is returned — no
+//! cap is breached and [`Error::OutputLimitExceeded`] is returned; no
 //! partial output, no unbounded buffering. [`OutputCap::Always`] forces a
 //! cap regardless of the per-spec field.
 //!
@@ -347,14 +347,14 @@
 //! # Cleanup policy: direct child only
 //!
 //! On timeout, output-limit breach, and stdin-write failure, both real
-//! runners **kill and reap the direct child** — kill first, then wait, so no
-//! zombie is left behind — before returning the corresponding error
+//! runners **kill and reap the direct child** (kill first, then wait, so no
+//! zombie is left behind) before returning the corresponding error
 //! (`Error::CommandTimeout`, `Error::OutputLimitExceeded`,
 //! `Error::StdinFailed`).
 //!
 //! This cleanup is **direct-child-only** by supported policy:
 //!
-//! - Grandchildren — processes the child spawns — survive a kill. Killing
+//! - Grandchildren (processes the child spawns) survive a kill. Killing
 //!   a process tree (Unix process groups with `killpg`, Windows job
 //!   objects) is out of scope and stays deferred until a real call site
 //!   demonstrates grandchild survival as a bug.
@@ -363,7 +363,7 @@
 //!   detached after a bounded wait (Duct), and the streaming stderr task
 //!   is aborted on a cap breach (Tokio).
 //! - On the Tokio paths, `kill_on_drop` additionally SIGKILLs the direct
-//!   child if the caller drops (cancels) the run future mid-flight — again
+//!   child if the caller drops (cancels) the run future mid-flight, again
 //!   best-effort for the direct child only.
 //!
 //! The same policy is documented next to the implementation in
@@ -373,13 +373,13 @@
 //!
 //! With `log_commands` enabled (the default on both real runners):
 //!
-//! - an INFO tracing span named `command` (fields: `program`, `command` —
+//! - an INFO tracing span named `command` (fields: `program`, `command`,
 //!   the log-redacted display) wraps the *entire* execution, success and
 //!   every failure path alike, on all real-runner paths including
 //!   streaming;
 //! - a DEBUG completion event fires on both captured paths when the child
 //!   exits, carrying the exit code, the log-redacted command display, and
-//!   — when the spec sets explicit env vars — a sanitized env summary in
+//!   (when the spec sets explicit env vars) a sanitized env summary in
 //!   which sensitive values are `***` regardless of `spec.redact`. The
 //!   streaming path has no completion event; its span wraps the session.
 //!
@@ -389,7 +389,7 @@
 //!
 //! # Shell execution: not offered
 //!
-//! `CommandSpec` carries direct argv only — there is no shell opt-in and
+//! `CommandSpec` carries direct argv only: there is no shell opt-in and
 //! there never will be. A shell command string would re-introduce, in one
 //! field, the injection risk the argv model exists to prevent, and its
 //! free-form text cannot be token-redacted. The crate ships the inverse
@@ -397,19 +397,19 @@
 //! argv before spawn, and a caller who genuinely needs shell features
 //! writes `CommandSpec::new("bash").args(["-c", script])`, keeping that
 //! decision visible in code review. This is a recorded ruling, not an
-//! omission — see the [`policy`] module docs.
+//! omission; see the [`policy`] module docs.
 //!
 //! # `FakeRunner` semantics
 //!
 //! `FakeRunner` (feature `fake`) replays canned responses in FIFO order or
 //! by exact spec match, records every call, and is lenient by default
 //! (unmatched calls succeed with empty output; `.strict()` turns that into
-//! an error). Exact matching compares command *construction* — program,
+//! an error). Exact matching compares command *construction* (program,
 //! args, `stdin`, `stdin_bytes`, `stdin_null`, env, `env_remove`,
-//! `clear_env`, `cwd`, `output_mode`, `redact`, `env_precedence`,
-//! `path_resolution` — and excludes runtime policy (`timeout`,
-//! `timeout_policy`, `output_limit`, `argv_policy`, `output_cap`). See the
-//! [`fake`] module.
+//! `clear_env`, `cwd`, `output_mode`, `redact`, `redact_flags`,
+//! `env_precedence`, `path_resolution`) and excludes runtime policy
+//! (`timeout`, `timeout_policy`, `output_limit`, `argv_policy`,
+//! `output_cap`). See the [`fake`] module.
 
 #![deny(unsafe_code)]
 #![allow(clippy::missing_errors_doc)]

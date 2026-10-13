@@ -360,6 +360,8 @@ mod no_leak_family {
 
 #[cfg(all(feature = "exec", feature = "upload"))]
 mod facade_smoke {
+    use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
     use toride_ssh::{HostKeyPolicy, SshManager};
 
     #[test]
@@ -371,5 +373,36 @@ mod facade_smoke {
         let upload_service = manager.upload();
         assert_eq!(upload_service.sftp_program(), "sftp");
         assert_eq!(upload_service.host_key_policy(), HostKeyPolicy::Strict);
+    }
+
+    /// foundations-0: the facade must forward exec/upload through an injected
+    /// runner, so tests and configured runners (for example a
+    /// `no_default_timeout` Duct build) never spawn through the bare default.
+    #[test]
+    fn injected_runners_back_the_exec_and_upload_accessors() {
+        let manager = SshManager::new().unwrap_or_else(|err| panic!("SshManager::new: {err}"));
+
+        let exec_fake = FakeRunner::new().push_response(CommandOutput::from_stdout("up"));
+        let host = toride_ssh::HostSpec::parse("root@203.0.113.10").unwrap();
+        manager
+            .exec_with(Box::new(exec_fake.clone()))
+            .run(&host, &["uptime"])
+            .expect("injected exec runner serves the call");
+        let exec_calls = exec_fake.calls();
+        assert_eq!(exec_calls.len(), 1, "the injected runner must be used");
+        assert_eq!(exec_calls[0].program, "ssh");
+        assert_eq!(exec_calls[0].args[4], "root@203.0.113.10");
+
+        let upload_fake = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
+        let remote = toride_ssh::upload::RemotePath::parse("/etc/toride/app.conf").unwrap();
+        let payload = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(payload.path(), b"config").unwrap();
+        manager
+            .upload_with(Box::new(upload_fake.clone()))
+            .upload(&host, payload.path(), &remote)
+            .expect("injected upload runner serves the call");
+        let upload_calls = upload_fake.calls();
+        assert_eq!(upload_calls.len(), 1, "the injected runner must be used");
+        assert_eq!(upload_calls[0].program, "sftp");
     }
 }

@@ -31,7 +31,7 @@ pub enum Error {
     },
 
     /// Command execution timed out.
-    #[error("command timed out: {program} (timeout: {}s)", .timeout.as_secs())]
+    #[error("command timed out: {program} (timeout: {timeout:?})")]
     CommandTimeout {
         /// Program that timed out.
         program: String,
@@ -125,5 +125,38 @@ pub enum Error {
 impl From<std::io::Error> for Error {
     fn from(err: std::io::Error) -> Self {
         Self::Io(err.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sub-second timeouts are first-class (spec round-trips nanos), so the
+    /// Display must not truncate to whole seconds: a 500 ms timeout used to
+    /// render as `timeout: 0s`.
+    #[test]
+    fn command_timeout_display_shows_sub_second_precision() {
+        let err = Error::CommandTimeout {
+            program: "sleep".to_owned(),
+            args: vec!["10".to_owned()],
+            timeout: Duration::from_millis(500),
+        };
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("500ms"),
+            "sub-second timeout must render precisely: {rendered}"
+        );
+        assert!(
+            !rendered.contains("0s"),
+            "no zero-second truncation: {rendered}"
+        );
+
+        let whole = Error::CommandTimeout {
+            program: "sleep".to_owned(),
+            args: vec![],
+            timeout: Duration::from_secs(60),
+        };
+        assert!(whole.to_string().contains("60s"), "{}", whole.to_string());
     }
 }

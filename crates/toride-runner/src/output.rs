@@ -1,4 +1,4 @@
-//! [`CommandOutput`] — the result of executing a command.
+//! [`CommandOutput`]: the result of executing a command.
 //!
 //! Captures stdout, stderr, exit code, and a convenience `success` flag.
 

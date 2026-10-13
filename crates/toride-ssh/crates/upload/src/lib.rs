@@ -36,6 +36,7 @@ use std::fmt;
 use std::fs;
 use std::io::Write as _;
 use std::path::Path;
+use std::time::Duration;
 
 use toride_runner::Runner;
 use toride_runner::display::{MIN_SUBSTRING_SCRUB_LEN, scrub_stderr};
@@ -180,6 +181,7 @@ pub struct UploadService {
     runner: Box<dyn Runner>,
     host_key_policy: HostKeyPolicy,
     sftp_program: String,
+    timeout: Option<Duration>,
 }
 
 impl UploadService {
@@ -191,6 +193,7 @@ impl UploadService {
             runner,
             host_key_policy: HostKeyPolicy::Strict,
             sftp_program: DEFAULT_SFTP_PROGRAM.to_owned(),
+            timeout: None,
         }
     }
 
@@ -208,6 +211,19 @@ impl UploadService {
         self
     }
 
+    /// Set a wall-clock cap applied to every invocation spec.
+    ///
+    /// Large uploads routinely exceed the 60 s fallback timeout a default
+    /// [`DuctRunner`](toride_runner::DuctRunner) applies; this pins the cap
+    /// per service. When unset, the runner's own default (60 s for the
+    /// default Duct and Tokio runners, overridable by injecting a configured
+    /// runner) decides.
+    #[must_use]
+    pub fn with_timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = Some(timeout);
+        self
+    }
+
     /// The configured host-key checking posture.
     #[must_use]
     pub fn host_key_policy(&self) -> HostKeyPolicy {
@@ -218,6 +234,12 @@ impl UploadService {
     #[must_use]
     pub fn sftp_program(&self) -> &str {
         &self.sftp_program
+    }
+
+    /// The configured per-invocation timeout, if any.
+    #[must_use]
+    pub fn timeout(&self) -> Option<Duration> {
+        self.timeout
     }
 
     /// Copy the local regular file `local` to `remote` on `host`, returning
@@ -279,7 +301,7 @@ impl UploadService {
     }
 
     fn sftp_spec(&self, host: &HostSpec, batch_arg: &str) -> CommandSpec {
-        CommandSpec::new(self.sftp_program.clone())
+        let mut spec = CommandSpec::new(self.sftp_program.clone())
             .arg("-o")
             .arg(BATCH_MODE_OPTION)
             .arg("-o")
@@ -288,7 +310,11 @@ impl UploadService {
             .arg(batch_arg)
             .arg(host.destination())
             .stdin_null(true)
-            .redact(true)
+            .redact(true);
+        if let Some(timeout) = self.timeout {
+            spec = spec.timeout(timeout);
+        }
+        spec
     }
 }
 
@@ -897,6 +923,37 @@ mod tests {
         let svc = UploadService::new(Box::new(FakeRunner::new()));
         assert_eq!(svc.host_key_policy(), HostKeyPolicy::Strict);
         assert_eq!(svc.sftp_program(), "sftp");
+        assert_eq!(svc.timeout(), None);
+    }
+
+    /// foundations-0: `with_timeout` must land on every invocation spec, so a
+    /// large upload is not killed by the runner's 60 s default.
+    #[test]
+    fn with_timeout_applies_the_cap_to_the_invocation_spec() {
+        let payload = payload_file();
+        let (service, observations) = spy_service(CommandOutput::from_stdout(""));
+        let service = service.with_timeout(Duration::from_secs(600));
+        assert_eq!(service.timeout(), Some(Duration::from_secs(600)));
+
+        service.upload(&host(), payload.path(), &remote()).unwrap();
+
+        let obs = snapshot(&observations);
+        assert_eq!(obs.len(), 1);
+        assert_eq!(
+            obs[0].spec.timeout,
+            Some(Duration::from_secs(600)),
+            "the spec must carry the service timeout"
+        );
+    }
+
+    /// Without the knob the spec leaves the timeout unset, deferring to the
+    /// runner default (60 s on the default Duct/Tokio runners).
+    #[test]
+    fn without_timeout_the_spec_defers_to_the_runner_default() {
+        let payload = payload_file();
+        let (service, observations) = spy_service(CommandOutput::from_stdout(""));
+        service.upload(&host(), payload.path(), &remote()).unwrap();
+        assert_eq!(snapshot(&observations)[0].spec.timeout, None);
     }
 
     #[test]

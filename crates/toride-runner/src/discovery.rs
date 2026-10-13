@@ -35,7 +35,7 @@ pub fn find_binary(name: &str) -> Result<PathBuf> {
 /// Verify that a required binary is present, returning an error if not.
 ///
 /// This is a convenience wrapper around [`find_binary`] that discards
-/// the path — useful for pre-flight checks.
+/// the path, useful for pre-flight checks.
 ///
 /// # Errors
 ///

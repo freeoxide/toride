@@ -390,9 +390,55 @@ impl ServiceManager {
         } else {
             None
         };
-        toride_fs::atomic_write_with_perms(&unit_path, contents, UNIT_FILE_MODE)?;
+        if let Err(write_error) =
+            toride_fs::atomic_write_with_perms(&unit_path, contents, UNIT_FILE_MODE)
+        {
+            return Err(Self::restore_after_failed_write(
+                name,
+                &unit_path,
+                backup.as_deref(),
+                Error::Filesystem(write_error),
+            ));
+        }
         tracing::info!(unit = name, path = %unit_path.display(), "installed unit file");
         Ok(backup)
+    }
+
+    /// Restore the pre-install unit file when the atomic write fails after a
+    /// backup was taken, so a failed install cannot leave the unit missing.
+    fn restore_after_failed_write(
+        name: &str,
+        unit_path: &Path,
+        backup: Option<&Path>,
+        cause: Error,
+    ) -> Error {
+        if let Some(backup_path) = backup {
+            if let Err(restore_error) = rollback_unit(unit_path, Some(backup_path)) {
+                tracing::error!(
+                    unit = name,
+                    error = %restore_error,
+                    "atomic unit write failed and the backup restore failed too"
+                );
+                return Error::BackupFailed(format!(
+                    "atomic unit write failed ({cause}) and restoring the backup failed too \
+                     ({restore_error})"
+                ));
+            }
+            tracing::warn!(
+                unit = name,
+                error = %cause,
+                "atomic unit write failed; unit file restored from backup"
+            );
+        } else if unit_path.exists()
+            && let Err(remove_error) = fs::remove_file(unit_path)
+        {
+            tracing::warn!(
+                unit = name,
+                error = %remove_error,
+                "atomic unit write failed and removing the partial unit failed"
+            );
+        }
+        cause
     }
 
     fn backup_unit(&self, name: &str) -> Result<PathBuf> {
@@ -1008,6 +1054,44 @@ mod tests {
         assert_eq!(
             fs::read_to_string(dir.path().join(backup_name)).expect("backup readable"),
             "old contents"
+        );
+    }
+
+    /// A failed atomic write after a backup was taken must restore the
+    /// pre-install unit file instead of propagating with the unit deleted:
+    /// the exact window foundations-20 pins. The restore helper is exercised
+    /// directly because the atomic-write failure itself (a post-rename chmod
+    /// failing under an unprivileged test user) cannot be triggered from
+    /// outside `toride-fs`.
+    #[test]
+    fn failed_write_after_backup_restores_the_previous_unit_file() {
+        let dir = TempDir::new().expect("temp dir creation should succeed");
+        let mgr = ServiceManager::with_units_root(Box::new(CannedRunner::empty()), dir.path());
+        fs::write(dir.path().join("app.service"), "previous unit contents")
+            .expect("seed unit write should succeed");
+
+        let backup = mgr
+            .backup_unit("app.service")
+            .expect("backup should succeed");
+        fs::write(dir.path().join("app.service"), "half-written garbage")
+            .expect("simulated destroyed unit write should succeed");
+
+        let cause = Error::Io(std::io::Error::other("injected write failure"));
+        let returned = ServiceManager::restore_after_failed_write(
+            "app.service",
+            &dir.path().join("app.service"),
+            Some(&backup),
+            cause,
+        );
+
+        assert!(
+            returned.to_string().contains("injected write failure"),
+            "the original write error must be returned: {returned}"
+        );
+        assert_eq!(
+            fs::read_to_string(dir.path().join("app.service")).expect("unit file readable"),
+            "previous unit contents",
+            "the pre-install unit file must be restored, not left destroyed"
         );
     }
 

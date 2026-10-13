@@ -28,10 +28,16 @@
 //! - [`SshManager::exec`] — remote command execution *(feature: `exec`)*
 //! - [`SshManager::upload`] — file upload via sftp *(feature: `upload`)*
 //!
-//! # Testing with a custom CLI runner
+//! # Testing without real SSH processes
 //!
-//! Use [`SshManager::with_cli_runner`] to inject a [`MockCliRunner`] so that
-//! no real SSH processes are spawned during tests.
+//! The [`CliRunner`]-backed subsystems (keys, agent, doctor, known-hosts,
+//! certificate) take a [`MockCliRunner`] through
+//! [`SshManager::with_cli_runner`], so they spawn nothing in tests. The
+//! `exec` and `upload` subsystems are built on the separate
+//! [`toride_runner::Runner`] trait instead: pass any runner (for example
+//! `toride_runner::fake::FakeRunner`) to [`SshManager::exec_with`] or
+//! [`SshManager::upload_with`], or construct
+//! [`exec::ExecService`]/[`upload::UploadService`] directly.
 
 // Re-export core types (Error, Result, SshKey, CliRunner, etc.)
 pub use toride_ssh_core::*;
@@ -121,9 +127,12 @@ impl SshManager {
 
     /// Create a manager with a custom [`CliRunner`].
     ///
-    /// This is the primary injection point for tests: pass a
-    /// [`MockCliRunner`] to control command execution without spawning
-    /// real SSH processes.
+    /// This is the injection point for the `CliRunner`-backed subsystems
+    /// (keys, agent, doctor, known-hosts, certificate): pass a
+    /// [`MockCliRunner`] to control their command execution without spawning
+    /// real SSH processes. The `exec` and `upload` subsystems do not go
+    /// through the [`CliRunner`]; inject their runner per service via
+    /// [`Self::exec_with`] and [`Self::upload_with`] instead.
     ///
     /// # Errors
     ///
@@ -196,19 +205,43 @@ impl SshManager {
 
     /// Remote command execution over ssh, on the default duct runner.
     ///
-    /// Tests and custom-runner users construct [`exec::ExecService`]
-    /// directly with their own runner (for example `FakeRunner`).
+    /// The default runner applies its 60 s fallback timeout to invocations
+    /// without a spec timeout; set a longer cap with
+    /// [`ExecService::with_timeout`](exec::ExecService::with_timeout), or
+    /// inject a configured runner through [`Self::exec_with`].
     #[cfg(feature = "exec")]
     pub fn exec(&self) -> exec::ExecService {
         exec::ExecService::new(Box::new(DuctRunner))
     }
 
+    /// Remote command execution over ssh on the given runner.
+    ///
+    /// This is the injection point for tests (pass a
+    /// `toride_runner::fake::FakeRunner`) and for configured runners such
+    /// as `DuctRunner::builder().no_default_timeout().build()`.
+    #[cfg(feature = "exec")]
+    pub fn exec_with(&self, runner: Box<dyn toride_runner::Runner>) -> exec::ExecService {
+        exec::ExecService::new(runner)
+    }
+
     /// One-shot file upload to a remote host via sftp, on the default duct runner.
     ///
-    /// Tests and custom-runner users construct [`upload::UploadService`]
-    /// directly with their own runner (for example `FakeRunner`).
+    /// The default runner applies its 60 s fallback timeout to invocations
+    /// without a spec timeout; set a longer cap with
+    /// [`UploadService::with_timeout`](upload::UploadService::with_timeout),
+    /// or inject a configured runner through [`Self::upload_with`].
     #[cfg(feature = "upload")]
     pub fn upload(&self) -> upload::UploadService {
         upload::UploadService::new(Box::new(DuctRunner))
+    }
+
+    /// One-shot file upload to a remote host via sftp on the given runner.
+    ///
+    /// This is the injection point for tests (pass a
+    /// `toride_runner::fake::FakeRunner`) and for configured runners such
+    /// as `DuctRunner::builder().no_default_timeout().build()`.
+    #[cfg(feature = "upload")]
+    pub fn upload_with(&self, runner: Box<dyn toride_runner::Runner>) -> upload::UploadService {
+        upload::UploadService::new(runner)
     }
 }

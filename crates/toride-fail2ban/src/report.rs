@@ -322,7 +322,8 @@ impl DoctorReport {
     /// Convert this report into a shared [`SharedDoctorReport`].
     ///
     /// Maps all local findings to shared findings. The `domain` is set to
-    /// `"fail2ban"` and `checked_at` is set to a placeholder timestamp.
+    /// `"fail2ban"` and `checked_at` carries the shared report's RFC 3339 UTC
+    /// timestamp.
     pub fn to_shared(&self) -> SharedDoctorReport {
         let shared_findings: Vec<SharedFinding> =
             self.findings.iter().map(Finding::to_shared).collect();

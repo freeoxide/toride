@@ -32,18 +32,19 @@ pub struct DoctorReport {
     pub domain: String,
     /// All findings from the run, in order.
     pub findings: Vec<Finding>,
-    /// ISO-8601 timestamp of when the checks were executed.
+    /// RFC 3339 (ISO-8601) UTC timestamp of when the checks were executed.
     pub checked_at: String,
 }
 
 impl DoctorReport {
-    /// Create a new report with the current UTC timestamp.
+    /// Create a new report stamped with the current UTC time as an RFC 3339
+    /// timestamp (e.g. `2026-10-13T08:31:04.123456789+00:00`).
     #[must_use]
     pub fn new(domain: impl Into<String>, findings: Vec<Finding>) -> Self {
         Self {
             domain: domain.into(),
             findings,
-            checked_at: String::from("<now>"), // TODO: use chrono/time when available
+            checked_at: chrono::Utc::now().to_rfc3339(),
         }
     }
 
@@ -160,5 +161,16 @@ mod tests {
             ],
         );
         assert_eq!(r.actionable().len(), 2);
+    }
+
+    /// `checked_at` must be a real RFC 3339 UTC timestamp, not the literal
+    /// `"<now>"` placeholder previously stored here.
+    #[test]
+    fn new_stamps_a_parseable_rfc3339_utc_timestamp() {
+        let r = DoctorReport::new("ssh", vec![]);
+        assert_ne!(r.checked_at, "<now>");
+        let parsed = chrono::DateTime::parse_from_rfc3339(&r.checked_at)
+            .unwrap_or_else(|e| panic!("checked_at not RFC 3339: {e}: {}", r.checked_at));
+        assert_eq!(parsed.offset().local_minus_utc(), 0, "must be UTC");
     }
 }
