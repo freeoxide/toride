@@ -68,23 +68,15 @@ use std::path::{Path, PathBuf};
 
 use crate::render;
 use crate::report::ApplyReport;
-use crate::spec::*;
+use crate::spec::{ActionSpec, FilterSpec, JailSpec};
 use crate::{Error, Result};
 use fd_lock::RwLock;
-
-// ---------------------------------------------------------------------------
-// Constants
-// ---------------------------------------------------------------------------
 
 /// Default namespace prefix for managed config files.
 ///
 /// All generated files are named `{namespace}-{name}.local` to avoid
 /// colliding with stock Fail2Ban configs.
 pub const DEFAULT_NAMESPACE: &str = "managed-by-fail2ban-kit";
-
-// ---------------------------------------------------------------------------
-// ManagedFile types
-// ---------------------------------------------------------------------------
 
 /// Category of a managed Fail2Ban config file.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -117,10 +109,6 @@ pub struct ManagedFile {
     /// Extracted name (the `{name}` portion of `{namespace}-{name}.local`).
     pub name: String,
 }
-
-// ---------------------------------------------------------------------------
-// IniManager
-// ---------------------------------------------------------------------------
 
 /// Manages Fail2Ban INI config snippets on disk.
 ///
@@ -222,7 +210,7 @@ impl IniManager {
     /// Returns a timestamped backup path for the given original file.
     ///
     /// Format: `{original}.bak-{timestamp}`
-    fn backup_path(&self, original: &Path) -> PathBuf {
+    fn backup_path(original: &Path) -> PathBuf {
         let ts = chrono::Local::now().format("%Y%m%dT%H%M%S%.3f");
         PathBuf::from(format!("{}.bak-{}", original.display(), ts))
     }
@@ -343,14 +331,12 @@ impl IniManager {
             if !dir.is_dir() {
                 continue;
             }
-            let entries = match fs_err::read_dir(dir) {
-                Ok(e) => e,
-                Err(_) => continue,
+            let Ok(entries) = fs_err::read_dir(dir) else {
+                continue;
             };
             for entry in entries {
-                let entry = match entry {
-                    Ok(e) => e,
-                    Err(_) => continue,
+                let Ok(entry) = entry else {
+                    continue;
                 };
                 let path = entry.path();
 
@@ -359,7 +345,8 @@ impl IniManager {
                     Some(n) => n.to_owned(),
                     None => continue,
                 };
-                if !fname.starts_with(&prefix) || !fname.ends_with(".local") {
+                let is_local = path.extension().is_some_and(|ext| ext == "local");
+                if !fname.starts_with(&prefix) || !is_local {
                     continue;
                 }
 
@@ -487,6 +474,8 @@ impl IniManager {
     /// Creates the parent directory if needed, backs up any existing managed
     /// file, writes to a `NamedTempFile`, fsyncs, and atomically renames.
     fn atomic_write_inner(&self, path: &Path, content: &str) -> Result<ApplyReport> {
+        use std::io::Write as _;
+
         let mut report = ApplyReport::empty();
 
         // Ensure parent directory exists.
@@ -502,7 +491,7 @@ impl IniManager {
                     path.display()
                 )));
             }
-            let backup = self.backup_path(path);
+            let backup = Self::backup_path(path);
             fs_err::copy(path, &backup)?;
             report.backup_paths.push(backup.display().to_string());
         }
@@ -510,7 +499,6 @@ impl IniManager {
         // Atomic write: NamedTempFile in same directory, then persist (rename).
         let parent = path.parent().unwrap_or(path);
         let mut tmp = tempfile::NamedTempFile::new_in(parent)?;
-        use std::io::Write;
         tmp.write_all(content.as_bytes())?;
         tmp.as_file().sync_all()?;
 
@@ -554,7 +542,7 @@ impl IniManager {
         }
 
         // Backup before removal.
-        let backup = self.backup_path(path);
+        let backup = Self::backup_path(path);
         fs_err::copy(path, &backup)?;
         report.backup_paths.push(backup.display().to_string());
 

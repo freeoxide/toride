@@ -10,7 +10,11 @@ use std::path::Path;
 use std::str::FromStr;
 use std::time::Duration;
 
-use crate::spec::*;
+use crate::spec::{
+    ActionKind, ActionName, ActionSpec, Backend, DurationSpec, FilterName, FilterSpec,
+    IgnoreIpList, IpOrCidr, JailName, JailSpec, JournalMatch, LogPath, PortSpec, Protocol,
+    RegexLine, UseDns,
+};
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -164,8 +168,10 @@ fn jail_local_always_emits_bantime_and_findtime() {
 fn jail_local_emits_filter_without_mode_when_none() {
     let jail = minimal_jail();
     let out = render_jail_local(&jail, "ns");
-    assert!(out.contains("filter = myapp-auth"));
-    assert!(!out.contains("filter = myapp-auth[mode="));
+    // The inline filter is materialized as ns-myapp-auth.local, so the jail
+    // references the namespaced file name.
+    assert!(out.contains("filter = ns-myapp-auth\n"));
+    assert!(!out.contains("filter = ns-myapp-auth[mode="));
 }
 
 #[test]
@@ -185,7 +191,7 @@ fn jail_local_emits_filter_with_mode_when_set() {
         .build();
 
     let out = render_jail_local(&jail, "ns");
-    assert!(out.contains("filter = sshd[mode=aggressive]"));
+    assert!(out.contains("filter = ns-sshd[mode=aggressive]"));
 }
 
 // ===========================================================================
@@ -602,8 +608,9 @@ fn jail_local_custom_action_uses_name_not_stock() {
         .build();
 
     let out = render_jail_local(&jail, "ns");
-    // Custom action should use its own name, not a stock name.
-    assert!(out.contains("action = my-custom-action[chain=INPUT]"));
+    // Custom actions are written to ns-my-custom-action.local, so the jail
+    // references the namespaced file name.
+    assert!(out.contains("action = ns-my-custom-action[chain=INPUT]"));
 }
 
 // ===========================================================================
@@ -817,14 +824,14 @@ fn filter_local_includes_managed_header() {
 }
 
 #[test]
-fn filter_local_section_header_matches_name() {
+fn filter_local_section_header_is_definition() {
     let filter = FilterSpec::builder()
         .name(FilterName::new("myapp-auth").unwrap())
         .failregex(vec![RegexLine::new("^fail <HOST>$").unwrap()])
         .build();
 
     let out = render_filter_local(&filter, "ns");
-    assert!(out.contains("[myapp-auth]"));
+    assert!(out.contains("[Definition]"));
 }
 
 #[test]
@@ -1057,10 +1064,10 @@ fn action_local_includes_managed_header() {
 }
 
 #[test]
-fn action_local_section_header_matches_name() {
+fn action_local_section_header_is_definition() {
     let action = ActionSpec::stock("nftables-multiport").unwrap();
     let out = render_action_local(&action, "ns");
-    assert!(out.contains("[nftables-multiport]"));
+    assert!(out.contains("[Definition]"));
 }
 
 #[test]
@@ -1287,7 +1294,6 @@ fn action_local_no_blank_lines_between_set_fields() {
 #[cfg(test)]
 mod proptests {
     use super::*;
-    use crate::spec::*;
     use proptest::prelude::*;
 
     // -- Strategies ----------------------------------------------------------
@@ -1301,9 +1307,9 @@ mod proptests {
             ][..],
         );
         prop::collection::vec(ch, 1..=20)
-            .prop_filter("no consecutive dots", |chars| {
+            .prop_filter("no leading dash or consecutive dots", |chars| {
                 let s: String = chars.iter().collect();
-                !s.is_empty() && !s.contains("..") && s.trim() == s
+                !s.is_empty() && !s.contains("..") && s.trim() == s && !s.starts_with('-')
             })
             .prop_map(|chars| chars.into_iter().collect())
     }
@@ -1412,11 +1418,9 @@ mod proptests {
         #[test]
         fn filter_local_always_contains_section_header(filter in filter_spec_strategy()) {
             let out = render_filter_local(&filter, "test-ns");
-            let expected = format!("[{}]", filter.name.as_str());
             prop_assert!(
-                out.contains(&expected),
-                "output should contain section header [{}]",
-                filter.name.as_str()
+                out.contains("[Definition]"),
+                "output should contain the [Definition] section fail2ban reads"
             );
         }
 

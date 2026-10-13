@@ -10,11 +10,63 @@ A Rust library for programmatically managing an existing Fail2Ban installation.
 
 This is a **Rust library crate**, not a CLI tool or Fail2Ban replacement. It lets Rust applications safely configure, validate, control, and diagnose an existing Fail2Ban installation through a typed, testable API.
 
+## Standalone ban engine
+
+Besides managing an existing Fail2Ban installation, the `config` feature
+(default on) ships a self-contained ban engine that needs no fail2ban daemon:
+
+- [`detector::LogDetector`](src/detector.rs): incremental regex log scanning
+  with journal offsets, rotation detection by device id and inode, a 1 MiB
+  per-line cap, and hold-back of trailing partial lines.
+- [`jail::Jail`](src/jail.rs): per-jail find_time/max_retry thresholding,
+  ban and unban actions with rollback, and scan-journal persistence.
+- [`store::Store`](src/store.rs) and [`ban::BanManager`](src/ban.rs): a JSON
+  ban store with CIDR-aware matching and IPv4-mapped IPv6 normalization.
+- [`manager::Fail2BanManager`](src/manager.rs): multi-jail orchestration,
+  status reporting, and expiry purging that executes unban actions.
+- [`action::ActionExec`](src/action.rs): shell-escaped command templates for
+  iptables (comment-tagged, self-deleting unban loops), nftables (elements
+  with `timeout <ban-time>s`), pf, and firewalld.
+
+```rust
+use std::path::PathBuf;
+use toride_fail2ban::config::ResolvedJail;
+use toride_fail2ban::jail::Jail;
+use toride_fail2ban::store::Store;
+use toride_fail2ban::support::Firewall;
+use toride_fail2ban::types::ExecutionMode;
+
+let config = ResolvedJail {
+    name: "myapp".to_owned(),
+    enabled: true,
+    log_path: PathBuf::from("/var/log/myapp/auth.log"),
+    pattern: r"authentication failure.*from (?P<ip>\d+\.\d+\.\d+\.\d+)".to_owned(),
+    find_time: 600,
+    ban_time: 3600,
+    max_retry: 5,
+    ban_action: "ban".to_owned(),
+    unban_action: "unban".to_owned(),
+    ignore_ips: vec!["127.0.0.1".to_owned()],
+};
+
+let store = Store::new(PathBuf::from("/var/lib/toride/fail2ban/bans.json"));
+let runner = toride_fail2ban::command::DuctRunner::new();
+let mut jail = Jail::new(config, store, None, Firewall::Iptables, Box::new(runner))?;
+
+// Scan and persist bans without touching a firewall (dry run), or with
+// ExecutionMode::Execute to apply the platform ban commands.
+let result = jail.scan(ExecutionMode::DryRun)?;
+println!("{} new bans from {} lines", result.new_bans.len(), result.lines_scanned);
+```
+
+The engine is a first-class feature of this crate. Whether it should stay in
+the default feature set is decided at the next minor release.
+
 ## Safety model
 
 All operations adhere to these security rules:
 
-- **No shell injection** -- arguments are passed as arrays through the [`Runner`](src/command.rs) trait. No string concatenation into shell commands.
+- **No shell injection on the client surface** -- `fail2ban-client`, `systemctl`, `nft`, and `iptables` invocations go through the [`Runner`](src/command.rs) trait with array argv, never a shell string. The standalone engine's action templates are the exception: they run via `sh -c`, with every interpolated value (`<ip>`, `<jail>`, `<log-path>`) shell-escaped and placeholders rejected inside double quotes (see [`ActionExec::expand_command`](src/action.rs)).
 - **No path traversal** -- [`LogPath`](src/spec.rs) and name newtypes (`JailName`, `FilterName`, `ActionName`) reject `..` components and `/` characters on construction.
 - **No stock config mutation** -- only `.local` override files are written. Files without the managed header are never overwritten. Stock `.conf` files are never modified.
 - **No unsafe code** -- `#![deny(unsafe_code)]` is enforced at the crate level.
@@ -32,6 +84,13 @@ Writing to `/etc/fail2ban` requires elevated privileges. Any application using [
 The [`DoctorScope::Permission`] check will flag world-writable config directories and non-root-owned files. The [`DoctorScope::Safety`] check verifies that the config directory is writable so rollback operations can succeed.
 
 ## Quickstart
+
+The jail-lifecycle surface in this example (`spec`, `ensure_jail`) requires the
+`jail-lifecycle` feature on top of the defaults:
+
+```toml
+toride-fail2ban = { version = "0.2", features = ["jail-lifecycle"] }
+```
 
 ```rust
 use toride_fail2ban::{Fail2Ban, spec::{JailSpec, FilterSpec, ActionSpec}};
@@ -67,7 +126,9 @@ if report.test_passed {
 f2b.ban_ip("myapp", "203.0.113.50")?;
 f2b.unban_ip("myapp", "203.0.113.50")?;
 
-// Dry-run mode: log commands without executing them.
+// Dry-run mode: every facade command path (test_config, reload, ban_ip,
+// unban_ip, the command steps of ensure_jail) logs and returns success
+// without spawning a process. Config files are still written.
 let f2b_dry = Fail2Ban::system()?.with_dry_run(true);
 ```
 
@@ -110,7 +171,7 @@ Available scopes: `All`, `Binary`, `Service`, `Config`, `Jail(name)`, `LogPath`,
 
 ## Rollback examples
 
-[`ensure_jail`] writes config, validates, and reloads. When a step fails, the [`ApplyReport`] contains findings that describe what went wrong. The [`IniManager`] creates timestamped backups (`.bak-{timestamp}`) before overwriting, enabling manual rollback.
+[`ensure_jail`] writes config, validates, and reloads. When a step fails, the [`ApplyReport`] contains findings that describe what went wrong. The [`IniManager`] creates timestamped backups (`.bak-{timestamp}`) before overwriting; restoring is manual (copy the backup over the `.local` file), there is no automatic restore today.
 
 ```rust
 use toride_fail2ban::{Fail2Ban, spec::JailSpec};
@@ -136,12 +197,10 @@ if !report.test_passed {
     eprintln!("Backup files: {:?}", report.backup_paths);
 }
 
-// Remove a managed jail entirely (restores backup if available).
+// Remove a managed jail entirely (a backup of the removed file is kept).
 let remove_report = f2b.remove_jail("myapp")?;
 println!("Removed {} file(s)", remove_report.files_removed.len());
 ```
-
-The [`RollbackReport`] type is returned by the `IniManager` when a write operation triggers an automatic restore from backup.
 
 ## Preset examples
 
@@ -198,10 +257,15 @@ let result = tester.test_maxlines(
     r"line one\n.*<HOST>",
 )?;
 
-// Test an ignoreregex pattern.
+// Test an ignoreregex pattern. Fail2Ban compiles ignoreregex with the same
+// <HOST> tag requirement as a failregex (verified against fail2ban-regex
+// 1.1.0: a pattern without <HOST> reports "Ignoreregex: 0 total"), so the
+// pattern must contain <HOST> to ever match. ignoreregex is the third
+// positional argument; there is no --ignoreregex option.
 let result = tester.test_ignoreregex(
-    r"my-health-check-bot",
-    "10.0.0.1 - - [GET /healthz] my-health-check-bot",
+    r"^GET /healthz from <HOST>$",
+    r"health-check <HOST>",
+    "10.0.0.1 - - [GET /healthz] health-check 10.0.0.1",
 )?;
 // result.lines_matched > 0 means the line would be ignored by Fail2Ban.
 ```
@@ -280,16 +344,16 @@ Solutions:
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `client` | Yes | [`Fail2BanClient`] wrapper around `fail2ban-client` commands |
-| `config` | Yes | Config file reading and writing via [`IniManager`] |
+| `client` | Yes | [`Fail2BanClient`], `DuctRunner`, [`service::ServiceManager`](src/service.rs), [`FirewallChecker`](src/firewall.rs) |
+| `config` | Yes | Standalone ban engine: config parsing, [`Jail`](src/jail.rs), ban management, [`detector`](src/detector.rs), [`store`](src/store.rs), [`Fail2BanManager`](src/manager.rs) |
 | `doctor` | Yes | Diagnostic engine ([`Doctor`], [`DoctorScope`], [`DoctorReport`]) |
+| `jail-lifecycle` | No | [`JailSpec`], INI rendering, and [`IniManager`] config file management |
 | `regex-test` | No | [`RegexTester`] wrapper around `fail2ban-regex` for filter testing |
-| `systemd` | No | Systemd journal backend support |
-| `systemd-zbus` | No | Direct D-Bus communication with systemd (planned, not yet implemented) |
-| `firewall-nft` | No | Native nftables JSON ruleset inspection (planned, not yet implemented) |
-| `firewall-iptables` | No | Native iptables rules parsing (planned, not yet implemented) |
-| `serde` | No | JSON serialization for [`Error`] and report types |
-| `tokio` | No | Async runtime support (planned) |
+| `cli` | No | [`clap`]-based argument parsing types for a `toride-fail2ban` binary |
+| `serde` | No | JSON serialization for [`Error`] (report types are always serializable) |
+| `systemd-zbus` | No | Placeholder gate for a planned D-Bus service manager; currently inert |
+| `firewall-nft` | No | Placeholder gate for planned native nftables JSON inspection; currently inert |
+| `firewall-iptables` | No | Placeholder gate for planned native iptables rules parsing; currently inert |
 
 ## Testing
 
@@ -300,10 +364,14 @@ use toride_fail2ban::command::{FakeRunner, CommandOutput, Runner};
 use toride_fail2ban::Fail2Ban;
 
 let mut fake = FakeRunner::new();
-fake.with_response("fail2ban-client", &["--test"], CommandOutput::empty_success());
+fake.with_response(
+    "fail2ban-client",
+    &["--test"],
+    CommandOutput::new(String::new(), String::new(), Some(0)),
+);
 
 let f2b = Fail2Ban::with_runner(Box::new(fake));
-// All commands are recorded and return canned responses.
+// All commands are recorded in fake.calls() and return canned responses.
 ```
 
 ## License

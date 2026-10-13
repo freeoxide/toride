@@ -2,27 +2,21 @@
 //!
 //! Uses atomic write (temp file + rename) to prevent corruption.
 //!
-//! Design note: `Store` is intentionally stateless -- every public method reads
-//! the JSON file from disk and writes it back after mutation. This keeps the
-//! implementation simple and correct for a single-process tool: there is no
-//! in-memory cache that can drift out of sync with the on-disk state, and
-//! concurrent writers (if any) always see the latest snapshot. The trade-off is
-//! that each operation pays the cost of a full deserialize/serialize round-trip,
-//! which is acceptable at the expected data volumes (hundreds of bans). If
-//! profiling reveals this becomes a bottleneck, interior mutability via
-//! `RefCell<Option<StoreData>>` can be added behind the existing `&self` API
-//! without changing callers.
+//! `Store` is intentionally stateless: every public method reads the JSON file
+//! from disk and writes it back after mutation, so there is no in-memory cache
+//! that can drift out of sync with the on-disk state. The trade-off is that
+//! each operation pays a full deserialize/serialize round-trip, which is
+//! acceptable at the expected data volumes (hundreds of bans); scans that
+//! persist many bans at once should use [`Store::add_bans`].
 //!
 //! # Concurrency Warning
 //!
 //! `Store` is **not safe for concurrent access from multiple processes or
 //! threads**. Every mutation follows a load-modify-save pattern with no file
 //! locking. If two processes mutate the store simultaneously, the last writer
-//! wins and the first writer's changes are silently lost. The PID file
-//! singleton enforcement in [`crate::manager::Fail2BanManager`] prevents
-//! multiple daemon instances from running at the same time, which is
-//! sufficient for the intended single-daemon usage. For multi-process
-//! scenarios, an `fd-lock` or `Mutex`-based wrapper would be required.
+//! wins and the first writer's changes are silently lost. Any multi-process
+//! deployment must wrap accesses in an `fd-lock` (already a dependency of the
+//! `jail-lifecycle` feature) or `Mutex`-based guard.
 
 use std::fs;
 use std::net::IpAddr;
@@ -36,8 +30,8 @@ use crate::types::BanEntry;
 /// Persistent store for ban entries.
 ///
 /// **Not safe for concurrent access.** Each operation is a standalone
-/// load-modify-save cycle with no file locking. The PID file singleton in
-/// [`crate::manager::Fail2BanManager`] prevents multiple daemon instances.
+/// load-modify-save cycle with no file locking; see the module-level
+/// concurrency warning.
 #[derive(Debug, Clone)]
 pub struct Store {
     /// Path to the ban database file.
@@ -66,6 +60,14 @@ pub struct JournalEntry {
     pub offset: u64,
     /// Last read line number.
     pub line_number: u64,
+    /// Device id of the scanned file; a change means the log was rotated.
+    /// Defaults to 0 for journals persisted before identity tracking.
+    #[serde(default)]
+    pub dev: u64,
+    /// Inode of the scanned file; a change means the log was rotated.
+    /// Defaults to 0 for journals persisted before identity tracking.
+    #[serde(default)]
+    pub ino: u64,
     /// When this journal was last updated.
     pub updated_at: DateTime<Utc>,
 }
@@ -121,22 +123,82 @@ impl Store {
 
     /// Add a ban entry.
     ///
+    /// An existing active entry for the same IP and jail whose expiry has
+    /// passed is treated as replaceable: it moves to history and the fresh
+    /// entry is inserted, so an expired-but-unpurged ban never blocks a new
+    /// one.
+    ///
     /// # Errors
     ///
-    /// Returns `AlreadyBanned` if the IP is already banned in this jail.
+    /// Returns `AlreadyBanned` if the IP is already actively banned in this jail.
     pub fn add_ban(&self, entry: &BanEntry) -> crate::Result<()> {
         let mut data = self.load()?;
+        let now = Utc::now();
 
-        if data
+        if let Some(existing) = data
             .active_bans
             .iter()
-            .any(|b| b.ip == entry.ip && b.jail_name == entry.jail_name)
+            .position(|b| b.ip == entry.ip && b.jail_name == entry.jail_name)
         {
-            return Err(crate::Error::AlreadyBanned(entry.ip.to_string()));
+            let stale = data.active_bans[existing]
+                .expires_at
+                .is_some_and(|expires| expires <= now);
+            if !stale {
+                return Err(crate::Error::AlreadyBanned(entry.ip.to_string()));
+            }
+            let removed = data.active_bans.remove(existing);
+            data.history.push(removed);
         }
 
         data.active_bans.push(entry.clone());
         self.save(&data)
+    }
+
+    /// Add many ban entries in one load/save cycle.
+    ///
+    /// Entries whose IP is already actively banned in the same jail are
+    /// skipped silently (the batch equivalent of tolerating `AlreadyBanned`
+    /// per entry); an expired same-IP entry is moved to history and replaced,
+    /// matching [`add_ban`](Self::add_ban). Duplicate IPs inside `entries`
+    /// keep only the first occurrence.
+    ///
+    /// Returns the entries that were actually inserted.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Io` or `Json` if the store cannot be loaded or saved.
+    pub fn add_bans(&self, entries: &[BanEntry]) -> crate::Result<Vec<BanEntry>> {
+        let mut data = self.load()?;
+        let now = Utc::now();
+        let mut inserted = Vec::new();
+
+        for entry in entries {
+            if inserted
+                .iter()
+                .any(|b: &BanEntry| b.ip == entry.ip && b.jail_name == entry.jail_name)
+            {
+                continue;
+            }
+            if let Some(existing) = data
+                .active_bans
+                .iter()
+                .position(|b| b.ip == entry.ip && b.jail_name == entry.jail_name)
+            {
+                let stale = data.active_bans[existing]
+                    .expires_at
+                    .is_some_and(|expires| expires <= now);
+                if !stale {
+                    continue;
+                }
+                let removed = data.active_bans.remove(existing);
+                data.history.push(removed);
+            }
+            data.active_bans.push(entry.clone());
+            inserted.push(entry.clone());
+        }
+
+        self.save(&data)?;
+        Ok(inserted)
     }
 
     /// Remove a ban entry. Returns the removed entry.

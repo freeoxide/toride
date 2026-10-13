@@ -152,6 +152,23 @@ pub const fn default_prefix(ip: std::net::IpAddr) -> u8 {
     }
 }
 
+/// Canonicalize an IP for ban comparisons: IPv4-mapped IPv6 addresses
+/// (`::ffff:203.0.113.5`) become their IPv4 form (`203.0.113.5`).
+///
+/// Applied at every parse boundary (detector extraction, ban insertion,
+/// CIDR lookups) so a client flipping between literal and mapped spellings
+/// of the same address cannot evade a ban.
+#[must_use]
+pub fn normalize_ip(ip: std::net::IpAddr) -> std::net::IpAddr {
+    match ip {
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => std::net::IpAddr::V4(v4),
+            None => std::net::IpAddr::V6(v6),
+        },
+        v4 @ std::net::IpAddr::V4(_) => v4,
+    }
+}
+
 #[cfg(test)]
 #[path = "types.test.rs"]
 mod tests;

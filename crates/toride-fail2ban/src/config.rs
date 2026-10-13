@@ -121,8 +121,6 @@ pub struct GlobalConfig {
     /// Log level for the daemon.
     #[serde(default = "default_log_level")]
     pub log_level: String,
-    /// PID file path override.
-    pub pid_file: Option<std::path::PathBuf>,
     /// Maximum number of bans to keep in history.
     #[serde(default = "default_max_history")]
     pub max_history: usize,
@@ -133,7 +131,6 @@ impl Default for GlobalConfig {
         Self {
             scan_interval: default_scan_interval(),
             log_level: default_log_level(),
-            pid_file: None,
             max_history: default_max_history(),
         }
     }

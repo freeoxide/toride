@@ -115,6 +115,42 @@ fn duct_runner_run_with_timeout_executes_command() {
 }
 
 #[test]
+#[cfg(target_os = "linux")]
+fn duct_runner_timeout_returns_promptly_and_leaks_no_threads() {
+    fn thread_count() -> usize {
+        std::fs::read_dir("/proc/self/task").map_or(0, |entries| entries.count())
+    }
+    let runner = DuctRunner::with_timeout(Duration::from_millis(300));
+    let before = thread_count();
+    for _ in 0..4 {
+        let started = std::time::Instant::now();
+        let result = runner.run("sleep", &["60"]);
+        match result {
+            Err(Error::CommandTimeout(d)) => assert_eq!(d, Duration::from_millis(300)),
+            other => panic!("expected CommandTimeout, got: {other:?}"),
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(10),
+            "timed-out run must not wait for the child"
+        );
+    }
+    // Transient reader threads from concurrently running tests may inflate
+    // the count briefly; a genuine leak never settles.
+    let mut after = thread_count();
+    for _ in 0..150 {
+        if after <= before {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+        after = thread_count();
+    }
+    assert!(
+        after <= before,
+        "timed-out commands must kill and reap the child without leaking threads (before={before}, after={after})"
+    );
+}
+
+#[test]
 fn duct_runner_spawn_failure_returns_command_failed_error() {
     let runner = DuctRunner::new();
     let result = runner.run("/definitely/not/a/real/binary", &[]);

@@ -66,6 +66,7 @@ impl Fail2BanManager {
                 resolved,
                 self.store.clone(),
                 actions,
+                self.firewall,
                 Box::new(crate::command::DuctRunner::new()),
             )?;
             // Resume scanning from the last persisted journal position.
@@ -94,6 +95,7 @@ impl Fail2BanManager {
             resolved,
             self.store.clone(),
             actions,
+            self.firewall,
             Box::new(crate::command::DuctRunner::new()),
         )?;
         self.jails.insert(name.to_string(), jail);
@@ -116,12 +118,14 @@ impl Fail2BanManager {
     ///
     /// # Errors
     ///
-    /// Returns `LogFileError` if any log file cannot be read, or `CommandFailed`
-    /// if a ban action fails during scan.
+    /// Returns `InvalidConfig` if the manager is stopped, `LogFileError` if
+    /// any log file cannot be read, or `CommandFailed` if a ban action fails
+    /// during scan.
     pub fn scan_all(
         &mut self,
         mode: ExecutionMode,
     ) -> crate::Result<BTreeMap<String, crate::types::ScanResult>> {
+        self.ensure_running()?;
         let mut results = BTreeMap::new();
 
         for (name, jail) in &mut self.jails {
@@ -136,13 +140,15 @@ impl Fail2BanManager {
     ///
     /// # Errors
     ///
-    /// Returns `JailNotFound` if the jail does not exist, `LogFileError` if the
-    /// log file cannot be read, or `CommandFailed` if a ban action fails.
+    /// Returns `InvalidConfig` if the manager is stopped, `JailNotFound` if
+    /// the jail does not exist, `LogFileError` if the log file cannot be
+    /// read, or `CommandFailed` if a ban action fails.
     pub fn scan_jail(
         &mut self,
         name: &str,
         mode: ExecutionMode,
     ) -> crate::Result<crate::types::ScanResult> {
+        self.ensure_running()?;
         let jail = self
             .jails
             .get_mut(name)
@@ -154,15 +160,17 @@ impl Fail2BanManager {
     ///
     /// # Errors
     ///
-    /// Returns `JailNotFound` if the jail does not exist, `AlreadyBanned` if the
-    /// IP is already banned, `InvalidConfig` if the IP is in the ignore list,
-    /// or `CommandFailed` if the firewall command fails.
+    /// Returns `InvalidConfig` if the manager is stopped or the IP is in the
+    /// ignore list, `JailNotFound` if the jail does not exist, `AlreadyBanned`
+    /// if the IP is already banned, or `CommandFailed` if the firewall
+    /// command fails.
     pub fn ban_ip(
         &mut self,
         jail_name: &str,
         ip: IpAddr,
         mode: ExecutionMode,
     ) -> crate::Result<()> {
+        self.ensure_running()?;
         let jail = self
             .jails
             .get_mut(jail_name)
@@ -175,20 +183,33 @@ impl Fail2BanManager {
     ///
     /// # Errors
     ///
-    /// Returns `JailNotFound` if the jail does not exist, `NotBanned` if the IP
-    /// is not currently banned, or `CommandFailed` if the firewall command fails.
+    /// Returns `InvalidConfig` if the manager is stopped, `JailNotFound` if
+    /// the jail does not exist, `NotBanned` if the IP is not currently banned,
+    /// or `CommandFailed` if the firewall command fails.
     pub fn unban_ip(
         &mut self,
         jail_name: &str,
         ip: IpAddr,
         mode: ExecutionMode,
     ) -> crate::Result<()> {
+        self.ensure_running()?;
         let jail = self
             .jails
             .get_mut(jail_name)
             .ok_or_else(|| crate::Error::JailNotFound(jail_name.to_string()))?;
         jail.unban_ip(ip, mode)?;
         Ok(())
+    }
+
+    /// Refuse operations while the manager is stopped.
+    fn ensure_running(&self) -> crate::Result<()> {
+        if self.running {
+            Ok(())
+        } else {
+            Err(crate::Error::InvalidConfig(
+                "manager is stopped; call start() before issuing commands".into(),
+            ))
+        }
     }
 
     /// Get status of all jails.
@@ -216,28 +237,47 @@ impl Fail2BanManager {
             .jails
             .get(name)
             .ok_or_else(|| crate::Error::JailNotFound(name.to_string()))?;
-        let bans = jail.list_bans()?;
-        let total_bans = self.store.history_count_for_jail(name);
+        let data = self.store.load()?;
+        let banned_ips = data
+            .active_bans
+            .iter()
+            .filter(|b| b.jail_name == name)
+            .cloned()
+            .collect();
+        let total_bans = data.history.iter().filter(|b| b.jail_name == name).count() as u64;
         Ok(JailStatus {
             name: name.to_string(),
-            active: true,
-            banned_ips: bans,
+            active: self.running,
+            banned_ips,
             total_bans,
             log_path: jail.log_path().to_path_buf(),
             pattern: jail.pattern().to_string(),
         })
     }
 
-    /// Get all jail statuses.
+    /// Get all jail statuses from one store read.
     fn jail_statuses(&self) -> crate::Result<Vec<JailStatus>> {
+        let data = self.store.load()?;
+        let mut active_by_jail: HashMap<&str, Vec<crate::types::BanEntry>> = HashMap::new();
+        let mut history_counts: HashMap<&str, u64> = HashMap::new();
+        for ban in &data.active_bans {
+            active_by_jail
+                .entry(ban.jail_name.as_str())
+                .or_default()
+                .push(ban.clone());
+        }
+        for ban in &data.history {
+            *history_counts.entry(ban.jail_name.as_str()).or_default() += 1;
+        }
+
         let mut statuses = Vec::new();
         for (name, jail) in &self.jails {
-            let bans = jail.list_bans()?;
-            let total_bans = self.store.history_count_for_jail(name);
+            let banned_ips = active_by_jail.remove(name.as_str()).unwrap_or_default();
+            let total_bans = history_counts.get(name.as_str()).copied().unwrap_or(0);
             statuses.push(JailStatus {
                 name: name.clone(),
-                active: true,
-                banned_ips: bans,
+                active: self.running,
+                banned_ips,
                 total_bans,
                 log_path: jail.log_path().to_path_buf(),
                 pattern: jail.pattern().to_string(),
@@ -248,11 +288,39 @@ impl Fail2BanManager {
 
     /// Purge expired bans across all jails and trim history.
     ///
+    /// Unless `mode` is [`ExecutionMode::DryRun`], each purged entry's jail
+    /// executes its unban action so expiry also lifts the firewall block;
+    /// failures are logged (the kernel rule may outlive the store entry).
+    ///
     /// # Errors
     ///
     /// Returns `Io` if the ban store cannot be read or written.
-    pub fn purge_expired(&self) -> crate::Result<Vec<crate::types::BanEntry>> {
+    pub fn purge_expired(&self, mode: ExecutionMode) -> crate::Result<Vec<crate::types::BanEntry>> {
         let purged = self.store.clear_expired()?;
+        if !mode.is_dry_run() {
+            for entry in &purged {
+                match self.jails.get(&entry.jail_name) {
+                    Some(jail) => {
+                        if let Err(e) =
+                            jail.exec_unban_action(entry.ip, entry.prefix, entry.fail_count)
+                        {
+                            tracing::error!(
+                                jail = %entry.jail_name,
+                                ip = %entry.ip,
+                                error = %e,
+                                "unban action failed for purged ban; firewall may still block"
+                            );
+                        }
+                    }
+                    None => {
+                        tracing::warn!(
+                            jail = %entry.jail_name,
+                            "no loaded jail for purged ban; unban action not executed"
+                        );
+                    }
+                }
+            }
+        }
         // Trim history to configured max.
         if let Err(e) = self.store.trim_history(self.config.global.max_history) {
             tracing::warn!(error = %e, "failed to trim ban history");
@@ -284,12 +352,15 @@ impl Fail2BanManager {
         &self.config.global.log_level
     }
 
-    /// Mark the manager as running.
+    /// Mark the manager as running (it starts running on construction).
+    ///
+    /// While stopped, scan/ban/unban verbs fail with `InvalidConfig`.
     pub const fn start(&mut self) {
         self.running = true;
     }
 
-    /// Mark the manager as stopped.
+    /// Mark the manager as stopped: scan, ban, and unban verbs refuse to run
+    /// and statuses report `active: false` until [`start`](Self::start).
     pub const fn stop(&mut self) {
         self.running = false;
     }

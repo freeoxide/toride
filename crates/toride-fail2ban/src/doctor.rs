@@ -64,6 +64,11 @@ impl DoctorScope {
 struct RunCache {
     client_bin: ClientBin,
     client_status: Option<CommandOutput>,
+    jail_logpaths: std::collections::HashMap<String, std::result::Result<CommandOutput, String>>,
+    jail_actions: std::collections::HashMap<String, std::result::Result<CommandOutput, String>>,
+    jail_failregex: std::collections::HashMap<String, std::result::Result<CommandOutput, String>>,
+    nft_available: Option<bool>,
+    iptables_available: Option<bool>,
 }
 
 #[derive(Clone, Default)]
@@ -84,14 +89,32 @@ impl RunCache {
 /// `Send` but not `Sync` (per-run memo uses a `RefCell`): create one per run.
 pub struct Doctor<'a> {
     runner: &'a dyn Runner,
+    paths: crate::SystemPaths,
     run_cache: RefCell<RunCache>,
 }
 
 impl<'a> Doctor<'a> {
-    /// Create a new diagnostic engine backed by `runner`.
+    /// Create a new diagnostic engine backed by `runner`, probing the default
+    /// `/etc/fail2ban` tree.
     pub fn new(runner: &'a dyn Runner) -> Self {
+        Self::with_paths(
+            runner,
+            crate::SystemPaths {
+                config_dir: PathBuf::from("/etc/fail2ban"),
+                jail_d: PathBuf::from("/etc/fail2ban/jail.d"),
+                filter_d: PathBuf::from("/etc/fail2ban/filter.d"),
+                action_d: PathBuf::from("/etc/fail2ban/action.d"),
+            },
+        )
+    }
+
+    /// Create a new diagnostic engine probing an explicit config tree, so
+    /// callers with relocated Fail2Ban installations diagnose the right
+    /// directories.
+    pub fn with_paths(runner: &'a dyn Runner, paths: crate::SystemPaths) -> Self {
         Self {
             runner,
+            paths,
             run_cache: RefCell::new(RunCache::default()),
         }
     }
@@ -119,6 +142,136 @@ impl<'a> Doctor<'a> {
         let out = self.runner.run(bin, &["status"])?;
         self.run_cache.borrow_mut().client_status = Some(out.clone());
         Ok(out)
+    }
+
+    /// Memoized `fail2ban-client get <jail> <field>`; repeated queries for
+    /// one jail within a doctor run share a single spawn. Failures are
+    /// replayed from the cached message so error findings stay informative.
+    fn run_get_cached(&self, bin: &str, jail: &str, field: &str) -> Result<CommandOutput> {
+        if let Some(cached) = self.cached_jail_field(jail, field) {
+            return match cached {
+                Ok(out) => Ok(out),
+                Err(msg) => Err(crate::Error::CommandFailed(msg)),
+            };
+        }
+        let result = self.runner.run(bin, &["get", jail, field]);
+        let stored: std::result::Result<CommandOutput, String> = match &result {
+            Ok(out) => Ok(out.clone()),
+            Err(e) => Err(e.to_string()),
+        };
+        self.store_jail_field(jail, field, stored);
+        result
+    }
+
+    fn cached_jail_field(
+        &self,
+        jail: &str,
+        field: &str,
+    ) -> Option<std::result::Result<CommandOutput, String>> {
+        let cache = self.run_cache.borrow();
+        let slot = match field {
+            "logpath" => cache.jail_logpaths.get(jail),
+            "actions" => cache.jail_actions.get(jail),
+            "failregex" => cache.jail_failregex.get(jail),
+            _ => return None,
+        };
+        slot.cloned()
+    }
+
+    fn store_jail_field(
+        &self,
+        jail: &str,
+        field: &str,
+        value: std::result::Result<CommandOutput, String>,
+    ) {
+        let mut cache = self.run_cache.borrow_mut();
+        match field {
+            "logpath" => {
+                cache.jail_logpaths.insert(jail.to_owned(), value);
+            }
+            "actions" => {
+                cache.jail_actions.insert(jail.to_owned(), value);
+            }
+            "failregex" => {
+                cache.jail_failregex.insert(jail.to_owned(), value);
+            }
+            _ => {}
+        }
+    }
+
+    /// Memoized `nft --version` availability probe.
+    fn nft_available(&self) -> bool {
+        if let Some(cached) = self.run_cache.borrow().nft_available {
+            return cached;
+        }
+        let available = self
+            .runner
+            .run("nft", &["--version"])
+            .is_ok_and(|o| o.success);
+        self.run_cache.borrow_mut().nft_available = Some(available);
+        available
+    }
+
+    /// Memoized `iptables --version` availability probe.
+    fn iptables_available(&self) -> bool {
+        if let Some(cached) = self.run_cache.borrow().iptables_available {
+            return cached;
+        }
+        let available = self
+            .runner
+            .run("iptables", &["--version"])
+            .is_ok_and(|o| o.success);
+        self.run_cache.borrow_mut().iptables_available = Some(available);
+        available
+    }
+
+    /// Heuristic writability check for a directory, from metadata plus the
+    /// effective uid (`id -u` through the runner): uid 0 is always writable,
+    /// an owner match checks the owner-write bit, and everything else falls
+    /// back to the other-write bit. Group membership is not evaluated.
+    #[cfg_attr(
+        not(unix),
+        expect(unused_variables, reason = "non-unix falls through to metadata only")
+    )]
+    fn rollback_writable(&self, dir: &std::path::Path) -> Result<bool> {
+        let metadata = std::fs::metadata(dir)?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            use std::os::unix::fs::PermissionsExt;
+            let mode = metadata.permissions().mode();
+            let euid = self.effective_uid()?;
+            if euid == 0 {
+                return Ok(true);
+            }
+            if metadata.uid() == euid {
+                return Ok(mode & 0o200 != 0);
+            }
+            Ok(mode & 0o002 != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            Ok(false)
+        }
+    }
+
+    /// Effective uid of the current process, via `id -u` through the runner
+    /// (kept runner-mediated so the check stays FakeRunner-testable and no
+    /// libc dependency is needed).
+    #[cfg(unix)]
+    fn effective_uid(&self) -> Result<u32> {
+        let out = self.runner.run("id", &["-u"])?;
+        if !out.success {
+            return Err(crate::Error::CommandFailed(format!(
+                "id -u exited with status {:?}: {}",
+                out.exit_code,
+                out.stderr.trim()
+            )));
+        }
+        out.stdout
+            .trim()
+            .parse()
+            .map_err(|e| crate::Error::InvalidConfig(format!("unparseable `id -u` output: {e}")))
     }
 
     /// Run the selected scope; `All` merges every category into one report.
@@ -654,7 +807,7 @@ impl<'a> Doctor<'a> {
     #[allow(clippy::too_many_lines, reason = "sequential config integrity probes")]
     fn check_config(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let config_dir = std::path::Path::new("/etc/fail2ban");
+        let config_dir = self.paths.config_dir.as_path();
 
         if config_dir.exists() {
             findings.push(Finding::new(
@@ -669,7 +822,7 @@ impl<'a> Doctor<'a> {
                     Severity::Critical,
                     "Fail2Ban config directory does not exist",
                 )
-                .detail("Expected /etc/fail2ban to exist.")
+                .detail(format!("Expected {} to exist.", config_dir.display()))
                 .fix("Install Fail2Ban or create /etc/fail2ban."),
             );
             return findings;
@@ -1168,7 +1321,7 @@ impl<'a> Doctor<'a> {
                         }
 
                         for jail in &jail_names {
-                            match self.runner.run(bin, &["get", jail, "logpath"]) {
+                            match self.run_get_cached(bin, jail, "logpath") {
                                 Ok(out) if out.success => {
                                     let log_paths = out.stdout.trim();
                                     for line in log_paths.lines() {
@@ -1515,7 +1668,7 @@ impl<'a> Doctor<'a> {
                                         format!("Jail '{jail}' uses systemd backend"),
                                     ));
 
-                                    match self.runner.run(bin, &["get", jail, "logpath"]) {
+                                    match self.run_get_cached(bin, jail, "logpath") {
                                         Ok(lp_out) if lp_out.success => {
                                             let logpath = lp_out.stdout.trim();
                                             if !logpath.is_empty()
@@ -1766,71 +1919,69 @@ impl<'a> Doctor<'a> {
                         if out.success {
                             let jail_names = parse_jail_list(&out.stdout);
                             for jail in &jail_names {
-                                let failregex_val: Option<String> = match self
-                                    .runner
-                                    .run(client_bin, &["get", jail, "failregex"])
-                                {
-                                    Ok(out) if out.success => {
-                                        let regex = out.stdout.trim();
-                                        if regex.is_empty() || regex == "None" {
-                                            findings.push(
-                                                Finding::new(
-                                                    "regex.jail-no-failregex",
-                                                    Severity::Warning,
-                                                    format!("Jail '{jail}' has no failregex"),
-                                                )
-                                                .fix(format!(
-                                                    "Add a failregex to the filter \
+                                let failregex_val: Option<String> =
+                                    match self.run_get_cached(client_bin, jail, "failregex") {
+                                        Ok(out) if out.success => {
+                                            let regex = out.stdout.trim();
+                                            if regex.is_empty() || regex == "None" {
+                                                findings.push(
+                                                    Finding::new(
+                                                        "regex.jail-no-failregex",
+                                                        Severity::Warning,
+                                                        format!("Jail '{jail}' has no failregex"),
+                                                    )
+                                                    .fix(format!(
+                                                        "Add a failregex to the filter \
                                                          used by jail '{jail}'.",
-                                                )),
-                                            );
-                                            None
-                                        } else if !regex.contains("<HOST>") {
-                                            findings.push(
-                                                Finding::new(
-                                                    "regex.missing-host-tag",
-                                                    Severity::Error,
-                                                    format!(
-                                                        "Jail '{jail}' failregex does \
+                                                    )),
+                                                );
+                                                None
+                                            } else if !regex.contains("<HOST>") {
+                                                findings.push(
+                                                    Finding::new(
+                                                        "regex.missing-host-tag",
+                                                        Severity::Error,
+                                                        format!(
+                                                            "Jail '{jail}' failregex does \
                                                              not contain <HOST>"
-                                                    ),
-                                                )
-                                                .detail(
-                                                    "The failregex must contain \
+                                                        ),
+                                                    )
+                                                    .detail(
+                                                        "The failregex must contain \
                                                          <HOST> so that Fail2Ban can \
                                                          extract the IP address from \
                                                          matching log lines.",
-                                                )
-                                                .fix(format!(
-                                                    "Update the failregex for jail \
+                                                    )
+                                                    .fix(format!(
+                                                        "Update the failregex for jail \
                                                          '{jail}' to include <HOST>.",
-                                                )),
-                                            );
-                                            None
-                                        } else {
-                                            findings.push(Finding::new(
-                                                "regex.host-tag-present",
-                                                Severity::Ok,
-                                                format!(
-                                                    "Jail '{jail}' failregex \
+                                                    )),
+                                                );
+                                                None
+                                            } else {
+                                                findings.push(Finding::new(
+                                                    "regex.host-tag-present",
+                                                    Severity::Ok,
+                                                    format!(
+                                                        "Jail '{jail}' failregex \
                                                          contains <HOST>"
+                                                    ),
+                                                ));
+                                                Some(regex.to_string())
+                                            }
+                                        }
+                                        _ => {
+                                            findings.push(Finding::new(
+                                                "regex.jail-failregex-unknown",
+                                                Severity::Info,
+                                                format!(
+                                                    "Could not query failregex \
+                                                         for jail '{jail}'"
                                                 ),
                                             ));
-                                            Some(regex.to_string())
+                                            None
                                         }
-                                    }
-                                    _ => {
-                                        findings.push(Finding::new(
-                                            "regex.jail-failregex-unknown",
-                                            Severity::Info,
-                                            format!(
-                                                "Could not query failregex \
-                                                         for jail '{jail}'"
-                                            ),
-                                        ));
-                                        None
-                                    }
-                                };
+                                    };
 
                                 if let Some(ref failregex) = failregex_val {
                                     let attack_lines = [
@@ -1842,30 +1993,30 @@ impl<'a> Doctor<'a> {
                                     for attack_line in &attack_lines {
                                         if let Ok(out) =
                                             self.runner.run(bin, &[attack_line, failregex])
+                                            && out.success
+                                            && out.stdout.contains("Lines:")
+                                            && out.stdout.contains("0 matched")
                                         {
-                                            if out.success && out.stdout.contains("Lines:") {
-                                            } else {
-                                                findings.push(
-                                                    Finding::new(
-                                                        "regex.attack_not_matched",
-                                                        Severity::Warning,
-                                                        format!(
-                                                            "Jail '{jail}' failregex \
-                                                             does not match attack \
-                                                             line"
-                                                        ),
-                                                    )
-                                                    .detail(format!(
-                                                        "Sample attack line was not \
-                                                         matched: {attack_line}",
-                                                    ))
-                                                    .fix(
-                                                        "Review the failregex pattern \
-                                                         to ensure it matches common \
-                                                         attack signatures.",
+                                            findings.push(
+                                                Finding::new(
+                                                    "regex.attack_not_matched",
+                                                    Severity::Warning,
+                                                    format!(
+                                                        "Jail '{jail}' failregex \
+                                                         does not match attack \
+                                                         line"
                                                     ),
-                                                );
-                                            }
+                                                )
+                                                .detail(format!(
+                                                    "Sample attack line was not \
+                                                     matched: {attack_line}",
+                                                ))
+                                                .fix(
+                                                    "Review the failregex pattern \
+                                                     to ensure it matches common \
+                                                     attack signatures.",
+                                                ),
+                                            );
                                         }
                                     }
 
@@ -2082,7 +2233,7 @@ impl<'a> Doctor<'a> {
     )]
     fn check_actions(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let action_dir = std::path::Path::new("/etc/fail2ban/action.d");
+        let action_dir = self.paths.action_d.as_path();
 
         if action_dir.exists() {
             findings.push(Finding::new(
@@ -2097,7 +2248,7 @@ impl<'a> Doctor<'a> {
                     Severity::Error,
                     "Fail2Ban action directory does not exist",
                 )
-                .detail("Expected /etc/fail2ban/action.d to exist.")
+                .detail(format!("Expected {} to exist.", action_dir.display()))
                 .fix("Install Fail2Ban or create the action.d directory."),
             );
             return findings;
@@ -2109,7 +2260,7 @@ impl<'a> Doctor<'a> {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
-                        match self.runner.run(bin, &["get", jail, "actions"]) {
+                        match self.run_get_cached(bin, jail, "actions") {
                             Ok(out) if out.success => {
                                 let actions_str = out.stdout.trim();
                                 for action_name in actions_str
@@ -2133,47 +2284,41 @@ impl<'a> Doctor<'a> {
 
                                         let action_lower = action_name.to_ascii_lowercase();
                                         if action_lower.contains("nftables") {
-                                            match self.runner.run("nft", &["--version"]) {
-                                                Ok(o) if o.success => {}
-                                                _ => {
-                                                    findings.push(
-                                                        Finding::new(
-                                                            "action.nft-incompatible",
-                                                            Severity::Critical,
-                                                            format!(
-                                                                "Jail '{jail}' uses \
-                                                                 nftables action but \
-                                                                 nft is not available"
-                                                            ),
-                                                        )
-                                                        .fix(
-                                                            "Install nftables or switch \
-                                                             to an iptables action.",
+                                            if !self.nft_available() {
+                                                findings.push(
+                                                    Finding::new(
+                                                        "action.nft-incompatible",
+                                                        Severity::Critical,
+                                                        format!(
+                                                            "Jail '{jail}' uses \
+                                                             nftables action but \
+                                                             nft is not available"
                                                         ),
-                                                    );
-                                                }
+                                                    )
+                                                    .fix(
+                                                        "Install nftables or switch \
+                                                         to an iptables action.",
+                                                    ),
+                                                );
                                             }
-                                        } else if action_lower.contains("iptables") {
-                                            match self.runner.run("iptables", &["--version"]) {
-                                                Ok(o) if o.success => {}
-                                                _ => {
-                                                    findings.push(
-                                                        Finding::new(
-                                                            "action.iptables-incompatible",
-                                                            Severity::Critical,
-                                                            format!(
-                                                                "Jail '{jail}' uses \
-                                                                 iptables action but \
-                                                                 iptables is not available"
-                                                            ),
-                                                        )
-                                                        .fix(
-                                                            "Install iptables or switch \
-                                                             to a nftables action.",
-                                                        ),
-                                                    );
-                                                }
-                                            }
+                                        } else if action_lower.contains("iptables")
+                                            && !self.iptables_available()
+                                        {
+                                            findings.push(
+                                                Finding::new(
+                                                    "action.iptables-incompatible",
+                                                    Severity::Critical,
+                                                    format!(
+                                                        "Jail '{jail}' uses \
+                                                         iptables action but \
+                                                         iptables is not available"
+                                                    ),
+                                                )
+                                                .fix(
+                                                    "Install iptables or switch \
+                                                     to a nftables action.",
+                                                ),
+                                            );
                                         }
 
                                         let action_content = if local_path.exists() {
@@ -2469,7 +2614,7 @@ impl<'a> Doctor<'a> {
     )]
     fn check_permissions(&self) -> Vec<Finding> {
         let mut findings = Vec::new();
-        let config_dir = std::path::Path::new("/etc/fail2ban");
+        let config_dir = self.paths.config_dir.as_path();
 
         if !config_dir.exists() {
             findings.push(Finding::new(
@@ -2488,7 +2633,7 @@ impl<'a> Doctor<'a> {
                         Finding::new(
                             "permission.config-dir-world-writable",
                             Severity::Critical,
-                            "/etc/fail2ban is world-writable",
+                            "Fail2Ban config directory is world-writable",
                         )
                         .detail(
                             "The Fail2Ban configuration directory is world-writable, \
@@ -2501,7 +2646,7 @@ impl<'a> Doctor<'a> {
                     findings.push(Finding::new(
                         "permission.config-dir-safe",
                         Severity::Ok,
-                        "/etc/fail2ban is not world-writable",
+                        "Fail2Ban config directory is not world-writable",
                     ));
                 }
             }
@@ -2590,7 +2735,7 @@ impl<'a> Doctor<'a> {
                         Finding::new(
                             "permission.not_root_owned",
                             Severity::Warning,
-                            format!("/etc/fail2ban is not owned by root (uid={uid})"),
+                            format!("config directory is not owned by root (uid={uid})"),
                         )
                         .detail(
                             "The Fail2Ban configuration directory should be owned \
@@ -2777,7 +2922,7 @@ impl<'a> Doctor<'a> {
             ));
         }
 
-        let jail_d = std::path::Path::new("/etc/fail2ban/jail.d");
+        let jail_d = self.paths.jail_d.as_path();
         if jail_d.exists() {
             if let Ok(entries) = std::fs::read_dir(jail_d) {
                 let backup_count = entries
@@ -2807,31 +2952,54 @@ impl<'a> Doctor<'a> {
             }
         }
 
-        let config_dir = std::path::Path::new("/etc/fail2ban");
-        if config_dir.exists() {
-            let test_path = config_dir.join("jail.d/.doctor-write-test");
-            match std::fs::write(&test_path, b"") {
-                Ok(()) => {
-                    let _ = std::fs::remove_file(&test_path);
+        // Writability is judged from directory metadata and the effective uid
+        // (via `id -u` through the runner), never by writing probe files into
+        // a directory Fail2Ban auto-loads.
+        let config_dir = self.paths.config_dir.as_path();
+        if !config_dir.is_dir() {
+            findings.push(Finding::new(
+                "safety.config-dir-missing",
+                Severity::Info,
+                "Fail2Ban config directory does not exist",
+            ));
+        } else if !self.paths.jail_d.exists() {
+            findings.push(Finding::new(
+                "safety.jail-d-missing",
+                Severity::Info,
+                "jail.d does not exist yet",
+            ));
+        } else {
+            match self.rollback_writable(&self.paths.jail_d) {
+                Ok(true) => {
                     findings.push(Finding::new(
                         "safety.rollback-writable",
                         Severity::Ok,
                         "Config directory is writable (rollback possible)",
                     ));
                 }
-                Err(_) => {
+                Ok(false) => {
                     findings.push(
                         Finding::new(
                             "safety.rollback-not-writable",
                             Severity::Warning,
                             "Config directory is not writable",
                         )
-                        .detail(
-                            "Cannot write to /etc/fail2ban/jail.d. Rollback \
-                             operations may fail. This check likely needs to \
-                             be run with elevated privileges.",
-                        )
+                        .detail(format!(
+                            "Directory {} is not writable by the current user. \
+                             Rollback operations may fail.",
+                            self.paths.jail_d.display(),
+                        ))
                         .fix("Run with appropriate privileges (e.g. via sudo)."),
+                    );
+                }
+                Err(e) => {
+                    findings.push(
+                        Finding::new(
+                            "safety.rollback-unknown",
+                            Severity::Info,
+                            "Could not determine config directory writability",
+                        )
+                        .detail(format!("{e}")),
                     );
                 }
             }
@@ -2964,7 +3132,7 @@ impl<'a> Doctor<'a> {
                 if out.success {
                     let jail_names = parse_jail_list(&out.stdout);
                     for jail in &jail_names {
-                        if let Ok(log_out) = self.runner.run(bin, &["get", jail, "logpath"]) {
+                        if let Ok(log_out) = self.run_get_cached(bin, jail, "logpath") {
                             if log_out.success {
                                 let log_path = log_out.stdout.trim().to_lowercase();
 
@@ -2995,7 +3163,7 @@ impl<'a> Doctor<'a> {
                             }
                         }
 
-                        if let Ok(action_out) = self.runner.run(bin, &["get", jail, "actions"]) {
+                        if let Ok(action_out) = self.run_get_cached(bin, jail, "actions") {
                             if action_out.success {
                                 let actions = action_out.stdout.trim().to_lowercase();
                                 for (label, keyword) in &proxy_indicators {
@@ -3021,7 +3189,7 @@ impl<'a> Doctor<'a> {
                         let mut detected_traefik_log = false;
                         let mut detected_cloudflare = false;
 
-                        if let Ok(log_out) = self.runner.run(bin, &["get", jail, "logpath"]) {
+                        if let Ok(log_out) = self.run_get_cached(bin, jail, "logpath") {
                             if log_out.success {
                                 let log_path_lower = log_out.stdout.trim().to_lowercase();
                                 if log_path_lower.contains("traefik") {
@@ -3030,7 +3198,7 @@ impl<'a> Doctor<'a> {
                             }
                         }
 
-                        if let Ok(action_out) = self.runner.run(bin, &["get", jail, "actions"]) {
+                        if let Ok(action_out) = self.run_get_cached(bin, jail, "actions") {
                             if action_out.success {
                                 let actions_lower = action_out.stdout.trim().to_lowercase();
                                 if actions_lower.contains("cloudflare")
@@ -3041,14 +3209,13 @@ impl<'a> Doctor<'a> {
                             }
                         }
 
-                        let cf_action_path =
-                            std::path::Path::new("/etc/fail2ban/action.d/cloudflare.conf");
+                        let cf_action_path = self.paths.action_d.join("cloudflare.conf");
                         if cf_action_path.exists() {
                             detected_cloudflare = true;
                         }
 
                         let has_proxy_indicator = detected_traefik_log || detected_cloudflare || {
-                            if let Ok(log_out) = self.runner.run(bin, &["get", jail, "logpath"]) {
+                            if let Ok(log_out) = self.run_get_cached(bin, jail, "logpath") {
                                 if log_out.success {
                                     let lp = log_out.stdout.trim().to_lowercase();
                                     lp.contains("nginx")
@@ -3218,11 +3385,15 @@ fn permission_mode(_permissions: &std::fs::Permissions) -> u32 {
 
 const PROXY_IP_SAMPLE_LINES: usize = 10;
 
+static IPV4_LITERAL_RE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    regex::Regex::new(r"(?:\d{1,3}\.){3}\d{1,3}").expect("hardcoded regex is valid")
+});
+
 fn extract_ips_from_line(line: &str) -> Vec<String> {
     use std::str::FromStr;
 
-    let re = regex::Regex::new(r"(?:\d{1,3}\.){3}\d{1,3}").unwrap();
-    re.find_iter(line)
+    IPV4_LITERAL_RE
+        .find_iter(line)
         .filter(|m| std::net::Ipv4Addr::from_str(m.as_str()).is_ok())
         .map(|m| m.as_str().to_string())
         .collect()

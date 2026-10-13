@@ -3,6 +3,104 @@ use chrono::{Duration, Utc};
 use std::net::IpAddr;
 use tempfile::tempdir;
 
+#[test]
+fn add_ban_replaces_expired_entry_instead_of_erroring() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("bans.json"));
+
+    let expired = make_ban_expiring(
+        "203.0.113.9",
+        "sshd",
+        Some(Utc::now() - Duration::seconds(1)),
+    );
+    store.add_ban(&expired).unwrap();
+
+    // A fresh ban for the same IP must replace the expired-but-unpurged entry
+    // rather than answer AlreadyBanned.
+    let fresh = make_ban("203.0.113.9", "sshd");
+    store
+        .add_ban(&fresh)
+        .expect("expired same-IP entry is replaceable");
+
+    let data = store.load().unwrap();
+    assert_eq!(data.active_bans.len(), 1);
+    assert_eq!(data.active_bans[0].ip.to_string(), "203.0.113.9");
+    assert!(
+        data.active_bans[0].expires_at.is_none(),
+        "the active entry is the fresh one (no expiry set by make_ban)"
+    );
+    assert_eq!(data.history.len(), 1, "the expired entry moves to history");
+    assert!(
+        data.history[0].expires_at.is_some_and(|e| e <= Utc::now()),
+        "history holds the expired entry"
+    );
+}
+
+#[test]
+fn add_bans_inserts_many_entries_in_one_round_trip() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("bans.json"));
+
+    let entries = vec![
+        make_ban("203.0.113.1", "sshd"),
+        make_ban("203.0.113.2", "sshd"),
+        make_ban("198.51.100.7", "nginx"),
+    ];
+    let inserted = store.add_bans(&entries).unwrap();
+    assert_eq!(inserted.len(), 3);
+
+    let data = store.load().unwrap();
+    assert_eq!(data.active_bans.len(), 3);
+}
+
+#[test]
+fn add_bans_skips_active_and_in_batch_duplicates() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("bans.json"));
+
+    let existing = make_ban("203.0.113.1", "sshd");
+    store.add_ban(&existing).unwrap();
+
+    let entries = vec![
+        make_ban("203.0.113.1", "sshd"), // already active: skipped
+        make_ban("203.0.113.2", "sshd"),
+        make_ban("203.0.113.2", "sshd"), // in-batch duplicate: first wins
+        make_ban("203.0.113.3", "sshd"),
+    ];
+    let inserted = store.add_bans(&entries).unwrap();
+    assert_eq!(inserted.len(), 2);
+    assert_eq!(
+        inserted
+            .iter()
+            .map(|b| b.ip.to_string())
+            .collect::<Vec<_>>(),
+        vec!["203.0.113.2", "203.0.113.3"]
+    );
+
+    let data = store.load().unwrap();
+    assert_eq!(data.active_bans.len(), 3);
+}
+
+#[test]
+fn add_bans_replaces_expired_entries() {
+    let dir = tempdir().unwrap();
+    let store = Store::new(dir.path().join("bans.json"));
+
+    let expired = make_ban_expiring(
+        "203.0.113.9",
+        "sshd",
+        Some(Utc::now() - Duration::seconds(1)),
+    );
+    store.add_ban(&expired).unwrap();
+
+    let inserted = store.add_bans(&[make_ban("203.0.113.9", "sshd")]).unwrap();
+    assert_eq!(inserted.len(), 1, "expired entry does not block the batch");
+
+    let data = store.load().unwrap();
+    assert_eq!(data.active_bans.len(), 1);
+    assert_eq!(data.history.len(), 1);
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -35,6 +133,8 @@ fn make_ban_expiring(ip: &str, jail: &str, expires_at: Option<chrono::DateTime<U
 
 fn make_journal(jail: &str, log_path: &str, offset: u64, line_number: u64) -> JournalEntry {
     JournalEntry {
+        dev: 0,
+        ino: 0,
         jail_name: jail.to_string(),
         log_path: log_path.into(),
         offset,
@@ -1145,6 +1245,8 @@ fn journal_entry_with_empty_jail_name() {
     let (_dir, store) = tmp_store();
 
     let entry = JournalEntry {
+        dev: 0,
+        ino: 0,
         jail_name: String::new(),
         log_path: "/var/log/auth.log".into(),
         offset: 0,

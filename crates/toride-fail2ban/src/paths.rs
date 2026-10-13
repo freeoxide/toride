@@ -13,8 +13,6 @@ pub struct Fail2BanPaths {
     pub data_dir: PathBuf,
     /// Ban database file path.
     pub ban_db: PathBuf,
-    /// PID file for the daemon.
-    pub pid_file: PathBuf,
     /// Log directory for fail2ban's own logs.
     pub log_dir: PathBuf,
     /// Journal directory for tracking log file positions.
@@ -45,17 +43,10 @@ impl Fail2BanPaths {
             config_file: config_dir.join("config.json"),
             log_dir: data_dir.join("logs"),
             ban_db: data_dir.join("bans.json"),
-            pid_file: data_dir.join("fail2ban.pid"),
             journal_dir: data_dir.join("journals"),
             config_dir,
             data_dir,
         })
-    }
-
-    /// Returns the PID file path, optionally overridden by config.
-    #[must_use]
-    pub fn pid_file_with_override(&self, config_pid: Option<&std::path::Path>) -> PathBuf {
-        config_pid.map_or_else(|| self.pid_file.clone(), std::path::Path::to_path_buf)
     }
 
     /// Create all directories. Idempotent.

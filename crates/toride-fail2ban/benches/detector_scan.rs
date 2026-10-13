@@ -8,11 +8,18 @@ const FIXTURE_LOG: &str = concat!(
     "/benches/fixtures/logs/sshd_auth_10k.log"
 );
 
+const DECOY_FIXTURE_LOG: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/benches/fixtures/logs/sshd_invalid_user_decoy_10k.log"
+);
+
 const EXPECTED_LINES: u64 = 10_000;
 
 const EXPECTED_FAILED_PASSWORD_MATCHES: u32 = 750;
 
 const EXPECTED_INVALID_USER_MATCHES: u32 = 250;
+
+const EXPECTED_DECOY_MATCHES: u32 = 250;
 
 const NAMED_GROUP_IP_PATTERN: &str =
     r"Failed password for (?:invalid user )?\S+ from (?P<ip>\S+) port \d+ ssh2";
@@ -43,6 +50,41 @@ fn assert_fixture_shape() {
     .expect("fallback failregex compiles");
     let result = detector.scan().expect("fixture scans cleanly");
     assert_eq!(result.matches_found, EXPECTED_INVALID_USER_MATCHES);
+
+    // Decy-username fixture: the first IP-looking token is attacker-chosen
+    // (a bare IPv4 literal as username); the fallback must ban the real
+    // source address after it, never the decoy.
+    let mut detector = LogDetector::new(
+        "fixture-check",
+        std::path::Path::new(DECOY_FIXTURE_LOG),
+        FALLBACK_IPV4_PATTERN,
+    )
+    .expect("fallback failregex compiles");
+    let result = detector.scan().expect("decoy fixture scans cleanly");
+    assert_eq!(result.lines_scanned, EXPECTED_LINES);
+    assert_eq!(result.matches_found, EXPECTED_DECOY_MATCHES);
+    assert_eq!(result.new_bans.len(), EXPECTED_DECOY_MATCHES as usize);
+    for ban in &result.new_bans {
+        assert!(
+            ban.ip.to_string().starts_with("203.0.113."),
+            "bans must target the real source address, not the decoy username: {}",
+            ban.ip
+        );
+    }
+
+    // A newline-free file larger than the line cap must abort with the
+    // LogFileError guard instead of buffering the whole file.
+    let oversized = tempfile::tempdir().expect("temp dir for oversized fixture");
+    let oversized_path = oversized.path().join("oversized.log");
+    std::fs::write(&oversized_path, vec![b'x'; 1_048_577]).expect("write oversized fixture");
+    let mut detector = LogDetector::new("fixture-check", &oversized_path, NAMED_GROUP_IP_PATTERN)
+        .expect("failregex compiles");
+    match detector.scan() {
+        Err(toride_fail2ban::Error::LogFileError(msg)) => {
+            assert!(msg.contains("exceeds"), "guard names the cap: {msg}");
+        }
+        other => panic!("oversized no-newline fixture must abort, got {other:?}"),
+    }
 }
 
 fn bench_detector_scan(c: &mut Criterion) {

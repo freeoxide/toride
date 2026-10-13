@@ -631,12 +631,12 @@ fn cidr_set_contains_ipv4_mapped_ipv6() {
     let block = CidrBlock::new("10.0.0.0".parse().unwrap(), 8).unwrap();
     set.insert(block);
 
-    // The IPv4-mapped IPv6 representation of 10.0.0.1 must NOT match an
-    // IPv4 CIDR block -- they are different address families.
+    // The IPv4-mapped IPv6 spelling of 10.0.0.1 is normalized to IPv4, so a
+    // client cannot evade the block by flipping address-family spellings.
     let mapped: IpAddr = "::ffff:10.0.0.1".parse().unwrap();
     assert!(
-        !set.contains(mapped),
-        "IPv4 CIDR block must not match IPv4-mapped IPv6 address"
+        set.contains(mapped),
+        "IPv4 CIDR block must cover the IPv4-mapped spelling of a member address"
     );
 }
 

@@ -15,10 +15,6 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
-// Name validation helpers
-// ---------------------------------------------------------------------------
-
 /// Characters that are forbidden in jail/filter/action names.
 ///
 /// Rejects: `/`, `..`, newlines, and shell metacharacters
@@ -27,13 +23,27 @@ const FORBIDDEN_NAME_CHARS: &[char] = &[
     '/', '\n', '\r', ';', '|', '&', '$', '`', '\\', '\'', '"', '(', ')', '<', '>', '{', '}',
 ];
 
-/// Validates that a name string is non-empty and contains no forbidden characters
-/// or path-traversal sequences.
+/// Validates that a name string is non-empty and contains no forbidden
+/// characters, whitespace, leading dash, or path-traversal sequences.
+///
+/// Names flow into `fail2ban-client` subcommand argv (where a leading `-`
+/// would parse as an option) and into INI section headers and file names
+/// (where whitespace would break both).
 fn validate_name(s: &str, type_label: &str) -> Result<String> {
     let trimmed = s.trim();
     if trimmed.is_empty() {
         return Err(Error::InvalidConfig(format!(
             "{type_label} must not be empty"
+        )));
+    }
+    if trimmed.starts_with('-') {
+        return Err(Error::InvalidConfig(format!(
+            "{type_label} must not start with '-': {s:?}"
+        )));
+    }
+    if let Some(ch) = trimmed.chars().find(|c| c.is_whitespace()) {
+        return Err(Error::InvalidConfig(format!(
+            "{type_label} must not contain whitespace ({ch:?}): {s:?}"
         )));
     }
     if trimmed.contains("..") {
@@ -118,17 +128,9 @@ macro_rules! define_name_type {
     };
 }
 
-// ---------------------------------------------------------------------------
-// Validated name newtypes
-// ---------------------------------------------------------------------------
-
 define_name_type!(JailName, "JailName");
 define_name_type!(FilterName, "FilterName");
 define_name_type!(ActionName, "ActionName");
-
-// ---------------------------------------------------------------------------
-// Enums
-// ---------------------------------------------------------------------------
 
 /// Fail2Ban log backend selection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -217,10 +219,6 @@ impl fmt::Display for ActionKind {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Value types
-// ---------------------------------------------------------------------------
 
 /// A human-readable duration string validated by `humantime`, or a permanent marker.
 ///
@@ -617,10 +615,6 @@ impl fmt::Display for IgnoreIpList {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Spec structs
-// ---------------------------------------------------------------------------
-
 /// Complete specification for a Fail2Ban jail.
 ///
 /// Use [`JailSpec::builder()`] to construct with compile-time enforcement of
@@ -865,10 +859,6 @@ impl ActionSpec {
             .build())
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 #[path = "spec.test.rs"]

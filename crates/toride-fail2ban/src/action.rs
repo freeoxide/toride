@@ -20,6 +20,28 @@ fn shell_escape(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\\''"))
 }
 
+/// Prefix `env K=V ...` in front of `cmd_str`, one shell-escaped `K=V`
+/// argument per entry, so the variables are set for the command the runner
+/// executes via `sh -c`.
+fn prefix_env(cmd_str: &str, env: &HashMap<String, String>) -> crate::Result<String> {
+    if env.is_empty() {
+        return Ok(cmd_str.to_string());
+    }
+    let mut prefixed = String::from("env");
+    for (key, value) in env {
+        if key.is_empty() || key.contains('=') || key.contains('\0') {
+            return Err(crate::Error::InvalidConfig(format!(
+                "invalid environment variable name {key:?}: must be non-empty with no '=' or NUL"
+            )));
+        }
+        prefixed.push(' ');
+        prefixed.push_str(&shell_escape(&format!("{key}={value}")));
+    }
+    prefixed.push(' ');
+    prefixed.push_str(cmd_str);
+    Ok(prefixed)
+}
+
 fn check_dq_placeholders(template: &str) -> Result<(), crate::Error> {
     const PLACEHOLDERS: &[&str] = &["<ip>", "<jail>", "<log-path>"];
     let bytes = template.as_bytes();
@@ -96,7 +118,8 @@ pub struct ActionExec {
     /// Optional validation commands.
     #[serde(default, alias = "validate")]
     pub validation_commands: Vec<String>,
-    /// Environment variables for command execution.
+    /// Environment variables for command execution, applied by prefixing
+    /// `env K=V ...` to the expanded command before it runs.
     #[serde(default)]
     pub env: HashMap<String, String>,
 }
@@ -235,15 +258,15 @@ impl ActionExec {
 
     fn run_command(
         cmd_str: &str,
-        _env: &HashMap<String, String>,
+        env: &HashMap<String, String>,
         runner: &dyn Runner,
     ) -> crate::Result<()> {
-        let output = runner.run("sh", &["-c", cmd_str])?;
+        let full_command = prefix_env(cmd_str, env)?;
+        let output = runner.run("sh", &["-c", &full_command])?;
 
         if !output.success {
             return Err(crate::Error::CommandFailed(format!(
-                "Command '{}' failed (exit {}): {}",
-                cmd_str,
+                "Command '{full_command}' failed (exit {}): {}",
                 output
                     .exit_code
                     .map_or("unknown".to_string(), |c| c.to_string()),

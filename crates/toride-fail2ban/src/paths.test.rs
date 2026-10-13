@@ -33,7 +33,6 @@ fn resolve_all_paths_contain_toride_fail2ban() {
         ("config_file", &p.config_file),
         ("data_dir", &p.data_dir),
         ("ban_db", &p.ban_db),
-        ("pid_file", &p.pid_file),
         ("log_dir", &p.log_dir),
         ("journal_dir", &p.journal_dir),
     ] {
@@ -62,14 +61,6 @@ fn resolve_ban_db_is_bans_json_in_data_dir() {
 }
 
 #[test]
-fn resolve_pid_file_is_fail2ban_pid_in_data_dir() {
-    let _tmp = with_custom_xdg();
-    let p = Fail2BanPaths::resolve().unwrap();
-
-    assert_eq!(p.pid_file, p.data_dir.join("fail2ban.pid"));
-}
-
-#[test]
 fn resolve_log_dir_is_logs_in_data_dir() {
     let _tmp = with_custom_xdg();
     let p = Fail2BanPaths::resolve().unwrap();
@@ -95,7 +86,6 @@ fn resolve_all_paths_are_absolute() {
         ("config_file", &p.config_file),
         ("data_dir", &p.data_dir),
         ("ban_db", &p.ban_db),
-        ("pid_file", &p.pid_file),
         ("log_dir", &p.log_dir),
         ("journal_dir", &p.journal_dir),
     ] {
@@ -144,7 +134,6 @@ fn ensure_directories_creates_all_dirs() {
         config_file: base.join("cfg").join("config.json"),
         data_dir: base.join("data"),
         ban_db: base.join("data").join("bans.json"),
-        pid_file: base.join("data").join("fail2ban.pid"),
         log_dir: base.join("data").join("logs"),
         journal_dir: base.join("data").join("journals"),
     };
@@ -172,7 +161,6 @@ fn ensure_directories_is_idempotent() {
         config_file: base.join("cfg").join("config.json"),
         data_dir: base.join("data"),
         ban_db: base.join("data").join("bans.json"),
-        pid_file: base.join("data").join("fail2ban.pid"),
         log_dir: base.join("data").join("logs"),
         journal_dir: base.join("data").join("journals"),
     };
@@ -208,12 +196,6 @@ fn ensure_directories_creates_deeply_nested_paths() {
             .join("z")
             .join("data")
             .join("bans.json"),
-        pid_file: base
-            .join("x")
-            .join("y")
-            .join("z")
-            .join("data")
-            .join("fail2ban.pid"),
         log_dir: base.join("x").join("y").join("z").join("data").join("logs"),
         journal_dir: base
             .join("x")
@@ -256,7 +238,6 @@ fn ensure_directories_does_not_create_file_paths() {
         config_file: base.join("cfg").join("config.json"),
         data_dir: base.join("data"),
         ban_db: base.join("data").join("bans.json"),
-        pid_file: base.join("data").join("fail2ban.pid"),
         log_dir: base.join("data").join("logs"),
         journal_dir: base.join("data").join("journals"),
     };
@@ -265,27 +246,6 @@ fn ensure_directories_does_not_create_file_paths() {
 
     assert!(!paths.config_file.exists());
     assert!(!paths.ban_db.exists());
-    assert!(!paths.pid_file.exists());
-}
-
-#[test]
-fn test_pid_file_with_override_returns_default_when_none() {
-    let _tmp = with_custom_xdg();
-    let p = Fail2BanPaths::resolve().unwrap();
-
-    let result = p.pid_file_with_override(None);
-    assert_eq!(result, p.pid_file);
-}
-
-#[test]
-fn test_pid_file_with_override_returns_custom_when_some() {
-    let _tmp = with_custom_xdg();
-    let p = Fail2BanPaths::resolve().unwrap();
-
-    let custom = std::path::Path::new("/tmp/custom-fail2ban.pid");
-    let result = p.pid_file_with_override(Some(custom));
-    assert_eq!(result, custom.to_path_buf());
-    assert_ne!(result, p.pid_file);
 }
 
 #[test]
@@ -313,18 +273,6 @@ fn test_resolve_ban_db_ends_with_json() {
 }
 
 #[test]
-fn test_resolve_pid_file_ends_with_pid() {
-    let _tmp = with_custom_xdg();
-    let p = Fail2BanPaths::resolve().unwrap();
-
-    assert!(
-        p.pid_file.ends_with("fail2ban.pid"),
-        "pid_file should end with fail2ban.pid: {:?}",
-        p.pid_file
-    );
-}
-
-#[test]
 fn test_ensure_directories_on_existing_dirs_does_not_error() {
     let tmp = TempDir::new().unwrap();
     let base = tmp.path();
@@ -334,7 +282,6 @@ fn test_ensure_directories_on_existing_dirs_does_not_error() {
         config_file: base.join("cfg").join("config.json"),
         data_dir: base.join("data"),
         ban_db: base.join("data").join("bans.json"),
-        pid_file: base.join("data").join("fail2ban.pid"),
         log_dir: base.join("data").join("logs"),
         journal_dir: base.join("data").join("journals"),
     };
@@ -353,7 +300,6 @@ fn test_paths_struct_is_cloneable() {
     assert_eq!(cloned.config_file, p.config_file);
     assert_eq!(cloned.data_dir, p.data_dir);
     assert_eq!(cloned.ban_db, p.ban_db);
-    assert_eq!(cloned.pid_file, p.pid_file);
     assert_eq!(cloned.log_dir, p.log_dir);
     assert_eq!(cloned.journal_dir, p.journal_dir);
 }
@@ -379,10 +325,6 @@ fn test_paths_struct_is_debug_printable() {
     assert!(
         dbg.contains("ban_db"),
         "Debug output should contain ban_db: {dbg}"
-    );
-    assert!(
-        dbg.contains("pid_file"),
-        "Debug output should contain pid_file: {dbg}"
     );
     assert!(
         dbg.contains("log_dir"),
@@ -422,7 +364,6 @@ fn test_ensure_directories_creates_journal_dir_nested() {
         config_file: base.join("cfg").join("config.json"),
         data_dir: base.join("data"),
         ban_db: base.join("data").join("bans.json"),
-        pid_file: base.join("data").join("fail2ban.pid"),
         log_dir: base.join("data").join("logs"),
         journal_dir: base
             .join("data")

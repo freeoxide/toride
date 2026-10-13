@@ -137,13 +137,13 @@ fn parse_test_with_pattern() {
         "test",
         "/var/log/auth.log",
         "--pattern",
-        r#"Failed password for .* from (\S+)"#,
+        r"Failed password for .* from (\S+)",
     ])
     .unwrap();
     match cli.command {
         Commands::Test { log_path, pattern } => {
             assert_eq!(log_path, PathBuf::from("/var/log/auth.log"));
-            assert_eq!(pattern, r#"Failed password for .* from (\S+)"#);
+            assert_eq!(pattern, r"Failed password for .* from (\S+)");
         }
         _ => panic!("expected Test command"),
     }
@@ -162,7 +162,7 @@ fn parse_addjail_with_all_options() {
         "--log-path",
         "/var/log/auth.log",
         "--pattern",
-        r#"Failed password"#,
+        r"Failed password",
         "--max-retry",
         "3",
         "--ban-time",
@@ -179,7 +179,7 @@ fn parse_addjail_with_all_options() {
         } => {
             assert_eq!(name, "sshd");
             assert_eq!(log_path, PathBuf::from("/var/log/auth.log"));
-            assert_eq!(pattern, r#"Failed password"#);
+            assert_eq!(pattern, r"Failed password");
             assert_eq!(max_retry, 3);
             assert_eq!(ban_time, 7200);
         }
@@ -196,7 +196,7 @@ fn parse_addjail_defaults() {
         "--log-path",
         "/var/log/nginx/error.log",
         "--pattern",
-        r#"limiting requests"#,
+        r"limiting requests",
     ])
     .unwrap();
     match cli.command {
@@ -240,7 +240,11 @@ fn parse_with_config_flag() {
         "status",
     ])
     .unwrap();
-    assert_eq!(cli.config, PathBuf::from("/etc/toride/f2b.json"));
+    assert_eq!(cli.config, Some(PathBuf::from("/etc/toride/f2b.json")));
+    assert_eq!(
+        cli.resolved_config().unwrap(),
+        PathBuf::from("/etc/toride/f2b.json")
+    );
 }
 
 #[test]
@@ -260,12 +264,36 @@ fn parse_with_dry_run_flag() {
 // -----------------------------------------------------------------------
 
 #[test]
-fn default_config_path() {
+fn default_config_resolves_to_the_xdg_path() {
     let cli = Cli::try_parse_from(["toride-fail2ban", "status"]).unwrap();
-    assert_eq!(
-        cli.config,
-        PathBuf::from("~/.config/toride/fail2ban/config.json")
+    assert_eq!(cli.config, None);
+
+    // The default must be an openable location, not a literal tilde path
+    // that Fail2BanConfig::load would reject with ConfigNotFound.
+    let resolved = cli.resolved_config().expect("XDG default resolves");
+    assert!(
+        resolved.is_absolute(),
+        "resolved default must be absolute: {}",
+        resolved.display()
     );
+    assert!(
+        resolved.ends_with("toride/fail2ban/config.json"),
+        "resolved default must be the XDG toride path: {}",
+        resolved.display()
+    );
+    assert!(crate::paths::Fail2BanPaths::resolve().is_ok());
+    if let Ok(paths) = crate::paths::Fail2BanPaths::resolve() {
+        assert_eq!(resolved, paths.config_file);
+    }
+}
+
+#[test]
+fn config_tilde_path_expands_to_the_home_directory() {
+    let cli = Cli::try_parse_from(["toride-fail2ban", "--config", "~/custom/f2b.json", "status"])
+        .unwrap();
+    let resolved = cli.resolved_config().expect("tilde expands");
+    let home = dirs::home_dir().expect("home dir known in tests");
+    assert_eq!(resolved, home.join("custom/f2b.json"));
 }
 
 #[test]

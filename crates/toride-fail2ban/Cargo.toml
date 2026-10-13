@@ -10,6 +10,13 @@ readme = "README.md"
 keywords = ["fail2ban", "intrusion-prevention", "ban", "firewall", "security"]
 categories = ["os", "network-programming"]
 
+## The lib carries no `#[bench]` functions; criterion owns every `[[bench]]`
+## target. Disabling the lib bench target keeps `cargo bench -- <criterion
+## args>` from forwarding those args to the libtest harness, which does not
+## understand them.
+[lib]
+bench = false
+
 [features]
 # `config` is on by default so the `detector_scan` criterion bench (which needs
 # the `detector` module) builds under plain `cargo bench --workspace`. It adds

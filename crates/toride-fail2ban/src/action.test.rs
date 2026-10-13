@@ -381,13 +381,13 @@ fn exec_stops_on_first_failure() {
 }
 
 #[test]
-fn exec_with_env_vars() {
-    // NOTE: The Runner trait does not forward environment variables to the
-    // subprocess, so env vars set on ActionExec are not available at runtime.
-    // This test verifies that exec still succeeds when the command does not
-    // depend on env vars, and that the env field is correctly populated.
+fn exec_with_env_vars_prefixes_the_command() {
+    // Environment variables are threaded into the sh -c invocation by
+    // prefixing `env K=V` arguments, so the variable is visible at runtime.
     let runner = make_runner();
-    let cmds = make_platform_commands(&["true"], &["true"], &["true"]);
+    // printenv observes the variable only if the env prefix reached the
+    // command; it exits 1 when the variable is unset.
+    let cmds = make_platform_commands(&["printenv TORIDE_TEST_VAR"], &["true"], &["true"]);
     let mut exec = make_exec("env-action", cmds);
     exec.env
         .insert("TORIDE_TEST_VAR".to_string(), "hello".to_string());
@@ -395,6 +395,38 @@ fn exec_with_env_vars() {
 
     assert!(exec.exec(&vars, &runner).is_ok());
     assert_eq!(exec.env.get("TORIDE_TEST_VAR").unwrap(), "hello");
+}
+
+#[test]
+fn env_prefix_reaches_the_runner_argv() {
+    let mut fake = crate::command::FakeRunner::new();
+    fake.with_response(
+        "sh",
+        &["-c", "env 'TORIDE_TEST_VAR=hello' true"],
+        crate::command::CommandOutput::new(String::new(), String::new(), Some(0)),
+    );
+    let cmds = make_platform_commands(&["true"], &[], &[]);
+    let mut exec = make_exec("env-argv", cmds);
+    exec.env
+        .insert("TORIDE_TEST_VAR".to_string(), "hello".to_string());
+
+    assert!(exec.exec(&default_vars(), &fake).is_ok());
+    let calls = fake.calls();
+    assert_eq!(calls.len(), 1, "exactly one sh -c invocation");
+    assert_eq!(calls[0].1[1], "env 'TORIDE_TEST_VAR=hello' true");
+}
+
+#[test]
+fn env_with_invalid_name_is_rejected() {
+    let cmds = make_platform_commands(&["true"], &[], &[]);
+    let mut exec = make_exec("env-bad", cmds);
+    exec.env.insert("BAD=NAME".to_string(), "v".to_string());
+
+    let result = exec.exec(&default_vars(), &make_runner());
+    assert!(
+        matches!(result, Err(crate::Error::InvalidConfig(_))),
+        "names containing '=' must be rejected, got {result:?}"
+    );
 }
 
 #[test]

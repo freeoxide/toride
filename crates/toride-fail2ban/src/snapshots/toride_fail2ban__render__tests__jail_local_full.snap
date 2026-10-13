@@ -8,7 +8,7 @@ expression: out
 
 [ssh]
 enabled = false
-filter = sshd[mode=aggressive]
+filter = ns-sshd[mode=aggressive]
 backend = systemd
 logpath = /var/log/auth.log
         /var/log/auth.log.1

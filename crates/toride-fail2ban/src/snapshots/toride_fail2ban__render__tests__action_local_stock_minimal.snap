@@ -1,9 +1,9 @@
 ---
 source: crates/toride-fail2ban/src/render.test.rs
-assertion_line: 1013
+assertion_line: 1046
 expression: out
 ---
 # Managed by fail2ban-kit.
 # Do not edit manually unless you also disable this manager.
 
-[nftables-multiport]
+[Definition]

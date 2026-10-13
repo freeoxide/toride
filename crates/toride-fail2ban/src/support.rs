@@ -66,8 +66,6 @@ impl std::fmt::Display for InitSystem {
 pub struct PlatformInfo {
     /// Detected operating system.
     pub os: String,
-    /// OS version.
-    pub version: String,
     /// Architecture.
     pub arch: String,
     /// Detected firewall.
@@ -118,7 +116,6 @@ pub fn detect_init() -> InitSystem {
 pub fn detect_platform() -> PlatformInfo {
     PlatformInfo {
         os: std::env::consts::OS.to_string(),
-        version: "unknown".to_string(),
         arch: std::env::consts::ARCH.to_string(),
         firewall: detect_firewall(),
         init_system: detect_init(),
@@ -126,16 +123,21 @@ pub fn detect_platform() -> PlatformInfo {
 }
 
 /// Get the default ban commands for the detected firewall.
+///
+/// The Linux templates are self-expiring where the firewall supports it:
+/// nft elements carry `timeout <ban-time>s`, and iptables rules carry a
+/// `toride-f2b-<jail>` comment tag so the matching unban template can delete
+/// every copy of the rule by tag.
 pub fn default_ban_commands(firewall: Firewall) -> PlatformCommands {
     match firewall {
         Firewall::Iptables => PlatformCommands::new(
-            vec!["if echo '<ip>' | grep -q ':'; then ip6tables -I INPUT -s <ip> -j DROP; else iptables -I INPUT -s <ip> -j DROP; fi".to_string()],
+            vec!["if echo '<ip>' | grep -q ':'; then ip6tables -I INPUT -s <ip> -m comment --comment toride-f2b-<jail> -j DROP; else iptables -I INPUT -s <ip> -m comment --comment toride-f2b-<jail> -j DROP; fi".to_string()],
             vec![],
             vec![],
         ),
         Firewall::Nftables => PlatformCommands::new(
             vec![
-                "if echo '<ip>' | grep -q ':'; then nft add set ip6 filter toride_banned \\{ type ipv6_addr \\; \\} 2>/dev/null; nft add element ip6 filter toride_banned \\{ <ip> \\}; else nft add set ip filter toride_banned \\{ type ipv4_addr \\; \\} 2>/dev/null; nft add element ip filter toride_banned \\{ <ip> \\}; fi".to_string(),
+                "if echo '<ip>' | grep -q ':'; then nft add set ip6 filter toride_banned \\{ type ipv6_addr \\; flags timeout \\; \\} 2>/dev/null; nft add element ip6 filter toride_banned \\{ <ip> timeout <ban-time>s \\}; else nft add set ip filter toride_banned \\{ type ipv4_addr \\; flags timeout \\; \\} 2>/dev/null; nft add element ip filter toride_banned \\{ <ip> timeout <ban-time>s \\}; fi".to_string(),
             ],
             vec![],
             vec![],
@@ -160,15 +162,20 @@ pub fn default_ban_commands(firewall: Firewall) -> PlatformCommands {
 }
 
 /// Get the default unban commands for the detected firewall.
+///
+/// The iptables template deletes every copy of the tagged rule (a re-ban
+/// after a partial unban can leave duplicates that a single `-D` miss).
+/// The nft delete is best-effort because the element may already have
+/// self-expired through its `timeout`.
 pub fn default_unban_commands(firewall: Firewall) -> PlatformCommands {
     match firewall {
         Firewall::Iptables => PlatformCommands::new(
-            vec!["if echo '<ip>' | grep -q ':'; then ip6tables -D INPUT -s <ip> -j DROP; else iptables -D INPUT -s <ip> -j DROP; fi".to_string()],
+            vec!["if echo '<ip>' | grep -q ':'; then while ip6tables -C INPUT -s <ip> -m comment --comment toride-f2b-<jail> -j DROP 2>/dev/null; do ip6tables -D INPUT -s <ip> -m comment --comment toride-f2b-<jail> -j DROP; done; else while iptables -C INPUT -s <ip> -m comment --comment toride-f2b-<jail> -j DROP 2>/dev/null; do iptables -D INPUT -s <ip> -m comment --comment toride-f2b-<jail> -j DROP; done; fi".to_string()],
             vec![],
             vec![],
         ),
         Firewall::Nftables => PlatformCommands::new(
-            vec!["if echo '<ip>' | grep -q ':'; then nft delete element ip6 filter toride_banned \\{ <ip> \\}; else nft delete element ip filter toride_banned \\{ <ip> \\}; fi".to_string()],
+            vec!["if echo '<ip>' | grep -q ':'; then nft delete element ip6 filter toride_banned \\{ <ip> \\} 2>/dev/null || true; else nft delete element ip filter toride_banned \\{ <ip> \\} 2>/dev/null || true; fi".to_string()],
             vec![],
             vec![],
         ),

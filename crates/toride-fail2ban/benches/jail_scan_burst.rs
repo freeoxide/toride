@@ -2,11 +2,12 @@ use std::hint::black_box;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{Criterion, Throughput, criterion_group, criterion_main};
 use toride_fail2ban::command::{CommandOutput, Runner};
 use toride_fail2ban::config::ResolvedJail;
 use toride_fail2ban::jail::Jail;
 use toride_fail2ban::store::Store;
+use toride_fail2ban::support::Firewall;
 use toride_fail2ban::types::ExecutionMode;
 
 const FIXTURE_LOG: &str = concat!(
@@ -18,8 +19,7 @@ const EXPECTED_LINES: u64 = 10_000;
 const EXPECTED_MATCHES: usize = 750;
 const EXPECTED_DISTINCT_IPS: usize = 377;
 
-const PATTERN: &str =
-    r"Failed password for (?:invalid user )?\S+ from (?P<ip>\S+) port \d+ ssh2";
+const PATTERN: &str = r"Failed password for (?:invalid user )?\S+ from (?P<ip>\S+) port \d+ ssh2";
 
 const SAMPLE_SIZE: usize = 30;
 const MEASUREMENT_TIME: Duration = Duration::from_secs(2);
@@ -73,6 +73,7 @@ fn scan_once(store_path: &std::path::Path) -> (usize, u32, u64) {
         jail_config(PathBuf::from(FIXTURE_LOG)),
         Store::new(store_path.to_path_buf()),
         None,
+        Firewall::Unknown,
         Box::new(runner),
     )
     .expect("jail builds");

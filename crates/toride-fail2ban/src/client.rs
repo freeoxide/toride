@@ -24,10 +24,6 @@ use std::path::PathBuf;
 use crate::command::{CommandOutput, Runner, find_binary};
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
-// Fail2BanClient
-// ---------------------------------------------------------------------------
-
 /// Typed wrapper around the `fail2ban-client` binary.
 ///
 /// Every method constructs the appropriate argument list and delegates

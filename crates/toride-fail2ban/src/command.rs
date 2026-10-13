@@ -10,12 +10,6 @@
 //! - [`FakeRunner`] -- test double that records calls and returns pre-canned
 //!   responses.
 //!
-//! # Migration note
-//!
-//! This module re-exports [`CommandOutput`] and [`find_binary`] from the shared
-//! `toride-runner` crate. The local [`Runner`] trait is kept for backward
-//! compatibility with existing call sites that use `runner.run("cmd", &["args"])`.
-//!
 //! # Security
 //!
 //! Arguments are always passed as arrays (no shell string concatenation).
@@ -25,16 +19,10 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
-#[cfg(feature = "client")]
-use std::sync::mpsc;
 use std::time::Duration;
 
 use crate::Error;
 use crate::Result;
-
-// ---------------------------------------------------------------------------
-// Re-exports from toride-runner
-// ---------------------------------------------------------------------------
 
 pub use toride_runner::CommandOutput;
 pub use toride_runner::CommandSpec;
@@ -47,10 +35,6 @@ pub use toride_runner::CommandSpec;
 pub fn find_binary(name: &str) -> Result<PathBuf> {
     toride_runner::discovery::find_binary(name).map_err(|_| Error::NotFound(name.to_string()))
 }
-
-// ---------------------------------------------------------------------------
-// Runner trait
-// ---------------------------------------------------------------------------
 
 /// Trait for executing external commands.
 ///
@@ -76,10 +60,6 @@ pub trait Runner: Send + Sync {
     fn set_dry_run(&mut self, dry_run: bool);
 }
 
-// ---------------------------------------------------------------------------
-// Redaction helper
-// ---------------------------------------------------------------------------
-
 /// Keywords that mark an argument value as sensitive.
 #[cfg(feature = "client")]
 const SENSITIVE_KEYWORDS: &[&str] = &["password", "token", "key", "secret"];
@@ -101,15 +81,13 @@ fn redacted_cmd_str(program: &str, args: &[&str]) -> String {
     parts.join(" ")
 }
 
-// ---------------------------------------------------------------------------
-// DuctRunner
-// ---------------------------------------------------------------------------
-
 /// Production command runner backed by the `duct` crate.
 ///
-/// Uses [`duct::cmd()`] for execution. Timeouts are implemented by spawning the
-/// child via `start()`, then waiting on a channel with a deadline. If the
-/// deadline expires the child is killed.
+/// Uses [`duct::cmd()`] for execution: the child is spawned via `start()`
+/// with captured output, and waited on with a deadline. If the deadline
+/// expires the child is killed and reaped before
+/// [`Error::CommandTimeout`] is returned, so no process or thread outlives
+/// the call.
 ///
 /// Only available when the `client` feature is enabled.
 #[cfg(feature = "client")]
@@ -140,15 +118,12 @@ impl DuctRunner {
     /// Execute a command with an explicit timeout using duct.
     ///
     /// The child is spawned with `stdout_capture` / `stderr_capture` and
-    /// `unchecked()` so that we can inspect output even on non-zero exit.
-    /// A timeout is enforced by waiting on a channel with `recv_timeout`.
+    /// `unchecked()` so output can be inspected even on non-zero exit. On
+    /// timeout the child is killed and reaped via `into_output()`.
     fn execute(program: &str, args: &[&str], timeout: Duration) -> Result<CommandOutput> {
         let cmd_str = redacted_cmd_str(program, args);
         tracing::debug!(cmd = %cmd_str, "executing");
 
-        // Spawn the child.  `unchecked()` prevents duct from turning a
-        // non-zero exit status into an `io::Error`, which lets us inspect the
-        // output ourselves.
         let handle = duct::cmd(program, args)
             .stdout_capture()
             .stderr_capture()
@@ -156,19 +131,26 @@ impl DuctRunner {
             .start()
             .map_err(|e| Error::CommandFailed(format!("failed to spawn {program}: {e}")))?;
 
-        // Channel for the owned output of `handle.wait()`.
-        let (tx, rx) = mpsc::channel();
-
-        std::thread::spawn(move || {
-            let result = handle.wait().cloned();
-            let _ = tx.send(result);
-        });
-
-        // Wait up to the timeout for the child to finish.
-        let raw_output = rx
-            .recv_timeout(timeout)
-            .map_err(|_| Error::CommandTimeout(timeout))?
-            .map_err(|e| Error::CommandFailed(format!("wait failed for {program}: {e}")))?;
+        let deadline = std::time::Instant::now() + timeout;
+        let raw_output = match handle.wait_deadline(deadline) {
+            Ok(Some(_)) => handle
+                .into_output()
+                .map_err(|e| Error::CommandFailed(format!("wait failed for {program}: {e}")))?,
+            Ok(None) => {
+                if let Err(e) = handle.kill() {
+                    tracing::warn!(cmd = %cmd_str, error = %e, "failed to kill timed-out child");
+                }
+                if let Err(e) = handle.into_output() {
+                    tracing::warn!(cmd = %cmd_str, error = %e, "failed to reap killed child");
+                }
+                return Err(Error::CommandTimeout(timeout));
+            }
+            Err(e) => {
+                return Err(Error::CommandFailed(format!(
+                    "wait failed for {program}: {e}"
+                )));
+            }
+        };
 
         let stdout = String::from_utf8_lossy(&raw_output.stdout).into_owned();
         let stderr = String::from_utf8_lossy(&raw_output.stderr).into_owned();
@@ -234,10 +216,6 @@ impl Runner for DuctRunner {
         self.dry_run = dry_run;
     }
 }
-
-// ---------------------------------------------------------------------------
-// FakeRunner
-// ---------------------------------------------------------------------------
 
 /// Test double that records invocations and returns pre-configured responses.
 ///

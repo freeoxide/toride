@@ -8,7 +8,7 @@ expression: out
 
 [myapp]
 enabled = true
-filter = myapp-auth
+filter = managed-by-fail2ban-kit-myapp-auth
 logpath = /tmp/auth.log
 bantime = 10m
 findtime = 10m

@@ -5,6 +5,7 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::paths::Fail2BanPaths;
 use crate::types::ExecutionMode;
 
 /// Fail2Ban CLI for toride.
@@ -14,9 +15,11 @@ use crate::types::ExecutionMode;
     about = "Fail2Ban-style intrusion prevention"
 )]
 pub struct Cli {
-    /// Path to configuration file.
-    #[arg(short, long, default_value = "~/.config/toride/fail2ban/config.json")]
-    pub config: PathBuf,
+    /// Path to configuration file (default: the XDG
+    /// `$XDG_CONFIG_HOME/toride/fail2ban/config.json` resolved by
+    /// [`Fail2BanPaths::resolve`]).
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
 
     /// Enable verbose logging.
     #[arg(short, long)]
@@ -40,6 +43,51 @@ impl Cli {
         } else {
             ExecutionMode::Execute
         }
+    }
+
+    /// The effective config path: the `--config` value (with a leading `~`
+    /// expanded to the home directory) or the XDG default from
+    /// [`Fail2BanPaths::resolve`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidConfig` when `--config ~...` was given but the home
+    /// directory cannot be determined, or when the XDG default cannot be
+    /// resolved.
+    pub fn resolved_config(&self) -> crate::Result<PathBuf> {
+        match &self.config {
+            Some(path) => expand_leading_tilde(path),
+            #[cfg(feature = "config")]
+            None => Fail2BanPaths::resolve().map(|paths| paths.config_file),
+            #[cfg(not(feature = "config"))]
+            None => Err(crate::Error::InvalidConfig(
+                "--config is required when the `config` feature is disabled",
+            )),
+        }
+    }
+}
+
+/// Expand a leading `~` component to the home directory; `~user` prefixes
+/// and interior tildes pass through untouched.
+fn expand_leading_tilde(path: &std::path::Path) -> crate::Result<PathBuf> {
+    let is_bare_tilde = path
+        .components()
+        .next()
+        .is_some_and(|c| c.as_os_str() == "~");
+    if !is_bare_tilde {
+        return Ok(path.to_path_buf());
+    }
+    let home = dirs::home_dir().ok_or_else(|| {
+        crate::Error::InvalidConfig(format!(
+            "cannot expand '~' in {}: home directory is unknown",
+            path.display()
+        ))
+    })?;
+    let rest: PathBuf = path.components().skip(1).collect();
+    if rest.as_os_str().is_empty() {
+        Ok(home)
+    } else {
+        Ok(home.join(rest))
     }
 }
 
