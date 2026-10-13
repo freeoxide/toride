@@ -29,10 +29,12 @@
 //!
 //! # Testing without real SSH processes
 //!
-//! The [`CliRunner`]-backed subsystems (keys, agent, doctor, known-hosts,
-//! certificate) take a [`MockCliRunner`] through
-//! [`SshManager::with_cli_runner`], so they spawn nothing in tests. The
-//! `exec` and `upload` subsystems are built on the separate
+//! The [`CliRunner`]-backed subsystems (keys, agent, doctor, known-hosts)
+//! take a [`MockCliRunner`] through [`SshManager::with_cli_runner`], so
+//! they spawn nothing in tests. The `certificate` subsystem has no runner
+//! injection: its operations spawn real `ssh-keygen` through
+//! [`toride_ssh_core::runner::ssh_keygen`] whatever runner the manager
+//! carries. The `exec` and `upload` subsystems are built on the separate
 //! [`toride_runner::Runner`] trait instead: pass any runner (for example
 //! `toride_runner::fake::FakeRunner`) to [`SshManager::exec_with`] or
 //! [`SshManager::upload_with`], or construct
@@ -123,11 +125,13 @@ impl SshManager {
     /// Create a manager with a custom [`CliRunner`].
     ///
     /// This is the injection point for the `CliRunner`-backed subsystems
-    /// (keys, agent, doctor, known-hosts, certificate): pass a
-    /// [`MockCliRunner`] to control their command execution without spawning
-    /// real SSH processes. The `exec` and `upload` subsystems do not go
-    /// through the [`CliRunner`]; inject their runner per service via
-    /// [`Self::exec_with`] and [`Self::upload_with`] instead.
+    /// (keys, agent, doctor, known-hosts): pass a [`MockCliRunner`] to
+    /// control their command execution without spawning real SSH processes.
+    /// The `certificate` subsystem takes no runner and spawns real
+    /// `ssh-keygen` regardless of this setting; the `exec` and `upload`
+    /// subsystems do not go through the [`CliRunner`], so inject their
+    /// runner per service via [`Self::exec_with`] and [`Self::upload_with`]
+    /// instead.
     ///
     /// # Errors
     ///
