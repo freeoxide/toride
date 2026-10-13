@@ -11,6 +11,7 @@ use toride_ssh_core::Result;
 ///
 /// The key comparison is case-insensitive (SSH config keywords are
 /// case-insensitive).
+#[must_use]
 pub fn get_directive(ast: &ConfigAst, host: &str, key: &str) -> Option<String> {
     let key_lower = key.to_lowercase();
 
@@ -29,7 +30,7 @@ pub fn get_directive(ast: &ConfigAst, host: &str, key: &str) -> Option<String> {
 ///
 /// Unlike first-match-wins, accumulative directives collect values from all
 /// matching Host blocks.
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
+#[must_use]
 pub fn get_accumulative_directive(ast: &ConfigAst, host: &str, key: &str) -> Vec<String> {
     let key_lower = key.to_lowercase();
     let mut values = Vec::new();
@@ -46,7 +47,7 @@ pub fn get_accumulative_directive(ast: &ConfigAst, host: &str, key: &str) -> Vec
 
 /// Get a directive value from any Host block by exact host name (the first
 /// pattern in the block). This is a simpler lookup than pattern matching.
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
+#[must_use]
 pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Option<String> {
     let key_lower = key.to_lowercase();
 
@@ -67,6 +68,7 @@ pub fn get_directive_by_name(ast: &ConfigAst, name: &str, key: &str) -> Option<S
 /// values for multi-valued directives (`IdentityFile`, `CertificateFile`,
 /// `SendEnv`, `SetEnv`, `DynamicForward`,
 /// `LocalForward`, `RemoteForward`, `PermitLocalCommand`).
+#[must_use]
 pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Vec<(String, String)> {
     let mut result = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -90,7 +92,6 @@ pub fn get_all_directives(ast: &ConfigAst, host: &str) -> Vec<(String, String)> 
 ///
 /// Returns [`Error::HostNotFound`] if no `Host` block matches the given
 /// host alias.
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn set_directive(ast: &mut ConfigAst, host: &str, key: &str, value: &str) -> Result<()> {
     let key_lower = key.to_lowercase();
 
@@ -107,7 +108,7 @@ pub fn set_directive(ast: &mut ConfigAst, host: &str, key: &str, value: &str) ->
                     return Ok(());
                 }
             }
-            // Not found — append new directive.
+            // Not found: append new directive.
             b.nodes.push(ConfigNode::Directive(Box::new(DirectiveData {
                 keyword: key.to_owned(),
                 separator: super::ast::Separator::Space,
@@ -135,10 +136,6 @@ fn find_directive_in_nodes<'a>(nodes: &'a [ConfigNode], key_lower: &str) -> Opti
 }
 
 /// Collect all values for a directive from a list of nodes.
-#[allow(
-    dead_code,
-    reason = "reachable only via public API not exercised in-workspace"
-)]
 fn collect_directives_in_nodes(nodes: &[ConfigNode], key_lower: &str, out: &mut Vec<String>) {
     for node in nodes {
         if let ConfigNode::Directive(d) = node
@@ -192,7 +189,7 @@ fn collect_all_directives(
 ///
 /// Calling `get_preferred_authentications(&ast, "example.com")` returns
 /// `Some("publickey,password".to_owned())`.
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
+#[must_use]
 pub fn get_preferred_authentications(ast: &ConfigAst, host: &str) -> Option<String> {
     get_directive(ast, host, "PreferredAuthentications")
 }
@@ -221,7 +218,7 @@ pub(crate) fn is_accumulative(keyword: &str) -> bool {
 /// - `?` matching a single character
 /// - Negation with `!`: `!example.com`
 pub(crate) fn host_matches_patterns(host: &str, patterns: &[impl AsRef<str>]) -> bool {
-    // SSH hostnames and patterns are ASCII — use ASCII lowercase to avoid
+    // SSH hostnames and patterns are ASCII: use ASCII lowercase to avoid
     // Unicode-aware allocation overhead.
     let host_lower = host.to_ascii_lowercase();
     let mut positive_match = false;
@@ -230,7 +227,7 @@ pub(crate) fn host_matches_patterns(host: &str, patterns: &[impl AsRef<str>]) ->
         let pat_lower = pattern.as_ref().to_ascii_lowercase();
 
         if let Some(negated) = pat_lower.strip_prefix('!') {
-            // Negated pattern — if it matches, the whole result is false.
+            // Negated pattern: if it matches, the whole result is false.
             if glob_matches(&host_lower, negated) {
                 return false;
             }
@@ -298,7 +295,7 @@ fn glob_match_recursive(text: &[u8], pattern: &[u8]) -> bool {
             }
         }
 
-        // Mismatch — backtrack to last star.
+        // Mismatch: backtrack to last star.
         if let Some(spi) = star_pi {
             pi = spi;
             star_text_idx += 1;

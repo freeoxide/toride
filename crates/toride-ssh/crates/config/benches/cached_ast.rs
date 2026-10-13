@@ -19,7 +19,6 @@ fn runtime() -> &'static tokio::runtime::Runtime {
 }
 
 fn cached_ast(c: &mut Criterion) {
-    let rt = runtime();
     let mut group = c.benchmark_group("config/ast");
     group.sample_size(SAMPLE_SIZE);
     group.measurement_time(MEASUREMENT_TIME);
@@ -36,17 +35,6 @@ fn cached_ast(c: &mut Criterion) {
     let dir = tempfile::tempdir().expect("tempdir");
     let path: PathBuf = dir.path().join("ssh_config");
     std::fs::write(&path, FIXTURE).expect("write fixture");
-
-    let include_dir = tempfile::tempdir().expect("tempdir");
-    let include_path: PathBuf = include_dir.path().join("bench-include");
-    std::fs::write(
-        &include_path,
-        "Host included\n    HostName included.example\n    User bench\n",
-    )
-    .expect("write include fixture");
-    let including_config = format!("Include {}\n\n{FIXTURE}", include_path.display());
-    std::fs::write(include_dir.path().join("config"), &including_config)
-        .expect("write including config");
 
     group.throughput(Throughput::Bytes(FIXTURE.len() as u64));
     group.bench_function("parse_fresh", |b| {
@@ -70,6 +58,28 @@ fn cached_ast(c: &mut Criterion) {
         });
     });
 
+    group.finish();
+}
+
+fn service_and_resolve(c: &mut Criterion) {
+    let rt = runtime();
+    let mut group = c.benchmark_group("config/ast");
+    group.sample_size(SAMPLE_SIZE);
+    group.measurement_time(MEASUREMENT_TIME);
+    group.warm_up_time(WARM_UP_TIME);
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let include_dir = tempfile::tempdir().expect("tempdir");
+    let include_path: PathBuf = include_dir.path().join("bench-include");
+    std::fs::write(
+        &include_path,
+        "Host included\n    HostName included.example\n    User bench\n",
+    )
+    .expect("write include fixture");
+    let including_config = format!("Include {}\n\n{FIXTURE}", include_path.display());
+    std::fs::write(include_dir.path().join("config"), &including_config)
+        .expect("write including config");
+
     let service_paths: &'static SshPaths = Box::leak(Box::new(SshPaths::with_dir(dir.path())));
     std::fs::write(dir.path().join("config"), FIXTURE).expect("write service config fixture");
     let service = ConfigService::new(service_paths);
@@ -87,9 +97,7 @@ fn cached_ast(c: &mut Criterion) {
     });
     group.bench_function("service_load", |b| {
         b.iter(|| {
-            let ast = rt
-                .block_on(service.load())
-                .expect("service load answers");
+            let ast = rt.block_on(service.load()).expect("service load answers");
             black_box(ast.nodes.len())
         });
     });
@@ -97,10 +105,9 @@ fn cached_ast(c: &mut Criterion) {
     let resolve_paths: &'static SshPaths =
         Box::leak(Box::new(SshPaths::with_dir(include_dir.path())));
     rt.block_on(async {
-        let resolved =
-            toride_ssh_config::resolve::resolve(resolve_paths.ssh_dir(), "github", None)
-                .await
-                .expect("resolve answers for the fixture host");
+        let resolved = toride_ssh_config::resolve::resolve(resolve_paths.ssh_dir(), "github", None)
+            .await
+            .expect("resolve answers for the fixture host");
         assert_eq!(
             resolved.host_name.as_deref(),
             Some("github.com"),
@@ -137,5 +144,5 @@ fn cached_ast(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, cached_ast);
+criterion_group!(benches, cached_ast, service_and_resolve);
 criterion_main!(benches);

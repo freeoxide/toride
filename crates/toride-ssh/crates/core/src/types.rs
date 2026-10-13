@@ -9,14 +9,14 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-/// Re-export [`toride_diagnostic_types::Severity`] for consumers that need the
-/// shared ecosystem severity type (used by doctor reports, UI, etc.).
+/// The shared ecosystem severity type ([`toride_diagnostic_types::Severity`]),
+/// the canonical vocabulary for [`Diagnostic`] and doctor reports.
 pub use toride_diagnostic_types::Severity as DiagnosticSeverity;
 
 /// SSH key algorithm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum KeyType {
-    /// Ed25519 — modern default.
+    /// Ed25519: modern default.
     Ed25519,
     /// RSA with specified bit size (2048, 3072, 4096).
     Rsa {
@@ -109,6 +109,14 @@ pub struct SshKey {
 }
 
 /// Diagnostic severity level.
+///
+/// Duplicate of [`DiagnosticSeverity`] kept only for published 0.1.0
+/// consumers; it diverges from the shared vocabulary (`Error` versus
+/// `Critical`, no `Important`).
+#[deprecated(
+    since = "0.2.0",
+    note = "use toride_diagnostic_types::Severity (re-exported as DiagnosticSeverity)"
+)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Severity {
     /// Check passed.
@@ -127,7 +135,7 @@ pub struct Diagnostic {
     /// Machine-readable check identifier.
     pub id: &'static str,
     /// How severe this finding is.
-    pub severity: Severity,
+    pub severity: DiagnosticSeverity,
     /// Human-readable description.
     pub message: String,
     /// Suggested fix.

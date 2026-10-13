@@ -4,9 +4,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
 use base64::Engine;
+use zeroize::Zeroizing;
 
 use crate::get_permissions;
 use toride_ssh_core::SshPaths;
+use toride_ssh_core::paths::pub_path_for;
 use toride_ssh_core::{Error, Fingerprint, KeyFormat, KeySource, KeyType, Result, SshKey};
 
 fn algorithm_to_key_type(algo: &ssh_key::Algorithm) -> Option<KeyType> {
@@ -42,6 +44,11 @@ struct CachedKey {
 static KEY_PARSE_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedKey>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Upper bound on cached entries. A full cache evicts an arbitrary entry
+/// before inserting so deleted or renamed key files cannot grow the
+/// process-wide cache without limit.
+const KEY_CACHE_CAP: usize = 256;
+
 fn key_stamp(metadata: &std::fs::Metadata) -> Option<FileStamp> {
     let mtime_ns = metadata
         .modified()
@@ -56,7 +63,10 @@ fn key_stamp(metadata: &std::fs::Metadata) -> Option<FileStamp> {
 }
 
 pub(crate) fn inspect_private_key_cached(path: &Path) -> Result<SshKey> {
-    let metadata = std::fs::metadata(path).map_err(|e| Error::KeyParseFailed(format!("{e}")))?;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) => return Err(evict_missing(path, &e)),
+    };
     let Some(stamp) = key_stamp(&metadata) else {
         return inspect_private_key(path);
     };
@@ -73,17 +83,40 @@ pub(crate) fn inspect_private_key_cached(path: &Path) -> Result<SshKey> {
     }
 
     let key = inspect_private_key(path)?;
-    KEY_PARSE_CACHE
-        .lock()
-        .expect("key parse cache mutex poisoned")
-        .insert(
-            path.to_path_buf(),
-            CachedKey {
-                stamp,
-                key: key.clone(),
-            },
-        );
+    insert_bounded(path, stamp, &key);
     Ok(key)
+}
+
+/// Map a metadata failure, dropping any stale cache entry on `NotFound`.
+#[cold]
+fn evict_missing(path: &Path, e: &std::io::Error) -> Error {
+    if e.kind() == std::io::ErrorKind::NotFound {
+        KEY_PARSE_CACHE
+            .lock()
+            .expect("key parse cache mutex poisoned")
+            .remove(path);
+    }
+    Error::KeyParseFailed(format!("{e}"))
+}
+
+/// Insert a cache entry, evicting an arbitrary victim at the cap.
+#[cold]
+fn insert_bounded(path: &Path, stamp: FileStamp, key: &SshKey) {
+    let mut cache = KEY_PARSE_CACHE
+        .lock()
+        .expect("key parse cache mutex poisoned");
+    if cache.len() >= KEY_CACHE_CAP
+        && let Some(victim) = cache.keys().next().cloned()
+    {
+        cache.remove(&victim);
+    }
+    cache.insert(
+        path.to_path_buf(),
+        CachedKey {
+            stamp,
+            key: key.clone(),
+        },
+    );
 }
 
 #[cfg(test)]
@@ -94,6 +127,24 @@ pub(crate) fn clear_key_cache_for_tests() {
         .clear();
 }
 
+#[cfg(test)]
+pub(crate) fn key_cache_len_for_tests() -> usize {
+    KEY_PARSE_CACHE
+        .lock()
+        .expect("key parse cache mutex poisoned")
+        .len()
+}
+
+#[cfg(test)]
+pub(crate) fn key_cache_paths_for_tests() -> Vec<PathBuf> {
+    KEY_PARSE_CACHE
+        .lock()
+        .expect("key parse cache mutex poisoned")
+        .keys()
+        .cloned()
+        .collect()
+}
+
 fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
     let path = path.to_path_buf();
     let filename = path
@@ -102,7 +153,7 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
         .to_string_lossy()
         .into_owned();
 
-    let pub_path = path.with_extension("pub");
+    let pub_path = pub_path_for(&path);
     let cert_path = {
         let name = path
             .file_name()
@@ -120,14 +171,16 @@ fn inspect_private_key(path: &std::path::Path) -> Result<SshKey> {
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map(|d| d.as_secs());
 
-    let private_key_data = std::fs::read_to_string(&path)
-        .map_err(|e| Error::KeyParseFailed(format!("failed to read {filename}: {e}")))?;
+    let private_key_data = Zeroizing::new(
+        std::fs::read_to_string(&path)
+            .map_err(|e| Error::KeyParseFailed(format!("failed to read {filename}: {e}")))?,
+    );
 
     let is_encrypted_from_content = is_likely_encrypted(&private_key_data);
 
     let key_format = detect_key_format(&private_key_data);
 
-    match ssh_key::PrivateKey::from_openssh(&private_key_data) {
+    match ssh_key::PrivateKey::from_openssh(private_key_data.as_str()) {
         Ok(pk) => {
             let mut key_type = algorithm_to_key_type(&pk.algorithm()).unwrap_or(KeyType::Ed25519);
             let public_key = pk.public_key();
@@ -324,14 +377,14 @@ fn check_ssh_v1_keys(ssh_dir: &Path) {
 
     if identity_path.exists() {
         tracing::warn!(
-            "SSH v1 private key found at {} — SSH v1 is deprecated and insecure; \
+            "SSH v1 private key found at {}: SSH v1 is deprecated and insecure; \
              generate a new SSH v2 key (e.g. ed25519)",
             identity_path.display()
         );
     }
     if identity_pub_path.exists() {
         tracing::warn!(
-            "SSH v1 public key found at {} — SSH v1 is deprecated and insecure; \
+            "SSH v1 public key found at {}: SSH v1 is deprecated and insecure; \
              generate a new SSH v2 key (e.g. ed25519)",
             identity_pub_path.display()
         );

@@ -1,8 +1,10 @@
 //! Remote SSH diagnostic checks.
 
 use toride_ssh_config::resolve::resolve;
+use toride_ssh_core::HostKeyPolicy;
+use toride_ssh_core::HostSpec;
 use toride_ssh_core::paths::SshPaths;
-use toride_ssh_core::{Diagnostic, Severity};
+use toride_ssh_core::{Diagnostic, DiagnosticSeverity as Severity};
 use toride_ssh_core::{Error, Result};
 
 /// Parse a host string for an optional port specification.
@@ -66,7 +68,7 @@ fn ssh_connect_args(port: Option<u16>, proxy_jump: Option<&str>) -> Vec<String> 
         "-o".into(),
         "ConnectTimeout=5".into(),
         "-o".into(),
-        "StrictHostKeyChecking=accept-new".into(),
+        HostKeyPolicy::AcceptNew.ssh_option().into(),
     ]);
     if let Some(p) = port {
         args.push("-p".into());
@@ -304,7 +306,7 @@ impl HostReachabilityCheck<'_> {
             }
             Err(e) => Ok(vec![Diagnostic {
                 id: "host_resolvable",
-                severity: Severity::Error,
+                severity: Severity::Critical,
                 message: format!("Cannot resolve host {}: {}", self.host, e),
                 hint: Some(
                     "Check the hostname spelling and ensure DNS is working (`nslookup <host>`)"
@@ -322,7 +324,7 @@ impl HostReachable<'_> {
         if !self.runner.tool_exists("ssh") {
             return Ok(vec![Diagnostic {
                 id: "host_reachable",
-                severity: Severity::Error,
+                severity: Severity::Critical,
                 message: "`ssh` is not found in PATH".into(),
                 hint: Some(
                     "Install OpenSSH: `brew install openssh` (macOS) or `sudo apt install openssh-client` (Linux)".into(),
@@ -347,7 +349,7 @@ impl HostReachable<'_> {
         } else {
             Ok(vec![Diagnostic {
                 id: "host_reachable",
-                severity: Severity::Error,
+                severity: Severity::Critical,
                 message: format!("Cannot connect to {}: {}", self.host, output.stderr.trim()),
                 hint: Some(
                     "Verify the hostname, network connectivity, and that SSH is running on the remote".into(),
@@ -554,7 +556,7 @@ impl HostKeyVerificationCheck<'_> {
             } else {
                 diagnostics.push(Diagnostic {
                     id: "host_key_verification",
-                    severity: Severity::Error,
+                    severity: Severity::Critical,
                     message: format!(
                         "Host key MISMATCH for {} ({}) — known_hosts key does not match the live host",
                         self.host, stored_type
@@ -892,7 +894,7 @@ impl RemotePubkeyAuthCheck<'_> {
         } else {
             Ok(vec![Diagnostic {
                 id: "remote_pubkey_auth",
-                severity: Severity::Error,
+                severity: Severity::Critical,
                 message: format!(
                     "Public-key authentication failed to {}: {}",
                     self.host,
@@ -1022,7 +1024,7 @@ impl RemoteHomeCheck<'_> {
         if !output.success {
             return Ok(vec![Diagnostic {
                 id: "remote_home",
-                severity: Severity::Error,
+                severity: Severity::Critical,
                 message: format!(
                     "Could not determine remote home directory on {}: {}",
                     self.host,
@@ -2173,7 +2175,7 @@ impl JumpHostReachableCheck<'_> {
         if !self.runner.tool_exists("ssh") {
             return Ok(vec![Diagnostic {
                 id: "jump_host_reachable",
-                severity: Severity::Error,
+                severity: Severity::Critical,
                 message: "`ssh` is not found in PATH".into(),
                 hint: Some(
                     "Install OpenSSH: `brew install openssh` (macOS) or \
@@ -2237,8 +2239,11 @@ pub async fn run_all(
     host: &str,
     runner: &dyn toride_ssh_core::CliRunner,
 ) -> Result<Vec<Diagnostic>> {
-    // Parse the host string once to extract an optional non-standard port.
+    // Parse the host string once to extract an optional non-standard port,
+    // then validate the grammar so a leading-dash host can never reach an
+    // ssh argv position.
     let (host, port) = parse_host_port(host);
+    HostSpec::parse(host)?;
 
     let mut all_diagnostics = Vec::new();
 
@@ -2266,13 +2271,17 @@ pub async fn run_all(
         // Check only the first (final) hop, as that is the one SSH
         // connects to directly.
         let first_jump = jump.split(',').next().unwrap_or(jump);
-        let jump_check = JumpHostReachableCheck {
-            jump_host: first_jump,
-            runner,
-        };
-        match jump_check.run_check().await {
-            Ok(d) => all_diagnostics.extend(d),
-            Err(e) => all_diagnostics.push(err_diagnostic("jump_host_reachable", &e)),
+        if let Err(e) = HostSpec::parse(first_jump) {
+            all_diagnostics.push(err_diagnostic("jump_host_reachable", &e));
+        } else {
+            let jump_check = JumpHostReachableCheck {
+                jump_host: first_jump,
+                runner,
+            };
+            match jump_check.run_check().await {
+                Ok(d) => all_diagnostics.extend(d),
+                Err(e) => all_diagnostics.push(err_diagnostic("jump_host_reachable", &e)),
+            }
         }
     }
 
@@ -2530,7 +2539,7 @@ pub async fn run_all(
 fn err_diagnostic(id: &'static str, e: &Error) -> Diagnostic {
     Diagnostic {
         id,
-        severity: Severity::Error,
+        severity: Severity::Critical,
         message: format!("Remote check '{id}' failed: {e}"),
         hint: None,
         module: "remote",
@@ -3063,5 +3072,15 @@ trustedusercakeys /etc/ssh/ca.pub
         // both inert inside single quotes.
         let value = "$(reboot)`whoami`$HOME";
         assert_eq!(shell_quote(value), "'$(reboot)`whoami`$HOME'");
+    }
+    #[tokio::test]
+    async fn run_all_rejects_leading_dash_host() {
+        let dir = tempfile::tempdir().unwrap();
+        let paths = SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::MockCliRunner::new();
+        let err = run_all(&paths, "-oProxyCommand=evil", &runner)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, toride_ssh_core::Error::InvalidHost(_)));
     }
 }

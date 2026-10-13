@@ -1,3 +1,7 @@
+#![warn(missing_docs)]
+//! SSH key lifecycle management: generation, inventory, installation, and
+//! repair of OpenSSH key material under `~/.ssh`.
+
 mod generate;
 pub mod install;
 mod inventory;
@@ -9,7 +13,9 @@ pub use install::UninstallOutcome;
 use std::ffi::OsStr;
 
 use toride_ssh_core::SshPaths;
+use toride_ssh_core::paths::pub_path_for;
 use toride_ssh_core::{Error, KeyCreateParams, KeyDeleteParams, KeyFormat, Result, SshKey};
+use zeroize::Zeroizing;
 
 const MAX_KEY_NAME_LENGTH: usize = 255;
 
@@ -72,6 +78,10 @@ fn unique_backup_path(base: &std::path::Path) -> std::path::PathBuf {
     base.with_extension(ext)
 }
 
+/// Entry point for key lifecycle operations against one `~/.ssh` layout.
+///
+/// All filesystem mutations are rooted at `paths`; CLI operations run through
+/// `runner`, so tests inject [`toride_ssh_core::MockCliRunner`].
 pub struct KeyService<'a> {
     paths: &'a SshPaths,
     runner: &'a dyn toride_ssh_core::CliRunner,
@@ -85,11 +95,16 @@ pub fn inspect_key_cached(path: &std::path::Path) -> Result<SshKey> {
 }
 
 impl<'a> KeyService<'a> {
+    /// Create a service bound to `paths` and `runner`.
+    #[must_use]
     pub fn new(paths: &'a SshPaths, runner: &'a dyn toride_ssh_core::CliRunner) -> Self {
         Self { paths, runner }
     }
 
-    /// List all SSH keys on disk and in the agent; unparseable keys are skipped.
+    /// List discoverable SSH keys: `id_*` default names and files referenced
+    /// by an `IdentityFile` in the SSH config, plus agent-loaded identities.
+    /// Keys with other filenames on disk are not auto-discovered;
+    /// unparseable keys are skipped.
     /// # Errors
     /// [`Error::TaskFailed`] if the background scan task panics or is cancelled.
     pub async fn list(&self) -> Result<Vec<SshKey>> {
@@ -115,7 +130,7 @@ impl<'a> KeyService<'a> {
             return Err(Error::KeyNotFound(params.name.clone()));
         }
 
-        let public_path = private_path.with_extension("pub");
+        let public_path = pub_path_for(&private_path);
 
         let cert_path = self
             .paths
@@ -210,8 +225,8 @@ impl<'a> KeyService<'a> {
             return Err(Error::KeyExists(new_name.to_owned()));
         }
 
-        let old_public = old_private.with_extension("pub");
-        let new_public = new_private.with_extension("pub");
+        let old_public = pub_path_for(&old_private);
+        let new_public = pub_path_for(&new_private);
         let old_cert = self.paths.ssh_dir().join(format!("{old_name}-cert.pub"));
         let new_cert = self.paths.ssh_dir().join(format!("{new_name}-cert.pub"));
 
@@ -247,7 +262,7 @@ impl<'a> KeyService<'a> {
             return Err(Error::KeyNotFound(key_name.to_owned()));
         }
 
-        let public_path = private_path.with_extension("pub");
+        let public_path = pub_path_for(&private_path);
 
         tokio::task::spawn_blocking(move || {
             #[cfg(unix)]
@@ -293,8 +308,8 @@ impl<'a> KeyService<'a> {
             .ok_or_else(|| Error::CommandFailed("key path is not valid UTF-8".to_owned()))?
             .to_owned();
 
-        let old_pass = old_passphrase.unwrap_or("").to_owned();
-        let new_pass = new_passphrase.unwrap_or("").to_owned();
+        let old_pass = Zeroizing::new(old_passphrase.unwrap_or("").to_owned());
+        let new_pass = Zeroizing::new(new_passphrase.unwrap_or("").to_owned());
 
         let askpass = MultiAskpassHandler::new(&[&old_pass, &new_pass, &new_pass])?;
         let args = vec!["-p".to_owned(), "-f".to_owned(), path_str];
@@ -443,16 +458,20 @@ impl MultiAskpassHandler {
         use std::os::unix::fs::OpenOptionsExt;
 
         use std::fmt::Write as _;
-        let mut arms = String::new();
+        use zeroize::Zeroizing;
+
+        let mut arms = Zeroizing::new(String::new());
         for (i, resp) in responses.iter().enumerate() {
             let arm = i + 1;
             let escaped = resp.replace('\'', "'\\''");
             let _ = writeln!(arms, "    {arm}) echo '{escaped}';;");
         }
-        let last_escaped = responses
-            .last()
-            .map(|r| r.replace('\'', "'\\''"))
-            .unwrap_or_default();
+        let last_escaped = Zeroizing::new(
+            responses
+                .last()
+                .map(|r| r.replace('\'', "'\\''"))
+                .unwrap_or_default(),
+        );
 
         let dir = std::env::temp_dir();
         let ts = std::time::SystemTime::now()
@@ -463,7 +482,7 @@ impl MultiAskpassHandler {
         let tid = format!("{:?}", std::thread::current().id())
             .replace("ThreadId(", "")
             .replace(')', "");
-        let filename = format!("toride-askpass-multi-{pid}-{tid}-{ts}");
+        let filename = format!("toride-askpass-multi-{pid}-{tid}-{ts}-{}", random_suffix());
 
         // Publish via hidden temp + atomic rename: an in-place rewrite can be seen
         // half-written or open-for-writing (ETXTBSY); the single O_EXCL open carries
@@ -474,7 +493,7 @@ impl MultiAskpassHandler {
         let count_path = dir.join(format!("{filename}.cnt"));
 
         let count_path_str = count_path.to_string_lossy().replace('\'', "'\\''");
-        let script = format!(
+        let script = Zeroizing::new(format!(
             "#!/bin/sh\n\
              # Generated by toride-ssh-key: answers SSH_ASKPASS prompts in order.\n\
              n=$(cat '{count_path_str}' 2>/dev/null || echo 0)\n\
@@ -483,8 +502,10 @@ impl MultiAskpassHandler {
              case \"$n\" in\n\
              {arms}\
              *) echo '{last_escaped}';;\n\
-             esac\n"
-        );
+             esac\n",
+            arms = arms.as_str(),
+            last_escaped = last_escaped.as_str(),
+        ));
 
         #[cfg(unix)]
         {
@@ -542,6 +563,7 @@ impl Askpass for MultiAskpassHandler {
 
 impl Drop for MultiAskpassHandler {
     fn drop(&mut self) {
+        scrub_before_unlink(&self.script_path);
         if let Err(e) = std::fs::remove_file(&self.script_path) {
             tracing::warn!(
                 "failed to remove multi-askpass script {}: {e}",
@@ -549,8 +571,60 @@ impl Drop for MultiAskpassHandler {
             );
         }
         let count_path = self.script_path.with_extension("cnt");
+        scrub_before_unlink(&count_path);
         let _ = std::fs::remove_file(&count_path);
     }
+}
+
+/// Overwrite a file with zeroes before unlinking it.
+///
+/// The askpass script embeds the passphrase; scrubbing the blocks before
+/// removal keeps them out of the freed block cache.
+fn scrub_before_unlink(path: &std::path::Path) {
+    use std::io::Write;
+    let Ok(metadata) = std::fs::metadata(path) else {
+        return;
+    };
+    let len = usize::try_from(metadata.len()).unwrap_or(0);
+    let Ok(mut file) = std::fs::OpenOptions::new()
+        .write(true)
+        .truncate(false)
+        .open(path)
+    else {
+        return;
+    };
+    let _ = file.write_all(&vec![0u8; len]);
+    let _ = file.sync_all();
+}
+
+/// Unguessable suffix for askpass temp names, from `/dev/urandom`.
+///
+/// Falls back to nanoseconds when the kernel entropy source is unavailable
+/// (non-Unix).
+fn random_suffix() -> String {
+    #[cfg(unix)]
+    {
+        use std::io::Read;
+        let mut buf = [0u8; 8];
+        if std::fs::File::open("/dev/urandom")
+            .and_then(|mut f| f.read_exact(&mut buf))
+            .is_ok()
+        {
+            let mut hex = String::with_capacity(16);
+            for b in buf {
+                use std::fmt::Write as _;
+                let _ = write!(hex, "{b:02x}");
+            }
+            return hex;
+        }
+    }
+    format!(
+        "{:x}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    )
 }
 
 async fn remove_key_from_agent(
@@ -636,84 +710,92 @@ async fn remove_from_config(paths: &SshPaths, key_name: &str) -> Result<()> {
         })?
         .to_owned();
 
-    tokio::task::spawn_blocking(move || {
-        let content = match std::fs::read_to_string(&config_path) {
-            Ok(c) => c,
-            Err(e) => {
-                tracing::warn!("cannot read config for cleanup: {e}");
-                return Ok(());
-            }
-        };
+    // Serialize with ConfigService::edit and any other writer on the same
+    // lock file so this read-filter-write cannot clobber a concurrent edit.
+    toride_ssh_config::edit_under_lock(&config_path, || async {
+        let config_path = config_path.clone();
+        let key_name_owned = key_name_owned.clone();
+        let ssh_dir_str = ssh_dir_str.clone();
+        tokio::task::spawn_blocking(move || {
+            let content = match std::fs::read_to_string(&config_path) {
+                Ok(c) => c,
+                Err(e) => {
+                    tracing::warn!("cannot read config for cleanup: {e}");
+                    return Ok(());
+                }
+            };
 
-        let final_content = filter_config_lines(&content, &ssh_dir_str, &key_name_owned);
+            let final_content = filter_config_lines(&content, &ssh_dir_str, &key_name_owned);
 
-        if final_content != content {
-            let parent = config_path
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
-            let tmp_path = parent.join(format!(
-                ".config.tmp.{}.{}",
-                std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-            ));
-            // `create_new` (O_EXCL) is load-bearing: the PID+nanos temp name is
-            // predictable, and without O_EXCL a pre-placed symlink there would redirect
-            // this write (open(2), O_EXCL symlink protection).
-            #[cfg(unix)]
-            {
-                use std::io::Write;
-                use std::os::unix::fs::OpenOptionsExt;
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .mode(0o600)
-                    .open(&tmp_path)
-                    .map_err(|e| {
-                        Error::ConfigWriteFailed(format!(
-                            "failed to create temp config {}: {e}",
-                            tmp_path.display()
-                        ))
+            if final_content != content {
+                let parent = config_path
+                    .parent()
+                    .unwrap_or_else(|| std::path::Path::new("."));
+                let tmp_path = parent.join(format!(
+                    ".config.tmp.{}.{}",
+                    std::process::id(),
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .unwrap_or_default()
+                        .as_nanos()
+                ));
+                // `create_new` (O_EXCL) is load-bearing: the PID+nanos temp name is
+                // predictable, and without O_EXCL a pre-placed symlink there would redirect
+                // this write (open(2), O_EXCL symlink protection).
+                #[cfg(unix)]
+                {
+                    use std::io::Write;
+                    use std::os::unix::fs::OpenOptionsExt;
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .mode(0o600)
+                        .open(&tmp_path)
+                        .map_err(|e| {
+                            Error::ConfigWriteFailed(format!(
+                                "failed to create temp config {}: {e}",
+                                tmp_path.display()
+                            ))
+                        })?;
+                    file.write_all(final_content.as_bytes()).map_err(|e| {
+                        Error::ConfigWriteFailed(format!("failed to write temp config: {e}"))
                     })?;
-                file.write_all(final_content.as_bytes()).map_err(|e| {
-                    Error::ConfigWriteFailed(format!("failed to write temp config: {e}"))
-                })?;
-                let _ = file.sync_all();
-                drop(file);
-            }
-            #[cfg(not(unix))]
-            {
-                use std::io::Write;
-                let mut file = std::fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&tmp_path)
-                    .map_err(|e| {
-                        Error::ConfigWriteFailed(format!(
-                            "failed to create temp config {}: {e}",
-                            tmp_path.display()
-                        ))
+                    let _ = file.sync_all();
+                    drop(file);
+                }
+                #[cfg(not(unix))]
+                {
+                    use std::io::Write;
+                    let mut file = std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&tmp_path)
+                        .map_err(|e| {
+                            Error::ConfigWriteFailed(format!(
+                                "failed to create temp config {}: {e}",
+                                tmp_path.display()
+                            ))
+                        })?;
+                    file.write_all(final_content.as_bytes()).map_err(|e| {
+                        Error::ConfigWriteFailed(format!("failed to write temp config: {e}"))
                     })?;
-                file.write_all(final_content.as_bytes()).map_err(|e| {
-                    Error::ConfigWriteFailed(format!("failed to write temp config: {e}"))
-                })?;
-                let _ = file.sync_all();
-                drop(file);
+                    let _ = file.sync_all();
+                    drop(file);
+                }
+                if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
+                    let _ = std::fs::remove_file(&tmp_path);
+                    return Err(Error::ConfigWriteFailed(format!(
+                        "failed to rename config: {e}"
+                    )));
+                }
             }
-            if let Err(e) = std::fs::rename(&tmp_path, &config_path) {
-                let _ = std::fs::remove_file(&tmp_path);
-                return Err(Error::ConfigWriteFailed(format!(
-                    "failed to rename config: {e}"
-                )));
-            }
-        }
 
-        Ok(())
+            Ok(())
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(format!("config cleanup task failed: {e}")))?
     })
     .await
-    .map_err(|e| Error::TaskFailed(format!("config cleanup task failed: {e}")))?
 }
 
 #[cfg(test)]

@@ -8,6 +8,8 @@
 
 use std::path::Path;
 
+use toride_ssh_core::HostSpec;
+use toride_ssh_core::paths::pub_path_for;
 use toride_ssh_core::{CliRunner, Error, Result};
 
 /// Result of a key installation attempt.
@@ -42,14 +44,19 @@ pub enum UninstallOutcome {
 ///   file is derived automatically (e.g., `id_ed25519` -> `id_ed25519.pub`).
 ///   If the `.pub` file does not exist, the private key path is used directly
 ///   (some `ssh-copy-id` implementations accept this).
-/// * `dest` - The remote destination in `[user@]host` format (same as what
-///   you would pass to `ssh` or `ssh-copy-id`).
+/// * `dest` - The remote destination in `[user@]host` format; validated
+///   through [`HostSpec::parse`] so a leading-dash destination can never
+///   reach the ssh argv.
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The key path does not exist.
+/// - `dest` fails [`HostSpec::parse`] validation.
 /// - Neither `ssh-copy-id` nor `ssh` is available.
+/// - The manual fallback is asked to install a file that is not an OpenSSH
+///   public key (a missing `.pub` companion must not echo private key
+///   material into the remote `authorized_keys`).
 /// - The remote command fails (authentication denied, network unreachable, etc.).
 pub async fn install_key_to_remote(
     key_path: &Path,
@@ -60,7 +67,9 @@ pub async fn install_key_to_remote(
         return Err(Error::KeyNotFound(key_path.display().to_string()));
     }
 
-    let pub_path = key_path.with_extension("pub");
+    let dest = HostSpec::parse(dest)?.destination();
+
+    let pub_path = pub_path_for(key_path);
     let pubkey_path = if pub_path.exists() {
         pub_path
     } else {
@@ -77,7 +86,7 @@ pub async fn install_key_to_remote(
         runner
             .run(
                 "ssh-copy-id",
-                vec!["-i".to_owned(), pubkey_str.to_owned(), dest.to_owned()],
+                vec!["-i".to_owned(), pubkey_str.to_owned(), dest],
             )
             .await?;
         return Ok(InstallOutcome::SshCopyId);
@@ -89,13 +98,14 @@ pub async fn install_key_to_remote(
         ));
     }
 
-    install_via_manual_ssh(&pubkey_path, dest, runner).await?;
+    install_via_manual_ssh(&pubkey_path, &dest, runner).await?;
     Ok(InstallOutcome::Manual)
 }
 
 /// Install via manual SSH command when `ssh-copy-id` is unavailable.
 ///
-/// Reads the public key content locally, then runs:
+/// Reads the public key content locally, rejects it unless it parses as an
+/// OpenSSH public key, then runs:
 /// ```sh
 /// ssh <dest> "mkdir -p ~/.ssh && echo '<key>' >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
 /// ```
@@ -113,6 +123,14 @@ async fn install_via_manual_ssh(
 
     let pubkey_content = pubkey_content.trim();
 
+    ssh_key::PublicKey::from_openssh(pubkey_content).map_err(|e| {
+        Error::KeyParseFailed(format!(
+            "{} does not contain an OpenSSH public key (refusing to install \
+             private key material on the remote host): {e}",
+            pubkey_path.display()
+        ))
+    })?;
+
     // Escape single quotes in the key content for safe shell embedding.
     let escaped_key = pubkey_content.replace('\'', "'\\''");
 
@@ -129,23 +147,26 @@ async fn install_via_manual_ssh(
 ///
 /// This function:
 /// 1. Reads the local public key content.
-/// 2. `SSHes` into the remote host and uses `grep -v` to strip the matching key
-///    line from `~/.ssh/authorized_keys`.
+/// 2. `SSHes` into the remote host in a single session and uses `grep -vF` to
+///    strip the matching key line from `~/.ssh/authorized_keys`.
 ///
 /// # Arguments
 ///
 /// * `key_path` - Path to the **private** key file. The corresponding `.pub`
 ///   file is derived automatically (e.g., `id_ed25519` -> `id_ed25519.pub`).
-///   If the `.pub` file does not exist, the private key path is used directly.
-/// * `dest` - The remote destination in `[user@]host` format (same as what
-///   you would pass to `ssh`).
+///   If the `.pub` file does not exist, the private key path is used directly
+///   and must itself parse as an OpenSSH public key.
+/// * `dest` - The remote destination in `[user@]host` format; validated
+///   through [`HostSpec::parse`].
 ///
 /// # Errors
 ///
 /// Returns an error if:
 /// - The key path does not exist.
+/// - `dest` fails [`HostSpec::parse`] validation.
 /// - `ssh` is not available in `PATH`.
-/// - The remote command fails (authentication denied, network unreachable, etc.).
+/// - The remote command fails (authentication denied, network unreachable,
+///   removal chain failed on the remote side, etc.).
 pub async fn uninstall_key_from_remote(
     key_path: &Path,
     dest: &str,
@@ -155,7 +176,9 @@ pub async fn uninstall_key_from_remote(
         return Err(Error::KeyNotFound(key_path.display().to_string()));
     }
 
-    let pub_path = key_path.with_extension("pub");
+    let dest = HostSpec::parse(dest)?.destination();
+
+    let pub_path = pub_path_for(key_path);
     let pubkey_path = if pub_path.exists() {
         pub_path
     } else {
@@ -166,21 +189,25 @@ pub async fn uninstall_key_from_remote(
         return Err(Error::ToolNotFound("ssh not found in PATH".to_owned()));
     }
 
-    uninstall_via_manual_ssh(&pubkey_path, dest, runner).await
+    uninstall_via_manual_ssh(&pubkey_path, &dest, runner).await
 }
 
-/// Remove via manual SSH command using `grep -v`.
+/// Remove the matching key line via one `ssh` invocation using `grep -vF`.
 ///
-/// Reads the public key content locally, then runs:
+/// Runs a single remote script:
 /// ```sh
-/// ssh <dest> "grep -vF '<key_content>' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp && mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys"
+/// if grep -qF '<key>' ~/.ssh/authorized_keys 2>/dev/null; then
+///   grep -vF '<key>' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp &&
+///   mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys &&
+///   chmod 600 ~/.ssh/authorized_keys && echo REMOVED
+/// else
+///   echo NOTFOUND
+/// fi
 /// ```
 ///
-/// The remote `grep -vF` removes any line that exactly contains the full key
-/// content (excluding any trailing comment).  This is safe to run even when
-/// the key is not present in the file -- `grep -vF` will simply reproduce the
-/// original content unchanged, and we detect the no-op by comparing the
-/// original and filtered output.
+/// The removal chain is joined with `&&` and unsuppressed, so a failed
+/// `grep`/`mv`/`chmod` makes the whole command fail (surfaced as
+/// [`Error::CommandFailed`]) instead of reporting success.
 async fn uninstall_via_manual_ssh(
     pubkey_path: &Path,
     dest: &str,
@@ -213,34 +240,29 @@ async fn uninstall_via_manual_ssh(
     // Escape single quotes in the key content for safe shell embedding.
     let escaped_key = key_fingerprint.replace('\'', "'\\''");
 
-    // Build a remote command that atomically removes the matching key line:
-    // 1. grep -vF removes lines containing the key fingerprint.
-    // 2. Write to a temp file and atomically move into place.
-    // 3. Preserve permissions with chmod 600.
-    // 4. If grep produces no output (file becomes empty or key not found),
-    //    we still get an empty file; the mv still succeeds.
     let remote_cmd = format!(
-        "grep -vF '{escaped_key}' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp 2>/dev/null; mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys 2>/dev/null; chmod 600 ~/.ssh/authorized_keys 2>/dev/null"
+        "if grep -qF '{escaped_key}' ~/.ssh/authorized_keys 2>/dev/null; then \
+         grep -vF '{escaped_key}' ~/.ssh/authorized_keys > ~/.ssh/authorized_keys.tmp && \
+         mv ~/.ssh/authorized_keys.tmp ~/.ssh/authorized_keys && \
+         chmod 600 ~/.ssh/authorized_keys && echo REMOVED; \
+         else echo NOTFOUND; fi"
     );
 
-    // We cannot reliably distinguish "key was present and removed" from
-    // "key was never there" based on grep exit code alone when piping into
-    // a temp file, so we use a two-step approach: first check if the key
-    // exists on the remote, then remove it.
-    let check_cmd = format!(
-        "grep -qF '{escaped_key}' ~/.ssh/authorized_keys 2>/dev/null && echo FOUND || echo NOTFOUND"
-    );
+    let output = runner.run("ssh", vec![dest.to_owned(), remote_cmd]).await?;
 
-    let check_output = runner.run("ssh", vec![dest.to_owned(), check_cmd]).await?;
-
-    if check_output.trim() == "NOTFOUND" {
-        return Ok(UninstallOutcome::NotFound);
+    match output.trim() {
+        "REMOVED" => Ok(UninstallOutcome::Removed),
+        "NOTFOUND" => Ok(UninstallOutcome::NotFound),
+        other => Err(Error::CommandFailed(format!(
+            "unexpected uninstall output from remote: {other:?}"
+        ))),
     }
-
-    runner.run("ssh", vec![dest.to_owned(), remote_cmd]).await?;
-
-    Ok(UninstallOutcome::Removed)
 }
+
+/// A syntactically valid OpenSSH ed25519 public key line (throwaway key).
+#[cfg(test)]
+const VALID_PUBKEY: &str =
+    "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILWnaRp7+VXp8vGSr8SmxJWOqJVWpitSTRiUyQYiavsZ toride@test";
 
 #[cfg(test)]
 mod tests {
@@ -268,6 +290,65 @@ mod tests {
     }
 
     #[test]
+    fn install_key_to_remote_rejects_invalid_dest() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("id_ed25519");
+        std::fs::write(&key_path, "private key material").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.set_tool_exists("ssh", true);
+        let result = rt.block_on(install_key_to_remote(
+            &key_path,
+            "-oProxyCommand=evil",
+            &runner,
+        ));
+        assert!(matches!(result.unwrap_err(), Error::InvalidHost(_)));
+    }
+
+    #[test]
+    fn install_key_to_remote_rejects_private_key_in_manual_branch() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("id_ed25519");
+        // No .pub companion; the private key must not be installed.
+        std::fs::write(
+            &key_path,
+            "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAA\n-----END OPENSSH PRIVATE KEY-----\n",
+        )
+        .unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.set_tool_exists("ssh", true);
+        runner.set_tool_exists("ssh-copy-id", false);
+        let result = rt.block_on(install_key_to_remote(&key_path, "user@host", &runner));
+        match result.unwrap_err() {
+            Error::KeyParseFailed(msg) => {
+                assert!(msg.contains("refusing to install private key material"));
+            }
+            other => panic!("expected KeyParseFailed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn install_key_to_remote_manual_branch_accepts_public_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("id_ed25519");
+        let pub_path = dir.path().join("id_ed25519.pub");
+        std::fs::write(&key_path, "private key material").unwrap();
+        std::fs::write(&pub_path, VALID_PUBKEY.to_owned() + "\n").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.set_tool_exists("ssh", true);
+        runner.set_tool_exists("ssh-copy-id", false);
+        runner.push_run_response("ssh", Ok(String::new()));
+
+        let result = rt.block_on(install_key_to_remote(&key_path, "user@host", &runner));
+        assert_eq!(result.unwrap(), InstallOutcome::Manual);
+    }
+
+    #[test]
     fn manual_ssh_command_format() {
         // Verify the remote command format matches expectations.
         let key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host";
@@ -289,6 +370,24 @@ mod tests {
         // the echo argument. After escaping, it's becomes it'\''s.
         assert!(!cmd.contains("it's"));
         assert!(cmd.contains("it'\\''s"));
+    }
+
+    #[test]
+    fn install_uses_dotted_pub_companion() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("deploy.key");
+        // ssh-keygen writes deploy.key.pub, not deploy.pub.
+        let pub_path = dir.path().join("deploy.key.pub");
+        std::fs::write(&key_path, "private key material").unwrap();
+        std::fs::write(&pub_path, VALID_PUBKEY.to_owned() + "\n").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.set_tool_exists("ssh-copy-id", true);
+        runner.push_run_response("ssh-copy-id", Ok(String::new()));
+
+        let result = rt.block_on(install_key_to_remote(&key_path, "user@host", &runner));
+        assert_eq!(result.unwrap(), InstallOutcome::SshCopyId);
     }
 
     // -----------------------------------------------------------------------
@@ -317,16 +416,29 @@ mod tests {
     }
 
     #[test]
+    fn uninstall_key_from_remote_rejects_invalid_dest() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("id_ed25519");
+        std::fs::write(&key_path, "private key").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.set_tool_exists("ssh", true);
+        let result = rt.block_on(uninstall_key_from_remote(
+            &key_path,
+            "-oProxyCommand=evil",
+            &runner,
+        ));
+        assert!(matches!(result.unwrap_err(), Error::InvalidHost(_)));
+    }
+
+    #[test]
     fn uninstall_key_from_remote_rejects_missing_ssh() {
         let dir = tempfile::tempdir().unwrap();
         let key_path = dir.path().join("id_ed25519");
         let pub_path = dir.path().join("id_ed25519.pub");
         std::fs::write(&key_path, "private key").unwrap();
-        std::fs::write(
-            &pub_path,
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
-        )
-        .unwrap();
+        std::fs::write(&pub_path, VALID_PUBKEY.to_owned() + "\n").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let runner = toride_ssh_core::MockCliRunner::new();
@@ -345,16 +457,11 @@ mod tests {
         let key_path = dir.path().join("id_ed25519");
         let pub_path = dir.path().join("id_ed25519.pub");
         std::fs::write(&key_path, "private key").unwrap();
-        std::fs::write(
-            &pub_path,
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
-        )
-        .unwrap();
+        std::fs::write(&pub_path, VALID_PUBKEY.to_owned() + "\n").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let runner = toride_ssh_core::MockCliRunner::new();
         runner.set_tool_exists("ssh", true);
-        // The check command returns NOTFOUND.
         runner.push_run_response("ssh", Ok("NOTFOUND\n".to_owned()));
 
         let result = rt.block_on(uninstall_key_from_remote(&key_path, "user@host", &runner));
@@ -367,19 +474,12 @@ mod tests {
         let key_path = dir.path().join("id_ed25519");
         let pub_path = dir.path().join("id_ed25519.pub");
         std::fs::write(&key_path, "private key").unwrap();
-        std::fs::write(
-            &pub_path,
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
-        )
-        .unwrap();
+        std::fs::write(&pub_path, VALID_PUBKEY.to_owned() + "\n").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let runner = toride_ssh_core::MockCliRunner::new();
         runner.set_tool_exists("ssh", true);
-        // First call: check command returns FOUND.
-        runner.push_run_response("ssh", Ok("FOUND\n".to_owned()));
-        // Second call: removal command succeeds.
-        runner.push_run_response("ssh", Ok(String::new()));
+        runner.push_run_response("ssh", Ok("REMOVED\n".to_owned()));
 
         let result = rt.block_on(uninstall_key_from_remote(&key_path, "user@host", &runner));
         assert_eq!(result.unwrap(), UninstallOutcome::Removed);
@@ -391,18 +491,11 @@ mod tests {
         let key_path = dir.path().join("id_ed25519");
         let pub_path = dir.path().join("id_ed25519.pub");
         std::fs::write(&key_path, "private key").unwrap();
-        std::fs::write(
-            &pub_path,
-            "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI user@host\n",
-        )
-        .unwrap();
+        std::fs::write(&pub_path, VALID_PUBKEY.to_owned() + "\n").unwrap();
 
         let rt = tokio::runtime::Runtime::new().unwrap();
         let runner = toride_ssh_core::MockCliRunner::new();
         runner.set_tool_exists("ssh", true);
-        // Check command returns FOUND.
-        runner.push_run_response("ssh", Ok("FOUND\n".to_owned()));
-        // Removal command fails.
         runner.push_run_response(
             "ssh",
             Err(Error::CommandFailed("connection refused".to_owned())),
@@ -412,6 +505,28 @@ mod tests {
         assert!(result.is_err());
         match result.unwrap_err() {
             Error::CommandFailed(msg) => assert!(msg.contains("connection refused")),
+            other => panic!("expected CommandFailed, got: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn uninstall_maps_failed_removal_to_command_failed() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_path = dir.path().join("id_ed25519");
+        let pub_path = dir.path().join("id_ed25519.pub");
+        std::fs::write(&key_path, "private key").unwrap();
+        std::fs::write(&pub_path, VALID_PUBKEY.to_owned() + "\n").unwrap();
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let runner = toride_ssh_core::MockCliRunner::new();
+        runner.set_tool_exists("ssh", true);
+        // ssh exited 0 but the removal chain printed no marker (e.g. mv
+        // failed and the remote shell swallowed the status).
+        runner.push_run_response("ssh", Ok(String::new()));
+
+        let result = rt.block_on(uninstall_key_from_remote(&key_path, "user@host", &runner));
+        match result.unwrap_err() {
+            Error::CommandFailed(msg) => assert!(msg.contains("unexpected uninstall output")),
             other => panic!("expected CommandFailed, got: {other:?}"),
         }
     }

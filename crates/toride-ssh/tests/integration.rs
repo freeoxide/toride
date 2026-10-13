@@ -141,7 +141,10 @@ async fn test_config_diagnose_conflicts() {
         1,
         "expected one proxy conflict diagnostic"
     );
-    assert_eq!(proxy_conflicts[0].severity, toride_ssh::Severity::Warning);
+    assert_eq!(
+        proxy_conflicts[0].severity,
+        toride_ssh::DiagnosticSeverity::Warning
+    );
     assert!(proxy_conflicts[0].message.contains("bastion"));
     assert!(proxy_conflicts[0].hint.is_some());
 

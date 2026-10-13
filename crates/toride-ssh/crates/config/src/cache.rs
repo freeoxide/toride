@@ -38,6 +38,21 @@ fn stamp_of(metadata: &std::fs::Metadata) -> Option<FileStamp> {
 static CONFIG_CACHE: LazyLock<Mutex<HashMap<PathBuf, CachedConfig>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 
+/// Upper bound on cached entries. A full cache evicts an arbitrary entry
+/// before inserting so deleted or renamed config files cannot grow the
+/// process-wide cache without limit.
+const CONFIG_CACHE_CAP: usize = 256;
+
+/// Insert an entry, evicting an arbitrary victim first when at capacity.
+fn insert_bounded(cache: &mut HashMap<PathBuf, CachedConfig>, path: &Path, entry: CachedConfig) {
+    if cache.len() >= CONFIG_CACHE_CAP
+        && let Some(victim) = cache.keys().next().cloned()
+    {
+        cache.remove(&victim);
+    }
+    cache.insert(path.to_path_buf(), entry);
+}
+
 enum Probe {
     Parsed(Arc<ast::ConfigAst>),
     Content(Arc<String>),
@@ -46,12 +61,25 @@ enum Probe {
 /// Read and parse the config at `path`, memoized on its `(mtime, len)` stamp.
 ///
 /// # Errors
-/// As `std::fs::metadata` / `std::fs::read_to_string` on the underlying file.
+/// As `std::fs::metadata` / `std::fs::read_to_string` on the underlying
+/// file. A `NotFound` metadata error also drops any stale entry for the
+/// path.
 ///
 /// # Panics
 /// Only if the cache mutex is poisoned.
 pub fn load_cached_ast(path: &Path) -> std::io::Result<Arc<ast::ConfigAst>> {
-    let metadata = std::fs::metadata(path)?;
+    let metadata = match std::fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                CONFIG_CACHE
+                    .lock()
+                    .expect("config cache mutex poisoned")
+                    .remove(path);
+            }
+            return Err(e);
+        }
+    };
     let Some(stamp) = stamp_of(&metadata) else {
         return Ok(Arc::new(read_and_parse(path)?));
     };
@@ -85,17 +113,16 @@ pub fn load_cached_ast(path: &Path) -> std::io::Result<Arc<ast::ConfigAst>> {
 
     let content = Arc::new(std::fs::read_to_string(path)?);
     let ast = Arc::new(ast::parse(&content));
-    CONFIG_CACHE
-        .lock()
-        .expect("config cache mutex poisoned")
-        .insert(
-            path.to_path_buf(),
-            CachedConfig {
-                stamp,
-                content: Arc::clone(&content),
-                ast: Some(Arc::clone(&ast)),
-            },
-        );
+    let mut cache = CONFIG_CACHE.lock().expect("config cache mutex poisoned");
+    insert_bounded(
+        &mut cache,
+        path,
+        CachedConfig {
+            stamp,
+            content: Arc::clone(&content),
+            ast: Some(Arc::clone(&ast)),
+        },
+    );
     Ok(ast)
 }
 
@@ -103,7 +130,8 @@ pub fn load_cached_ast(path: &Path) -> std::io::Result<Arc<ast::ConfigAst>> {
 /// stamp.
 ///
 /// # Errors
-/// As `std::fs::metadata` / `std::fs::read_to_string` on the underlying file.
+/// As `std::fs::metadata` / `std::fs::read_to_string` on the underlying
+/// file.
 ///
 /// # Panics
 /// Only if the cache mutex is poisoned.
@@ -123,17 +151,16 @@ pub fn load_cached_content(path: &Path) -> std::io::Result<Arc<String>> {
     }
 
     let content = Arc::new(std::fs::read_to_string(path)?);
-    CONFIG_CACHE
-        .lock()
-        .expect("config cache mutex poisoned")
-        .insert(
-            path.to_path_buf(),
-            CachedConfig {
-                stamp,
-                content: Arc::clone(&content),
-                ast: None,
-            },
-        );
+    let mut cache = CONFIG_CACHE.lock().expect("config cache mutex poisoned");
+    insert_bounded(
+        &mut cache,
+        path,
+        CachedConfig {
+            stamp,
+            content: Arc::clone(&content),
+            ast: None,
+        },
+    );
     Ok(content)
 }
 
@@ -148,6 +175,30 @@ pub(crate) fn clear_cache_for_tests(path: &Path) {
         .lock()
         .expect("config cache mutex poisoned")
         .remove(path);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_all_cache_for_tests() {
+    CONFIG_CACHE
+        .lock()
+        .expect("config cache mutex poisoned")
+        .clear();
+}
+
+#[cfg(test)]
+pub(crate) fn cache_len_for_tests() -> usize {
+    CONFIG_CACHE
+        .lock()
+        .expect("config cache mutex poisoned")
+        .len()
+}
+
+#[cfg(test)]
+pub(crate) fn cache_contains_for_tests(path: &Path) -> bool {
+    CONFIG_CACHE
+        .lock()
+        .expect("config cache mutex poisoned")
+        .contains_key(path)
 }
 
 #[cfg(test)]

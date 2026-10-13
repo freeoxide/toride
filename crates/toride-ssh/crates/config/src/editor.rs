@@ -83,6 +83,10 @@ pub fn remove_host(ast: &mut ConfigAst, name: &str) -> Result<()> {
 
 /// Rename a Host block by updating its header and patterns.
 ///
+/// When the block carries several patterns (`Host foo bar`), only the
+/// pattern equal to `old_name` is replaced and the sibling aliases survive;
+/// the header is regenerated from the resulting pattern list.
+///
 /// # Errors
 ///
 /// Returns [`Error::HostNotFound`] if `old_name` does not match any block,
@@ -96,8 +100,16 @@ pub fn rename_host(ast: &mut ConfigAst, old_name: &str, new_name: &str) -> Resul
     }
 
     if let ConfigNode::HostBlock(b) = &mut ast.nodes[idx] {
-        b.header = format!("Host {new_name}");
-        b.patterns = vec![new_name.to_owned()];
+        let Some(matched) = b
+            .patterns
+            .iter_mut()
+            .find(|pattern| pattern.as_str() == old_name)
+        else {
+            return Err(toride_ssh_core::Error::HostNotFound(old_name.to_owned()));
+        };
+        matched.clone_from(&new_name.to_owned());
+        let patterns = b.patterns.join(" ");
+        b.header.clone_from(&format!("Host {patterns}"));
     }
 
     Ok(())
@@ -108,7 +120,6 @@ pub fn rename_host(ast: &mut ConfigAst, old_name: &str, new_name: &str) -> Resul
 /// # Errors
 ///
 /// Returns [`Error::HostNotFound`] if no Host block matches the given name.
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn add_directive_to_host(
     ast: &mut ConfigAst,
     name: &str,
@@ -136,7 +147,6 @@ pub fn add_directive_to_host(
 /// # Errors
 ///
 /// Returns [`Error::HostNotFound`] if no Host block matches the given name.
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub fn remove_directive_from_host(ast: &mut ConfigAst, name: &str, key: &str) -> Result<()> {
     let idx = find_host_index(ast, name)
         .ok_or_else(|| toride_ssh_core::Error::HostNotFound(name.to_owned()))?;

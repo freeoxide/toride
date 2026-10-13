@@ -169,6 +169,11 @@ impl CertificateService {
     /// `ssh-keygen -k` fails (e.g. `ssh-keygen` is not available, the key
     /// file does not exist, or the KRL file cannot be written).
     pub async fn revoke_key(&self, krl_path: &Path, key: &str) -> Result<()> {
+        if key.starts_with('-') {
+            return Err(toride_ssh_core::Error::CommandFailed(
+                "key path must not start with '-'".to_owned(),
+            ));
+        }
         let krl_str = krl_path.to_str().ok_or_else(|| {
             toride_ssh_core::Error::CommandFailed(format!(
                 "KRL path is not valid UTF-8: {}",
@@ -318,5 +323,22 @@ mod tests {
         assert!(status.exists);
         assert!(status.readable);
         assert_eq!(status.key_count, 0);
+    }
+}
+
+#[cfg(test)]
+mod hostspec_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn revoke_key_rejects_leading_dash_operand() {
+        let svc = CertificateService::new();
+        let err = svc
+            .revoke_key(std::path::Path::new("/tmp/krl"), "-oProxyCommand=evil")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, toride_ssh_core::Error::CommandFailed(ref m) if m.contains("must not start with '-'"))
+        );
     }
 }

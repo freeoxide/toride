@@ -8,7 +8,7 @@ use toride_ssh_config::ast::{self, ConfigNode};
 use toride_ssh_config::cache::{load_cached_ast, load_cached_content};
 use toride_ssh_core::Result;
 use toride_ssh_core::paths::SshPaths;
-use toride_ssh_core::{Diagnostic, Severity};
+use toride_ssh_core::{Diagnostic, DiagnosticSeverity as Severity};
 
 async fn cached_config_ast(
     config_path: std::path::PathBuf,
@@ -156,7 +156,7 @@ impl Check for SshDirExists<'_> {
                 }]),
                 Ok(_) => Ok(vec![Diagnostic {
                     id: "ssh_dir_exists",
-                    severity: Severity::Error,
+                    severity: Severity::Critical,
                     message: format!("{} exists but is not a directory", ssh_dir.display()),
                     hint: Some("Remove the file and run `mkdir -p ~/.ssh`".into()),
                     module: "local",
@@ -203,7 +203,7 @@ impl Check for SshDirPermissions<'_> {
                     } else {
                         Ok(vec![Diagnostic {
                             id: "ssh_dir_permissions",
-                            severity: Severity::Error,
+                            severity: Severity::Critical,
                             message: format!(
                                 "{} has overly permissive permissions ({:o}), expected 700",
                                 ssh_dir.display(),
@@ -367,7 +367,7 @@ impl Check for PrivateKeyPermissions<'_> {
                 } else {
                     diagnostics.push(Diagnostic {
                         id: "private_key_permissions",
-                        severity: Severity::Error,
+                        severity: Severity::Critical,
                         message: format!(
                             "{} has overly permissive permissions ({:o}), expected 600",
                             path.display(),
@@ -457,7 +457,7 @@ impl Check for KeygenAvailable<'_> {
             } else {
                 Ok(vec![Diagnostic {
                     id: "keygen_available",
-                    severity: Severity::Error,
+                    severity: Severity::Critical,
                     message: "ssh-keygen is not found in PATH".into(),
                     hint: Some(
                         "Install OpenSSH: `brew install openssh` (macOS) or `sudo apt install openssh-client` (Linux)".into(),
@@ -541,7 +541,7 @@ impl Check for OwnerCheck<'_> {
                     } else {
                         Ok(vec![Diagnostic {
                             id: "owner_check",
-                            severity: Severity::Error,
+                            severity: Severity::Critical,
                             message: format!(
                                 "{} is owned by uid {} but current user is uid {}",
                                 ssh_dir.display(),
@@ -598,7 +598,7 @@ impl Check for ConfigPermissionsCheck<'_> {
                     } else {
                         Ok(vec![Diagnostic {
                             id: "config_permissions",
-                            severity: Severity::Error,
+                            severity: Severity::Critical,
                             message: format!(
                                 "{} is group/world writable ({:o}), expected no group/world write bits",
                                 config_path.display(),
@@ -654,7 +654,7 @@ impl Check for AuthorizedKeysPermissionsCheck<'_> {
                     } else {
                         Ok(vec![Diagnostic {
                             id: "authorized_keys_permissions",
-                            severity: Severity::Error,
+                            severity: Severity::Critical,
                             message: format!(
                                 "{} has permissions {:o}, expected 600 or 644",
                                 ak_path.display(),
@@ -2877,7 +2877,7 @@ pub async fn run_all<'a>(
             Ok(diagnostics) => all_diagnostics.extend(diagnostics),
             Err(e) => all_diagnostics.push(Diagnostic {
                 id: check.id(),
-                severity: Severity::Error,
+                severity: Severity::Critical,
                 message: format!("Check failed: {e}"),
                 hint: None,
                 module: check.module(),

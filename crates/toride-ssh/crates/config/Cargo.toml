@@ -9,6 +9,12 @@ readme = "README.md"
 keywords = ["ssh", "config", "ssh-config", "parser", "ast"]
 categories = ["config", "network-programming"]
 
+# The lib target is not a bench: cargo would otherwise forward criterion's
+# `--baseline`/`--save-baseline` flags to the libtest harness, which rejects
+# them. The package's only benches are the criterion targets below.
+[lib]
+bench = false
+
 [dependencies]
 toride-ssh-core = { path = "../core", version = "0.2.0" }
 toride-fs = { path = "../../../toride-fs", version = "0.2.0" }

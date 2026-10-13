@@ -24,7 +24,6 @@ fn close_marker(name: &str) -> String {
 
 /// A managed block extracted from the AST, with its name and directive nodes.
 #[derive(Debug, Clone)]
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
 pub struct ManagedBlock {
     /// The name of this managed block (the part after `toride`).
     pub name: String,
@@ -37,7 +36,7 @@ pub struct ManagedBlock {
 /// Scans top-level nodes looking for `# >>> toride {name}` /
 /// `# <<< toride {name}` comment pairs at the *top level* of the config.
 /// Returns the directive nodes between the markers.
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
+#[must_use]
 pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Option<ManagedBlock> {
     let open = open_marker(name);
     let close = close_marker(name);
@@ -64,7 +63,7 @@ pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Option<ManagedBlock
     }
 
     // If we were inside but never hit the closing marker, that is a malformed
-    // block — return what we have.
+    // block: return what we have.
     if inside {
         Some(ManagedBlock {
             name: name.to_owned(),
@@ -76,6 +75,7 @@ pub fn extract_managed_block(ast: &ConfigAst, name: &str) -> Option<ManagedBlock
 }
 
 /// List all managed block names in the config.
+#[must_use]
 pub fn list_managed_blocks(ast: &ConfigAst) -> Vec<String> {
     let mut names = Vec::new();
 
@@ -133,12 +133,13 @@ pub fn upsert_managed_block(ast: &mut ConfigAst, name: &str, directives: Vec<(St
             return;
         }
 
-        // Unclosed block: remove the orphaned opening marker and everything
-        // after it (the stale content), then fall through to append a fresh block.
-        ast.nodes.drain(start..);
+        // Unclosed block: drop only the orphan marker; the nodes after it
+        // are user content that must survive. A fresh block is appended
+        // below.
+        ast.nodes.remove(start);
     }
 
-    // No existing block (or unclosed block was cleaned up) — append a new one.
+    // No existing block (or unclosed block was cleaned up): append a new one.
     let open_comment = ConfigNode::Comment {
         text: open,
         indent: String::new(),
@@ -168,6 +169,11 @@ pub fn upsert_managed_block(ast: &mut ConfigAst, name: &str, directives: Vec<(St
 ///
 /// Removes the marker comments, all content between them, and any adjacent
 /// blank line to keep the config clean.
+///
+/// # Errors
+///
+/// [`toride_ssh_core::Error::ManagedBlockNotFound`] when either marker is
+/// missing.
 pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
     let open = open_marker(name);
     let close = close_marker(name);
@@ -206,7 +212,7 @@ pub fn remove_managed_block(ast: &mut ConfigAst, name: &str) -> Result<()> {
 }
 
 /// Check whether a managed block with the given name exists.
-#[allow(dead_code, reason = "public API, not exercised in-workspace")]
+#[must_use]
 pub fn has_managed_block(ast: &ConfigAst, name: &str) -> bool {
     let open = open_marker(name);
     ast.nodes

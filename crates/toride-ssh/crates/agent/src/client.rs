@@ -7,6 +7,8 @@
 
 use std::path::Path;
 
+use toride_ssh_core::HostSpec;
+use toride_ssh_core::paths::pub_path_for;
 use toride_ssh_core::{CliRunner, Error, Fingerprint, KeySource, KeyType, Result, SshKey};
 
 /// Connect to the SSH agent via `SSH_AUTH_SOCK`.
@@ -130,6 +132,9 @@ pub async fn destination_constrained_add(
             "destination-constrained add requires at least one host".into(),
         ));
     }
+    for host in hosts {
+        HostSpec::parse(host)?;
+    }
 
     let path_str = key_path
         .to_str()
@@ -146,7 +151,7 @@ pub async fn destination_constrained_add(
 
 /// Remove a key from the SSH agent via `ssh-add -d`.
 pub async fn remove_key(key_path: &Path, runner: &dyn CliRunner) -> Result<()> {
-    let pub_path = key_path.with_extension("pub");
+    let pub_path = pub_path_for(key_path);
     let path = if pub_path.exists() {
         pub_path
     } else {

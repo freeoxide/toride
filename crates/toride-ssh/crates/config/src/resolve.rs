@@ -7,6 +7,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::ast::{self, ConfigAst, ConfigNode};
+use super::cache;
+use toride_ssh_core::Error;
 use toride_ssh_core::Result;
 
 /// Fully resolved parameters for a host.
@@ -112,18 +114,26 @@ const TOKEN_EXPANDABLE: &[&str] = &[
 ///
 /// # Errors
 ///
-/// Returns `Error::ConfigIncludeCycle` if an `Include` chain contains a
-/// cycle. Returns `Error::Io` if the config file cannot be read.
+/// Returns `Error::ConfigIncludeCycle` if an `Include` chain re-enters a
+/// file already on the active include path. Returns `Error::Io` if the
+/// config file cannot be read.
 pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<ResolvedHost> {
     let config_path = ssh_dir.join("config");
 
-    // Load and flatten includes.
-    let mut visited = HashSet::new();
-    let flat_ast = load_and_flatten(&config_path, &mut visited).await?;
+    // Load and flatten includes on a blocking thread: the loads hit the
+    // process-wide (mtime, len) cache but the glob walks are directory
+    // scans that must not run on the async runtime.
+    let load_path = config_path.clone();
+    let flat_ast = tokio::task::spawn_blocking(move || {
+        let mut stack: Vec<PathBuf> = Vec::new();
+        load_and_flatten(&load_path, &mut stack)
+    })
+    .await
+    .map_err(|e| Error::TaskFailed(e.to_string()))??;
 
     // First pass: resolve against the original alias.
     let local_user = user.map_or_else(whoami, str::to_owned);
-    let mut resolved = resolve_pass(&flat_ast, host, host, &local_user);
+    let mut resolved = resolve_pass(&flat_ast, host, host, &local_user, false);
 
     // Token expansion on first-pass values.
     expand_resolved(&mut resolved, host, ssh_dir);
@@ -132,7 +142,7 @@ pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<R
     if is_canonicalize_enabled(&resolved) {
         let canonical_host = resolved.host_name.take().unwrap_or_else(|| host.to_owned());
 
-        let mut canon = resolve_pass(&flat_ast, &canonical_host, host, &local_user);
+        let mut canon = resolve_pass(&flat_ast, &canonical_host, host, &local_user, true);
 
         // Expand tokens in the canonicalized result.
         expand_resolved(&mut canon, &canonical_host, ssh_dir);
@@ -149,13 +159,15 @@ pub async fn resolve(ssh_dir: &Path, host: &str, user: Option<&str>) -> Result<R
 ///
 /// `target_host` is the hostname used for pattern matching (the canonical
 /// name on the second pass, or the original alias on the first).
-/// `original_host` is always the alias the user typed — used for
-/// `Match originalhost` criteria.
+/// `original_host` is always the alias the user typed: used for
+/// `Match originalhost` criteria. `final_pass` is `true` on the
+/// post-canonicalization pass, which is what makes `Match final` apply.
 fn resolve_pass(
     flat_ast: &ConfigAst,
     target_host: &str,
     original_host: &str,
     local_user: &str,
+    final_pass: bool,
 ) -> ResolvedHost {
     let mut resolved = ResolvedHost {
         alias: target_host.to_owned(),
@@ -196,7 +208,7 @@ fn resolve_pass(
                 }
             }
             ConfigNode::MatchBlock(b) => {
-                // Warn about `exec` criteria — we cannot evaluate them safely.
+                // Warn about `exec` criteria: we cannot evaluate them safely.
                 if contains_exec_criteria(&b.criteria) {
                     let warning = format!(
                         "Match block contains 'exec' criteria which are not evaluated: {}",
@@ -205,9 +217,20 @@ fn resolve_pass(
                     tracing::warn!("{}", &warning);
                     resolved.unevaluated_match_warnings.push(warning);
                 }
-                if match_criteria_host(&b.criteria, target_host, local_user, original_host) {
+                if match_criteria_host(
+                    &b.criteria,
+                    target_host,
+                    local_user,
+                    original_host,
+                    final_pass,
+                ) {
                     resolve_block(&b.nodes, &mut resolved, &mut seen_keys);
                 }
+            }
+            // Top-level directives (before any block) are global scope per
+            // ssh_config(5) and apply to every host, first-obtained-wins.
+            ConfigNode::Directive(_) => {
+                resolve_block(std::slice::from_ref(node), &mut resolved, &mut seen_keys);
             }
             _ => {}
         }
@@ -217,74 +240,87 @@ fn resolve_pass(
 }
 
 /// Load a config file and recursively inline all Include directives.
-fn load_and_flatten<'a>(
-    path: &'a Path,
-    visited: &'a mut HashSet<PathBuf>,
-) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<ConfigAst>> + 'a>> {
-    Box::pin(async move {
-        // PERF: If canonicalize fails (e.g. permission denied, broken symlink),
-        // cycle detection may not catch symlink loops. This is acceptable because
-        // SSH config files are unlikely to use symlinks.
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+///
+/// Runs entirely on the calling (blocking) thread: file loads go through
+/// [`cache::load_cached_content`] and glob walks are synchronous directory
+/// scans. Cycle detection tracks the active include *path* (pushed on
+/// descend, popped on return), so a diamond include: the same file reached
+/// through two different branches: resolves fine and only a true ancestor
+/// re-entry is an [`toride_ssh_core::Error::ConfigIncludeCycle`].
+fn load_and_flatten(path: &Path, stack: &mut Vec<PathBuf>) -> Result<ConfigAst> {
+    // If canonicalize fails (e.g. permission denied, broken symlink), cycle
+    // detection may not catch symlink loops; SSH config files rarely use
+    // symlinks, so this is accepted.
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_owned());
 
-        if visited.contains(&canonical) {
-            return Err(toride_ssh_core::Error::ConfigIncludeCycle(
-                canonical.display().to_string(),
-            ));
-        }
-        visited.insert(canonical);
+    if stack.contains(&canonical) {
+        return Err(toride_ssh_core::Error::ConfigIncludeCycle(
+            canonical.display().to_string(),
+        ));
+    }
+    stack.push(canonical);
 
-        let content = if path.exists() {
-            tokio::fs::read_to_string(path).await?
-        } else {
+    let result = load_and_flatten_descend(path, stack);
+
+    stack.pop();
+    result
+}
+
+/// Descend into `path`'s parsed nodes, splicing in include contents.
+///
+/// Only called with `path` already pushed onto `stack`.
+fn load_and_flatten_descend(path: &Path, stack: &mut Vec<PathBuf>) -> Result<ConfigAst> {
+    let content = match cache::load_cached_content(path) {
+        Ok(content) => content,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             return Ok(ConfigAst { nodes: Vec::new() });
+        }
+        Err(e) => return Err(e.into()),
+    };
+
+    let mut flat = ast::parse(&content);
+
+    // Inline includes in one pass: each Include directive's glob is
+    // expanded and the recursively-loaded nodes spliced in place;
+    // non-Include nodes are kept as-is.
+    let original_nodes = std::mem::take(&mut flat.nodes);
+    let mut new_nodes = Vec::with_capacity(original_nodes.len());
+
+    for node in original_nodes {
+        let pattern_value = match &node {
+            ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("include") => {
+                Some(d.value.clone())
+            }
+            _ => None,
         };
 
-        let mut flat = ast::parse(&content);
+        if let Some(include_pattern) = pattern_value {
+            let expanded = expand_tilde_and_env(&include_pattern);
 
-        // Inline includes: single-pass replacement that avoids the position-
-        // shifting bug.  We walk the original nodes vec and, for each Include
-        // directive, expand its glob and splice in the recursively-loaded
-        // content.  Non-Include nodes are kept as-is.
-        let original_nodes = std::mem::take(&mut flat.nodes);
-        let mut new_nodes = Vec::with_capacity(original_nodes.len());
-
-        for node in original_nodes {
-            let pattern_value = match &node {
-                ConfigNode::Directive(d) if d.keyword.eq_ignore_ascii_case("include") => {
-                    Some(d.value.clone())
-                }
-                _ => None,
+            // Glob the pattern.
+            let base_dir = if Path::new(&expanded).is_absolute() {
+                PathBuf::new()
+            } else {
+                path.parent().unwrap_or_else(|| Path::new(".")).to_owned()
             };
 
-            if let Some(include_pattern) = pattern_value {
-                let expanded = expand_tilde_and_env(&include_pattern);
+            let full_pattern = base_dir.join(&expanded);
+            let pattern_str = full_pattern.display().to_string();
 
-                // Glob the pattern.
-                let base_dir = if Path::new(&expanded).is_absolute() {
-                    PathBuf::new()
-                } else {
-                    path.parent().unwrap_or_else(|| Path::new(".")).to_owned()
-                };
+            let matched_files = glob_paths(&pattern_str);
 
-                let full_pattern = base_dir.join(&expanded);
-                let pattern_str = full_pattern.display().to_string();
-
-                let matched_files = glob_paths(&pattern_str);
-
-                for inc_path in matched_files {
-                    let included = load_and_flatten(&inc_path, visited).await?;
-                    new_nodes.extend(included.nodes);
-                }
-            } else {
-                new_nodes.push(node);
+            for inc_path in matched_files {
+                let included = load_and_flatten(&inc_path, stack)?;
+                new_nodes.extend(included.nodes);
             }
+        } else {
+            new_nodes.push(node);
         }
+    }
 
-        flat.nodes = new_nodes;
+    flat.nodes = new_nodes;
 
-        Ok(flat)
-    })
+    Ok(flat)
 }
 
 /// Expand tilde (`~`) and `${ENV}` patterns in an include path.
@@ -317,7 +353,7 @@ fn expand_env_vars(s: &str) -> String {
     while let Some((i, ch)) = chars.next() {
         if ch == '$' {
             if let Some((_, '{')) = chars.peek() {
-                // `${VAR}` form — look for closing `}`.
+                // `${VAR}` form: look for closing `}`.
                 chars.next(); // consume '{'
                 let start = i + 2;
                 if let Some(end_offset) = s[start..].find('}') {
@@ -329,12 +365,12 @@ fn expand_env_vars(s: &str) -> String {
                     }
                     continue;
                 }
-                // No closing `}` — preserve the literal `${` to avoid corruption.
+                // No closing `}`: preserve the literal `${` to avoid corruption.
                 result.push(ch);
                 result.push('{');
                 continue;
             }
-            // `$VAR` form (without braces) — read until non-alphanumeric/underscore.
+            // `$VAR` form (without braces): read until non-alphanumeric/underscore.
             let rest = &s[i + 1..];
             let end = rest
                 .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
@@ -421,7 +457,7 @@ fn glob_paths_recursive(pattern: &str) -> Vec<PathBuf> {
             collect_recursive_glob(&base, suffix, &mut paths);
         }
     } else if let Some(prefix) = pattern.strip_suffix("**") {
-        // Trailing ** without trailing slash — treat as "match everything
+        // Trailing ** without trailing slash: treat as "match everything
         // under the prefix directory".
         let base = if prefix.is_empty() {
             PathBuf::from(".")
@@ -535,7 +571,7 @@ fn simple_glob_match(name: &str, pattern: &str) -> bool {
 fn resolve_block(nodes: &[ConfigNode], resolved: &mut ResolvedHost, seen: &mut HashSet<String>) {
     for node in nodes {
         if let ConfigNode::Directive(d) = node {
-            // Accumulative directives — collect with dedup.
+            // Accumulative directives: collect with dedup.
             if super::directives::is_accumulative(&d.keyword) {
                 if d.keyword.eq_ignore_ascii_case("identityfile")
                     && !resolved.identity_files.iter().any(|f| f == &d.value)
@@ -642,13 +678,6 @@ struct TokenContext<'a> {
     port: &'a str,
     /// Canonical hostname (same as host unless `CanonicalizeHostname` is enabled).
     canonical_host: &'a str,
-    /// Identity file being expanded (`%i` → basename).  `None` when
-    /// expanding a non-IdentityFile directive.
-    #[allow(
-        dead_code,
-        reason = "placeholder for `%i` token expansion, not yet wired"
-    )]
-    identity_file: Option<&'a str>,
     /// Local host key (`%k`).
     local_host_key: &'a str,
     /// Jump host (`%j`).
@@ -660,7 +689,7 @@ struct TokenContext<'a> {
 /// Expand tokens in resolved values.
 ///
 /// Applies tilde, environment-variable, and SSH token expansion to all
-/// directive values that may contain them — including the dedicated
+/// directive values that may contain them: including the dedicated
 /// fields (`identity_files`, `host_name`, `proxy_jump`) and every
 /// entry in the raw `directives` vec whose key is listed in
 /// [`TOKEN_EXPANDABLE`].
@@ -690,8 +719,7 @@ fn expand_resolved(resolved: &mut ResolvedHost, host: &str, _ssh_dir: &Path) {
         // On first pass canonical_host == host; second pass uses the
         // canonical name (already substituted as `host` by the caller).
         canonical_host: host,
-        identity_file: None,
-        // Placeholders — not yet populated from live connection state.
+        // Placeholders: not yet populated from live connection state.
         local_host_key: "",
         jump_host: "",
         remote_host_key: "",
@@ -815,7 +843,7 @@ fn is_canonicalize_enabled(resolved: &ResolvedHost) -> bool {
 ///
 /// Supported tokens (matching OpenSSH `ssh_config(5)`):
 /// - `%%` → literal `%`
-/// - `%C` → hash of connection (host+port+user) — placeholder
+/// - `%C` → hash of connection (host+port+user): placeholder
 /// - `%d` → home directory
 /// - `%H` → canonical hostname
 /// - `%h` / `%n` → remote host (alias)
@@ -845,7 +873,7 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
                     chars.next();
                 }
                 Some('C') => {
-                    // Connection hash — use a simple hash of host:port:user.
+                    // Connection hash: use a simple hash of host:port:user.
                     chars.next();
                     let hash_input = format!("{}:{}:{}", ctx.host, ctx.port, ctx.local_user);
                     let hash = simple_hash(&hash_input);
@@ -887,11 +915,9 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
                     result.push_str(ctx.remote_user);
                 }
                 Some('i' | 'u') => {
-                    // %i and %u both expand to the local username.
-                    // Note: per OpenSSH, %i is the "identity file name" in some
-                    // contexts, but when used in IdentityFile paths it would create
-                    // a circular reference.  The local username fallback matches
-                    // OpenSSH behaviour for IdentityFile and most other directives.
+                    // %i and %u both expand to the local username; per
+                    // OpenSSH this avoids a circular reference when %i is
+                    // used inside IdentityFile paths.
                     chars.next();
                     result.push_str(ctx.local_user);
                 }
@@ -916,7 +942,7 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
                     result.push_str(ctx.port);
                 }
                 _ => {
-                    // Unknown token or '%' at end of string — keep as-is.
+                    // Unknown token or '%' at end of string: keep as-is.
                     result.push(ch);
                 }
             }
@@ -931,7 +957,7 @@ fn expand_tokens(s: &str, ctx: &TokenContext<'_>) -> String {
 /// Simple hash function for `%C` token (OpenSSH uses SHA-1 of host:port:user).
 ///
 /// Uses a FNV-1a style hash for stability across Rust versions.  This is NOT
-/// cryptographically secure — it only needs to be deterministic and collision-
+/// cryptographically secure: it only needs to be deterministic and collision-
 /// resistant enough for socket naming.  OpenSSH uses SHA-1 here, but we avoid
 /// the dependency.
 fn simple_hash(s: &str) -> String {
@@ -972,27 +998,33 @@ fn host_matches(host: &str, patterns: &[impl AsRef<str>]) -> bool {
 /// Check if `Match` criteria are satisfied for the given host context.
 ///
 /// Supported criteria keywords (case-insensitive):
-/// - `host <patterns>` — matches against `target_host` (the hostname being
+/// - `host <patterns>`: matches against `target_host` (the hostname being
 ///   resolved, which may be the canonical name on a second pass).
-/// - `originalhost <patterns>` — matches against `original_host` (the
+/// - `originalhost <patterns>`: matches against `original_host` (the
 ///   alias the user typed, before any canonicalization).
-/// - `user <names>` — matches against `target_user` (the remote username;
+/// - `user <names>`: matches against `target_user` (the remote username;
 ///   comma-separated, case-insensitive comparison).
-/// - `localuser <names>` — matches against the local username;
+/// - `localuser <names>`: matches against the local username;
 ///   comma-separated, case-insensitive comparison.
+/// - `all`: always true; per `ssh_config(5)` it cannot combine with any
+///   value-carrying criterion, and such a block never applies.
+/// - `final`: true only on the second (post-canonicalization) pass,
+///   i.e. when `final_pass` is `true`.
 ///
 /// Multiple occurrences of the **same** keyword are OR'd (e.g.
 /// `host web host db` matches either "web" or "db").  Different keywords
 /// are AND'd (e.g. `user alice host web` requires both to match).
 ///
 /// Returns `true` only when every recognized criterion type matches and at
-/// least one recognized criterion is present.  Unrecognized keywords
-/// (e.g. `exec`, `address`) are silently skipped.
+/// least one recognized criterion is present.  Unrecognized keywords are
+/// skipped without consuming the following token, so an unknown
+/// criterion's value can never be mistaken for another keyword.
 fn match_criteria_host(
     criteria: &str,
     target_host: &str,
     target_user: &str,
     original_host: &str,
+    final_pass: bool,
 ) -> bool {
     let mut tokens = criteria.split_whitespace();
 
@@ -1006,12 +1038,18 @@ fn match_criteria_host(
     let mut user_matched = false;
     let mut has_localuser = false;
     let mut localuser_matched = false;
+    let mut has_final = false;
+    let mut has_all = false;
 
     // Determine the local username for localuser matching.
     let local_user = whoami();
 
     while let Some(keyword) = tokens.next() {
-        if keyword.eq_ignore_ascii_case("host") {
+        if keyword.eq_ignore_ascii_case("all") {
+            has_all = true;
+        } else if keyword.eq_ignore_ascii_case("final") {
+            has_final = true;
+        } else if keyword.eq_ignore_ascii_case("host") {
             if let Some(patterns_str) = tokens.next() {
                 has_host = true;
                 let patterns: Vec<&str> = patterns_str.split(',').collect();
@@ -1047,24 +1085,28 @@ fn match_criteria_host(
         } else if keyword.eq_ignore_ascii_case("exec") {
             // `exec` consumes the rest of the criteria string as its command
             // (it is always the last criterion on a Match line per OpenSSH).
-            // We intentionally do not evaluate exec — just skip the remainder.
+            // We intentionally do not evaluate exec: just skip the remainder.
             break;
         } else {
-            // Unknown criterion keyword — consume its value token and skip.
-            // Criteria like `address` fall here.
-            tokens.next();
+            // Unknown criterion keyword (e.g. `address`): skip the keyword
+            // only. Consuming its value blindly would eat a following
+            // keyword when the value's shape is not what we guessed.
         }
     }
 
     // At least one criterion type must be present.
-    let any_known = has_host || has_originalhost || has_user || has_localuser;
+    let any_known =
+        has_host || has_originalhost || has_user || has_localuser || has_final || has_all;
+    // `all` cannot combine with value-carrying criteria (ssh_config(5)).
+    let all_combined = has_all && (has_host || has_originalhost || has_user || has_localuser);
     // All present types must have matched (AND across types).
     let all_matched = (!has_host || host_matched)
         && (!has_originalhost || originalhost_matched)
         && (!has_user || user_matched)
-        && (!has_localuser || localuser_matched);
+        && (!has_localuser || localuser_matched)
+        && (!has_final || final_pass);
 
-    any_known && all_matched
+    any_known && !all_combined && all_matched
 }
 
 /// Check whether a Match criteria string contains an `exec` keyword.
@@ -1078,9 +1120,13 @@ fn contains_exec_criteria(criteria: &str) -> bool {
         if keyword.eq_ignore_ascii_case("exec") {
             return true;
         }
-        // Each criterion keyword is followed by a value token.
-        // If the keyword is unknown but not exec, just skip one value token.
-        tokens.next();
+        if matches!(
+            keyword.to_ascii_lowercase().as_str(),
+            "host" | "originalhost" | "user" | "localuser"
+        ) {
+            // Known value-carrying criterion: skip its value token.
+            tokens.next();
+        }
     }
     false
 }

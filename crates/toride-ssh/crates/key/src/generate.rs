@@ -1,9 +1,12 @@
 //! SSH key generation via ssh-keygen CLI and ssh-key crate for parsing.
 
 use base64::Engine;
+use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 use crate::get_permissions;
 use toride_ssh_core::SshPaths;
+use toride_ssh_core::paths::pub_path_for;
 use toride_ssh_core::{
     CliRunner, Error, Fingerprint, KeyCreateParams, KeyFormat, KeySource, KeyType, Result, SshKey,
 };
@@ -33,7 +36,7 @@ fn key_type_to_cli_arg(kt: KeyType) -> &'static str {
 ///
 /// SECURITY NOTE: `-N` is only included for the *empty*-passphrase case. When a
 /// passphrase is requested it is omitted entirely so `ssh-keygen` prompts for
-/// it and reads it via `SSH_ASKPASS` (see [`generate_key`]) — the passphrase
+/// it and reads it via `SSH_ASKPASS` (see [`generate_key`]): the passphrase
 /// never appears in `argv` or `/proc/<pid>/cmdline`, unlike the old
 /// `-N <passphrase>` approach which exposed it to every local user via `ps` for
 /// the lifetime of the ssh-keygen process.
@@ -49,13 +52,13 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
     ];
     // Only pin an empty passphrase (`-N ""`) when none was requested. When one
     // IS requested, omit `-N` so ssh-keygen prompts and reads it via
-    // SSH_ASKPASS — never argv.
+    // SSH_ASKPASS: never argv.
     if !passphrase_nonempty {
         args.push("-N".to_owned());
         args.push(String::new());
     }
 
-    // RSA bit size — only accept values that OpenSSH actually supports.
+    // RSA bit size: only accept values that OpenSSH actually supports.
     if let KeyType::Rsa { bits } = params.key_type
         && bits > 0
     {
@@ -99,11 +102,11 @@ fn build_keygen_args(params: &KeyCreateParams, private_path_str: &str) -> Vec<St
 )]
 pub async fn generate_key(
     paths: &SshPaths,
-    params: KeyCreateParams,
+    mut params: KeyCreateParams,
     runner: &dyn CliRunner,
 ) -> Result<SshKey> {
     let private_path = paths.ssh_dir().join(&params.name);
-    let public_path = private_path.with_extension("pub");
+    let public_path = pub_path_for(&private_path);
 
     if private_path.exists() {
         return Err(Error::KeyExists(params.name.clone()));
@@ -142,11 +145,8 @@ pub async fn generate_key(
 
     let args = build_keygen_args(&params, private_path_str);
 
-    // When a passphrase is requested, ssh-keygen is invoked WITHOUT `-N` (see
-    // `build_keygen_args`) so it prompts for it. Feed the passphrase via an
-    // SSH_ASKPASS helper script so it is read from a temp file rather than
-    // passed in argv — `-N <passphrase>` would expose it via `ps`/cmdline. The
-    // handler's Drop removes the script as soon as the run completes.
+    // Feed the passphrase via SSH_ASKPASS (never `-N`, which `ps` exposes);
+    // the handler's Drop removes the script when the run completes.
     if passphrase_nonempty {
         let askpass =
             toride_ssh_agent::AskpassHandler::new(params.passphrase.as_deref().unwrap_or(""))?;
@@ -159,6 +159,7 @@ pub async fn generate_key(
             ("DISPLAY".to_owned(), ":0".to_owned()),
         ];
         runner.run_with_env("ssh-keygen", args, askpass_env).await?;
+        params.passphrase.zeroize();
     } else {
         runner.run("ssh-keygen", args).await?;
     }
@@ -202,10 +203,12 @@ pub async fn generate_key(
 
         let permissions = get_permissions(&private_path_clone);
 
-        let private_key_data = std::fs::read_to_string(&private_path_clone)
-            .map_err(|e| Error::KeyParseFailed(format!("failed to read generated key: {e}")))?;
+        let private_key_data =
+            Zeroizing::new(std::fs::read_to_string(&private_path_clone).map_err(|e| {
+                Error::KeyParseFailed(format!("failed to read generated key: {e}"))
+            })?);
 
-        let pk = ssh_key::PrivateKey::from_openssh(&private_key_data)
+        let pk = ssh_key::PrivateKey::from_openssh(private_key_data.as_str())
             .map_err(|e| Error::KeyParseFailed(format!("failed to parse generated key: {e}")))?;
 
         Ok::<_, Error>((permissions, pk, public_path.exists()))
@@ -222,24 +225,10 @@ pub async fn generate_key(
 
     // Add to SSH config if requested.
     if params.add_to_config {
-        let host_alias = params
-            .config_host
-            .as_deref()
-            .unwrap_or(&params.name)
-            .to_owned();
-        let identity_value = format!("~/.ssh/{}", params.name);
+        let (host_alias, directives) = config_block_for(&params);
         let config_service = toride_ssh_config::ConfigService::new(paths);
         config_service
-            .edit(|ast| {
-                toride_ssh_config::ConfigService::add_host(
-                    ast,
-                    &host_alias,
-                    vec![
-                        ("HostName".to_owned(), host_alias.clone()),
-                        ("IdentityFile".to_owned(), identity_value),
-                    ],
-                )
-            })
+            .edit(|ast| toride_ssh_config::ConfigService::add_host(ast, &host_alias, directives))
             .await?;
     }
 
@@ -273,6 +262,25 @@ pub async fn generate_key(
     })
 }
 
+/// Host-block alias and directives that `add_to_config` writes for a new key.
+///
+/// `HostName` is emitted only when the caller supplied a real `config_host`;
+/// without one the block carries just `IdentityFile`, because `HostName`
+/// defaulting to the key name would make `ssh <key name>` resolve the
+/// hostname `<key name>`.
+fn config_block_for(params: &KeyCreateParams) -> (String, Vec<(String, String)>) {
+    let alias = params
+        .config_host
+        .clone()
+        .unwrap_or_else(|| params.name.clone());
+    let mut directives = Vec::with_capacity(2);
+    if let Some(ref host) = params.config_host {
+        directives.push(("HostName".to_owned(), host.clone()));
+    }
+    directives.push(("IdentityFile".to_owned(), format!("~/.ssh/{}", params.name)));
+    (alias, directives)
+}
+
 /// Add a key to the SSH agent.
 ///
 /// Delegates to [`CliRunner::run`] so the call is testable with
@@ -304,6 +312,76 @@ async fn add_key_to_agent(private_path: &std::path::Path, runner: &dyn CliRunner
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_block_without_config_host_omits_hostname() {
+        let params = KeyCreateParams {
+            add_to_config: true,
+            config_host: None,
+            ..KeyCreateParams::ed25519("id_ed25519".to_owned())
+        };
+        let (alias, directives) = config_block_for(&params);
+        assert_eq!(alias, "id_ed25519");
+        assert_eq!(
+            directives,
+            vec![("IdentityFile".to_owned(), "~/.ssh/id_ed25519".to_owned())]
+        );
+    }
+
+    #[test]
+    fn config_block_with_config_host_emits_hostname() {
+        let params = KeyCreateParams {
+            add_to_config: true,
+            config_host: Some("vps.example.org".to_owned()),
+            ..KeyCreateParams::ed25519("deploy_key".to_owned())
+        };
+        let (alias, directives) = config_block_for(&params);
+        assert_eq!(alias, "vps.example.org");
+        assert_eq!(
+            directives,
+            vec![
+                ("HostName".to_owned(), "vps.example.org".to_owned()),
+                ("IdentityFile".to_owned(), "~/.ssh/deploy_key".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn add_to_config_without_config_host_writes_identity_only() {
+        let ssh_keygen_present = std::process::Command::new("ssh-keygen")
+            .arg("--help")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok();
+        if !ssh_keygen_present {
+            eprintln!("skipping: ssh-keygen not available");
+            return;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let paths = SshPaths::with_dir(dir.path());
+        let runner = toride_ssh_core::DefaultCliRunner;
+        let params = KeyCreateParams {
+            add_to_config: true,
+            config_host: None,
+            ..KeyCreateParams::ed25519("id_ed25519".to_owned())
+        };
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(generate_key(&paths, params, &runner))
+            .expect("generate");
+
+        let config = std::fs::read_to_string(dir.path().join("config")).unwrap();
+        assert!(config.contains("Host id_ed25519"), "config: {config}");
+        assert!(
+            config.contains("IdentityFile ~/.ssh/id_ed25519"),
+            "config: {config}"
+        );
+        assert!(
+            !config.to_lowercase().contains("hostname"),
+            "config must not carry a HostName defaulting to the key name: {config}"
+        );
+    }
 
     #[test]
     fn key_type_to_cli_arg_all_types() {
@@ -401,7 +479,7 @@ mod tests {
         };
         let args = build_keygen_args(&params, "/tmp/key");
         // When a passphrase is requested, `-N` is OMITTED entirely so
-        // ssh-keygen prompts and reads it via SSH_ASKPASS — neither `-N` nor
+        // ssh-keygen prompts and reads it via SSH_ASKPASS: neither `-N` nor
         // the passphrase value appears in argv.
         assert!(
             !args.contains(&"-N".to_owned()),

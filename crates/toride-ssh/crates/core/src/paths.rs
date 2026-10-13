@@ -109,6 +109,19 @@ impl SshPaths {
     }
 }
 
+/// Companion `.pub` path for a private key file.
+///
+/// Appends the literal `.pub` suffix instead of replacing the text after the
+/// last dot, matching `ssh-keygen`: a key named `deploy.key` gets its public
+/// half at `deploy.key.pub`, where [`Path::with_extension`] would produce the
+/// wrong `deploy.pub`.
+#[must_use]
+pub fn pub_path_for(private: &Path) -> PathBuf {
+    let mut name = private.as_os_str().to_owned();
+    name.push(".pub");
+    private.with_file_name(name)
+}
+
 /// Expand a path that may start with `~` or be relative.
 ///
 /// Handles the common SSH config path expansion logic:

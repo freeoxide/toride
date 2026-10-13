@@ -225,12 +225,13 @@ pub fn convert_diagnostics(diagnostics: Vec<toride_ssh::Diagnostic>) -> Vec<Diag
 }
 
 /// Format a diagnostic severity to a string.
-pub fn format_severity(s: toride_ssh::Severity) -> String {
+pub fn format_severity(s: toride_ssh::DiagnosticSeverity) -> String {
     match s {
-        toride_ssh::Severity::Ok => "ok".into(),
-        toride_ssh::Severity::Info => "info".into(),
-        toride_ssh::Severity::Warning => "warning".into(),
-        toride_ssh::Severity::Error => "error".into(),
+        toride_ssh::DiagnosticSeverity::Ok => "ok".into(),
+        toride_ssh::DiagnosticSeverity::Info => "info".into(),
+        toride_ssh::DiagnosticSeverity::Warning => "warning".into(),
+        toride_ssh::DiagnosticSeverity::Important => "important".into(),
+        toride_ssh::DiagnosticSeverity::Critical => "critical".into(),
     }
 }
 

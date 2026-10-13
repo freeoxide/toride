@@ -476,7 +476,7 @@ async fn repair_public_routes_passphrase_through_askpass_not_argv() {
 /// executed has an open writer. Even after an atomic write+rename (so no
 /// userspace process holds the file open) the kernel's `i_writecount`
 /// accounting can transiently report a write reference while the binfmt
-/// layer sets up the text segment, **under concurrent fork/exec load** —
+/// layer sets up the text segment, **under concurrent fork/exec load**:
 /// e.g. when cargo runs the askpass tests in parallel. This is a known,
 /// purely-transient kernel race; the script is always executable a few
 /// microseconds later. We retry a handful of times with a short backoff so
@@ -835,4 +835,130 @@ async fn remove_from_config_strips_referenced_line_and_writes_atomically() {
         .filter(|e| e.file_name().to_string_lossy().starts_with(".config.tmp."))
         .count();
     assert_eq!(leftovers, 0, "temp config file must be cleaned up");
+}
+
+#[tokio::test]
+async fn dotted_key_name_lifecycle_with_real_ssh_keygen() {
+    let ssh_keygen_present = std::process::Command::new("ssh-keygen")
+        .arg("--help")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok();
+    if !ssh_keygen_present {
+        eprintln!("skipping: ssh-keygen not available");
+        return;
+    }
+
+    let dir = tempfile::tempdir().unwrap();
+    let paths = toride_ssh_core::SshPaths::with_dir(dir.path());
+    let runner = toride_ssh_core::DefaultCliRunner;
+    let svc = KeyService::new(&paths, &runner);
+
+    // Generate a key with a dotted name: ssh-keygen writes deploy.key.pub,
+    // and every companion lookup must agree with that.
+    svc.create(toride_ssh_core::KeyCreateParams::ed25519(
+        "deploy.key".to_owned(),
+    ))
+    .await
+    .expect("generate dotted key");
+
+    let ssh_dir = dir.path();
+    assert!(ssh_dir.join("deploy.key").exists(), "private key exists");
+    assert!(
+        ssh_dir.join("deploy.key.pub").exists(),
+        "public companion is deploy.key.pub (not deploy.pub)"
+    );
+    assert!(!ssh_dir.join("deploy.pub").exists());
+
+    // The scan only auto-discovers id_* names (documented on list()), so
+    // exercise the dotted companion through the inspect path instead.
+    let inspected = inspect_key_cached(&ssh_dir.join("deploy.key")).expect("inspect dotted key");
+    assert_eq!(inspected.path, ssh_dir.join("deploy.key"));
+    assert!(inspected.has_public_pair, "has_public_pair finds the .pub");
+
+    // repair_public over a moved key still targets deploy.key.pub.
+    std::fs::remove_file(ssh_dir.join("deploy.key.pub")).unwrap();
+    svc.repair_public(&ssh_dir.join("deploy.key"), None)
+        .await
+        .expect("repair");
+    assert!(
+        ssh_dir.join("deploy.key.pub").exists(),
+        "repair recreates deploy.key.pub"
+    );
+
+    // chmod_fix covers the dotted .pub companion.
+    std::fs::write(
+        ssh_dir.join("deploy.key.pub"),
+        "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILWnaRp7+VXp8vGSr8SmxJWOqJVWpitSTRiUyQYiavsZ t\n",
+    )
+    .unwrap();
+    svc.chmod_fix("deploy.key").await.expect("chmod fix");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(ssh_dir.join("deploy.key"))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // rename keeps the dotted companion in sync.
+    svc.rename("deploy.key", "release.key")
+        .await
+        .expect("rename");
+    assert!(ssh_dir.join("release.key").exists());
+    assert!(
+        ssh_dir.join("release.key.pub").exists(),
+        "rename moves release.key.pub"
+    );
+    assert!(!ssh_dir.join("deploy.key.pub").exists());
+
+    // delete removes both dotted companions.
+    svc.delete(toride_ssh_core::KeyDeleteParams {
+        name: "release.key".to_owned(),
+        remove_public: true,
+        remove_certificate: false,
+        remove_from_agent: false,
+        remove_from_config: false,
+        backup: false,
+    })
+    .await
+    .expect("delete");
+    assert!(!ssh_dir.join("release.key").exists());
+    assert!(!ssh_dir.join("release.key.pub").exists());
+}
+
+#[test]
+fn key_parse_cache_is_capped() {
+    crate::inventory::clear_key_cache_for_tests();
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..300 {
+        let path = dir.path().join(format!("key-{i}"));
+        std::fs::write(&path, "garbage key material\n").unwrap();
+        let _ = crate::inventory::inspect_private_key_cached(&path);
+    }
+    assert!(
+        crate::inventory::key_cache_len_for_tests() <= 256,
+        "key cache must stay bounded, got {}",
+        crate::inventory::key_cache_len_for_tests()
+    );
+    crate::inventory::clear_key_cache_for_tests();
+}
+
+#[test]
+fn missing_key_file_drops_its_stale_cache_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gone-key");
+    std::fs::write(&path, "garbage key material\n").unwrap();
+    let _ = crate::inventory::inspect_private_key_cached(&path);
+    assert!(crate::inventory::key_cache_paths_for_tests().contains(&path));
+
+    std::fs::remove_file(&path).unwrap();
+    assert!(crate::inventory::inspect_private_key_cached(&path).is_err());
+    assert!(
+        !crate::inventory::key_cache_paths_for_tests().contains(&path),
+        "a NotFound probe must evict the stale entry"
+    );
 }

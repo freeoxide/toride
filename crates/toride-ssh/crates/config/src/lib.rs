@@ -2,19 +2,20 @@
 
 pub mod ast;
 pub mod cache;
-mod directives;
-mod editor;
-mod managed;
+pub mod directives;
+pub mod editor;
+pub mod managed;
 mod parse;
 pub mod resolve;
 pub mod sshd;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use toride_ssh_core::Result;
 use toride_ssh_core::SshPaths;
-use toride_ssh_core::{Diagnostic, Error, Severity};
+use toride_ssh_core::{Diagnostic, DiagnosticSeverity, Error};
 
 pub use resolve::ResolvedHost;
 
@@ -32,24 +33,40 @@ impl<'a> ConfigService<'a> {
     /// Load and parse the SSH config into a lossless AST (cached); returns an
     /// empty AST when the file is missing.
     ///
+    /// The AST is shared through an [`Arc`], so repeated loads do not
+    /// deep-clone every node; use [`Self::load_owned`] when you need to
+    /// mutate.
+    ///
     /// # Errors
     /// [`Error::Io`] when the file is unreadable.
-    pub async fn load(&self) -> Result<ast::ConfigAst> {
+    pub async fn load(&self) -> Result<Arc<ast::ConfigAst>> {
         let path = self.paths.config_path();
         if !path.exists() {
-            return Ok(ast::ConfigAst { nodes: Vec::new() });
+            return Ok(Arc::new(ast::ConfigAst { nodes: Vec::new() }));
         }
         let path = path.to_path_buf();
         let ast = tokio::task::spawn_blocking(move || cache::load_cached_ast(&path))
             .await
             .map_err(|e| Error::TaskFailed(e.to_string()))??;
-        Ok((*ast).clone())
+        Ok(ast)
+    }
+
+    /// Load a deep copy of the AST for mutation (see [`Self::load`]).
+    ///
+    /// # Errors
+    /// [`Error::Io`] when the file is unreadable.
+    pub async fn load_owned(&self) -> Result<ast::ConfigAst> {
+        Ok((*self.load().await?).clone())
     }
 
     /// Save the AST atomically with `0o600` permissions.
     ///
+    /// The write goes through [`toride_fs::atomic_write_with_perms`]
+    /// (`O_EXCL` temp file, fsync, rename, chmod), keeping the `.bak` copy of
+    /// the previous config when one exists.
+    ///
     /// # Errors
-    /// [`Error::ConfigWriteFailed`] (write/rename) or [`Error::Io`] (chmod).
+    /// [`Error::ConfigWriteFailed`] on write or rename failure.
     pub async fn save(&self, ast: &ast::ConfigAst) -> Result<()> {
         let path = self.paths.config_path();
         let content = ast.to_string_lossless();
@@ -61,28 +78,13 @@ impl<'a> ConfigService<'a> {
             }
         }
 
-        let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-        let tmp_path = parent.join(format!(
-            ".config.tmp.{}.{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_nanos()
-        ));
-        tokio::fs::write(&tmp_path, &content).await?;
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            tokio::fs::set_permissions(&tmp_path, perms).await?;
-        }
-
-        tokio::fs::rename(&tmp_path, path).await.map_err(|e| {
-            let _ = std::fs::remove_file(&tmp_path);
-            toride_ssh_core::Error::ConfigWriteFailed(format!("failed to rename config: {e}"))
-        })?;
+        let path = path.to_path_buf();
+        tokio::task::spawn_blocking(move || {
+            toride_fs::atomic_write_with_perms(&path, &content, 0o600)
+        })
+        .await
+        .map_err(|e| Error::TaskFailed(e.to_string()))?
+        .map_err(|e| Error::ConfigWriteFailed(e.to_string()))?;
 
         Ok(())
     }
@@ -201,16 +203,25 @@ impl<'a> ConfigService<'a> {
 
     /// Load, mutate via `f`, then save.
     ///
+    /// The whole load-mutate-save critical section is serialized across
+    /// processes by an advisory `flock` on the lock file named by
+    /// [`config_edit_lock_path`], mirroring [`sshd::edit`]'s lock
+    /// discipline: two concurrent editors cannot each load the original,
+    /// apply their edit, and have the second save clobber the first.
+    ///
     /// # Errors
-    /// From any step: ensure, load, `f`, or save.
+    /// From any step: ensure, lock, load, `f`, or save.
     pub async fn edit<F>(&self, f: F) -> Result<()>
     where
         F: FnOnce(&mut ast::ConfigAst) -> Result<()>,
     {
         self.ensure_config_file().await?;
-        let mut ast = self.load().await?;
-        f(&mut ast)?;
-        self.save(&ast).await
+        edit_under_lock(self.paths.config_path(), || async {
+            let mut ast = self.load_owned().await?;
+            f(&mut ast)?;
+            self.save(&ast).await
+        })
+        .await
     }
 
     /// Diagnose the config: proxy conflicts, duplicate aliases, `Host *`
@@ -253,6 +264,64 @@ impl<'a> ConfigService<'a> {
     }
 }
 
+/// Lock file path for a config file, shared by every in-process and
+/// cross-process writer (`<config>.toride.lock` beside the config).
+#[must_use]
+pub fn config_edit_lock_path(config_path: &Path) -> PathBuf {
+    let mut name = config_path.file_name().unwrap_or_default().to_os_string();
+    name.push(".toride.lock");
+    config_path.with_file_name(name)
+}
+
+/// Run `f` while holding the cross-process edit lock for `config_path`.
+///
+/// The exclusive `flock` guard is acquired on a lock file named by
+/// [`config_edit_lock_path`] **before** `f` starts and held until it
+/// finishes, so a load-mutate-save critical section (see
+/// [`ConfigService::edit`]) cannot interleave with another writer. The
+/// acquire is a `try_write` retry loop with a small sleep instead of a
+/// blocking `flock` wait: a blocking wait on an async worker thread
+/// deadlocks a bounded runtime whenever the lock holder needs that same
+/// worker to finish. The guard and its backing file are plain locals
+/// dropped on every return path.
+///
+/// # Errors
+/// [`Error::Io`] when the lock file cannot be opened, plus whatever `f`
+/// returns.
+pub async fn edit_under_lock<F, Fut, T>(config_path: &Path, f: F) -> Result<T>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = Result<T>>,
+{
+    let lock_path = config_edit_lock_path(config_path);
+    if let Some(parent) = lock_path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| Error::Io(std::io::Error::other(format!("config edit lock: {e}"))))?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|e| {
+            Error::Io(std::io::Error::other(format!(
+                "config edit lock: cannot open {}: {e}",
+                lock_path.display()
+            )))
+        })?;
+    let mut lock = fd_lock::RwLock::new(file);
+    let _guard = loop {
+        match lock.try_write() {
+            Ok(guard) => break guard,
+            Err(_) => tokio::time::sleep(std::time::Duration::from_millis(5)).await,
+        }
+    };
+    tracing::debug!(path = %lock_path.display(), "config edit lock acquired");
+
+    f().await
+}
+
 fn check_proxy_conflict(
     header: &str,
     nodes: &[ast::ConfigNode],
@@ -275,7 +344,7 @@ fn check_proxy_conflict(
     if has_proxy_command && has_proxy_jump {
         diagnostics.push(Diagnostic {
             id: "config_proxy_conflict",
-            severity: Severity::Warning,
+            severity: DiagnosticSeverity::Warning,
             message: format!("Host block '{header}' has both ProxyCommand and ProxyJump set"),
             hint: Some(
                 "ProxyJump takes precedence over ProxyCommand; \
@@ -300,7 +369,7 @@ fn check_duplicate_aliases(
         if let Some(first_header) = seen_patterns.get(pat) {
             diagnostics.push(Diagnostic {
                 id: "config_duplicate_alias",
-                severity: Severity::Warning,
+                severity: DiagnosticSeverity::Warning,
                 message: format!(
                     "Host alias '{pat}' appears in both '{first_header}' and '{header}'",
                 ),
@@ -326,7 +395,7 @@ fn check_identity_files(
             if d.value.to_lowercase().ends_with(".pub") {
                 diagnostics.push(Diagnostic {
                     id: "config_identity_pub",
-                    severity: Severity::Warning,
+                    severity: DiagnosticSeverity::Warning,
                     message: format!(
                         "IdentityFile '{}' in '{header}' points to a public key \
                          (.pub file)",
@@ -345,7 +414,7 @@ fn check_identity_files(
             if !expanded.exists() {
                 diagnostics.push(Diagnostic {
                     id: "config_identity_missing",
-                    severity: Severity::Warning,
+                    severity: DiagnosticSeverity::Warning,
                     message: format!(
                         "IdentityFile '{}' in '{header}' does not exist \
                          (resolved: {})",
@@ -373,7 +442,7 @@ fn check_host_star_placement(
     {
         diagnostics.push(Diagnostic {
             id: "config_host_star_placement",
-            severity: Severity::Warning,
+            severity: DiagnosticSeverity::Warning,
             message: "'Host *' appears before specific Host blocks; \
                  later blocks cannot override its defaults"
                 .into(),

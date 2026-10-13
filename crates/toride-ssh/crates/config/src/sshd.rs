@@ -7,13 +7,13 @@
 //!
 //! Writes are privileged (the file is root-owned) and go through
 //! [`toride_ssh_core::run_privileged`], which validates the result with
-//! `sshd -t` and keeps a `.bak` backup before installing — a malformed
+//! `sshd -t` and keeps a `.bak` backup before installing: a malformed
 //! `sshd_config` would lock the user out of SSH, so an invalid config is never
 //! written.
 //!
 //! All access here is restricted to **global** directives (those outside any
 //! `Match` block). `Match`-scoped directives are intentionally left untouched
-//! — editing them blindly is dangerous, and global scope is what we expose in
+//!: editing them blindly is dangerous, and global scope is what we expose in
 //! the UI.
 
 use toride_ssh_core::{Result, privilege::PrivilegedOp, run_privileged};
@@ -53,19 +53,19 @@ fn edit_lock_path() -> std::path::PathBuf {
 }
 
 /// Ensure the cross-process lock file exists and is openable by every user
-/// that may contend on a `sshd_config` edit — both root and non-root toride
+/// that may contend on a `sshd_config` edit: both root and non-root toride
 /// processes, plus any other editor.
 ///
 /// The lock lives in `/tmp` (sticky, world-writable). To let *any* user
 /// `open(O_RDWR)` it for `flock`, it must be world read/write (`0o666`). We
 /// create it with those perms if absent, and (best-effort) chmod it to `0o666`
 /// if we own it / are root. If it already exists and we can't change its perms,
-/// we simply proceed — `toride_fs::with_lock`'s own `open` will surface an
+/// we proceed regardless: `toride_fs::with_lock`'s own `open` will surface an
 /// `EACCES` as a `LockFailed` error if it genuinely cannot be opened, which is
 /// the correct fail-closed behaviour.
 fn ensure_lock_file(path: &std::path::Path) {
     // Create if missing. `create_new` avoids a race: if two processes race
-    // here, the loser simply gets AlreadyExists, which we ignore.
+    // here, the loser gets AlreadyExists, which we ignore.
     let created = std::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -92,10 +92,6 @@ fn ensure_lock_file(path: &std::path::Path) {
         let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o666));
     }
 }
-
-// ---------------------------------------------------------------------------
-// Load / save / edit
-// ---------------------------------------------------------------------------
 
 /// Load and parse `/etc/ssh/sshd_config` into a lossless AST.
 ///
@@ -140,8 +136,8 @@ fn with_edit_lock<T>(path: &std::path::Path, f: impl FnOnce() -> Result<T>) -> R
     // but our critical section yields `toride_ssh_core::Result`. Bridge the two
     // by funneling the ssh error through a `toride_fs::Error::Io` (which itself
     // carries the original message verbatim); the `.map_err` below then lifts
-    // *all* errors — both lock-acquisition failures and inner-critical-section
-    // failures — back into `toride_ssh_core::Error::Io`.
+    // *all* errors: both lock-acquisition failures and inner-critical-section
+    // failures: back into `toride_ssh_core::Error::Io`.
     toride_fs::with_lock(path, || {
         f().map_err(|e| {
             toride_fs::Error::Io(std::io::Error::other(format!(
@@ -194,7 +190,7 @@ where
     // Acquire the cross-process advisory lock. The lock, the backing file, and
     // the write guard are all locals here; declaration order guarantees the
     // guard (borrowing `lock`) is dropped before `lock` (and the file it owns)
-    // at scope end, releasing the flock on every return path — error, panic,
+    // at scope end, releasing the flock on every return path: error, panic,
     // or success. The lock-acquire itself is a `flock(2)` syscall (cheap; only
     // contends with other toride instances editing sshd_config, a brief and
     // rare contention), so it does not need to run on a blocking thread.
@@ -224,10 +220,6 @@ where
     f(&mut ast)?;
     save(&ast, running_as_root).await
 }
-
-// ---------------------------------------------------------------------------
-// Read
-// ---------------------------------------------------------------------------
 
 /// The current global `AllowUsers` list (ignoring `Match`-scoped directives).
 ///
@@ -261,7 +253,7 @@ pub fn get_deny_groups(ast: &ConfigAst) -> Vec<String> {
 
 /// Collect every whitespace-separated token from all global `<key>` directives.
 ///
-/// Only top-level [`ConfigNode::Directive`] nodes are considered — values
+/// Only top-level [`ConfigNode::Directive`] nodes are considered: values
 /// inside `Match`/`Host` blocks are intentionally skipped, since those are
 /// scope-specific and not what Toride's global UI exposes.
 ///
@@ -341,15 +333,11 @@ fn directive_follows_match_or_host_set(
     leaked
 }
 
-// ---------------------------------------------------------------------------
-// Pattern detection
-// ---------------------------------------------------------------------------
-
 /// Returns `true` if `value` contains any OpenSSH pattern tokens.
 ///
 /// `AllowUsers`/`DenyUsers` values are pattern strings: a token may contain
 /// glob wildcards (`*`, `?`) or a `user@host` selector. Such a directive
-/// cannot be safely edited by exact username — adding a plain name would be
+/// cannot be safely edited by exact username: adding a plain name would be
 /// swallowed by an existing pattern, and "removing" against patterns would be
 /// semantically meaningless. The editor refuses to mutate such directives
 /// instead (see [`directive_has_patterns`]).
@@ -366,7 +354,7 @@ pub fn has_pattern_tokens(value: &str) -> bool {
 ///
 /// `Match`-scoped directives are ignored, consistent with the rest of this
 /// module's global-only scope. Scope-ambiguous directives that follow a
-/// `Match`/`Host` block (the `parse_block_body` leak — see `ast::parse_block_body`)
+/// `Match`/`Host` block (the `parse_block_body` leak: see `ast::parse_block_body`)
 /// are likewise excluded, so a leaked block-scoped `*` does not get reported as
 /// a global pattern.
 #[must_use]
@@ -390,10 +378,6 @@ pub fn directive_has_patterns(ast: &ConfigAst, key: &str) -> bool {
         matches!(&ast.nodes[i], ConfigNode::Directive(d) if has_pattern_tokens(&d.value))
     })
 }
-
-// ---------------------------------------------------------------------------
-// Write
-// ---------------------------------------------------------------------------
 
 /// Add `user` to the global `AllowUsers` directive.
 ///
@@ -461,7 +445,7 @@ enum Action {
 /// deleting the directive as needed.
 ///
 /// Refuses to touch the AST (returning [`Error::SshdConfigInvalid`]) if any
-/// global occurrence of `<key>` contains pattern tokens — editing a pattern
+/// global occurrence of `<key>` contains pattern tokens: editing a pattern
 /// directive by exact username would be semantically wrong.
 ///
 /// When multiple global occurrences exist, they are merged into the first
@@ -488,7 +472,7 @@ fn upsert_user_in_directive(
     // Fail-closed against the parse_block_body Match/Host-leak (see ast.rs
     // `parse_block_body` doc comment): if ANY matching Directive node is
     // immediately preceded in document order (ignoring BlankLine/Comment
-    // nodes) by a Match/Host block, its scope is genuinely ambiguous — it may
+    // nodes) by a Match/Host block, its scope is genuinely ambiguous: it may
     // be a block-scoped directive that the indentation-based parser leaked to
     // the top level. `sshd -t` would still accept the file (it is syntactically
     // valid), so the validation gate cannot catch this, and re-rendering at
@@ -502,7 +486,7 @@ fn upsert_user_in_directive(
         )));
     }
 
-    // Refuse to mutate any directive that already uses patterns — exact
+    // Refuse to mutate any directive that already uses patterns: exact
     // username edits against glob/@ selectors are semantically wrong. Check
     // before touching anything so the AST is left unmodified on error.
     if indices
@@ -540,7 +524,7 @@ fn upsert_user_in_directive(
             apply_action_to_users(&mut merged, user, action);
 
             // Write the result back into the first occurrence (or delete it if
-            // the union is now empty — an absent directive is clearer than a
+            // the union is now empty: an absent directive is clearer than a
             // dangling empty line and matches the OpenSSH default).
             if merged.is_empty() {
                 // Remove ALL occurrences (first first, then the rest in reverse
@@ -880,7 +864,7 @@ mod tests {
     #[test]
     fn single_occurrence_unchanged_keeps_inline_comment() {
         // Idempotent add of an existing user (or noop remove) must NOT touch
-        // the inline comment — the value is unchanged so the comment is still
+        // the inline comment: the value is unchanged so the comment is still
         // accurate.
         let mut a = ast("AllowUsers alice bob # both admins\n");
         add_user_to_allow(&mut a, "alice").unwrap();
@@ -924,8 +908,8 @@ mod tests {
     // parse_block_body (ast.rs) breaks a Match/Host block on the first
     // non-indented line, so an UNINDENTED directive that OpenSSH actually
     // scopes to the preceding block leaks to the top level. The editor MUST
-    // refuse such edits (sshd -t does not catch it — the file is still
-    // syntactically valid — and re-rendering at indent 0 would permanently
+    // refuse such edits (sshd -t does not catch it: the file is still
+    // syntactically valid: and re-rendering at indent 0 would permanently
     // relocate the directive to global scope on disk).
 
     #[test]
@@ -943,7 +927,7 @@ mod tests {
                 && msg.contains("ambiguous")),
             "expected SshdConfigInvalid scope-ambiguity error, got {err:?}"
         );
-        // AST must be byte-identical (round-trip stable) — no mutation.
+        // AST must be byte-identical (round-trip stable): no mutation.
         assert_eq!(a.to_string_lossless(), before);
     }
 
@@ -985,7 +969,7 @@ mod tests {
     #[test]
     fn upsert_edits_normally_when_directive_precedes_match_block() {
         // An AllowUsers BEFORE any Match/Host block is genuinely global and
-        // must still edit normally — the guard only fires when a directive
+        // must still edit normally: the guard only fires when a directive
         // FOLLOWS a block.
         let mut a = ast("AllowUsers alice\nMatch User sftpuser\n    PermitRootLogin no\n");
         add_user_to_allow(&mut a, "bob").unwrap();
@@ -1008,7 +992,7 @@ mod tests {
     #[test]
     fn upsert_edits_when_another_directive_intervenes() {
         // A non-block directive between the target and any earlier block means
-        // the target's immediate predecessor is a Directive, not a block — so
+        // the target's immediate predecessor is a Directive, not a block: so
         // its scope is unambiguous and the edit proceeds.
         let mut a = ast("Match User sftpuser\n    PermitRootLogin no\nPort 22\nAllowUsers bob\n");
         add_user_to_allow(&mut a, "carol").unwrap();
@@ -1044,7 +1028,7 @@ mod tests {
     // with_edit_lock (an advisory flock). We can't drive edit() itself in a
     // unit test (it reads /etc/ssh/sshd_config and runs privileged sshd -t /
     // sudo), but we CAN test the exact lock primitive edit() uses and prove
-    // two concurrent holders serialize — the second cannot enter until the
+    // two concurrent holders serialize: the second cannot enter until the
     // first releases.
 
     #[test]
@@ -1133,7 +1117,7 @@ mod tests {
         });
         assert!(err.is_err(), "first call must propagate the error");
 
-        // A second call must succeed without deadlocking — proving the lock
+        // A second call must succeed without deadlocking: proving the lock
         // was released on the error path. (If it were still held, this would
         // block until the test timeout.)
         let result = with_edit_lock(&lock_path, || Ok(42));
@@ -1148,7 +1132,7 @@ mod tests {
     // edit() used to wrap its critical section in
     // `tokio::task::block_in_place(|| handle.block_on(...))`. block_in_place
     // PANICS ("can call blocking only when running on the multi-threaded
-    // runtime") when edit() is awaited from a current-thread runtime — which
+    // runtime") when edit() is awaited from a current-thread runtime: which
     // is the default for `#[tokio::test]` and many embedded/host runtimes.
     // The fix makes edit() a genuine async fn (no nested runtime). These tests
     // drive edit() on both runtime flavors and assert it completes without

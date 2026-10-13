@@ -11,7 +11,7 @@
 //! cached, producing a clear error the UI can surface. The user runs `sudo -v`
 //! in another terminal first, or runs the whole app under `sudo`.
 //!
-//! The privilege boundary is explicit and narrow — a caller cannot execute an
+//! The privilege boundary is explicit and narrow: a caller cannot execute an
 //! arbitrary command; it must describe one of the enumerated [`PrivilegedOp`]s.
 
 use std::path::Path;
@@ -46,20 +46,20 @@ pub fn is_root() -> bool {
 /// An operation that requires elevated privileges to perform.
 ///
 /// Each variant fully describes the privileged write so the boundary stays
-/// auditable — there is no generic "run any command" escape hatch.
+/// auditable: there is no generic "run any command" escape hatch.
 #[derive(Debug, Clone)]
 pub enum PrivilegedOp {
     /// Atomically install new contents for `/etc/ssh/sshd_config`.
     ///
     /// The caller has already serialized the desired file content. This op:
     /// 1. Stages the content in an O_EXCL, unpredictable-named temp file in
-    ///    the *same directory* as the target (`/etc/ssh`) — so the install is
+    ///    the *same directory* as the target (`/etc/ssh`): so the install is
     ///    an atomic `rename(2)` within one filesystem, and `sshd -t` resolves
     ///    relative `Include` directives (e.g. the default
     ///    `Include /etc/ssh/sshd_config.d/*.conf`) against the live directory.
     /// 2. **Always** validates the staged file with `sshd -t` through the
     ///    privileged path. If the `sshd` binary is genuinely unavailable, the
-    ///    write **fails closed** — an unvalidatable config is never installed.
+    ///    write **fails closed**: an unvalidatable config is never installed.
     /// 3. Backs up the existing config to `<path>.bak` *before* install. A
     ///    backup failure is fatal (the write aborts without touching the live
     ///    config).
@@ -73,8 +73,8 @@ pub enum PrivilegedOp {
 impl PrivilegedOp {
     /// Execute the privileged operation on a blocking thread.
     ///
-    /// `running_as_root` should be the result of [`is_root`]; it is passed in
-    /// rather than re-detected so the caller controls the trust boundary.
+    /// `running_as_root` is passed in, not re-detected, so the caller
+    /// controls the trust boundary.
     fn execute(self, running_as_root: bool) -> Result<()> {
         match self {
             Self::WriteSshdConfig { content } => {
@@ -110,10 +110,8 @@ pub async fn run_privileged(op: PrivilegedOp, running_as_root: bool) -> Result<(
         .map_err(|e| Error::TaskFailed(e.to_string()))?
 }
 
-/// Build a `duct` expression that runs `cmd args`, optionally through `sudo`.
-///
-/// When not root, the command is wrapped as `sudo -n cmd args…` so it fails
-/// fast (rather than prompting) when credentials aren't cached.
+/// Build a `duct` expression running `cmd args`, wrapped in `sudo -n` when
+/// not root so a missing credential cache fails fast instead of prompting.
 fn cmd_with_priv(cmd: &str, args: &[&str], running_as_root: bool) -> duct::Expression {
     if running_as_root {
         duct::cmd(cmd, args)
@@ -126,29 +124,14 @@ fn cmd_with_priv(cmd: &str, args: &[&str], running_as_root: bool) -> duct::Expre
     }
 }
 
-/// Type of the validation seam injected into [`write_sshd_config`].
-///
-/// A validator runs the staged temp file through `sshd -t` (or a test double)
-/// and reports one of three outcomes:
-///
-/// - [`ValidateOutcome::Ok`] — the config parses, proceed to install.
-/// - [`ValidateOutcome::Invalid`] — `sshd -t` rejected the config; fail closed
-///   with [`Error::SshdConfigInvalid`].
-/// - [`ValidateOutcome::BinaryMissing`] — the `sshd` binary itself could not
-///   be found; fail closed with [`Error::SshdNotFound`]. We never install a
-///   config we could not validate.
+/// Validation seam for [`write_sshd_config`]: run `sshd -t` on the staged
+/// file and report Ok, Invalid (fail closed, never installed), or
+/// BinaryMissing (fail closed with [`Error::SshdNotFound`]).
 type Validator = fn(path: &Path, running_as_root: bool) -> ValidateOutcome;
 
-/// The captured result of running the validator command (`sshd -t -f <path>`).
-///
-/// This is the testable seam behind [`default_validator`]: rather than calling
-/// `cmd_with_priv(...).run()` inline (which requires the `sshd` binary to exist
-/// on the host and so can't be exercised on CI), [`default_validator`] delegates
-/// the actual execution to [`default_validator_runner`] and then classifies the
-/// outcome via [`classify_validator_output`]. Tests call
-/// [`classify_validator_output`] directly with canned outputs, so the three-way
-/// classification (privilege-denied → binary-missing → invalid) is locked by a
-/// deterministic assertion that has no dependency on the host having `sshd`.
+/// Captured result of the validator command, split from execution so
+/// [`classify_validator_output`] is testable with canned outputs on hosts
+/// without `sshd`.
 enum ValidatorRun {
     /// The command exited with this status and captured (merged) output.
     Output {
@@ -163,16 +146,9 @@ enum ValidatorRun {
     SpawnFailed(String),
 }
 
-/// Type of the privileged-command runner seam injected into
-/// [`write_sshd_config`].
-///
-/// This mirrors the contract of [`run_cmd`]: run `cmd args…` (through `sudo -n`
-/// when not root), require a zero exit, and return `Err(Error::SudoFailed(…))`
-/// on any non-zero exit or spawn failure. Production code passes `None`, which
-/// resolves to the real [`run_cmd`]; tests inject a stub that records the
-/// invocation and fakes success (or a specific failure) so the NON-root write
-/// pipeline (`lift_staged_into_target_dir` → validate → `install_command`) can
-/// be exercised end-to-end without ever invoking `sudo` or `sshd`.
+/// Privileged-command runner seam mirroring [`run_cmd`]: `sudo -n` when not
+/// root, zero exit required, non-zero mapped to [`Error::SudoFailed`].
+/// Production passes `None` for the real [`run_cmd`]; tests inject a stub.
 type Runner = fn(cmd: &str, args: &[&str], running_as_root: bool) -> Result<()>;
 
 /// The result of validating a staged sshd_config.
@@ -189,7 +165,7 @@ pub enum ValidateOutcome {
     /// path; carry the detail we observed.
     BinaryMissing(String),
     /// The privileged runner could not authenticate (e.g. `sudo -n` has no
-    /// cached credentials — "a password is required"). This is a privilege
+    /// cached credentials: "a password is required"). This is a privilege
     /// failure, not a config error; mapped to [`Error::SudoFailed`] so the UI
     /// does not misreport it as a config-validation failure.
     PrivilegeDenied(String),
@@ -197,40 +173,12 @@ pub enum ValidateOutcome {
 
 /// Write, validate, back up, and atomically install new sshd_config contents.
 ///
-/// This is the hardened write path. The hardening vs. the original
-/// implementation:
-///
-/// - **Validation is never skipped.** The old code gated `sshd -t` on
-///   `which::which("sshd")`, which resolves against the *invoking* user's
-///   `PATH`. On Debian/Ubuntu a normal user's `PATH` lacks `/usr/sbin` where
-///   `sshd` lives, so validation was silently skipped and an unvalidated
-///   config was installed. Now we always run validation through the privileged
-///   runner (`sudo -n`, which uses sudo's `secure_path` containing `/usr/sbin`).
-///   If the binary is genuinely missing we fail closed — no install.
-/// - **The temp ends up in the target directory before validation.** When
-///   root, we stage directly in the target's directory (`/etc/ssh`). When not
-///   root we cannot write `/etc/ssh` from an unprivileged process (`tempfile_in`
-///   is a plain Rust call; `run_privileged` only elevates individual
-///   *commands* via `sudo -n`, not the process), so we stage in the
-///   world-writable system temp dir and lift the file into `/etc/ssh` via
-///   `sudo -n cp` before validating. In both cases `sshd -t` then resolves
-///   relative `Include` directives against the live directory, and install is
-///   an atomic same-directory `rename(2)`.
-/// - **Backup failure is fatal.** We keep the `.bak` backup but, unlike
-///   before, a failed backup aborts the install rather than being warned
-///   away. The security constraint requires a backup before every install.
-///
-/// # Test seams
-///
-/// `validator` lets tests inject a fake validation result (binary-missing vs.
-/// invalid vs. ok) without touching the real `/etc/ssh`. In production it is
-/// `None` and [`default_validator`] is used. `runner` lets tests inject a fake
-/// privileged-command runner (see [`Runner`]) so the NON-root write pipeline
-/// (lift → validate → single-`sh -c` install) can be exercised end-to-end
-/// without `sudo` or `sshd`; in production it is `None` and [`run_cmd`] is
-/// used. Likewise `target` is a parameter only so tests can point it at a
-/// tempdir; production callers go through [`PrivilegedOp::execute`], which
-/// pins it to [`SSHD_CONFIG_PATH`].
+/// Validation always runs through the privileged runner (sudo's `secure_path`
+/// finds `/usr/sbin`) and fails closed; a failed backup aborts the install;
+/// the temp reaches the target directory before validation so `Include`
+/// context is real and install is a same-dir `rename(2)`. `validator`,
+/// `runner`, and `target` exist only as test seams (see [`Validator`],
+/// [`Runner`]); production goes through [`PrivilegedOp::execute`].
 fn write_sshd_config(
     content: &str,
     running_as_root: bool,
@@ -243,46 +191,21 @@ fn write_sshd_config(
     let validator = validator.unwrap_or(default_validator);
     let runner = runner.unwrap_or(run_cmd);
 
-    // 0. SYMLINK REFUSAL GATE — fail closed before staging. If the pinned
-    //    `target` is itself a symlink, `rename(2)`/`mv` would replace the
-    //    *symlink* (not the file it points at), so toride would report success
-    //    while the running sshd keeps reading the old, still-linked config.
-    //    We do NOT auto-resolve: the operator must manage the real file
-    //    directly. `symlink_metadata` is lstat (does not follow). This applies
-    //    to both root and non-root paths since it runs before any staging.
+    // Refuse a symlink target: rename would replace the link while sshd
+    // keeps reading the linked file. `symlink_metadata` is lstat; the
+    // operator must manage the real file directly.
     if let Ok(meta) = std::fs::symlink_metadata(target)
         && meta.file_type().is_symlink()
     {
         return Err(Error::ConfigWriteFailed(format!(
-            "refusing to install: {} is a symlink — manage the resolved file directly",
+            "refusing to install: {} is a symlink: manage the resolved file directly",
             target.display()
         )));
     }
 
-    // 0b. SELF-SWEEP defense-in-depth — best-effort remove any leftover STAGED
-    //     `toride-sshd-*.tmp` from a prior failed run so leaked temps self-heal
-    //     on the next write. We sweep TWO directories:
-    //
-    //       1. `<targetdir>` — reclaims leaked STAGED temps on the ROOT path
-    //          (the staged temp lives here). The NON-ROOT path's lifted temp
-    //          lives in the target dir too, but its DISTINCT `toride-lifted-`
-    //          prefix never matches the sweep pattern (see
-    //          [`LIFTED_TEMP_PREFIX`]).
-    //       2. `std::env::temp_dir()` (e.g. `/tmp`) — on the NON-ROOT path the
-    //          STAGED temp lives here, so a SIGKILL/panic between `tmp.keep()`
-    //          and the trailing `remove_file` orphans it forever (F18). Sweeping
-    //          here reclaims those.
-    //
-    //     The sweep is AGE-GATED (`-mmin +59`, over an hour old): a CONCURRENT
-    //     write's live staged temp is seconds old and must never be deleted out
-    //     from under it — an ungated prefix sweep races exactly that way against
-    //     every other toride process (and test) sharing the staging dir, killing
-    //     the victim's lift with ENOENT. Age is the orphan/live discriminator:
-    //     a crash orphans the file with nobody left to clean it, so only old
-    //     files are garbage.
-    //
-    //     ALL errors are ignored (best-effort): the sweep must never gate a real
-    //     write. The pattern is anchored on the STAGED prefix only.
+    // Self-sweep of stale staged temps, age-gated (`-mmin +59`) so a
+    // concurrent write's live temp is never deleted; errors are ignored
+    // because the sweep must never gate a real write.
     let sweep_stale_staged = |dir: &Path| {
         let dir_s = dir.to_string_lossy();
         let pattern = format!("{STAGED_TEMP_PREFIX}*{TEMP_SUFFIX}");
@@ -314,25 +237,18 @@ fn write_sshd_config(
     if let Some(dir) = target.parent().filter(|p| !p.as_os_str().is_empty()) {
         sweep_stale_staged(dir);
     }
-    // F18: ALSO sweep the system temp dir for orphaned STAGED temps (non-root
-    // path stages here; a crash mid-write orphans them). On the root path this
-    // is a harmless best-effort no-op (no staged temp lives in /tmp then).
+    // The non-root path stages in the system temp dir, so sweep it too (a
+    // harmless no-op for root).
     sweep_stale_staged(&std::env::temp_dir());
 
-    // 1. Stage the new contents in an O_EXCL, unpredictable-named temp file
-    //    where THIS process can write it. See [`staging_dir`]: root stages in
-    //    the target's directory (for an atomic same-dir rename and correct
-    //    `Include` context); non-root stages in the system temp dir and the
-    //    file is lifted into the target directory via `sudo -n cp` before
-    //    validation in [`write_sshd_config_finish`]. Staging in `/etc/ssh`
-    //    directly when non-root would EACCES (the process is unprivileged).
+    // Stage via an O_EXCL unpredictable-named temp where this process can
+    // write (see [`staging_dir`]): root in the target dir, non-root in the
+    // system temp dir for a later privileged lift.
     let staging_dir = staging_dir(running_as_root, target);
     let mut staged = tempfile::Builder::new();
     staged.prefix(STAGED_TEMP_PREFIX).suffix(TEMP_SUFFIX);
-    // O_EXCL + 0o600 kills the predictable-pid-name symlink-attack surface
-    // of the old `/tmp/<prefix>.<pid>.tmp` scheme. POSIX mode bits are
-    // Unix-only; other targets get platform-default permissions (these
-    // targets are never the privileged-write targets of this code).
+    // O_EXCL + 0o600 removes the predictable-name symlink-attack surface.
+    // POSIX mode bits are Unix-only; other targets get platform defaults.
     #[cfg(unix)]
     staged.permissions(std::os::unix::fs::PermissionsExt::from_mode(0o600));
     let tmp = staged
@@ -381,24 +297,14 @@ fn write_sshd_config(
     result
 }
 
-/// Where the invoking process should stage the new config content.
-///
-/// Root can write the target directory (`/etc/ssh`), so it stages there
-/// directly — install is then an atomic same-directory rename and `sshd -t`
-/// resolves relative `Include` directives against the live directory.
-///
-/// Non-root cannot write `/etc/ssh` (the staging `tempfile_in` call is an
-/// unprivileged Rust call; only individual commands are elevated via `sudo -n`),
-/// so it stages in the world-writable system temp dir. [`write_sshd_config_finish`]
-/// then lifts the staged file into the target directory via `sudo -n cp` before
-/// validating, restoring both the atomic-rename and correct-`Include`-context
-/// properties on the non-root path. This is the fix for the regression where
-/// non-root staging in `/etc/ssh` failed with EACCES and broke every write.
+/// Root stages in the target directory (atomic same-dir rename, live
+/// `Include` context); non-root cannot write it, so stages in the system
+/// temp dir for [`write_sshd_config_finish`] to lift privilegedly.
 fn staging_dir(running_as_root: bool, target: &Path) -> std::path::PathBuf {
     if running_as_root {
         // `Path::parent` returns `Some("")` for a bare filename (e.g. just
         // "sshd_config"), not `None`, so an empty parent must be treated as
-        // missing too — otherwise we'd stage via an empty (cwd-relative) path.
+        // missing too: otherwise we'd stage via an empty (cwd-relative) path.
         target
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
@@ -409,11 +315,9 @@ fn staging_dir(running_as_root: bool, target: &Path) -> std::path::PathBuf {
     }
 }
 
-/// Second half of [`write_sshd_config`], separated so temp cleanup always runs.
-///
-/// Ensures the content lives in the target's directory before validation, then
-/// runs the validate → backup → install sequence (see [`validate_backup_install`]),
-/// cleaning up any lifted staging temp on failure.
+/// Second half of [`write_sshd_config`], split so temp cleanup always runs:
+/// move the content into the target's directory, then
+/// validate/backup/install via [`validate_backup_install`].
 fn write_sshd_config_finish(
     _content: &str,
     running_as_root: bool,
@@ -422,10 +326,8 @@ fn write_sshd_config_finish(
     validator: Validator,
     runner: Runner,
 ) -> Result<()> {
-    // Get the content into the TARGET directory as a temp file so that
-    // validation runs against the correct Include context and install is an
-    // atomic same-directory rename. Root already staged there; non-root staged
-    // in the temp dir and must be lifted into the target dir via `sudo -n cp`.
+    // Root already staged in the target dir; non-root lifts through
+    // `sudo -n cp` so validation and install see the target directory.
     let validate_path: std::path::PathBuf;
     let lifted: Option<std::path::PathBuf>;
     if running_as_root {
@@ -445,15 +347,9 @@ fn write_sshd_config_finish(
     if result.is_err()
         && let Some(p) = &lifted
     {
-        // Best-effort cleanup: the real failure is already being surfaced,
-        // and a leftover temp is not a lockout (it is not the live config).
-        // The cleanup itself runs as `sudo -n rm`, so if the sudo
-        // credentials expired mid-flight (the very thing that caused the
-        // failure), the rm fails the same way. We do NOT propagate that
-        // cleanup error — the original error is what the caller needs — but
-        // we MUST surface the leaked path so the operator can remove it by
-        // hand. (The next write's self-sweep at the top of
-        // write_sshd_config will also eventually reclaim it.)
+        // Best-effort cleanup only: the original error is what propagates,
+        // but the leaked path is surfaced so the operator can remove it (the
+        // next write's self-sweep also reclaims it).
         if let Err(cleanup_err) = runner("rm", &["-f", &p.to_string_lossy()], running_as_root) {
             tracing::warn!(
                 target: "toride_ssh_core::privilege",
@@ -467,12 +363,10 @@ fn write_sshd_config_finish(
     result
 }
 
-/// Validate, back up, then atomically install `validate_path` as `target`.
-///
-/// `validate_path` must already live in the target's directory (root staged it
-/// there directly; non-root had it lifted there). Fail-closed at every gate:
-/// an invalid, unvalidatable, or privilege-denied config is never installed,
-/// and install never proceeds without a `.bak` backup in place.
+/// Validate, back up, then atomically install `validate_path` as `target`
+/// (which must already be in the target's directory). Fail-closed at every
+/// gate: invalid, unvalidatable, or privilege-denied configs are never
+/// installed, and a `.bak` must exist before install.
 fn validate_backup_install(
     running_as_root: bool,
     target: &Path,
@@ -480,7 +374,7 @@ fn validate_backup_install(
     validator: Validator,
     runner: Runner,
 ) -> Result<()> {
-    // 1. VALIDATION GATE — never skipped. Distinguish "binary missing",
+    // 1. VALIDATION GATE: never skipped. Distinguish "binary missing",
     //    "privilege denied", and "config invalid"; all three fail closed.
     match validator(validate_path, running_as_root) {
         ValidateOutcome::Ok => {}
@@ -489,27 +383,14 @@ fn validate_backup_install(
         ValidateOutcome::PrivilegeDenied(detail) => return Err(Error::SudoFailed(detail)),
     }
 
-    // 2. BACKUP BEFORE INSTALL — fatal on failure.
+    // 2. BACKUP BEFORE INSTALL: fatal on failure.
     if target.exists() {
         backup_config(target, running_as_root, runner)?;
     }
 
-    // 3. INSTALL + CHMOD as a single privileged step. The temp was created at
-    //    0o600; `rename(2)` preserves the source mode, so the live file would
-    //    land at 0o600 without an explicit chmod. The required invariant is a
-    //    root-owned 0o644 config.
-    //
-    //    The install and the chmod are arranged so a chmod failure can never
-    //    leave the live config at the wrong mode. On the ROOT path the temp is
-    //    chmod'd to 0o644 BEFORE the rename, so a chmod failure aborts with
-    //    nothing installed and a successful rename lands the right mode. On the
-    //    NON-ROOT path both go through one `sudo -n sh -c 'chmod && mv'` (see
-    //    [`install_command`]) — chmod-then-mv, so a chmod failure aborts (`&&`)
-    //    before the live config is touched; if they were two separate sudo
-    //    processes, the sudo credential timestamp could expire in the window
-    //    between `chmod` and `mv`, leaving the live config at 0o600. A single
-    //    `sudo -n sh -c` means one timestamp covers both — the chmod cannot
-    //    independently fail.
+    // Install + chmod as a single privileged step; the temp's 0o600 must
+    // become root-owned 0o644. Chmod always precedes the rename, so a chmod
+    // failure can never leave the live config at the wrong mode.
     install_temp(validate_path, target, 0o644, running_as_root, runner)?;
 
     Ok(())
@@ -520,37 +401,19 @@ fn validate_backup_install(
 /// `/tmp` sweep it runs both glob `toride-sshd-*.tmp` to reclaim ONLY these.
 const STAGED_TEMP_PREFIX: &str = "toride-sshd-";
 
-/// Prefix used for LIFTED sshd_config temps (the root-owned copy a non-root
-/// write makes in the target directory via [`lift_staged_into_target_dir`]).
-///
-/// This is deliberately a DIFFERENT STEM from [`STAGED_TEMP_PREFIX`] so the
-/// self-sweep glob `toride-sshd-*.tmp` provably CANNOT match a lifted temp. A
-/// shell glob `toride-sshd-*` matches any name beginning `toride-sshd-` — so a
-/// lifted name like `toride-sshd-lifted-X.tmp` WOULD still be matched (the `*`
-/// swallows `lifted-X`). Using the distinct stem `toride-lifted-` makes the glob
-/// fail to anchor (the glob expects a literal `-` after `toride-sshd`), so a
-/// concurrent instance's top-of-write sweep cannot delete this instance's
-/// just-lifted validate path. This is defense-in-depth alongside the
-/// cross-process lock added in `sshd::edit()` (F2): even if the lock is held,
-/// this naming keeps the sweep's blast radius to genuinely stale STAGED temps.
+/// Prefix for lifted temps, deliberately a different stem from
+/// [`STAGED_TEMP_PREFIX`] so the self-sweep glob `toride-sshd-*.tmp` can
+/// never match a just-lifted validate path (a `toride-sshd-lifted-*` name
+/// would match).
 const LIFTED_TEMP_PREFIX: &str = "toride-lifted-";
 
 /// Suffix shared by both staged and lifted temps.
 const TEMP_SUFFIX: &str = ".tmp";
 
-/// Lift a staged temp (`src`, in the system temp dir) into `target`'s directory
-/// as a root-owned temp, returning the lifted path.
-///
-/// Used on the non-root path so validation can run against a file in `/etc/ssh`
-/// (correct `Include` context) and install can be an atomic same-directory
-/// rename. The lifted file takes the distinct [`LIFTED_TEMP_PREFIX`] (NOT the
-/// staged `toride-sshd-` prefix), preserving the staged temp's unpredictable
-/// random component, so it (a) is unpredictable (only root could pre-create it
-/// — no realistic symlink/TOCTOU surface) and (b) is provably NOT matched by the
-/// self-sweep glob `toride-sshd-*.tmp`, so a concurrent write cannot sweep away
-/// this instance's just-lifted validate path. The mode is irrelevant for
-/// validation (sshd reads the config as root) and is set to 0o644 atomically at
-/// install time.
+/// Lift a staged temp into `target`'s directory as a root-owned temp so
+/// validation sees the real `Include` context and install is a same-dir
+/// rename. Keeps the unpredictable name under [`LIFTED_TEMP_PREFIX`] so the
+/// self-sweep cannot match it.
 fn lift_staged_into_target_dir(
     src: &Path,
     target: &Path,
@@ -558,10 +421,8 @@ fn lift_staged_into_target_dir(
     runner: Runner,
 ) -> Result<std::path::PathBuf> {
     let dir = target.parent().unwrap_or_else(|| Path::new("/"));
-    // Derive the lifted name from the staged temp's UNPREDICTABLE random
-    // component (the part between the staged prefix and `.tmp`). This keeps the
-    // lifted name unpredictable while swapping in the distinct lifted prefix so
-    // the self-sweep glob cannot match it.
+    // Reuse the staged temp's unpredictable random component under the
+    // distinct lifted prefix so the self-sweep glob cannot match it.
     let rand_component = src
         .file_name()
         .and_then(|n| n.to_str())
@@ -578,13 +439,9 @@ fn lift_staged_into_target_dir(
     let src_s = src.to_string_lossy();
     let lifted_s = lifted.to_string_lossy();
     runner("cp", &[&src_s, &lifted_s], running_as_root).map_err(|e| {
-        // F20: a lift-step failure that is actually a privilege denial (e.g.
-        // `sudo -n` with no cached credentials — the `cp` runs as `sudo -n cp`
-        // on the non-root path) must surface as `Error::SudoFailed`, NOT
-        // `Error::ConfigWriteFailed`. The validate step already classifies this
-        // correctly via `ValidateOutcome::PrivilegeDenied`; the lift step must
-        // not misclassify it as a config write failure (which would hide the
-        // real, actionable cause — "run `sudo -v`").
+        // A lift-step privilege denial must surface as `Error::SudoFailed`,
+        // not `ConfigWriteFailed`: the config was never validated and the
+        // actionable hint is `sudo -v`.
         if is_privilege_denied(&e.to_string()) || matches!(e, Error::SudoFailed(_)) {
             Error::SudoFailed(format!(
                 "privilege denied while staging sshd_config into target dir for validation: {e}"
@@ -598,34 +455,20 @@ fn lift_staged_into_target_dir(
     Ok(lifted)
 }
 
-/// The production validator: run `sshd -t -f <path>` through the privileged
-/// runner and classify the outcome.
-///
-/// We do NOT gate on `which::which("sshd")`: that resolves against the
-/// invoking user's `PATH`, which on Debian/Ubuntu omits `/usr/sbin`, so the
-/// real (root-installed) `sshd` would be missed and validation silently
-/// skipped. Instead we always invoke through the privileged runner; `sudo -n`
-/// uses sudo's `secure_path` (which includes `/usr/sbin`). We then inspect the
-/// failure to tell "binary genuinely not found" apart from "config invalid".
-///
-/// The actual command execution is delegated to [`default_validator_runner`] and
-/// the outcome is classified by [`classify_validator_output`]. Splitting the
-/// runner from the classifier makes the three-way classification (privilege
-/// denied → binary missing → invalid) deterministically testable without a real
-/// `sshd` binary on the host (see [`classify_validator_output`]'s tests).
+/// Run `sshd -t -f <path>` through the privileged runner and classify.
+/// Never gated on the invoking user's `PATH` (which omits `/usr/sbin` on
+/// Debian/Ubuntu); sudo's `secure_path` finds it. Execution goes through
+/// [`default_validator_runner`] so [`classify_validator_output`] stays
+/// testable without a real `sshd`.
 fn default_validator(path: &Path, running_as_root: bool) -> ValidateOutcome {
     let path_str = path.to_string_lossy();
     let run = default_validator_runner("sshd", &["-t", "-f", &path_str], running_as_root);
     classify_validator_output(run)
 }
 
-/// The production runner for [`default_validator`]: actually shell out to
-/// `sshd -t` (via `sudo -n` when not root) and capture the merged output.
-///
-/// This is the thin execution layer behind the seam; it has no classification
-/// logic so it is intentionally host-dependent (it requires `sshd` to be
-/// reachable). The classification it feeds lives in [`classify_validator_output`]
-/// and is tested in isolation.
+/// Execution layer of [`default_validator`]: shells out to `sshd -t` (via
+/// `sudo -n` when not root) and captures merged output. No classification
+/// logic; host-dependent by design.
 fn default_validator_runner(cmd: &str, args: &[&str], running_as_root: bool) -> ValidatorRun {
     match cmd_with_priv(cmd, args, running_as_root)
         .stderr_to_stdout()
@@ -636,34 +479,16 @@ fn default_validator_runner(cmd: &str, args: &[&str], running_as_root: bool) -> 
             stdout: output.stdout,
             success: output.status.success(),
         },
-        // The process itself couldn't be spawned. On the non-root path the
-        // command is `sudo -n sshd …`; a spawn failure means either `sudo` or
-        // `sshd` (or the privileged runner as a whole) could not be launched
-        // — e.g. ENOENT ("not found"), EACCES ("Permission denied"), or
-        // EAGAIN ("Resource temporarily unavailable"). In ALL of these cases
-        // we could not actually run `sshd -t`, so we must NOT claim the CONFIG
-        // is invalid (that would point the user at their sshd_config when the
-        // real problem is the privileged runner). Classify as BinaryMissing
-        // ("validator unavailable") so the caller fails closed without
-        // misreporting a config error.
+        // A spawn failure means `sshd -t` never ran, so the config must not
+        // be reported invalid; classify as BinaryMissing to fail closed
+        // without misreporting a config error.
         Err(e) => ValidatorRun::SpawnFailed(e.to_string()),
     }
 }
 
-/// Classify a captured validator command outcome into a [`ValidateOutcome`].
-///
-/// This is the pure, host-independent core of [`default_validator`], extracted
-/// so the three-way classification can be unit-tested with canned outputs:
-///
-/// - `SpawnFailed` → [`ValidateOutcome::BinaryMissing`] (we never ran
-///   `sshd -t`, so we must not claim the *config* is invalid).
-/// - exit success with empty stderr → [`ValidateOutcome::Ok`].
-/// - non-zero exit with text matching [`is_privilege_denied`] →
-///   [`ValidateOutcome::PrivilegeDenied`] (checked first: `sudo -n` with no
-///   cached credentials never actually validated the config).
-/// - non-zero exit matching [`is_binary_missing`] →
-///   [`ValidateOutcome::BinaryMissing`].
-/// - otherwise → [`ValidateOutcome::Invalid`] (a genuine config error).
+/// Pure classification of a [`ValidatorRun`] into a [`ValidateOutcome`]:
+/// SpawnFailed → BinaryMissing (the config was never checked); success →
+/// Ok; otherwise privilege-denied, then binary-missing, then Invalid.
 fn classify_validator_output(run: ValidatorRun) -> ValidateOutcome {
     match run {
         ValidatorRun::SpawnFailed(detail) => ValidateOutcome::BinaryMissing(detail),
@@ -673,12 +498,8 @@ fn classify_validator_output(run: ValidatorRun) -> ValidateOutcome {
             }
             let detail = String::from_utf8_lossy(&stdout);
             let detail = detail.trim().to_string();
-            // Order: privilege first. `sudo -n` with no cached credentials
-            // prints "sudo: a password is required" and exits non-zero — the
-            // config was never checked, so this is NOT a config error.
-            // Checking this before binary-missing and invalid keeps us from
-            // misreporting a sudo-password failure as a config problem (which
-            // would wrongly point the user at their sshd_config).
+            // Privilege first: with no cached credentials the config was
+            // never checked, so this is not a config error.
             if is_privilege_denied(&detail) {
                 ValidateOutcome::PrivilegeDenied(detail)
             } else if is_binary_missing(&detail) {
@@ -690,28 +511,14 @@ fn classify_validator_output(run: ValidatorRun) -> ValidateOutcome {
     }
 }
 
-/// Heuristic: does this error text indicate the privileged runner refused to
-/// authenticate (e.g. `sudo -n` with no cached credentials)?
-///
-/// `sudo -n` prints `sudo: a password is required` (or, on older sudo, `sudo:
-/// sorry, a password is required to run sudo`) to stderr and exits non-zero
-/// when there are no cached credentials. We must not confuse this with a
-/// config-validation failure: the config was never checked. Matching `password
-/// is required` catches both sudo phrasings — note `a password is required`
-/// contains that substring — without colliding with real `sshd -t` diagnostics
-/// (which never phrase a config error that way).
+/// True when the text is a `sudo -n` authentication refusal. `sshd -t`
+/// never phrases a config error this way, so the config was never checked.
 fn is_privilege_denied(detail: &str) -> bool {
     detail.to_ascii_lowercase().contains("password is required")
 }
 
-/// Heuristic: does this error text indicate the `sshd` binary is missing
-/// (rather than the config being invalid)?
-///
-/// Matches the phrasings emitted by `sudo` and the shell when a command
-/// cannot be found: "command not found", "not found", "No such file".
-/// `sshd -t` itself never emits these for an invalid config (it reports the
-/// specific parse/semantics error), so a match here reliably means the binary
-/// is unavailable.
+/// True when the text is a shell/sudo "command not found" phrasing;
+/// `sshd -t` config errors are always more specific than this.
 fn is_binary_missing(detail: &str) -> bool {
     let lower = detail.to_ascii_lowercase();
     lower.contains("command not found")
@@ -719,29 +526,16 @@ fn is_binary_missing(detail: &str) -> bool {
         || lower.contains("no such file")
 }
 
-/// Back up `target` to `<target>.bak` via `cp`, keeping one prior generation.
-///
-/// Before taking the new backup, an existing `<target>.bak` is rotated to
-/// `<target>.bak.1` (and any older `<target>.bak.1` is dropped first). This
-/// keeps two generations on disk: the pre-current-edit original (`.bak.1`) and
-/// the immediately prior content (`.bak`). The rotation is deterministic (no
-/// timestamps), and any rotation failure is fatal so we never install without
-/// a known-good backup in place.
-///
-/// # Errors
-///
-/// Returns [`Error::ConfigWriteFailed`] if any privileged step (rotation or
-/// copy) fails. The caller treats this as fatal and does not proceed to
-/// install — the security constraint requires a backup before every install.
+/// Back up `target` to `<target>.bak`, rotating the previous one to
+/// `.bak.1` (two deterministic generations). Any rotation or copy failure is
+/// fatal: no install proceeds without a known-good backup.
 fn backup_config(target: &Path, running_as_root: bool, runner: Runner) -> Result<()> {
     let src = target.to_string_lossy();
     let prev_bak = format!("{src}.bak");
     let oldest_bak = format!("{src}.bak.1");
 
-    // Rotate the previous backup out of the way before we clobber it. We keep
-    // at most two generations (.bak and .bak.1), so any stale .bak.1 is dropped
-    // first. A failure here must abort — without a clean rotation we could lose
-    // the pre-first-edit original when two bad edits land back to back.
+    // Rotate before clobbering: without a clean rotation, two back-to-back
+    // bad edits could lose the pre-first-edit original.
     let has_prev = std::path::Path::new(&prev_bak).exists();
     if has_prev {
         // Drop a stale .bak.1 (best-effort: it's already a generation we no
@@ -769,31 +563,11 @@ fn backup_config(target: &Path, running_as_root: bool, runner: Runner) -> Result
     })
 }
 
-/// Install `tmp_path` at `target` with the final `mode`, as a single atomic
-/// privileged step.
-///
-/// The temp was created at 0o600; `rename(2)` preserves the source mode, so the
-/// required invariant (root-owned 0o644) needs an explicit chmod. Both branches
-/// apply the chmod BEFORE the rename lands in place, so a chmod failure can
-/// never leave the live config installed at the wrong mode:
-///
-/// - **Root branch:** chmod the TEMP to `mode` first, THEN `rename(2)` it into
-///   place. If the pre-rename chmod fails, nothing was installed (fail closed).
-///   If the rename succeeds, the file already has the right mode — there is no
-///   post-install chmod that could independently fail and leave 0o600 live.
-/// - **Non-root branch:** the install and chmod are folded into one
-///   `sudo -n sh -c 'chmod "$mode" "$src" && mv "$src" "$dst"'` (built by
-///   [`install_command`]), so a single `sudo -n` timestamp covers both steps.
-///   A sudo-credential expiry after the chmod aborts the entire `sh -c` before
-///   the `mv`, so we never observe a live file installed but at 0o600.
-///
-/// `mv` performs a single `rename(2)` here because the source and target share
-/// a filesystem (the temp was staged in the target's directory), so `mv` will
-/// not fall back to copy+unlink.
-///
-/// # Errors
-///
-/// Returns [`Error::ConfigWriteFailed`] on a non-zero exit.
+/// Install `tmp_path` at `target` with `mode` as one atomic privileged step.
+/// The temp's 0o600 must become root-owned 0o644, so the chmod always runs
+/// BEFORE the rename (root: chmod-then-rename in-process; non-root: one
+/// `sudo -n sh -c 'chmod && mv'` built by [`install_command`]), meaning a
+/// chmod failure can never leave the live config at the wrong mode.
 fn install_temp(
     tmp_path: &Path,
     target: &Path,
@@ -802,10 +576,8 @@ fn install_temp(
     runner: Runner,
 ) -> Result<()> {
     if running_as_root {
-        // chmod the TEMP first, THEN rename. If the pre-rename chmod fails,
-        // nothing was installed (fail closed). After a successful rename the
-        // file already has the right mode — no post-install chmod that could
-        // leave the live config at 0o600.
+        // Chmod the temp before the rename: a chmod failure installs
+        // nothing, and a successful rename lands the right mode.
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -819,14 +591,8 @@ fn install_temp(
         }
         std::fs::rename(tmp_path, target)
             .map_err(|e| Error::ConfigWriteFailed(format!("failed to install sshd_config: {e}")))?;
-        // F17: best-effort fsync of the target's PARENT directory so the
-        // rename(2) (which updates the parent directory's entries) is durable
-        // across power loss. The temp itself was fsynced before install, but
-        // without fsyncing the parent the new directory entry could be lost in
-        // the sub-second window after a "successful" return — leaving the
-        // rename durable on the old entry only. This MUST NOT turn a success
-        // into an error: the .bak backup + `sshd -t` already protect against
-        // lockout, so a fsync hygiene failure is only warned about.
+        // Best-effort parent-dir fsync so the rename entry is durable;
+        // never turns a successful install into an error.
         fsync_parent_dir_best_effort(target, running_as_root, runner);
         return Ok(());
     }
@@ -837,42 +603,16 @@ fn install_temp(
     let args_refs: Vec<&str> = args.iter().map(std::string::String::as_str).collect();
     runner(program, &args_refs, running_as_root)
         .map_err(|e| Error::ConfigWriteFailed(format!("failed to install sshd_config: {e}")))?;
-    // F17: same best-effort parent-dir fsync as the root branch. On the non-root
-    // path the parent (/etc/ssh) is not writable by this process; the helper
-    // attempts an in-process read-only fd fsync first (works on Linux for dirs
-    // with the execute bit), then falls back to `sudo -n`, then warns and skips.
-    // Never fails the install.
+    // Same best-effort parent fsync; the helper tries an in-process fd,
+    // then sudo, then warns and skips. Never fails the install.
     fsync_parent_dir_best_effort(target, running_as_root, runner);
     Ok(())
 }
 
-/// Best-effort fsync of `target`'s parent directory after the install rename.
-///
-/// The staged temp is fsynced before install, but `rename(2)` mutates the
-/// *parent directory's* entry list — that mutation is only durable once the
-/// parent directory itself is fsynced. Without this, a power loss in the
-/// sub-second window after a "successful" install could revert the directory
-/// entry to the pre-rename state (pointing at the old/unlinked inode). This
-/// closes that durability gap (F17).
-///
-/// This is PURELY a durability/hygiene step. The lockout-prevention guarantees
-/// (`.bak` backup before install, `sshd -t` validation before install) do NOT
-/// depend on it, so it MUST NEVER turn a successful install into an error:
-/// every failure path here is warned-and-skipped.
-///
-/// Strategy, in order:
-/// 1. In-process: open the parent read-only and `fsync` it. On Linux a
-///    directory fd openable with execute permission can be fsynced without
-///    write permission, so this works for root AND for a non-root process
-///    against `/etc/ssh` (mode typically 0o755). This is the cheapest and most
-///    reliable path and is what real deployments hit.
-/// 2. Non-root only, if the in-process attempt failed: best-effort privileged
-///    fallback via the runner. There is no portable POSIX shell builtin that
-///    fsyncs a single directory, so this is a soft attempt (a `sync` covers the
-///    whole filesystem, which is acceptable as a coarse durability push). Any
-///    failure here is warned and skipped — never propagated.
-/// 3. If everything fails, `tracing::warn!` and return (the install already
-///    succeeded and is protected by the backup + validation gates).
+/// Best-effort fsync of `target`'s parent so the install rename's directory
+/// entry is durable. Pure hygiene: the backup and validation gates carry the
+/// lockout guarantees, so failures are warned and never propagated
+/// (in-process fsync first, then a privileged fallback, then skip).
 fn fsync_parent_dir_best_effort(target: &Path, running_as_root: bool, runner: Runner) {
     let Some(parent) = target.parent() else {
         return;
@@ -883,7 +623,7 @@ fn fsync_parent_dir_best_effort(target: &Path, running_as_root: bool, runner: Ru
     {
         match std::fs::File::open(parent) {
             Ok(dir) => match dir.sync_all() {
-                Ok(()) => return, // durable — nothing more to do.
+                Ok(()) => return, // durable: nothing more to do.
                 Err(e) => tracing::warn!(
                     target: "toride_ssh_core::privilege",
                     parent = %parent.display(),
@@ -904,14 +644,12 @@ fn fsync_parent_dir_best_effort(target: &Path, running_as_root: bool, runner: Ru
 
     // (2) Privileged fallback (non-root path only). On the root path the
     //     in-process attempt above either succeeded or the dir genuinely can't
-    //     be fsynced — and we are already root, so `sudo` would buy nothing.
+    //     be fsynced: and we are already root, so `sudo` would buy nothing.
     if running_as_root {
         return;
     }
-    // No portable POSIX shell builtin fsyncs a SINGLE directory. `sync` pushes
-    // all dirty filesystem buffers to disk, which is coarser than a per-dir
-    // fsync but still makes the just-installed rename durable. This is a soft,
-    // best-effort push; any failure is warned and skipped (never propagated).
+    // No POSIX shell builtin fsyncs one directory; `sync` is the coarse
+    // fallback. Best-effort: failures are warned and skipped.
     if let Err(e) = runner("sync", &[], running_as_root) {
         tracing::warn!(
             target: "toride_ssh_core::privilege",
@@ -924,22 +662,9 @@ fn fsync_parent_dir_best_effort(target: &Path, running_as_root: bool, runner: Ru
     }
 }
 
-/// Build the (program, args) for the non-root install+chmod step WITHOUT
-/// running anything.
-///
-/// Extracted as a pure helper so invariant #3 (the install and chmod are a
-/// SINGLE privileged invocation) is locked by an executable unit test rather
-/// than a comment. The non-root branch folds `chmod` and `mv` into one
-/// `sudo -n sh -c`, in that order: a single sudo-credential timestamp covers
-/// both, and because the `chmod` runs on the staged temp BEFORE the `mv`, a
-/// chmod failure aborts (`&&`) before the live config is touched — so it can
-/// never be left at the temp's 0o600 mode. A sudo-credential expiry at either
-/// step aborts the whole sh -c (no half-applied state is observed).
-///
-/// The root branch is handled in-process by [`install_temp`] directly (a pure
-/// `std::fs` chmod-then-rename with no shell — see [LOW #1]); this helper is
-/// only invoked on the non-root path, but it is the single source of truth for
-/// the command shape the test asserts against.
+/// Pure builder of the non-root install command: one `sudo -n sh -c
+/// 'chmod && mv'` (chmod first, so a failure aborts before the live config
+/// is touched, and one sudo timestamp covers both steps).
 fn install_command(
     tmp_path: &Path,
     target: &Path,
@@ -956,23 +681,14 @@ fn install_command(
     let src = tmp_path.to_string_lossy().to_string();
     let dst = target.to_string_lossy().to_string();
     let mode_octal = format!("{mode:o}");
-    // Single sudo invocation: chmod THEN mv. `$0`/`$1` are bound positionally
-    // so the paths need no shell-quoting. chmod-ing the staged temp BEFORE the
-    // mv mirrors the root path (chmod-then-rename): if the chmod fails, `&&`
-    // aborts before the mv runs, so the live config is never left at the temp's
-    // 0o600 mode. A sudo-credential expiry at either step aborts the whole
-    // sh -c (one timestamp covers both); the whole thing exits non-zero if
-    // either step fails.
+    // `$0`/`$1` bind positionally so the paths need no shell quoting; `&&`
+    // keeps chmod-then-mv atomic under one sudo timestamp.
     let script = format!("chmod {mode_octal} \"$0\" && mv \"$0\" \"$1\"");
     ("sh", vec!["-c".to_string(), script, src, dst])
 }
 
-/// Run `cmd args…` (through sudo when not root) and require a zero exit.
-///
-/// # Errors
-///
-/// Returns [`Error::SudoFailed`] on a non-zero exit, including the captured
-/// stderr (e.g. "sudo: a password is required") so the UI can show it.
+/// Run `cmd args…` (through sudo when not root) and require a zero exit;
+/// non-zero exits map to [`Error::SudoFailed`] carrying stderr for the UI.
 fn run_cmd(cmd: &str, args: &[&str], running_as_root: bool) -> Result<()> {
     let output = cmd_with_priv(cmd, args, running_as_root)
         .stderr_to_stdout()
@@ -1038,7 +754,7 @@ mod tests {
         // content must be rejected. Skip when sshd genuinely isn't present so
         // this stays green on CI without sshd. We force `running_as_root = true`
         // so the validator runs `sshd -t` directly (it needs no privilege to
-        // parse) and staging lands in the tempdir we own — no `sudo` required.
+        // parse) and staging lands in the tempdir we own: no `sudo` required.
         if std::process::Command::new("sshd")
             .arg("-V")
             .stdout(std::process::Stdio::null())
@@ -1081,7 +797,7 @@ mod tests {
         // the same on either path.
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("sshd_config");
-        // Pre-existing live config — it must be left untouched.
+        // Pre-existing live config: it must be left untouched.
         std::fs::write(&target, "Port 2222\n").unwrap();
 
         let err = write_sshd_config(
@@ -1184,7 +900,7 @@ mod tests {
         // SshdConfigInvalid, so the UI does not point the user at their config),
         // and MUST NOT install or back up. We force `running_as_root = true` so
         // staging lands in a tempdir we own and the validator is reached
-        // directly — the privilege classification is what's under test here,
+        // directly: the privilege classification is what's under test here,
         // not the sudo lift.
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("sshd_config");
@@ -1243,7 +959,7 @@ mod tests {
 
         // The staged temp must have lived as a sibling of the target (not in
         // /tmp). We assert this indirectly: the only toride-staged artifacts
-        // left in the target dir are the target itself and its .bak — no
+        // left in the target dir are the target itself and its .bak: no
         // stray `toride-sshd-*` temp remains (it was renamed into place /
         // cleaned up). This confirms staging happened in this dir.
         for entry in std::fs::read_dir(dir.path()).unwrap() {
@@ -1401,7 +1117,7 @@ mod tests {
             ".bak.1 must hold the 1st write (pre-current-edit original): {oldest_content:?}"
         );
 
-        // At most two generations are retained — no .bak.2 leaks.
+        // At most two generations are retained: no .bak.2 leaks.
         assert!(
             !Path::new(&bak2).exists(),
             "no .bak.2+ must be retained (max two generations)"
@@ -1416,7 +1132,7 @@ mod tests {
         // <src>, <dst>]. Folding chmod+mv into one sh -c means a single
         // sudo-credential timestamp covers both. The chmod runs on the staged
         // temp BEFORE the mv, so a chmod failure aborts (`&&`) before the live
-        // config is touched — mirroring the root path's chmod-then-rename, it
+        // config is touched: mirroring the root path's chmod-then-rename, it
         // can never leave the live config at the temp's 0o600 mode. The
         // `$0`/`$1` positional binding means the paths need no shell-quoting.
         let src = Path::new("/etc/ssh/toride-sshd-abc.tmp");
@@ -1440,7 +1156,7 @@ mod tests {
     #[test]
     fn write_sshd_config_refuses_to_install_over_symlink() {
         // [LOW #2] If the pinned `target` is a symlink, rename(2)/mv would
-        // replace the SYMLINK (not the resolved file) — toride would report
+        // replace the SYMLINK (not the resolved file): toride would report
         // success while the running sshd keeps the old config. The write MUST
         // fail closed with a symlink message and MUST NOT create or modify the
         // resolved file.
@@ -1497,12 +1213,9 @@ mod tests {
         assert!(installed.contains("Port 22"));
     }
 
-    // -------------------------------------------------------------------------
-    // [F16] deterministic classification of the validator command output.
-    // -------------------------------------------------------------------------
     //
     // `default_validator` used to only be exercised by a host-dependent test
-    // that SKIPS when `sshd` is absent — so on CI without sshd the three-way
+    // that SKIPS when `sshd` is absent: so on CI without sshd the three-way
     // classification (privilege-denied → binary-missing → invalid) never ran.
     // Now the runner is split from the classifier; these tests feed canned
     // `ValidatorRun` values directly to `classify_validator_output` and assert
@@ -1524,7 +1237,7 @@ mod tests {
         // The privileged runner could not even be launched (ENOENT on `sudo`/
         // `sshd`, EACCES, EAGAIN, …). The validator never ran, so this MUST
         // NOT be classified as Invalid (which would wrongly point the user at
-        // their sshd_config). It must be BinaryMissing — the write fails closed
+        // their sshd_config). It must be BinaryMissing: the write fails closed
         // without misreporting a config error.
         let outcome = classify_validator_output(ValidatorRun::SpawnFailed(
             "ENOENT: sudo: No such file or directory".into(),
@@ -1578,7 +1291,7 @@ mod tests {
     #[test]
     fn classify_validator_output_privilege_denied_beats_binary_missing_and_invalid() {
         // Ordering: privilege FIRST. `sudo -n` with no cached credentials
-        // prints "a password is required" and exits non-zero — the config was
+        // prints "a password is required" and exits non-zero: the config was
         // never checked. Even though that phrasing contains neither "not
         // found" nor "Bad configuration option", we assert the classifier
         // returns PrivilegeDenied (which maps to SshdFailed, not SshdConfigInvalid).
@@ -1648,9 +1361,6 @@ mod tests {
         }
     }
 
-    // -------------------------------------------------------------------------
-    // [F14] end-to-end coverage of the NON-root write path.
-    // -------------------------------------------------------------------------
     //
     // Every prior `write_sshd_config` test passed `running_as_root = true`, so
     // the non-root branch (lift via sudo cp → validate the LIFTED file → single
@@ -1659,7 +1369,7 @@ mod tests {
     // bug between `install_command` and `run_cmd` would have passed the whole
     // suite. These tests run the NON-root pipeline against a tempdir using an
     // injected `Runner` seam that records invocations and fakes success (or a
-    // specific failure) — never invoking real `sudo`.
+    // specific failure): never invoking real `sudo`.
     //
     // Each scenario uses its OWN dedicated recording statics so the two tests
     // never contend over shared state when the harness runs them concurrently
@@ -1676,7 +1386,7 @@ mod tests {
         static HAPPY_INSTALL_CALL: std::cell::RefCell<Option<Vec<String>>> =
             const { std::cell::RefCell::new(None) };
         /// Count of INSTALL `sh` invocations seen by the happy-path stub (must
-        /// be 1 — the single install; the self-sweep is not counted).
+        /// be 1: the single install; the self-sweep is not counted).
         static HAPPY_SH_COUNT: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
         /// argv of the install `sh -c` invocation, captured by the failure
         /// stub. `Some` once the install step was reached.
@@ -1696,7 +1406,7 @@ mod tests {
 
     /// Shared body of the two stub runners: perform the real op for `cp`/`mv`/
     /// `rm` against the tempdir we own, and for the install `sh -c` either
-    /// chmod+mv for real or — when `fail_install` is true — return the
+    /// chmod+mv for real or: when `fail_install` is true: return the
     /// injected error.
     fn nonroot_runner_impl(
         cmd: &str,
@@ -1793,7 +1503,7 @@ mod tests {
     /// Happy-path stub: counts INSTALL `sh` invocations (those whose script
     /// folds chmod+mv) and records the install argv into its dedicated
     /// thread-local cell. Never injects a failure. (The top-of-write
-    /// self-sweep is a `find` call and is NOT counted — only the install is,
+    /// self-sweep is a `find` call and is NOT counted: only the install is,
     /// since invariant #3 is "the install is a single sh -c".)
     fn nonroot_runner_happy(cmd: &str, args: &[&str], _running_as_root: bool) -> Result<()> {
         let is_install_sh = cmd == "sh"
@@ -1822,10 +1532,10 @@ mod tests {
 
     #[test]
     fn nonroot_write_pipeline_lifts_before_validate_and_installs_single_sh_c() {
-        // [F14] Run the NON-root pipeline against a tempdir with the injected
+        // Run the NON-root pipeline against a tempdir with the injected
         // runner stub. Assert:
         //   (a) the validator was called with a path whose PARENT is the TARGET
-        //       dir — i.e. the lift (`sudo -n cp`) happened BEFORE validate;
+        //       dir: i.e. the lift (`sudo -n cp`) happened BEFORE validate;
         //   (b) install is a SINGLE `sh -c` against the LIFTED temp (invariant
         //       #3 actually executes, not just an argv string);
         //   (c) the installed file ends at mode 0o644;
@@ -1855,7 +1565,7 @@ mod tests {
         )
         .expect("non-root happy path must succeed with the stub runner");
 
-        // (a) The validator's path MUST share a parent with the target — the
+        // (a) The validator's path MUST share a parent with the target: the
         // lift ran before validation. If the lift were skipped, the validator
         // would have seen a path in /tmp (the non-root staging dir) whose
         // parent is NOT the target dir.
@@ -1866,7 +1576,7 @@ mod tests {
             validated.parent(),
             target.parent(),
             "validator must run against the LIFTED temp (parent = target dir); \
-             got {} — the lift did not happen before validate",
+             got {}: the lift did not happen before validate",
             validated.display()
         );
 
@@ -1904,10 +1614,10 @@ mod tests {
         );
 
         // (d) Exactly ONE install sh invocation. The install must be a SINGLE
-        // sh -c (invariant #3) — if a regression split chmod and mv into two
+        // sh -c (invariant #3): if a regression split chmod and mv into two
         // separate sh invocations, this count would be 2. (The self-sweep at
         // the top of write_sshd_config is a `find` call, not sh, so it is
-        // deliberately NOT counted — only install-shaped sh calls are.)
+        // deliberately NOT counted: only install-shaped sh calls are.)
         let sh_count = HAPPY_SH_COUNT.with(std::cell::Cell::get);
         assert_eq!(
             sh_count, 1,
@@ -1943,11 +1653,11 @@ mod tests {
 
     #[test]
     fn nonroot_write_pipeline_leaves_live_target_untouched_when_install_fails() {
-        // [F14 failure branch] Inject a failure at the install `sh -c` step and
+        // Inject a failure at the install `sh -c` step and
         // assert: Err is returned AND the live target is UNCHANGED (not created
         // at the new content, original content intact). This is the lockout-
         // prevention guarantee: an install failure must never mutate the live
-        // config. (Backup was taken before install; that is acceptable — the
+        // config. (Backup was taken before install; that is acceptable: the
         // invariant under test is that the LIVE config is untouched on failure.)
         FAIL_INSTALL_CALL.with(|c| *c.borrow_mut() = None);
         FAIL_VALIDATED_PATH.with(|c| *c.borrow_mut() = None);
@@ -1993,7 +1703,7 @@ mod tests {
         // was handed a path whose parent IS the target dir (i.e. the file was
         // lifted out of /tmp into the target dir first). Combined with the
         // install assertion below, this proves the failure originated at the
-        // install step — not at the lift, which would have masked the install
+        // install step: not at the lift, which would have masked the install
         // path under test.
         let validated = FAIL_VALIDATED_PATH
             .with(|c| c.borrow().clone())
@@ -2005,7 +1715,7 @@ mod tests {
         );
 
         // And the install step was actually reached (the validator passed, so
-        // the failure is from install — not an earlier lift/validate failure
+        // the failure is from install: not an earlier lift/validate failure
         // that would mask the install path under test).
         let install = FAIL_INSTALL_CALL.with(|c| c.borrow().clone());
         assert!(
@@ -2014,9 +1724,6 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // [F3] lifted temp uses a DISTINCT prefix the self-sweep glob cannot match.
-    // -------------------------------------------------------------------------
     //
     // The staged temp is `toride-sshd-<rand>.tmp`; the self-sweep globs
     // `toride-sshd-*.tmp`. A lifted temp that ALSO started with `toride-sshd-`
@@ -2054,7 +1761,7 @@ mod tests {
         assert!(
             !matches_staged_glob(&lifted_name),
             "lifted name {lifted_name:?} must NOT match the sweep glob \
-             `toride-sshd-*.tmp` (F3); otherwise a concurrent sweep could \
+             `toride-sshd-*.tmp`; otherwise a concurrent sweep could \
              delete this instance's just-lifted validate path"
         );
     }
@@ -2097,8 +1804,8 @@ mod tests {
             .expect("lifted temp must have a file name");
         assert!(
             name.starts_with(LIFTED_TEMP_PREFIX),
-            "lifted temp must use the DISTINCT `toride-lifted-` prefix (F3), \
-             got {name:?} — a `toride-sshd-`-prefixed name would be matched by \
+            "lifted temp must use the DISTINCT `toride-lifted-` prefix, \
+             got {name:?}: a `toride-sshd-`-prefixed name would be matched by \
              a concurrent instance's self-sweep glob and could be deleted \
              mid-write"
         );
@@ -2108,23 +1815,20 @@ mod tests {
         );
     }
 
-    // -------------------------------------------------------------------------
-    // [F18] the self-sweep reclaims stale STAGED temps but spares LIFTED temps.
-    // -------------------------------------------------------------------------
     //
     // This exercises the actual sweep mechanics (the production sweep runs
     // `find <dir> -maxdepth 1 -type f -name 'toride-sshd-*.tmp' -mmin +59
     // -delete`): a STAGED-prefix temp older than the age gate must be removed,
     // while a LIFTED-prefix temp and a FRESH staged temp (a concurrent write's
     // live staging file) must survive. The /tmp sweep uses the identical
-    // command, so this also locks F18's "only staged temps match" and the
+    // command, so this also locks the "only staged temps match" and the
     // age-gate race immunity invariants.
 
     #[test]
     fn self_sweep_removes_stale_staged_temps_but_spares_lifted_temps() {
         // Set up a target dir containing: an over-an-hour-old STAGED temp, a
         // fresh LIFTED temp, a fresh STAGED temp, and the live config. Run a
-        // root-path write (so the real sweep executes against the target dir —
+        // root-path write (so the real sweep executes against the target dir:
         // the production sweep scans the same dir). Assert the stale STAGED
         // temp is gone and both fresh temps survive.
         let dir = tempfile::tempdir().unwrap();
@@ -2144,7 +1848,7 @@ mod tests {
         std::fs::write(&fresh_staged, "fresh\n").unwrap();
         std::fs::write(&lifted, "lifted\n").unwrap();
         // An orphaned staged temp is by definition old: backdate it past the
-        // sweep's age gate (an ungated sweep would also take the fresh one —
+        // sweep's age gate (an ungated sweep would also take the fresh one:
         // exactly the cross-write race the gate exists to prevent).
         std::fs::File::options()
             .write(true)
@@ -2158,16 +1862,16 @@ mod tests {
 
         assert!(
             !stale_staged.exists(),
-            "stale STAGED temp must be reclaimed by the self-sweep (F18), \
+            "stale STAGED temp must be reclaimed by the self-sweep, \
              but it still exists at {}",
             stale_staged.display()
         );
-        // The LIFTED-prefix temp must SURVIVE — the sweep pattern does not
-        // match `toride-lifted-*`. If F3's distinct-prefix fix were reverted
+        // The LIFTED-prefix temp must SURVIVE: the sweep pattern does not
+        // match `toride-lifted-*`. If the distinct-prefix rule were reverted
         // (lifted reused `toride-sshd-`), the sweep would delete this.
         assert!(
             lifted.exists(),
-            "LIFTED temp must NOT be matched by the self-sweep pattern (F3); \
+            "LIFTED temp must NOT be matched by the self-sweep pattern; \
              it was deleted from {}",
             lifted.display()
         );
@@ -2176,7 +1880,7 @@ mod tests {
         // write's lift into a spurious ENOENT failure.
         assert!(
             fresh_staged.exists(),
-            "fresh STAGED temp must NOT be swept — the age gate spares every \
+            "fresh STAGED temp must NOT be swept: the age gate spares every \
              concurrent write's live staging file; it was deleted from {}",
             fresh_staged.display()
         );
@@ -2184,11 +1888,6 @@ mod tests {
         let live = std::fs::read_to_string(&target).unwrap();
         assert!(live.contains("Port 22"), "new content must be installed");
     }
-
-    // -------------------------------------------------------------------------
-    // [F20] lift-step sudo-credential expiry is classified as SudoFailed, not
-    // ConfigWriteFailed.
-    // -------------------------------------------------------------------------
 
     /// A runner that simulates `sudo -n cp` (the lift step) failing with a
     /// sudo-credential-expiry error, then fakes everything else to succeed.
@@ -2212,17 +1911,17 @@ mod tests {
             }
         }
         // Everything else (backup cp/mv/rm, install sh -c, sync, sweep sh) is
-        // faked to success without doing real work — the lift failure aborts
+        // faked to success without doing real work: the lift failure aborts
         // before any of these matter, but we must not panic on them.
         nonroot_runner_impl(cmd, args, false, |_| {})
     }
 
     #[test]
     fn lift_step_privilege_denial_maps_to_sudo_failed_not_config_write_failed() {
-        // F20: when the lift (`sudo -n cp`) fails because sudo credentials
+        // When the lift (`sudo -n cp`) fails because sudo credentials
         // expired ("a password is required"), the error MUST surface as
         // Error::SudoFailed (actionable: "run sudo -v"), NOT
-        // Error::ConfigWriteFailed (which hides the real cause). If the F20 fix
+        // Error::ConfigWriteFailed (which hides the real cause). If the mapping
         // in lift_staged_into_target_dir were reverted, this returns
         // ConfigWriteFailed and the assertion fails.
         let dir = tempfile::tempdir().unwrap();
@@ -2240,8 +1939,8 @@ mod tests {
 
         assert!(
             matches!(err, Error::SudoFailed(_)),
-            "lift-step privilege denial must map to Error::SudoFailed (F20), \
-             got {err:?} — a ConfigWriteFailed here would mislead the user into \
+            "lift-step privilege denial must map to Error::SudoFailed, \
+             got {err:?}: a ConfigWriteFailed here would mislead the user into \
              thinking the config write itself failed rather than that sudo \
              credentials expired"
         );
@@ -2262,7 +1961,7 @@ mod tests {
 
     #[test]
     fn lift_step_non_privilege_failure_still_maps_to_config_write_failed() {
-        // Guard against the F20 fix being too broad: a lift failure that is NOT
+        // Guard against the mapping being too broad: a lift failure that is NOT
         // a privilege denial (e.g. disk full → a generic IO-flavored error
         // surfaced via ConfigWriteFailed by the stub) must STILL map to
         // ConfigWriteFailed. Only privilege denials are reclassified.
@@ -2294,28 +1993,23 @@ mod tests {
 
         assert!(
             matches!(err, Error::ConfigWriteFailed(_)),
-            "a non-privilege lift failure must stay ConfigWriteFailed (F20 only \
+            "a non-privilege lift failure must stay ConfigWriteFailed \
              reclassifies privilege denials), got {err:?}"
         );
     }
 
-    // -------------------------------------------------------------------------
-    // [F17] parent-dir fsync after install is best-effort and never fails the
-    // install.
-    // -------------------------------------------------------------------------
-
     #[test]
     fn fsync_parent_dir_best_effort_is_infallible_and_runs_against_tempdir() {
-        // F17: the helper exists, takes (target, running_as_root, runner),
+        // The helper exists, takes (target, running_as_root, runner),
         // returns `()` (it can NEVER turn a successful install into an error),
-        // and runs without panicking against a real tempdir parent. If F17 were
+        // and runs without panicking against a real tempdir parent. If it were
         // reverted (the helper removed), this fails to compile.
         let dir = tempfile::tempdir().unwrap();
         let target = dir.path().join("sshd_config");
         std::fs::write(&target, "Port 22\n").unwrap();
 
         // Call it directly: must return () and must not panic. The in-process
-        // arm opens the parent (the tempdir) read-only and fsyncs it — that
+        // arm opens the parent (the tempdir) read-only and fsyncs it: that
         // succeeds on a normal tempdir.
         let (): () = fsync_parent_dir_best_effort(&target, true, run_cmd);
 
@@ -2326,7 +2020,7 @@ mod tests {
 
     #[test]
     fn root_path_install_succeeds_and_invokes_parent_fsync_step() {
-        // F17 regression guard: a root-path install must still succeed WITH the
+        // A root-path install must still succeed WITH the
         // post-install parent-dir fsync wired into install_temp. If the fsync
         // call were removed or made fallible in a way that propagated, the
         // install path under test would change. We assert success and that the
@@ -2350,7 +2044,7 @@ mod tests {
             /* running_as_root = */ true,
             run_cmd,
         )
-        .expect("root-path install must succeed with the F17 fsync step wired in");
+        .expect("root-path install must succeed with the parent fsync step wired in");
 
         // Install landed.
         assert!(
@@ -2364,7 +2058,7 @@ mod tests {
 
     #[test]
     fn nonroot_install_succeeds_and_parent_fsync_fallback_does_not_fail_install() {
-        // F17: on the non-root path, after the single sh -c install, the
+        // On the non-root path, after the single sh -c install, the
         // parent-dir fsync runs its in-process arm (succeeds on the tempdir
         // parent) and the install still returns Ok. We inject a stub runner
         // whose catch-all handles the `sync` privileged fallback as Ok; the
@@ -2385,7 +2079,7 @@ mod tests {
             /* running_as_root = */ false,
             nonroot_runner_happy,
         )
-        .expect("non-root install must succeed; the F17 parent fsync must never fail it");
+        .expect("non-root install must succeed; the parent fsync must never fail it");
 
         assert!(
             std::fs::read_to_string(&target)

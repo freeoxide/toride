@@ -180,3 +180,35 @@ fn changed_file_invalidates_content_too() {
     );
     assert_eq!(second.as_str(), "Host bravo\n");
 }
+
+#[test]
+fn cache_entries_are_capped() {
+    crate::cache::clear_all_cache_for_tests();
+    let dir = tempfile::tempdir().unwrap();
+    for i in 0..300 {
+        let path = dir.path().join(format!("config-{i}"));
+        std::fs::write(&path, format!("Host h{i}\n    Port {i}\n")).unwrap();
+        crate::cache::load_cached_ast(&path).unwrap();
+    }
+    assert!(
+        crate::cache::cache_len_for_tests() <= 256,
+        "cache must stay bounded, got {}",
+        crate::cache::cache_len_for_tests()
+    );
+}
+
+#[test]
+fn deleting_a_file_drops_its_stale_entry() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config");
+    std::fs::write(&path, "Host h\n    Port 22\n").unwrap();
+    crate::cache::load_cached_ast(&path).unwrap();
+    assert!(crate::cache::cache_contains_for_tests(&path));
+
+    std::fs::remove_file(&path).unwrap();
+    assert!(crate::cache::load_cached_ast(&path).is_err());
+    assert!(
+        !crate::cache::cache_contains_for_tests(&path),
+        "a NotFound probe must evict the stale entry"
+    );
+}

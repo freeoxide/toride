@@ -1,5 +1,5 @@
 use super::*;
-use toride_ssh_core::Severity;
+use toride_ssh_core::DiagnosticSeverity;
 
 /// Helper: write a config string to a temp dir and return the `ConfigService`.
 fn setup_config(config_content: &str) -> (tempfile::TempDir, ConfigService<'static>) {
@@ -41,7 +41,7 @@ Host bastion
         1,
         "expected exactly one proxy conflict diagnostic"
     );
-    assert_eq!(conflicts[0].severity, Severity::Warning);
+    assert_eq!(conflicts[0].severity, DiagnosticSeverity::Warning);
     assert!(conflicts[0].message.contains("bastion"));
     assert!(conflicts[0].hint.is_some());
 
@@ -71,7 +71,7 @@ Host web
         1,
         "expected exactly one duplicate alias diagnostic"
     );
-    assert_eq!(dupes[0].severity, Severity::Warning);
+    assert_eq!(dupes[0].severity, DiagnosticSeverity::Warning);
     assert!(dupes[0].message.contains("'web'"));
 
     drop(dir);
@@ -96,7 +96,7 @@ Host specific
         .collect();
 
     assert_eq!(star.len(), 1, "expected Host * placement diagnostic");
-    assert_eq!(star[0].severity, Severity::Warning);
+    assert_eq!(star[0].severity, DiagnosticSeverity::Warning);
     assert!(star[0].message.contains("Host *"));
 
     drop(dir);
@@ -166,11 +166,11 @@ Host *
 
     let diags = svc.diagnose().await.unwrap();
 
-    // No warnings or errors expected — the config is well-formed and the
+    // No warnings or errors expected: the config is well-formed and the
     // referenced IdentityFile exists on disk.
     let warnings: Vec<_> = diags
         .iter()
-        .filter(|d| d.severity == Severity::Warning)
+        .filter(|d| d.severity == DiagnosticSeverity::Warning)
         .collect();
 
     assert!(
@@ -197,7 +197,7 @@ Host bad
         .collect();
 
     assert_eq!(pub_warns.len(), 1);
-    assert_eq!(pub_warns[0].severity, Severity::Warning);
+    assert_eq!(pub_warns[0].severity, DiagnosticSeverity::Warning);
     assert!(pub_warns[0].message.contains(".pub"));
 
     drop(dir);
@@ -214,4 +214,90 @@ async fn diagnose_empty_config_returns_empty() {
     );
 
     drop(dir);
+}
+
+#[tokio::test]
+async fn save_writes_0600_and_leaves_no_temp() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = SshPaths::with_dir(dir.path());
+    let service = ConfigService::new(&paths);
+
+    service
+        .edit(|ast| {
+            ConfigService::add_host(
+                ast,
+                "locked",
+                vec![("HostName".to_owned(), "locked.example.com".to_owned())],
+            )
+        })
+        .await
+        .unwrap();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(paths.config_path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600, "config must be saved 0o600");
+    }
+    let leftovers: Vec<_> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(std::result::Result::ok)
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .filter(|n| n.starts_with(".config.tmp"))
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "temp files left behind: {leftovers:?}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn concurrent_edits_do_not_lose_writes() {
+    let dir = tempfile::tempdir().unwrap();
+    let paths = SshPaths::with_dir(dir.path());
+
+    // Warm the file so every racer starts from a real load.
+    ConfigService::new(&paths)
+        .edit(|ast| {
+            ConfigService::add_host(
+                ast,
+                "seed",
+                vec![("HostName".to_owned(), "seed.example.com".to_owned())],
+            )
+        })
+        .await
+        .unwrap();
+
+    let mut handles = Vec::new();
+    for i in 0..8 {
+        let paths = SshPaths::with_dir(dir.path());
+        handles.push(tokio::spawn(async move {
+            let service = ConfigService::new(&paths);
+            let name = format!("racer{i}");
+            service
+                .edit(|ast| {
+                    ConfigService::add_host(
+                        ast,
+                        &name,
+                        vec![("HostName".to_owned(), format!("r{i}.example.com"))],
+                    )
+                })
+                .await
+        }));
+    }
+    for handle in handles {
+        handle.await.unwrap().unwrap();
+    }
+
+    let content = std::fs::read_to_string(dir.path().join("config")).unwrap();
+    for i in 0..8 {
+        assert!(
+            content.contains(&format!("Host racer{i}\n")),
+            "racer{i} lost to a concurrent edit:\n{content}"
+        );
+    }
+    assert!(content.contains("Host seed\n"));
 }

@@ -526,3 +526,16 @@ fn destination_constrained_hosts_with_ports() {
     let constraint = hosts.join(">");
     assert_eq!(constraint, "example.com:2222>10.0.0.1:22");
 }
+
+#[tokio::test]
+async fn destination_constrained_add_rejects_leading_dash_host() {
+    let runner = toride_ssh_core::MockCliRunner::new();
+    let err = destination_constrained_add(
+        std::path::Path::new("/tmp/key"),
+        &["-oProxyCommand=evil"],
+        &runner,
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(err, toride_ssh_core::Error::InvalidHost(_)));
+}
