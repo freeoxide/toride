@@ -10,10 +10,6 @@ use crate::paths::BackupPaths;
 use crate::spec::BackupSpec;
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
-// BackupConfig
-// ---------------------------------------------------------------------------
-
 /// Root configuration structure for all backup jobs.
 ///
 /// Stored as `config.json` in the backup configuration directory.
@@ -37,23 +33,39 @@ impl BackupConfig {
 
     /// Load configuration from the default XDG path.
     ///
+    /// A missing default-path file is a valid first-run state and yields an
+    /// empty configuration; use [`BackupConfig::load_from`] for strict
+    /// explicit-path semantics.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::ConfigParse`] if the config file cannot be read
     /// or parsed.
     pub fn load() -> Result<Self> {
         let paths = BackupPaths::resolve()?;
+        if !paths.config_file.exists() {
+            return Ok(Self::empty());
+        }
         Self::load_from(&paths.config_file)
     }
 
     /// Load configuration from an explicit file path.
     ///
+    /// A missing file is an error, not an empty config: an explicit path
+    /// means the caller expects that file, and silently reporting zero jobs
+    /// hides typos and unexpanded `~` paths.
+    ///
     /// # Errors
     ///
-    /// Returns [`Error::ConfigParse`] if the file cannot be read or parsed.
+    /// Returns [`Error::ConfigParse`] if the file does not exist, cannot be
+    /// read, or cannot be parsed.
     pub fn load_from(path: &Path) -> Result<Self> {
         if !path.exists() {
-            return Ok(Self::empty());
+            return Err(Error::ConfigParse(format!(
+                "config file not found: {} (an unexpanded ~ path never matches; \
+                 the CLI default is the resolved XDG path)",
+                path.display()
+            )));
         }
 
         let content = std::fs::read_to_string(path)?;
@@ -123,7 +135,7 @@ impl BackupConfig {
     pub fn validate(&self) -> Result<()> {
         for (name, spec) in &self.jobs {
             spec.validate()
-                .map_err(|e| Error::ConfigParse(format!("job {:?}: {e}", name,)))?;
+                .map_err(|e| Error::ConfigParse(format!("job {name:?}: {e}")))?;
         }
         Ok(())
     }
@@ -145,10 +157,6 @@ impl BackupConfig {
         self.jobs.get(name)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Serde support (gated)
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "serde")]
 impl serde::Serialize for BackupConfig {
@@ -218,12 +226,37 @@ impl<'de> serde::Deserialize<'de> for BackupConfig {
 
                 Ok(BackupConfig {
                     jobs: jobs.unwrap_or_default(),
-                    default_backend: default_backend.unwrap_or_else(crate::spec::Backend::default),
+                    default_backend: default_backend.unwrap_or_default(),
                 })
             }
         }
 
         const FIELDS: &[&str] = &["default_backend", "jobs"];
         deserializer.deserialize_struct("BackupConfig", FIELDS, BackupConfigVisitor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn load_from_missing_path_is_an_error_not_an_empty_config() {
+        let err = BackupConfig::load_from(Path::new("/nonexistent/toride-backup-test/config.json"))
+            .expect_err("an explicit missing path must error");
+        assert!(matches!(err, Error::ConfigParse(_)), "got {err:?}");
+        assert!(
+            format!("{err}").contains("config file not found"),
+            "error must name the missing file: {err}"
+        );
+    }
+
+    #[test]
+    fn load_from_empty_object_is_an_empty_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        std::fs::write(&path, "{}").unwrap();
+        let config = BackupConfig::load_from(&path).expect("empty object parses");
+        assert!(config.jobs.is_empty());
     }
 }

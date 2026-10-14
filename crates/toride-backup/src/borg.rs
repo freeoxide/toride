@@ -37,10 +37,6 @@ use crate::{Error, Result};
 // `toride_runner`'s `duct-runner` + `fake` features via the workspace Cargo.toml.
 use toride_runner::{CommandSpec, Runner};
 
-// ---------------------------------------------------------------------------
-// BorgClient
-// ---------------------------------------------------------------------------
-
 /// Typed wrapper around the `borg` binary.
 ///
 /// Every method constructs the appropriate argument list and delegates
@@ -129,21 +125,18 @@ impl BorgClient {
         self
     }
 
-    // -----------------------------------------------------------------------
-    // Repository management
-    // -----------------------------------------------------------------------
-
     /// Initialise a new borg repository.
     ///
     /// Runs `borg init --encryption=<mode> <repo>` where `<mode>` is derived
-    /// from [`Encryption`] (defaulting to `repokey`, the Borg-recommended
-    /// mode). The passphrase — if set — is supplied via `BORG_PASSPHRASE`.
+    /// from the caller's [`Encryption`] setting via
+    /// [`BorgClient::encryption_mode`]. The passphrase, if set, is supplied
+    /// via `BORG_PASSPHRASE`.
     ///
     /// # Errors
     ///
     /// Returns [`Error::RepositoryInit`] if the init command fails.
-    pub fn init(&self) -> Result<()> {
-        let mode = Self::encryption_mode(&Encryption::RepoKey);
+    pub fn init(&self, encryption: &Encryption) -> Result<()> {
+        let mode = Self::encryption_mode(encryption);
         let spec = self
             .command("init")
             .args(["--encryption", mode])
@@ -174,10 +167,6 @@ impl BorgClient {
         let output = self.run_string(&spec, Error::RepositoryAccess)?;
         Ok(output)
     }
-
-    // -----------------------------------------------------------------------
-    // Archive operations
-    // -----------------------------------------------------------------------
 
     /// Create a new archive in the repository.
     ///
@@ -251,44 +240,35 @@ impl BorgClient {
 
     /// Prune archives according to a retention policy.
     ///
-    /// Runs `borg prune <repo> --keep-daily=N --keep-weekly=N ...`. Only the
-    /// retention counts that are `Some` are emitted.
+    /// Runs `borg prune --list <repo> --keep-* N ...` with every knob of
+    /// `policy` rendered via [`crate::spec::RetentionPolicy::keep_args`] (all five are
+    /// representable, so no configured knob is silently dropped). `--list`
+    /// makes each Keep/Pruned decision machine-readable: pass the returned
+    /// stdout to [`parse_prune_list`] for removed/kept counts.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the prune command fails.
-    pub fn prune(
-        &self,
-        keep_daily: Option<u32>,
-        keep_weekly: Option<u32>,
-        keep_monthly: Option<u32>,
-    ) -> Result<String> {
-        let mut spec = self.command("prune").arg(self.repo_arg());
-        if let Some(n) = keep_daily {
-            spec = spec.args(["--keep-daily", &n.to_string()]);
-        }
-        if let Some(n) = keep_weekly {
-            spec = spec.args(["--keep-weekly", &n.to_string()]);
-        }
-        if let Some(n) = keep_monthly {
-            spec = spec.args(["--keep-monthly", &n.to_string()]);
+    /// Returns [`Error::CommandFailed`] if the prune command fails, or
+    /// [`Error::ConfigParse`] if the policy has no keep-* value at all (borg
+    /// documents `prune` with zero keep flags as deleting all archives).
+    pub fn prune(&self, policy: &crate::spec::RetentionPolicy) -> Result<String> {
+        policy
+            .validate()
+            .map_err(|e| Error::ConfigParse(format!("borg prune: {e}")))?;
+        let mut spec = self.command("prune").arg(self.repo_arg()).arg("--list");
+        for a in policy.keep_args() {
+            spec = spec.arg(a);
         }
         let spec = spec.redact(self.carries_secret());
 
         tracing::info!(
             repo = %self.repo.display(),
-            keep_daily = ?keep_daily,
-            keep_weekly = ?keep_weekly,
-            keep_monthly = ?keep_monthly,
+            keep_args = ?policy.keep_args(),
             "borg prune"
         );
         let output = self.run_string(&spec, Error::command_failed)?;
         Ok(output)
     }
-
-    // -----------------------------------------------------------------------
-    // Extract / restore
-    // -----------------------------------------------------------------------
 
     /// Extract (restore) an archive into a target directory.
     ///
@@ -317,10 +297,6 @@ impl BorgClient {
         self.run_unit(&spec, Error::RestoreFailed)?;
         Ok(())
     }
-
-    // -----------------------------------------------------------------------
-    // JSON parsing helpers
-    // -----------------------------------------------------------------------
 
     /// Parse the JSON document produced by [`BorgClient::list`].
     ///
@@ -360,10 +336,6 @@ impl BorgClient {
         })
     }
 
-    // -----------------------------------------------------------------------
-    // Accessors (useful for tests + diagnostics)
-    // -----------------------------------------------------------------------
-
     /// The repository location as configured.
     pub fn repo(&self) -> &Path {
         &self.repo
@@ -373,10 +345,6 @@ impl BorgClient {
     pub fn has_passphrase(&self) -> bool {
         self.passphrase.is_some()
     }
-
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
 
     /// Build the repository path argument.
     fn repo_arg(&self) -> String {
@@ -461,10 +429,6 @@ impl BorgClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public parsed JSON shapes (file-local serde structs behind the client feature)
-// ---------------------------------------------------------------------------
-
 /// Subset of `borg list --json` / `borg info --json` repository metadata.
 #[cfg(feature = "client")]
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -547,10 +511,6 @@ struct InfoEnvelope {
     archives: Vec<BorgArchive>,
 }
 
-// ---------------------------------------------------------------------------
-// Error helper
-// ---------------------------------------------------------------------------
-
 impl Error {
     /// Construct a [`Error::CommandFailed`] from a free-form message.
     fn command_failed(msg: String) -> Self {
@@ -558,18 +518,34 @@ impl Error {
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
+/// Parse `borg prune --list` output into `(removed, kept)` archive counts.
+///
+/// With `--list`, borg prints one decision line per archive
+/// (<https://borgbackup.readthedocs.io/en/stable/usage/prune.html>):
+/// `Keep (rule: daily #1/7):        archive-name` for archives a retention
+/// rule keeps and `Pruned:  archive-name` for archives that matched no rule
+/// and were deleted. Lines matching neither form are ignored.
+pub fn parse_prune_list(stdout: &str) -> (u64, u64) {
+    let mut removed = 0u64;
+    let mut kept = 0u64;
+    for line in stdout.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("Keep") {
+            kept += 1;
+        } else if trimmed.starts_with("Pruned") {
+            removed += 1;
+        }
+    }
+    (removed, kept)
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::spec::RetentionPolicy;
     use std::sync::Arc;
     use toride_runner::CommandOutput;
     use toride_runner::fake::FakeRunner;
-
-    // ---- helpers --------------------------------------------------------
 
     /// Build a client wired to a fresh fake runner, returning both so the
     /// caller can push responses / inspect recorded calls. The client shares
@@ -593,8 +569,6 @@ mod tests {
         }
     }
 
-    // ---- init -----------------------------------------------------------
-
     #[test]
     fn init_uses_repokey_and_passphrase_env_not_cli() {
         // Source: https://borgbackup.readthedocs.io/en/stable/usage/init.html
@@ -603,7 +577,8 @@ mod tests {
         //   "Use the environment variables BORG_PASSPHRASE ... to pass
         //    passphrases to Borg, don't use the interactive passphrase prompts."
         let (c, rc) = make("/mnt/repo", Some("s3cr3t"));
-        c.init().expect("init should succeed under fake runner");
+        c.init(&Encryption::RepoKey)
+            .expect("init should succeed under fake runner");
 
         let calls = rc.calls();
         assert_eq!(calls.len(), 1, "init should issue exactly one borg command");
@@ -627,12 +602,34 @@ mod tests {
         assert!(call.redact, "passphrase-bearing command must be redacted");
     }
 
+    /// The `--encryption` mode is derived from the caller's [`Encryption`]
+    /// setting, not hardcoded: `KeyFile` must produce `keyfile`, `None` must
+    /// produce `none`.
+    #[test]
+    fn init_derives_encryption_mode_from_the_caller_setting() {
+        let (c, rc) = make("/mnt/repo", None);
+        c.init(&Encryption::KeyFile).unwrap();
+        assert_eq!(
+            rc.calls()[0].args,
+            vec!["init", "--encryption", "keyfile", "/mnt/repo"],
+            "KeyFile must map onto --encryption keyfile"
+        );
+
+        let (c, rc) = make("/mnt/repo", None);
+        c.init(&Encryption::None).unwrap();
+        assert_eq!(
+            rc.calls()[0].args,
+            vec!["init", "--encryption", "none", "/mnt/repo"],
+            "None must map onto --encryption none"
+        );
+    }
+
     #[test]
     fn init_without_passphrase_is_not_redacted() {
         // An unencrypted repo init (or one where the caller will be prompted
         // interactively) carries no secret in the command, so redact stays off.
         let (c, rc) = make("/mnt/repo", None);
-        c.init().unwrap();
+        c.init(&Encryption::RepoKey).unwrap();
         let call = &rc.calls()[0];
         assert!(!call.redact, "no passphrase => no redaction needed");
         assert!(
@@ -652,11 +649,9 @@ mod tests {
             },
         )));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/mnt/repo").with_runner(rc.clone());
-        let err = c.init().unwrap_err();
+        let err = c.init(&Encryption::RepoKey).unwrap_err();
         assert!(matches!(err, Error::RepositoryInit(_)), "got {err:?}");
     }
-
-    // ---- check ----------------------------------------------------------
 
     #[test]
     fn check_builds_correct_command_and_returns_output() {
@@ -692,8 +687,6 @@ mod tests {
         let err = c.check().unwrap_err();
         assert!(matches!(err, Error::RepositoryAccess(_)), "got {err:?}");
     }
-
-    // ---- create ---------------------------------------------------------
 
     #[test]
     fn create_builds_repo_archive_target_and_paths() {
@@ -732,8 +725,6 @@ mod tests {
         let err = c.create("dup", &[Path::new("/etc")]).unwrap_err();
         assert!(matches!(err, Error::CommandFailed(_)), "got {err:?}");
     }
-
-    // ---- list -----------------------------------------------------------
 
     // Verbatim `borg list --json` sample from the official frontend docs:
     // https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
@@ -805,8 +796,6 @@ mod tests {
         assert!(rc.calls()[0].redact);
     }
 
-    // ---- info -----------------------------------------------------------
-
     // Verbatim `borg info --json` sample (repository-only form, archives: [])
     // from the official frontend docs:
     // https://borgbackup.readthedocs.io/en/stable/internals/frontends.html
@@ -866,8 +855,6 @@ mod tests {
         assert!(raw.contains("total_chunks"));
     }
 
-    // ---- prune ----------------------------------------------------------
-
     #[test]
     fn prune_emits_only_provided_keep_flags() {
         // Source: https://borgbackup.readthedocs.io/en/stable/usage/prune.html
@@ -876,7 +863,14 @@ mod tests {
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/mnt/repo")
             .with_passphrase("pw")
             .with_runner(rc.clone());
-        let out = c.prune(Some(7), None, Some(6)).unwrap();
+        let policy = RetentionPolicy {
+            keep_hourly: None,
+            keep_daily: Some(7),
+            keep_weekly: None,
+            keep_monthly: Some(6),
+            keep_yearly: None,
+        };
+        let out = c.prune(&policy).unwrap();
         assert_eq!(out, "pruned");
         let call = &rc.calls()[0];
         assert_eq!(
@@ -884,6 +878,7 @@ mod tests {
             vec![
                 "prune",
                 "/mnt/repo",
+                "--list",
                 "--keep-daily",
                 "7",
                 "--keep-monthly",
@@ -895,26 +890,93 @@ mod tests {
     }
 
     #[test]
-    fn prune_with_all_counts() {
+    fn prune_with_all_five_counts() {
         let rc = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("ok")));
         let c = BorgClient::with_binary(PathBuf::from("borg"), "/r").with_runner(rc.clone());
-        let _ = c.prune(Some(1), Some(2), Some(3)).unwrap();
+        let policy = RetentionPolicy {
+            keep_hourly: Some(24),
+            keep_daily: Some(1),
+            keep_weekly: Some(2),
+            keep_monthly: Some(3),
+            keep_yearly: Some(1),
+        };
+        let _ = c.prune(&policy).unwrap();
         assert_eq!(
             rc.calls()[0].args,
             vec![
                 "prune",
                 "/r",
+                "--list",
+                "--keep-hourly",
+                "24",
                 "--keep-daily",
                 "1",
                 "--keep-weekly",
                 "2",
                 "--keep-monthly",
                 "3",
+                "--keep-yearly",
+                "1",
             ]
         );
     }
 
-    // ---- extract --------------------------------------------------------
+    /// An hourly-only policy is valid and must reach borg as
+    /// `--keep-hourly`: dropping it would run `borg prune` with zero keep
+    /// flags, which borg documents as deleting all archives.
+    #[test]
+    fn prune_hourly_only_policy_is_forwarded() {
+        let rc = Arc::new(FakeRunner::new().push_response(CommandOutput::from_stdout("")));
+        let c = BorgClient::with_binary(PathBuf::from("borg"), "/r").with_runner(rc.clone());
+        let policy = RetentionPolicy {
+            keep_hourly: Some(6),
+            keep_daily: None,
+            keep_weekly: None,
+            keep_monthly: None,
+            keep_yearly: None,
+        };
+        c.prune(&policy)
+            .expect("hourly-only policy is representable");
+        assert_eq!(
+            rc.calls()[0].args,
+            vec!["prune", "/r", "--list", "--keep-hourly", "6"]
+        );
+    }
+
+    /// A policy with no keep values at all is rejected before any command is
+    /// issued: `borg prune` with zero keep flags deletes all archives.
+    #[test]
+    fn prune_rejects_policy_with_no_keep_values() {
+        let rc = Arc::new(FakeRunner::new().strict());
+        let c = BorgClient::with_binary(PathBuf::from("borg"), "/r").with_runner(rc.clone());
+        let policy = RetentionPolicy {
+            keep_hourly: None,
+            keep_daily: None,
+            keep_weekly: None,
+            keep_monthly: None,
+            keep_yearly: None,
+        };
+        let err = c.prune(&policy).expect_err("empty policy must error");
+        assert!(matches!(err, Error::ConfigParse(_)), "got {err:?}");
+        assert!(
+            rc.calls().is_empty(),
+            "no borg command may be issued for an empty policy"
+        );
+    }
+
+    /// `parse_prune_list` counts Keep/Pruned decision lines from
+    /// `borg prune --list` output.
+    #[test]
+    fn parse_prune_list_counts_keep_and_pruned_lines() {
+        let out = "\
+Keep (rule: daily #1/7):        myhost-2024-05-19-0300
+Keep (rule: weekly #1/4):       myhost-2024-05-13-0300
+Pruned:                         myhost-2024-04-01-0300
+";
+        assert_eq!(parse_prune_list(out), (1, 2));
+        assert_eq!(parse_prune_list(""), (0, 0));
+        assert_eq!(parse_prune_list("unrelated text\n"), (0, 0));
+    }
 
     #[test]
     fn extract_uses_cwd_not_destination_flag() {
@@ -957,8 +1019,6 @@ mod tests {
         assert!(matches!(err, Error::RestoreFailed(_)), "got {err:?}");
     }
 
-    // ---- redaction property --------------------------------------------
-
     #[test]
     fn passphrase_command_is_redacted_and_env_borne() {
         // The single most important correctness property: a command that
@@ -968,12 +1028,12 @@ mod tests {
         let (c, rc) = make("/mnt/repo", Some("hunter2"));
 
         // init, check, create, list, info, prune, extract — every op.
-        c.init().unwrap();
+        c.init(&Encryption::RepoKey).unwrap();
         c.check().unwrap();
         c.create("a", &[Path::new("/x")]).unwrap();
         c.list().unwrap();
         c.info().unwrap();
-        c.prune(Some(1), Some(1), None).unwrap();
+        c.prune(&RetentionPolicy::default_policy()).unwrap();
         c.extract("a", Path::new("/tmp/r")).unwrap();
 
         assert!(
@@ -1012,8 +1072,6 @@ mod tests {
             Some(&("BORG_HOST_ID".to_string(), "deadbeef".to_string())),
         );
     }
-
-    // ---- construction / accessors --------------------------------------
 
     #[test]
     fn with_binary_does_not_probe_path() {

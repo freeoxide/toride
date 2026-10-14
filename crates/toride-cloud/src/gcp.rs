@@ -18,10 +18,6 @@ use crate::error::{Error, Result};
 use crate::spec::{FirewallRule, PortRange, Protocol, RuleAction, SecurityGroup};
 use toride_runner::{CommandOutput, CommandSpec, DuctRunner, Runner};
 
-// ---------------------------------------------------------------------------
-// GcpClient
-// ---------------------------------------------------------------------------
-
 /// Client for managing GCP firewall rules.
 ///
 /// Delegates command execution to the `gcloud` CLI through a swappable
@@ -252,9 +248,16 @@ fn build_mutation_spec(
             .arg("--rules")
             .arg(deny_tokens.join(","));
     } else {
-        // No protocols specified: keep the rule well-formed with the gcloud
-        // default-expanding form.
-        spec = spec.arg("--allow").arg("all");
+        // gcloud requires --allow (or --action + --rules); a rule-less
+        // mutation has no valid rendering. The old fallback emitted
+        // `--allow all`, which turned an update into an allow-everything
+        // firewall on the rule's existing source ranges.
+        return Err(Error::Unsupported(format!(
+            "GCP firewall rule {} needs at least one rule to build a {} \
+             command (gcloud has no rule-less form; --allow all was removed)",
+            name.unwrap_or(""),
+            verb
+        )));
     }
 
     if let Some(network) = network {
@@ -286,10 +289,6 @@ fn build_mutation_spec(
     Ok(client.with_project(spec))
 }
 
-// ---------------------------------------------------------------------------
-// CLI -> domain mapping helpers (file-local to avoid parse.rs conflicts)
-// ---------------------------------------------------------------------------
-
 /// Return the first non-empty description among `rules`, or `""`.
 fn first_description(rules: &[FirewallRule]) -> String {
     rules
@@ -318,7 +317,6 @@ fn render_protocol_port(rule: &FirewallRule) -> String {
     }
 }
 
-// --- serde helper structs mirroring the gcloud --format=json shape --------
 //
 // Shape (per `gcloud compute firewall-rules list/describe --format=json`):
 //   {
@@ -551,10 +549,6 @@ fn parse_port_token(token: &str) -> Option<PortRange> {
         Some(PortRange::single(single))
     }
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -881,6 +875,37 @@ mod tests {
         assert!(
             matches!(err, Error::Other(_)),
             "expected Other, got {err:?}"
+        );
+    }
+
+    /// A mutation with zero rules must be a typed error, never
+    /// `--allow all`: on an update that fallback rewrote the rule to allow
+    /// every protocol and port on its existing source ranges.
+    #[test]
+    fn create_or_update_with_no_rules_is_unsupported() {
+        let runner = FakeRunner::new().strict();
+        let (client, runner) = client_with(runner);
+
+        let err = client
+            .create_firewall_rule("empty", "default", &[])
+            .expect_err("rule-less create must be refused");
+        assert!(
+            matches!(err, Error::Unsupported(_)),
+            "expected Unsupported, got {err:?}"
+        );
+        assert!(
+            format!("{err}").contains("--allow all"),
+            "error must name the removed fallback: {err}"
+        );
+
+        let err = client
+            .update_firewall_rule("empty", &[])
+            .expect_err("rule-less update must be refused");
+        assert!(matches!(err, Error::Unsupported(_)), "got {err:?}");
+
+        assert!(
+            runner.calls().is_empty(),
+            "the refusal must happen before any gcloud spawn"
         );
     }
 

@@ -38,10 +38,6 @@ use toride_runner::{CommandSpec, DuctRunner, Runner};
 
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
-// Public typed views (parsed from restic --json output)
-// ---------------------------------------------------------------------------
-
 /// A single restic snapshot, as reported by `restic snapshots --json` /
 /// `restic cat snapshot <id>`.
 ///
@@ -136,11 +132,9 @@ pub struct RepoStats {
     pub snapshots_count: u64,
 }
 
-// ---------------------------------------------------------------------------
 // file-local serde helpers (only compiled under the `client` feature, which
 // implies serde + serde_json). Keeping these private avoids leaking restic's
 // exact JSON field set through the crate's public surface.
-// ---------------------------------------------------------------------------
 
 #[cfg(feature = "client")]
 mod json_shapes {
@@ -236,10 +230,6 @@ mod json_shapes {
         pub snapshots_count: u64,
     }
 }
-
-// ---------------------------------------------------------------------------
-// ResticClient
-// ---------------------------------------------------------------------------
 
 /// Typed wrapper around the `restic` binary.
 ///
@@ -337,10 +327,6 @@ impl ResticClient {
         self
     }
 
-    // -----------------------------------------------------------------------
-    // Repository management
-    // -----------------------------------------------------------------------
-
     /// Initialise a new restic repository.
     ///
     /// Runs `restic init`. Emits a single JSON-lines `initialized` record
@@ -407,10 +393,6 @@ impl ResticClient {
             snapshots_count: parsed.snapshots_count,
         })
     }
-
-    // -----------------------------------------------------------------------
-    // Snapshot operations
-    // -----------------------------------------------------------------------
 
     /// Create a backup snapshot of the given paths.
     ///
@@ -558,38 +540,32 @@ impl ResticClient {
 
     /// Prune snapshots according to a retention policy.
     ///
-    /// Runs `restic forget --prune --keep-daily <n> --keep-weekly <n>
-    /// --keep-monthly <n>`. Note from the docs: `prune` itself does not support
-    /// JSON, so `forget --prune` produces mixed JSON + text output; we return
-    /// the raw stdout.
+    /// Runs `restic forget --prune --json --keep-* <n>...` with every knob of
+    /// `policy` rendered via [`RetentionPolicy::keep_args`] (all five are
+    /// representable, so no configured knob is silently dropped). `--json`
+    /// makes the forget groups machine-readable; the trailing `prune` pass
+    /// still prints text, so callers parsing counts should read the JSON
+    /// prefix (see [`parse_forget_groups`]).
     ///
     /// Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget>
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the prune command fails.
-    pub fn prune(
-        &self,
-        keep_daily: Option<u32>,
-        keep_weekly: Option<u32>,
-        keep_monthly: Option<u32>,
-    ) -> Result<String> {
+    /// Returns [`Error::CommandFailed`] if the prune command fails, or
+    /// [`Error::ConfigParse`] if the policy has no keep-* value at all (a
+    /// `forget` with zero keep flags would remove every snapshot).
+    pub fn prune(&self, policy: &crate::spec::RetentionPolicy) -> Result<String> {
+        policy
+            .validate()
+            .map_err(|e| Error::ConfigParse(format!("restic prune: {e}")))?;
         tracing::info!(
             repo = %self.repo.display(),
-            keep_daily = ?keep_daily,
-            keep_weekly = ?keep_weekly,
-            keep_monthly = ?keep_monthly,
+            keep_args = ?policy.keep_args(),
             "restic forget --prune"
         );
-        let mut spec = self.spec("forget").arg("--prune");
-        if let Some(d) = keep_daily {
-            spec = spec.arg("--keep-daily").arg(d.to_string());
-        }
-        if let Some(w) = keep_weekly {
-            spec = spec.arg("--keep-weekly").arg(w.to_string());
-        }
-        if let Some(m) = keep_monthly {
-            spec = spec.arg("--keep-monthly").arg(m.to_string());
+        let mut spec = self.spec("forget").arg("--prune").arg("--json");
+        for a in policy.keep_args() {
+            spec = spec.arg(a);
         }
         let spec = spec.redact(true);
         let output = self
@@ -599,39 +575,37 @@ impl ResticClient {
         Ok(output.stdout)
     }
 
-    /// Apply a retention policy **without** pruning (no data removal).
+    /// Apply a retention policy with `forget`: the snapshots outside the
+    /// keep groups are removed from the repository index (their pack data is
+    /// only reclaimed by a later `prune`, run via [`Self::prune`]).
     ///
-    /// Runs `restic forget --keep-* <n>` (no `--prune`), returning the parsed
-    /// JSON plan: which snapshots restic would keep vs remove. Useful for
-    /// dry-run retention previews.
+    /// Runs `restic forget [--dry-run] --json --keep-* <n>...`. With
+    /// `dry_run == true` restic appends `--dry-run` and removes nothing: the
+    /// JSON output describes what *would* be kept and removed.
     ///
     /// Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget>
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the command fails.
-    pub fn forget(
-        &self,
-        keep_daily: Option<u32>,
-        keep_weekly: Option<u32>,
-        keep_monthly: Option<u32>,
-    ) -> Result<String> {
+    /// Returns [`Error::CommandFailed`] if the command fails, or
+    /// [`Error::ConfigParse`] if the policy has no keep-* value at all.
+    pub fn forget(&self, policy: &crate::spec::RetentionPolicy, dry_run: bool) -> Result<String> {
+        policy
+            .validate()
+            .map_err(|e| Error::ConfigParse(format!("restic forget: {e}")))?;
         tracing::info!(
             repo = %self.repo.display(),
-            keep_daily = ?keep_daily,
-            keep_weekly = ?keep_weekly,
-            keep_monthly = ?keep_monthly,
+            keep_args = ?policy.keep_args(),
+            dry_run,
             "restic forget"
         );
-        let mut spec = self.spec("forget").arg("--json");
-        if let Some(d) = keep_daily {
-            spec = spec.arg("--keep-daily").arg(d.to_string());
+        let mut spec = self.spec("forget");
+        if dry_run {
+            spec = spec.arg("--dry-run");
         }
-        if let Some(w) = keep_weekly {
-            spec = spec.arg("--keep-weekly").arg(w.to_string());
-        }
-        if let Some(m) = keep_monthly {
-            spec = spec.arg("--keep-monthly").arg(m.to_string());
+        spec = spec.arg("--json");
+        for a in policy.keep_args() {
+            spec = spec.arg(a);
         }
         let spec = spec.redact(true);
         let output = self
@@ -640,10 +614,6 @@ impl ResticClient {
             .map_err(|e| Error::CommandFailed(restic_err(&e)))?;
         Ok(output.stdout)
     }
-
-    // -----------------------------------------------------------------------
-    // Restore
-    // -----------------------------------------------------------------------
 
     /// Restore a snapshot to a target directory.
     ///
@@ -709,10 +679,6 @@ impl ResticClient {
             .map_err(|e| Error::RestoreFailed(format!("parse restic restore summary: {e}")))
     }
 
-    // -----------------------------------------------------------------------
-    // Internal helpers
-    // -----------------------------------------------------------------------
-
     /// Build the base of a restic subcommand: `<binary> --repo <repo> [--password-command <cmd>]`.
     ///
     /// The repo and (raw) passphrase are never passed as positional args; the
@@ -749,10 +715,6 @@ impl ResticClient {
         Vec::new()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Free helpers
-// ---------------------------------------------------------------------------
 
 /// Render a runner error into a compact string.
 ///
@@ -847,9 +809,37 @@ fn parse_restore_summary(stdout: &str) -> std::result::Result<RestoreSummary, St
     summary.ok_or_else(|| "no summary record in restic restore output".to_string())
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
+/// Parse `restic forget [--prune] --json` output into `(removed, kept)`
+/// snapshot counts, or `None` when the output carries no JSON group array.
+///
+/// `forget --json` prints one object per retention group, each carrying
+/// `remove` and `keep` arrays of snapshot objects (only the counts matter
+/// here, so the entries are skipped via `IgnoredAny`). When `--prune` is
+/// also passed, human-readable prune text follows the JSON; the streaming
+/// deserializer stops at the end of the first JSON value, so trailing text
+/// is ignored.
+///
+/// Docs: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget>
+#[cfg(feature = "client")]
+pub(crate) fn parse_forget_groups(stdout: &str) -> Option<(u64, u64)> {
+    #[derive(serde::Deserialize)]
+    struct Group {
+        #[serde(default)]
+        remove: Vec<serde::de::IgnoredAny>,
+        #[serde(default)]
+        keep: Vec<serde::de::IgnoredAny>,
+    }
+
+    let trimmed = stdout.trim_start();
+    if !trimmed.starts_with('[') {
+        return None;
+    }
+    let mut groups = serde_json::Deserializer::from_str(trimmed).into_iter::<Vec<Group>>();
+    let groups = groups.next()?.ok()?;
+    let removed = groups.iter().map(|g| g.remove.len() as u64).sum();
+    let kept = groups.iter().map(|g| g.keep.len() as u64).sum();
+    Some((removed, kept))
+}
 
 #[cfg(all(test, feature = "client"))]
 mod tests {
@@ -874,10 +864,6 @@ mod tests {
             .with_runner(for_client);
         (client, runner)
     }
-
-    // -------------------------------------------------------------------------
-    // Command construction
-    // -------------------------------------------------------------------------
 
     /// `restic init` builds `restic --repo <repo> init --json` and carries the
     /// passphrase via `RESTIC_PASSWORD` env (never as an arg).
@@ -1161,16 +1147,22 @@ mod tests {
         runner.assert_called_with(&expected);
     }
 
-    /// `restic forget --prune --keep-*` retention policy.
+    /// `restic forget --prune --json --keep-*` retention policy: every knob
+    /// of the policy is forwarded (all five are representable).
     /// Source: <https://restic.readthedocs.io/en/v0.17.2/075_scripting.html#forget>
     #[test]
-    fn prune_builds_forget_prune_command() {
-        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("forgotten"));
+    fn prune_builds_forget_prune_command_with_all_five_knobs() {
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("[]"));
         let (client, runner) = client_and_runner(runner, "/srv/backup");
 
-        let _ = client
-            .prune(Some(7), Some(4), Some(6))
-            .expect("prune should succeed");
+        let policy = crate::spec::RetentionPolicy {
+            keep_hourly: Some(24),
+            keep_daily: Some(7),
+            keep_weekly: Some(4),
+            keep_monthly: Some(6),
+            keep_yearly: Some(2),
+        };
+        let _ = client.prune(&policy).expect("prune should succeed");
 
         let expected = CommandSpec::new("/usr/bin/restic")
             .args([
@@ -1178,28 +1170,92 @@ mod tests {
                 "/srv/backup",
                 "forget",
                 "--prune",
+                "--json",
+                "--keep-hourly",
+                "24",
                 "--keep-daily",
                 "7",
                 "--keep-weekly",
                 "4",
                 "--keep-monthly",
                 "6",
+                "--keep-yearly",
+                "2",
             ])
             .env("RESTIC_PASSWORD", "s3cr3t-passphrase")
             .redact(true);
         runner.assert_called_with(&expected);
     }
 
-    /// `restic forget --json --keep-*` (no prune) for a dry-run-style preview.
+    /// An empty policy is rejected before any command is issued: a forget
+    /// with zero keep flags would remove every snapshot.
     #[test]
-    fn forget_builds_command_without_prune() {
+    fn prune_rejects_policy_with_no_keep_values() {
+        let runner = FakeRunner::new().strict();
+        let (client, runner) = client_and_runner(runner, "/srv/backup");
+        let policy = crate::spec::RetentionPolicy {
+            keep_hourly: None,
+            keep_daily: None,
+            keep_weekly: None,
+            keep_monthly: None,
+            keep_yearly: None,
+        };
+        let err = client.prune(&policy).expect_err("empty policy must error");
+        assert!(matches!(err, Error::ConfigParse(_)), "got {err:?}");
+        assert!(
+            runner.calls().is_empty(),
+            "no restic command may be issued for an empty policy"
+        );
+    }
+
+    /// `restic forget --dry-run --json --keep-*` removes nothing.
+    #[test]
+    fn forget_dry_run_appends_dry_run_flag() {
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("[]"));
         let (client, runner) = client_and_runner(runner, "/srv/backup");
 
-        let out = client
-            .forget(None, Some(4), None)
-            .expect("forget should succeed");
+        let policy = crate::spec::RetentionPolicy {
+            keep_hourly: None,
+            keep_daily: None,
+            keep_weekly: Some(4),
+            keep_monthly: None,
+            keep_yearly: None,
+        };
+        let out = client.forget(&policy, true).expect("forget should succeed");
         assert_eq!(out.trim(), "[]");
+
+        let expected = CommandSpec::new("/usr/bin/restic")
+            .args([
+                "--repo",
+                "/srv/backup",
+                "forget",
+                "--dry-run",
+                "--json",
+                "--keep-weekly",
+                "4",
+            ])
+            .env("RESTIC_PASSWORD", "s3cr3t-passphrase")
+            .redact(true);
+        runner.assert_called_with(&expected);
+    }
+
+    /// Without `dry_run`, forget removes the snapshots outside the keep
+    /// groups; the command must NOT carry `--dry-run`.
+    #[test]
+    fn forget_without_dry_run_runs_real_forget() {
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("[]"));
+        let (client, runner) = client_and_runner(runner, "/srv/backup");
+
+        let policy = crate::spec::RetentionPolicy {
+            keep_hourly: None,
+            keep_daily: None,
+            keep_weekly: Some(4),
+            keep_monthly: None,
+            keep_yearly: None,
+        };
+        let _ = client
+            .forget(&policy, false)
+            .expect("forget should succeed");
 
         let expected = CommandSpec::new("/usr/bin/restic")
             .args([
@@ -1213,6 +1269,30 @@ mod tests {
             .env("RESTIC_PASSWORD", "s3cr3t-passphrase")
             .redact(true);
         runner.assert_called_with(&expected);
+    }
+
+    /// `parse_forget_groups` counts remove/keep entries across groups and
+    /// tolerates the trailing human-readable prune text.
+    #[test]
+    fn parse_forget_groups_counts_remove_and_keep() {
+        let out = r#"[
+  {
+    "tags": null,
+    "host": "kasa",
+    "paths": null,
+    "keep": [
+      {"time": "2024-09-18T12:00:00Z", "id": "aaa"},
+      {"time": "2024-09-17T12:00:00Z", "id": "bbb"}
+    ],
+    "remove": [
+      {"time": "2024-09-16T12:00:00Z", "id": "ccc"}
+    ]
+  }
+]
+loading indexes..."; prune text follows"#;
+        assert_eq!(parse_forget_groups(out), Some((1, 2)));
+        assert_eq!(parse_forget_groups("[]"), Some((0, 0)));
+        assert_eq!(parse_forget_groups("no json at all"), None);
     }
 
     /// `restic restore <snap> --target <dir> --json` parses the summary record.

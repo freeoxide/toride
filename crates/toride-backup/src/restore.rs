@@ -34,10 +34,6 @@ use crate::report::RestoreReport;
 use crate::spec::{Backend, BackupSpec};
 use crate::{Error, Result};
 
-// ---------------------------------------------------------------------------
-// RestoreOptions
-// ---------------------------------------------------------------------------
-
 /// Options for a restore operation.
 #[derive(Debug, Clone)]
 pub struct RestoreOptions {
@@ -96,10 +92,6 @@ impl RestoreOptions {
     }
 }
 
-// ---------------------------------------------------------------------------
-// RestoreManager
-// ---------------------------------------------------------------------------
-
 /// Manages restore workflows for backup repositories.
 ///
 /// Coordinates between the backend-specific clients (restic/borg) and
@@ -121,7 +113,7 @@ impl RestoreManager {
     /// validation before any restore command is issued.
     pub fn restore(spec: &BackupSpec, options: &RestoreOptions) -> Result<RestoreReport> {
         spec.validate()?;
-        restore_with_runner(spec, options, &toride_runner::DuctRunner)
+        restore_with_runner(spec, options, &toride_runner::DuctRunner, None)
     }
 
     /// Perform a test restore to verify backup integrity.
@@ -172,22 +164,32 @@ impl RestoreManager {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Backend dispatch (runner-injectable for testing)
-// ---------------------------------------------------------------------------
-
 /// Run a restore using an injectable [`Runner`].
 ///
-/// This is the testable core of [`RestoreManager::restore`]: the public
-/// static method delegates here with a [`DectRunner`](toride_runner::DuctRunner),
-/// while tests pass a [`FakeRunner`](toride_runner::FakeRunner).
+/// This is the runner-injectable core of [`RestoreManager::restore`]: the
+/// static method delegates here with a [`DuctRunner`](toride_runner::DuctRunner),
+/// while tests and the [`BackupClient`](crate::client::BackupClient) facade
+/// pass their own runner (e.g. a [`FakeRunner`](toride_runner::FakeRunner)).
+///
+/// `binary_override` replaces the literal `restic`/`borg` program names, so a
+/// facade that pins a binary path (see
+/// [`BackupClient::with_binary`](crate::client::BackupClient::with_binary))
+/// restores through the same pinned binary it backs up with; `None` invokes
+/// `restic`/`borg` from `$PATH`.
 ///
 /// The runner is taken by reference (not owned) so callers can keep a handle
 /// to inspect recorded calls after the restore completes.
-fn restore_with_runner<R: Runner + ?Sized>(
+///
+/// # Errors
+///
+/// Returns [`Error::ConfigParse`]/[`Error::ScheduleError`] when the spec
+/// fails validation before any restore command is issued, or
+/// [`Error::RestoreFailed`] if the restore operation fails.
+pub fn restore_with_runner<R: Runner + ?Sized>(
     spec: &BackupSpec,
     options: &RestoreOptions,
     runner: &R,
+    binary_override: Option<&str>,
 ) -> Result<RestoreReport> {
     // Validate the spec up front (name allowlist, cron, retention, and that an
     // encrypted repo actually has a password_command) — mirrors backup()/prune().
@@ -202,8 +204,10 @@ fn restore_with_runner<R: Runner + ?Sized>(
     );
 
     let report = match spec.backend {
-        Backend::Restic => run_restic_restore(spec, options, &snapshot_id, runner)?,
-        Backend::Borg => run_borg_extract(spec, options, &snapshot_id, runner)?,
+        Backend::Restic => {
+            run_restic_restore(spec, options, &snapshot_id, runner, binary_override)?
+        }
+        Backend::Borg => run_borg_extract(spec, options, &snapshot_id, runner, binary_override)?,
     };
 
     tracing::info!(
@@ -236,10 +240,6 @@ fn resolve_snapshot_id(spec: &BackupSpec, options: &RestoreOptions) -> Result<St
     Ok("latest".to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Restic restore
-// ---------------------------------------------------------------------------
-
 /// Run `restic restore` and parse its output into a [`RestoreReport`].
 ///
 /// Command shape (sourced from the official restic man page
@@ -265,14 +265,19 @@ fn run_restic_restore<R: Runner + ?Sized>(
     options: &RestoreOptions,
     snapshot_id: &str,
     runner: &R,
+    binary_override: Option<&str>,
 ) -> Result<RestoreReport> {
-    let mut cmd = CommandSpec::new("restic")
+    let mut cmd = CommandSpec::new(binary_override.unwrap_or("restic"))
         .arg("-r")
         .arg(spec.repository.to_string_lossy().as_ref())
         .arg("restore")
         .arg(snapshot_id)
         .arg("--target")
-        .arg(&options.target);
+        .arg(&options.target)
+        // --json makes restic emit the machine-readable summary record the
+        // report parses below (restic restore prints the summary JSON only
+        // under --json; without it every successful restore would report 0/0).
+        .arg("--json");
 
     for path in &options.paths {
         cmd = cmd.arg("--include").arg(path);
@@ -345,10 +350,6 @@ fn apply_restic_password(spec: &BackupSpec, cmd: CommandSpec) -> Result<CommandS
     }
 }
 
-// ---------------------------------------------------------------------------
-// Borg extract
-// ---------------------------------------------------------------------------
-
 /// Run `borg extract` and parse its output into a [`RestoreReport`].
 ///
 /// Command shape (sourced from the official borg extract docs
@@ -375,6 +376,7 @@ fn run_borg_extract<R: Runner + ?Sized>(
     options: &RestoreOptions,
     archive_id: &str,
     runner: &R,
+    binary_override: Option<&str>,
 ) -> Result<RestoreReport> {
     // borg resolves "latest" itself? No — borg has no "latest" keyword for
     // extract. We treat the literal "latest" as a caller-side placeholder and
@@ -391,7 +393,7 @@ fn run_borg_extract<R: Runner + ?Sized>(
     let repo = spec.repository.to_string_lossy();
     let archive_arg = format!("{repo}::{archive_id}");
 
-    let mut cmd = CommandSpec::new("borg")
+    let mut cmd = CommandSpec::new(binary_override.unwrap_or("borg"))
         .arg("extract")
         .arg("--list")
         .arg(&archive_arg)
@@ -451,10 +453,6 @@ fn apply_borg_passphrase(spec: &BackupSpec, cmd: CommandSpec) -> Result<CommandS
         Ok(cmd)
     }
 }
-
-// ---------------------------------------------------------------------------
-// Output parsing
-// ---------------------------------------------------------------------------
 
 /// Best-effort parse of `restic restore --json` summary output.
 ///
@@ -566,10 +564,6 @@ fn parse_borg_extract_output(stdout: &str) -> (u64, u64) {
     (files, 0)
 }
 
-// ---------------------------------------------------------------------------
-// Tree comparison for verify()
-// ---------------------------------------------------------------------------
-
 /// Recursive file count and total byte size of a directory tree.
 #[derive(Debug, PartialEq, Eq)]
 struct TreeStats {
@@ -584,16 +578,31 @@ fn count_tree(root: &Path) -> std::io::Result<TreeStats> {
     Ok(stats)
 }
 
+/// Symlink-aware tree walk: symlinks are skipped rather than followed.
+///
+/// `path.is_file()`/`read_dir` follow symlinks, so an absolute link like
+/// `/var/run -> /run` would double-count the pointed-to subtree and a cycle
+/// (`foo -> .`) would recurse until stack overflow. `symlink_metadata`
+/// classifies each entry without following it; a missing or unreadable
+/// directory contributes zero files (matching the historical tolerant
+/// behaviour of this walk).
 fn walk(path: &Path, stats: &mut TreeStats) -> std::io::Result<()> {
-    if path.is_file() {
+    let Ok(meta) = std::fs::symlink_metadata(path) else {
+        return Ok(());
+    };
+    let file_type = meta.file_type();
+    if file_type.is_symlink() {
+        return Ok(());
+    }
+    if file_type.is_file() {
         stats.files += 1;
-        if let Ok(meta) = std::fs::metadata(path) {
-            stats.bytes += meta.len();
-        }
+        stats.bytes += meta.len();
+        return Ok(());
+    }
+    if !file_type.is_dir() {
         return Ok(());
     }
     let Some(entries) = std::fs::read_dir(path).ok() else {
-        // Not a directory or unreadable: treat as zero files.
         return Ok(());
     };
     for entry in entries.flatten() {
@@ -608,10 +617,6 @@ mod tests {
     use std::path::PathBuf;
     use toride_runner::CommandOutput;
     use toride_runner::fake::FakeRunner;
-
-    // -------------------------------------------------------------------
-    // Test helpers
-    // -------------------------------------------------------------------
 
     fn spec_restic(repo: &str) -> BackupSpec {
         use crate::spec::{Encryption, RetentionPolicy, Schedule};
@@ -651,10 +656,6 @@ mod tests {
     /// <https://restic.readthedocs.io/en/stable/075_scripting.html>.
     const RESTIC_RESTORE_SUMMARY_JSON: &str = r#"{"message_type":"summary","snapshot_id":"79766175","seconds_elapsed":12.3,"total_files":60,"files_restored":50,"files_skipped":3,"total_bytes":1572864,"bytes_restored":1572864,"bytes_skipped":0}"#;
 
-    // -------------------------------------------------------------------
-    // Restic: command construction
-    // -------------------------------------------------------------------
-
     #[test]
     fn restic_restore_builds_exact_command() {
         // Asserts the EXACT restic restore command shape documented at
@@ -673,6 +674,7 @@ mod tests {
                 .arg("79766175")
                 .arg("--target")
                 .arg("/tmp/restore-work")
+                .arg("--json")
                 .arg("--verify")
                 .arg("--password-command")
                 .arg("cat /etc/restic/pw")
@@ -680,7 +682,7 @@ mod tests {
             CommandOutput::from_stdout(RESTIC_RESTORE_SUMMARY_JSON),
         );
 
-        let report = restore_with_runner(&spec, &options, &runner).unwrap();
+        let report = restore_with_runner(&spec, &options, &runner, None).unwrap();
         assert!(report.success);
         runner.assert_called_with(
             &CommandSpec::new("restic")
@@ -690,6 +692,7 @@ mod tests {
                 .arg("79766175")
                 .arg("--target")
                 .arg("/tmp/restore-work")
+                .arg("--json")
                 .arg("--verify")
                 .arg("--password-command")
                 .arg("cat /etc/restic/pw")
@@ -715,12 +718,13 @@ mod tests {
             .arg("latest")
             .arg("--target")
             .arg("/tmp/restore-latest")
+            .arg("--json")
             .arg("--password-command")
             .arg("cat /etc/restic/pw")
             .redact(true);
 
         let runner = FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout("{}"));
-        let report = restore_with_runner(&spec, &options, &runner).unwrap();
+        let report = restore_with_runner(&spec, &options, &runner, None).unwrap();
         assert_eq!(report.snapshot_id, "latest");
         runner.assert_called_with(&expected);
     }
@@ -739,6 +743,7 @@ mod tests {
             .arg("79766175")
             .arg("--target")
             .arg("/tmp/restore-work")
+            .arg("--json")
             .arg("--include")
             .arg("/work/foo")
             .arg("--include")
@@ -748,13 +753,9 @@ mod tests {
             .redact(true);
 
         let runner = FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout(""));
-        let _ = restore_with_runner(&spec, &options, &runner).unwrap();
+        let _ = restore_with_runner(&spec, &options, &runner, None).unwrap();
         runner.assert_called_with(&expected);
     }
-
-    // -------------------------------------------------------------------
-    // Restic: redaction of passphrase-bearing commands
-    // -------------------------------------------------------------------
 
     #[test]
     fn restic_restore_marks_passphrase_command_redact_true() {
@@ -774,6 +775,7 @@ mod tests {
             .arg("latest")
             .arg("--target")
             .arg("/tmp/restore-work")
+            .arg("--json")
             .arg("--password-command")
             .arg("cat /etc/restic/pw")
             .redact(true);
@@ -781,7 +783,7 @@ mod tests {
         let runner = FakeRunner::new()
             .strict()
             .respond(expected.clone(), CommandOutput::from_stdout(""));
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(
             result.is_ok(),
             "strict FakeRunner matched: redact(true) was applied. err={result:?}"
@@ -804,6 +806,7 @@ mod tests {
             .arg("latest")
             .arg("--target")
             .arg("/tmp/restore-work")
+            .arg("--json")
             .arg("--password-command")
             .arg("cat /etc/restic/pw");
         // (note: no .redact(true) above)
@@ -811,16 +814,12 @@ mod tests {
         let runner = FakeRunner::new()
             .strict()
             .respond(unredacted, CommandOutput::from_stdout(""));
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(
             result.is_err(),
             "unredacted passphrase command must NOT match RestoreManager's redacted command"
         );
     }
-
-    // -------------------------------------------------------------------
-    // Restic: parses real docs-sourced JSON summary
-    // -------------------------------------------------------------------
 
     #[test]
     fn restic_restore_parses_real_json_summary() {
@@ -832,7 +831,7 @@ mod tests {
 
         let runner = FakeRunner::new()
             .push_response(CommandOutput::from_stdout(RESTIC_RESTORE_SUMMARY_JSON));
-        let report = restore_with_runner(&spec, &options, &runner).unwrap();
+        let report = restore_with_runner(&spec, &options, &runner, None).unwrap();
         // Restore summary carries files_restored / bytes_restored directly
         // (NOT the backup-summary fields files_new/dirs_new).
         assert_eq!(report.files_restored, 50);
@@ -853,14 +852,10 @@ restored  /work/qux
         let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
 
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(text));
-        let report = restore_with_runner(&spec, &options, &runner).unwrap();
+        let report = restore_with_runner(&spec, &options, &runner, None).unwrap();
         assert_eq!(report.files_restored, 3);
         assert_eq!(report.bytes_restored, 0);
     }
-
-    // -------------------------------------------------------------------
-    // Restic: error propagation
-    // -------------------------------------------------------------------
 
     #[test]
     fn restic_restore_propagates_command_failure() {
@@ -871,7 +866,7 @@ restored  /work/qux
         let runner = FakeRunner::new()
             .push_response(CommandOutput::from_stderr("Fatal: wrong password", 12));
         // restic exit 12 == incorrect password (per the man page).
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::RestoreFailed(_)));
     }
@@ -903,7 +898,7 @@ restored  /work/qux
         // Strict runner with no responses: restore must error BEFORE invoking
         // restic, so the runner is never consulted.
         let runner = FakeRunner::new().strict();
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         let err =
             result.expect_err("encrypted repo with no password_command must error, not fall back");
         let msg = format!("{err}");
@@ -937,7 +932,7 @@ restored  /work/qux
         };
         let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("archive-1");
         let runner = FakeRunner::new().strict();
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         let msg = format!("{}", result.expect_err("must error"));
         assert!(
             msg.contains("password_command"),
@@ -953,7 +948,7 @@ restored  /work/qux
         spec.sources = vec![];
         let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("79766175");
         let runner = FakeRunner::new().strict();
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(matches!(result, Err(Error::ConfigParse(_))));
         assert!(runner.calls().is_empty());
     }
@@ -963,14 +958,10 @@ restored  /work/qux
         let spec = spec_restic("/srv/restic-repo");
         let options = RestoreOptions::new("/tmp/restore-work").with_snapshot("   ");
         let runner = FakeRunner::new();
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::RestoreFailed(_)));
     }
-
-    // -------------------------------------------------------------------
-    // Borg: command construction
-    // -------------------------------------------------------------------
 
     #[test]
     fn borg_extract_builds_exact_command_with_cwd() {
@@ -990,7 +981,7 @@ restored  /work/qux
             .redact(true);
 
         let runner = FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout(""));
-        let report = restore_with_runner(&spec, &options, &runner).unwrap();
+        let report = restore_with_runner(&spec, &options, &runner, None).unwrap();
         runner.assert_called_with(&expected);
         assert_eq!(report.snapshot_id, "my-files");
     }
@@ -1012,7 +1003,7 @@ restored  /work/qux
             .redact(true);
 
         let runner = FakeRunner::new().respond(expected.clone(), CommandOutput::from_stdout(""));
-        let _ = restore_with_runner(&spec, &options, &runner).unwrap();
+        let _ = restore_with_runner(&spec, &options, &runner, None).unwrap();
         runner.assert_called_with(&expected);
     }
 
@@ -1023,7 +1014,7 @@ restored  /work/qux
         let spec = spec_borg("/path/to/repo");
         let options = RestoreOptions::new("/tmp/restore");
         let runner = FakeRunner::new();
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(result.is_err());
         let msg = format!("{}", result.unwrap_err());
         assert!(
@@ -1031,10 +1022,6 @@ restored  /work/qux
             "expected guidance about explicit snapshot_id, got: {msg}"
         );
     }
-
-    // -------------------------------------------------------------------
-    // Borg: redaction
-    // -------------------------------------------------------------------
 
     #[test]
     fn borg_extract_marks_passphrase_command_redact_true() {
@@ -1052,7 +1039,7 @@ restored  /work/qux
         let runner = FakeRunner::new()
             .strict()
             .respond(expected.clone(), CommandOutput::from_stdout(""));
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(result.is_ok(), "redact(true) matched: {result:?}");
     }
 
@@ -1072,13 +1059,9 @@ restored  /work/qux
         let runner = FakeRunner::new()
             .strict()
             .respond(unredacted, CommandOutput::from_stdout(""));
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(result.is_err(), "unredacted borg command must not match");
     }
-
-    // -------------------------------------------------------------------
-    // Borg: parses --list output
-    // -------------------------------------------------------------------
 
     #[test]
     fn borg_extract_parses_list_output() {
@@ -1094,7 +1077,7 @@ x home/user/src/main.rs
         let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
 
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(text));
-        let report = restore_with_runner(&spec, &options, &runner).unwrap();
+        let report = restore_with_runner(&spec, &options, &runner, None).unwrap();
         assert_eq!(report.files_restored, 3);
         assert_eq!(report.bytes_restored, 0);
     }
@@ -1108,21 +1091,17 @@ x home/user/src/main.rs
             "passphrase supplied in BORG_PASSPHRASE is incorrect",
             1,
         ));
-        let result = restore_with_runner(&spec, &options, &runner);
+        let result = restore_with_runner(&spec, &options, &runner, None);
         assert!(result.is_err());
         assert!(matches!(result.unwrap_err(), Error::RestoreFailed(_)));
     }
-
-    // -------------------------------------------------------------------
-    // Backend dispatch
-    // -------------------------------------------------------------------
 
     #[test]
     fn dispatches_to_restic_for_restic_spec() {
         let spec = spec_restic("/srv/restic-repo");
         let options = RestoreOptions::new("/tmp/restore").with_snapshot("79766175");
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout("{}"));
-        let _ = restore_with_runner(&spec, &options, &runner).unwrap();
+        let _ = restore_with_runner(&spec, &options, &runner, None).unwrap();
         let calls = runner.calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].program, "restic");
@@ -1134,16 +1113,12 @@ x home/user/src/main.rs
         let spec = spec_borg("/path/to/repo");
         let options = RestoreOptions::new("/tmp/restore").with_snapshot("my-files");
         let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(""));
-        let _ = restore_with_runner(&spec, &options, &runner).unwrap();
+        let _ = restore_with_runner(&spec, &options, &runner, None).unwrap();
         let calls = runner.calls();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].program, "borg");
         assert!(calls[0].args.contains(&"extract".to_string()));
     }
-
-    // -------------------------------------------------------------------
-    // RestoreOptions builder
-    // -------------------------------------------------------------------
 
     #[test]
     fn restore_options_builder() {
@@ -1167,10 +1142,6 @@ x home/user/src/main.rs
         assert!(!opts.verify);
         assert!(!opts.test);
     }
-
-    // -------------------------------------------------------------------
-    // verify()
-    // -------------------------------------------------------------------
 
     #[test]
     fn verify_returns_true_for_identical_trees() {
@@ -1223,9 +1194,52 @@ x home/user/src/main.rs
         assert!(result.is_ok() || matches!(result, Err(Error::RestoreFailed(_))));
     }
 
-    // -------------------------------------------------------------------
-    // Output parsing units
-    // -------------------------------------------------------------------
+    /// An absolute symlink inside the walked tree must not pull the pointed-to
+    /// subtree into the count: identical trees containing the same link still
+    /// compare equal instead of double-counting (the pre-fix walk followed the
+    /// link and counted `/tmp`'s contents).
+    #[test]
+    fn verify_skips_absolute_symlinks_instead_of_following_them() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let outside = tmp.path().join("outside");
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(outside.join("payload.bin"), "not part of the backup").unwrap();
+
+        for dir_name in ["src", "dst"] {
+            let dir = tmp.path().join(dir_name);
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join("a.txt"), "hello").unwrap();
+            symlink(&outside, dir.join("run")).unwrap();
+        }
+
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        assert!(
+            RestoreManager::verify(&src, &dst).unwrap(),
+            "identical trees with identical absolute symlinks must compare equal"
+        );
+    }
+
+    /// A cyclic symlink (`loop -> .`) must not recurse until stack overflow.
+    #[test]
+    fn verify_terminates_on_cyclic_symlink() {
+        use std::fs;
+        use std::os::unix::fs::symlink;
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        for dir_name in [&src, &dst] {
+            fs::create_dir_all(dir_name).unwrap();
+            fs::write(dir_name.join("a.txt"), "x").unwrap();
+            symlink(".", dir_name.join("loop")).unwrap();
+        }
+        assert!(
+            RestoreManager::verify(&src, &dst).unwrap(),
+            "cyclic symlinks must be skipped, not followed"
+        );
+    }
 
     #[test]
     fn parse_restic_summary_counts_new_and_modified() {

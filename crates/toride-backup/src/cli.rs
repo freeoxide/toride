@@ -2,7 +2,7 @@
 //!
 //! Provides clap-based argument parsing for the toride-backup CLI binary.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
 
@@ -14,9 +14,12 @@ use crate::restore::RestoreOptions;
 #[derive(Parser, Debug)]
 #[command(name = "toride-backup", about = "Backup scheduling and management")]
 pub struct Cli {
-    /// Path to configuration file.
-    #[arg(short, long, default_value = "~/.config/toride/backup/config.json")]
-    pub config: PathBuf,
+    /// Path to configuration file. Defaults to the resolved XDG path
+    /// (`$XDG_CONFIG_HOME/toride/backup/config.json`, i.e. the same file
+    /// `BackupConfig::save` writes). A leading `~`/`~/` is expanded against
+    /// `$HOME`; no other tilde forms are expanded.
+    #[arg(short, long)]
+    pub config: Option<PathBuf>,
 
     /// Enable verbose logging.
     #[arg(short, long)]
@@ -102,10 +105,6 @@ pub enum Commands {
     Validate,
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch
-// ---------------------------------------------------------------------------
-
 impl Cli {
     /// Execute the parsed subcommand against a production [`BackupClient`].
     ///
@@ -124,8 +123,11 @@ impl Cli {
     /// Execute the parsed subcommand against an injected [`BackupClient`].
     ///
     /// Every [`Commands`] variant is mapped to its corresponding real client
-    /// method. Spec-bearing variants load the job from the config file given by
-    /// `--config` (defaulting to the XDG path) and look it up by name.
+    /// method. Spec-bearing variants load the job from the config file given
+    /// by `--config`; when the flag is omitted the resolved XDG path is used
+    /// (the same file [`BackupConfig::save`] writes, so the default
+    /// invocation finds an existing config instead of a literal `~` path no
+    /// filesystem API resolves).
     ///
     /// This is the seam used by the `FakeRunner`-backed tests: the test builds a
     /// `BackupClient` wired to a shared fake runner and asserts the dispatched
@@ -135,7 +137,11 @@ impl Cli {
     ///
     /// Propagates any error from config loading or the underlying client call.
     pub fn run_with_client(&self, client: &BackupClient) -> crate::Result<()> {
-        let config = BackupConfig::load_from(&self.config)?;
+        let config_path = match &self.config {
+            Some(path) => expand_tilde(path),
+            None => crate::paths::BackupPaths::resolve()?.config_file,
+        };
+        let config = BackupConfig::load_from(&config_path)?;
 
         match &self.command {
             Commands::Backup { name } => {
@@ -213,10 +219,6 @@ impl Cli {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Dispatch helpers
-// ---------------------------------------------------------------------------
-
 /// Look up a named backup job in the config, returning a typed error if absent.
 fn lookup_job<'c>(
     config: &'c crate::config::BackupConfig,
@@ -225,6 +227,22 @@ fn lookup_job<'c>(
     config
         .get_job(name)
         .ok_or_else(|| crate::Error::ConfigParse(format!("no backup job named {name:?} in config")))
+}
+
+/// Expand a leading `~` or `~/` against `$HOME`; other paths (including other
+/// tilde forms like `~user`) pass through unchanged.
+fn expand_tilde(path: &Path) -> PathBuf {
+    let Some(home) = std::env::var_os("HOME") else {
+        return path.to_path_buf();
+    };
+    let text = path.to_string_lossy();
+    if text == "~" {
+        return PathBuf::from(home);
+    }
+    if let Some(rest) = text.strip_prefix("~/") {
+        return PathBuf::from(home).join(rest);
+    }
+    path.to_path_buf()
 }
 
 /// Map the `--scope <string>` CLI argument onto a [`DoctorScope`].
@@ -238,7 +256,7 @@ fn lookup_job<'c>(
 fn parse_doctor_scope(scope: Option<&str>) -> crate::Result<crate::doctor::DoctorScope> {
     use crate::doctor::DoctorScope;
     match scope {
-        None | Some("") | Some("all") => Ok(DoctorScope::All),
+        None | Some("" | "all") => Ok(DoctorScope::All),
         Some("binary") => Ok(DoctorScope::Binary),
         Some("repository") => Ok(DoctorScope::Repository(String::new())),
         Some("staleness") => Ok(DoctorScope::Staleness(String::new())),
@@ -254,10 +272,6 @@ fn parse_doctor_scope(scope: Option<&str>) -> crate::Result<crate::doctor::Docto
     }
 }
 
-// ===========================================================================
-// Tests
-// ===========================================================================
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -270,10 +284,6 @@ mod tests {
     use std::sync::Arc;
     use toride_runner::fake::FakeRunner;
     use toride_runner::{CommandOutput, CommandSpec};
-
-    // -----------------------------------------------------------------------
-    // Fixtures
-    // -----------------------------------------------------------------------
 
     /// A minimal valid restic `BackupSpec` whose `backup` issues a real
     /// `restic backup --json` command (mirrors the spec in client.rs's tests).
@@ -311,10 +321,6 @@ mod tests {
     const RESTIC_SUMMARY: &str = r#"{"message_type":"summary","files_new":3,"files_changed":2,"files_unmodified":5,"dirs_new":1,"dirs_changed":0,"dirs_unmodified":4,"data_blobs":6,"tree_blobs":2,"data_added":2048,"data_added_packed":1024,"total_files_processed":10,"total_bytes_processed":4096,"total_duration":1.5,"snapshot_id":"5111c8ae5a5e3e2e8b6b4f0c5b8e3a2d1c9f0a1b2c3d4e5f6a7b8c9d0e1f2a3"}"#;
     const RESTIC_SNAPSHOTS: &str = r#"[{"time":"2024-09-18T12:34:56Z","tree":"x","paths":["/etc"],"hostname":"h","username":"u","tags":[],"id":"5111c8ae5a5e3e2e8b6b4f0c5b8e3a2d1c9f0a1b2c3d4e5f6a7b8c9d0e1f2a3","short_id":"5111c8ae"}]"#;
     const RESTIC_STATS: &str = r#"{"total_size":1048576,"total_file_count":42,"total_blob_count":100,"snapshots_count":1,"total_uncompressed_size":2000000,"compression_ratio":1.6,"compression_progress":100,"compression_space_saving":38}"#;
-
-    // -----------------------------------------------------------------------
-    // Dispatch: `backup <name>` parses AND reaches the real restic backend
-    // -----------------------------------------------------------------------
 
     /// `Cli::parse_from(["toride-backup", "--config", <path>, "backup", "nightly"])`
     /// must parse into `Commands::Backup { name: "nightly" }`, and
@@ -372,12 +378,8 @@ mod tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Dispatch: unknown job name surfaces a typed error (no silent success)
-    // -----------------------------------------------------------------------
-
     /// A `backup <missing>` must fail with a config-parse error rather than
-    /// silently succeeding or panicking. Proves lookup_job is wired.
+    /// silently succeeding or panicking. Proves `lookup_job` is wired.
     #[test]
     fn dispatch_backup_unknown_job_returns_config_parse_error() {
         let config_file = write_config(&restic_spec());
@@ -402,10 +404,6 @@ mod tests {
             "expected ConfigParse error, got {err:?}"
         );
     }
-
-    // -----------------------------------------------------------------------
-    // Dispatch: `doctor --scope integrity` parses the scope label
-    // -----------------------------------------------------------------------
 
     /// `parse_doctor_scope` maps recognised labels to the right variant and
     /// rejects unknown labels with a typed error. This is the parsing seam the
@@ -435,7 +433,84 @@ mod tests {
         );
     }
 
-    /// A throwaway `BackupPaths` for tests (mirrors client.rs's dummy_paths).
+    /// Without `--config`, the parsed CLI carries `None` and dispatch
+    /// resolves the XDG default (the file `BackupConfig::save` writes), not a
+    /// literal tilde path no filesystem API resolves.
+    #[test]
+    fn cli_without_config_flag_parses_none() {
+        let cli = Cli::parse_from(["toride-backup", "validate"]);
+        assert!(
+            cli.config.is_none(),
+            "no --config flag means: use XDG default"
+        );
+    }
+
+    /// `--config` is kept verbatim when present (expansion happens at
+    /// dispatch time).
+    #[test]
+    fn cli_with_config_flag_parses_path() {
+        let cli = Cli::parse_from(["toride-backup", "--config", "/tmp/x.json", "validate"]);
+        assert_eq!(cli.config.as_deref(), Some(Path::new("/tmp/x.json")));
+    }
+
+    /// A leading `~`/`~/` expands against `$HOME`; other tilde forms pass
+    /// through unchanged.
+    #[test]
+    fn expand_tilde_expands_bare_and_slash_forms() {
+        let home = std::env::var_os("HOME");
+        let Some(home) = home else {
+            // Without $HOME the expansion is a no-op; still assert the
+            // pass-through contract.
+            assert_eq!(expand_tilde(Path::new("/abs")), PathBuf::from("/abs"));
+            return;
+        };
+        assert_eq!(expand_tilde(Path::new("~")), PathBuf::from(home.clone()));
+        assert_eq!(
+            expand_tilde(Path::new("~/.config/toride/backup/config.json")),
+            PathBuf::from(home).join(".config/toride/backup/config.json")
+        );
+        // Only the bare forms expand.
+        assert_eq!(
+            expand_tilde(Path::new("~other/config.json")),
+            PathBuf::from("~other/config.json")
+        );
+        assert_eq!(
+            expand_tilde(Path::new("/abs/config.json")),
+            PathBuf::from("/abs/config.json")
+        );
+    }
+
+    /// A `--config` path whose file does not exist surfaces the typed
+    /// "config file not found" error instead of an empty config that fails
+    /// later with a misleading "no backup job named ...".
+    #[test]
+    fn dispatch_with_missing_config_errors_with_config_not_found() {
+        let runner_arc = Arc::new(FakeRunner::new().strict());
+        let client = BackupClient::with_paths(dummy_paths())
+            .with_runner(runner_arc)
+            .with_binary(PathBuf::from("/usr/bin/restic"));
+
+        let cli = Cli::parse_from([
+            "toride-backup",
+            "--config",
+            "/nonexistent/toride-backup-test/config.json",
+            "backup",
+            "nightly",
+        ]);
+        let err = cli
+            .run_with_client(&client)
+            .expect_err("missing config must error");
+        assert!(
+            matches!(err, crate::Error::ConfigParse(_)),
+            "expected ConfigParse, got {err:?}"
+        );
+        assert!(
+            format!("{err}").contains("config file not found"),
+            "error must say the file is missing: {err}"
+        );
+    }
+
+    /// A throwaway `BackupPaths` for tests (mirrors `dummy_paths` in `client.rs`).
     fn dummy_paths() -> crate::paths::BackupPaths {
         let root = PathBuf::from("/tmp/toride-backup-cli-test");
         crate::paths::BackupPaths {

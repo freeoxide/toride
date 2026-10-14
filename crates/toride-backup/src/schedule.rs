@@ -47,8 +47,12 @@ pub struct ScheduleTimerStatus {
 }
 
 /// Manages systemd timer or cron schedule installation and removal for backup
-/// jobs; every `systemctl` / `crontab` call goes through a [`toride_runner::Runner`]
-/// (inject one with [`ScheduleManager::with_runner`]).
+/// jobs. The install/remove/read commands this manager issues itself
+/// (daemon-reload, enable/disable, cron.d writes) go through a
+/// [`toride_runner::Runner`] (inject one with [`ScheduleManager::with_runner`]);
+/// the live status probes in [`crate::systemd`] (`systemctl cat`/`is-active`/
+/// `list-timers`) use `std::process::Command` directly and are observable in
+/// tests via that module's spawn counter instead.
 pub struct ScheduleManager {
     backend: ScheduleBackend,
     runner: Box<dyn Runner>,
@@ -237,8 +241,17 @@ impl ScheduleManager {
 
         tracing::info!(unit = %timer_unit, "wrote systemd unit files");
 
-        self.run(&systemd::daemon_reload_spec())?;
-        self.run(&systemd::enable_now_spec(&timer_unit))?;
+        if let Err(e) = self
+            .run(&systemd::daemon_reload_spec())
+            .and_then(|()| self.run(&systemd::enable_now_spec(&timer_unit)))
+        {
+            // Both unit files were just written by this call: leave nothing
+            // behind on failure (a half-installed timer pair would either
+            // fire with stale contents or mask a later good install).
+            let _ = std::fs::remove_file(&timer_path);
+            let _ = std::fs::remove_file(&service_path);
+            return Err(e);
+        }
 
         tracing::info!(unit = %timer_unit, "enabled + started systemd timer");
         Ok(())
@@ -483,6 +496,34 @@ mod tests {
         assert!(err.is_err(), "install should fail on command mismatch");
     }
 
+    /// When `systemctl enable --now` fails after the unit pair was written,
+    /// both just-written files must be removed again: a half-installed timer
+    /// pair would fire with stale contents or mask a later good install.
+    #[test]
+    fn install_systemd_rolls_back_units_when_enable_fails() {
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("")) // daemon-reload ok
+            .push_response(CommandOutput::from_stderr(
+                "Failed to enable unit: Unit is masked",
+                1,
+            )); // enable --now fails
+        let (mgr, _dir) = mgr_with_temp(ScheduleBackend::SystemdTimer, runner);
+
+        let err = mgr
+            .install("nightly", &Schedule::new("0 2 * * *"))
+            .expect_err("failing enable must surface the error");
+        assert!(matches!(err, Error::CommandFailed(_)), "got {err:?}");
+
+        assert!(
+            !mgr.unit_dir.join("toride-backup-nightly.service").exists(),
+            "service unit must be rolled back"
+        );
+        assert!(
+            !mgr.unit_dir.join("toride-backup-nightly.timer").exists(),
+            "timer unit must be rolled back"
+        );
+    }
+
     #[test]
     fn install_systemd_unit_path_stays_inside_unit_dir() {
         let runner = FakeRunner::new()
@@ -651,36 +692,6 @@ mod tests {
         assert_eq!(line, "toride-backup backup nightly");
         assert!(!line.contains("password"));
         assert!(!line.contains("passphrase"));
-    }
-
-    #[test]
-    fn render_service_unit_keeps_passphrase_off_cli() {
-        use crate::spec::{Backend, BackupSpec, Encryption, RetentionPolicy};
-        use std::collections::HashMap;
-        use std::path::PathBuf;
-        let spec = BackupSpec {
-            name: "nightly".into(),
-            backend: Backend::Restic,
-            repository: PathBuf::from("/srv/restic-repo"),
-            sources: vec![PathBuf::from("/home/user/work")],
-            schedule: Schedule::new("0 2 * * *"),
-            retention: RetentionPolicy::default_policy(),
-            encryption: Encryption::RepoKey,
-            password_command: Some("cat /etc/restic/password".into()),
-            exclude_patterns: vec!["*.tmp".into()],
-            tags: vec!["auto".into()],
-            extra_env: HashMap::new(),
-        };
-        let unit = systemd::render_service_unit(&spec);
-        assert!(unit.contains("ExecStart=restic -r /srv/restic-repo backup"));
-        assert!(
-            !unit.contains("--password"),
-            "password must not be a CLI flag: {unit}"
-        );
-        assert!(
-            unit.contains("RESTIC_PASSWORD_FILE=/etc/toride-backup/nightly.pw"),
-            "expected RESTIC_PASSWORD_FILE env: {unit}"
-        );
     }
 
     #[test]

@@ -1,14 +1,11 @@
 //! Rendering functions for firewall rules and security groups.
 //!
-//! Converts typed domain objects into human-readable or provider-specific
-//! formats for display, logging, or configuration file generation.
+//! Converts typed domain objects into human-readable formats for display,
+//! logging, or report generation. Provider-specific command construction
+//! lives in the provider clients ([`crate::aws`], [`crate::gcp`], ...).
 
 use crate::spec::{FirewallRule, SecurityGroup};
 use std::fmt::Write as _;
-
-// ---------------------------------------------------------------------------
-// Human-readable rendering
-// ---------------------------------------------------------------------------
 
 /// Render a single firewall rule as a human-readable string.
 ///
@@ -81,33 +78,6 @@ pub fn render_firewall_rules(rules: &[FirewallRule]) -> String {
         .join("\n")
 }
 
-// ---------------------------------------------------------------------------
-// Provider-specific rendering
-// ---------------------------------------------------------------------------
-
-/// Render a firewall rule as an AWS CLI `--ip-permissions` argument.
-///
-/// This is a skeleton; full implementation would produce JSON for
-/// `aws ec2 authorize-security-group-ingress`.
-pub fn render_aws_rule(rule: &FirewallRule) -> String {
-    let _ = rule;
-    // TODO: Implement AWS CLI argument rendering.
-    String::new()
-}
-
-/// Render a firewall rule as a GCP `gcloud compute firewall-rules create` argument.
-///
-/// This is a skeleton; full implementation would produce the full command line.
-pub fn render_gcp_rule(rule: &FirewallRule) -> String {
-    let _ = rule;
-    // TODO: Implement GCP CLI argument rendering.
-    String::new()
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -136,8 +106,6 @@ mod tests {
             action: RuleAction::Allow,
         }
     }
-
-    // -- render_firewall_rule ------------------------------------------------
 
     #[test]
     fn render_firewall_rule_ingress() {
@@ -190,8 +158,6 @@ mod tests {
         assert!(!rendered.contains('"'));
     }
 
-    // -- render_security_group -----------------------------------------------
-
     #[test]
     fn render_security_group_includes_metadata() {
         let group = crate::spec::SecurityGroup {
@@ -222,8 +188,6 @@ mod tests {
         let rendered = render_security_group(&group);
         assert!(!rendered.contains("Description:"));
     }
-
-    // -- render_firewall_rules -----------------------------------------------
 
     #[test]
     fn render_firewall_rules_ingress_before_egress() {

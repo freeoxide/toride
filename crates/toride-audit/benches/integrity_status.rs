@@ -88,8 +88,8 @@ fn bench_integrity_status(c: &mut Criterion) {
     }
     assert_eq!(
         check_spawn_count(&runner),
-        STATUS_CALLS_PER_CASE,
-        "uncached today: every status() spawns one aide --check; this case exists to show that count dropping once status caching lands (safety-state-9)"
+        1,
+        "safety-state-9 gate: within the status TTL only the first call may spawn `aide --check`"
     );
 
     group.finish();

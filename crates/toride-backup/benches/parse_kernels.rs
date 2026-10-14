@@ -51,10 +51,19 @@ fn assert_fixture_shape(snapshots: &str, check: &str, borg: &str) {
     assert_eq!(borg_parsed.len(), EXPECTED_BORG_LINES);
     assert!(borg_parsed.iter().all(|s| s.hostname.is_none()));
     assert_eq!(borg_parsed[0].id.len(), 8, "short id is the first 8 chars");
+    assert_eq!(
+        borg_parsed[0].timestamp, "2025-01-01T00:00:00",
+        "the double-space borg columns must split to the real timestamp field"
+    );
+    assert_eq!(borg_parsed[0].id, "host0000");
     assert!(
-        borg_parsed.iter().all(|s| s.timestamp.is_empty()),
-        "pre-fix pin: the double-space borg columns split to an empty timestamp field; \
-         the whitespace-run fix must make this start with 2025-01-01"
+        borg_parsed.iter().all(|s| !s.timestamp.is_empty()),
+        "every borg row carries its timestamp (whitespace-run split)"
+    );
+    assert_eq!(
+        borg_parsed[EXPECTED_BORG_LINES - 1].timestamp,
+        "2025-03-25T07:00:00",
+        "the fixture's last row keeps its timestamp"
     );
 }
 

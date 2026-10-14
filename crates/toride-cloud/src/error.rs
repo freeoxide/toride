@@ -6,10 +6,6 @@
 
 use std::fmt::Write as _;
 
-// ---------------------------------------------------------------------------
-// Error enum -- single source of truth for the entire crate
-// ---------------------------------------------------------------------------
-
 /// Crate-level error type covering all cloud provider subsystems.
 ///
 /// Uses [`thiserror`] for `Display` and `std::error::Error` impls.
@@ -39,6 +35,12 @@ pub enum Error {
     #[error("cloud provider not found: {0}")]
     ProviderNotFound(String),
 
+    /// The operation is not expressible for the detected provider and was
+    /// refused before any CLI ran (e.g. per-rule authorize/revoke on GCP,
+    /// whose firewall model has no per-rule unit).
+    #[error("unsupported operation: {0}")]
+    Unsupported(String),
+
     /// A firewall rule conflicts with an existing rule.
     #[error("firewall rule conflict: {0}")]
     FirewallRuleConflict(String),
@@ -52,16 +54,8 @@ pub enum Error {
     Other(String),
 }
 
-// ---------------------------------------------------------------------------
-// Crate-level result alias
-// ---------------------------------------------------------------------------
-
 /// Crate-level result alias used throughout the library.
 pub type Result<T> = std::result::Result<T, Error>;
-
-// ---------------------------------------------------------------------------
-// Conversion from toride_runner::Error
-// ---------------------------------------------------------------------------
 
 /// Single, shared translation of [`toride_runner::Error`] into the cloud
 /// [`Error`].

@@ -9,6 +9,9 @@ readme = "README.md"
 keywords = ["audit", "auditd", "integrity", "aide", "logging"]
 categories = ["os", "filesystem"]
 
+[lib]
+bench = false
+
 [[bin]]
 name = "toride-audit"
 path = "src/bin/toride_audit.rs"

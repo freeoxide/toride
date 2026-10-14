@@ -16,10 +16,6 @@ use crate::report::CloudReport;
 use crate::spec::{FirewallRule, Protocol, RuleAction, SecurityGroup};
 use toride_runner::Runner;
 
-// ---------------------------------------------------------------------------
-// CloudClient
-// ---------------------------------------------------------------------------
-
 /// Unified cloud client that delegates to provider-specific implementations.
 ///
 /// # Example
@@ -36,6 +32,10 @@ use toride_runner::Runner;
 pub struct CloudClient {
     /// The detected cloud provider.
     pub provider: CloudProvider,
+    /// Region override for region-scoped providers (AWS today). `None` lets
+    /// the provider resolve the region itself (env vars first, then the
+    /// provider CLI's own configuration).
+    region: Option<String>,
     /// Optional shared command runner injected into the provider-specific
     /// clients (Aws/Gcp/Hetzner). When `None`, each provider client
     /// constructs its own [`toride_runner::DuctRunner`].
@@ -56,6 +56,7 @@ impl CloudClient {
         let provider = crate::detect::detect_provider()?;
         Ok(Self {
             provider,
+            region: None,
             runner: None,
         })
     }
@@ -65,6 +66,7 @@ impl CloudClient {
     pub fn for_provider(provider: CloudProvider) -> Self {
         Self {
             provider,
+            region: None,
             runner: None,
         }
     }
@@ -81,17 +83,32 @@ impl CloudClient {
     pub fn for_provider_with_runner(provider: CloudProvider, runner: Arc<dyn Runner>) -> Self {
         Self {
             provider,
+            region: None,
             runner: Some(runner),
         }
+    }
+
+    /// Pin the region for region-scoped providers (AWS today).
+    ///
+    /// When unset, the AWS client omits `--region` and the `aws` CLI
+    /// resolves it from `AWS_REGION`/`AWS_DEFAULT_REGION` or the active
+    /// profile, so accounts outside `us-east-1` are not silently redirected.
+    /// Providers without a region concept ignore this.
+    #[must_use]
+    pub fn with_region(mut self, region: impl Into<String>) -> Self {
+        self.region = Some(region.into());
+        self
     }
 
     /// Build the AWS client for the current provider, threading the injected
     /// runner through when one is configured.
     fn aws_client(&self) -> AwsClient {
-        let region = default_region(self.provider);
-        match &self.runner {
-            Some(runner) => AwsClient::with_runner(region, runner.clone()),
-            None => AwsClient::new(region),
+        let region = self.region.clone().or_else(default_aws_region);
+        match (&self.runner, region) {
+            (Some(runner), Some(region)) => AwsClient::with_runner(region, runner.clone()),
+            (Some(runner), None) => AwsClient::with_runner_without_region(runner.clone()),
+            (None, Some(region)) => AwsClient::new(region),
+            (None, None) => AwsClient::new_without_region(),
         }
     }
 
@@ -170,7 +187,11 @@ impl CloudClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if creation fails.
+    /// Returns [`Error::Unsupported`] for GCP: a GCP firewall *is* one named
+    /// rule and cannot be created empty (gcloud has no rule-less form, and
+    /// the old empty create either failed or produced an allow-all rule).
+    /// Build it with [`GcpClient::create_firewall_rule`](crate::gcp::GcpClient::create_firewall_rule)
+    /// instead. Returns [`Error::CommandFailed`] if creation fails.
     pub fn create_security_group(
         &self,
         name: &str,
@@ -183,11 +204,12 @@ impl CloudClient {
                     .create_security_group(name, description, vpc_id)
             }
             CloudProvider::Gcp => {
-                // GCP models a firewall as a named rule list; description and
-                // VPC are not first-class at create time. Pass an empty network
-                // (the default VPC) and no rules, then return the caller's view.
-                let _ = (description, vpc_id);
-                self.gcp_client().create_firewall_rule(name, "", &[])
+                let _ = (name, description, vpc_id);
+                Err(Error::Unsupported(
+                    "GCP has no empty security group: a firewall rule is created with its \
+                     rules in one call (GcpClient::create_firewall_rule)"
+                        .to_string(),
+                ))
             }
             CloudProvider::DigitalOcean => {
                 // DigitalOcean requires at least one inbound or outbound rule.
@@ -233,14 +255,24 @@ impl CloudClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::FirewallRuleConflict`] if the rule already exists, or
-    /// [`Error::CommandFailed`] if the provider CLI fails for another reason.
+    /// Returns [`Error::Unsupported`] for GCP: a GCP firewall rule is the
+    /// whole named rule, so an "authorize one rule" update would clobber the
+    /// rule's other entries. Rewrite the rule with
+    /// [`GcpClient::update_firewall_rule`](crate::gcp::GcpClient::update_firewall_rule)
+    /// instead. Returns [`Error::FirewallRuleConflict`] if the rule already
+    /// exists, or [`Error::CommandFailed`] if the provider CLI fails for
+    /// another reason.
     pub fn authorize_ingress(&self, group_id: &str, rule: &FirewallRule) -> Result<()> {
         match self.provider {
             CloudProvider::Aws => self.aws_client().authorize_ingress(group_id, rule),
-            CloudProvider::Gcp => self
-                .gcp_client()
-                .update_firewall_rule(group_id, std::slice::from_ref(rule)),
+            CloudProvider::Gcp => {
+                let _ = (group_id, rule);
+                Err(Error::Unsupported(
+                    "GCP authorize_ingress would rewrite the whole named firewall rule; \
+                     use GcpClient::update_firewall_rule with the full rule set"
+                        .to_string(),
+                ))
+            }
             CloudProvider::DigitalOcean => {
                 DigitalOceanClient::new().add_rules(group_id, std::slice::from_ref(rule))
             }
@@ -257,14 +289,25 @@ impl CloudClient {
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if the rule does not exist or the
-    /// provider CLI fails.
+    /// Returns [`Error::Unsupported`] for GCP: there is no per-rule revoke
+    /// (the firewall rule is the unit, and the previous empty-set update
+    /// rewrote it to allow all protocols and ports on its existing source
+    /// ranges). Delete the rule with
+    /// [`GcpClient::delete_firewall_rule`](crate::gcp::GcpClient::delete_firewall_rule)
+    /// instead. Returns [`Error::CommandFailed`] if the rule does not exist
+    /// or the provider CLI fails.
     pub fn revoke_ingress(&self, group_id: &str, rule: &FirewallRule) -> Result<()> {
         match self.provider {
             CloudProvider::Aws => self.aws_client().revoke_ingress(group_id, rule),
-            // GCP has no per-rule revoke: the firewall rule is the unit, so
-            // updating with an empty set removes it.
-            CloudProvider::Gcp => self.gcp_client().update_firewall_rule(group_id, &[]),
+            CloudProvider::Gcp => {
+                let _ = (group_id, rule);
+                Err(Error::Unsupported(
+                    "GCP revoke_ingress has no per-rule form (the empty-set update it \
+                     used to issue rewrote the rule to --allow all); delete the rule \
+                     with GcpClient::delete_firewall_rule"
+                        .to_string(),
+                ))
+            }
             CloudProvider::DigitalOcean => {
                 DigitalOceanClient::new().remove_rules(group_id, std::slice::from_ref(rule))
             }
@@ -309,20 +352,17 @@ impl CloudClient {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Construction defaults
-// ---------------------------------------------------------------------------
-
-/// Pick a reasonable default region for providers that need one.
+/// Resolve the default AWS region for the facade.
 ///
-/// The facade constructs provider clients internally, so it needs *some*
-/// region when the caller has not configured one. `us-east-1` is the AWS
-/// canonical default; it is ignored by providers that do not take a region.
-fn default_region(provider: CloudProvider) -> &'static str {
-    match provider {
-        CloudProvider::Aws => "us-east-1",
-        _ => "",
-    }
+/// `AWS_REGION` first, then `AWS_DEFAULT_REGION` (both documented by the AWS
+/// CLI), else `None`: with no explicit region the `aws` CLI resolves its own
+/// configuration, so accounts outside `us-east-1` are never silently
+/// redirected there.
+fn default_aws_region() -> Option<String> {
+    std::env::var("AWS_REGION")
+        .or_else(|_| std::env::var("AWS_DEFAULT_REGION"))
+        .ok()
+        .filter(|r| !r.trim().is_empty())
 }
 
 /// Resolve the default GCP project id.
@@ -334,16 +374,12 @@ fn default_project() -> String {
     std::env::var("GOOGLE_CLOUD_PROJECT").unwrap_or_else(|_| "default".to_string())
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::spec::{PortRange, Protocol, RuleAction};
-
-    // -- dispatch soundness ---------------------------------------------------
+    use toride_runner::CommandOutput;
+    use toride_runner::fake::FakeRunner;
 
     #[test]
     fn for_provider_unknown_list_returns_provider_not_found() {
@@ -405,8 +441,6 @@ mod tests {
         assert!(matches!(err, Error::ProviderNotFound(_)), "{err:?}");
     }
 
-    // -- report ---------------------------------------------------------------
-
     #[test]
     fn report_for_unknown_records_list_failed_finding() {
         let client = CloudClient::for_provider(CloudProvider::Unknown);
@@ -421,12 +455,99 @@ mod tests {
         );
     }
 
-    // -- helpers --------------------------------------------------------------
-
     #[test]
-    fn default_region_picks_us_east_1_for_aws() {
-        assert_eq!(default_region(CloudProvider::Aws), "us-east-1");
-        assert_eq!(default_region(CloudProvider::Gcp), "");
+    fn default_aws_region_mirrors_env_or_none() {
+        // `default_aws_region` reads AWS_REGION / AWS_DEFAULT_REGION at call
+        // time. Without env mutation we assert the documented contract: it
+        // equals the first set env var, or None (never a us-east-1 fallback).
+        let got = default_aws_region();
+        let expected = std::env::var("AWS_REGION")
+            .ok()
+            .or_else(|| std::env::var("AWS_DEFAULT_REGION").ok())
+            .filter(|r| !r.trim().is_empty());
+        assert_eq!(got, expected);
+        assert_ne!(
+            got.as_deref(),
+            Some("us-east-1"),
+            "no hardcoded us-east-1 fallback may appear"
+        );
+    }
+
+    /// The GCP arms of authorize/revoke/create must refuse with a typed
+    /// Unsupported error instead of issuing a destructive or invalid gcloud
+    /// call.
+    #[test]
+    fn gcp_authorize_revoke_create_are_unsupported() {
+        let rule = FirewallRule {
+            id: None,
+            description: String::new(),
+            is_ingress: true,
+            protocol: Protocol::Tcp,
+            port_range: Some(PortRange::single(22)),
+            cidr: "0.0.0.0/0".to_string(),
+            action: RuleAction::Allow,
+        };
+        let runner = Arc::new(FakeRunner::new().strict());
+        let client = CloudClient::for_provider_with_runner(CloudProvider::Gcp, runner.clone());
+
+        let err = client.authorize_ingress("rule-1", &rule).unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
+        let err = client.revoke_ingress("rule-1", &rule).unwrap_err();
+        assert!(
+            matches!(err, Error::Unsupported(_)) && format!("{err}").contains("allow all"),
+            "revoke error must name the removed allow-all rewrite: {err:?}"
+        );
+        let err = client.create_security_group("n", "d", None).unwrap_err();
+        assert!(matches!(err, Error::Unsupported(_)), "{err:?}");
+        assert!(
+            runner.calls().is_empty(),
+            "the refusals must happen before any gcloud spawn"
+        );
+    }
+
+    /// A pinned region reaches the AWS commands via the facade.
+    #[test]
+    fn with_region_pins_aws_region_on_facade_commands() {
+        let runner = Arc::new(
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
+        );
+        let client = CloudClient::for_provider_with_runner(CloudProvider::Aws, runner.clone())
+            .with_region("eu-central-1");
+        client.list_security_groups().expect("list ok");
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            calls[0]
+                .args
+                .windows(2)
+                .any(|w| w[0] == "--region" && w[1] == "eu-central-1"),
+            "pinned region must reach the aws command: {:?}",
+            calls[0].args
+        );
+    }
+
+    /// Without a pinned region and without AWS_* env vars, the facade must
+    /// OMIT --region entirely so the aws CLI resolves its own configuration.
+    #[test]
+    fn unpinned_region_omits_the_region_flag() {
+        if default_aws_region().is_some() {
+            eprintln!("skipping: AWS_REGION/AWS_DEFAULT_REGION set in this environment");
+            return;
+        }
+        let runner = Arc::new(
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
+        );
+        let client = CloudClient::for_provider_with_runner(CloudProvider::Aws, runner.clone());
+        client.list_security_groups().expect("list ok");
+        let calls = runner.calls();
+        assert_eq!(calls.len(), 1);
+        assert!(
+            !calls[0].args.iter().any(|a| a == "--region"),
+            "no --region may be forced without an explicit pin or env var: {:?}",
+            calls[0].args
+        );
     }
 
     #[test]

@@ -1,16 +1,15 @@
-//! Cloud provider detection via metadata endpoints.
+//! Cloud provider detection from the environment and the DMI table.
 //!
-//! Determines which cloud provider the current machine is running on by
-//! querying provider-specific metadata endpoints. Each cloud provider exposes
-//! a unique metadata service that can be used for identification.
+//! Determines which cloud provider the current machine is running on from
+//! well-known environment variables (an explicit override: a set variable
+//! classifies the host for that provider) and, when none is set, from the
+//! DMI identification files under `/sys/class/dmi/id`. No metadata endpoint
+//! is queried; see [`CloudProvider::metadata_url`] when a caller wants the
+//! endpoint addresses for its own probing.
 
 use std::fmt;
 
 use crate::Result;
-
-// ---------------------------------------------------------------------------
-// CloudProvider
-// ---------------------------------------------------------------------------
 
 /// Supported cloud providers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -82,54 +81,73 @@ impl CloudProvider {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Provider detection
-// ---------------------------------------------------------------------------
-
-/// Detect the current cloud provider by querying metadata endpoints.
+/// Detect the current cloud provider from the environment and DMI files.
 ///
-/// Tries each provider's metadata endpoint in order. The first one that
-/// responds successfully identifies the provider.
+/// Well-known provider environment variables are treated as an explicit
+/// override and checked first (e.g. an exported `AWS_REGION` classifies the
+/// host as [`CloudProvider::Aws`] even on a bare-metal box, which matters
+/// when firewall operations follow the verdict). When none is set, the DMI
+/// identification files under `/sys/class/dmi/id` decide. No metadata
+/// endpoint is contacted.
 ///
 /// # Errors
 ///
-/// Returns [`Error::ProviderNotFound`](crate::error::Error::ProviderNotFound) if no metadata endpoint responds.
+/// Returns [`Error::ProviderNotFound`](crate::error::Error::ProviderNotFound)
+/// when neither source classifies the host (e.g. bare metal, a local VM, or
+/// a container without DMI): proceeding with firewall operations against a
+/// guessed provider would target the wrong account, so detection must be
+/// explicit (`--provider` in the CLI) rather than defaulted.
 pub fn detect_provider() -> Result<CloudProvider> {
-    // TODO: Implement actual metadata endpoint probing.
-    // For now, try to detect from environment variables or files.
-    if let Some(provider) = detect_from_env() {
+    detect_provider_with(&detect_from_env, &detect_from_files)
+}
+
+/// The pure detection core: env lookup first (explicit override), then the
+/// DMI file probe, then a typed error. Split out so the decision table is
+/// testable without mutating the process environment.
+fn detect_provider_with(
+    env_probe: &dyn Fn() -> Option<CloudProvider>,
+    files_probe: &dyn Fn() -> Option<CloudProvider>,
+) -> Result<CloudProvider> {
+    if let Some(provider) = env_probe() {
         return Ok(provider);
     }
-
-    if let Some(provider) = detect_from_files() {
+    if let Some(provider) = files_probe() {
         return Ok(provider);
     }
-
-    Ok(CloudProvider::Unknown)
+    Err(crate::error::Error::ProviderNotFound(
+        "no cloud provider detected (no provider env vars set, no cloud DMI vendor); \
+         pass the provider explicitly instead of guessing"
+            .to_string(),
+    ))
 }
 
 /// Try to detect the cloud provider from well-known environment variables.
 fn detect_from_env() -> Option<CloudProvider> {
+    detect_from_env_with(&|key| std::env::var(key).ok().filter(|v| !v.trim().is_empty()))
+}
+
+/// The env-var decision table over an injectable lookup (tests feed a map).
+/// A variable set to a blank value does not count as set.
+fn detect_from_env_with(var: &dyn Fn(&str) -> Option<String>) -> Option<CloudProvider> {
+    let set = |key: &str| var(key).is_some_and(|v| !v.trim().is_empty());
+
     // AWS
-    if std::env::var("AWS_EXECUTION_ENV").is_ok()
-        || std::env::var("AWS_REGION").is_ok()
-        || std::env::var("AWS_DEFAULT_REGION").is_ok()
-    {
+    if set("AWS_EXECUTION_ENV") || set("AWS_REGION") || set("AWS_DEFAULT_REGION") {
         return Some(CloudProvider::Aws);
     }
 
     // GCP
-    if std::env::var("GCE_METADATA_HOST").is_ok() || std::env::var("GOOGLE_CLOUD_PROJECT").is_ok() {
+    if set("GCE_METADATA_HOST") || set("GOOGLE_CLOUD_PROJECT") {
         return Some(CloudProvider::Gcp);
     }
 
     // DigitalOcean
-    if std::env::var("DIGITALOCEAN_TOKEN").is_ok() {
+    if set("DIGITALOCEAN_TOKEN") {
         return Some(CloudProvider::DigitalOcean);
     }
 
     // Hetzner
-    if std::env::var("HCLOUD_TOKEN").is_ok() {
+    if set("HCLOUD_TOKEN") {
         return Some(CloudProvider::Hetzner);
     }
 
@@ -138,34 +156,35 @@ fn detect_from_env() -> Option<CloudProvider> {
 
 /// Try to detect the cloud provider from well-known system files.
 fn detect_from_files() -> Option<CloudProvider> {
+    detect_from_files_with(&|path| std::fs::read_to_string(path).ok())
+}
+
+/// The DMI decision table over an injectable file reader (tests feed a map;
+/// every candidate path lives under `/sys/class/dmi/id`).
+fn detect_from_files_with(read: &dyn Fn(&str) -> Option<String>) -> Option<CloudProvider> {
     // AWS
-    if std::path::Path::new("/sys/class/dmi/id/board_vendor").exists()
-        && let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/board_vendor")
+    if let Some(vendor) = read("/sys/class/dmi/id/board_vendor")
         && vendor.trim() == "Amazon EC2"
     {
         return Some(CloudProvider::Aws);
     }
 
     // GCP
-    if std::path::Path::new("/sys/class/dmi/id/product_name").exists()
-        && let Ok(name) = std::fs::read_to_string("/sys/class/dmi/id/product_name")
+    if let Some(name) = read("/sys/class/dmi/id/product_name")
         && name.trim().starts_with("Google Compute Engine")
     {
         return Some(CloudProvider::Gcp);
     }
 
     // DigitalOcean
-    if std::path::Path::new("/sys/class/dmi/id/sys_vendor").exists()
-        && let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/sys_vendor")
+    if let Some(vendor) = read("/sys/class/dmi/id/sys_vendor")
         && vendor.trim() == "DigitalOcean"
     {
         return Some(CloudProvider::DigitalOcean);
     }
 
     // Hetzner
-    if std::path::Path::new("/sys/class/dmi/id/board_vendor").exists()
-        && let Ok(vendor) = std::fs::read_to_string("/sys/class/dmi/id/board_vendor")
-    {
+    if let Some(vendor) = read("/sys/class/dmi/id/board_vendor") {
         let v = vendor.trim();
         if v == "Hetzner" || v == "hcloud" {
             return Some(CloudProvider::Hetzner);
@@ -175,15 +194,146 @@ fn detect_from_files() -> Option<CloudProvider> {
     None
 }
 
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
-
 #[cfg(test)]
 mod tests {
-    use super::CloudProvider;
+    use super::*;
 
-    // -- from_str_loose: AWS aliases -----------------------------------------
+    fn env_map(pairs: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let owned: Vec<(String, String)> = pairs
+            .iter()
+            .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
+            .collect();
+        move |key| owned.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    }
+
+    #[test]
+    fn env_detection_maps_each_provider() {
+        let cases = [
+            (vec![("AWS_REGION", "eu-central-1")], CloudProvider::Aws),
+            (
+                vec![("AWS_DEFAULT_REGION", "us-east-1")],
+                CloudProvider::Aws,
+            ),
+            (
+                vec![("GCE_METADATA_HOST", "metadata.google.internal")],
+                CloudProvider::Gcp,
+            ),
+            (vec![("GOOGLE_CLOUD_PROJECT", "proj")], CloudProvider::Gcp),
+            (
+                vec![("DIGITALOCEAN_TOKEN", "tok")],
+                CloudProvider::DigitalOcean,
+            ),
+            (vec![("HCLOUD_TOKEN", "tok")], CloudProvider::Hetzner),
+        ];
+        for (env, expected) in cases {
+            let probe = env_map(&env);
+            assert_eq!(
+                detect_from_env_with(&probe),
+                Some(expected),
+                "env {env:?} must classify as {expected:?}"
+            );
+        }
+        assert_eq!(
+            detect_from_env_with(&|_| None),
+            None,
+            "no provider env vars means no env-based classification"
+        );
+    }
+
+    /// An env var set to the empty string does not classify the host.
+    #[test]
+    fn env_detection_ignores_empty_values() {
+        let probe = env_map(&[("AWS_REGION", "  ")]);
+        assert_eq!(detect_from_env_with(&probe), None);
+    }
+
+    /// The documented env-override semantics: `AWS_REGION` wins over the DMI
+    /// table even on a Hetzner board.
+    #[test]
+    fn env_override_takes_precedence_over_dmi() {
+        let env = env_map(&[("AWS_REGION", "us-east-1")]);
+        let dmi = |_p: &str| Some("Hetzner\n".to_string());
+        let verdict = detect_provider_with(&|| detect_from_env_with(&env), &|| {
+            detect_from_files_with(&dmi)
+        })
+        .unwrap();
+        assert_eq!(verdict, CloudProvider::Aws);
+    }
+
+    #[test]
+    fn dmi_detection_maps_each_vendor() {
+        let cases = [
+            (
+                "/sys/class/dmi/id/board_vendor",
+                "Amazon EC2\n",
+                CloudProvider::Aws,
+            ),
+            (
+                "/sys/class/dmi/id/product_name",
+                "Google Compute Engine\n",
+                CloudProvider::Gcp,
+            ),
+            (
+                "/sys/class/dmi/id/sys_vendor",
+                "DigitalOcean\n",
+                CloudProvider::DigitalOcean,
+            ),
+            (
+                "/sys/class/dmi/id/board_vendor",
+                "Hetzner\n",
+                CloudProvider::Hetzner,
+            ),
+            (
+                "/sys/class/dmi/id/board_vendor",
+                "hcloud\n",
+                CloudProvider::Hetzner,
+            ),
+        ];
+        for (path, content, expected) in cases {
+            let dmi = move |p: &str| (p == path).then(|| content.to_string());
+            assert_eq!(
+                detect_from_files_with(&dmi),
+                Some(expected),
+                "DMI {path}={content:?} must classify as {expected:?}"
+            );
+        }
+        assert_eq!(
+            detect_from_files_with(&|_| None),
+            None,
+            "no DMI files means no file-based classification"
+        );
+    }
+
+    /// Nothing matching is a typed error, not `Ok(Unknown)`: firewall
+    /// operations against a guessed provider would target the wrong account.
+    #[test]
+    fn no_detection_is_a_typed_error() {
+        let err = detect_provider_with(&|| None, &|| None).unwrap_err();
+        assert!(
+            matches!(err, crate::Error::ProviderNotFound(_)),
+            "got {err:?}"
+        );
+        let unrelated_dmi =
+            move |p: &str| (p == "/sys/class/dmi/id/board_vendor").then(|| "QEMU\n".to_string());
+        let err =
+            detect_provider_with(&|| None, &|| detect_from_files_with(&unrelated_dmi)).unwrap_err();
+        assert!(matches!(err, crate::Error::ProviderNotFound(_)));
+    }
+
+    /// The live probes stay consistent with their decision tables (no env
+    /// mutation: the live call either resolves a provider or errors).
+    #[test]
+    fn live_detect_provider_matches_decision_tables() {
+        let live = detect_provider();
+        let expected = detect_from_env().or_else(detect_from_files);
+        match expected {
+            Some(provider) => assert_eq!(live.unwrap(), provider),
+            None => assert!(matches!(
+                live.unwrap_err(),
+                crate::Error::ProviderNotFound(_)
+            )),
+        }
+    }
 
     #[test]
     fn from_str_loose_aws() {
@@ -194,8 +344,6 @@ mod tests {
     fn from_str_loose_ec2() {
         assert_eq!(CloudProvider::from_str_loose("EC2"), CloudProvider::Aws);
     }
-
-    // -- from_str_loose: GCP aliases -----------------------------------------
 
     #[test]
     fn from_str_loose_gcp() {
@@ -211,8 +359,6 @@ mod tests {
     fn from_str_loose_google() {
         assert_eq!(CloudProvider::from_str_loose("google"), CloudProvider::Gcp);
     }
-
-    // -- from_str_loose: DigitalOcean aliases --------------------------------
 
     #[test]
     fn from_str_loose_do() {
@@ -230,8 +376,6 @@ mod tests {
         );
     }
 
-    // -- from_str_loose: Hetzner aliases -------------------------------------
-
     #[test]
     fn from_str_loose_hetzner() {
         assert_eq!(
@@ -248,8 +392,6 @@ mod tests {
         );
     }
 
-    // -- from_str_loose: unknown returns Unknown -----------------------------
-
     #[test]
     fn from_str_loose_unknown() {
         assert_eq!(
@@ -258,8 +400,6 @@ mod tests {
         );
         assert_eq!(CloudProvider::from_str_loose(""), CloudProvider::Unknown);
     }
-
-    // -- from_str_loose is case-insensitive ----------------------------------
 
     #[test]
     fn from_str_loose_case_insensitive() {
@@ -280,8 +420,6 @@ mod tests {
         );
     }
 
-    // -- all() returns 4 known providers -------------------------------------
-
     #[test]
     fn all_returns_four_providers() {
         let providers = CloudProvider::all();
@@ -292,8 +430,6 @@ mod tests {
         assert!(providers.contains(&CloudProvider::Hetzner));
         assert!(!providers.contains(&CloudProvider::Unknown));
     }
-
-    // -- metadata_url --------------------------------------------------------
 
     #[test]
     fn metadata_url_known_providers_return_some() {
@@ -308,8 +444,6 @@ mod tests {
         assert!(CloudProvider::Unknown.metadata_url().is_none());
     }
 
-    // -- cli_tool -----------------------------------------------------------
-
     #[test]
     fn cli_tool_returns_correct_names() {
         assert_eq!(CloudProvider::Aws.cli_tool(), "aws");
@@ -318,8 +452,6 @@ mod tests {
         assert_eq!(CloudProvider::Hetzner.cli_tool(), "hcloud");
         assert_eq!(CloudProvider::Unknown.cli_tool(), "");
     }
-
-    // -- Display trait -------------------------------------------------------
 
     #[test]
     fn display_formats_correctly() {

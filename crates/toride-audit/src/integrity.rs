@@ -20,16 +20,22 @@
 //!
 //! Every field of the returned [`IntegrityStatus`] reflects a real probe, so
 //! the presentation layer never has to render a "not implemented" placeholder.
+//!
+//! ## Status caching
+//!
+//! `aide --check` re-hashes the monitored filesystem (minutes on a real
+//! host), so [`IntegrityManager::status`] memoizes its result for
+//! [`IntegrityManager::DEFAULT_STATUS_TTL`] and re-probes only when the TTL
+//! expires or the AIDE database mtime moves. Callers needing a fresh check
+//! on every call pass [`Duration::ZERO`] to
+//! [`IntegrityManager::with_status_ttl`].
 
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime};
 
 use crate::{AuditPaths, Error, Result};
 use toride_runner::CommandSpec;
-
-// ---------------------------------------------------------------------------
-// IntegrityStatus
-// ---------------------------------------------------------------------------
 
 /// Status of the AIDE integrity check.
 ///
@@ -58,8 +64,8 @@ pub struct IntegrityStatus {
     pub database_initialized: bool,
     /// Number of files AIDE reported as changed/added/removed on the last
     /// `aide --check`. `Some(0)` means the check ran and the filesystem
-    /// matched the database. `None` only when the count is genuinely unknown
-    /// (e.g. database missing).
+    /// matched the database; `None` means the count is genuinely unknown
+    /// (AIDE absent, database missing, or unparseable check output).
     pub file_count: Option<usize>,
     /// Whether the last integrity check passed. `Some(true)`/`Some(false)`
     /// from a real `aide --check`; `Some(false)` when AIDE is not installed
@@ -74,24 +80,22 @@ impl IntegrityStatus {
     /// Build a status where AIDE is **not installed**.
     ///
     /// This is the honest representation of "no integrity monitoring is
-    /// configured on this host": `database_initialized=false`, and the
-    /// secondary fields are populated with a clear status string so the
+    /// configured on this host": `database_initialized=false`,
+    /// `file_count=None` (no check ever ran, so no count exists — `Some(0)`
+    /// would falsely read as "ran clean"), `last_check_passed=Some(false)`
+    /// (monitoring is not active), and a clear status string so the
     /// presentation layer renders "AIDE not installed" rather than an
     /// unimplemented placeholder.
     #[must_use]
     pub fn not_installed() -> Self {
         Self {
             database_initialized: false,
-            file_count: Some(0),
+            file_count: None,
             last_check_passed: Some(false),
             last_check_output: Some("AIDE not installed".to_owned()),
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// IntegrityManager
-// ---------------------------------------------------------------------------
 
 /// High-level manager for AIDE file integrity monitoring.
 ///
@@ -101,6 +105,19 @@ pub struct IntegrityManager<'a> {
     runner: &'a dyn toride_runner::Runner,
     paths: &'a AuditPaths,
     binary_override: Option<PathBuf>,
+    status_ttl: Duration,
+    status_cache: Mutex<Option<StatusCacheEntry>>,
+}
+
+/// Memoized [`IntegrityStatus`] plus the conditions it was probed under:
+/// reuse only while the TTL holds, the binary-presence verdict is unchanged,
+/// and the AIDE database mtime has not moved (an `--init`/`--update` through
+/// this manager invalidates immediately).
+struct StatusCacheEntry {
+    at: Instant,
+    binary_present: bool,
+    db_mtime: Option<SystemTime>,
+    status: IntegrityStatus,
 }
 
 /// Candidate AIDE config file locations, searched in order.
@@ -110,12 +127,20 @@ const AIDE_CONFIG_CANDIDATES: &[&str] = &["/etc/aide.conf", "/etc/aide/aide.conf
 const AIDE_DB_CANDIDATES: &[&str] = &["/var/lib/aide/aide.db.gz", "/var/lib/aide/aide.db.new.gz"];
 
 impl<'a> IntegrityManager<'a> {
+    /// Default TTL for the memoized [`IntegrityManager::status`] result.
+    /// `aide --check` re-hashes the monitored filesystem (minutes on a real
+    /// host), so a dashboard polling every few seconds must not re-run it
+    /// every poll.
+    pub const DEFAULT_STATUS_TTL: Duration = Duration::from_secs(300);
+
     /// Create a new integrity manager with the given runner and paths.
     pub fn new(runner: &'a dyn toride_runner::Runner, paths: &'a AuditPaths) -> Self {
         Self {
             runner,
             paths,
             binary_override: None,
+            status_ttl: Self::DEFAULT_STATUS_TTL,
+            status_cache: Mutex::new(None),
         }
     }
 
@@ -136,7 +161,21 @@ impl<'a> IntegrityManager<'a> {
             runner,
             paths,
             binary_override: Some(binary),
+            status_ttl: Self::DEFAULT_STATUS_TTL,
+            status_cache: Mutex::new(None),
         }
+    }
+
+    /// Override the [`IntegrityManager::status`] memoization TTL.
+    ///
+    /// `Duration::ZERO` disables caching: every `status()` call re-probes
+    /// (`aide --version` plus `aide --check`). The cache also invalidates
+    /// early when the AIDE database mtime changes, so `--init`/`--update`
+    /// through the same manager is noticed immediately regardless of TTL.
+    #[must_use]
+    pub fn with_status_ttl(mut self, ttl: Duration) -> Self {
+        self.status_ttl = ttl;
+        self
     }
 
     /// Whether the `aide` binary can be invoked: caller-pinned for
@@ -214,26 +253,80 @@ impl<'a> IntegrityManager<'a> {
     /// [`IntegrityStatus::not_installed`] — an honest "monitoring not active"
     /// status rather than a stub.
     ///
+    /// The result is memoized for [`IntegrityManager::DEFAULT_STATUS_TTL`]
+    /// (see the module's *Status caching* section): repeated calls within the
+    /// TTL spawn no `aide` processes, and an AIDE database mtime change
+    /// invalidates the memo immediately.
+    ///
     /// # Errors
     ///
     /// Returns [`Error::Io`] only if a database path that is known to exist
     /// cannot be stat'd (an exceptional filesystem error).
+    ///
+    /// # Panics
+    ///
+    /// Panics if the internal status-cache mutex is poisoned (another
+    /// thread panicked while holding it).
     pub fn status(&self) -> Result<IntegrityStatus> {
+        let binary_present = self.binary_present();
+        let db_path = self.find_db();
+        let db_mtime = match db_path.as_deref() {
+            Some(p) => p.metadata().map_err(Error::Io)?.modified().ok(),
+            None => None,
+        };
+
+        if self.status_ttl > Duration::ZERO
+            && let Some(cached) = self.fresh_cache_entry(binary_present, db_mtime)
+        {
+            return Ok(cached);
+        }
+
+        let status = self.probe_status(binary_present, db_mtime);
+        if self.status_ttl > Duration::ZERO {
+            let mut cache = self.status_cache.lock().expect("status cache lock");
+            *cache = Some(StatusCacheEntry {
+                at: Instant::now(),
+                binary_present,
+                db_mtime,
+                status: status.clone(),
+            });
+        }
+        Ok(status)
+    }
+
+    /// Return the memoized status when it is still fresh: TTL unexpired,
+    /// same binary-presence verdict, and an unchanged AIDE database mtime.
+    fn fresh_cache_entry(
+        &self,
+        binary_present: bool,
+        db_mtime: Option<SystemTime>,
+    ) -> Option<IntegrityStatus> {
+        let cache = self.status_cache.lock().expect("status cache lock");
+        let entry = cache.as_ref()?;
+        if entry.at.elapsed() >= self.status_ttl
+            || entry.binary_present != binary_present
+            || entry.db_mtime != db_mtime
+        {
+            return None;
+        }
+        Some(entry.status.clone())
+    }
+
+    /// The uncached probe backing [`IntegrityManager::status`]. The database
+    /// verdict and mtime come from the caller's single probe, so a status
+    /// call stats the database exactly once.
+    fn probe_status(&self, binary_present: bool, db_mtime: Option<SystemTime>) -> IntegrityStatus {
         // 1. Is the `aide` binary available?
-        if !self.binary_present() {
-            return Ok(IntegrityStatus::not_installed());
+        if !binary_present {
+            return IntegrityStatus::not_installed();
         }
 
         // 2. Probe the config file (configured path first, then candidates).
         let config_present = self.find_config().is_some();
 
-        // 3. Probe the AIDE database and its mtime (= last check time).
-        let db_path = self.find_db();
-        let database_initialized = db_path.is_some();
-        let last_check = match db_path.as_deref() {
-            Some(p) => p.metadata().map_err(Error::Io)?.modified().ok(),
-            None => None,
-        };
+        // 3. Database verdict + last-check time from the pre-computed probe.
+        let database_initialized = db_mtime.is_some();
+        let last_check = db_mtime;
 
         // 4. Version string from `aide --version` (best-effort).
         let version = self.aide_version();
@@ -269,15 +362,13 @@ impl<'a> IntegrityManager<'a> {
             last_check,
         );
 
-        Ok(IntegrityStatus {
+        IntegrityStatus {
             database_initialized,
             file_count,
             last_check_passed,
             last_check_output: Some(status_line),
-        })
+        }
     }
-
-    // -- private helpers ----------------------------------------------------
 
     /// Locate the AIDE config file: the configured `paths.aide_conf` first,
     /// then the well-known candidate locations.
@@ -327,10 +418,6 @@ impl<'a> IntegrityManager<'a> {
         self.runner.run(&spec).ok()
     }
 }
-
-// ---------------------------------------------------------------------------
-// Free helpers
-// ---------------------------------------------------------------------------
 
 /// Extract an AIDE version token (e.g. `0.18.8`) from `--version` output.
 fn extract_version(combined: &str) -> Option<String> {
@@ -437,18 +524,10 @@ fn unix_to_ymdhms(secs: i64) -> (i64, u32, u32, u32, u32, u32) {
     (year, m, d, hour, minute, second)
 }
 
-// ---------------------------------------------------------------------------
-// Path-existence convenience (kept explicit so the probe surface is obvious)
-// ---------------------------------------------------------------------------
-
 #[allow(dead_code)]
 fn path_exists(p: &Path) -> bool {
     p.exists()
 }
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -503,20 +582,16 @@ mod tests {
         *C.get_or_init(|| which::which("aide").is_ok())
     }
 
-    // -- not_installed ------------------------------------------------------
-
     #[test]
-    fn not_installed_populates_every_field() {
+    fn not_installed_reports_unknown_count_and_failed_check() {
         let s = IntegrityStatus::not_installed();
         assert!(!s.database_initialized);
-        // Every field populated — no `None` stubs that would render as
-        // "not implemented" downstream.
-        assert_eq!(s.file_count, Some(0));
+        // No check ever ran, so the count is genuinely unknown: Some(0)
+        // would read as "check ran clean" downstream.
+        assert_eq!(s.file_count, None);
         assert_eq!(s.last_check_passed, Some(false));
         assert_eq!(s.last_check_output.as_deref(), Some("AIDE not installed"));
     }
-
-    // -- status when aide binary is missing ---------------------------------
 
     #[test]
     fn status_helpers_handle_absent_files() {
@@ -533,10 +608,13 @@ mod tests {
         let s = mgr.status().unwrap();
         assert!(s.last_check_output.is_some());
         assert!(s.last_check_passed.is_some());
-        assert!(s.file_count.is_some());
+        if !aide_installed() {
+            assert_eq!(
+                s.file_count, None,
+                "an AIDE-absent host must not report a known (clean) count"
+            );
+        }
     }
-
-    // -- status with a real DB on disk and a faked check output -------------
 
     #[test]
     fn status_with_db_and_clean_check_reports_zero_changes() {
@@ -569,8 +647,6 @@ mod tests {
         assert!(line.contains("AIDE"), "line = {line}");
         assert!(line.contains("0 changes"), "line = {line}");
     }
-
-    // -- with_binary seam: runner-call-count gates --------------------------
 
     fn clean_check_output() -> CommandOutput {
         CommandOutput::from_stdout(
@@ -647,7 +723,103 @@ mod tests {
         );
     }
 
-    // -- find_db picks the newest -------------------------------------------
+    /// Within the status TTL a second `status()` call must spawn nothing:
+    /// `aide --check` re-hashes the monitored filesystem, so a polling
+    /// consumer must not trigger it every poll (safety-state-9 gate).
+    #[test]
+    fn repeated_status_within_ttl_spawns_no_additional_checks() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(clean_check_output());
+        let mgr = IntegrityManager::with_binary(
+            &runner,
+            &paths,
+            PathBuf::from("/opt/toride-fixtures/aide"),
+        );
+
+        let first = mgr.status().expect("first status");
+        let second = mgr.status().expect("cached status");
+        assert_eq!(first.file_count, second.file_count);
+        assert_eq!(first.last_check_passed, second.last_check_passed);
+
+        let check_spawns = runner
+            .calls()
+            .iter()
+            .filter(|c| c.args.iter().any(|a| a == "--check"))
+            .count();
+        assert_eq!(
+            check_spawns, 1,
+            "one live probe only; the repeat must be served from the TTL cache"
+        );
+    }
+
+    /// `with_status_ttl(Duration::ZERO)` disables the cache: every call
+    /// probes again.
+    #[test]
+    fn zero_ttl_disables_status_caching() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(clean_check_output())
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(clean_check_output());
+        let mgr = IntegrityManager::with_binary(
+            &runner,
+            &paths,
+            PathBuf::from("/opt/toride-fixtures/aide"),
+        )
+        .with_status_ttl(Duration::ZERO);
+
+        mgr.status().expect("first status");
+        mgr.status().expect("second status");
+        let check_spawns = runner
+            .calls()
+            .iter()
+            .filter(|c| c.args.iter().any(|a| a == "--check"))
+            .count();
+        assert_eq!(check_spawns, 2, "ZERO TTL must probe on every call");
+    }
+
+    /// An AIDE database mtime change invalidates the memo before the TTL
+    /// expires (an `--init`/`--update` through the same manager must be
+    /// noticed immediately).
+    #[test]
+    fn db_mtime_change_invalidates_cached_status() {
+        let tmp = TempDir::new().unwrap();
+        let paths = override_paths_with_db(tmp.path());
+
+        let runner = FakeRunner::new()
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.8\n"))
+            .push_response(clean_check_output())
+            .push_response(CommandOutput::from_stdout("AIDE 0.18.9\n"))
+            .push_response(clean_check_output());
+        let mgr = IntegrityManager::with_binary(
+            &runner,
+            &paths,
+            PathBuf::from("/opt/toride-fixtures/aide"),
+        );
+
+        mgr.status().expect("first status (cached)");
+        // Bump the db mtime past coarse filesystem granularity.
+        std::thread::sleep(Duration::from_millis(1100));
+        std::fs::write(paths.aide_db_dir.join("aide.db.gz"), b"updated").unwrap();
+
+        mgr.status().expect("status after db update");
+        let check_spawns = runner
+            .calls()
+            .iter()
+            .filter(|c| c.args.iter().any(|a| a == "--check"))
+            .count();
+        assert_eq!(
+            check_spawns, 2,
+            "a moved database mtime must force a fresh probe"
+        );
+    }
 
     #[test]
     fn find_db_picks_newest_candidate() {
@@ -672,8 +844,6 @@ mod tests {
         let _ = old;
     }
 
-    // -- find_config prefers the configured path ----------------------------
-
     #[test]
     fn find_config_prefers_configured_path() {
         let tmp = TempDir::new().unwrap();
@@ -688,8 +858,6 @@ mod tests {
         let mgr = IntegrityManager::new(&runner, &paths);
         assert_eq!(mgr.find_config(), Some(paths.aide_conf.clone()));
     }
-
-    // -- version extraction -------------------------------------------------
 
     #[test]
     fn extract_version_from_typical_output() {
@@ -708,8 +876,6 @@ mod tests {
         let v = extract_version("some unrelated line\n");
         assert!(v.is_none());
     }
-
-    // -- build_status_line --------------------------------------------------
 
     #[test]
     fn status_line_when_not_initialized() {
@@ -730,8 +896,6 @@ mod tests {
         let line = build_status_line(None, true, true, Some(7), None);
         assert!(line.contains("7 changes"), "line = {line}");
     }
-
-    // -- unix_to_ymdhms -----------------------------------------------------
 
     #[test]
     fn unix_to_ymdhms_known_epoch() {

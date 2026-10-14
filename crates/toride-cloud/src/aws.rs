@@ -29,17 +29,15 @@ use std::sync::Arc;
 use toride_runner::spec::CommandSpec;
 use toride_runner::{CommandOutput, DuctRunner, Runner};
 
-// ---------------------------------------------------------------------------
-// AwsClient
-// ---------------------------------------------------------------------------
-
 /// Client for managing AWS EC2 security groups.
 ///
 /// Delegates command execution to the `aws` CLI. All commands go through the
 /// centralised runner pattern for testability.
 pub struct AwsClient {
-    /// AWS region (e.g. `us-east-1`).
-    pub region: String,
+    /// AWS region (e.g. `us-east-1`). `None` omits `--region` so the `aws`
+    /// CLI resolves it from `AWS_REGION`/`AWS_DEFAULT_REGION` or the active
+    /// profile.
+    pub region: Option<String>,
     /// AWS profile name (uses default profile if `None`).
     pub profile: Option<String>,
     /// Command runner used to execute the `aws` CLI.
@@ -56,6 +54,13 @@ impl AwsClient {
         Self::with_runner(region, Arc::new(DuctRunner))
     }
 
+    /// Create an AWS client with no pinned region and a real [`DuctRunner`]:
+    /// every command omits `--region` and the `aws` CLI resolves it.
+    #[must_use]
+    pub fn new_without_region() -> Self {
+        Self::with_runner_without_region(Arc::new(DuctRunner))
+    }
+
     /// Set the AWS profile.
     #[must_use]
     pub fn with_profile(mut self, profile: impl Into<String>) -> Self {
@@ -70,20 +75,31 @@ impl AwsClient {
     #[must_use]
     pub fn with_runner(region: impl Into<String>, runner: Arc<dyn Runner>) -> Self {
         Self {
-            region: region.into(),
+            region: Some(region.into()),
             profile: None,
             runner,
         }
     }
 
-    /// Build the common `aws ec2 ... --region <r> [--profile <p>] --output json`
+    /// Inject a custom [`Runner`] with no pinned region: commands omit
+    /// `--region` and the `aws` CLI resolves it from the environment or the
+    /// active profile.
+    #[must_use]
+    pub fn with_runner_without_region(runner: Arc<dyn Runner>) -> Self {
+        Self {
+            region: None,
+            profile: None,
+            runner,
+        }
+    }
+
+    /// Build the common `aws ec2 ... [--region <r>] [--profile <p>] --output json`
     /// command prefix.
     fn base_command(&self, action: &str) -> CommandSpec {
-        let mut spec = CommandSpec::new("aws")
-            .arg("ec2")
-            .arg(action)
-            .arg("--region")
-            .arg(&self.region);
+        let mut spec = CommandSpec::new("aws").arg("ec2").arg(action);
+        if let Some(region) = &self.region {
+            spec = spec.arg("--region").arg(region);
+        }
         if let Some(profile) = &self.profile {
             spec = spec.arg("--profile").arg(profile);
         }
@@ -254,10 +270,6 @@ impl AwsClient {
         Ok(())
     }
 }
-
-// ---------------------------------------------------------------------------
-// JSON parsing helpers (file-local to avoid colliding with parse.rs)
-// ---------------------------------------------------------------------------
 
 /// Top-level `describe-security-groups` response.
 #[derive(Debug, Deserialize)]
@@ -464,29 +476,51 @@ fn port_range_from(from: Option<i64>, to: Option<i64>, protocol: Protocol) -> Op
 ///
 /// Shape mirrors the AWS CLI reference:
 /// `[{"IpProtocol":"tcp","FromPort":22,"ToPort":22,"IpRanges":[{"CidrIp":"..."}]}]`.
+/// A rule whose `cidr` is an `sg:<group-id>` reference (how listing renders
+/// `UserIdGroupPairs`) is sent back as a `UserIdGroupPairs` entry, not as an
+/// `IpRanges` CIDR the API would reject.
 fn build_ip_permissions(rule: &FirewallRule) -> serde_json::Value {
     let proto = match rule.protocol {
-        Protocol::Tcp => "tcp",
-        Protocol::Udp => "udp",
-        Protocol::Icmp => "icmp",
-        Protocol::All => "-1",
-        Protocol::Other(n) => {
-            return serde_json::json!([{
-                "IpProtocol": n.to_string(),
-                "IpRanges": [cidr_object(rule)],
-            }]);
-        }
+        Protocol::Tcp => "tcp".to_owned(),
+        Protocol::Udp => "udp".to_owned(),
+        Protocol::Icmp => "icmp".to_owned(),
+        Protocol::All => "-1".to_owned(),
+        Protocol::Other(n) => n.to_string(),
     };
 
-    let mut perm = serde_json::json!({ "IpProtocol": proto });
-    if let Some(range) = rule.port_range
-        && !matches!(rule.protocol, Protocol::All)
+    let mut perm = serde_json::Map::new();
+    perm.insert("IpProtocol".to_owned(), serde_json::Value::String(proto));
+    if let Some(range) = rule
+        .port_range
+        .filter(|_| !matches!(rule.protocol, Protocol::All))
     {
-        perm["FromPort"] = serde_json::Value::from(i64::from(range.start));
-        perm["ToPort"] = serde_json::Value::from(i64::from(range.end));
+        perm.insert(
+            "FromPort".to_owned(),
+            serde_json::Value::from(i64::from(range.start)),
+        );
+        perm.insert(
+            "ToPort".to_owned(),
+            serde_json::Value::from(i64::from(range.end)),
+        );
     }
-    perm["IpRanges"] = serde_json::Value::Array(vec![cidr_object(rule)]);
-    serde_json::Value::Array(vec![perm])
+    for (key, value) in source_entries(rule).as_object().expect("source object") {
+        perm.insert(key.clone(), value.clone());
+    }
+    serde_json::Value::Array(vec![serde_json::Value::Object(perm)])
+}
+
+/// Build the source entries of a permission: `{"IpRanges": [ ... ]}` for a
+/// CIDR rule, `{"UserIdGroupPairs": [ ... ]}` for an `sg:` group reference.
+fn source_entries(rule: &FirewallRule) -> serde_json::Value {
+    if let Some(group_id) = rule.cidr.strip_prefix("sg:") {
+        let mut pair = serde_json::json!({ "GroupId": group_id });
+        if !rule.description.is_empty() {
+            pair["Description"] = serde_json::Value::from(rule.description.clone());
+        }
+        serde_json::json!({ "UserIdGroupPairs": [pair] })
+    } else {
+        serde_json::json!({ "IpRanges": [cidr_object(rule)] })
+    }
 }
 
 /// Build a single `{"CidrIp": "...", "Description": "..."}` entry.
@@ -497,10 +531,6 @@ fn cidr_object(rule: &FirewallRule) -> serde_json::Value {
     }
     obj
 }
-
-// ===========================================================================
-// Tests
-// ===========================================================================
 
 #[cfg(test)]
 mod tests {
@@ -565,8 +595,6 @@ mod tests {
         assert_eq!(calls[0].args, expected.args, "args mismatch");
         assert_eq!(calls[0].redact, expected.redact, "redact mismatch");
     }
-
-    // ---- command construction (program + exact args) ----
 
     #[test]
     fn list_command_exact() {
@@ -820,8 +848,6 @@ mod tests {
         );
     }
 
-    // ---- real-sample parsing ----
-
     #[test]
     fn parses_real_describe_sample() {
         // Asserts the docs-sourced describe-security-groups JSON parses into
@@ -883,8 +909,6 @@ mod tests {
         assert_eq!(g.name, "n");
     }
 
-    // ---- helpers ----
-
     #[test]
     fn parse_protocol_variants() {
         assert_eq!(parse_protocol("tcp"), Protocol::Tcp);
@@ -916,5 +940,107 @@ mod tests {
         let rule = &groups[0].rules[0];
         assert_eq!(rule.cidr, "sg:sg-b");
         assert_eq!(rule.description, "from b");
+    }
+
+    /// An `sg:`-referencing rule must be sent back as `UserIdGroupPairs`,
+    /// not as an `IpRanges` `{"CidrIp": "sg:sg-b"}` payload the AWS API
+    /// rejects as not a CIDR (which made revoking SG-referenced rules
+    /// impossible).
+    #[test]
+    fn authorize_sends_sg_references_as_user_id_group_pairs() {
+        let rule = FirewallRule {
+            id: None,
+            description: "from b".to_string(),
+            is_ingress: true,
+            protocol: Protocol::Tcp,
+            port_range: Some(PortRange::single(443)),
+            cidr: "sg:sg-b".to_string(),
+            action: RuleAction::Allow,
+        };
+        let runner = Arc::new(
+            FakeRunner::new().push_response(CommandOutput::from_stdout(r#"{"return": true}"#)),
+        );
+        let client = client_with(runner.clone());
+
+        client.authorize_ingress("sg-a", &rule).unwrap();
+
+        let call = &runner.calls()[0];
+        let perms_idx = call
+            .args
+            .iter()
+            .position(|a| a == "--ip-permissions")
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&call.args[perms_idx + 1]).unwrap();
+        assert!(
+            payload[0].get("IpRanges").is_none(),
+            "an sg: source must not be sent as IpRanges: {payload}"
+        );
+        assert_eq!(payload[0]["UserIdGroupPairs"][0]["GroupId"], "sg-b");
+        assert_eq!(payload[0]["UserIdGroupPairs"][0]["Description"], "from b");
+        assert_eq!(payload[0]["IpProtocol"], "tcp");
+        assert_eq!(payload[0]["FromPort"], 443);
+    }
+
+    /// Round-trip: the `sg:` pseudo-CIDR a listing produces authorizes and
+    /// revokes through the same `UserIdGroupPairs` shape AWS handed us.
+    #[test]
+    fn sg_reference_round_trips_from_listing_to_revoke() {
+        let list_json = r#"{
+            "SecurityGroups": [{
+                "GroupId": "sg-a", "GroupName": "g", "Description": "",
+                "IpPermissions": [{
+                    "IpProtocol": "tcp", "FromPort": 443, "ToPort": 443,
+                    "UserIdGroupPairs": [{ "GroupId": "sg-b" }]
+                }],
+                "IpPermissionsEgress": []
+            }]
+        }"#;
+        let runner = Arc::new(
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout(list_json))
+                .push_response(CommandOutput::from_stdout(r#"{"return": true}"#)),
+        );
+        let client = AwsClient::with_runner("us-east-1", runner.clone());
+        let group = client.get_security_group("sg-a").unwrap();
+        let rule = &group.rules[0];
+        assert_eq!(rule.cidr, "sg:sg-b");
+
+        client.revoke_ingress("sg-a", rule).unwrap();
+        let call = &runner.calls()[1];
+        let perms_idx = call
+            .args
+            .iter()
+            .position(|a| a == "--ip-permissions")
+            .unwrap();
+        let payload: serde_json::Value = serde_json::from_str(&call.args[perms_idx + 1]).unwrap();
+        assert_eq!(payload[0]["UserIdGroupPairs"][0]["GroupId"], "sg-b");
+        assert!(payload[0].get("IpRanges").is_none());
+    }
+
+    /// Without a pinned region the commands omit `--region` so the `aws` CLI
+    /// resolves it from `AWS_REGION`/`AWS_DEFAULT_REGION` or the profile.
+    #[test]
+    fn unpinned_region_omits_region_flag() {
+        let runner = Arc::new(
+            FakeRunner::new()
+                .push_response(CommandOutput::from_stdout(r#"{"SecurityGroups": []}"#)),
+        );
+        let client = AwsClient::with_runner_without_region(runner.clone());
+        client.list_security_groups().unwrap();
+
+        let call = &runner.calls()[0];
+        assert!(
+            !call.args.iter().any(|a| a == "--region"),
+            "no --region without a pin: {:?}",
+            call.args
+        );
+        assert_eq!(
+            &call.args[..3],
+            &[
+                "ec2".to_string(),
+                "describe-security-groups".to_string(),
+                "--output".to_string()
+            ]
+        );
     }
 }
