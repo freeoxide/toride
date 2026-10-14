@@ -98,7 +98,7 @@ impl DaemonStatus {
 
     /// Collect daemon status with explicit paths.
     ///
-    /// This is the testable entry point — all filesystem interaction is
+    /// This is the testable entry point: all filesystem interaction is
     /// confined to the paths passed here. Use this method when you need
     /// to check daemon status with custom PID file, socket, or restart
     /// count paths.
@@ -182,7 +182,7 @@ fn read_pid_file(path: &Path) -> Option<u32> {
 
 /// Check if a process with the given PID is alive.
 ///
-/// On Unix, uses `kill(pid, 0)` — no signal is sent, just checks existence.
+/// On Unix, uses `kill(pid, 0)`, which sends no signal and just checks existence.
 /// On Windows, uses `OpenProcess` with `PROCESS_QUERY_LIMITED_INFORMATION`.
 #[cfg(unix)]
 fn is_process_alive(pid: u32) -> bool {
@@ -645,7 +645,7 @@ mod tests {
         // Drop the listener; the socket file persists but no one is listening.
         drop(listener);
 
-        // The socket file exists but no server is bound — should be stale.
+        // The socket file exists but no server is bound, so it should be stale.
         // Note: on some platforms the file may be removed on drop, in which
         // case check_stale_socket returns false (socket doesn't exist).
         // We only assert stale=true if the file still exists after drop.
@@ -669,7 +669,7 @@ mod tests {
 
     #[test]
     fn read_pid_file_parses_leading_zeros() {
-        // "007" should parse as 7 — leading zeros are valid decimal.
+        // "007" must parse as 7; leading zeros are valid decimal.
         let dir = setup_test_dir(Some("007"), None);
         assert_eq!(read_pid_file(&dir.path().join("toride.pid")), Some(7));
     }
@@ -739,7 +739,7 @@ mod tests {
 
     #[test]
     fn parse_elapsed_time_rejects_multiple_dashes() {
-        // "1-2-03:04:05" — split_once('-') yields day="1", rest="2-03:04:05"
+        // "1-2-03:04:05": split_once('-') yields day="1", rest="2-03:04:05"
         // which then fails to parse as HH:MM:SS.
         assert_eq!(parse_elapsed_time("1-2-03:04:05"), None);
     }

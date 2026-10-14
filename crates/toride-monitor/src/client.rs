@@ -6,7 +6,6 @@ use crate::alert::AlertDispatcher;
 use crate::anomaly::AnomalyDetector;
 use crate::conntrack::ConntrackReader;
 use crate::output::OutputChain;
-use crate::parse::{parse_ss_output, ss_entry_to_connection};
 use crate::paths::MonitorPaths;
 use crate::report::{AnomalyReport, MonitorReport};
 use crate::spec::{AlertTarget, LoggingRule, MonitorSpec};
@@ -101,14 +100,30 @@ impl MonitorClient {
                 .len() as u64
         };
 
-        let mut by_protocol = std::collections::HashMap::new();
-        let mut by_port = std::collections::HashMap::new();
-        let mut by_state = std::collections::HashMap::new();
+        let mut by_protocol: std::collections::HashMap<String, u64> =
+            std::collections::HashMap::new();
+        let mut by_port: std::collections::HashMap<u16, u64> = std::collections::HashMap::new();
+        let mut by_state: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
         for conn in &connections {
-            *by_protocol.entry(conn.protocol.clone()).or_insert(0u64) += 1;
-            *by_port.entry(conn.dst_port).or_insert(0u64) += 1;
-            *by_state.entry(conn.state.clone()).or_insert(0u64) += 1;
+            match by_protocol.get_mut(conn.protocol.as_str()) {
+                Some(count) => *count += 1,
+                None => {
+                    by_protocol.insert(conn.protocol.clone(), 1);
+                }
+            }
+            match by_port.get_mut(&conn.dst_port) {
+                Some(count) => *count += 1,
+                None => {
+                    by_port.insert(conn.dst_port, 1);
+                }
+            }
+            match by_state.get_mut(conn.state.as_str()) {
+                Some(count) => *count += 1,
+                None => {
+                    by_state.insert(conn.state.clone(), 1);
+                }
+            }
         }
 
         let (total_bytes, total_packets) = self.collect_conntrack_stats();
@@ -134,6 +149,35 @@ impl MonitorClient {
     pub fn detect(&self, report: &MonitorReport) -> Result<AnomalyReport> {
         let detector = AnomalyDetector::default_detector();
         detector.detect(report)
+    }
+
+    /// Run anomaly detection on an owned monitoring snapshot.
+    ///
+    /// Moves the snapshot behind the [`AnomalyReport::snapshot`] `Arc`
+    /// instead of deep-cloning it, so the per-poll cost is one reference
+    /// count rather than a full [`MonitorReport`] copy.
+    ///
+    /// # Errors
+    /// Does not return errors; detection always produces a report
+    /// (see [`AnomalyDetector::detect_into`]).
+    pub fn detect_into(&self, report: MonitorReport) -> Result<AnomalyReport> {
+        let detector = AnomalyDetector::default_detector();
+        detector.detect_into(report)
+    }
+
+    /// Run anomaly detection with explicit thresholds instead of the defaults,
+    /// moving the owned snapshot into the report.
+    ///
+    /// # Errors
+    /// Does not return errors; detection always produces a report
+    /// (see [`AnomalyDetector::detect`]).
+    pub fn detect_with_thresholds_into(
+        &self,
+        report: MonitorReport,
+        thresholds: crate::spec::AnomalyThreshold,
+    ) -> Result<AnomalyReport> {
+        let detector = AnomalyDetector::new(thresholds);
+        detector.detect_into(report)
     }
 
     /// Run anomaly detection with explicit thresholds instead of the defaults.
@@ -175,12 +219,14 @@ impl MonitorClient {
     pub fn apply(&self, spec: &MonitorSpec) -> Result<AnomalyReport> {
         if !spec.enabled {
             tracing::info!("Monitoring disabled in spec; skipping.");
-            return Ok(AnomalyReport::empty(MonitorReport::empty()));
+            return Ok(AnomalyReport::empty(std::sync::Arc::new(
+                MonitorReport::empty(),
+            )));
         }
 
         self.setup_logging(&spec.logging_rules)?;
         let snapshot = self.snapshot()?;
-        let anomalies = self.detect_with_thresholds(&snapshot, spec.thresholds.clone())?;
+        let anomalies = self.detect_with_thresholds_into(snapshot, spec.thresholds.clone())?;
 
         if !anomalies.is_clean() {
             let alert_reports = self.alert(&anomalies, &spec.alert_targets);
@@ -199,7 +245,7 @@ impl MonitorClient {
     }
 
     /// List all listening TCP/UDP ports with process info, via native OS
-    /// APIs (`netstat2`) — no `lsof` or `ss` required.
+    /// APIs (`netstat2`); no `lsof` or `ss` required.
     ///
     /// # Errors
     /// [`Error::PortsError`](crate::error::Error::PortsError) on failure.
@@ -252,18 +298,13 @@ impl MonitorClient {
             )));
         }
 
-        let entries = parse_ss_output(&output.stdout)?;
-        Ok(entries.iter().filter_map(ss_entry_to_connection).collect())
+        crate::parse::parse_ss_connections(&output.stdout)
     }
 
     fn collect_conntrack_stats(&self) -> (Option<u64>, Option<u64>) {
         let reader = ConntrackReader::new(&self.paths, self.runner.as_ref());
-        match reader.list_all() {
-            Ok(entries) => {
-                let total_bytes: u64 = entries.iter().filter_map(|e| e.bytes).sum();
-                let total_packets: u64 = entries.iter().filter_map(|e| e.packets).sum();
-                (Some(total_bytes), Some(total_packets))
-            }
+        match reader.sum_counters() {
+            Ok(totals) => (totals.map(|t| t.0), totals.map(|t| t.1)),
             Err(e) => {
                 tracing::debug!("conntrack stats unavailable: {e}");
                 (None, None)

@@ -1,6 +1,6 @@
 //! Error types for the toride status module.
 //!
-//! Defines [`StatusError`] — the unified error enum for all status-collection
+//! Defines [`StatusError`], the unified error enum for all status-collection
 //! operations. Each variant represents a distinct failure mode encountered
 //! while gathering system, daemon, or SSH health data.
 //!

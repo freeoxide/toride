@@ -142,7 +142,7 @@ impl<'a> OutputChain<'a> {
         let output = self.runner.run(&spec)?;
         if !output.success {
             // Do not echo the full argv or the raw combined output into the
-            // error string — they may contain sensitive values and are noisy
+            // error string; they may contain sensitive values and are noisy
             // in logs. Keep only the program name, the exit code, and the
             // first line of stderr (which carries the actionable reason, e.g.
             // "Rule does not exist", relied on by [`Self::remove_all`]).
@@ -530,7 +530,7 @@ COMMIT
     fn remove_all_leaves_non_toride_log_rules_intact() {
         // Regression: teardown is ownership-aware. A LOG rule installed by
         // another tool (no `toride-mon-` prefix in its --log-prefix) must
-        // survive `remove_all` — only the iptables-save enumeration call is
+        // survive `remove_all`; only the iptables-save enumeration call is
         // issued, with NO deletion attempted against the foreign rule.
         let foreign_rule = "-A OUTPUT -d 10.0.0.0/8 -p tcp -j LOG --log-prefix \"OTHER_TOOL \"";
         let toride_rule = "-A OUTPUT -d 0.0.0.0/0 -p tcp -j LOG --log-prefix \"toride-mon-out \"";

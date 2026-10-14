@@ -175,8 +175,9 @@ pub struct SshCapabilities {
 pub struct GpuCapabilities {
     /// GPU identity information is available.
     pub identity: bool,
-    /// NVIDIA NVML is available.
-    pub nvidia_nvml: bool,
+    /// NVIDIA GPU data is available via the `nvidia-smi` command (the
+    /// collector shells out to it; NVML is not linked).
+    pub nvidia_smi: bool,
     /// GPU utilization data is available.
     pub utilization: bool,
     /// GPU temperature data is available.
@@ -402,15 +403,20 @@ impl SshCapabilities {
 
 impl GpuCapabilities {
     fn detect() -> Self {
+        use which::which;
+        // GPU metrics come from the nvidia-smi subprocess on Linux/Windows
+        // and system_profiler on macOS; without the binary there is no data.
+        let nvidia_smi = (cfg!(target_os = "linux") || cfg!(target_os = "windows"))
+            && which("nvidia-smi").is_ok();
         Self {
             identity: cfg!(target_os = "linux")
                 || cfg!(target_os = "macos")
                 || cfg!(target_os = "windows"),
-            nvidia_nvml: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
-            utilization: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
-            temperature: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
-            memory: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
-            per_process: cfg!(target_os = "linux") || cfg!(target_os = "windows"),
+            nvidia_smi,
+            utilization: nvidia_smi || cfg!(target_os = "macos"),
+            temperature: nvidia_smi || cfg!(target_os = "macos"),
+            memory: nvidia_smi || cfg!(target_os = "macos"),
+            per_process: nvidia_smi,
         }
     }
 }
@@ -450,6 +456,9 @@ impl ProcessCapabilities {
 
 impl StorageCapabilities {
     fn detect() -> Self {
+        // `model`, `smart`, and `temperature` stay false: the collectors
+        // never populate `DiskStatus::model`/`serial`/`temperature`/`wear`
+        // (there is no SMART or DMI-per-disk probe in this crate).
         Self {
             disk_usage: true,
             disk_io: cfg!(target_os = "linux")
@@ -458,11 +467,9 @@ impl StorageCapabilities {
             disk_type: cfg!(target_os = "linux")
                 || cfg!(target_os = "macos")
                 || cfg!(target_os = "windows"),
-            model: cfg!(target_os = "linux")
-                || cfg!(target_os = "macos")
-                || cfg!(target_os = "windows"),
-            smart: cfg!(target_os = "linux"),
-            temperature: cfg!(target_os = "linux"),
+            model: false,
+            smart: false,
+            temperature: false,
         }
     }
 }
@@ -514,7 +521,7 @@ impl fmt::Display for GpuCapabilities {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "GPU:")?;
         writeln!(f, "  Identity: {}", yn(self.identity))?;
-        writeln!(f, "  NVIDIA NVML: {}", yn(self.nvidia_nvml))?;
+        writeln!(f, "  NVIDIA (nvidia-smi): {}", yn(self.nvidia_smi))?;
         writeln!(f, "  Utilization: {}", yn(self.utilization))?;
         writeln!(f, "  Temperature: {}", yn(self.temperature))?;
         writeln!(f, "  Memory: {}", yn(self.memory))?;
@@ -901,7 +908,7 @@ mod tests {
         let output = format!("{caps}");
         assert!(output.contains("GPU:"));
         assert!(output.contains("Identity:"));
-        assert!(output.contains("NVIDIA NVML:"));
+        assert!(output.contains("NVIDIA (nvidia-smi):"));
     }
 
     // --- BatteryCapabilities ---
@@ -980,12 +987,15 @@ mod tests {
         assert!(caps.disk_usage);
     }
 
-    #[cfg(target_os = "linux")]
+    /// SMART, per-disk temperature, and model are never populated by the
+    /// collectors, so the flags must report false even though the platform
+    /// could in principle provide them.
     #[test]
-    fn storage_smart_and_temp_on_linux() {
+    fn storage_smart_temp_model_report_unimplemented() {
         let caps = StorageCapabilities::detect();
-        assert!(caps.smart);
-        assert!(caps.temperature);
+        assert!(!caps.smart);
+        assert!(!caps.temperature);
+        assert!(!caps.model);
     }
 
     #[test]

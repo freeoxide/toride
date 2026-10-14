@@ -129,7 +129,7 @@ impl DoctorReport {
 
     /// Run health checks against provided status snapshots.
     ///
-    /// This is the testable entry point — all subsystem data is provided
+    /// This is the testable entry point: all subsystem data is provided
     /// via parameters rather than collected fresh. Use this for testing
     /// or when you already have snapshots available.
     ///
@@ -450,8 +450,6 @@ fn check_system_extended(system: &SystemStatus) -> Vec<DoctorCheck> {
             system.disk_io.read_bytes, system.disk_io.written_bytes
         ),
     });
-
-    // --- Data quality checks ---
 
     // quality.cpu_interval: CPU usage of exactly 0.0 may indicate the sample
     // was taken before the measurement window completed.
@@ -1210,8 +1208,6 @@ mod tests {
         assert_eq!(hostname_check.status, crate::doctor::CheckStatus::Fail);
     }
 
-    // --- Helpers ---
-
     #[expect(
         clippy::too_many_lines,
         reason = "test fixture fully populates a wide SystemStatus struct"
@@ -1381,8 +1377,6 @@ mod tests {
             .unwrap_or_else(|| panic!("check '{name}' not found"))
     }
 
-    // --- check_with edge cases ---
-
     #[test]
     fn check_with_empty_hostname_produces_fail() {
         let mut system = happy_system();
@@ -1461,8 +1455,6 @@ mod tests {
         unsafe { std::env::set_var("PATH", &original_path) };
     }
 
-    // --- all_passed edge cases ---
-
     #[test]
     fn all_pass_report_returns_true() {
         let report = DoctorReport {
@@ -1524,8 +1516,6 @@ mod tests {
         };
         assert!(!report.all_passed());
     }
-
-    // --- summary edge cases ---
 
     #[test]
     fn summary_empty_checks() {
@@ -1611,8 +1601,6 @@ mod tests {
         };
         assert_eq!(report.summary(), (2, 1, 1));
     }
-
-    // --- Display edge cases ---
 
     #[test]
     fn display_all_pass() {
@@ -1835,8 +1823,6 @@ mod tests {
         insta::assert_snapshot!("doctor_report_display", format!("{}", report));
     }
 
-    // --- check_permissions ---
-
     #[test]
     fn permissions_checks_present_in_report() {
         let report = DoctorReport::check_with(&happy_system(), &happy_daemon(), &happy_ssh());
@@ -1884,8 +1870,6 @@ mod tests {
         let check = find_check(&report, "permissions.is_admin");
         assert_eq!(check.status, CheckStatus::Pass);
     }
-
-    // --- check_network ---
 
     #[test]
     fn network_provider_warns_when_no_interfaces() {
@@ -1988,8 +1972,6 @@ mod tests {
         let check = find_check(&report, "network.counters_monotonic");
         assert_eq!(check.status, CheckStatus::Pass);
     }
-
-    // --- check_privacy_redaction ---
 
     #[test]
     fn privacy_serial_redacted_passes_when_no_serial() {
@@ -2169,8 +2151,6 @@ mod tests {
                 .all(|c| c.name != "privacy.command_args")
         );
     }
-
-    // --- Data quality checks ---
 
     #[test]
     fn quality_cpu_interval_passes_for_nonzero() {
@@ -2358,8 +2338,6 @@ mod tests {
                 .all(|c| c.name != "quality.gpu_0_identity_no_metrics")
         );
     }
-
-    // --- check_with_privacy integration ---
 
     #[test]
     fn check_with_privacy_includes_all_groups() {

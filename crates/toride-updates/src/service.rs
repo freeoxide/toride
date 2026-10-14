@@ -96,7 +96,7 @@ impl<'a> ServiceManager<'a> {
     ///
     /// Returns [`Error::CommandFailed`] only if the runner itself fails to
     /// spawn `systemctl`. A non-active service returns `Ok(false)`, not an
-    /// error — matching `systemctl`'s exit-code semantics.
+    /// error, matching `systemctl`'s exit-code semantics.
     pub fn is_active(&self) -> Result<bool> {
         let service = self.service_name();
         let spec = systemctl_spec(&["is-active", "--quiet", service]);
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn is_active_returns_false_on_nonzero_exit() {
-        // systemctl is-active exits 3 when inactive — not a runner error.
+        // systemctl is-active exits 3 when inactive, which is not a runner error.
         let runner = FakeRunner::new().push_response(CommandOutput::from_stderr("inactive", 3));
         let active = mgr_with(PackageManager::Apt, &runner).is_active().unwrap();
         assert!(!active);

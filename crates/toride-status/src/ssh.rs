@@ -1,6 +1,6 @@
 //! SSH subsystem status: mux master, control path, config parse, agent, keys.
 //!
-//! Uses `ssh -O check` to probe the mux master, validates control paths via
+//! Uses `ssh -O check` to probe the mux master, validates control sockets via
 //! `fs::symlink_metadata`, and shells out to `ssh -G` for config
 //! parsing. Key counting uses `ssh-add -l`.
 //!
@@ -24,7 +24,10 @@
 //!   ControlPersist 10m
 //! ```
 //!
-//! The control path directory (`~/.ssh/controlmasters/`) must exist.
+//! The control path directory (`~/.ssh/controlmasters/`) must exist. ssh
+//! expands the `%r@%h-%p` tokens itself when it names each socket, so
+//! [`SshStatus::collect`] enumerates the directory instead of statting a
+//! tokenized literal.
 //!
 //! ## SSH agent
 //!
@@ -39,11 +42,11 @@
 //!
 //! # Control path validation
 //!
-//! The control path must satisfy **all** of:
+//! A control socket counts as valid when it satisfies **all** of:
 //!
-//! 1. Exist and be a Unix socket (or named pipe on Windows).
-//! 2. Have permissions `0600` (owner read/write only).
-//! 3. Be connectable (non-blocking `UnixStream::connect`).
+//! 1. Exists and is a Unix socket (or a file on Windows).
+//! 2. Has permissions `0600` (owner read/write only).
+//! 3. Is connectable (non-blocking `UnixStream::connect`).
 //!
 //! # Platform behavior
 //!
@@ -106,8 +109,14 @@ pub struct SshStatus {
 impl SshStatus {
     /// Collect SSH subsystem status using default paths.
     ///
-    /// Default control path: `~/.ssh/controlmasters/%r@%h-%p`
+    /// Default control socket directory: `~/.ssh/controlmasters/`
     /// Default config path: `~/.ssh/config`
+    ///
+    /// `control_path_valid` and `mux_master_alive` are derived by
+    /// enumerating the sockets actually present in the control directory
+    /// (ssh expands the `%r@%h-%p` tokens when it creates them, so the
+    /// literal configured string never names a real socket). With no live
+    /// socket both report `false`.
     ///
     /// # Examples
     ///
@@ -120,23 +129,23 @@ impl SshStatus {
     /// ```
     #[must_use]
     pub fn collect() -> Self {
-        let control_path = default_control_path();
+        let control_dir = default_control_dir();
         let config_path = default_config_path();
 
-        Self::collect_with_paths(&control_path, &config_path)
+        Self::collect_with_paths(&control_dir, &config_path)
     }
 
     /// Collect SSH subsystem status with explicit paths.
     ///
-    /// This is the testable entry point — all subprocess and filesystem
+    /// This is the testable entry point: all subprocess and filesystem
     /// interaction is confined to the paths passed here. Use this method
     /// when you need to check SSH status with custom control path or
     /// config paths.
     ///
     /// # Arguments
     ///
-    /// * `control_path` - Path to the SSH control master socket (may contain
-    ///   `%r@%h-%p` tokens if using SSH multiplexing).
+    /// * `control_path` - The controlmasters directory to enumerate (or a
+    ///   specific socket path to check directly).
     /// * `config_path` - Path to the SSH config file to validate.
     ///
     /// # Examples
@@ -146,14 +155,15 @@ impl SshStatus {
     /// use toride_status::ssh::SshStatus;
     ///
     /// let status = SshStatus::collect_with_paths(
-    ///     Path::new("~/.ssh/controlmasters/%r@%h-%p"),
+    ///     Path::new("~/.ssh/controlmasters"),
     ///     Path::new("~/.ssh/config"),
     /// );
     /// ```
     #[must_use]
     pub fn collect_with_paths(control_path: &Path, config_path: &Path) -> Self {
-        let control_path_valid = validate_control_path(control_path);
-        let mux_master_alive = check_mux_master(control_path);
+        let sockets = enumerate_control_sockets(control_path);
+        let control_path_valid = sockets.iter().any(|s| validate_control_path(s));
+        let mux_master_alive = sockets.iter().any(|s| check_mux_master(s));
         let config_valid = check_config(config_path);
         let agent_running = check_agent();
         let key_count = count_keys();
@@ -168,13 +178,30 @@ impl SshStatus {
     }
 }
 
-/// Default control path directory.
-fn default_control_path() -> PathBuf {
+/// Default control socket directory.
+fn default_control_dir() -> PathBuf {
     dirs::home_dir()
         .unwrap_or_else(|| PathBuf::from("/tmp"))
         .join(".ssh")
         .join("controlmasters")
-        .join("%r@%h-%p")
+}
+
+/// Collect candidate control socket paths under `path`.
+///
+/// A directory yields its entries (the controlmasters directory holds one
+/// socket per `%r@%h-%p` expansion); a non-directory path yields itself so a
+/// specific socket can be checked directly.
+fn enumerate_control_sockets(path: &Path) -> Vec<PathBuf> {
+    if path.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return Vec::new();
+        };
+        let mut sockets: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
+        sockets.sort();
+        sockets
+    } else {
+        vec![path.to_path_buf()]
+    }
 }
 
 /// Default SSH config path.
@@ -229,9 +256,11 @@ fn check_socket_connectable(path: &Path) -> bool {
     UnixStream::connect(path).is_ok()
 }
 
-/// Check if the SSH mux master is alive by running `ssh -O check`.
+/// Check if the SSH mux master behind a specific control socket is alive.
 ///
-/// Returns `true` if the command exits with status 0.
+/// Runs `ssh -O check -S <socket> ssh-mux-probe`; the trailing destination
+/// operand is syntactically required by ssh but never resolved for `-O`
+/// commands, so the probe only inspects the socket named by `-S`.
 #[allow(clippy::unnecessary_wraps)] // run_with_timeout returns Option; signature must accommodate timeout/failure
 fn check_mux_master(control_path: &Path) -> bool {
     let spec = CommandSpec::new("ssh")
@@ -240,7 +269,7 @@ fn check_mux_master(control_path: &Path) -> bool {
             "check",
             "-S",
             &control_path.to_string_lossy(),
-            "dummy",
+            "ssh-mux-probe",
         ])
         .timeout(SSH_TIMEOUT);
     let runner = DuctRunner;
@@ -366,6 +395,51 @@ mod tests {
         assert!(!status.mux_master_alive);
         assert!(!status.control_path_valid);
         assert!(!status.config_valid);
+    }
+
+    #[test]
+    fn enumerate_control_sockets_lists_directory_entries() {
+        let dir = TempDir::new().unwrap();
+        std::fs::write(dir.path().join("readme"), "").unwrap();
+        assert_eq!(
+            enumerate_control_sockets(dir.path()),
+            vec![dir.path().join("readme")],
+            "directory entries become socket candidates"
+        );
+        let single = dir.path().join("readme");
+        assert_eq!(
+            enumerate_control_sockets(&single),
+            vec![single.clone()],
+            "a non-directory path yields itself"
+        );
+        assert!(
+            enumerate_control_sockets(Path::new("/nonexistent/dir")).is_empty()
+                || !Path::new("/nonexistent/dir").is_dir()
+        );
+    }
+
+    /// A bound 0600 listener socket inside the controlmasters directory must
+    /// make `control_path_valid` true: the directory is enumerated, so the
+    /// `%r@%h-%p` token the config carries never reaches the filesystem
+    /// checks.
+    #[cfg(unix)]
+    #[test]
+    fn collect_with_paths_validates_enumerated_socket() {
+        use std::os::unix::fs::PermissionsExt;
+        use std::os::unix::net::UnixListener;
+
+        let dir = TempDir::new().unwrap();
+        let control_dir = dir.path().join("controlmasters");
+        std::fs::create_dir_all(&control_dir).unwrap();
+        let socket = control_dir.join("root@10.0.0.1-22");
+        let _listener = UnixListener::bind(&socket).unwrap();
+        std::fs::set_permissions(&socket, std::fs::Permissions::from_mode(0o600)).unwrap();
+
+        let status = SshStatus::collect_with_paths(&control_dir, &dir.path().join("config"));
+        assert!(
+            status.control_path_valid,
+            "a connectable 0600 socket in the control dir validates"
+        );
     }
 
     #[test]

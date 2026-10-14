@@ -45,7 +45,7 @@ impl<'a> MonitorService<'a> {
     ///
     /// Note: the monitoring client retains its OWN runner (the one it was
     /// constructed with), so the iptables-logging and systemctl paths run
-    /// through two independent runner instances — a single injected fake will
+    /// through two independent runner instances, so a single injected fake will
     /// not observe both. [`MonitorService::with_runner`] lets you inject the
     /// systemctl-side runner for testing that path, but it does not unify the
     /// two runners. (Sharing one runner across both, à la toride-tailscale,

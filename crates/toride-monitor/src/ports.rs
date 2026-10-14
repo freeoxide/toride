@@ -1,12 +1,12 @@
 //! Network port inspection via native OS APIs.
 //!
 //! Uses [`netstat2`] to enumerate TCP/UDP sockets with associated process
-//! information — no shell commands or `lsof`/`ss` parsing required.
+//! information; no shell commands or `lsof`/`ss` parsing required.
 //!
 //! # Types (always compiled)
 //!
-//! [`PortEntry`] — a single socket with address, state, and process info.
-//! [`PortQuery`] — flexible filter for querying specific entries.
+//! [`PortEntry`]: a single socket with address, state, and process info.
+//! [`PortQuery`]: flexible filter for querying specific entries.
 //!
 //! # Live inspection (requires `client` feature)
 //!
@@ -133,9 +133,10 @@ pub struct PortEntry {
     pub local_addr: IpAddr,
     /// Local port number.
     pub local_port: u16,
-    /// Remote IP address.
-    pub remote_addr: IpAddr,
-    /// Remote port number.
+    /// Remote IP address; `None` for UDP sockets, which are connectionless
+    /// and carry no peer address.
+    pub remote_addr: Option<IpAddr>,
+    /// Remote port number (0 when there is no peer).
     pub remote_port: u16,
     /// Socket state.
     pub state: PortState,
@@ -150,7 +151,10 @@ impl fmt::Display for PortEntry {
         let proto = self.protocol;
         let state = &self.state;
         let local = format_addr(self.local_addr, self.local_port);
-        let remote = format_addr(self.remote_addr, self.remote_port);
+        let remote = match self.remote_addr {
+            Some(addr) => format_addr(addr, self.remote_port),
+            None => "*:*".to_owned(),
+        };
 
         match (&self.process_name, self.pid) {
             (Some(name), Some(pid)) => {
@@ -189,7 +193,7 @@ fn format_addr(addr: IpAddr, port: u16) -> String {
 
 /// Flexible filter for querying port entries.
 ///
-/// All fields are optional — `None` means "don't filter by this dimension".
+/// All fields are optional; `None` means "don't filter by this dimension".
 /// Multiple non-None fields are `AND`ed together.
 #[derive(Debug, Clone, Default)]
 pub struct PortQuery {
@@ -257,6 +261,9 @@ impl PortQuery {
     }
 
     /// Check if an entry matches this query.
+    ///
+    /// The process-name needle is lowercased once per call, not once per
+    /// candidate entry.
     pub fn matches(&self, entry: &PortEntry) -> bool {
         if let Some(port) = self.port
             && entry.local_port != port
@@ -269,10 +276,11 @@ impl PortQuery {
             return false;
         }
         if let Some(ref name) = self.process_name {
+            let needle = name.to_lowercase();
             let matches_name = entry
                 .process_name
                 .as_ref()
-                .is_some_and(|pn| pn.to_lowercase().contains(&name.to_lowercase()));
+                .is_some_and(|pn| pn.to_lowercase().contains(&needle));
             if !matches_name {
                 return false;
             }
@@ -385,7 +393,7 @@ impl<'a> PortReader<'a> {
         Ok(!all.iter().any(|e| e.local_port == port))
     }
 
-    /// Flexible query — returns entries matching all non-None filters in `q`.
+    /// Flexible query: returns entries matching all non-None filters in `q`.
     ///
     /// # Errors
     ///
@@ -451,7 +459,7 @@ impl<'a> PortReader<'a> {
                                 iv,
                                 t.local_addr,
                                 t.local_port,
-                                t.remote_addr,
+                                Some(t.remote_addr),
                                 t.remote_port,
                                 tcp_state_to_port_state(t.state),
                             )
@@ -466,8 +474,7 @@ impl<'a> PortReader<'a> {
                                 iv,
                                 u.local_addr,
                                 u.local_port,
-                                // UDP sockets don't have remote address info.
-                                u.local_addr,
+                                None,
                                 0u16,
                                 PortState::Unknown("UDP".into()),
                             )
@@ -594,7 +601,7 @@ mod tests {
             ip_version: IpVersion::V4,
             local_addr: "0.0.0.0".parse().unwrap(),
             local_port: 80,
-            remote_addr: "0.0.0.0".parse().unwrap(),
+            remote_addr: Some("0.0.0.0".parse().unwrap()),
             remote_port: 0,
             state: PortState::Listen,
             process_name: Some("nginx".into()),
@@ -608,6 +615,27 @@ mod tests {
         assert!(s.contains("1234"));
     }
 
+    /// UDP sockets carry no peer; the display must say so instead of
+    /// echoing the local address as a fake remote.
+    #[test]
+    fn udp_entry_renders_wildcard_remote() {
+        let entry = PortEntry {
+            protocol: PortProtocol::Udp,
+            ip_version: IpVersion::V4,
+            local_addr: "192.168.1.10".parse().unwrap(),
+            local_port: 53,
+            remote_addr: None,
+            remote_port: 0,
+            state: PortState::Unknown("UDP".into()),
+            process_name: Some("dnsmasq".into()),
+            pid: None,
+        };
+        let s = format!("{entry}");
+        assert!(s.contains("*:*"), "no peer renders as *:*, got {s}");
+        assert!(!s.contains("192.168.1.10:*"));
+        assert!(!s.contains("192.168.1.10:0"));
+    }
+
     #[test]
     fn port_entry_display_no_process() {
         let entry = PortEntry {
@@ -615,7 +643,7 @@ mod tests {
             ip_version: IpVersion::V6,
             local_addr: "::".parse().unwrap(),
             local_port: 5353,
-            remote_addr: "::".parse().unwrap(),
+            remote_addr: Some("::".parse().unwrap()),
             remote_port: 0,
             state: PortState::Unknown("UDP".into()),
             process_name: None,
@@ -647,7 +675,7 @@ mod tests {
             ip_version: IpVersion::V4,
             local_addr: "0.0.0.0".parse().unwrap(),
             local_port: 443,
-            remote_addr: "0.0.0.0".parse().unwrap(),
+            remote_addr: Some("0.0.0.0".parse().unwrap()),
             remote_port: 0,
             state: PortState::Listen,
             process_name: Some("nginx".into()),
@@ -664,7 +692,7 @@ mod tests {
             ip_version: IpVersion::V4,
             local_addr: "0.0.0.0".parse().unwrap(),
             local_port: 22,
-            remote_addr: "0.0.0.0".parse().unwrap(),
+            remote_addr: Some("0.0.0.0".parse().unwrap()),
             remote_port: 0,
             state: PortState::Listen,
             process_name: Some("sshd".into()),
@@ -682,7 +710,7 @@ mod tests {
             ip_version: IpVersion::V4,
             local_addr: "0.0.0.0".parse().unwrap(),
             local_port: 80,
-            remote_addr: "0.0.0.0".parse().unwrap(),
+            remote_addr: Some("0.0.0.0".parse().unwrap()),
             remote_port: 0,
             state: PortState::Listen,
             process_name: Some("nginx".into()),
@@ -704,7 +732,7 @@ mod tests {
             ip_version: IpVersion::V4,
             local_addr: "0.0.0.0".parse().unwrap(),
             local_port: 80,
-            remote_addr: "0.0.0.0".parse().unwrap(),
+            remote_addr: Some("0.0.0.0".parse().unwrap()),
             remote_port: 0,
             state: PortState::Listen,
             process_name: None,

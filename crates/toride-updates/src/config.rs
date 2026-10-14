@@ -59,8 +59,8 @@ impl ConfigManager {
 
         let pkg_mgr = self.resolved_package_manager();
         match pkg_mgr {
-            crate::detect::PackageManager::Apt => self.read_apt_config(),
-            crate::detect::PackageManager::Dnf => self.read_dnf_config(),
+            crate::detect::PackageManager::Apt => Ok(self.read_apt_config()),
+            crate::detect::PackageManager::Dnf => Ok(self.read_dnf_config()),
             crate::detect::PackageManager::Unknown => Err(Error::PackageDetection(
                 "no supported package manager detected".into(),
             )),
@@ -146,7 +146,7 @@ impl ConfigManager {
     // Backend-specific readers
     // -----------------------------------------------------------------------
 
-    fn read_apt_config(&self) -> Result<UpdateSpec> {
+    fn read_apt_config(&self) -> UpdateSpec {
         let mut spec = UpdateSpec::disabled(); // start pessimistic
         spec.schedule = Schedule::Daily;
 
@@ -181,28 +181,28 @@ impl ConfigManager {
             let mut reboot_set = false;
             for raw in content.lines() {
                 let line = raw.trim();
-                if let Some(val) = apt_directive_value(line, "Automatic-Reboot") {
-                    if !reboot_set {
-                        spec.reboot = match val {
-                            "always" => RebootPolicy::Always,
-                            "true" => RebootPolicy::WhenNeeded,
-                            _ => RebootPolicy::Never,
-                        };
-                        reboot_set = true;
-                    }
+                if let Some(val) = apt_directive_value(line, "Automatic-Reboot")
+                    && !reboot_set
+                {
+                    spec.reboot = match val {
+                        "always" => RebootPolicy::Always,
+                        "true" => RebootPolicy::WhenNeeded,
+                        _ => RebootPolicy::Never,
+                    };
+                    reboot_set = true;
                 }
             }
         }
 
-        Ok(spec)
+        spec
     }
 
-    fn read_dnf_config(&self) -> Result<UpdateSpec> {
+    fn read_dnf_config(&self) -> UpdateSpec {
         let mut spec = UpdateSpec::disabled();
         spec.schedule = Schedule::Daily;
 
         let Ok(content) = std::fs::read_to_string(&self.paths.dnf_automatic_conf) else {
-            return Ok(spec);
+            return spec;
         };
 
         let mut section = String::new();
@@ -235,7 +235,7 @@ impl ConfigManager {
             }
         }
 
-        Ok(spec)
+        spec
     }
 }
 

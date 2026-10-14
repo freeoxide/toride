@@ -50,23 +50,43 @@ impl<'a> AptBackend<'a> {
         Self { runner, paths }
     }
 
-    /// Check for available updates using `apt-check`.
+    /// Check for available updates using `apt-check`, falling back to
+    /// `apt-get -s upgrade` when `apt-check` is not installed.
     ///
-    /// `apt-check` prints `N;M` to **stderr** (where `N` is the number of
-    /// security updates and `M` is the total). Returns `(security, total)`.
+    /// `apt-check` (Ubuntu's `update-notifier-common` package, absent on
+    /// stock Debian) prints `N;M` to **stderr** where `N` is the number of
+    /// security updates and `M` is the total. When
+    /// [`UpdatePaths::apt_check`] does not exist, the backend runs
+    /// `apt-get -s upgrade` and counts `Inst` lines instead (security ones
+    /// identified by a `*-security` suite in the version list). Returns
+    /// `(security, total)`.
     ///
     /// # Errors
     ///
-    /// Returns [`Error::CommandFailed`] if `apt-check` fails, or
-    /// [`Error::ConfigParse`] if its output cannot be parsed.
+    /// Returns [`Error::CommandFailed`] if the probe fails, or
+    /// [`Error::ConfigParse`] if `apt-check` output cannot be parsed.
     pub fn check_updates(&self) -> Result<(usize, usize)> {
         info!("Checking APT updates");
-        let spec = check_updates_spec();
+        if !self.paths.apt_check.exists() {
+            return self.check_updates_via_simulation();
+        }
+        let spec =
+            toride_runner::CommandSpec::new(self.paths.apt_check.to_string_lossy().into_owned());
         let output = self
             .runner
             .run_checked(&spec)
             .map_err(|e| Error::CommandFailed(format!("apt-check failed: {e}")))?;
         crate::parse::parse_apt_check(&output.stderr)
+    }
+
+    /// The portable probe used when `apt-check` is absent.
+    fn check_updates_via_simulation(&self) -> Result<(usize, usize)> {
+        let spec = apt_get_simulate_spec();
+        let output = self
+            .runner
+            .run_checked(&spec)
+            .map_err(|e| Error::CommandFailed(format!("apt-get -s upgrade failed: {e}")))?;
+        crate::parse::parse_apt_get_simulate(&output.stdout)
     }
 
     /// Apply pending security updates via `unattended-upgrades`.
@@ -136,6 +156,11 @@ fn check_updates_spec() -> toride_runner::CommandSpec {
     toride_runner::CommandSpec::new("/usr/lib/update-notifier/apt-check")
 }
 
+/// Build the portable `apt-get -s upgrade` [`toride_runner::CommandSpec`].
+fn apt_get_simulate_spec() -> toride_runner::CommandSpec {
+    toride_runner::CommandSpec::new("apt-get").args(["-s", "upgrade"])
+}
+
 /// Build the `unattended-upgrades` [`toride_runner::CommandSpec`].
 fn apply_updates_spec() -> toride_runner::CommandSpec {
     toride_runner::CommandSpec::new("unattended-upgrades").arg("-v")
@@ -152,7 +177,7 @@ fn read_log_tail(path: &std::path::Path) -> Result<String> {
     use std::io::{Read, Seek, SeekFrom};
 
     let mut file = std::fs::File::open(path)?;
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let len = file.metadata().map_or(0, |m| m.len());
 
     if len <= MAX_LOG_READ_BYTES {
         let mut content = String::new();
@@ -172,8 +197,7 @@ fn read_log_tail(path: &std::path::Path) -> Result<String> {
     let start = bytes
         .iter()
         .position(|&b| b == b'\n')
-        .map(|i| (i + 1).min(bytes.len()))
-        .unwrap_or(0);
+        .map_or(0, |i| (i + 1).min(bytes.len()));
     String::from_utf8(bytes[start..].to_vec())
         .map_err(|e| Error::ConfigParse(format!("log is not valid UTF-8: {e}")))
 }
@@ -190,12 +214,34 @@ mod tests {
 
     #[test]
     fn check_updates_builds_apt_check_command() {
+        let dir = tempfile::tempdir().unwrap();
         // apt-check writes "N;M" to stderr.
         let runner = FakeRunner::new().push_response(CommandOutput::from_stderr("3;12", 0));
-        let (security, total) = AptBackend::new(&runner).check_updates().unwrap();
+        let mut backend = AptBackend::new(&runner);
+        backend.paths.apt_check = dir.path().join("apt-check");
+        std::fs::write(&backend.paths.apt_check, "#!/bin/sh\n").unwrap();
+        let (security, total) = backend.check_updates().unwrap();
         assert_eq!(security, 3);
         assert_eq!(total, 12);
-        runner.assert_called_with(&CommandSpec::new("/usr/lib/update-notifier/apt-check"));
+        runner.assert_called_with(&CommandSpec::new(
+            dir.path().join("apt-check").to_string_lossy().as_ref(),
+        ));
+    }
+
+    /// Stock Debian has no `/usr/lib/update-notifier/apt-check`; the probe
+    /// must fall back to `apt-get -s upgrade` instead of failing.
+    #[test]
+    fn check_updates_falls_back_to_apt_get_simulation() {
+        let runner = FakeRunner::new().push_response(CommandOutput::from_stdout(
+            "Inst libssl3 [3.0.13-1] (3.0.15-1 Debian-Security:12/stable-security)\n\
+             Inst libc6 [2.36-9] (2.36-9+deb12u1 Debian:12.7/stable)\n",
+        ));
+        let mut backend = AptBackend::new(&runner);
+        backend.paths.apt_check = std::path::PathBuf::from("/nonexistent/apt-check");
+        let (security, total) = backend.check_updates().unwrap();
+        assert_eq!(security, 1);
+        assert_eq!(total, 2);
+        runner.assert_called_with(&CommandSpec::new("apt-get").args(["-s", "upgrade"]));
     }
 
     #[test]
@@ -217,7 +263,7 @@ mod tests {
     ///
     /// Source: Ubuntu Server docs, "Automatic updates" -- a run that installed
     /// libc6 + python3-jinja2 (from the reboot-notification example).
-    /// https://ubuntu.com/server/docs/how-to/software/automatic-updates/
+    /// <https://ubuntu.com/server/docs/how-to/software/automatic-updates/>
     #[test]
     fn status_parses_log_file() {
         let dir = tempfile::tempdir().unwrap();
@@ -298,7 +344,7 @@ mod tests {
     fn command_specs_are_stable() {
         let check = AptBackend::check_updates_spec_ref();
         assert_eq!(check.program, "/usr/lib/update-notifier/apt-check");
-        assert!(check.args.is_empty());
+        assert_eq!(check.args.len(), 0);
 
         let apply = AptBackend::apply_updates_spec_ref();
         assert_eq!(apply.program, "unattended-upgrades");

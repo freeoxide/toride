@@ -17,7 +17,7 @@ use crate::{Error, Result};
 /// - `name` is non-empty.
 /// - `log_prefix` contains the toride ownership marker (so teardown only ever
 ///   removes rules toride installed).
-/// - `destination` is a valid CIDR or IP.
+/// - `destination` is a valid CIDR or bare IP.
 /// - `protocol` is one of `"tcp"`, `"udp"`, `"icmp"`, `"all"`.
 /// - `log_prefix` is at most 29 characters (iptables limit).
 /// - `log_level` is a valid iptables log level.
@@ -34,7 +34,7 @@ pub fn validate_logging_rule(rule: &LoggingRule) -> Result<()> {
 
     // Ownership marker: every toride-installed LOG rule must carry the toride
     // log-prefix marker so teardown can identify and remove *only* rules we
-    // created — never unrelated LOG rules in the OUTPUT chain.
+    // created, never unrelated LOG rules in the OUTPUT chain.
     if !rule.log_prefix.contains(TORIDE_LOG_PREFIX_MARKER) {
         return Err(Error::Other(format!(
             "logging rule `{}`: log_prefix must contain the toride marker `{}` \
@@ -43,10 +43,10 @@ pub fn validate_logging_rule(rule: &LoggingRule) -> Result<()> {
         )));
     }
 
-    if rule.destination.is_empty() {
+    if !is_ip_or_cidr(&rule.destination) {
         return Err(Error::Other(format!(
-            "logging rule `{}`: destination must not be empty",
-            rule.name
+            "logging rule `{}`: destination must be an IP or CIDR (got `{}`)",
+            rule.name, rule.destination
         )));
     }
 
@@ -124,6 +124,12 @@ pub fn validate_threshold(threshold: &AnomalyThreshold) -> Result<()> {
         ));
     }
 
+    if threshold.max_unique_dest_ports_per_source == 0 {
+        return Err(Error::AnomalyThreshold(
+            "max_unique_dest_ports_per_source must be greater than zero".into(),
+        ));
+    }
+
     if threshold.window.is_zero() {
         return Err(Error::AnomalyThreshold(
             "window duration must be greater than zero".into(),
@@ -131,6 +137,28 @@ pub fn validate_threshold(threshold: &AnomalyThreshold) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Parse-check a destination as a bare IP address or `ip/prefix` CIDR.
+fn is_ip_or_cidr(destination: &str) -> bool {
+    use std::net::IpAddr;
+    if destination.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+    let Some((ip_str, prefix_str)) = destination.split_once('/') else {
+        return false;
+    };
+    let Ok(ip) = ip_str.parse::<IpAddr>() else {
+        return false;
+    };
+    let Ok(prefix) = prefix_str.parse::<u32>() else {
+        return false;
+    };
+    let max_prefix = match ip {
+        IpAddr::V4(_) => 32,
+        IpAddr::V6(_) => 128,
+    };
+    prefix <= max_prefix
 }
 
 // ---------------------------------------------------------------------------
@@ -158,6 +186,25 @@ mod tests {
     #[test]
     fn valid_logging_rule_passes() {
         assert!(validate_logging_rule(&valid_rule()).is_ok());
+    }
+
+    #[test]
+    fn non_ip_destination_fails_validation() {
+        let mut rule = valid_rule();
+        rule.destination = "banana".into();
+        let err = validate_logging_rule(&rule).unwrap_err();
+        assert!(err.to_string().contains("IP or CIDR"));
+    }
+
+    #[test]
+    fn destination_accepts_bare_ips_and_valid_cidrs() {
+        let mut rule = valid_rule();
+        rule.destination = "10.0.0.1".into();
+        assert!(validate_logging_rule(&rule).is_ok());
+        rule.destination = "2001:db8::/32".into();
+        assert!(validate_logging_rule(&rule).is_ok());
+        rule.destination = "10.0.0.0/33".into();
+        assert!(validate_logging_rule(&rule).is_err());
     }
 
     #[test]

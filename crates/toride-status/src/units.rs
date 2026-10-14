@@ -201,19 +201,19 @@ impl From<u32> for Rpm {
     }
 }
 
-// ── Formatting helpers ──────────────────────────────────────────────
-
 const KB: u64 = 1024;
 const MB: u64 = 1024 * KB;
 const GB: u64 = 1024 * MB;
 const TB: u64 = 1024 * GB;
 const PB: u64 = 1024 * TB;
+const EB: u64 = 1024 * PB;
 
 const KB_F: f64 = 1024.0;
 const MB_F: f64 = 1024.0 * 1024.0;
 const GB_F: f64 = 1024.0 * 1024.0 * 1024.0;
 const TB_F: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0;
 const PB_F: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0;
+const EB_F: f64 = 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0 * 1024.0;
 
 /// Format bytes as human-readable string.
 #[must_use]
@@ -223,7 +223,9 @@ pub fn format_bytes(bytes: u64) -> String {
         reason = "byte counts fit f64 mantissa for display purposes"
     )]
     let bytes_f = bytes as f64;
-    if bytes >= PB {
+    if bytes >= EB {
+        format!("{:.2} EiB", bytes_f / EB_F)
+    } else if bytes >= PB {
         format!("{:.2} PiB", bytes_f / PB_F)
     } else if bytes >= TB {
         format!("{:.2} TiB", bytes_f / TB_F)
@@ -290,6 +292,11 @@ mod tests {
         assert_eq!(format!("{}", Bytes(1_048_576)), "1.0 MiB");
         assert_eq!(format!("{}", Bytes(1_073_741_824)), "1.00 GiB");
         assert_eq!(format!("{}", Bytes(1_099_511_627_776)), "1.00 TiB");
+        assert_eq!(
+            format!("{}", Bytes(u64::MAX)),
+            "16.00 EiB",
+            "u64::MAX must render in the EiB tier, not 16384.00 PiB"
+        );
     }
 
     #[test]

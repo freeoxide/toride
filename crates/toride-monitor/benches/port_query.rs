@@ -32,7 +32,7 @@ fn entry(index: usize) -> PortEntry {
         },
         local_addr: IpAddr::V4(Ipv4Addr::LOCALHOST),
         local_port: 10_000 + u16::try_from(index % 40_000).expect("port offset fits u16"),
-        remote_addr: IpAddr::V4(Ipv4Addr::UNSPECIFIED),
+        remote_addr: Some(IpAddr::V4(Ipv4Addr::UNSPECIFIED)),
         remote_port: 0,
         state: if index.is_multiple_of(3) {
             PortState::Established

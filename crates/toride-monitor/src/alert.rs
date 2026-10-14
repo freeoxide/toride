@@ -55,7 +55,7 @@ impl<'a> AlertDispatcher<'a> {
     /// *reader* and cannot write entries.)
     fn dispatch_journald(&self, finding: &AnomalyFinding, priority: &str) -> AlertReport {
         let message = format!(
-            "[toride-monitor] {} ({}): {} — observed: {}, threshold: {}",
+            "[toride-monitor] {} ({}): {} (observed: {}, threshold: {})",
             finding.severity, finding.id, finding.title, finding.observed_value, finding.threshold,
         );
 
@@ -113,7 +113,7 @@ impl<'a> AlertDispatcher<'a> {
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         let line = format!(
-            "[{}] {} ({}): {} — observed: {}, threshold: {}",
+            "[{}] {} ({}): {} (observed: {}, threshold: {})",
             finding.severity,
             now_secs,
             finding.id,
@@ -166,19 +166,14 @@ fn dispatch_webhook_impl(
 ) -> AlertReport {
     let payload = webhook_payload(finding);
 
-    // Bound the request with a hard timeout so an unreachable or stalling
-    // endpoint cannot block the monitoring loop indefinitely.
-    let client = match reqwest::blocking::Client::builder()
-        .timeout(WEBHOOK_TIMEOUT)
-        .build()
-    {
+    let client = match shared_webhook_client() {
         Ok(c) => c,
         Err(e) => {
             return AlertReport {
                 finding: finding.clone(),
                 target: format!("webhook({url})"),
                 dispatched: false,
-                error: Some(format!("failed to build HTTP client: {e}")),
+                error: Some(e),
             };
         }
     };
@@ -215,6 +210,26 @@ fn dispatch_webhook_impl(
 /// monitoring tick.
 #[cfg(feature = "webhook")]
 const WEBHOOK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// The process-wide webhook client, built once and reused for every dispatch.
+///
+/// Each `reqwest::blocking::Client` construction spawns its own tokio runtime
+/// and connection pool; constructing one per finding per target would defeat
+/// keep-alive and add runtime churn whenever findings fire.
+#[cfg(feature = "webhook")]
+fn shared_webhook_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: std::sync::OnceLock<Result<reqwest::blocking::Client, String>> =
+        std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::blocking::Client::builder()
+                .timeout(WEBHOOK_TIMEOUT)
+                .build()
+                .map_err(|e| format!("failed to build HTTP client: {e}"))
+        })
+        .as_ref()
+        .map_err(std::clone::Clone::clone)
+}
 
 #[cfg(not(feature = "webhook"))]
 fn dispatch_webhook_impl(

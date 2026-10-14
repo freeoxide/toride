@@ -1,4 +1,4 @@
-//! `toride-updates` — automatic security update management for Linux VPS hosts.
+//! `toride-updates`: automatic security update management for Linux VPS hosts.
 //!
 //! Wraps `unattended-upgrades` (Debian/Ubuntu) and `dnf-automatic` (Fedora/RHEL)
 //! behind a unified API for configuring, scheduling, and monitoring automatic

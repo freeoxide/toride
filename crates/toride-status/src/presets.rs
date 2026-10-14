@@ -5,24 +5,19 @@
 //!
 //! # Preset comparison
 //!
-//! | Feature            | Minimal | `TaskManager` | Diagnostics | `ServerMonitoring` | `PrivacySafe` |
-//! |--------------------|:-------:|:-------------:|:-----------:|:------------------:|:-------------:|
-//! | CPU usage          | Yes     | Yes         | Yes         | Yes              | Yes         |
-//! | Per-core CPU       | No      | Yes         | Yes         | No               | No          |
-//! | Memory             | Yes     | Yes         | Yes         | Yes              | Yes         |
-//! | Swap               | No      | No          | Yes         | Yes              | No          |
-//! | Disk (root)        | Yes     | Yes         | Yes         | Yes              | No          |
-//! | All disks          | No      | Yes         | Yes         | No               | No          |
-//! | Network            | Yes     | Yes         | Yes         | Yes              | No          |
-//! | Network interfaces | No      | No          | Yes         | Yes              | No          |
-//! | Load average       | Yes     | Yes         | Yes         | Yes              | No          |
-//! | Uptime             | Yes     | Yes         | Yes         | Yes              | No          |
-//! | Hostname           | Yes     | Yes         | Yes         | Yes              | No          |
-//! | OS info            | Yes     | Yes         | Yes         | Yes              | Yes         |
-//! | Sensors            | No      | Yes         | Yes         | No               | No          |
-//! | Processes          | No      | Yes         | Yes         | No               | No          |
-//! | GPU                | No      | No          | Yes         | No               | Yes         |
-//! | Battery            | No      | No          | Yes         | No               | No          |
+//! Always-collected fields (never cleared by any preset): CPU usage, memory,
+//! root disk, network totals, load average, uptime, hostname, and OS info.
+//!
+//! | Feature            | Minimal | `TaskManager` | Diagnostics | `ServerMonitoring` | `PrivacySafeBugReport` | `HardwareInventory` |
+//! |--------------------|:-------:|:-------------:|:-----------:|:------------------:|:----------------------:|:-------------------:|
+//! | Per-core CPU       | No      | Yes         | Yes         | No               | No                   | Yes                 |
+//! | Swap               | No      | No          | Yes         | Yes              | No                   | No                  |
+//! | All disks          | No      | Yes         | Yes         | No               | No                   | Yes                 |
+//! | Network interfaces | No      | No          | Yes         | Yes              | No                   | No                  |
+//! | Sensors            | No      | Yes         | Yes         | No               | No                   | Yes                 |
+//! | Processes          | No      | Yes         | Yes         | No               | No                   | No                  |
+//! | GPU                | No      | No          | Yes         | No               | Yes                  | Yes                 |
+//! | Battery            | No      | No          | Yes         | No               | No                   | Yes                 |
 //!
 //! # Choosing a preset
 //!
@@ -34,8 +29,12 @@
 //!   This is the default preset.
 //! - **`ServerMonitoring`**: Headless server monitoring. Includes network
 //!   interfaces and swap, but omits sensors and processes for lower overhead.
-//! - **`PrivacySafeBugReport`**: Redacted data safe for sharing in bug reports.
-//!   Only includes OS info, CPU family, memory total, and GPU model.
+//! - **`PrivacySafeBugReport`**: The always-collected set plus GPU data,
+//!   shaped for sharing in bug reports (pair it with
+//!   [`PrivacyMode::Safe`](crate::privacy::PrivacyMode::Safe) to redact the
+//!   hostname and identifying fields it still carries).
+//! - **`HardwareInventory`**: Static description focus: per-core CPU detail,
+//!   all disks, sensors, GPU, and battery.
 //!
 //! # Examples
 //!
@@ -224,7 +223,7 @@ impl Preset {
 
     /// Whether this preset includes OS info.
     ///
-    /// Always returns `true` — OS information is useful in every context.
+    /// Always returns `true`: OS information is useful in every context.
     ///
     /// # Examples
     ///
@@ -937,5 +936,60 @@ mod tests {
     #[test]
     fn hardware_inventory_excludes_process_disk_io() {
         assert!(!Preset::HardwareInventory.includes_process_disk_io());
+    }
+
+    /// Pins the doc-table membership row by row, so the comparison table
+    /// above cannot drift from the `includes_*` methods again.
+    #[test]
+    fn preset_table_membership_matches_includes_methods() {
+        let presets = [
+            (Preset::Minimal, "Minimal"),
+            (Preset::TaskManager, "TaskManager"),
+            (Preset::Diagnostics, "Diagnostics"),
+            (Preset::ServerMonitoring, "ServerMonitoring"),
+            (Preset::PrivacySafeBugReport, "PrivacySafeBugReport"),
+            (Preset::HardwareInventory, "HardwareInventory"),
+        ];
+        // (per-preset flags in table column order)
+        let expected: [(&str, [bool; 8]); 6] = [
+            (
+                "Minimal",
+                [false, false, false, false, false, false, false, false],
+            ),
+            (
+                "TaskManager",
+                [true, false, true, false, true, true, false, false],
+            ),
+            (
+                "Diagnostics",
+                [true, true, true, true, true, true, true, true],
+            ),
+            (
+                "ServerMonitoring",
+                [false, true, false, true, false, false, false, false],
+            ),
+            (
+                "PrivacySafeBugReport",
+                [false, false, false, false, false, false, true, false],
+            ),
+            (
+                "HardwareInventory",
+                [true, false, true, false, true, false, true, true],
+            ),
+        ];
+        for (preset, name) in presets {
+            let (_, table) = expected.iter().find(|(n, _)| *n == name).expect(name);
+            let actual = [
+                preset.includes_per_core_cpu(),
+                preset.includes_swap(),
+                preset.includes_all_disks(),
+                preset.includes_network_interfaces(),
+                preset.includes_sensors(),
+                preset.includes_processes(),
+                preset.includes_gpu(),
+                preset.includes_battery(),
+            ];
+            assert_eq!(actual, *table, "{name} column must match the doc table");
+        }
     }
 }

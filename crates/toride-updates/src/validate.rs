@@ -51,8 +51,10 @@ pub fn validate_spec(spec: &UpdateSpec) -> Result<Vec<Finding>> {
                 "Empty origin pattern in spec",
             ));
         }
-        // APT origin patterns should contain at least one comma-separated field.
-        if spec.security_only && !origin.contains(',') {
+        // Origins-Patterns use comma-separated `key=value` fields while
+        // Allowed-Origins use the `distro:suite` shorthand; a pattern with
+        // neither separator is likely too broad.
+        if spec.security_only && !origin.contains(',') && !origin.contains(':') {
             findings.push(Finding::info(
                 "config.origin.simple-pattern",
                 &format!("Origin pattern may be too broad: {origin}"),

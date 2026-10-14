@@ -29,20 +29,26 @@ impl<'a> ConntrackReader<'a> {
 
     /// List all connection tracking entries.
     ///
-    /// Runs `conntrack -L` and parses the output into structured entries.
+    /// Runs `conntrack -L -o extended`: the `-o extended` flag makes
+    /// conntrack emit the per-direction `bytes=`/`packets=` counter pairs
+    /// that plain `-L` output omits (they also require kernel accounting
+    /// to be enabled). Entries parse regardless; counter fields stay
+    /// `None` when a line carries none.
     ///
     /// # Errors
     ///
     /// Returns [`crate::Error::CommandFailed`] if the `conntrack` command fails,
     /// or [`crate::Error::ConntrackError`] if parsing fails.
     pub fn list_all(&self) -> Result<Vec<ConntrackEntry>> {
-        let output = self.run_conntrack(&["-L".to_owned()])?;
+        let output = self.run_conntrack(&["-L".to_owned(), "-o".into(), "extended".into()])?;
         parse_conntrack_output(&output.stdout)
     }
 
     /// List connection tracking entries filtered by destination port.
     ///
-    /// Runs `conntrack -L -p <proto> --dport <port>`.
+    /// Runs `conntrack -L -p <proto> --dport <port> -o extended`, so
+    /// entries carry per-direction byte/packet counters as in
+    /// [`list_all`](Self::list_all).
     ///
     /// # Errors
     ///
@@ -54,6 +60,8 @@ impl<'a> ConntrackReader<'a> {
             proto.into(),
             "--dport".into(),
             port.to_string(),
+            "-o".into(),
+            "extended".into(),
         ])?;
         parse_conntrack_output(&output.stdout)
     }
@@ -101,6 +109,22 @@ impl<'a> ConntrackReader<'a> {
         Ok(count)
     }
 
+    /// Sum byte and packet counters across the table without materializing
+    /// entries.
+    ///
+    /// Runs the same `conntrack -L -o extended` query as
+    /// [`list_all`](Self::list_all) and accumulates the per-direction counter
+    /// pairs directly from the output. Returns `Ok(None)` when no line
+    /// carried counters (kernel accounting off).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`crate::Error::CommandFailed`] if the `conntrack` command fails.
+    pub fn sum_counters(&self) -> Result<Option<(u64, u64)>> {
+        let output = self.run_conntrack(&["-L".to_owned(), "-o".into(), "extended".into()])?;
+        Ok(crate::parse::sum_conntrack_counters(&output.stdout))
+    }
+
     // -----------------------------------------------------------------------
     // Internal helpers
     // -----------------------------------------------------------------------
@@ -141,7 +165,7 @@ mod tests {
     }
 
     /// `End-to-end` `FakeRunner` test for `ConntrackReader::list_all()` against a
-    /// real `/proc/net/nf_conntrack` sample containing BOTH tcp and udp lines
+    /// real `conntrack -L -o extended` sample containing BOTH tcp and udp lines
     /// (plus sctp/dccp/icmp). This is the regression that Wave-2a found: the
     /// parser read `parts[3]` unconditionally and captured the UDP `src=` field
     /// as a bogus "state".
@@ -153,20 +177,18 @@ mod tests {
     ///     -dccp are the only protocols that emit a state keyword)
     #[test]
     fn list_all_parses_mixed_protocols_from_real_proc_sample() {
-        // Real-world sample shape. `conntrack -L` emits the same per-line
-        // layout as /proc/net/nf_conntrack (minus the leading L3 family/name
-        // columns, which our parser does not consume). Here we feed the
-        // canonical `conntrack -L` style.
+        // Real-world `conntrack -L -o extended` shape: two direction blocks
+        // per line, each with a packets=/bytes= counter pair.
         let sample = "\
-tcp      6 431998 ESTABLISHED src=10.0.2.2 dst=93.184.216.34 sport=58994 dport=443 bytes=2048 packets=12
-udp      17 30 src=192.168.1.10 dst=8.8.8.8 sport=54321 dport=53 bytes=128 packets=2
-sctp     132 210 ESTABLISHED src=10.0.0.7 dst=10.0.0.8 sport=3868 dport=3868 bytes=0 packets=0
-dccp     33 120 REQUEST src=10.0.0.9 dst=10.0.0.10 sport=5001 dport=5001 bytes=64 packets=1
-icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
+tcp      6 431998 ESTABLISHED src=10.0.2.2 dst=93.184.216.34 sport=58994 dport=443 packets=12 bytes=2048 src=93.184.216.34 dst=10.0.2.2 sport=443 dport=58994 packets=15 bytes=16384 [ASSURED] mark=0 use=1
+udp      17 30 src=192.168.1.10 dst=8.8.8.8 sport=54321 dport=53 packets=2 bytes=128 src=8.8.8.8 dst=192.168.1.10 sport=53 dport=54321 packets=2 bytes=512
+sctp     132 210 ESTABLISHED src=10.0.0.7 dst=10.0.0.8 sport=3868 dport=3868 packets=0 bytes=0 src=10.0.0.8 dst=10.0.0.7 sport=3868 dport=3868 packets=0 bytes=0
+dccp     33 120 REQUEST src=10.0.0.9 dst=10.0.0.10 sport=5001 dport=5001 packets=1 bytes=64 src=10.0.0.10 dst=10.0.0.9 sport=5001 dport=5001 packets=1 bytes=72
+icmp     1 25 src=10.0.0.11 dst=10.0.0.12 type=8 code=0 id=42396 packets=1 bytes=56 src=10.0.0.12 dst=10.0.0.11 type=0 code=0 id=42396 packets=1 bytes=56
 ";
 
         let runner = FakeRunner::new().respond(
-            CommandSpec::new("/usr/sbin/conntrack").args(["-L"]),
+            CommandSpec::new("/usr/sbin/conntrack").args(["-L", "-o", "extended"]),
             CommandOutput::from_stdout(sample),
         );
         let paths = test_paths();
@@ -178,6 +200,7 @@ icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
         // tcp -> state present
         assert_eq!(entries[0].proto, 6);
         assert_eq!(entries[0].state.as_deref(), Some("ESTABLISHED"));
+        assert_eq!(entries[0].bytes, Some(18432), "both directions summed");
 
         // udp -> NO state (the regression: previously bogus "src=...")
         assert_eq!(entries[1].proto, 17);
@@ -194,9 +217,11 @@ icmp     1 25 src=10.0.0.11 dst=10.0.0.12 bytes=56 packets=1
         assert_eq!(entries[4].proto, 1);
         assert_eq!(entries[4].state, None);
 
-        // The reader was actually invoked with `conntrack -L` (verifies the
-        // spec plumbing, not just the parser).
-        runner.assert_called_with(&CommandSpec::new("/usr/sbin/conntrack").args(["-L"]));
+        // The reader was actually invoked with `conntrack -L -o extended`
+        // (verifies the spec plumbing, not just the parser).
+        runner.assert_called_with(
+            &CommandSpec::new("/usr/sbin/conntrack").args(["-L", "-o", "extended"]),
+        );
 
         // Round-trip through ConnectionInfo: udp state must be empty string
         // (not the leaked src= value).
